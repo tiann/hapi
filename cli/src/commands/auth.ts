@@ -1,7 +1,9 @@
 import chalk from 'chalk'
 import os from 'node:os'
+import * as readline from 'node:readline/promises'
+import { stdin as input, stdout as output } from 'node:process'
 import { configuration } from '@/configuration'
-import { readSettings, clearMachineId } from '@/persistence'
+import { readSettings, clearMachineId, updateSettings } from '@/persistence'
 
 export async function handleAuthCommand(args: string[]): Promise<void> {
     const subcommand = args[0]
@@ -13,24 +15,56 @@ export async function handleAuthCommand(args: string[]): Promise<void> {
 
     if (subcommand === 'status') {
         const settings = await readSettings()
+        const envToken = process.env.CLI_API_TOKEN
+        const settingsToken = settings.cliApiToken
+        const hasToken = Boolean(envToken || settingsToken)
+        const tokenSource = envToken ? 'environment' : (settingsToken ? 'settings file' : 'none')
         console.log(chalk.bold('\nDirect Connect Status\n'))
         console.log(chalk.gray(`  HAPPY_BOT_URL: ${configuration.serverUrl}`))
-        console.log(chalk.gray(`  CLI_API_TOKEN: ${configuration.cliApiToken ? 'set' : 'missing'}`))
+        console.log(chalk.gray(`  CLI_API_TOKEN: ${hasToken ? 'set' : 'missing'}`))
+        console.log(chalk.gray(`  Token Source: ${tokenSource}`))
         console.log(chalk.gray(`  Machine ID: ${settings.machineId ?? 'not set'}`))
         console.log(chalk.gray(`  Host: ${os.hostname()}`))
         return
     }
 
     if (subcommand === 'login') {
-        console.log(chalk.yellow('No login flow in direct-connect mode.'))
-        console.log(chalk.gray('Set `HAPPY_BOT_URL` and `CLI_API_TOKEN` in your environment.'))
+        if (!process.stdin.isTTY) {
+            console.error(chalk.red('Cannot prompt for token in non-TTY environment.'))
+            console.error(chalk.gray('Set CLI_API_TOKEN environment variable instead.'))
+            process.exit(1)
+        }
+
+        const rl = readline.createInterface({ input, output })
+
+        try {
+            const token = await rl.question(chalk.cyan('Enter CLI_API_TOKEN: '))
+
+            if (!token.trim()) {
+                console.error(chalk.red('Token cannot be empty'))
+                process.exit(1)
+            }
+
+            await updateSettings(current => ({
+                ...current,
+                cliApiToken: token.trim()
+            }))
+            configuration._setCliApiToken(token.trim())
+            console.log(chalk.green('\nToken saved to ~/.config/hapi/settings.json'))
+        } finally {
+            rl.close()
+        }
         return
     }
 
     if (subcommand === 'logout') {
+        await updateSettings(current => ({
+            ...current,
+            cliApiToken: undefined
+        }))
         await clearMachineId()
-        console.log(chalk.green('Cleared local machineId.'))
-        console.log(chalk.gray('Unset `CLI_API_TOKEN` in your environment to fully revoke access.'))
+        console.log(chalk.green('Cleared local credentials (token and machineId).'))
+        console.log(chalk.gray('Note: If CLI_API_TOKEN is set via environment variable, it will still be used.'))
         return
     }
 
@@ -41,15 +75,16 @@ export async function handleAuthCommand(args: string[]): Promise<void> {
 
 function showHelp(): void {
     console.log(`
-${chalk.bold('hapi auth')} - Direct-connect configuration
+${chalk.bold('hapi auth')} - Authentication management
 
 ${chalk.bold('Usage:')}
   hapi auth status            Show current configuration
-  hapi auth login             Print configuration help
-  hapi auth logout            Clear local machineId
+  hapi auth login             Enter and save CLI_API_TOKEN
+  hapi auth logout            Clear saved credentials
 
-${chalk.bold('Required env vars:')}
-  HAPPY_BOT_URL=<https://your-bot-domain>
-  CLI_API_TOKEN=<shared secret>
+${chalk.bold('Token priority (highest to lowest):')}
+  1. CLI_API_TOKEN environment variable
+  2. ~/.config/hapi/settings.json
+  3. Interactive prompt (on first run)
 `)
 }

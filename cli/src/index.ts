@@ -26,6 +26,7 @@ import { handleConnectCommand } from './commands/connect'
 import { spawnHappyCLI } from './utils/spawnHappyCLI'
 import { claudeCliPath } from './claude/claudeLocal'
 import { execFileSync } from 'node:child_process'
+import { initializeToken } from './ui/tokenInit'
 
 
 (async () => {
@@ -87,7 +88,8 @@ import { execFileSync } from 'node:child_process'
           startedBy = args[++i] as 'daemon' | 'terminal';
         }
       }
-      
+
+      await initializeToken();
       await authAndSetupMachineIfNeeded();
       await runCodex({ startedBy });
       // Do not force exit here; allow instrumentation to show lingering handles
@@ -179,6 +181,7 @@ import { execFileSync } from 'node:child_process'
       }
       process.exit(0);
     } else if (daemonSubcommand === 'start-sync') {
+      await initializeToken();
       await startDaemon()
       process.exit(0)
     } else if (daemonSubcommand === 'stop') {
@@ -283,7 +286,7 @@ ${chalk.bold('hapi')} - Claude Code On the Go
 
 ${chalk.bold('Usage:')}
   hapi [options]         Start Claude with Telegram control (direct-connect)
-  hapi auth              Show direct-connect configuration
+  hapi auth              Manage authentication
   hapi codex             Start Codex mode
   hapi connect           (not available in direct-connect mode)
   hapi notify            (not available in direct-connect mode)
@@ -292,9 +295,9 @@ ${chalk.bold('Usage:')}
   hapi doctor            System diagnostics & troubleshooting
 
 ${chalk.bold('Examples:')}
-  HAPPY_BOT_URL=http://localhost:3006 CLI_API_TOKEN=... hapi
-                          Start session (direct-connect)
-  hapi --yolo             Start with bypassing permissions 
+  hapi                    Start session (will prompt for token if not set)
+  hapi auth login         Configure CLI_API_TOKEN interactively
+  hapi --yolo             Start with bypassing permissions
                             hapi sugar for --dangerously-skip-permissions
   hapi auth status        Show direct-connect status
   hapi doctor             Run diagnostics
@@ -327,6 +330,7 @@ ${chalk.bold.cyan('Claude Code Options (from `claude --help`):')}
     }
 
     // Normal flow - auth and machine setup
+    await initializeToken();
     await authAndSetupMachineIfNeeded();
 
     // Always auto-start daemon for simplicity

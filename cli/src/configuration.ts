@@ -12,7 +12,7 @@ import packageJson from '../package.json'
 
 class Configuration {
     public readonly serverUrl: string
-    public readonly cliApiToken: string
+    private _cliApiToken: string
     public readonly isDaemonProcess: boolean
 
     // Directories and paths (from persistence)
@@ -30,19 +30,19 @@ class Configuration {
     constructor() {
         // Bot server configuration
         this.serverUrl = process.env.HAPPY_BOT_URL || 'http://localhost:3006'
-        this.cliApiToken = process.env.CLI_API_TOKEN || ''
+        this._cliApiToken = process.env.CLI_API_TOKEN || ''
 
         // Check if we're running as daemon based on process args
         const args = process.argv.slice(2)
         this.isDaemonProcess = args.length >= 2 && args[0] === 'daemon' && (args[1] === 'start-sync')
 
-        // Directory configuration - Priority: HAPPY_HOME_DIR env > default home dir
-        if (process.env.HAPPY_HOME_DIR) {
+        // Directory configuration - Priority: HAPI_HOME_DIR env > default home dir
+        if (process.env.HAPI_HOME_DIR) {
             // Expand ~ to home directory if present
-            const expandedPath = process.env.HAPPY_HOME_DIR.replace(/^~/, homedir())
+            const expandedPath = process.env.HAPI_HOME_DIR.replace(/^~/, homedir())
             this.happyHomeDir = expandedPath
         } else {
-            this.happyHomeDir = join(homedir(), '.happy')
+            this.happyHomeDir = join(homedir(), '.config', 'hapi')
         }
 
         this.logsDir = join(this.happyHomeDir, 'logs')
@@ -63,6 +63,14 @@ class Configuration {
         if (!existsSync(this.logsDir)) {
             mkdirSync(this.logsDir, { recursive: true })
         }
+    }
+
+    get cliApiToken(): string {
+        return this._cliApiToken
+    }
+
+    _setCliApiToken(token: string): void {
+        this._cliApiToken = token
     }
 }
 

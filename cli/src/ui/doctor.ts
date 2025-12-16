@@ -23,7 +23,7 @@ import packageJson from '../../package.json'
 export function getEnvironmentInfo(): Record<string, any> {
     return {
         PWD: process.env.PWD,
-        HAPPY_HOME_DIR: process.env.HAPPY_HOME_DIR,
+        HAPI_HOME_DIR: process.env.HAPI_HOME_DIR,
         HAPPY_BOT_URL: process.env.HAPPY_BOT_URL,
         HAPPY_PROJECT_ROOT: process.env.HAPPY_PROJECT_ROOT,
         CLI_API_TOKEN_SET: Boolean(process.env.CLI_API_TOKEN),
@@ -111,7 +111,7 @@ export async function runDoctorCommand(filter?: 'all' | 'daemon'): Promise<void>
         // Environment
         console.log(chalk.bold('\n🌍 Environment Variables'));
         const env = getEnvironmentInfo();
-        console.log(`HAPPY_HOME_DIR: ${env.HAPPY_HOME_DIR ? chalk.green(env.HAPPY_HOME_DIR) : chalk.gray('not set')}`);
+        console.log(`HAPI_HOME_DIR: ${env.HAPI_HOME_DIR ? chalk.green(env.HAPI_HOME_DIR) : chalk.gray('not set')}`);
         console.log(`HAPPY_BOT_URL: ${env.HAPPY_BOT_URL ? chalk.green(env.HAPPY_BOT_URL) : chalk.gray('not set')}`);
         console.log(`CLI_API_TOKEN: ${env.CLI_API_TOKEN_SET ? chalk.green('set') : chalk.gray('not set')}`);
         console.log(`DANGEROUSLY_LOG_TO_SERVER: ${env.DANGEROUSLY_LOG_TO_SERVER_FOR_AI_AUTO_DEBUGGING ? chalk.yellow('ENABLED') : chalk.gray('not set')}`);
@@ -119,21 +119,30 @@ export async function runDoctorCommand(filter?: 'all' | 'daemon'): Promise<void>
         console.log(`NODE_ENV: ${env.NODE_ENV ? chalk.green(env.NODE_ENV) : chalk.gray('not set')}`);
 
         // Settings
+        let settings;
         try {
-            const settings = await readSettings();
+            settings = await readSettings();
             console.log(chalk.bold('\n📄 Settings (settings.json):'));
-            console.log(chalk.gray(JSON.stringify(settings, null, 2)));
+            // Hide cliApiToken in output for security
+            const displaySettings = { ...settings, cliApiToken: settings.cliApiToken ? '***' : undefined };
+            console.log(chalk.gray(JSON.stringify(displaySettings, null, 2)));
         } catch (error) {
             console.log(chalk.bold('\n📄 Settings:'));
             console.log(chalk.red('❌ Failed to read settings'));
+            settings = {};
         }
 
         // Authentication status (direct-connect)
         console.log(chalk.bold('\n🔐 Direct Connect Auth'));
-        if (configuration.cliApiToken) {
-            console.log(chalk.green('✓ CLI_API_TOKEN is set'));
+        const envToken = process.env.CLI_API_TOKEN;
+        const settingsToken = settings.cliApiToken;
+        const hasToken = Boolean(envToken || settingsToken);
+        const tokenSource = envToken ? 'environment variable' : (settingsToken ? 'settings file' : 'none');
+        if (hasToken) {
+            console.log(chalk.green(`✓ CLI_API_TOKEN is set (from ${tokenSource})`));
         } else {
             console.log(chalk.red('❌ CLI_API_TOKEN is not set'));
+            console.log(chalk.gray('  Run `hapi auth login` to configure or set CLI_API_TOKEN env var'));
         }
 
         // Legacy credentials (unused in direct-connect mode)

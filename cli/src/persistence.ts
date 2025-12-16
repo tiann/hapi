@@ -19,6 +19,7 @@ interface Settings {
   machineId?: string
   machineIdConfirmedByServer?: boolean
   daemonAutoStartWhenRunningHappy?: boolean
+  cliApiToken?: string
 }
 
 const defaultSettings: Settings = {
