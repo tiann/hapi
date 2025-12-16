@@ -93,6 +93,7 @@ export interface Machine {
 
 export interface DecryptedMessage {
     id: string
+    seq: number
     localId: string | null
     content: unknown
     createdAt: number
@@ -115,6 +116,7 @@ export interface SyncEvent {
     sessionId?: string
     machineId?: string
     data?: unknown
+    message?: DecryptedMessage
 }
 
 export type SyncEventListener = (event: SyncEvent) => void
@@ -172,11 +174,18 @@ export class SyncEngine {
             }
         }
 
-        const webappEvent: SyncEvent = {
-            type: event.type,
-            sessionId: event.sessionId,
-            machineId: event.machineId
-        }
+        const webappEvent: SyncEvent = event.type === 'message-received'
+            ? {
+                type: event.type,
+                sessionId: event.sessionId,
+                machineId: event.machineId,
+                message: event.message
+            }
+            : {
+                type: event.type,
+                sessionId: event.sessionId,
+                machineId: event.machineId
+            }
 
         const rooms = new Set<string>()
         if (webappEvent.sessionId) {
@@ -226,6 +235,46 @@ export class SyncEngine {
 
     getSessionMessages(sessionId: string): DecryptedMessage[] {
         return this.sessionMessages.get(sessionId) || []
+    }
+
+    getMessagesPage(sessionId: string, options: { limit: number; beforeSeq: number | null }): {
+        messages: DecryptedMessage[]
+        page: {
+            limit: number
+            beforeSeq: number | null
+            nextBeforeSeq: number | null
+            hasMore: boolean
+        }
+    } {
+        const stored = this.store.getMessages(sessionId, options.limit, options.beforeSeq ?? undefined)
+        const messages: DecryptedMessage[] = stored.map((m) => ({
+            id: m.id,
+            seq: m.seq,
+            localId: m.localId,
+            content: m.content,
+            createdAt: m.createdAt
+        }))
+
+        let oldestSeq: number | null = null
+        for (const message of messages) {
+            if (typeof message.seq !== 'number') continue
+            if (oldestSeq === null || message.seq < oldestSeq) {
+                oldestSeq = message.seq
+            }
+        }
+
+        const nextBeforeSeq = oldestSeq
+        const hasMore = nextBeforeSeq !== null && this.store.getMessages(sessionId, 1, nextBeforeSeq).length > 0
+
+        return {
+            messages,
+            page: {
+                limit: options.limit,
+                beforeSeq: options.beforeSeq,
+                nextBeforeSeq,
+                hasMore
+            }
+        }
     }
 
     handleRealtimeEvent(event: SyncEvent): void {
@@ -439,6 +488,7 @@ export class SyncEngine {
             const stored = this.store.getMessages(sessionId, 200)
             const messages: DecryptedMessage[] = stored.map((m) => ({
                 id: m.id,
+                seq: m.seq,
                 localId: m.localId,
                 content: m.content,
                 createdAt: m.createdAt
@@ -450,23 +500,24 @@ export class SyncEngine {
         }
     }
 
-    async sendMessage(sessionId: string, text: string): Promise<void> {
+    async sendMessage(sessionId: string, payload: { text: string; localId?: string | null; sentFrom?: 'telegram-bot' | 'webapp' }): Promise<void> {
         const session = this.sessions.get(sessionId)
+        const sentFrom = payload.sentFrom ?? 'webapp'
 
         const content = {
             role: 'user',
             content: {
                 type: 'text',
-                text
+                text: payload.text
             },
             meta: {
-                sentFrom: 'telegram-bot',
+                sentFrom,
                 permissionMode: session?.permissionMode || 'default',
                 model: session?.modelMode === 'default' ? null : session?.modelMode ?? undefined
             }
         }
 
-        const msg = this.store.addMessage(sessionId, content)
+        const msg = this.store.addMessage(sessionId, content, payload.localId ?? undefined)
 
         const update = {
             id: msg.id,
@@ -488,10 +539,20 @@ export class SyncEngine {
 
         // Keep a small in-memory cache for Telegram rendering.
         const cached = this.sessionMessages.get(sessionId) ?? []
-        cached.push({ id: msg.id, localId: msg.localId, content: msg.content, createdAt: msg.createdAt })
+        cached.push({ id: msg.id, seq: msg.seq, localId: msg.localId, content: msg.content, createdAt: msg.createdAt })
         this.sessionMessages.set(sessionId, cached.slice(-200))
 
-        this.emit({ type: 'message-received', sessionId, data: msg.content })
+        this.emit({
+            type: 'message-received',
+            sessionId,
+            message: {
+                id: msg.id,
+                seq: msg.seq,
+                localId: msg.localId,
+                content: msg.content,
+                createdAt: msg.createdAt
+            }
+        })
     }
 
     async approvePermission(

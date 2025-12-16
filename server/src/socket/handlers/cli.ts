@@ -147,7 +147,13 @@ export function registerCliHandlers(socket: Socket, deps: CliHandlersDeps): void
         onWebappEvent?.({
             type: 'message-received',
             sessionId: sid,
-            data: msg.content
+            message: {
+                id: msg.id,
+                seq: msg.seq,
+                localId: msg.localId,
+                content: msg.content,
+                createdAt: msg.createdAt
+            }
         })
     })
 

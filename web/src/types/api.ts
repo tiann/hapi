@@ -52,6 +52,7 @@ export type MessageStatus = 'sending' | 'sent' | 'failed'
 
 export type DecryptedMessage = {
     id: string
+    seq: number | null
     localId: string | null
     content: unknown
     createdAt: number
@@ -86,14 +87,10 @@ export type MessagesResponse = {
     messages: DecryptedMessage[]
     page: {
         limit: number
-        before: number | null
-        nextBefore: number | null
+        beforeSeq: number | null
+        nextBeforeSeq: number | null
         hasMore: boolean
     }
-    warning?: {
-        status: number | null
-        error: string
-    } | null
 }
 
 export type MachinesResponse = { machines: Machine[] }
@@ -106,6 +103,6 @@ export type SyncEvent =
     | { type: 'session-added'; sessionId: string; data?: unknown }
     | { type: 'session-updated'; sessionId: string; data?: unknown }
     | { type: 'session-removed'; sessionId: string }
-    | { type: 'message-received'; sessionId: string; data?: unknown }
+    | { type: 'message-received'; sessionId: string; message: DecryptedMessage }
     | { type: 'machine-updated'; machineId: string; data?: unknown }
     | { type: 'connection-changed'; data?: { status: string } }

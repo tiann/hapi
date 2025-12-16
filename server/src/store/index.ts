@@ -496,7 +496,7 @@ export class Store {
     getMessages(sessionId: string, limit: number = 200, beforeSeq?: number): StoredMessage[] {
         const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.min(200, limit)) : 200
 
-        const rows = (beforeSeq && Number.isFinite(beforeSeq))
+        const rows = (beforeSeq !== undefined && beforeSeq !== null && Number.isFinite(beforeSeq))
             ? this.db.prepare(
                 'SELECT * FROM messages WHERE session_id = ? AND seq < ? ORDER BY seq DESC LIMIT ?'
             ).all(sessionId, beforeSeq, safeLimit) as DbMessageRow[]

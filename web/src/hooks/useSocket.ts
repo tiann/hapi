@@ -17,9 +17,13 @@ export function useSocket(options: {
     token: string
     subscription?: SocketSubscription
     onEvent: (event: SyncEvent) => void
+    onConnect?: () => void
+    onDisconnect?: (reason: string) => void
     onError?: (error: unknown) => void
 }): void {
     const onEventRef = useRef(options.onEvent)
+    const onConnectRef = useRef(options.onConnect)
+    const onDisconnectRef = useRef(options.onDisconnect)
     const onErrorRef = useRef(options.onError)
     const subscriptionRef = useRef<SocketSubscription>(options.subscription ?? {})
     const socketRef = useRef<ReturnType<typeof io> | null>(null)
@@ -31,6 +35,14 @@ export function useSocket(options: {
     useEffect(() => {
         onErrorRef.current = options.onError
     }, [options.onError])
+
+    useEffect(() => {
+        onConnectRef.current = options.onConnect
+    }, [options.onConnect])
+
+    useEffect(() => {
+        onDisconnectRef.current = options.onDisconnect
+    }, [options.onDisconnect])
 
     useEffect(() => {
         subscriptionRef.current = options.subscription ?? {}
@@ -55,6 +67,13 @@ export function useSocket(options: {
         const sendSubscribe = () => {
             socket.emit('subscribe', subscriptionRef.current)
         }
+        const handleConnect = () => {
+            sendSubscribe()
+            onConnectRef.current?.()
+        }
+        const handleDisconnect = (reason: string) => {
+            onDisconnectRef.current?.(reason)
+        }
 
         socket.on('update', (event: unknown) => {
             if (!isObject(event)) return
@@ -70,11 +89,13 @@ export function useSocket(options: {
             onErrorRef.current?.(error)
         })
 
-        socket.on('connect', sendSubscribe)
+        socket.on('connect', handleConnect)
+        socket.on('disconnect', handleDisconnect)
         sendSubscribe()
 
         return () => {
-            socket.off('connect', sendSubscribe)
+            socket.off('connect', handleConnect)
+            socket.off('disconnect', handleDisconnect)
             socket.disconnect()
             if (socketRef.current === socket) {
                 socketRef.current = null

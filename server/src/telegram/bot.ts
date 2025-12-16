@@ -259,7 +259,7 @@ export class HappyBot {
         }
 
         if (event.type === 'message-received' && event.sessionId) {
-            const message = event.data as any
+            const message = (event.message?.content ?? event.data) as any
             const messageContent = message?.content
             const eventType = messageContent?.type === 'event' ? messageContent?.data?.type : null
 

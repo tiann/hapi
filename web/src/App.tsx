@@ -62,72 +62,74 @@ function isUserMessage(msg: DecryptedMessage): boolean {
     return false
 }
 
-function mergeRecentMessages(existing: DecryptedMessage[], recent: DecryptedMessage[]): DecryptedMessage[] {
-    if (existing.length === 0) return recent
-    if (recent.length === 0) return existing
-
-    // Separate optimistic messages (those with localId and status)
-    const optimisticMessages = existing.filter(m => m.localId && m.status)
-    const nonOptimisticExisting = existing.filter(m => !m.localId || !m.status)
-
-    const anchorId = recent[0]?.id
-    let merged: DecryptedMessage[]
-
-    if (anchorId) {
-        const matchIndex = nonOptimisticExisting.findIndex((m) => m.id === anchorId)
-        if (matchIndex >= 0) {
-            merged = [...nonOptimisticExisting.slice(0, matchIndex), ...recent]
-        } else {
-            const anchorTime = recent[0]?.createdAt
-            if (typeof anchorTime === 'number') {
-                const timeMatchIndex = nonOptimisticExisting.findIndex((m) => m.createdAt >= anchorTime)
-                if (timeMatchIndex >= 0) {
-                    merged = [...nonOptimisticExisting.slice(0, timeMatchIndex), ...recent]
-                } else {
-                    merged = dedupeAndSort([...nonOptimisticExisting, ...recent])
-                }
-            } else {
-                merged = dedupeAndSort([...nonOptimisticExisting, ...recent])
-            }
-        }
-    } else {
-        merged = dedupeAndSort([...nonOptimisticExisting, ...recent])
+function compareMessages(a: DecryptedMessage, b: DecryptedMessage): number {
+    const aSeq = typeof a.seq === 'number' ? a.seq : null
+    const bSeq = typeof b.seq === 'number' ? b.seq : null
+    if (aSeq !== null && bSeq !== null && aSeq !== bSeq) {
+        return aSeq - bSeq
     }
-
-    // Re-add optimistic messages that are still sending or failed
-    // (sent messages will be replaced by server messages)
-    for (const opt of optimisticMessages) {
-        if (opt.status === 'sent') {
-            // Check if server USER message with similar time exists
-            const hasServerUserMessage = merged.some(m =>
-                !m.localId &&
-                isUserMessage(m) &&
-                Math.abs(m.createdAt - opt.createdAt) < 10000
-            )
-            if (hasServerUserMessage) continue
-        }
-        // Keep sending and failed messages
-        if (!merged.some(m => m.id === opt.id)) {
-            merged.push(opt)
-        }
+    if (a.createdAt !== b.createdAt) {
+        return a.createdAt - b.createdAt
     }
-
-    merged.sort((a, b) => {
-        if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt
-        return a.id.localeCompare(b.id)
-    })
-
-    return merged
+    return a.id.localeCompare(b.id)
 }
 
-function dedupeAndSort(messages: DecryptedMessage[]): DecryptedMessage[] {
-    const seen = new Set<string>()
-    const result: DecryptedMessage[] = []
-    for (const msg of messages) {
-        if (seen.has(msg.id)) continue
-        seen.add(msg.id)
-        result.push(msg)
+function mergeMessages(existing: DecryptedMessage[], incoming: DecryptedMessage[]): DecryptedMessage[] {
+    if (existing.length === 0) {
+        return [...incoming].sort(compareMessages)
     }
+    if (incoming.length === 0) {
+        return [...existing].sort(compareMessages)
+    }
+
+    const byId = new Map<string, DecryptedMessage>()
+    for (const msg of existing) {
+        byId.set(msg.id, msg)
+    }
+    for (const msg of incoming) {
+        byId.set(msg.id, msg)
+    }
+
+    let merged = Array.from(byId.values())
+
+    const incomingLocalIds = new Set<string>()
+    for (const msg of incoming) {
+        if (msg.localId) {
+            incomingLocalIds.add(msg.localId)
+        }
+    }
+
+    // If we received a stored message with a localId, drop any optimistic bubble with the same localId.
+    if (incomingLocalIds.size > 0) {
+        merged = merged.filter((msg) => {
+            if (!msg.localId || !incomingLocalIds.has(msg.localId)) {
+                return true
+            }
+            return !msg.status
+        })
+    }
+
+    // Fallback: if an optimistic message was marked as sent but we didn't get a localId echo,
+    // drop it when a server user message appears close in time.
+    const optimisticMessages = merged.filter((m) => m.localId && m.status)
+    const nonOptimisticMessages = merged.filter((m) => !m.localId || !m.status)
+    const result: DecryptedMessage[] = [...nonOptimisticMessages]
+
+    for (const optimistic of optimisticMessages) {
+        if (optimistic.status === 'sent') {
+            const hasServerUserMessage = nonOptimisticMessages.some((m) =>
+                !m.status &&
+                isUserMessage(m) &&
+                Math.abs(m.createdAt - optimistic.createdAt) < 10_000
+            )
+            if (hasServerUserMessage) {
+                continue
+            }
+        }
+        result.push(optimistic)
+    }
+
+    result.sort(compareMessages)
     return result
 }
 
@@ -154,7 +156,7 @@ export function App() {
     const [messagesLoading, setMessagesLoading] = useState<boolean>(false)
     const [messagesLoadingMore, setMessagesLoadingMore] = useState<boolean>(false)
     const [messagesHasMore, setMessagesHasMore] = useState<boolean>(false)
-    const [messagesNextBefore, setMessagesNextBefore] = useState<number | null>(null)
+    const [messagesNextBeforeSeq, setMessagesNextBeforeSeq] = useState<number | null>(null)
     const [messagesWarning, setMessagesWarning] = useState<string | null>(null)
 
     const [machines, setMachines] = useState<Machine[]>([])
@@ -162,7 +164,7 @@ export function App() {
     const [machinesError, setMachinesError] = useState<string | null>(null)
 
     const [isSending, setIsSending] = useState<boolean>(false)
-    const silentSyncInFlightRef = useRef<boolean>(false)
+    const syncInFlightRef = useRef<boolean>(false)
 
     useEffect(() => {
         const tg = getTelegramWebApp()
@@ -277,7 +279,10 @@ export function App() {
         setSelectedSession(res.session)
     }, [api])
 
-    const loadMessages = useCallback(async (sessionId: string, options: { before?: number; appendOlder?: boolean; refresh?: boolean }) => {
+    const loadMessages = useCallback(async (
+        sessionId: string,
+        options: { beforeSeq?: number | null; appendOlder?: boolean } = {}
+    ) => {
         if (!api) return
 
         if (options.appendOlder) {
@@ -289,23 +294,13 @@ export function App() {
         try {
             const res = await api.getMessages(sessionId, {
                 limit: 50,
-                before: options.before,
-                refresh: options.refresh
+                beforeSeq: options.beforeSeq ?? null
             })
 
-            if (options.appendOlder) {
-                setMessages((prev) => [...res.messages, ...prev])
-            } else {
-                setMessages(res.messages)
-            }
+            setMessages((prev) => mergeMessages(prev, res.messages))
             setMessagesHasMore(res.page.hasMore)
-            setMessagesNextBefore(res.page.nextBefore)
-            if (res.warning) {
-                const status = res.warning.status ?? 'error'
-                setMessagesWarning(`Happy Bot returned ${status} while fetching message history. Showing cached/live messages.`)
-            } else {
-                setMessagesWarning(null)
-            }
+            setMessagesNextBeforeSeq(res.page.nextBeforeSeq)
+            setMessagesWarning(null)
         } catch (e) {
             setMessagesWarning(e instanceof Error ? e.message : 'Failed to load messages')
         } finally {
@@ -314,11 +309,11 @@ export function App() {
         }
     }, [api])
 
-    const silentSyncSessionAndMessages = useCallback(async (sessionId: string) => {
+    const syncSessionAndMessages = useCallback(async (sessionId: string) => {
         if (!api) return
         if (messagesLoading || messagesLoadingMore) return
-        if (silentSyncInFlightRef.current) return
-        silentSyncInFlightRef.current = true
+        if (syncInFlightRef.current) return
+        syncInFlightRef.current = true
 
         try {
             const [sessionRes, messagesRes] = await Promise.all([
@@ -331,10 +326,12 @@ export function App() {
             }
 
             if (messagesRes) {
-                setMessages((prev) => mergeRecentMessages(prev, messagesRes.messages))
+                setMessages((prev) => mergeMessages(prev, messagesRes.messages))
+                setMessagesHasMore(messagesRes.page.hasMore)
+                setMessagesNextBeforeSeq(messagesRes.page.nextBeforeSeq)
             }
         } finally {
-            silentSyncInFlightRef.current = false
+            syncInFlightRef.current = false
         }
     }, [api, messagesLoading, messagesLoadingMore])
 
@@ -352,7 +349,7 @@ export function App() {
             )
         )
 
-        api.sendMessage(selectedSessionId, text)
+        api.sendMessage(selectedSessionId, text, localId)
             .then(() => {
                 getTelegramWebApp()?.HapticFeedback?.notificationOccurred('success')
                 setMessages((prev) =>
@@ -397,18 +394,18 @@ export function App() {
             setSelectedSession(null)
             setMessages([])
             setMessagesHasMore(false)
-            setMessagesNextBefore(null)
+            setMessagesNextBeforeSeq(null)
             setMessagesWarning(null)
             return
         }
         setSelectedSession(null)
         setMessages([])
         setMessagesHasMore(false)
-        setMessagesNextBefore(null)
+        setMessagesNextBeforeSeq(null)
         setMessagesWarning(null)
 
         loadSession(selectedSessionId)
-        loadMessages(selectedSessionId, { refresh: true })
+        loadMessages(selectedSessionId)
     }, [api, selectedSessionId, loadSession, loadMessages])
 
     useEffect(() => {
@@ -432,6 +429,11 @@ export function App() {
         enabled: Boolean(api && token),
         token: token ?? '',
         subscription: socketSubscription,
+        onConnect: () => {
+            if (selectedSessionId) {
+                syncSessionAndMessages(selectedSessionId)
+            }
+        },
         onEvent: (event: SyncEvent) => {
             if (event.type === 'session-added' || event.type === 'session-updated' || event.type === 'session-removed') {
                 loadSessions()
@@ -440,28 +442,13 @@ export function App() {
                 }
             }
             if (event.type === 'message-received' && selectedSessionId && event.sessionId === selectedSessionId) {
-                silentSyncSessionAndMessages(selectedSessionId)
+                setMessages((prev) => mergeMessages(prev, [event.message]))
             }
             if (event.type === 'machine-updated' && (screen.type === 'machines' || screen.type === 'spawn')) {
                 loadMachines()
             }
         }
     })
-
-    useEffect(() => {
-        if (!api) return
-        if (screen.type !== 'session') return
-        if (!selectedSessionId) return
-
-        silentSyncSessionAndMessages(selectedSessionId)
-        const interval = setInterval(() => {
-            silentSyncSessionAndMessages(selectedSessionId)
-        }, 3_000)
-
-        return () => {
-            clearInterval(interval)
-        }
-    }, [api, screen.type, selectedSessionId, silentSyncSessionAndMessages])
 
     if (isAuthLoading) {
         return (
@@ -516,11 +503,11 @@ export function App() {
                         onBack={goBack}
                         onRefresh={() => {
                             loadSession(screen.sessionId)
-                            loadMessages(screen.sessionId, { refresh: true })
+                            loadMessages(screen.sessionId)
                         }}
                         onLoadMore={() => {
-                            if (!messagesNextBefore) return
-                            loadMessages(screen.sessionId, { before: messagesNextBefore, appendOlder: true })
+                            if (messagesNextBeforeSeq === null) return
+                            loadMessages(screen.sessionId, { beforeSeq: messagesNextBeforeSeq, appendOlder: true })
                         }}
                         onSend={(text) => {
                             if (isSending) return
@@ -529,6 +516,7 @@ export function App() {
                             const localId = makeClientSideId('local')
                             const optimisticMessage: DecryptedMessage = {
                                 id: localId,
+                                seq: null,
                                 localId: localId,
                                 content: { role: 'user', content: text },
                                 createdAt: Date.now(),
@@ -537,10 +525,10 @@ export function App() {
                             }
 
                             // Immediately show message
-                            setMessages((prev) => [...prev, optimisticMessage])
+                            setMessages((prev) => mergeMessages(prev, [optimisticMessage]))
                             setIsSending(true)
 
-                            api.sendMessage(screen.sessionId, text)
+                            api.sendMessage(screen.sessionId, text, localId)
                                 .then(() => {
                                     getTelegramWebApp()?.HapticFeedback?.notificationOccurred('success')
                                     // Update status to sent

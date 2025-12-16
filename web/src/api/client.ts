@@ -57,21 +57,24 @@ export class ApiClient {
         return await this.request<SessionResponse>(`/api/sessions/${encodeURIComponent(sessionId)}`)
     }
 
-    async getMessages(sessionId: string, options: { before?: number; limit?: number; refresh?: boolean }): Promise<MessagesResponse> {
+    async getMessages(sessionId: string, options: { beforeSeq?: number | null; limit?: number }): Promise<MessagesResponse> {
         const params = new URLSearchParams()
-        if (options.before) params.set('before', `${options.before}`)
-        if (options.limit) params.set('limit', `${options.limit}`)
-        if (options.refresh) params.set('refresh', '1')
+        if (options.beforeSeq !== undefined && options.beforeSeq !== null) {
+            params.set('beforeSeq', `${options.beforeSeq}`)
+        }
+        if (options.limit !== undefined && options.limit !== null) {
+            params.set('limit', `${options.limit}`)
+        }
 
         const qs = params.toString()
         const url = `/api/sessions/${encodeURIComponent(sessionId)}/messages${qs ? `?${qs}` : ''}`
         return await this.request<MessagesResponse>(url)
     }
 
-    async sendMessage(sessionId: string, text: string): Promise<void> {
+    async sendMessage(sessionId: string, text: string, localId?: string | null): Promise<void> {
         await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/messages`, {
             method: 'POST',
-            body: JSON.stringify({ text })
+            body: JSON.stringify({ text, localId: localId ?? undefined })
         })
     }
 
