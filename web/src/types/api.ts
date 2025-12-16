@@ -19,9 +19,22 @@ export type AgentStateRequest = {
     createdAt?: number | null
 }
 
+export type AgentStateCompletedRequest = {
+    tool: string
+    arguments: unknown
+    createdAt?: number | null
+    completedAt?: number | null
+    status: 'canceled' | 'denied' | 'approved'
+    reason?: string
+    mode?: string
+    decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort'
+    allowTools?: string[]
+}
+
 export type AgentState = {
     controlledByUser?: boolean | null
     requests?: Record<string, AgentStateRequest> | null
+    completedRequests?: Record<string, AgentStateCompletedRequest> | null
 }
 
 export type Session = {

@@ -14,7 +14,7 @@ export const DialogContent = React.forwardRef<
         <DialogPrimitive.Content
             ref={ref}
             className={cn(
-                'fixed left-1/2 top-1/2 z-50 w-[calc(100vw-24px)] max-w-lg -translate-x-1/2 -translate-y-1/2 rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] p-4 shadow-lg',
+                'fixed left-1/2 top-1/2 z-50 w-[calc(100vw-24px)] max-w-lg -translate-x-1/2 -translate-y-1/2 rounded-xl bg-[var(--app-secondary-bg)] p-4 shadow-2xl',
                 className
             )}
             {...props}
@@ -50,4 +50,3 @@ export const DialogDescription = React.forwardRef<
     />
 ))
 DialogDescription.displayName = 'DialogDescription'
-

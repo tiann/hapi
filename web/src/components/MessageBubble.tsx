@@ -13,6 +13,40 @@ function truncate(text: string, maxLen: number): string {
     return text.slice(0, maxLen - 3) + '...'
 }
 
+/**
+ * Converts snake_case string to Title Case with spaces.
+ * Example: "create_issue" -> "Create Issue"
+ */
+function snakeToTitleWithSpaces(value: string): string {
+    return value
+        .split('_')
+        .filter((part) => part.length > 0)
+        .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+        .join(' ')
+}
+
+/**
+ * Formats MCP tool names for display.
+ * Example: "mcp__linear__create_issue" -> "MCP: Linear Create Issue"
+ */
+function formatMCPTitle(toolName: string): string {
+    const withoutPrefix = toolName.replace(/^mcp__/, '')
+    const parts = withoutPrefix.split('__')
+    if (parts.length >= 2) {
+        const serverName = snakeToTitleWithSpaces(parts[0])
+        const toolPart = snakeToTitleWithSpaces(parts.slice(1).join('_'))
+        return `MCP: ${serverName} ${toolPart}`
+    }
+    return `MCP: ${snakeToTitleWithSpaces(withoutPrefix)}`
+}
+
+function formatToolTitle(toolName: string): string {
+    if (toolName.startsWith('mcp__')) {
+        return formatMCPTitle(toolName)
+    }
+    return toolName
+}
+
 type RoleWrappedMessage = {
     role: string
     content: unknown
@@ -81,7 +115,7 @@ function renderRoleWrappedMessageContent(message: RoleWrappedMessage): ReactNode
 function formatEventLabel(event: unknown): string {
     if (!isObject(event)) return 'Event'
     const type = event.type
-    if (type === 'ready') return '✅ Ready for input'
+    if (type === 'ready') return 'ready'
     if (type === 'switch') {
         const mode = event.mode === 'local' ? 'local' : 'remote'
         return `🔄 Switched to ${mode}`
@@ -99,6 +133,38 @@ function formatEventLabel(event: unknown): string {
     } catch {
         return 'Event'
     }
+}
+
+function parseToolUseError(message: string): { isToolUseError: boolean; errorMessage: string | null } {
+    const regex = /<tool_use_error>(.*?)<\/tool_use_error>/s
+    const match = message.match(regex)
+
+    if (match) {
+        return {
+            isToolUseError: true,
+            errorMessage: typeof match[1] === 'string' ? match[1].trim() : ''
+        }
+    }
+
+    return {
+        isToolUseError: false,
+        errorMessage: null
+    }
+}
+
+function parseClaudeUsageLimit(text: string): number | null {
+    const match = text.match(/^Claude AI usage limit reached\|(\d+)$/)
+    if (!match) return null
+    const timestamp = Number.parseInt(match[1], 10)
+    if (!Number.isFinite(timestamp)) return null
+    return timestamp
+}
+
+function formatUnixTimestamp(value: number): string {
+    const ms = value < 1_000_000_000_000 ? value * 1000 : value
+    const date = new Date(ms)
+    if (Number.isNaN(date.getTime())) return String(value)
+    return date.toLocaleString()
 }
 
 function getToolName(value: Record<string, unknown>): string {
@@ -213,6 +279,8 @@ function ToolUseView(props: { toolName: string; input: unknown }) {
     const url = getInputStringAny(normalizedInput, ['url'])
     const prompt = getInputStringAny(normalizedInput, ['description', 'prompt'])
 
+    const title = formatToolTitle(props.toolName)
+
     // Generate compact title suffix
     const titleSuffix = filePath
         ? `: ${filePath.split('/').pop() ?? filePath}`
@@ -234,12 +302,12 @@ function ToolUseView(props: { toolName: string; input: unknown }) {
                     type="button"
                     className="flex items-center gap-1 text-left text-xs font-medium text-[var(--app-hint)] hover:underline"
                 >
-                    🔧 {props.toolName}{titleSuffix}
+                    🔧 {title}{titleSuffix}
                 </button>
             </DialogTrigger>
             <DialogContent>
                 <DialogHeader>
-                    <DialogTitle>🔧 {props.toolName}</DialogTitle>
+                    <DialogTitle>🔧 {title}</DialogTitle>
                 </DialogHeader>
                 <div className="mt-3 flex max-h-[60vh] flex-col gap-3 overflow-auto">
                     {filePath && (
@@ -282,8 +350,17 @@ function ToolUseView(props: { toolName: string; input: unknown }) {
 
 function ToolResultView(props: { isError: boolean; content: unknown }) {
     const text = extractTextFromToolResult(props.content)
-    const summary = text !== null ? generateOutputSummary(text) : null
-    const header = props.isError ? '❌ Tool error' : '✓ Tool result'
+    const toolUseError = text !== null ? parseToolUseError(text) : null
+    const toolUseErrorText = toolUseError?.isToolUseError ? (toolUseError.errorMessage ?? '') : null
+
+    const displayText = toolUseError?.isToolUseError ? toolUseErrorText : text
+    const summary = displayText !== null ? generateOutputSummary(displayText) : null
+
+    const header = toolUseError?.isToolUseError
+        ? '⛔ Tool rejected'
+        : props.isError
+            ? '❌ Tool error'
+            : '✓ Tool result'
     const hasContent = props.content !== null && props.content !== undefined
 
     return (
@@ -302,8 +379,8 @@ function ToolResultView(props: { isError: boolean; content: unknown }) {
                     <DialogTitle>{header}</DialogTitle>
                 </DialogHeader>
                 <div className="mt-3 max-h-[60vh] overflow-auto">
-                    {text !== null ? (
-                        <CodeBlock code={text} language="text" />
+                    {displayText !== null ? (
+                        <CodeBlock code={displayText} language="text" />
                     ) : hasContent ? (
                         <CodeBlock code={safeStringify(props.content)} language="json" />
                     ) : (
@@ -393,6 +470,9 @@ function renderOutputData(data: unknown): ReactNode {
 
     if (outputType === 'event') {
         const event = (data.data ?? data.event ?? data) as unknown
+        if (isObject(event) && event.type === 'ready') {
+            return null
+        }
         return (
             <div className="mx-auto w-fit rounded-full bg-[var(--app-subtle-bg)] px-3 py-1 text-xs text-[var(--app-hint)]">
                 {formatEventLabel(event)}
@@ -434,6 +514,13 @@ function renderOutputData(data: unknown): ReactNode {
     if (outputType === 'tool_use') {
         const name = getToolName(data)
         const input = getToolInput(data)
+        if (name === 'mcp__happy__change_title' && isObject(input) && typeof input.title === 'string') {
+            return (
+                <div className="mx-auto w-fit rounded-full bg-[var(--app-subtle-bg)] px-3 py-1 text-xs text-[var(--app-hint)]">
+                    Title changed to &quot;{input.title}&quot;
+                </div>
+            )
+        }
         // Special handling for ExitPlanMode - show plan content directly
         if (isExitPlanModeTool(name)) {
             return <ExitPlanModeView input={input} />
@@ -455,6 +542,14 @@ function renderBlock(block: unknown): ReactNode {
         const parsed = tryParseJsonString(block)
         if (parsed !== block) {
             return renderBlock(parsed)
+        }
+        const usageLimit = parseClaudeUsageLimit(block)
+        if (usageLimit !== null) {
+            return (
+                <div className="mx-auto w-fit rounded-full bg-[var(--app-subtle-bg)] px-3 py-1 text-xs text-[var(--app-hint)]">
+                    ⏳ Usage limit reached until {formatUnixTimestamp(usageLimit)}
+                </div>
+            )
         }
         return <MarkdownRenderer content={block} />
     }
@@ -486,6 +581,14 @@ function renderBlock(block: unknown): ReactNode {
     const type = block.type
 
     if (type === 'text' && typeof block.text === 'string') {
+        const usageLimit = parseClaudeUsageLimit(block.text)
+        if (usageLimit !== null) {
+            return (
+                <div className="mx-auto w-fit rounded-full bg-[var(--app-subtle-bg)] px-3 py-1 text-xs text-[var(--app-hint)]">
+                    ⏳ Usage limit reached until {formatUnixTimestamp(usageLimit)}
+                </div>
+            )
+        }
         return <MarkdownRenderer content={block.text} />
     }
 
@@ -494,6 +597,9 @@ function renderBlock(block: unknown): ReactNode {
     }
 
     if (type === 'event') {
+        if (isObject(block.data) && block.data.type === 'ready') {
+            return null
+        }
         return (
             <div className="mx-auto w-fit rounded-full bg-[var(--app-subtle-bg)] px-3 py-1 text-xs text-[var(--app-hint)]">
                 {formatEventLabel(block.data)}
@@ -508,6 +614,13 @@ function renderBlock(block: unknown): ReactNode {
     if (type === 'tool_use') {
         const name = getToolName(block)
         const input = getToolInput(block)
+        if (name === 'mcp__happy__change_title' && isObject(input) && typeof input.title === 'string') {
+            return (
+                <div className="mx-auto w-fit rounded-full bg-[var(--app-subtle-bg)] px-3 py-1 text-xs text-[var(--app-hint)]">
+                    Title changed to &quot;{input.title}&quot;
+                </div>
+            )
+        }
         // Special handling for ExitPlanMode - show plan content directly
         if (isExitPlanModeTool(name)) {
             return <ExitPlanModeView input={input} />
@@ -600,6 +713,9 @@ export function MessageBubble(props: {
 
     // Events render centered without bubble
     if (isObject(inner) && inner.type === 'event') {
+        if (isObject(inner.data) && inner.data.type === 'ready') {
+            return null
+        }
         return (
             <div className="py-1">
                 {renderBlock(inner)}

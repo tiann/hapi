@@ -37,13 +37,18 @@ export const AgentStateSchema = z.object({
         tool: z.string(),
         arguments: z.unknown(),
         createdAt: z.number().nullish()
-    })).nullish(),
+    }).passthrough()).nullish(),
     completedRequests: z.record(z.string(), z.object({
         tool: z.string(),
         arguments: z.unknown(),
+        createdAt: z.number().nullish(),
+        completedAt: z.number().nullish(),
         status: z.enum(['canceled', 'denied', 'approved']),
-        mode: z.string().nullish()
-    })).nullish()
+        reason: z.string().optional(),
+        mode: z.string().optional(),
+        decision: z.enum(['approved', 'approved_for_session', 'denied', 'abort']).optional(),
+        allowTools: z.array(z.string()).optional()
+    }).passthrough()).nullish()
 }).passthrough()
 
 export type AgentState = z.infer<typeof AgentStateSchema>
@@ -558,19 +563,28 @@ export class SyncEngine {
     async approvePermission(
         sessionId: string,
         requestId: string,
-        mode?: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan'
+        mode?: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan',
+        allowTools?: string[],
+        decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort'
     ): Promise<void> {
         await this.sessionRpc(sessionId, 'permission', {
             id: requestId,
             approved: true,
-            mode
+            mode,
+            allowTools,
+            decision
         })
     }
 
-    async denyPermission(sessionId: string, requestId: string): Promise<void> {
+    async denyPermission(
+        sessionId: string,
+        requestId: string,
+        decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort'
+    ): Promise<void> {
         await this.sessionRpc(sessionId, 'permission', {
             id: requestId,
-            approved: false
+            approved: false,
+            decision
         })
     }
 

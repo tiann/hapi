@@ -4,8 +4,16 @@ import type { SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 import { requireSessionFromParam, requireSyncEngine } from './guards'
 
+const decisionSchema = z.enum(['approved', 'approved_for_session', 'denied', 'abort'])
+
 const approveBodySchema = z.object({
-    mode: z.enum(['default', 'acceptEdits', 'bypassPermissions']).optional()
+    mode: z.enum(['default', 'acceptEdits', 'bypassPermissions', 'plan']).optional(),
+    allowTools: z.array(z.string()).optional(),
+    decision: decisionSchema.optional()
+})
+
+const denyBodySchema = z.object({
+    decision: decisionSchema.optional()
 })
 
 export function createPermissionsRoutes(getSyncEngine: () => SyncEngine | null): Hono<WebAppEnv> {
@@ -26,7 +34,7 @@ export function createPermissionsRoutes(getSyncEngine: () => SyncEngine | null):
         const { sessionId, session } = sessionResult
 
         const json = await c.req.json().catch(() => null)
-        const parsed = approveBodySchema.safeParse(json)
+        const parsed = approveBodySchema.safeParse(json ?? {})
         if (!parsed.success) {
             return c.json({ error: 'Invalid body' }, 400)
         }
@@ -37,7 +45,9 @@ export function createPermissionsRoutes(getSyncEngine: () => SyncEngine | null):
         }
 
         const mode = parsed.data.mode
-        await engine.approvePermission(sessionId, requestId, mode)
+        const allowTools = parsed.data.allowTools
+        const decision = parsed.data.decision
+        await engine.approvePermission(sessionId, requestId, mode, allowTools, decision)
         return c.json({ ok: true })
     })
 
@@ -60,7 +70,13 @@ export function createPermissionsRoutes(getSyncEngine: () => SyncEngine | null):
             return c.json({ error: 'Request not found' }, 404)
         }
 
-        await engine.denyPermission(sessionId, requestId)
+        const json = await c.req.json().catch(() => null)
+        const parsed = denyBodySchema.safeParse(json ?? {})
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid body' }, 400)
+        }
+
+        await engine.denyPermission(sessionId, requestId, parsed.data.decision)
         return c.json({ ok: true })
     })
 

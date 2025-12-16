@@ -99,17 +99,34 @@ export class ApiClient {
         })
     }
 
-    async approvePermission(sessionId: string, requestId: string, mode?: 'default' | 'acceptEdits' | 'bypassPermissions'): Promise<void> {
+    async approvePermission(
+        sessionId: string,
+        requestId: string,
+        modeOrOptions?: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | {
+            mode?: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan'
+            allowTools?: string[]
+            decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort'
+        }
+    ): Promise<void> {
+        const body = typeof modeOrOptions === 'string' || modeOrOptions === undefined
+            ? { mode: modeOrOptions }
+            : modeOrOptions
         await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/permissions/${encodeURIComponent(requestId)}/approve`, {
             method: 'POST',
-            body: JSON.stringify({ mode })
+            body: JSON.stringify(body)
         })
     }
 
-    async denyPermission(sessionId: string, requestId: string): Promise<void> {
+    async denyPermission(
+        sessionId: string,
+        requestId: string,
+        options?: {
+            decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort'
+        }
+    ): Promise<void> {
         await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/permissions/${encodeURIComponent(requestId)}/deny`, {
             method: 'POST',
-            body: JSON.stringify({})
+            body: JSON.stringify(options ?? {})
         })
     }
 
