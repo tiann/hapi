@@ -1,0 +1,119 @@
+{
+  "name": "hapi",
+  "version": "0.12.0-0",
+  "description": "Mobile and Web client for Claude Code and Codex",
+  "author": "Kirill Dubovitskiy",
+  "license": "MIT",
+  "type": "module",
+  "homepage": "https://github.com/user/hapi",
+  "bugs": "https://github.com/user/hapi/issues",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/user/hapi",
+    "directory": "cli"
+  },
+  "bin": {
+    "hapi": "./bin/happy.mjs",
+    "hapi-mcp": "./bin/happy-mcp.mjs"
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.cts",
+  "exports": {
+    ".": {
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      },
+      "import": {
+        "types": "./dist/index.d.mts",
+        "default": "./dist/index.mjs"
+      }
+    },
+    "./lib": {
+      "require": {
+        "types": "./dist/lib.d.cts",
+        "default": "./dist/lib.cjs"
+      },
+      "import": {
+        "types": "./dist/lib.d.mts",
+        "default": "./dist/lib.mjs"
+      }
+    },
+    "./codex/happyMcpStdioBridge": {
+      "require": {
+        "types": "./dist/codex/happyMcpStdioBridge.d.cts",
+        "default": "./dist/codex/happyMcpStdioBridge.cjs"
+      },
+      "import": {
+        "types": "./dist/codex/happyMcpStdioBridge.d.mts",
+        "default": "./dist/codex/happyMcpStdioBridge.mjs"
+      }
+    }
+  },
+  "files": [
+    "dist",
+    "bin",
+    "scripts",
+    "tools",
+    "package.json"
+  ],
+  "scripts": {
+    "why do we need to build before running tests / dev?": "We need the binary to be built so we run daemon commands which directly run the binary - we don't want them to go out of sync or have custom spawn logic depending how we started happy",
+    "typecheck": "tsc --noEmit",
+    "build": "shx rm -rf dist && tsc --noEmit && pkgroll",
+    "test": "bun run build && tsx --env-file .env.integration-test node_modules/.bin/vitest run",
+    "test:win": "bun run build && vitest run",
+    "start": "bun run build && ./bin/happy.mjs",
+    "start:win": "bun run build && node ./bin/happy.mjs",
+    "dev": "tsx src/index.ts",
+    "dev:local-server": "bun run build && tsx --env-file .env.dev-local-server src/index.ts",
+    "dev:integration-test-env": "bun run build && tsx --env-file .env.integration-test src/index.ts",
+    "prepublishOnly": "bun run build && bun run test",
+    "release": "release-it",
+    "postinstall": "node scripts/unpack-tools.cjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.22.0",
+    "@types/cross-spawn": "^6.0.6",
+    "@types/ps-list": "^6.2.1",
+    "@types/react": "^19.2.7",
+    "@types/tmp": "^0.2.6",
+    "axios": "^1.13.2",
+    "chalk": "^5.6.2",
+    "cross-spawn": "^7.0.6",
+    "fastify": "^5.6.2",
+    "fastify-type-provider-zod": "4.0.2",
+    "ink": "^6.5.1",
+    "ps-list": "^8.1.1",
+    "react": "^19.2.0",
+    "socket.io-client": "^4.8.1",
+    "tar": "^7.5.2",
+    "tmp": "^0.2.5",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@eslint/compat": "^1",
+    "@types/node": ">=20",
+    "cross-env": "^10.1.0",
+    "dotenv": "^16.6.1",
+    "eslint": "^9",
+    "eslint-config-prettier": "^10",
+    "pkgroll": "^2.14.2",
+    "release-it": "^19.0.6",
+    "shx": "^0.3.3",
+    "ts-node": "^10",
+    "tsx": "^4.20.6",
+    "typescript": "^5",
+    "vitest": "^3.2.4"
+  },
+  "resolutions": {
+    "whatwg-url": "14.2.0",
+    "parse-path": "7.0.3",
+    "@types/parse-path": "7.0.3"
+  },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org"
+  },
+  "packageManager": "bun@1.3.4"
+}

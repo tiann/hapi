@@ -1,0 +1,128 @@
+import { Hono } from 'hono'
+import { cors } from 'hono/cors'
+import { join } from 'node:path'
+import { existsSync } from 'node:fs'
+import { serveStatic } from 'hono/bun'
+import { configuration } from '../configuration'
+import type { SyncEngine } from '../sync/syncEngine'
+import { createAuthMiddleware, type WebAppEnv } from './middleware/auth'
+import { createAuthRoutes } from './routes/auth'
+import { createSessionsRoutes } from './routes/sessions'
+import { createMessagesRoutes } from './routes/messages'
+import { createPermissionsRoutes } from './routes/permissions'
+import { createMachinesRoutes } from './routes/machines'
+import { createCliRoutes } from './routes/cli'
+import type { Server as BunServer } from 'bun'
+import type { Server as SocketEngine } from '@socket.io/bun-engine'
+import type { WebSocketData } from '@socket.io/bun-engine'
+
+function findWebappDistDir(): { distDir: string; indexHtmlPath: string } {
+    const candidates = [
+        join(process.cwd(), '..', 'web', 'dist'),
+        join(import.meta.dir, '..', '..', '..', 'web', 'dist'),
+        join(process.cwd(), 'web', 'dist')
+    ]
+
+    for (const distDir of candidates) {
+        const indexHtmlPath = join(distDir, 'index.html')
+        if (existsSync(indexHtmlPath)) {
+            return { distDir, indexHtmlPath }
+        }
+    }
+
+    const distDir = candidates[0]
+    return { distDir, indexHtmlPath: join(distDir, 'index.html') }
+}
+
+function createWebApp(options: {
+    getSyncEngine: () => SyncEngine | null
+    jwtSecret: Uint8Array
+}): Hono<WebAppEnv> {
+    const app = new Hono<WebAppEnv>()
+
+    const corsOrigins = configuration.corsOrigins
+    const corsOriginOption = corsOrigins.includes('*') ? '*' : corsOrigins
+    const corsMiddleware = cors({
+        origin: corsOriginOption,
+        allowMethods: ['GET', 'POST', 'OPTIONS'],
+        allowHeaders: ['authorization', 'content-type']
+    })
+    app.use('/api/*', corsMiddleware)
+    app.use('/cli/*', corsMiddleware)
+
+    app.route('/cli', createCliRoutes(options.getSyncEngine))
+
+    app.route('/api', createAuthRoutes(options.jwtSecret))
+
+    app.use('/api/*', createAuthMiddleware(options.jwtSecret))
+    app.route('/api', createSessionsRoutes(options.getSyncEngine))
+    app.route('/api', createMessagesRoutes(options.getSyncEngine))
+    app.route('/api', createPermissionsRoutes(options.getSyncEngine))
+    app.route('/api', createMachinesRoutes(options.getSyncEngine))
+
+    const { distDir, indexHtmlPath } = findWebappDistDir()
+
+    if (!existsSync(indexHtmlPath)) {
+        app.get('/', (c) => {
+            return c.text(
+                'Mini App is not built.\n\nRun:\n  cd web\n  bun install\n  bun run build\n',
+                503
+            )
+        })
+        return app
+    }
+
+    app.use('/assets/*', serveStatic({ root: distDir }))
+
+    app.use('*', async (c, next) => {
+        if (c.req.path.startsWith('/api')) {
+            await next()
+            return
+        }
+
+        return await serveStatic({ root: distDir })(c, next)
+    })
+
+    app.get('*', async (c, next) => {
+        if (c.req.path.startsWith('/api')) {
+            await next()
+            return
+        }
+
+        return await serveStatic({ root: distDir, path: 'index.html' })(c, next)
+    })
+
+    return app
+}
+
+export async function startWebServer(options: {
+    getSyncEngine: () => SyncEngine | null
+    jwtSecret: Uint8Array
+    socketEngine: SocketEngine
+}): Promise<BunServer<WebSocketData>> {
+    const app = createWebApp({
+        getSyncEngine: options.getSyncEngine,
+        jwtSecret: options.jwtSecret
+    })
+
+    const socketHandler = options.socketEngine.handler()
+
+    const server = Bun.serve({
+        port: configuration.webappPort,
+        idleTimeout: Math.max(30, socketHandler.idleTimeout),
+        maxRequestBodySize: socketHandler.maxRequestBodySize,
+        websocket: socketHandler.websocket,
+        fetch: (req, server) => {
+            const url = new URL(req.url)
+            if (url.pathname.startsWith('/socket.io/')) {
+                return socketHandler.fetch(req, server)
+            }
+            return app.fetch(req)
+        }
+    })
+
+    console.log(`[Web] Mini App server listening on :${configuration.webappPort}`)
+    console.log(`[Web] Mini App public URL: ${configuration.miniAppUrl}`)
+
+    return server
+}

@@ -1,0 +1,14 @@
+{
+    "extends": "../tsconfig.base.json",
+    "compilerOptions": {
+        "lib": ["es2020", "es2022"],
+        "rootDir": "src",
+        "noEmit": true,
+        "types": ["node", "bun-types"],
+        "paths": {
+            "@/*": ["./src/*"]
+        }
+    },
+    "exclude": ["node_modules"],
+    "include": ["src/**/*.ts"]
+}

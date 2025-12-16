@@ -1,0 +1,18 @@
+{
+    "name": "hapi",
+    "private": true,
+    "workspaces": ["cli", "server", "web"],
+    "scripts": {
+        "build": "bun run build:cli && bun run build:server && bun run build:web",
+        "build:cli": "cd cli && bun run build",
+        "build:server": "cd server && bun run build",
+        "build:web": "cd web && bun run build",
+        "dev:server": "cd server && bun run dev",
+        "dev:web": "cd web && bun run dev",
+        "typecheck": "bun run typecheck:cli && bun run typecheck:server && bun run typecheck:web",
+        "typecheck:cli": "cd cli && bun run typecheck",
+        "typecheck:server": "cd server && bun run typecheck",
+        "typecheck:web": "cd web && bun run typecheck",
+        "test": "cd cli && bun run test"
+    }
+}

@@ -1,0 +1,28 @@
+*-debug.log
+*-error.log
+**/.DS_Store
+/.idea
+/dist
+/tmp
+/node_modules
+oclif.manifest.json
+
+# Unpacked binaries (keep archives)
+/tools/unpacked/
+
+
+
+pnpm-lock.yaml
+
+# Environment variables
+.env
+.env*.local
+
+# Claude code session level settings
+.claude/settings.local.json
+
+# Local installation
+.happy/
+
+**/*.log
+.release-notes-temp.md

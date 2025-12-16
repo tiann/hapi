@@ -1,0 +1,79 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+    --app-bg: var(--tg-theme-bg-color, #ffffff);
+    --app-fg: var(--tg-theme-text-color, #111827);
+    --app-hint: var(--tg-theme-hint-color, #6b7280);
+    --app-link: var(--tg-theme-link-color, #2563eb);
+    --app-button: var(--tg-theme-button-color, #2563eb);
+    --app-button-text: var(--tg-theme-button-text-color, #ffffff);
+    --app-secondary-bg: var(--tg-theme-secondary-bg-color, #f3f4f6);
+
+    /* Theme-aware colors (light mode defaults) */
+    --app-border: rgba(0, 0, 0, 0.1);
+    --app-subtle-bg: rgba(0, 0, 0, 0.05);
+    --app-code-bg: #f6f8fa;
+    --app-inline-code-bg: rgba(0, 0, 0, 0.08);
+
+    /* Diff colors (light) - from happy-app */
+    --app-diff-added-bg: #e6ffed;
+    --app-diff-added-text: #24292e;
+    --app-diff-removed-bg: #ffeef0;
+    --app-diff-removed-text: #24292e;
+
+    /* Badge colors (light) */
+    --app-badge-warning-bg: rgba(245, 158, 11, 0.2);
+    --app-badge-warning-text: #b45309;
+    --app-badge-warning-border: rgba(245, 158, 11, 0.3);
+    --app-badge-success-bg: rgba(34, 197, 94, 0.2);
+    --app-badge-success-text: #15803d;
+    --app-badge-success-border: rgba(34, 197, 94, 0.3);
+}
+
+[data-theme="dark"] {
+    --app-border: rgba(255, 255, 255, 0.1);
+    --app-subtle-bg: rgba(255, 255, 255, 0.05);
+    --app-code-bg: #282c34;
+    --app-inline-code-bg: rgba(255, 255, 255, 0.1);
+
+    /* Diff colors (dark) - from happy-app */
+    --app-diff-added-bg: #0d2e1f;
+    --app-diff-added-text: #c9d1d9;
+    --app-diff-removed-bg: #3f1b23;
+    --app-diff-removed-text: #c9d1d9;
+
+    /* Badge colors (dark) */
+    --app-badge-warning-bg: rgba(251, 191, 36, 0.2);
+    --app-badge-warning-text: #fbbf24;
+    --app-badge-warning-border: rgba(251, 191, 36, 0.3);
+    --app-badge-success-bg: rgba(74, 222, 128, 0.2);
+    --app-badge-success-text: #4ade80;
+    --app-badge-success-border: rgba(74, 222, 128, 0.3);
+}
+
+html,
+body {
+    height: 100%;
+    touch-action: pan-x pan-y;
+    overscroll-behavior: none;
+    -webkit-text-size-adjust: 100%;
+}
+
+body {
+    background: var(--app-bg);
+    color: var(--app-fg);
+}
+
+#root {
+    height: 100%;
+}
+
+/* Markdown styles */
+.markdown-content a { color: var(--app-link); text-decoration: underline; }
+.markdown-content code { background: var(--app-inline-code-bg); padding: 0.1em 0.3em; border-radius: 4px; font-size: 0.9em; }
+.markdown-content blockquote { border-left: 3px solid var(--app-hint); padding-left: 0.75rem; margin: 0.5rem 0; opacity: 0.85; }
+.markdown-content ul, .markdown-content ol { padding-left: 1.5rem; margin: 0.5rem 0; }
+.markdown-content table { border-collapse: collapse; width: 100%; }
+.markdown-content th, .markdown-content td { border: 1px solid var(--app-border); padding: 0.25rem 0.5rem; }

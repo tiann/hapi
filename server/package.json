@@ -1,0 +1,28 @@
+{
+    "name": "hapi-server",
+    "private": true,
+    "version": "0.1.0",
+    "description": "Telegram Bot client for Happy - control Claude Code sessions",
+    "author": "Kirill Dubovitskiy",
+    "license": "MIT",
+    "type": "module",
+    "scripts": {
+        "start": "bun run src/index.ts",
+        "dev": "bun --watch run src/index.ts",
+        "typecheck": "tsc --noEmit",
+        "build": "bun build src/index.ts --outdir dist --target bun"
+    },
+    "dependencies": {
+        "@socket.io/bun-engine": "^0.1.0",
+        "grammy": "^1.31.3",
+        "hono": "^4.8.0",
+        "jose": "^5.10.0",
+        "socket.io": "^4.8.1",
+        "zod": "^3.23.8"
+    },
+    "devDependencies": {
+        "@types/node": ">=20",
+        "bun-types": "^1.2.21",
+        "typescript": "^5"
+    }
+}
