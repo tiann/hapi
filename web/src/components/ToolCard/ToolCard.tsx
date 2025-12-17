@@ -315,13 +315,6 @@ function StatusIcon(props: { state: ToolCallBlock['tool']['state'] }) {
     )
 }
 
-function accentBorderClass(state: ToolCallBlock['tool']['state']): string {
-    if (state === 'completed') return 'border-l-4 border-l-emerald-500'
-    if (state === 'error') return 'border-l-4 border-l-red-500'
-    if (state === 'pending') return 'border-l-4 border-l-amber-500'
-    return 'border-l-4 border-l-blue-500'
-}
-
 function statusColorClass(state: ToolCallBlock['tool']['state']): string {
     if (state === 'completed') return 'text-emerald-600'
     if (state === 'error') return 'text-red-600'
@@ -356,11 +349,15 @@ export function ToolCard(props: {
     const toolTitle = presentation.title
     const subtitle = presentation.subtitle ?? props.block.tool.description
     const taskSummary = renderTaskSummary(props.block)
-    const accent = accentBorderClass(props.block.tool.state)
     const runningFrom = props.block.tool.startedAt ?? props.block.tool.createdAt
     const showDialog = presentation.minimal || toolName === 'Task'
     const showInline = !presentation.minimal && toolName !== 'Task'
-    const hasBody = showInline || taskSummary !== null || Boolean(props.block.tool.permission)
+    const permission = props.block.tool.permission
+    const showsPermissionFooter = Boolean(permission && (
+        permission.status === 'pending'
+        || ((permission.status === 'denied' || permission.status === 'canceled') && Boolean(permission.reason))
+    ))
+    const hasBody = showInline || taskSummary !== null || showsPermissionFooter
     const stateColor = statusColorClass(props.block.tool.state)
 
     const header = (
@@ -394,7 +391,7 @@ export function ToolCard(props: {
     )
 
     return (
-        <Card className={`overflow-hidden shadow-sm ${accent}`}>
+        <Card className="overflow-hidden shadow-sm">
             <CardHeader className="p-3 space-y-0">
                 {showDialog ? (
                     <Dialog>

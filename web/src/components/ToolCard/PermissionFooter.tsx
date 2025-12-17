@@ -200,15 +200,14 @@ export function PermissionFooter(props: {
     }
 
     if (!isPending) {
-        const tone = permission.status === 'approved'
-            ? 'text-emerald-600'
-            : permission.status === 'denied' || permission.status === 'canceled'
-                ? 'text-red-600'
-                : 'text-[var(--app-hint)]'
+        // Keep the thread minimal: approval is already reflected by tool state/icon.
+        // Only surface a short message when the permission was denied/canceled and we have a reason.
+        if (permission.status !== 'denied' && permission.status !== 'canceled') return null
+        if (!permission.reason) return null
 
         return (
-            <div className={`mt-2 text-xs ${tone}`}>
-                {summary}
+            <div className="mt-2 text-xs text-red-600">
+                {permission.reason}
             </div>
         )
     }
