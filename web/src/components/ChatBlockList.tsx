@@ -89,7 +89,7 @@ export function ChatBlockList(props: {
         <div className="flex flex-col gap-3">
             {props.blocks.map((block) => {
                 if (block.kind === 'user-text') {
-                    const userBubbleClass = 'w-fit max-w-[92%] ml-auto rounded-xl border border-[var(--app-border)] bg-[var(--app-secondary-bg)] px-3 py-2 text-[var(--app-fg)] shadow-sm'
+                    const userBubbleClass = 'w-fit max-w-[92%] ml-auto rounded-xl bg-[var(--app-secondary-bg)] px-3 py-2 text-[var(--app-fg)] shadow-sm'
                     const status = block.status
                     const onRetry = block.localId && status === 'failed' && props.onRetryMessage
                         ? () => props.onRetryMessage!(block.localId!)
@@ -147,7 +147,7 @@ export function ChatBlockList(props: {
                                         <summary className="cursor-pointer text-xs text-[var(--app-hint)]">
                                             Task details ({block.children.length})
                                         </summary>
-                                        <div className="mt-2 border-l border-[var(--app-border)] pl-3">
+                                        <div className="mt-2 pl-3">
                                             <ChatBlockList
                                                 api={props.api}
                                                 sessionId={props.sessionId}
@@ -160,7 +160,7 @@ export function ChatBlockList(props: {
                                         </div>
                                     </details>
                                 ) : (
-                                    <div className="mt-2 border-l border-[var(--app-border)] pl-3">
+                                    <div className="mt-2 pl-3">
                                         <ChatBlockList
                                             api={props.api}
                                             sessionId={props.sessionId}

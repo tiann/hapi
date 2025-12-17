@@ -18,13 +18,13 @@ export function ChatInput(props: {
     }
 
     return (
-        <div className="border-t border-[var(--app-border)] bg-[var(--app-bg)] p-2">
+        <div className="bg-[var(--app-bg)] p-2">
             <div className="flex items-end gap-2">
                 <textarea
                     value={text}
                     onChange={(e) => setText(e.target.value)}
                     placeholder="Type a message..."
-                    className="flex-1 resize-none rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] p-2 text-sm focus:outline-none focus:ring-2 focus:ring-[var(--app-link)]"
+                    className="flex-1 resize-none rounded-xl bg-[var(--app-secondary-bg)] p-2 text-sm focus:outline-none focus:ring-2 focus:ring-[var(--app-link)]"
                     rows={1}
                     disabled={props.disabled}
                     onKeyDown={(e) => {

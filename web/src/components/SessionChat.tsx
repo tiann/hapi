@@ -72,7 +72,7 @@ export function SessionChat(props: {
             />
 
             {controlsDisabled ? (
-                <div className="border-b border-[var(--app-border)] bg-[var(--app-subtle-bg)] p-3 text-sm text-[var(--app-hint)]">
+                <div className="bg-[var(--app-subtle-bg)] p-3 text-sm text-[var(--app-hint)]">
                     Session is inactive. Controls are disabled.
                 </div>
             ) : null}
@@ -80,7 +80,7 @@ export function SessionChat(props: {
             <div ref={scrollRef} className="flex-1 overflow-y-auto">
                 <div className="mx-auto w-full max-w-[720px] p-3">
                     {props.messagesWarning ? (
-                        <div className="mb-3 rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-xs">
+                        <div className="mb-3 rounded-md bg-amber-500/10 p-2 text-xs">
                             {props.messagesWarning}
                         </div>
                     ) : null}
@@ -122,7 +122,7 @@ export function SessionChat(props: {
                     ) : (
                         <>
                             {import.meta.env.DEV && viewMode === 'reduced' && normalizedMessages.length === 0 && props.messages.length > 0 ? (
-                                <div className="mb-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-xs">
+                                <div className="mb-2 rounded-md bg-amber-500/10 p-2 text-xs">
                                     Message normalization returned 0 items for {props.messages.length} messages (see `hapi/web/src/chat/normalize.ts`).
                                 </div>
                             ) : null}

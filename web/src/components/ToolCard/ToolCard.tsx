@@ -361,32 +361,35 @@ export function ToolCard(props: {
     const stateColor = statusColorClass(props.block.tool.state)
 
     const header = (
-        <div className="flex items-center justify-between gap-3">
-            <div className="min-w-0 flex items-center gap-2">
-                <div className="shrink-0 text-base leading-none">
-                    {presentation.icon}
+        <div className="flex flex-col gap-1">
+            <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0 flex items-center gap-2">
+                    <div className="shrink-0 flex h-3.5 w-3.5 items-center justify-center text-[11px] leading-none">
+                        {presentation.icon}
+                    </div>
+                    <CardTitle className="min-w-0 text-sm font-medium leading-tight break-words">
+                        {toolTitle}
+                    </CardTitle>
                 </div>
-                <div className="min-w-0">
-                    <CardTitle className="text-sm font-medium break-words">{toolTitle}</CardTitle>
-                    {subtitle ? (
-                        <CardDescription className="mt-0.5 font-mono text-xs break-all opacity-80">
-                            {truncate(subtitle, 160)}
-                        </CardDescription>
+
+                <div className="flex items-center gap-2 shrink-0">
+                    <ElapsedView from={runningFrom} active={props.block.tool.state === 'running'} />
+                    <span className={stateColor}>
+                        <StatusIcon state={props.block.tool.state} />
+                    </span>
+                    {showDialog ? (
+                        <span className="text-[var(--app-hint)]">
+                            <DetailsIcon />
+                        </span>
                     ) : null}
                 </div>
             </div>
 
-            <div className="flex items-center gap-2 shrink-0">
-                <ElapsedView from={runningFrom} active={props.block.tool.state === 'running'} />
-                <span className={stateColor}>
-                    <StatusIcon state={props.block.tool.state} />
-                </span>
-                {showDialog ? (
-                    <span className="text-[var(--app-hint)]">
-                        <DetailsIcon />
-                    </span>
-                ) : null}
-            </div>
+            {subtitle ? (
+                <CardDescription className="font-mono text-xs break-all opacity-80">
+                    {truncate(subtitle, 160)}
+                </CardDescription>
+            ) : null}
         </div>
     )
 

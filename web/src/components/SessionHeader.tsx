@@ -58,7 +58,7 @@ export function SessionHeader(props: {
     }
 
     return (
-        <div className="flex items-center gap-2 border-b border-[var(--app-border)] bg-[var(--app-bg)] p-3">
+        <div className="flex items-center gap-2 bg-[var(--app-bg)] p-3">
             <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2 min-w-0">
                     <span
@@ -132,7 +132,7 @@ export function SessionHeader(props: {
                                 </div>
                             </div>
 
-                            <div className="rounded-md border border-[var(--app-border)] bg-[var(--app-subtle-bg)] p-2 text-xs text-[var(--app-hint)]">
+                            <div className="rounded-md bg-[var(--app-subtle-bg)] p-2 text-xs text-[var(--app-hint)]">
                                 <div>Path: {props.session.metadata?.path ?? '(unknown)'}</div>
                                 <div>Host: {props.session.metadata?.host ?? '(unknown)'}</div>
                                 <div>Status: {props.session.active ? 'Active' : 'Inactive'}</div>
