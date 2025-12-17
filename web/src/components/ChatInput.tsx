@@ -544,7 +544,7 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, ChatInputProps>(functi
                 {/* Unified panel */}
                 <div className="overflow-hidden rounded-[20px] bg-[var(--app-secondary-bg)]">
                     {/* Input area */}
-                    <div className="flex items-center px-3 py-2">
+                    <div className="flex items-center px-4 py-3">
                         <TextareaAutosize
                             ref={textareaRef}
                             value={text}
