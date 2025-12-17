@@ -5,10 +5,11 @@ import {
     useEffect,
     useImperativeHandle,
     forwardRef,
-    memo
+    memo,
+    useMemo
 } from 'react'
 import TextareaAutosize from 'react-textarea-autosize'
-import type { ModelMode, PermissionMode } from '@/types/api'
+import type { AgentState, ModelMode, PermissionMode } from '@/types/api'
 import type { Suggestion } from '@/hooks/useActiveSuggestions'
 import { useActiveWord } from '@/hooks/useActiveWord'
 import { useActiveSuggestions } from '@/hooks/useActiveSuggestions'
@@ -38,6 +39,10 @@ export interface ChatInputProps {
     permissionMode?: PermissionMode
     modelMode?: ModelMode
     active?: boolean
+    thinking?: boolean
+    agentState?: AgentState | null
+    // Usage data for context display
+    contextSize?: number
     // Callbacks
     onPermissionModeChange?: (mode: PermissionMode) => void
     onModelModeChange?: (mode: ModelMode) => void
@@ -67,6 +72,87 @@ const MODEL_MODE_LABELS: Record<string, string> = {
 // Default empty suggestion handler
 const defaultSuggestionHandler = async (): Promise<Suggestion[]> => []
 
+// Max context size for percentage calculation
+const MAX_CONTEXT_SIZE = 190000
+
+// Vibing messages for thinking state
+const VIBING_MESSAGES = [
+    "Accomplishing", "Actioning", "Actualizing", "Baking", "Booping", "Brewing",
+    "Calculating", "Cerebrating", "Channelling", "Churning", "Clauding", "Coalescing",
+    "Cogitating", "Computing", "Combobulating", "Concocting", "Conjuring", "Considering",
+    "Contemplating", "Cooking", "Crafting", "Creating", "Crunching", "Deciphering",
+    "Deliberating", "Determining", "Discombobulating", "Divining", "Doing", "Effecting",
+    "Elucidating", "Enchanting", "Envisioning", "Finagling", "Flibbertigibbeting",
+    "Forging", "Forming", "Frolicking", "Generating", "Germinating", "Hatching",
+    "Herding", "Honking", "Ideating", "Imagining", "Incubating", "Inferring",
+    "Manifesting", "Marinating", "Meandering", "Moseying", "Mulling", "Mustering",
+    "Musing", "Noodling", "Percolating", "Perusing", "Philosophising", "Pontificating",
+    "Pondering", "Processing", "Puttering", "Puzzling", "Reticulating", "Ruminating",
+    "Scheming", "Schlepping", "Shimmying", "Simmering", "Smooshing", "Spelunking",
+    "Spinning", "Stewing", "Sussing", "Synthesizing", "Thinking", "Tinkering",
+    "Transmuting", "Unfurling", "Unravelling", "Vibing", "Wandering", "Whirring",
+    "Wibbling", "Wizarding", "Working", "Wrangling"
+]
+
+// Get connection status based on session state
+function getConnectionStatus(
+    active: boolean,
+    thinking: boolean,
+    agentState: AgentState | null | undefined
+): { text: string; color: string; dotColor: string; isPulsing: boolean } {
+    const hasPermissions = agentState?.requests && Object.keys(agentState.requests).length > 0
+
+    if (!active) {
+        return {
+            text: 'offline',
+            color: 'text-[#999]',
+            dotColor: 'bg-[#999]',
+            isPulsing: false
+        }
+    }
+
+    if (hasPermissions) {
+        return {
+            text: 'permission required',
+            color: 'text-[#FF9500]',
+            dotColor: 'bg-[#FF9500]',
+            isPulsing: true
+        }
+    }
+
+    if (thinking) {
+        const vibingMessage = VIBING_MESSAGES[Math.floor(Math.random() * VIBING_MESSAGES.length)].toLowerCase() + '…'
+        return {
+            text: vibingMessage,
+            color: 'text-[#007AFF]',
+            dotColor: 'bg-[#007AFF]',
+            isPulsing: true
+        }
+    }
+
+    return {
+        text: 'online',
+        color: 'text-[#34C759]',
+        dotColor: 'bg-[#34C759]',
+        isPulsing: false
+    }
+}
+
+// Get context warning based on usage
+function getContextWarning(contextSize: number): { text: string; color: string } | null {
+    const percentageUsed = (contextSize / MAX_CONTEXT_SIZE) * 100
+    const percentageRemaining = 100 - percentageUsed
+
+    if (percentageRemaining <= 5) {
+        return { text: `${Math.round(percentageRemaining)}% left`, color: 'text-red-500' }
+    } else if (percentageRemaining <= 10) {
+        return { text: `${Math.round(percentageRemaining)}% left`, color: 'text-amber-500' }
+    } else {
+        // Always show context percentage
+        return { text: `${Math.round(percentageRemaining)}% left`, color: 'text-[var(--app-hint)]' }
+    }
+}
+
 export const ChatInput = memo(forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput(props, ref) {
     const {
         disabled = false,
@@ -74,12 +160,27 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, ChatInputProps>(functi
         permissionMode = 'default',
         modelMode = 'default',
         active = true,
+        thinking = false,
+        agentState,
+        contextSize,
         onPermissionModeChange,
         onModelModeChange,
         onAbort,
         autocompletePrefixes = ['@', '/'],
         autocompleteSuggestions = defaultSuggestionHandler
     } = props
+
+    // Compute connection status
+    const connectionStatus = useMemo(
+        () => getConnectionStatus(active, thinking, agentState),
+        [active, thinking, agentState]
+    )
+
+    // Compute context warning
+    const contextWarning = useMemo(
+        () => contextSize !== undefined ? getContextWarning(contextSize) : null,
+        [contextSize]
+    )
 
     // State
     const [text, setText] = useState('')
@@ -408,8 +509,27 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, ChatInputProps>(functi
                 )}
 
                 {/* Status bar */}
-                {(permissionMode && permissionMode !== 'default') && (
-                    <div className="flex items-center justify-end px-2 pb-1">
+                <div className="flex items-center justify-between px-2 pb-1">
+                    {/* Left side: connection status and context */}
+                    <div className="flex items-baseline gap-3">
+                        {/* Connection status */}
+                        <div className="flex items-center gap-1.5">
+                            <span
+                                className={`h-2 w-2 rounded-full ${connectionStatus.dotColor} ${connectionStatus.isPulsing ? 'animate-pulse' : ''}`}
+                            />
+                            <span className={`text-xs ${connectionStatus.color}`}>
+                                {connectionStatus.text}
+                            </span>
+                        </div>
+                        {/* Context warning */}
+                        {contextWarning && (
+                            <span className={`text-[10px] ${contextWarning.color}`}>
+                                {contextWarning.text}
+                            </span>
+                        )}
+                    </div>
+                    {/* Right side: permission mode */}
+                    {(permissionMode && permissionMode !== 'default') && (
                         <span className={`text-xs ${
                             permissionMode === 'acceptEdits' ? 'text-amber-500' :
                             permissionMode === 'bypassPermissions' ? 'text-red-500' :
@@ -418,8 +538,8 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, ChatInputProps>(functi
                         }`}>
                             {PERMISSION_MODE_LABELS[permissionMode]}
                         </span>
-                    </div>
-                )}
+                    )}
+                </div>
 
                 {/* Unified panel */}
                 <div className="overflow-hidden rounded-[20px] bg-[var(--app-secondary-bg)]">

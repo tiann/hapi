@@ -44,21 +44,9 @@ export function SessionHeader(props: {
             {/* Session info */}
             <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2 min-w-0">
-                    <span
-                        className={props.session.active ? 'h-2.5 w-2.5 rounded-full bg-emerald-500' : 'h-2.5 w-2.5 rounded-full bg-gray-400'}
-                        title={props.session.active ? 'active' : 'offline'}
-                        aria-label={props.session.active ? 'active' : 'offline'}
-                    />
                     <div className="truncate font-semibold">
                         {title}
                     </div>
-                    {props.session.thinking ? (
-                        <span
-                            className="h-2.5 w-2.5 rounded-full bg-amber-400 animate-pulse"
-                            title="thinking"
-                            aria-label="thinking"
-                        />
-                    ) : null}
                 </div>
                 <div className="text-xs text-[var(--app-hint)] truncate">
                     {props.session.metadata?.host ? `Host: ${props.session.metadata.host}` : props.session.id}

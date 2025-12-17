@@ -1,6 +1,11 @@
 import type { AgentState } from '@/types/api'
-import type { AgentEvent, ChatBlock, ChatToolCall, NormalizedMessage, ToolCallBlock, ToolPermission } from '@/chat/types'
+import type { AgentEvent, ChatBlock, ChatToolCall, NormalizedMessage, ToolCallBlock, ToolPermission, UsageData } from '@/chat/types'
 import { traceMessages, type TracedMessage } from '@/chat/tracer'
+
+// Calculate context size from usage data
+function calculateContextSize(usage: UsageData): number {
+    return (usage.cache_creation_input_tokens || 0) + (usage.cache_read_input_tokens || 0) + usage.input_tokens
+}
 
 function parseClaudeUsageLimit(text: string): number | null {
     const match = text.match(/^Claude AI usage limit reached\|(\d+)$/)
@@ -435,10 +440,19 @@ function reduceTimeline(
     return { blocks, toolBlocksById, hasReadyEvent }
 }
 
+export type LatestUsage = {
+    inputTokens: number
+    outputTokens: number
+    cacheCreation: number
+    cacheRead: number
+    contextSize: number
+    timestamp: number
+}
+
 export function reduceChatBlocks(
     normalized: NormalizedMessage[],
     agentState: AgentState | null | undefined
-): { blocks: ChatBlock[]; hasReadyEvent: boolean } {
+): { blocks: ChatBlock[]; hasReadyEvent: boolean; latestUsage: LatestUsage | null } {
     const permissionsById = getPermissions(agentState)
     const toolIdsInMessages = collectToolIdsFromMessages(normalized)
     const titleChangesByToolUseId = collectTitleChanges(normalized)
@@ -508,5 +522,22 @@ export function reduceChatBlocks(
         }
     }
 
-    return { blocks: dedupeAgentEvents(rootResult.blocks), hasReadyEvent }
+    // Calculate latest usage from messages (find the most recent message with usage data)
+    let latestUsage: LatestUsage | null = null
+    for (let i = normalized.length - 1; i >= 0; i--) {
+        const msg = normalized[i]
+        if (msg.usage) {
+            latestUsage = {
+                inputTokens: msg.usage.input_tokens,
+                outputTokens: msg.usage.output_tokens,
+                cacheCreation: msg.usage.cache_creation_input_tokens ?? 0,
+                cacheRead: msg.usage.cache_read_input_tokens ?? 0,
+                contextSize: calculateContextSize(msg.usage),
+                timestamp: msg.createdAt
+            }
+            break
+        }
+    }
+
+    return { blocks: dedupeAgentEvents(rootResult.blocks), hasReadyEvent, latestUsage }
 }
