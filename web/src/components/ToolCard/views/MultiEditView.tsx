@@ -7,6 +7,8 @@ function isObject(value: unknown): value is Record<string, unknown> {
 
 type Edit = { old_string: string; new_string: string }
 
+const MAX_COMPACT_EDITS = 3
+
 function extractEdits(input: unknown): Edit[] {
     if (!isObject(input) || !Array.isArray(input.edits)) return []
     return input.edits
@@ -24,6 +26,28 @@ export function MultiEditView(props: ToolViewProps) {
 
     return (
         <div className="flex flex-col gap-2">
+            {edits.slice(0, MAX_COMPACT_EDITS).map((edit, idx) => (
+                <DiffView
+                    key={idx}
+                    oldString={edit.old_string}
+                    newString={edit.new_string}
+                />
+            ))}
+            {edits.length > MAX_COMPACT_EDITS ? (
+                <div className="text-xs text-[var(--app-hint)]">
+                    (+{edits.length - MAX_COMPACT_EDITS} more edits)
+                </div>
+            ) : null}
+        </div>
+    )
+}
+
+export function MultiEditFullView(props: ToolViewProps) {
+    const edits = extractEdits(props.block.tool.input)
+    if (edits.length === 0) return null
+
+    return (
+        <div className="flex flex-col gap-2">
             {edits.map((edit, idx) => (
                 <DiffView
                     key={idx}
@@ -34,4 +58,3 @@ export function MultiEditView(props: ToolViewProps) {
         </div>
     )
 }
-

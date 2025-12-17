@@ -31,6 +31,26 @@ function truncate(text: string, maxLen: number): string {
     return text.slice(0, maxLen - 3) + '...'
 }
 
+function countLines(text: string): number {
+    return text.split('\n').length
+}
+
+function isDocumentFilePath(filePath: string): boolean {
+    const lower = filePath.toLowerCase()
+    return (
+        lower.endsWith('.md')
+        || lower.endsWith('.mdx')
+        || lower.endsWith('.markdown')
+        || lower.endsWith('.txt')
+    )
+}
+
+function shouldCollapseDocumentWrite(filePath: string | null): boolean {
+    if (!filePath) return false
+    if (!isDocumentFilePath(filePath)) return false
+    return true
+}
+
 function snakeToTitleWithSpaces(value: string): string {
     return value
         .split('_')
@@ -147,7 +167,10 @@ export const knownTools: Record<string, {
             const file = getInputStringAny(opts.input, ['file_path', 'path'])
             return file ? resolveDisplayPath(file, opts.metadata) : 'Edit file'
         },
-        minimal: false
+        minimal: (opts) => {
+            const file = getInputStringAny(opts.input, ['file_path', 'path'])
+            return isDocumentFilePath(file ?? '')
+        }
     },
     MultiEdit: {
         icon: () => <FileDiffIcon className={DEFAULT_ICON_CLASS} />,
@@ -159,7 +182,10 @@ export const knownTools: Record<string, {
             const path = resolveDisplayPath(file, opts.metadata)
             return count > 1 ? `${path} (${count} edits)` : path
         },
-        minimal: false
+        minimal: (opts) => {
+            const file = getInputStringAny(opts.input, ['file_path', 'path'])
+            return isDocumentFilePath(file ?? '')
+        }
     },
     Write: {
         icon: () => <FileDiffIcon className={DEFAULT_ICON_CLASS} />,
@@ -167,7 +193,16 @@ export const knownTools: Record<string, {
             const file = getInputStringAny(opts.input, ['file_path', 'path'])
             return file ? resolveDisplayPath(file, opts.metadata) : 'Write file'
         },
-        minimal: false
+        subtitle: (opts) => {
+            const content = getInputStringAny(opts.input, ['content', 'text'])
+            if (!content) return null
+            const lines = countLines(content)
+            return lines > 1 ? `${lines} lines` : `${content.length} chars`
+        },
+        minimal: (opts) => {
+            const file = getInputStringAny(opts.input, ['file_path', 'path'])
+            return shouldCollapseDocumentWrite(file)
+        }
     },
     WebFetch: {
         icon: () => <GlobeIcon className={DEFAULT_ICON_CLASS} />,
@@ -270,7 +305,11 @@ export const knownTools: Record<string, {
             }
             return null
         },
-        minimal: false
+        minimal: (opts) => {
+            const unified = getInputStringAny(opts.input, ['unified_diff'])
+            if (!unified) return true
+            return unified.length >= 2000 || countLines(unified) >= 50
+        }
     },
     ExitPlanMode: {
         icon: () => <ClipboardIcon className={DEFAULT_ICON_CLASS} />,

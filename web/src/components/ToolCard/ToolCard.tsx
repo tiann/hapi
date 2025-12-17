@@ -10,6 +10,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { PermissionFooter } from '@/components/ToolCard/PermissionFooter'
 import { getToolPresentation } from '@/components/ToolCard/knownTools'
 import { getToolFullViewComponent, getToolViewComponent } from '@/components/ToolCard/views/_all'
+import { getToolResultViewComponent } from '@/components/ToolCard/views/_results'
 
 function isObject(value: unknown): value is Record<string, unknown> {
     return Boolean(value) && typeof value === 'object'
@@ -21,20 +22,6 @@ function safeStringify(value: unknown): string {
     } catch {
         return String(value)
     }
-}
-
-function parseToolUseError(message: string): { isToolUseError: boolean; errorMessage: string | null } {
-    const regex = /<tool_use_error>(.*?)<\/tool_use_error>/s
-    const match = message.match(regex)
-
-    if (match) {
-        return {
-            isToolUseError: true,
-            errorMessage: typeof match[1] === 'string' ? match[1].trim() : ''
-        }
-    }
-
-    return { isToolUseError: false, errorMessage: null }
 }
 
 function getInputString(input: unknown, key: string): string | null {
@@ -251,40 +238,6 @@ function renderToolInput(block: ToolCallBlock): ReactNode {
     return <CodeBlock code={safeStringify(input)} language="json" />
 }
 
-function renderToolResult(block: ToolCallBlock): ReactNode {
-    const result = block.tool.result
-    const toolName = block.tool.name
-
-    if (result === undefined || result === null) {
-        return (
-            <div className="text-sm text-[var(--app-hint)]">
-                {block.tool.state === 'pending' ? 'Waiting for permission…' : block.tool.state === 'running' ? 'Running…' : '(no output)'}
-            </div>
-        )
-    }
-
-    if ((toolName === 'Bash' || toolName === 'CodexBash') && isObject(result)) {
-        const stdout = typeof result.stdout === 'string' ? result.stdout : null
-        const stderr = typeof result.stderr === 'string' ? result.stderr : null
-        if (stdout !== null || stderr !== null) {
-            return (
-                <div className="flex flex-col gap-2">
-                    {stdout ? <CodeBlock code={stdout} language="text" /> : null}
-                    {stderr ? <CodeBlock code={stderr} language="text" /> : null}
-                </div>
-            )
-        }
-    }
-
-    if (typeof result === 'string') {
-        const toolUseError = parseToolUseError(result)
-        const display = toolUseError.isToolUseError ? (toolUseError.errorMessage ?? '') : result
-        return <CodeBlock code={display} language="text" />
-    }
-
-    return <CodeBlock code={safeStringify(result)} language="json" />
-}
-
 function StatusIcon(props: { state: ToolCallBlock['tool']['state'] }) {
     if (props.state === 'completed') {
         return (
@@ -358,6 +311,7 @@ export function ToolCard(props: {
     const showInline = !presentation.minimal && toolName !== 'Task'
     const CompactToolView = showInline ? getToolViewComponent(toolName) : null
     const FullToolView = getToolFullViewComponent(toolName)
+    const ResultToolView = getToolResultViewComponent(toolName)
     const permission = props.block.tool.permission
     const showsPermissionFooter = Boolean(permission && (
         permission.status === 'pending'
@@ -421,7 +375,7 @@ export function ToolCard(props: {
                             </div>
                             <div>
                                 <div className="mb-1 text-xs font-medium text-[var(--app-hint)]">Result</div>
-                                {renderToolResult(props.block)}
+                                <ResultToolView block={props.block} metadata={props.metadata} />
                             </div>
                         </div>
                     </DialogContent>
@@ -449,7 +403,7 @@ export function ToolCard(props: {
                                 </div>
                                 <div>
                                     <div className="mb-1 text-xs font-medium text-[var(--app-hint)]">Result</div>
-                                    {renderToolResult(props.block)}
+                                    <ResultToolView block={props.block} metadata={props.metadata} />
                                 </div>
                             </div>
                         )

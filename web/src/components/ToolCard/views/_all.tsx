@@ -5,7 +5,7 @@ import { CodexDiffCompactView, CodexDiffFullView } from '@/components/ToolCard/v
 import { CodexPatchView } from '@/components/ToolCard/views/CodexPatchView'
 import { EditView } from '@/components/ToolCard/views/EditView'
 import { ExitPlanModeView } from '@/components/ToolCard/views/ExitPlanModeView'
-import { MultiEditView } from '@/components/ToolCard/views/MultiEditView'
+import { MultiEditFullView, MultiEditView } from '@/components/ToolCard/views/MultiEditView'
 import { TodoWriteView } from '@/components/ToolCard/views/TodoWriteView'
 import { WriteView } from '@/components/ToolCard/views/WriteView'
 
@@ -28,11 +28,10 @@ export const toolViewRegistry: Record<string, ToolViewComponent> = {
 
 export const toolFullViewRegistry: Record<string, ToolViewComponent> = {
     Edit: EditView,
-    MultiEdit: MultiEditView,
+    MultiEdit: MultiEditFullView,
     Write: WriteView,
     CodexDiff: CodexDiffFullView,
     CodexPatch: CodexPatchView,
-    TodoWrite: TodoWriteView,
     ExitPlanMode: ExitPlanModeView,
     exit_plan_mode: ExitPlanModeView
 }
