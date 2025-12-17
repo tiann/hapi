@@ -10,7 +10,6 @@ import { readSettings } from '@/persistence';
 import { EnhancedMode, PermissionMode } from './loop';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { hashObject } from '@/utils/deterministicJson';
-import { startCaffeinate, stopCaffeinate } from '@/utils/caffeinate';
 import { extractSDKMetadataAsync } from '@/claude/sdk/metadataExtractor';
 import { parseSpecialCommand } from '@/parsers/specialCommands';
 import { getEnvironmentInfo } from '@/ui/doctor';
@@ -136,12 +135,6 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         ...currentState,
         controlledByUser: options.startingMode !== 'remote'
     }));
-
-    // Start caffeinate to prevent sleep on macOS
-    const caffeinateStarted = startCaffeinate();
-    if (caffeinateStarted) {
-        logger.infoDeveloper('Sleep prevention enabled (macOS)');
-    }
 
     // Import MessageQueue2 and create message queue
     const messageQueue = new MessageQueue2<EnhancedMode>(mode => hashObject({
@@ -310,9 +303,6 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
                 await session.close();
             }
 
-            // Stop caffeinate
-            stopCaffeinate();
-
             // Stop Happy MCP server
             happyServer.stop();
 
@@ -381,10 +371,6 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
     // Close session
     logger.debug('Closing session...');
     await session.close();
-
-    // Stop caffeinate before exiting
-    stopCaffeinate();
-    logger.debug('Stopped sleep prevention');
 
     // Stop Happy MCP server
     happyServer.stop();

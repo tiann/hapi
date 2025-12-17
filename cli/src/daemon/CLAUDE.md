@@ -173,9 +173,6 @@ I do not like how
 
 - we loose track of children processes when daemon exits / restarts - we should write them to the same state file? At least the pids should be there for doctor & cleanup
 
-- caffeinate process is not tracked in state at all & might become runaway
-- caffeinate is also started by individual sesions - we should not do that for simpler cleanup 
-
 - the daemon control server binds to `127.0.0.1` on a random port; if we ever expose it beyond localhost, require an explicit auth token/header
 
 

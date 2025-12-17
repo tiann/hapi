@@ -9,7 +9,6 @@ import { SpawnSessionOptions, SpawnSessionResult } from '@/modules/common/regist
 import { logger } from '@/ui/logger';
 import { authAndSetupMachineIfNeeded } from '@/ui/auth';
 import { configuration } from '@/configuration';
-import { startCaffeinate, stopCaffeinate } from '@/utils/caffeinate';
 import packageJson from '../../package.json';
 import { getEnvironmentInfo } from '@/ui/doctor';
 import { spawnHappyCLI } from '@/utils/spawnHappyCLI';
@@ -121,12 +120,6 @@ export async function startDaemon(): Promise<void> {
   // 2. Should not have another daemon process running
 
   try {
-    // Start caffeinate
-    const caffeinateStarted = startCaffeinate();
-    if (caffeinateStarted) {
-      logger.debug('[DAEMON RUN] Sleep prevention enabled');
-    }
-
     // Ensure auth and machine registration BEFORE anything else
     const { machineId } = await authAndSetupMachineIfNeeded();
     logger.debug('[DAEMON RUN] Auth and machine setup complete');
@@ -562,7 +555,6 @@ export async function startDaemon(): Promise<void> {
       apiMachine.shutdown();
       await stopControlServer();
       await cleanupDaemonState();
-      await stopCaffeinate();
       await releaseDaemonLock(daemonLockHandle);
 
       logger.debug('[DAEMON RUN] Cleanup completed, exiting process');

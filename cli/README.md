@@ -44,7 +44,6 @@ This will:
 - `HAPPY_BOT_URL` - Bot URL (default: http://localhost:3006)
 - `CLI_API_TOKEN` - Shared secret for bot authentication (required)
 - `HAPPY_HOME_DIR` - Custom home directory for hapi data (default: ~/.happy)
-- `HAPPY_DISABLE_CAFFEINATE` - Disable macOS sleep prevention (set to `true`, `1`, or `yes`)
 - `HAPPY_EXPERIMENTAL` - Enable experimental features (set to `true`, `1`, or `yes`)
 
 ## Requirements

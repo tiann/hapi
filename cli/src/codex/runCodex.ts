@@ -26,7 +26,6 @@ import type { CodexSessionConfig } from './types';
 import { notifyDaemonSessionStarted } from "@/daemon/controlClient";
 import { registerKillSessionHandler } from "@/claude/registerKillSessionHandler";
 import { delay } from "@/utils/time";
-import { stopCaffeinate } from "@/utils/caffeinate";
 
 type ReadyEventOptions = {
     pending: unknown;
@@ -270,9 +269,6 @@ export async function runCodex(opts: {
                 await session.flush();
                 await session.close();
             }
-
-            // Stop caffeinate
-            stopCaffeinate();
 
             // Stop Happy MCP server
             happyServer.stop();
