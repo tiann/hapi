@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ApiClient } from '@/api/client'
-import type { DecryptedMessage, Session } from '@/types/api'
+import type { DecryptedMessage, ModelMode, PermissionMode, Session } from '@/types/api'
 import type { NormalizedMessage } from '@/chat/types'
 import { normalizeDecryptedMessage } from '@/chat/normalize'
 import { reduceChatBlocks } from '@/chat/reducer'
@@ -10,6 +10,7 @@ import { MessageBubble } from '@/components/MessageBubble'
 import { ChatBlockList } from '@/components/ChatBlockList'
 import { ChatInput } from '@/components/ChatInput'
 import { useScrollToBottom } from '@/hooks/useScrollToBottom'
+import { getTelegramWebApp } from '@/hooks/useTelegram'
 
 export function SessionChat(props: {
     api: ApiClient
@@ -62,13 +63,41 @@ export function SessionChat(props: {
     const viewMode = import.meta.env.DEV ? debugViewMode : 'reduced'
     const scrollRef = useScrollToBottom([props.messages.length, reduced.blocks.length, viewMode])
 
+    // Permission mode change handler
+    const handlePermissionModeChange = useCallback(async (mode: PermissionMode) => {
+        try {
+            await props.api.setPermissionMode(props.session.id, mode as 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan')
+            getTelegramWebApp()?.HapticFeedback?.notificationOccurred('success')
+            props.onRefresh()
+        } catch (e) {
+            getTelegramWebApp()?.HapticFeedback?.notificationOccurred('error')
+            console.error('Failed to set permission mode:', e)
+        }
+    }, [props.api, props.session.id, props.onRefresh])
+
+    // Model mode change handler
+    const handleModelModeChange = useCallback(async (mode: ModelMode) => {
+        try {
+            await props.api.setModelMode(props.session.id, mode as 'default' | 'sonnet' | 'opus')
+            getTelegramWebApp()?.HapticFeedback?.notificationOccurred('success')
+            props.onRefresh()
+        } catch (e) {
+            getTelegramWebApp()?.HapticFeedback?.notificationOccurred('error')
+            console.error('Failed to set model mode:', e)
+        }
+    }, [props.api, props.session.id, props.onRefresh])
+
+    // Abort handler
+    const handleAbort = useCallback(async () => {
+        await props.api.abortSession(props.session.id)
+        props.onRefresh()
+    }, [props.api, props.session.id, props.onRefresh])
+
     return (
         <div className="flex h-full flex-col">
             <SessionHeader
-                api={props.api}
                 session={props.session}
                 onBack={props.onBack}
-                onRefresh={props.onRefresh}
             />
 
             {controlsDisabled ? (
@@ -159,6 +188,13 @@ export function SessionChat(props: {
             <ChatInput
                 disabled={props.isSending || controlsDisabled}
                 onSend={props.onSend}
+                sessionId={props.session.id}
+                permissionMode={props.session.permissionMode}
+                modelMode={props.session.modelMode}
+                active={props.session.active}
+                onPermissionModeChange={handlePermissionModeChange}
+                onModelModeChange={handleModelModeChange}
+                onAbort={handleAbort}
             />
         </div>
     )
