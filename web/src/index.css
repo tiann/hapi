@@ -37,6 +37,9 @@
 }
 
 [data-theme="dark"] {
+    /* Override secondary-bg for better contrast on iOS - matches happy-app surfaceHigh */
+    --app-secondary-bg: #2C2C2E;
+
     --app-border: rgba(255, 255, 255, 0.1);
     --app-divider: rgba(255, 255, 255, 0.08);
     --app-subtle-bg: rgba(255, 255, 255, 0.05);

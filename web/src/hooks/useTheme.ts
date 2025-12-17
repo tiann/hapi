@@ -1,4 +1,4 @@
-import { useEffect, useState, useSyncExternalStore } from 'react'
+import { useSyncExternalStore } from 'react'
 import { getTelegramWebApp } from './useTelegram'
 
 type ColorScheme = 'light' | 'dark'
@@ -8,8 +8,18 @@ function getColorScheme(): ColorScheme {
     return tg?.colorScheme === 'dark' ? 'dark' : 'light'
 }
 
+function isIOS(): boolean {
+    return /iPad|iPhone|iPod/.test(navigator.userAgent)
+}
+
 function applyTheme(scheme: ColorScheme): void {
     document.documentElement.setAttribute('data-theme', scheme)
+}
+
+function applyPlatform(): void {
+    if (isIOS()) {
+        document.documentElement.classList.add('ios')
+    }
 }
 
 // External store for theme state
