@@ -1,15 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { AssistantRuntimeProvider } from '@assistant-ui/react'
 import type { ApiClient } from '@/api/client'
 import type { DecryptedMessage, ModelMode, PermissionMode, Session } from '@/types/api'
 import type { NormalizedMessage } from '@/chat/types'
 import { normalizeDecryptedMessage } from '@/chat/normalize'
 import { reduceChatBlocks } from '@/chat/reducer'
 import { Button } from '@/components/ui/button'
+import { HappyComposer } from '@/components/AssistantChat/HappyComposer'
+import { HappyThread } from '@/components/AssistantChat/HappyThread'
+import { useHappyRuntime } from '@/lib/assistant-runtime'
 import { SessionHeader } from '@/components/SessionHeader'
 import { MessageBubble } from '@/components/MessageBubble'
-import { ChatBlockList } from '@/components/ChatBlockList'
-import { ChatInput } from '@/components/ChatInput'
-import { useScrollToBottom } from '@/hooks/useScrollToBottom'
 import { getTelegramWebApp } from '@/hooks/useTelegram'
 
 export function SessionChat(props: {
@@ -61,7 +62,6 @@ export function SessionChat(props: {
 
     const [debugViewMode, setDebugViewMode] = useState<'reduced' | 'raw'>('reduced')
     const viewMode = import.meta.env.DEV ? debugViewMode : 'reduced'
-    const scrollRef = useScrollToBottom([props.messages.length, reduced.blocks.length, viewMode])
 
     // Permission mode change handler
     const handlePermissionModeChange = useCallback(async (mode: PermissionMode) => {
@@ -93,6 +93,98 @@ export function SessionChat(props: {
         props.onRefresh()
     }, [props.api, props.session.id, props.onRefresh])
 
+    const runtime = useHappyRuntime({
+        session: props.session,
+        blocks: viewMode === 'raw' ? [] : reduced.blocks,
+        isSending: props.isSending,
+        onSendMessage: props.onSend,
+        onAbort: handleAbort
+    })
+
+    const threadHeader = useMemo(() => {
+        if (props.isLoadingMessages) {
+            return (
+                <div className="text-sm text-[var(--app-hint)]">
+                    Loading…
+                </div>
+            )
+        }
+
+        return (
+            <>
+                {props.messagesWarning ? (
+                    <div className="mb-3 rounded-md bg-amber-500/10 p-2 text-xs">
+                        {props.messagesWarning}
+                    </div>
+                ) : null}
+
+                {import.meta.env.DEV ? (
+                    <div className="mb-2 flex items-center gap-2">
+                        <Button
+                            variant={viewMode === 'reduced' ? 'default' : 'secondary'}
+                            size="sm"
+                            onClick={() => setDebugViewMode('reduced')}
+                        >
+                            Reduced
+                        </Button>
+                        <Button
+                            variant={viewMode === 'raw' ? 'default' : 'secondary'}
+                            size="sm"
+                            onClick={() => setDebugViewMode('raw')}
+                        >
+                            Raw
+                        </Button>
+                    </div>
+                ) : null}
+
+                {props.hasMoreMessages ? (
+                    <div className="mb-3">
+                        <Button
+                            variant="secondary"
+                            size="sm"
+                            onClick={props.onLoadMore}
+                            disabled={props.isLoadingMoreMessages}
+                        >
+                            {props.isLoadingMoreMessages ? 'Loading…' : 'Load older'}
+                        </Button>
+                    </div>
+                ) : null}
+
+                {import.meta.env.DEV && viewMode === 'reduced' && normalizedMessages.length === 0 && props.messages.length > 0 ? (
+                    <div className="mb-2 rounded-md bg-amber-500/10 p-2 text-xs">
+                        Message normalization returned 0 items for {props.messages.length} messages (see `hapi/web/src/chat/normalize.ts`).
+                    </div>
+                ) : null}
+
+                {viewMode === 'raw' ? (
+                    <div className="flex flex-col gap-2">
+                        {props.messages.map((m) => (
+                            <MessageBubble
+                                key={m.id}
+                                message={m}
+                                onRetry={m.localId && m.status === 'failed' && props.onRetryMessage
+                                    ? () => props.onRetryMessage!(m.localId!)
+                                    : undefined
+                                }
+                            />
+                        ))}
+                    </div>
+                ) : null}
+            </>
+        )
+    }, [
+        props.isLoadingMessages,
+        props.messagesWarning,
+        props.hasMoreMessages,
+        props.isLoadingMoreMessages,
+        props.onLoadMore,
+        props.messages,
+        props.messages.length,
+        props.onRetryMessage,
+        viewMode,
+        normalizedMessages.length
+    ])
+
     return (
         <div className="flex h-full flex-col">
             <SessionHeader
@@ -106,89 +198,20 @@ export function SessionChat(props: {
                 </div>
             ) : null}
 
-            <div ref={scrollRef} className="relative flex min-h-0 flex-1 flex-col overflow-y-auto">
-                <div className="mx-auto w-full max-w-[720px] p-3">
-                    {props.messagesWarning ? (
-                        <div className="mb-3 rounded-md bg-amber-500/10 p-2 text-xs">
-                            {props.messagesWarning}
-                        </div>
-                    ) : null}
-
-                    {import.meta.env.DEV ? (
-                        <div className="mb-2 flex items-center gap-2">
-                            <Button
-                                variant={viewMode === 'reduced' ? 'default' : 'secondary'}
-                                size="sm"
-                                onClick={() => setDebugViewMode('reduced')}
-                            >
-                                Reduced
-                            </Button>
-                            <Button
-                                variant={viewMode === 'raw' ? 'default' : 'secondary'}
-                                size="sm"
-                                onClick={() => setDebugViewMode('raw')}
-                            >
-                                Raw
-                            </Button>
-                        </div>
-                    ) : null}
-
-                    {props.hasMoreMessages ? (
-                        <div className="mb-3">
-                            <Button
-                                variant="secondary"
-                                size="sm"
-                                onClick={props.onLoadMore}
-                                disabled={props.isLoadingMoreMessages}
-                            >
-                                {props.isLoadingMoreMessages ? 'Loading…' : 'Load older'}
-                            </Button>
-                        </div>
-                    ) : null}
-
-                    {props.isLoadingMessages ? (
-                        <div className="text-sm text-[var(--app-hint)]">Loading…</div>
-                    ) : (
-                        <>
-                            {import.meta.env.DEV && viewMode === 'reduced' && normalizedMessages.length === 0 && props.messages.length > 0 ? (
-                                <div className="mb-2 rounded-md bg-amber-500/10 p-2 text-xs">
-                                    Message normalization returned 0 items for {props.messages.length} messages (see `hapi/web/src/chat/normalize.ts`).
-                                </div>
-                            ) : null}
-
-                            {viewMode === 'raw' ? (
-                                <div className="flex flex-col gap-2">
-                                    {props.messages.map((m) => (
-                                        <MessageBubble
-                                            key={m.id}
-                                            message={m}
-                                            onRetry={m.localId && m.status === 'failed' && props.onRetryMessage
-                                                ? () => props.onRetryMessage!(m.localId!)
-                                                : undefined
-                                            }
-                                        />
-                                    ))}
-                                </div>
-                            ) : (
-                                <ChatBlockList
-                                    api={props.api}
-                                    sessionId={props.session.id}
-                                    metadata={props.session.metadata}
-                                    disabled={controlsDisabled}
-                                    onRefresh={props.onRefresh}
-                                    blocks={reduced.blocks}
-                                    onRetryMessage={props.onRetryMessage}
-                                />
-                            )}
-                        </>
-                    )}
-                </div>
-
-                <div className="sticky bottom-0 z-10 mt-auto w-full overflow-visible">
-                    <ChatInput
-                        disabled={props.isSending || controlsDisabled}
-                        onSend={props.onSend}
+            <AssistantRuntimeProvider runtime={runtime}>
+                <div className="relative flex min-h-0 flex-1 flex-col">
+                    <HappyThread
+                        api={props.api}
                         sessionId={props.session.id}
+                        metadata={props.session.metadata}
+                        disabled={controlsDisabled}
+                        onRefresh={props.onRefresh}
+                        onRetryMessage={props.onRetryMessage}
+                        header={threadHeader}
+                    />
+
+                    <HappyComposer
+                        disabled={props.isSending || controlsDisabled}
                         permissionMode={props.session.permissionMode}
                         modelMode={props.session.modelMode}
                         active={props.session.active}
@@ -197,10 +220,9 @@ export function SessionChat(props: {
                         contextSize={reduced.latestUsage?.contextSize}
                         onPermissionModeChange={handlePermissionModeChange}
                         onModelModeChange={handleModelModeChange}
-                        onAbort={handleAbort}
                     />
                 </div>
-            </div>
+            </AssistantRuntimeProvider>
         </div>
     )
 }

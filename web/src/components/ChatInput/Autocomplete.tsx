@@ -2,7 +2,7 @@ import { memo } from 'react'
 import type { Suggestion } from '@/hooks/useActiveSuggestions'
 
 interface AutocompleteProps {
-    suggestions: Suggestion[]
+    suggestions: readonly Suggestion[]
     selectedIndex: number
     onSelect: (index: number) => void
 }
