@@ -106,7 +106,7 @@ export function SessionChat(props: {
                 </div>
             ) : null}
 
-            <div ref={scrollRef} className="flex-1 overflow-y-auto">
+            <div ref={scrollRef} className="relative flex min-h-0 flex-1 flex-col overflow-y-auto">
                 <div className="mx-auto w-full max-w-[720px] p-3">
                     {props.messagesWarning ? (
                         <div className="mb-3 rounded-md bg-amber-500/10 p-2 text-xs">
@@ -183,22 +183,24 @@ export function SessionChat(props: {
                         </>
                     )}
                 </div>
-            </div>
 
-            <ChatInput
-                disabled={props.isSending || controlsDisabled}
-                onSend={props.onSend}
-                sessionId={props.session.id}
-                permissionMode={props.session.permissionMode}
-                modelMode={props.session.modelMode}
-                active={props.session.active}
-                thinking={props.session.thinking}
-                agentState={props.session.agentState}
-                contextSize={reduced.latestUsage?.contextSize}
-                onPermissionModeChange={handlePermissionModeChange}
-                onModelModeChange={handleModelModeChange}
-                onAbort={handleAbort}
-            />
+                <div className="sticky bottom-0 z-10 mt-auto w-full overflow-visible">
+                    <ChatInput
+                        disabled={props.isSending || controlsDisabled}
+                        onSend={props.onSend}
+                        sessionId={props.session.id}
+                        permissionMode={props.session.permissionMode}
+                        modelMode={props.session.modelMode}
+                        active={props.session.active}
+                        thinking={props.session.thinking}
+                        agentState={props.session.agentState}
+                        contextSize={reduced.latestUsage?.contextSize}
+                        onPermissionModeChange={handlePermissionModeChange}
+                        onModelModeChange={handleModelModeChange}
+                        onAbort={handleAbort}
+                    />
+                </div>
+            </div>
         </div>
     )
 }

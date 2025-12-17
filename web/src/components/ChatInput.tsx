@@ -196,7 +196,15 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, ChatInputProps>(functi
 
     // Imperative handle
     useImperativeHandle(ref, () => ({
-        focus: () => textareaRef.current?.focus(),
+        focus: () => {
+            const el = textareaRef.current
+            if (!el) return
+            try {
+                el.focus({ preventScroll: true })
+            } catch {
+                el.focus()
+            }
+        },
         blur: () => textareaRef.current?.blur()
     }), [])
 
@@ -257,7 +265,11 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, ChatInputProps>(functi
         setTimeout(() => {
             if (textareaRef.current) {
                 textareaRef.current.setSelectionRange(result.cursorPosition, result.cursorPosition)
-                textareaRef.current.focus()
+                try {
+                    textareaRef.current.focus({ preventScroll: true })
+                } catch {
+                    textareaRef.current.focus()
+                }
             }
         }, 0)
 
