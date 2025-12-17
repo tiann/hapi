@@ -1,5 +1,5 @@
 import { Badge } from '@/components/ui/badge'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import type { SessionSummary } from '@/types/api'
 
 function PlusIcon(props: { className?: string }) {
@@ -44,6 +44,9 @@ function BulbIcon(props: { className?: string }) {
 }
 
 function getSessionTitle(session: SessionSummary): string {
+    if (session.metadata?.name) {
+        return session.metadata.name
+    }
     if (session.metadata?.summary?.text) {
         return session.metadata.summary.text
     }
@@ -114,14 +117,9 @@ export function SessionList(props: {
                                 </div>
                             </div>
                             <CardDescription className="truncate">
-                                {s.metadata?.host ? `Host: ${s.metadata.host}` : 'Host: (unknown)'}
+                                {s.metadata?.path ?? s.id}
                             </CardDescription>
                         </CardHeader>
-                        <CardContent className="pt-0">
-                            <div className="text-xs text-[var(--app-hint)] truncate">
-                                {s.metadata?.path ?? s.id}
-                            </div>
-                        </CardContent>
                     </Card>
                 ))}
             </div>

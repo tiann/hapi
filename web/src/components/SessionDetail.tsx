@@ -1,13 +1,16 @@
 import { useMemo } from 'react'
 import type { ApiClient } from '@/api/client'
+import { getTelegramWebApp } from '@/hooks/useTelegram'
 import type { DecryptedMessage, Session } from '@/types/api'
 import { Button } from '@/components/ui/button'
-import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { MessageBubble } from '@/components/MessageBubble'
 import { PermissionPanel } from '@/components/PermissionPanel'
 
 function getSessionTitle(session: Session): string {
+    if (session.metadata?.name) {
+        return session.metadata.name
+    }
     if (session.metadata?.summary?.text) {
         return session.metadata.summary.text
     }
@@ -37,39 +40,31 @@ export function SessionDetail(props: {
         return Object.entries(rec).map(([requestId, request]) => ({ requestId, request }))
     }, [props.session])
 
+    const isTelegram = getTelegramWebApp() !== null
+
     return (
         <div className="flex flex-col gap-3">
-            <div className="flex items-center justify-between gap-2">
-                <Button variant="secondary" size="sm" onClick={props.onBack}>
-                    Back
-                </Button>
-                <Button variant="secondary" size="sm" onClick={props.onRefreshAll} disabled={props.isLoadingMessages}>
-                    Refresh
-                </Button>
-            </div>
-
-            <Card>
-                <CardHeader className="pb-2">
+            {!isTelegram && (
+                <>
                     <div className="flex items-center justify-between gap-2">
-                        <CardTitle className="truncate">{getSessionTitle(props.session)}</CardTitle>
-                        {requests.length > 0 ? (
-                            <Badge variant="warning">{requests.length} pending</Badge>
-                        ) : props.session.active ? (
-                            <Badge variant="success">active</Badge>
-                        ) : (
-                            <Badge>inactive</Badge>
-                        )}
+                        <Button variant="secondary" size="sm" onClick={props.onBack}>
+                            Back
+                        </Button>
+                        <Button variant="secondary" size="sm" onClick={props.onRefreshAll} disabled={props.isLoadingMessages}>
+                            Refresh
+                        </Button>
                     </div>
-                    <CardDescription className="truncate">
-                        {props.session.metadata?.host ? `Host: ${props.session.metadata.host}` : 'Host: (unknown)'}
-                    </CardDescription>
-                </CardHeader>
-                <CardContent className="pt-0">
-                    <div className="text-xs text-[var(--app-hint)]">
-                        {props.session.metadata?.path ?? props.session.id}
-                    </div>
-                </CardContent>
-            </Card>
+
+                    <Card>
+                        <CardHeader className="pb-2">
+                            <CardTitle className="truncate">{getSessionTitle(props.session)}</CardTitle>
+                            <CardDescription className="truncate">
+                                {props.session.metadata?.path ?? props.session.id}
+                            </CardDescription>
+                        </CardHeader>
+                    </Card>
+                </>
+            )}
 
             <Card>
                 <CardHeader className="pb-2">

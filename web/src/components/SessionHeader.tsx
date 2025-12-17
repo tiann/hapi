@@ -1,9 +1,13 @@
 import { useMemo } from 'react'
 import type { Session } from '@/types/api'
+import { getTelegramWebApp } from '@/hooks/useTelegram'
 
 function getSessionTitle(session: Session): string {
     if (session.metadata?.name) {
         return session.metadata.name
+    }
+    if (session.metadata?.summary?.text) {
+        return session.metadata.summary.text
     }
     if (session.metadata?.path) {
         const parts = session.metadata.path.split('/').filter(Boolean)
@@ -16,7 +20,13 @@ export function SessionHeader(props: {
     session: Session
     onBack: () => void
 }) {
+    const isTelegram = getTelegramWebApp() !== null
     const title = useMemo(() => getSessionTitle(props.session), [props.session])
+
+    // In Telegram, don't render header (Telegram provides its own)
+    if (isTelegram) {
+        return null
+    }
 
     return (
         <div className="flex items-center gap-2 bg-[var(--app-bg)] p-3">
@@ -41,15 +51,13 @@ export function SessionHeader(props: {
                 </svg>
             </button>
 
-            {/* Session info */}
+            {/* Session info - two lines: title and path */}
             <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2 min-w-0">
-                    <div className="truncate font-semibold">
-                        {title}
-                    </div>
+                <div className="truncate font-semibold">
+                    {title}
                 </div>
                 <div className="text-xs text-[var(--app-hint)] truncate">
-                    {props.session.metadata?.host ? `Host: ${props.session.metadata.host}` : props.session.id}
+                    {props.session.metadata?.path ?? props.session.id}
                 </div>
             </div>
         </div>
