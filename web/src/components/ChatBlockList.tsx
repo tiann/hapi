@@ -3,6 +3,7 @@ import type { MessageStatus } from '@/types/api'
 import type { ApiClient } from '@/api/client'
 import type { SessionMetadataSummary } from '@/types/api'
 import { MarkdownRenderer } from '@/components/MarkdownRenderer'
+import { LazyRainbowText } from '@/components/LazyRainbowText'
 import { ToolCard } from '@/components/ToolCard/ToolCard'
 
 function ErrorIcon() {
@@ -99,7 +100,7 @@ export function ChatBlockList(props: {
                         <div key={`user:${block.id}`} className={userBubbleClass}>
                             <div className="flex items-end gap-2">
                                 <div className="flex-1">
-                                    <MarkdownRenderer content={block.text} />
+                                    <LazyRainbowText text={block.text} />
                                 </div>
                                 {status ? (
                                     <div className="shrink-0 self-end pb-0.5">

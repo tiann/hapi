@@ -85,3 +85,30 @@ body {
 .markdown-content ul, .markdown-content ol { padding-left: 1.5rem; margin: 0.5rem 0; }
 .markdown-content table { border-collapse: collapse; width: 100%; }
 .markdown-content th, .markdown-content td { border: 1px solid var(--app-border); padding: 0.25rem 0.5rem; }
+
+/* Ultrathink rainbow sparkle effect - per-letter wave animation */
+@keyframes rainbow-wave {
+  0% { color: #ff5555; }      /* red */
+  14% { color: #ffaa00; }     /* orange */
+  28% { color: #ffff55; }     /* yellow */
+  42% { color: #55ff55; }     /* green */
+  57% { color: #55ffff; }     /* cyan */
+  71% { color: #5555ff; }     /* blue */
+  85% { color: #ff55ff; }     /* magenta/pink */
+  100% { color: #ff5555; }    /* red */
+}
+
+@keyframes sparkle-wave {
+  0%, 100% {
+    filter: brightness(1);
+  }
+  50% {
+    filter: brightness(0.7);
+  }
+}
+
+.rainbow-letter {
+  display: inline-block;
+  animation: rainbow-wave 2s linear infinite, sparkle-wave 2s ease-in-out infinite;
+  font-weight: 600;
+}
