@@ -411,7 +411,7 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, ChatInputProps>(functi
     }, [showSettings])
 
     return (
-        <div className="bg-[var(--app-bg)] px-2 pb-2 pt-1">
+        <div className="bg-[var(--app-bg)] px-2 pt-1" style={{ paddingBottom: 'calc(8px + env(safe-area-inset-bottom, 0px))' }}>
             <div className="relative mx-auto w-full max-w-[720px]">
                 {/* Autocomplete overlay */}
                 {suggestions.length > 0 && (
