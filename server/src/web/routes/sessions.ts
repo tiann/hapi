@@ -13,6 +13,7 @@ type SessionSummary = {
     permissionMode: Session['permissionMode']
     modelMode: Session['modelMode']
     metadata: Session['metadata']
+    todos?: Session['todos']
     pendingRequestsCount: number
 }
 
@@ -27,6 +28,7 @@ function toSessionSummary(session: Session): SessionSummary {
         permissionMode: session.permissionMode,
         modelMode: session.modelMode,
         metadata: session.metadata,
+        todos: session.todos,
         pendingRequestsCount
     }
 }

@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto'
 import type { Store } from '../../store'
 import { RpcRegistry } from '../rpcRegistry'
 import type { SyncEvent } from '../../sync/syncEngine'
+import { extractTodoWriteTodosFromMessageContent } from '../../sync/todos'
 
 type SessionAlivePayload = {
     sid: string
@@ -124,6 +125,14 @@ export function registerCliHandlers(socket: Socket, deps: CliHandlersDeps): void
             : raw
 
         const msg = store.addMessage(sid, content, localId)
+
+        const todos = extractTodoWriteTodosFromMessageContent(content)
+        if (todos) {
+            const updated = store.setSessionTodos(sid, todos, msg.createdAt)
+            if (updated) {
+                onWebappEvent?.({ type: 'session-updated', sessionId: sid, data: { sid } })
+            }
+        }
 
         // Broadcast to other CLI sockets interested in this session (skip sender).
         const update = {

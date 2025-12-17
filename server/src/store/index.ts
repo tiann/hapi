@@ -13,6 +13,8 @@ export type StoredSession = {
     metadataVersion: number
     agentState: unknown | null
     agentStateVersion: number
+    todos: unknown | null
+    todosUpdatedAt: number | null
     active: boolean
     activeAt: number | null
     seq: number
@@ -55,6 +57,8 @@ type DbSessionRow = {
     metadata_version: number
     agent_state: string | null
     agent_state_version: number
+    todos: string | null
+    todos_updated_at: number | null
     active: number
     active_at: number | null
     seq: number
@@ -102,6 +106,8 @@ function toStoredSession(row: DbSessionRow): StoredSession {
         metadataVersion: row.metadata_version,
         agentState: safeJsonParse(row.agent_state),
         agentStateVersion: row.agent_state_version,
+        todos: safeJsonParse(row.todos),
+        todosUpdatedAt: row.todos_updated_at,
         active: row.active === 1,
         activeAt: row.active_at,
         seq: row.seq
@@ -184,6 +190,8 @@ export class Store {
                 metadata_version INTEGER DEFAULT 1,
                 agent_state TEXT,
                 agent_state_version INTEGER DEFAULT 1,
+                todos TEXT,
+                todos_updated_at INTEGER,
                 active INTEGER DEFAULT 0,
                 active_at INTEGER,
                 seq INTEGER DEFAULT 0
@@ -215,6 +223,16 @@ export class Store {
             CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, seq);
             CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_local_id ON messages(session_id, local_id) WHERE local_id IS NOT NULL;
         `)
+
+        const sessionColumns = this.db.prepare('PRAGMA table_info(sessions)').all() as Array<{ name: string }>
+        const sessionColumnNames = new Set(sessionColumns.map((c) => c.name))
+
+        if (!sessionColumnNames.has('todos')) {
+            this.db.exec('ALTER TABLE sessions ADD COLUMN todos TEXT')
+        }
+        if (!sessionColumnNames.has('todos_updated_at')) {
+            this.db.exec('ALTER TABLE sessions ADD COLUMN todos_updated_at INTEGER')
+        }
     }
 
     getOrCreateSession(tag: string, metadata: unknown, agentState: unknown): StoredSession {
@@ -237,11 +255,13 @@ export class Store {
                 id, tag, machine_id, created_at, updated_at,
                 metadata, metadata_version,
                 agent_state, agent_state_version,
+                todos, todos_updated_at,
                 active, active_at, seq
             ) VALUES (
                 @id, @tag, NULL, @created_at, @updated_at,
                 @metadata, 1,
                 @agent_state, 1,
+                NULL, NULL,
                 0, NULL, 0
             )
         `).run({
@@ -323,6 +343,29 @@ export class Store {
             }
         } catch {
             return { result: 'error' }
+        }
+    }
+
+    setSessionTodos(id: string, todos: unknown, todosUpdatedAt: number): boolean {
+        try {
+            const json = todos === null || todos === undefined ? null : JSON.stringify(todos)
+            const result = this.db.prepare(`
+                UPDATE sessions
+                SET todos = @todos,
+                    todos_updated_at = @todos_updated_at,
+                    updated_at = CASE WHEN updated_at > @updated_at THEN updated_at ELSE @updated_at END,
+                    seq = seq + 1
+                WHERE id = @id AND (todos_updated_at IS NULL OR todos_updated_at < @todos_updated_at)
+            `).run({
+                id,
+                todos: json,
+                todos_updated_at: todosUpdatedAt,
+                updated_at: todosUpdatedAt
+            })
+
+            return result.changes === 1
+        } catch {
+            return false
         }
     }
 

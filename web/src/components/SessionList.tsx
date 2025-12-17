@@ -22,6 +22,27 @@ function PlusIcon(props: { className?: string }) {
     )
 }
 
+function BulbIcon(props: { className?: string }) {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="24"
+            height="24"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={props.className}
+        >
+            <path d="M9 18h6" />
+            <path d="M10 22h4" />
+            <path d="M12 2a7 7 0 0 0-4 12c.6.6 1 1.2 1 2h6c0-.8.4-1.4 1-2a7 7 0 0 0-4-12Z" />
+        </svg>
+    )
+}
+
 function getSessionTitle(session: SessionSummary): string {
     if (session.metadata?.summary?.text) {
         return session.metadata.summary.text
@@ -31,6 +52,14 @@ function getSessionTitle(session: SessionSummary): string {
         return parts.length > 0 ? parts[parts.length - 1] : session.id.slice(0, 8)
     }
     return session.id.slice(0, 8)
+}
+
+function getTodoProgress(session: SessionSummary): { completed: number; total: number } | null {
+    if (!session.todos || session.todos.length === 0) return null
+    const total = session.todos.length
+    const completed = session.todos.filter(t => t.status === 'completed').length
+    if (completed === total) return null
+    return { completed, total }
 }
 
 export function SessionList(props: {
@@ -62,15 +91,27 @@ export function SessionList(props: {
                         <CardHeader className="pb-2">
                             <div className="flex items-center justify-between gap-2">
                                 <CardTitle className="truncate">{getSessionTitle(s)}</CardTitle>
-                                {s.active ? (
-                                    s.pendingRequestsCount > 0 ? (
-                                        <Badge variant="warning">{s.pendingRequestsCount} pending</Badge>
+                                <div className="flex items-center gap-2 shrink-0">
+                                    {(() => {
+                                        const progress = getTodoProgress(s)
+                                        if (!progress) return null
+                                        return (
+                                            <Badge className="gap-1 border-transparent bg-[var(--app-secondary-bg)] px-2 py-0.5 text-[10px] font-medium text-[var(--app-hint)]">
+                                                <BulbIcon className="h-3 w-3" />
+                                                {progress.completed}/{progress.total}
+                                            </Badge>
+                                        )
+                                    })()}
+                                    {s.active ? (
+                                        s.pendingRequestsCount > 0 ? (
+                                            <Badge variant="warning">{s.pendingRequestsCount} pending</Badge>
+                                        ) : (
+                                            <Badge variant="success">active</Badge>
+                                        )
                                     ) : (
-                                        <Badge variant="success">active</Badge>
-                                    )
-                                ) : (
-                                    <Badge>inactive</Badge>
-                                )}
+                                        <Badge>inactive</Badge>
+                                    )}
+                                </div>
                             </div>
                             <CardDescription className="truncate">
                                 {s.metadata?.host ? `Host: ${s.metadata.host}` : 'Host: (unknown)'}

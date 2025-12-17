@@ -37,6 +37,13 @@ export type AgentState = {
     completedRequests?: Record<string, AgentStateCompletedRequest> | null
 }
 
+export type TodoItem = {
+    content: string
+    status: 'pending' | 'in_progress' | 'completed'
+    priority: 'high' | 'medium' | 'low'
+    id: string
+}
+
 export type Session = {
     id: string
     createdAt: number
@@ -45,6 +52,7 @@ export type Session = {
     thinking: boolean
     metadata: SessionMetadataSummary | null
     agentState: AgentState | null
+    todos?: TodoItem[]
     permissionMode?: PermissionMode
     modelMode?: ModelMode
 }
@@ -58,6 +66,7 @@ export type SessionSummary = {
     permissionMode: PermissionMode
     modelMode: ModelMode
     metadata: SessionMetadataSummary | null
+    todos?: TodoItem[]
     pendingRequestsCount: number
 }
 

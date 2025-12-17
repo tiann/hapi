@@ -11,6 +11,7 @@ import { z } from 'zod'
 import type { Server } from 'socket.io'
 import type { Store } from '../store'
 import type { RpcRegistry } from '../socket/rpcRegistry'
+import { extractTodoWriteTodosFromMessageContent, TodosSchema, type TodoItem } from './todos'
 
 export type ConnectionStatus = 'disconnected' | 'connected'
 
@@ -73,6 +74,7 @@ export interface Session {
     agentStateVersion: number
     thinking: boolean
     thinkingAt: number
+    todos?: TodoItem[]
     permissionMode?: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | null
     modelMode?: 'default' | 'sonnet' | 'opus' | null
 }
@@ -143,6 +145,7 @@ export class SyncEngine {
 
     private readonly lastBroadcastAtBySessionId: Map<string, number> = new Map()
     private readonly lastBroadcastAtByMachineId: Map<string, number> = new Map()
+    private readonly todoBackfillAttemptedSessionIds: Set<string> = new Set()
     private inactivityTimer: NodeJS.Timeout | null = null
 
     constructor(
@@ -382,7 +385,7 @@ export class SyncEngine {
     }
 
     private refreshSession(sessionId: string): Session | null {
-        const stored = this.store.getSession(sessionId)
+        let stored = this.store.getSession(sessionId)
         if (!stored) {
             const existed = this.sessions.delete(sessionId)
             if (existed) {
@@ -393,6 +396,22 @@ export class SyncEngine {
 
         const existing = this.sessions.get(sessionId)
 
+        if (stored.todos === null && !this.todoBackfillAttemptedSessionIds.has(sessionId)) {
+            this.todoBackfillAttemptedSessionIds.add(sessionId)
+            const messages = this.store.getMessages(sessionId, 200)
+            for (let i = messages.length - 1; i >= 0; i -= 1) {
+                const message = messages[i]
+                const todos = extractTodoWriteTodosFromMessageContent(message.content)
+                if (todos) {
+                    const updated = this.store.setSessionTodos(sessionId, todos, message.createdAt)
+                    if (updated) {
+                        stored = this.store.getSession(sessionId) ?? stored
+                    }
+                    break
+                }
+            }
+        }
+
         const metadata = (() => {
             const parsed = MetadataSchema.safeParse(stored.metadata)
             return parsed.success ? parsed.data : null
@@ -401,6 +420,12 @@ export class SyncEngine {
         const agentState = (() => {
             const parsed = AgentStateSchema.safeParse(stored.agentState)
             return parsed.success ? parsed.data : null
+        })()
+
+        const todos = (() => {
+            if (stored.todos === null) return undefined
+            const parsed = TodosSchema.safeParse(stored.todos)
+            return parsed.success ? parsed.data : undefined
         })()
 
         const session: Session = {
@@ -416,6 +441,7 @@ export class SyncEngine {
             agentStateVersion: stored.agentStateVersion,
             thinking: existing?.thinking ?? false,
             thinkingAt: existing?.thinkingAt ?? 0,
+            todos,
             permissionMode: existing?.permissionMode ?? null,
             modelMode: existing?.modelMode ?? null
         }

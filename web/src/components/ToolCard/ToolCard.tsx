@@ -9,6 +9,7 @@ import { DiffView } from '@/components/DiffView'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { PermissionFooter } from '@/components/ToolCard/PermissionFooter'
 import { getToolPresentation } from '@/components/ToolCard/knownTools'
+import { getToolFullViewComponent, getToolViewComponent } from '@/components/ToolCard/views/_all'
 
 function isObject(value: unknown): value is Record<string, unknown> {
     return Boolean(value) && typeof value === 'object'
@@ -76,12 +77,14 @@ function ElapsedView(props: { from: number; active: boolean }) {
     )
 }
 
-function formatTaskChildLabel(child: ToolCallBlock): string {
+function formatTaskChildLabel(child: ToolCallBlock, metadata: SessionMetadataSummary | null): string {
     const presentation = getToolPresentation({
         toolName: child.tool.name,
         input: child.tool.input,
+        result: child.tool.result,
         childrenCount: child.children.length,
-        description: child.tool.description
+        description: child.tool.description,
+        metadata
     })
 
     if (presentation.subtitle) {
@@ -104,7 +107,7 @@ function TaskStateIcon(props: { state: ToolCallBlock['tool']['state'] }) {
     return <span className="text-amber-600 animate-pulse">●</span>
 }
 
-function renderTaskSummary(block: ToolCallBlock): ReactNode | null {
+function renderTaskSummary(block: ToolCallBlock, metadata: SessionMetadataSummary | null): ReactNode | null {
     if (block.tool.name !== 'Task') return null
 
     const children = block.children
@@ -126,7 +129,7 @@ function renderTaskSummary(block: ToolCallBlock): ReactNode | null {
                                 <TaskStateIcon state={child.tool.state} />
                             </span>
                             <span className="align-middle break-all">
-                                {formatTaskChildLabel(child)}
+                                {formatTaskChildLabel(child, metadata)}
                             </span>
                         </div>
                     </div>
@@ -341,17 +344,20 @@ export function ToolCard(props: {
     const presentation = getToolPresentation({
         toolName: props.block.tool.name,
         input: props.block.tool.input,
+        result: props.block.tool.result,
         childrenCount: props.block.children.length,
-        description: props.block.tool.description
+        description: props.block.tool.description,
+        metadata: props.metadata
     })
 
     const toolName = props.block.tool.name
     const toolTitle = presentation.title
     const subtitle = presentation.subtitle ?? props.block.tool.description
-    const taskSummary = renderTaskSummary(props.block)
+    const taskSummary = renderTaskSummary(props.block, props.metadata)
     const runningFrom = props.block.tool.startedAt ?? props.block.tool.createdAt
-    const showDialog = presentation.minimal || toolName === 'Task'
     const showInline = !presentation.minimal && toolName !== 'Task'
+    const CompactToolView = showInline ? getToolViewComponent(toolName) : null
+    const FullToolView = getToolFullViewComponent(toolName)
     const permission = props.block.tool.permission
     const showsPermissionFooter = Boolean(permission && (
         permission.status === 'pending'
@@ -364,7 +370,7 @@ export function ToolCard(props: {
         <div className="flex flex-col gap-1">
             <div className="flex items-center justify-between gap-3">
                 <div className="min-w-0 flex items-center gap-2">
-                    <div className="shrink-0 flex h-3.5 w-3.5 items-center justify-center text-[11px] leading-none">
+                    <div className="shrink-0 flex h-3.5 w-3.5 items-center justify-center text-[var(--app-hint)] leading-none">
                         {presentation.icon}
                     </div>
                     <CardTitle className="min-w-0 text-sm font-medium leading-tight break-words">
@@ -377,11 +383,9 @@ export function ToolCard(props: {
                     <span className={stateColor}>
                         <StatusIcon state={props.block.tool.state} />
                     </span>
-                    {showDialog ? (
-                        <span className="text-[var(--app-hint)]">
-                            <DetailsIcon />
-                        </span>
-                    ) : null}
+                    <span className="text-[var(--app-hint)]">
+                        <DetailsIcon />
+                    </span>
                 </div>
             </div>
 
@@ -396,32 +400,32 @@ export function ToolCard(props: {
     return (
         <Card className="overflow-hidden shadow-sm">
             <CardHeader className="p-3 space-y-0">
-                {showDialog ? (
-                    <Dialog>
-                        <DialogTrigger asChild>
-                            <button type="button" className="w-full text-left">
-                                {header}
-                            </button>
-                        </DialogTrigger>
-                        <DialogContent className="max-w-2xl">
-                            <DialogHeader>
-                                <DialogTitle>{toolTitle}</DialogTitle>
-                            </DialogHeader>
-                            <div className="mt-3 flex max-h-[75vh] flex-col gap-4 overflow-auto">
-                                <div>
-                                    <div className="mb-1 text-xs font-medium text-[var(--app-hint)]">Input</div>
-                                    {renderToolInput(props.block)}
-                                </div>
-                                <div>
-                                    <div className="mb-1 text-xs font-medium text-[var(--app-hint)]">Result</div>
-                                    {renderToolResult(props.block)}
-                                </div>
+                <Dialog>
+                    <DialogTrigger asChild>
+                        <button type="button" className="w-full text-left">
+                            {header}
+                        </button>
+                    </DialogTrigger>
+                    <DialogContent className="max-w-2xl">
+                        <DialogHeader>
+                            <DialogTitle>{toolTitle}</DialogTitle>
+                        </DialogHeader>
+                        <div className="mt-3 flex max-h-[75vh] flex-col gap-4 overflow-auto">
+                            <div>
+                                <div className="mb-1 text-xs font-medium text-[var(--app-hint)]">Input</div>
+                                {FullToolView ? (
+                                    <FullToolView block={props.block} metadata={props.metadata} />
+                                ) : (
+                                    renderToolInput(props.block)
+                                )}
                             </div>
-                        </DialogContent>
-                    </Dialog>
-                ) : (
-                    header
-                )}
+                            <div>
+                                <div className="mb-1 text-xs font-medium text-[var(--app-hint)]">Result</div>
+                                {renderToolResult(props.block)}
+                            </div>
+                        </div>
+                    </DialogContent>
+                </Dialog>
             </CardHeader>
 
             {hasBody ? (
@@ -433,16 +437,22 @@ export function ToolCard(props: {
                     ) : null}
 
                     {showInline ? (
-                        <div className="mt-3 flex flex-col gap-3">
-                            <div>
-                                <div className="mb-1 text-xs font-medium text-[var(--app-hint)]">Input</div>
-                                {renderToolInput(props.block)}
+                        CompactToolView ? (
+                            <div className="mt-3">
+                                <CompactToolView block={props.block} metadata={props.metadata} />
                             </div>
-                            <div>
-                                <div className="mb-1 text-xs font-medium text-[var(--app-hint)]">Result</div>
-                                {renderToolResult(props.block)}
+                        ) : (
+                            <div className="mt-3 flex flex-col gap-3">
+                                <div>
+                                    <div className="mb-1 text-xs font-medium text-[var(--app-hint)]">Input</div>
+                                    {renderToolInput(props.block)}
+                                </div>
+                                <div>
+                                    <div className="mb-1 text-xs font-medium text-[var(--app-hint)]">Result</div>
+                                    {renderToolResult(props.block)}
+                                </div>
                             </div>
-                        </div>
+                        )
                     ) : null}
 
                     <PermissionFooter

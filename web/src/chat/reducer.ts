@@ -176,6 +176,11 @@ function ensureToolBlock(
 ): ToolCallBlock {
     const existing = toolBlocksById.get(id)
     if (existing) {
+        const isPlaceholderToolName = (name: string): boolean => {
+            const normalized = name.trim().toLowerCase()
+            return normalized === '' || normalized === 'tool' || normalized === 'unknown'
+        }
+
         // Preserve earliest createdAt for stable ordering.
         if (seed.createdAt < existing.createdAt) {
             existing.createdAt = seed.createdAt
@@ -187,11 +192,15 @@ function ensureToolBlock(
                 existing.tool.state = 'pending'
             }
         }
-        if (seed.name) {
+        if (seed.name && (!isPlaceholderToolName(seed.name) || isPlaceholderToolName(existing.tool.name))) {
             existing.tool.name = seed.name
         }
-        existing.tool.input = seed.input
-        existing.tool.description = seed.description
+        if (seed.input !== null && seed.input !== undefined) {
+            existing.tool.input = seed.input
+        }
+        if (seed.description !== null) {
+            existing.tool.description = seed.description
+        }
         return existing
     }
 
