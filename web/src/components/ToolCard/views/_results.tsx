@@ -578,7 +578,7 @@ export const toolResultViewRegistry: Record<string, ToolViewComponent> = {
 
 export function getToolResultViewComponent(toolName: string): ToolViewComponent {
     if (toolName.startsWith('mcp__')) {
-        return MarkdownResultView
+        return GenericResultView
     }
     return toolResultViewRegistry[toolName] ?? GenericResultView
 }
