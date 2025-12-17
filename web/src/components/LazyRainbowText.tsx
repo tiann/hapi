@@ -1,7 +1,46 @@
 import React, { useRef, useState, useEffect, useMemo } from 'react'
 import { MarkdownRenderer } from '@/components/MarkdownRenderer'
 
-const ULTRATHINK_PATTERN = /\b(ultrathink)\b/gi
+// 特效单词列表 - 可以轻松扩展
+const RAINBOW_WORDS = [
+    'ultrathink',
+    'fuck',
+    'step by step',
+    'ELI5',
+    'lgtm',
+    'impl it',
+    'pls fix',
+    'stop changing',
+    '用中文',
+    '我说了',
+    '别又',
+    '为什么又',
+    '根本不',
+    '还是报错',
+    '大哥',
+    '求你',
+    '就改这里',
+    '弱智',
+]
+
+// 转义正则特殊字符
+function escapeRegExp(str: string): string {
+    return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+// 动态构建正则表达式
+function buildPattern(words: string[]): RegExp {
+    const pattern = words.map(escapeRegExp).join('|')
+    return new RegExp(`(${pattern})`, 'gi')
+}
+
+// 快速检查是否包含任何特效单词
+function hasAnySpecialWord(text: string, words: string[]): boolean {
+    const lowerText = text.toLowerCase()
+    return words.some(word => lowerText.includes(word.toLowerCase()))
+}
+
+const RAINBOW_PATTERN = buildPattern(RAINBOW_WORDS)
 
 // Each letter gets a different delay for wave effect
 function RainbowWord({ word, baseKey }: { word: string; baseKey: number }) {
@@ -23,7 +62,7 @@ function RainbowWord({ word, baseKey }: { word: string; baseKey: number }) {
                             animationDelay: `${-colorDelay}s, ${-sparkleDelay}s`,
                         }}
                     >
-                        {letter}
+                        {letter === ' ' ? '\u00A0' : letter}
                     </span>
                 )
             })}
@@ -31,14 +70,14 @@ function RainbowWord({ word, baseKey }: { word: string; baseKey: number }) {
     )
 }
 
-// Process text string to wrap "ultrathink" with RainbowWord
+// Process text string to wrap special words with RainbowWord
 function processTextForRainbow(text: string): React.ReactNode {
-    ULTRATHINK_PATTERN.lastIndex = 0
+    RAINBOW_PATTERN.lastIndex = 0
     const parts: React.ReactNode[] = []
     let lastIndex = 0
     let match: RegExpExecArray | null
 
-    while ((match = ULTRATHINK_PATTERN.exec(text)) !== null) {
+    while ((match = RAINBOW_PATTERN.exec(text)) !== null) {
         if (match.index > lastIndex) {
             parts.push(text.slice(lastIndex, match.index))
         }
@@ -84,8 +123,8 @@ export function LazyRainbowText({ text }: { text: string }) {
         return () => observer.disconnect()
     }, [])
 
-    // Quick check: if no ultrathink, just render markdown
-    const hasUltrathink = text.toLowerCase().includes('ultrathink')
+    // Quick check: if no special words, just render markdown
+    const hasSpecialWord = hasAnySpecialWord(text, RAINBOW_WORDS)
 
     const rainbowComponents = useMemo(() => ({
         p: ({ children }: { children?: React.ReactNode }) => (
@@ -97,7 +136,7 @@ export function LazyRainbowText({ text }: { text: string }) {
         <div ref={ref}>
             <MarkdownRenderer
                 content={text}
-                components={hasUltrathink && hasBeenVisible ? rainbowComponents : undefined}
+                components={hasSpecialWord && hasBeenVisible ? rainbowComponents : undefined}
             />
         </div>
     )
