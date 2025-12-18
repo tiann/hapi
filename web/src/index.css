@@ -111,6 +111,15 @@ body {
     background-color: transparent !important;
 }
 
+/* Shiki dual theme colors */
+.shiki,
+.shiki span {
+    color: var(--shiki-light) !important;
+    font-style: var(--shiki-light-font-style) !important;
+    font-weight: var(--shiki-light-font-weight) !important;
+    text-decoration: var(--shiki-light-text-decoration) !important;
+}
+
 html[data-theme="dark"] .shiki,
 html[data-theme="dark"] .shiki span {
     color: var(--shiki-dark) !important;

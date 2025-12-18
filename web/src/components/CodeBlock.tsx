@@ -1,21 +1,6 @@
-import type { Themes } from 'react-shiki/web'
-import { useMemo, useState } from 'react'
-import { useShikiHighlighter } from 'react-shiki/web'
+import { useState } from 'react'
 import { usePlatform } from '@/hooks/usePlatform'
-
-const SHIKI_THEMES: Themes = {
-    light: 'github-light',
-    dark: 'github-dark',
-}
-
-function normalizeLanguage(language?: string): string {
-    const raw = language?.trim()
-    if (!raw) return 'text'
-    const cleaned = raw.startsWith('language-') ? raw.slice('language-'.length) : raw
-    const canonical = cleaned.toLowerCase()
-    if (canonical === 'text' || canonical === 'plaintext' || canonical === 'txt') return 'text'
-    return cleaned
-}
+import { useShikiHighlighter } from '@/lib/shiki'
 
 function safeCopyToClipboard(text: string): Promise<void> {
     if (navigator.clipboard?.writeText) {
@@ -70,14 +55,10 @@ export function CodeBlock(props: {
 }) {
     const { haptic } = usePlatform()
     const showCopyButton = props.showCopyButton ?? true
-    const normalizedLanguage = useMemo(() => normalizeLanguage(props.language), [props.language])
 
     const [copied, setCopied] = useState(false)
 
-    const highlighted = useShikiHighlighter(props.code, normalizedLanguage, SHIKI_THEMES, {
-        delay: 75,
-        structure: 'inline',
-    })
+    const highlighted = useShikiHighlighter(props.code, props.language)
 
     const handleCopy = async () => {
         try {
@@ -103,10 +84,8 @@ export function CodeBlock(props: {
                 </button>
             ) : null}
 
-            <pre className="overflow-auto p-2 pr-8 text-xs">
-                <code className="shiki font-mono">
-                    {highlighted ?? props.code}
-                </code>
+            <pre className="shiki overflow-auto p-2 pr-8 text-xs font-mono">
+                <code>{highlighted ?? props.code}</code>
             </pre>
         </div>
     )
