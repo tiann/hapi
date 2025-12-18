@@ -1,6 +1,7 @@
 import type { ToolViewComponent, ToolViewProps } from '@/components/ToolCard/views/_all'
 import { CodeBlock } from '@/components/CodeBlock'
 import { MarkdownRenderer } from '@/components/MarkdownRenderer'
+import { extractAskUserQuestionQuestionsInfo } from '@/components/ToolCard/askUserQuestion'
 import { basename, resolveDisplayPath } from '@/components/ToolCard/path'
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -191,6 +192,59 @@ function extractLineList(text: string): string[] {
 function isProbablyMarkdownList(text: string): boolean {
     const trimmed = text.trimStart()
     return trimmed.startsWith('- ') || trimmed.startsWith('* ') || trimmed.startsWith('1. ')
+}
+
+const AskUserQuestionResultView: ToolViewComponent = (props: ToolViewProps) => {
+    const answers = props.block.tool.permission?.answers ?? null
+    if (!answers || Object.keys(answers).length === 0) {
+        return <MarkdownResultView {...props} />
+    }
+
+    const questions = extractAskUserQuestionQuestionsInfo(props.block.tool.input)
+    const keys = Object.keys(answers).sort((a, b) => {
+        const aNum = Number.parseInt(a, 10)
+        const bNum = Number.parseInt(b, 10)
+        if (Number.isFinite(aNum) && Number.isFinite(bNum)) return aNum - bNum
+        if (Number.isFinite(aNum)) return -1
+        if (Number.isFinite(bNum)) return 1
+        return a.localeCompare(b)
+    })
+
+    return (
+        <div className="flex flex-col gap-2">
+            {keys.map((key) => {
+                const idx = Number.parseInt(key, 10)
+                const q = questions && Number.isFinite(idx) ? questions[idx] : null
+                const header = q?.header ?? (Number.isFinite(idx) ? `Question ${idx + 1}` : `Question ${key}`)
+                const values = answers[key] ?? []
+                const cleaned = values.map((v) => String(v)).map((v) => v.trim()).filter((v) => v.length > 0)
+
+                return (
+                    <div key={key} className="rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] p-2">
+                        <div className="text-xs font-medium text-[var(--app-hint)] break-words">
+                            {header}
+                        </div>
+                        {q?.question ? (
+                            <div className="mt-1 text-xs text-[var(--app-hint)] break-words">
+                                {q.question}
+                            </div>
+                        ) : null}
+                        {cleaned.length > 0 ? (
+                            <ul className="mt-2 list-disc pl-5 text-sm text-[var(--app-fg)]">
+                                {cleaned.map((v, i) => (
+                                    <li key={i} className="break-words">{v}</li>
+                                ))}
+                            </ul>
+                        ) : (
+                            <div className="mt-2 text-sm text-[var(--app-hint)]">
+                                (no answer)
+                            </div>
+                        )}
+                    </div>
+                )
+            })}
+        </div>
+    )
 }
 
 const BashResultView: ToolViewComponent = (props: ToolViewProps) => {
@@ -572,7 +626,9 @@ export const toolResultViewRegistry: Record<string, ToolViewComponent> = {
     CodexReasoning: CodexReasoningResultView,
     CodexPatch: CodexPatchResultView,
     CodexDiff: CodexDiffResultView,
+    AskUserQuestion: AskUserQuestionResultView,
     ExitPlanMode: MarkdownResultView,
+    ask_user_question: AskUserQuestionResultView,
     exit_plan_mode: MarkdownResultView
 }
 

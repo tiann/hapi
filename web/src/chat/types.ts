@@ -83,6 +83,7 @@ export type ToolPermission = {
     mode?: string
     allowedTools?: string[]
     decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort'
+    answers?: Record<string, string[]>
     date?: number
     createdAt?: number | null
     completedAt?: number | null

@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 import type { SessionMetadataSummary } from '@/types/api'
-import { BulbIcon, ClipboardIcon, EyeIcon, FileDiffIcon, GlobeIcon, PuzzleIcon, RocketIcon, SearchIcon, TerminalIcon, WrenchIcon } from '@/components/ToolCard/icons'
+import { BulbIcon, ClipboardIcon, EyeIcon, FileDiffIcon, GlobeIcon, PuzzleIcon, QuestionIcon, RocketIcon, SearchIcon, TerminalIcon, WrenchIcon } from '@/components/ToolCard/icons'
 import { basename, resolveDisplayPath } from '@/components/ToolCard/path'
 
 const DEFAULT_ICON_CLASS = 'h-3.5 w-3.5'
@@ -295,6 +295,34 @@ export const knownTools: Record<string, {
         icon: () => <ClipboardIcon className={DEFAULT_ICON_CLASS} />,
         title: () => 'Plan proposal',
         minimal: false
+    },
+    AskUserQuestion: {
+        icon: () => <QuestionIcon className={DEFAULT_ICON_CLASS} />,
+        title: (opts) => {
+            const first = isObject(opts.input) && Array.isArray(opts.input.questions) ? opts.input.questions[0] : null
+            const header = isObject(first) && typeof first.header === 'string' ? first.header.trim() : ''
+            return header.length > 0 ? header : 'Question'
+        },
+        subtitle: (opts) => {
+            const first = isObject(opts.input) && Array.isArray(opts.input.questions) ? opts.input.questions[0] : null
+            const question = isObject(first) && typeof first.question === 'string' ? first.question.trim() : ''
+            return question.length > 0 ? truncate(question, 120) : null
+        },
+        minimal: true
+    },
+    ask_user_question: {
+        icon: () => <QuestionIcon className={DEFAULT_ICON_CLASS} />,
+        title: (opts) => {
+            const first = isObject(opts.input) && Array.isArray(opts.input.questions) ? opts.input.questions[0] : null
+            const header = isObject(first) && typeof first.header === 'string' ? first.header.trim() : ''
+            return header.length > 0 ? header : 'Question'
+        },
+        subtitle: (opts) => {
+            const first = isObject(opts.input) && Array.isArray(opts.input.questions) ? opts.input.questions[0] : null
+            const question = isObject(first) && typeof first.question === 'string' ? first.question.trim() : ''
+            return question.length > 0 ? truncate(question, 120) : null
+        },
+        minimal: true
     }
 }
 

@@ -48,7 +48,8 @@ export const AgentStateSchema = z.object({
         reason: z.string().optional(),
         mode: z.string().optional(),
         decision: z.enum(['approved', 'approved_for_session', 'denied', 'abort']).optional(),
-        allowTools: z.array(z.string()).optional()
+        allowTools: z.array(z.string()).optional(),
+        answers: z.record(z.string(), z.array(z.string())).optional()
     }).passthrough()).nullish()
 }).passthrough()
 
@@ -591,14 +592,16 @@ export class SyncEngine {
         requestId: string,
         mode?: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan',
         allowTools?: string[],
-        decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort'
+        decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort',
+        answers?: Record<string, string[]>
     ): Promise<void> {
         await this.sessionRpc(sessionId, 'permission', {
             id: requestId,
             approved: true,
             mode,
             allowTools,
-            decision
+            decision,
+            answers
         })
     }
 

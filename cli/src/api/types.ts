@@ -80,6 +80,7 @@ export type AgentState = {
             mode?: string
             decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort'
             allowTools?: string[]
+            answers?: Record<string, string[]>
         }
     }
 }
@@ -100,7 +101,8 @@ export const AgentStateSchema = z.object({
         reason: z.string().optional(),
         mode: z.string().optional(),
         decision: z.enum(['approved', 'approved_for_session', 'denied', 'abort']).optional(),
-        allowTools: z.array(z.string()).optional()
+        allowTools: z.array(z.string()).optional(),
+        answers: z.record(z.string(), z.array(z.string())).optional()
     })).optional()
 }).passthrough()
 

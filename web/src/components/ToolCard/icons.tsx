@@ -127,3 +127,13 @@ export function WrenchIcon(props: IconProps) {
     )
 }
 
+export function QuestionIcon(props: IconProps) {
+    return createIcon(
+        <>
+            <circle cx="12" cy="12" r="9" />
+            <path d="M9.5 9a2.5 2.5 0 1 1 4.1 1.9c-.9.7-1.6 1.3-1.6 2.6" />
+            <path d="M12 17h.01" />
+        </>,
+        props
+    )
+}

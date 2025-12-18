@@ -29,6 +29,7 @@ export type AgentStateCompletedRequest = {
     mode?: string
     decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort'
     allowTools?: string[]
+    answers?: Record<string, string[]>
 }
 
 export type AgentState = {

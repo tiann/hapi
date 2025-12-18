@@ -22,9 +22,72 @@ interface PermissionResponse {
     reason?: string;
     mode?: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan';
     allowTools?: string[];
+    answers?: Record<string, string[]>;
     receivedAt?: number;
 }
 
+function isObject(value: unknown): value is Record<string, unknown> {
+    return Boolean(value) && typeof value === 'object';
+}
+
+function isAskUserQuestionToolName(toolName: string): boolean {
+    return toolName === 'AskUserQuestion' || toolName === 'ask_user_question';
+}
+
+function formatAskUserQuestionAnswers(answers: Record<string, string[]>, input: unknown): string {
+    const questions = (() => {
+        if (!isObject(input)) return null;
+        const raw = input.questions;
+        if (!Array.isArray(raw)) return null;
+        return raw.filter((q) => isObject(q));
+    })();
+
+    const keys = Object.keys(answers).sort((a, b) => {
+        const aNum = Number.parseInt(a, 10);
+        const bNum = Number.parseInt(b, 10);
+        if (Number.isFinite(aNum) && Number.isFinite(bNum)) return aNum - bNum;
+        if (Number.isFinite(aNum)) return -1;
+        if (Number.isFinite(bNum)) return 1;
+        return a.localeCompare(b);
+    });
+
+    const lines = keys.map((key) => {
+        const idx = Number.parseInt(key, 10);
+        const q = questions && Number.isFinite(idx) ? questions[idx] : null;
+        const header = q && typeof q.header === 'string' && q.header.trim().length > 0
+            ? q.header.trim()
+            : Number.isFinite(idx)
+                ? `Question ${idx + 1}`
+                : `Question ${key}`;
+        const value = answers[key] ?? [];
+        const joined = value.map((v) => String(v)).filter((v) => v.trim().length > 0).join(', ');
+        return `${header}: ${joined || '(no answer)'}`;
+    });
+
+    const rawJson = (() => {
+        try {
+            return JSON.stringify(answers);
+        } catch {
+            return null;
+        }
+    })();
+
+    const body = lines.length > 0 ? lines.join('\n') : '(no answers)';
+    return rawJson
+        ? `User answered:\n${body}\n\nRaw answers JSON:\n${rawJson}`
+        : `User answered:\n${body}`;
+}
+
+function buildAskUserQuestionUpdatedInput(input: unknown, answers: Record<string, string[]>): Record<string, unknown> {
+    if (!isObject(input)) {
+        return { answers };
+    }
+
+    return {
+        ...input,
+        answers
+    };
+}
 
 interface PendingRequest {
     resolve: (value: PermissionResult) => void;
@@ -71,6 +134,9 @@ export class PermissionHandler {
         // Update allowed tools
         if (response.allowTools && response.allowTools.length > 0) {
             response.allowTools.forEach(tool => {
+                if (isAskUserQuestionToolName(tool)) {
+                    return;
+                }
                 if (tool.startsWith('Bash(') || tool === 'Bash') {
                     this.parseBashPermission(tool);
                 } else {
@@ -85,6 +151,20 @@ export class PermissionHandler {
         }
 
         // Handle 
+        if (isAskUserQuestionToolName(pending.toolName)) {
+            const answers = response.answers ?? {};
+            if (Object.keys(answers).length === 0) {
+                pending.resolve({ behavior: 'deny', message: 'No answers were provided.' });
+                return;
+            }
+
+            pending.resolve({
+                behavior: 'allow',
+                updatedInput: buildAskUserQuestionUpdatedInput(pending.input, answers)
+            });
+            return;
+        }
+
         if (pending.toolName === 'exit_plan_mode' || pending.toolName === 'ExitPlanMode') {
             // Handle exit_plan_mode specially
             logger.debug('Plan mode result received', response);
@@ -114,9 +194,10 @@ export class PermissionHandler {
      * Creates the canCallTool callback for the SDK
      */
     handleToolCall = async (toolName: string, input: unknown, mode: EnhancedMode, options: { signal: AbortSignal }): Promise<PermissionResult> => {
+        const isAskUserQuestion = isAskUserQuestionToolName(toolName);
 
         // Check if tool is explicitly allowed
-        if (toolName === 'Bash') {
+        if (!isAskUserQuestion && toolName === 'Bash') {
             const inputObj = input as { command?: string };
             if (inputObj?.command) {
                 // Check literal matches
@@ -130,7 +211,7 @@ export class PermissionHandler {
                     }
                 }
             }
-        } else if (this.allowedTools.has(toolName)) {
+        } else if (!isAskUserQuestion && this.allowedTools.has(toolName)) {
             return { behavior: 'allow', updatedInput: input as Record<string, unknown> };
         }
 
@@ -141,11 +222,11 @@ export class PermissionHandler {
         // Handle special cases
         //
 
-        if (this.permissionMode === 'bypassPermissions') {
+        if (!isAskUserQuestion && this.permissionMode === 'bypassPermissions') {
             return { behavior: 'allow', updatedInput: input as Record<string, unknown> };
         }
 
-        if (this.permissionMode === 'acceptEdits' && descriptor.edit) {
+        if (!isAskUserQuestion && this.permissionMode === 'acceptEdits' && descriptor.edit) {
             return { behavior: 'allow', updatedInput: input as Record<string, unknown> };
         }
 
@@ -399,7 +480,8 @@ export class PermissionHandler {
                             status: message.approved ? 'approved' : 'denied',
                             reason: message.reason,
                             mode: message.mode,
-                            allowTools: message.allowTools
+                            allowTools: message.allowTools,
+                            answers: message.answers
                         }
                     }
                 };

@@ -9,7 +9,8 @@ const decisionSchema = z.enum(['approved', 'approved_for_session', 'denied', 'ab
 const approveBodySchema = z.object({
     mode: z.enum(['default', 'acceptEdits', 'bypassPermissions', 'plan']).optional(),
     allowTools: z.array(z.string()).optional(),
-    decision: decisionSchema.optional()
+    decision: decisionSchema.optional(),
+    answers: z.record(z.string(), z.array(z.string())).optional()
 })
 
 const denyBodySchema = z.object({
@@ -47,7 +48,8 @@ export function createPermissionsRoutes(getSyncEngine: () => SyncEngine | null):
         const mode = parsed.data.mode
         const allowTools = parsed.data.allowTools
         const decision = parsed.data.decision
-        await engine.approvePermission(sessionId, requestId, mode, allowTools, decision)
+        const answers = parsed.data.answers
+        await engine.approvePermission(sessionId, requestId, mode, allowTools, decision, answers)
         return c.json({ ok: true })
     })
 

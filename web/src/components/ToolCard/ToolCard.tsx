@@ -8,6 +8,8 @@ import { MarkdownRenderer } from '@/components/MarkdownRenderer'
 import { DiffView } from '@/components/DiffView'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { PermissionFooter } from '@/components/ToolCard/PermissionFooter'
+import { AskUserQuestionFooter } from '@/components/ToolCard/AskUserQuestionFooter'
+import { isAskUserQuestionToolName } from '@/components/ToolCard/askUserQuestion'
 import { getToolPresentation } from '@/components/ToolCard/knownTools'
 import { getToolFullViewComponent, getToolViewComponent } from '@/components/ToolCard/views/_all'
 import { getToolResultViewComponent } from '@/components/ToolCard/views/_results'
@@ -313,6 +315,7 @@ export function ToolCard(props: {
     const FullToolView = getToolFullViewComponent(toolName)
     const ResultToolView = getToolResultViewComponent(toolName)
     const permission = props.block.tool.permission
+    const isAskUserQuestion = isAskUserQuestionToolName(toolName)
     const showsPermissionFooter = Boolean(permission && (
         permission.status === 'pending'
         || ((permission.status === 'denied' || permission.status === 'canceled') && Boolean(permission.reason))
@@ -409,14 +412,24 @@ export function ToolCard(props: {
                         )
                     ) : null}
 
-                    <PermissionFooter
-                        api={props.api}
-                        sessionId={props.sessionId}
-                        metadata={props.metadata}
-                        tool={props.block.tool}
-                        disabled={props.disabled}
-                        onDone={props.onDone}
-                    />
+                    {isAskUserQuestion && permission?.status === 'pending' ? (
+                        <AskUserQuestionFooter
+                            api={props.api}
+                            sessionId={props.sessionId}
+                            tool={props.block.tool}
+                            disabled={props.disabled}
+                            onDone={props.onDone}
+                        />
+                    ) : (
+                        <PermissionFooter
+                            api={props.api}
+                            sessionId={props.sessionId}
+                            metadata={props.metadata}
+                            tool={props.block.tool}
+                            disabled={props.disabled}
+                            onDone={props.onDone}
+                        />
+                    )}
                 </CardContent>
             ) : null}
         </Card>
