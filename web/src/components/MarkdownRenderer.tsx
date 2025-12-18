@@ -1,50 +1,30 @@
-import ReactMarkdown, { Components } from 'react-markdown'
-import remarkGfm from 'remark-gfm'
-import { CodeBlock } from '@/components/CodeBlock'
-
-function getLanguageFromClassName(className?: string): string | null {
-    if (!className) return null
-    for (const token of className.split(/\s+/g)) {
-        if (token.startsWith('language-')) {
-            return token.slice('language-'.length) || null
-        }
-    }
-    return null
-}
-
-const defaultComponents: Components = {
-    code({ className, children, ...props }) {
-        const language = getLanguageFromClassName(className) || 'text'
-        const code = String(children).replace(/\n$/, '')
-
-        if (language !== 'text' || code.includes('\n')) {
-            return (
-                <CodeBlock
-                    code={code}
-                    language={language}
-                    showCopyButton={false}
-                />
-            )
-        }
-
-        return <code className={className} {...props}>{children}</code>
-    },
-}
+import type { MarkdownTextPrimitiveProps } from '@assistant-ui/react-markdown'
+import { MarkdownTextPrimitive } from '@assistant-ui/react-markdown'
+import { TextMessagePartProvider } from '@assistant-ui/react'
+import { MARKDOWN_PLUGINS, defaultComponents } from '@/components/assistant-ui/markdown-text'
+import { cn } from '@/lib/utils'
 
 interface MarkdownRendererProps {
     content: string
-    components?: Components
+    components?: MarkdownTextPrimitiveProps['components']
 }
 
-export function MarkdownRenderer({ content, components }: MarkdownRendererProps) {
+function MarkdownContent(props: MarkdownRendererProps) {
+    const mergedComponents = props.components
+        ? { ...defaultComponents, ...props.components }
+        : defaultComponents
+
     return (
-        <div className="markdown-content text-sm">
-            <ReactMarkdown
-                remarkPlugins={[remarkGfm]}
-                components={{ ...defaultComponents, ...components }}
-            >
-                {content}
-            </ReactMarkdown>
-        </div>
+        <TextMessagePartProvider text={props.content}>
+            <MarkdownTextPrimitive
+                remarkPlugins={MARKDOWN_PLUGINS}
+                components={mergedComponents}
+                className={cn('aui-md text-sm')}
+            />
+        </TextMessagePartProvider>
     )
+}
+
+export function MarkdownRenderer(props: MarkdownRendererProps) {
+    return <MarkdownContent {...props} />
 }

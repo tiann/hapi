@@ -92,6 +92,33 @@ body {
 .markdown-content table { border-collapse: collapse; width: 100%; }
 .markdown-content th, .markdown-content td { border: 1px solid var(--app-border); padding: 0.25rem 0.5rem; }
 
+/* assistant-ui markdown + shiki */
+.aui-md-codeblock pre.shiki {
+    margin: 0;
+    padding: 0.5rem;
+    overflow: auto;
+    background-color: transparent !important;
+    font-size: 0.75rem;
+}
+
+.aui-md-codeblock pre.shiki code {
+    display: block;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
+
+.aui-md-codeblock .shiki,
+.aui-md-codeblock .shiki span {
+    background-color: transparent !important;
+}
+
+html[data-theme="dark"] .shiki,
+html[data-theme="dark"] .shiki span {
+    color: var(--shiki-dark) !important;
+    font-style: var(--shiki-dark-font-style) !important;
+    font-weight: var(--shiki-dark-font-weight) !important;
+    text-decoration: var(--shiki-dark-text-decoration) !important;
+}
+
 /* Ultrathink rainbow sparkle effect - per-letter wave animation */
 @keyframes rainbow-wave {
   0% { color: #ff5555; }      /* red */

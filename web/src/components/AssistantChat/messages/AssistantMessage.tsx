@@ -1,34 +1,6 @@
-import type { SyntaxHighlighterProps } from '@assistant-ui/react-markdown'
-import { MarkdownTextPrimitive } from '@assistant-ui/react-markdown'
 import { MessagePrimitive, useAssistantState } from '@assistant-ui/react'
-import remarkGfm from 'remark-gfm'
-import { CodeBlock } from '@/components/CodeBlock'
+import { MarkdownText } from '@/components/assistant-ui/markdown-text'
 import { HappyToolMessage } from '@/components/AssistantChat/messages/ToolMessage'
-
-function MarkdownSyntaxHighlighter(props: SyntaxHighlighterProps) {
-    return (
-        <CodeBlock
-            code={props.code}
-            language={props.language}
-            showCopyButton={false}
-        />
-    )
-}
-
-const MARKDOWN_PLUGINS = [remarkGfm]
-const MARKDOWN_COMPONENTS = {
-    SyntaxHighlighter: MarkdownSyntaxHighlighter
-} as const
-
-function MarkdownText() {
-    return (
-        <MarkdownTextPrimitive
-            className="markdown-content text-sm"
-            remarkPlugins={MARKDOWN_PLUGINS}
-            components={MARKDOWN_COMPONENTS}
-        />
-    )
-}
 
 const TOOL_COMPONENTS = {
     Fallback: HappyToolMessage

@@ -1,41 +1,20 @@
+import type { Themes } from 'react-shiki/web'
 import { useMemo, useState } from 'react'
-import SyntaxHighlighter from 'react-syntax-highlighter/dist/esm/prism-async-light'
-import oneDark from 'react-syntax-highlighter/dist/esm/styles/prism/one-dark'
-import oneLight from 'react-syntax-highlighter/dist/esm/styles/prism/one-light'
+import { useShikiHighlighter } from 'react-shiki/web'
 import { getTelegramWebApp } from '@/hooks/useTelegram'
-import { useTheme } from '@/hooks/useTheme'
 
-type SyntaxHighlighterWithSupportedLanguages = typeof SyntaxHighlighter & {
-    supportedLanguages?: string[]
-}
-
-const SUPPORTED_LANGUAGE_LOOKUP = new Map(
-    ((SyntaxHighlighter as SyntaxHighlighterWithSupportedLanguages).supportedLanguages ?? []).map(
-        (lang: string): [string, string] => [canonicalizeLanguage(lang), lang]
-    )
-)
-
-function canonicalizeLanguage(value: string): string {
-    return value
-        .trim()
-        .replace(/^language-/, '')
-        .toLowerCase()
-        .replace(/#/g, 'sharp')
-        .replace(/\+/g, 'p')
-        .replace(/[^a-z0-9]/g, '')
+const SHIKI_THEMES: Themes = {
+    light: 'github-light',
+    dark: 'github-dark',
 }
 
 function normalizeLanguage(language?: string): string {
     const raw = language?.trim()
     if (!raw) return 'text'
-
-    const canonical = canonicalizeLanguage(raw)
-    if (!canonical || canonical === 'text' || canonical === 'plaintext' || canonical === 'txt') return 'text'
-
-    const supported = SUPPORTED_LANGUAGE_LOOKUP.get(canonical)
-    if (supported) return supported
-
-    return raw.startsWith('language-') ? raw.slice('language-'.length) : raw
+    const cleaned = raw.startsWith('language-') ? raw.slice('language-'.length) : raw
+    const canonical = cleaned.toLowerCase()
+    if (canonical === 'text' || canonical === 'plaintext' || canonical === 'txt') return 'text'
+    return cleaned
 }
 
 function safeCopyToClipboard(text: string): Promise<void> {
@@ -91,9 +70,14 @@ export function CodeBlock(props: {
 }) {
     const showCopyButton = props.showCopyButton ?? true
     const normalizedLanguage = useMemo(() => normalizeLanguage(props.language), [props.language])
-    const { isDark } = useTheme()
 
     const [copied, setCopied] = useState(false)
+
+    const highlighted = useShikiHighlighter(props.code, normalizedLanguage, SHIKI_THEMES, {
+        delay: 75,
+        outputFormat: 'react',
+        structure: 'inline',
+    })
 
     const handleCopy = async () => {
         try {
@@ -105,8 +89,6 @@ export function CodeBlock(props: {
             getTelegramWebApp()?.HapticFeedback?.notificationOccurred('error')
         }
     }
-
-    const syntaxTheme = isDark ? oneDark : oneLight
 
     return (
         <div className="relative overflow-hidden rounded-md bg-[var(--app-code-bg)]">
@@ -121,16 +103,18 @@ export function CodeBlock(props: {
                 </button>
             ) : null}
 
-            <div className="overflow-auto p-2 pr-8 text-xs">
-                <SyntaxHighlighter
-                    language={normalizedLanguage}
-                    style={syntaxTheme}
-                    PreTag="div"
-                    customStyle={{ margin: 0, padding: 0, background: 'transparent' }}
-                >
-                    {props.code}
-                </SyntaxHighlighter>
-            </div>
+            <pre className="overflow-auto p-2 pr-8 text-xs">
+                {typeof highlighted === 'string' ? (
+                    <code
+                        className="shiki font-mono"
+                        dangerouslySetInnerHTML={{ __html: highlighted }}
+                    />
+                ) : (
+                    <code className="shiki font-mono">
+                        {highlighted ?? props.code}
+                    </code>
+                )}
+            </pre>
         </div>
     )
 }
