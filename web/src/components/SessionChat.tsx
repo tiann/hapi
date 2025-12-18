@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef } from 'react'
 import { AssistantRuntimeProvider } from '@assistant-ui/react'
 import type { ApiClient } from '@/api/client'
 import type { DecryptedMessage, ModelMode, PermissionMode, Session } from '@/types/api'
@@ -10,7 +10,6 @@ import { HappyComposer } from '@/components/AssistantChat/HappyComposer'
 import { HappyThread } from '@/components/AssistantChat/HappyThread'
 import { useHappyRuntime } from '@/lib/assistant-runtime'
 import { SessionHeader } from '@/components/SessionHeader'
-import { MessageBubble } from '@/components/MessageBubble'
 import { getTelegramWebApp } from '@/hooks/useTelegram'
 
 export function SessionChat(props: {
@@ -60,9 +59,6 @@ export function SessionChat(props: {
 
     const reduced = useMemo(() => reduceChatBlocks(normalizedMessages, props.session.agentState), [normalizedMessages, props.session.agentState])
 
-    const [debugViewMode, setDebugViewMode] = useState<'reduced' | 'raw'>('reduced')
-    const viewMode = import.meta.env.DEV ? debugViewMode : 'reduced'
-
     // Permission mode change handler
     const handlePermissionModeChange = useCallback(async (mode: PermissionMode) => {
         try {
@@ -95,7 +91,7 @@ export function SessionChat(props: {
 
     const runtime = useHappyRuntime({
         session: props.session,
-        blocks: viewMode === 'raw' ? [] : reduced.blocks,
+        blocks: reduced.blocks,
         isSending: props.isSending,
         onSendMessage: props.onSend,
         onAbort: handleAbort
@@ -118,25 +114,6 @@ export function SessionChat(props: {
                     </div>
                 ) : null}
 
-                {import.meta.env.DEV ? (
-                    <div className="mb-2 flex items-center gap-2">
-                        <Button
-                            variant={viewMode === 'reduced' ? 'default' : 'secondary'}
-                            size="sm"
-                            onClick={() => setDebugViewMode('reduced')}
-                        >
-                            Reduced
-                        </Button>
-                        <Button
-                            variant={viewMode === 'raw' ? 'default' : 'secondary'}
-                            size="sm"
-                            onClick={() => setDebugViewMode('raw')}
-                        >
-                            Raw
-                        </Button>
-                    </div>
-                ) : null}
-
                 {props.hasMoreMessages ? (
                     <div className="mb-3">
                         <Button
@@ -150,24 +127,9 @@ export function SessionChat(props: {
                     </div>
                 ) : null}
 
-                {import.meta.env.DEV && viewMode === 'reduced' && normalizedMessages.length === 0 && props.messages.length > 0 ? (
+                {import.meta.env.DEV && normalizedMessages.length === 0 && props.messages.length > 0 ? (
                     <div className="mb-2 rounded-md bg-amber-500/10 p-2 text-xs">
-                        Message normalization returned 0 items for {props.messages.length} messages (see `hapi/web/src/chat/normalize.ts`).
-                    </div>
-                ) : null}
-
-                {viewMode === 'raw' ? (
-                    <div className="flex flex-col gap-2">
-                        {props.messages.map((m) => (
-                            <MessageBubble
-                                key={m.id}
-                                message={m}
-                                onRetry={m.localId && m.status === 'failed' && props.onRetryMessage
-                                    ? () => props.onRetryMessage!(m.localId!)
-                                    : undefined
-                                }
-                            />
-                        ))}
+                        Message normalization returned 0 items for {props.messages.length} messages (see `web/src/chat/normalize.ts`).
                     </div>
                 ) : null}
             </>
@@ -178,10 +140,7 @@ export function SessionChat(props: {
         props.hasMoreMessages,
         props.isLoadingMoreMessages,
         props.onLoadMore,
-        props.messages,
         props.messages.length,
-        props.onRetryMessage,
-        viewMode,
         normalizedMessages.length
     ])
 
