@@ -2,6 +2,10 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { ApiClient } from '@/api/client'
 import type { AuthResponse } from '@/types/api'
 
+export type AuthSource =
+    | { type: 'telegram'; initData: string }
+    | { type: 'accessToken'; token: string }
+
 function decodeJwtExpMs(token: string): number | null {
     const parts = token.split('.')
     if (parts.length < 2) return null
@@ -22,7 +26,14 @@ function decodeJwtExpMs(token: string): number | null {
     }
 }
 
-export function useAuth(initData: string | null): {
+function getAuthPayload(source: AuthSource): { initData: string } | { accessToken: string } {
+    if (source.type === 'telegram') {
+        return { initData: source.initData }
+    }
+    return { accessToken: source.token }
+}
+
+export function useAuth(authSource: AuthSource | null): {
     token: string | null
     user: AuthResponse['user'] | null
     api: ApiClient | null
@@ -37,12 +48,16 @@ export function useAuth(initData: string | null): {
 
     const api = useMemo(() => (token ? new ApiClient(token) : null), [token])
 
+    // Stable reference for auth source to use in effects
+    const authSourceRef = useRef(authSource)
+    authSourceRef.current = authSource
+
     useEffect(() => {
         let isCancelled = false
 
         async function run() {
-            if (!initData) {
-                setError('Missing Telegram initData (open inside Telegram)')
+            if (!authSource) {
+                // No auth source - waiting for login
                 return
             }
 
@@ -50,7 +65,7 @@ export function useAuth(initData: string | null): {
             setError(null)
             try {
                 const client = new ApiClient('') // temporary for auth call
-                const auth = await client.authenticate(initData)
+                const auth = await client.authenticate(getAuthPayload(authSource))
                 if (isCancelled) return
                 setToken(auth.token)
                 setUser(auth.user)
@@ -69,10 +84,10 @@ export function useAuth(initData: string | null): {
         return () => {
             isCancelled = true
         }
-    }, [initData])
+    }, [authSource])
 
     useEffect(() => {
-        if (!token || !initData) {
+        if (!token || !authSource) {
             return
         }
 
@@ -96,9 +111,15 @@ export function useAuth(initData: string | null): {
             if (refreshInFlightRef.current) return
             refreshInFlightRef.current = true
 
+            const currentSource = authSourceRef.current
+            if (!currentSource) {
+                refreshInFlightRef.current = false
+                return
+            }
+
             try {
                 const client = new ApiClient('')
-                const auth = await client.authenticate(initData)
+                const auth = await client.authenticate(getAuthPayload(currentSource))
                 if (isCancelled) return
                 setToken(auth.token)
                 setUser(auth.user)
@@ -107,7 +128,10 @@ export function useAuth(initData: string | null): {
                 if (Date.now() >= expMs) {
                     setToken(null)
                     setUser(null)
-                    setError('Session expired. Reopen the Mini App from Telegram.')
+                    const msg = currentSource.type === 'telegram'
+                        ? 'Session expired. Reopen the Mini App from Telegram.'
+                        : 'Session expired. Please login again.'
+                    setError(msg)
                     return
                 }
                 schedule(15_000)
@@ -124,7 +148,7 @@ export function useAuth(initData: string | null): {
                 clearTimeout(timeout)
             }
         }
-    }, [initData, token])
+    }, [authSource, token])
 
     return { token, user, api, isLoading, error }
 }

@@ -5,7 +5,16 @@ type ColorScheme = 'light' | 'dark'
 
 function getColorScheme(): ColorScheme {
     const tg = getTelegramWebApp()
-    return tg?.colorScheme === 'dark' ? 'dark' : 'light'
+    if (tg?.colorScheme) {
+        return tg.colorScheme === 'dark' ? 'dark' : 'light'
+    }
+
+    // Fallback to system preference for browser environment
+    if (typeof window !== 'undefined' && window.matchMedia) {
+        return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+    }
+
+    return 'light'
 }
 
 function isIOS(): boolean {
@@ -47,10 +56,15 @@ function updateScheme(): void {
 // Initialize theme on module load
 applyTheme(currentScheme)
 
-// Listen for Telegram theme changes
+// Listen for theme changes
 const tg = getTelegramWebApp()
 if (tg?.onEvent) {
+    // Telegram theme changes
     tg.onEvent('themeChanged', updateScheme)
+} else if (typeof window !== 'undefined' && window.matchMedia) {
+    // Browser system preference changes
+    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)')
+    mediaQuery.addEventListener('change', updateScheme)
 }
 
 export function useTheme(): { colorScheme: ColorScheme; isDark: boolean } {

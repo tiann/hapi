@@ -8,7 +8,7 @@ import {
     type CodeHeaderProps,
 } from '@assistant-ui/react-markdown'
 import remarkGfm from 'remark-gfm'
-import { getTelegramWebApp } from '@/hooks/useTelegram'
+import { getPlatform } from '@/hooks/usePlatform'
 import { cn } from '@/lib/utils'
 import { SyntaxHighlighter } from '@/components/assistant-ui/shiki-highlighter'
 
@@ -66,13 +66,14 @@ function CodeHeader(props: CodeHeaderProps) {
     const language = props.language && props.language !== 'unknown' ? props.language : ''
 
     const handleCopy = async () => {
+        const { haptic } = getPlatform()
         try {
             await safeCopyToClipboard(props.code)
-            getTelegramWebApp()?.HapticFeedback?.notificationOccurred('success')
+            haptic.notification('success')
             setCopied(true)
             setTimeout(() => setCopied(false), 1500)
         } catch {
-            getTelegramWebApp()?.HapticFeedback?.notificationOccurred('error')
+            haptic.notification('error')
         }
     }
 

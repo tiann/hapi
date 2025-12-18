@@ -2,28 +2,15 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { getTelegramWebApp } from '@/hooks/useTelegram'
 import { initializeTheme } from '@/hooks/useTheme'
 import { useAuth } from '@/hooks/useAuth'
+import { useAuthSource } from '@/hooks/useAuthSource'
+import { usePlatform } from '@/hooks/usePlatform'
 import { useSocket } from '@/hooks/useSocket'
 import type { DecryptedMessage, Machine, Session, SessionSummary, SyncEvent } from '@/types/api'
 import { SessionList } from '@/components/SessionList'
 import { SessionChat } from '@/components/SessionChat'
 import { MachineList } from '@/components/MachineList'
 import { SpawnSession } from '@/components/SpawnSession'
-
-function getInitData(): string | null {
-    const tg = getTelegramWebApp()
-    if (tg?.initData) {
-        return tg.initData
-    }
-
-    const query = new URLSearchParams(window.location.search)
-    const tgWebAppData = query.get('tgWebAppData')
-    if (tgWebAppData) {
-        return tgWebAppData
-    }
-
-    const fromQuery = new URLSearchParams(window.location.search).get('initData')
-    return fromQuery || null
-}
+import { LoginPrompt } from '@/components/LoginPrompt'
 
 type Screen =
     | { type: 'sessions' }
@@ -134,8 +121,9 @@ function mergeMessages(existing: DecryptedMessage[], incoming: DecryptedMessage[
 }
 
 export function App() {
-    const [initData, setInitData] = useState<string | null>(() => getInitData())
-    const { token, api, isLoading: isAuthLoading, error: authError, user } = useAuth(initData)
+    const { authSource, isLoading: isAuthSourceLoading, isTelegram, setAccessToken, clearAuth } = useAuthSource()
+    const { token, api, isLoading: isAuthLoading, error: authError, user } = useAuth(authSource)
+    const { haptic } = usePlatform()
 
     const [screen, setScreen] = useState<Screen>(() => {
         const deepLinkedSessionId = getDeepLinkedSessionId()
@@ -237,27 +225,6 @@ export function App() {
         }
     }, [goBack, screen.type])
 
-    useEffect(() => {
-        if (initData) {
-            return
-        }
-
-        let attempts = 0
-        const interval = setInterval(() => {
-            attempts += 1
-            const next = getInitData()
-            if (next) {
-                setInitData(next)
-                clearInterval(interval)
-            } else if (attempts >= 20) {
-                clearInterval(interval)
-            }
-        }, 250)
-
-        return () => {
-            clearInterval(interval)
-        }
-    }, [initData])
 
     const loadSessions = useCallback(async () => {
         if (!api) return
@@ -351,7 +318,7 @@ export function App() {
 
         api.sendMessage(selectedSessionId, text, localId)
             .then(() => {
-                getTelegramWebApp()?.HapticFeedback?.notificationOccurred('success')
+                haptic.notification('success')
                 setMessages((prev) =>
                     prev.map(m => m.localId === localId
                         ? { ...m, status: 'sent' as const }
@@ -360,7 +327,7 @@ export function App() {
                 )
             })
             .catch(() => {
-                getTelegramWebApp()?.HapticFeedback?.notificationOccurred('error')
+                haptic.notification('error')
                 setMessages((prev) =>
                     prev.map(m => m.localId === localId
                         ? { ...m, status: 'failed' as const }
@@ -450,6 +417,21 @@ export function App() {
         }
     })
 
+    // Loading auth source
+    if (isAuthSourceLoading) {
+        return (
+            <div className="p-4">
+                <div className="text-sm text-[var(--app-hint)]">Loading…</div>
+            </div>
+        )
+    }
+
+    // No auth source (browser environment, not logged in)
+    if (!authSource) {
+        return <LoginPrompt onLogin={setAccessToken} />
+    }
+
+    // Authenticating
     if (isAuthLoading) {
         return (
             <div className="p-4">
@@ -458,7 +440,19 @@ export function App() {
         )
     }
 
+    // Auth error
     if (authError || !token || !api) {
+        // If using access token and auth failed, show login again
+        if (authSource.type === 'accessToken') {
+            return (
+                <LoginPrompt
+                    onLogin={setAccessToken}
+                    error={authError ?? 'Authentication failed'}
+                />
+            )
+        }
+
+        // Telegram auth failed
         return (
             <div className="p-4 space-y-3">
                 <div className="text-base font-semibold">Happy Mini App</div>
@@ -466,7 +460,7 @@ export function App() {
                     {authError ?? 'Not authorized'}
                 </div>
                 <div className="text-xs text-[var(--app-hint)]">
-                    Open this page from Telegram using the bot’s “Open App” button (not “Open in browser”).
+                    Open this page from Telegram using the bot's "Open App" button (not "Open in browser").
                 </div>
             </div>
         )
@@ -530,7 +524,7 @@ export function App() {
 
                             api.sendMessage(screen.sessionId, text, localId)
                                 .then(() => {
-                                    getTelegramWebApp()?.HapticFeedback?.notificationOccurred('success')
+                                    haptic.notification('success')
                                     // Update status to sent
                                     setMessages((prev) =>
                                         prev.map(m => m.localId === localId
@@ -540,7 +534,7 @@ export function App() {
                                     )
                                 })
                                 .catch(() => {
-                                    getTelegramWebApp()?.HapticFeedback?.notificationOccurred('error')
+                                    haptic.notification('error')
                                     // Update status to failed
                                     setMessages((prev) =>
                                         prev.map(m => m.localId === localId

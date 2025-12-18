@@ -34,11 +34,11 @@ export class ApiClient {
         return await res.json() as T
     }
 
-    async authenticate(initData: string): Promise<AuthResponse> {
+    async authenticate(auth: { initData: string } | { accessToken: string }): Promise<AuthResponse> {
         const res = await fetch('/api/auth', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ initData })
+            body: JSON.stringify(auth)
         })
 
         if (!res.ok) {

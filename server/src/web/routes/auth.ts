@@ -5,9 +5,15 @@ import { configuration } from '../../configuration'
 import { validateTelegramInitData } from '../telegramInitData'
 import type { WebAppEnv } from '../middleware/auth'
 
-const authBodySchema = z.object({
+const telegramAuthSchema = z.object({
     initData: z.string()
 })
+
+const accessTokenAuthSchema = z.object({
+    accessToken: z.string()
+})
+
+const authBodySchema = z.union([telegramAuthSchema, accessTokenAuthSchema])
 
 export function createAuthRoutes(jwtSecret: Uint8Array): Hono<WebAppEnv> {
     const app = new Hono<WebAppEnv>()
@@ -19,18 +25,37 @@ export function createAuthRoutes(jwtSecret: Uint8Array): Hono<WebAppEnv> {
             return c.json({ error: 'Invalid body' }, 400)
         }
 
-        const initData = parsed.data.initData
-        const result = validateTelegramInitData(initData, configuration.telegramBotToken)
-        if (!result.ok) {
-            return c.json({ error: result.error }, 401)
+        let userId: number
+        let username: string | undefined
+        let firstName: string | undefined
+        let lastName: string | undefined
+
+        // Access Token authentication (CLI_API_TOKEN)
+        if ('accessToken' in parsed.data) {
+            if (parsed.data.accessToken !== configuration.cliApiToken) {
+                return c.json({ error: 'Invalid access token' }, 401)
+            }
+            // Use first allowed chat ID as the shared user identity
+            userId = configuration.allowedChatIds[0]
+            firstName = 'Web User'
+        } else {
+            // Telegram initData authentication
+            const result = validateTelegramInitData(parsed.data.initData, configuration.telegramBotToken)
+            if (!result.ok) {
+                return c.json({ error: result.error }, 401)
+            }
+
+            userId = result.user.id
+            if (!configuration.isChatIdAllowed(userId)) {
+                return c.json({ error: 'User not allowed' }, 403)
+            }
+
+            username = result.user.username
+            firstName = result.user.first_name
+            lastName = result.user.last_name
         }
 
-        const telegramUserId = result.user.id
-        if (!configuration.isChatIdAllowed(telegramUserId)) {
-            return c.json({ error: 'User not allowed' }, 403)
-        }
-
-        const token = await new SignJWT({ uid: telegramUserId })
+        const token = await new SignJWT({ uid: userId })
             .setProtectedHeader({ alg: 'HS256' })
             .setIssuedAt()
             .setExpirationTime('15m')
@@ -39,10 +64,10 @@ export function createAuthRoutes(jwtSecret: Uint8Array): Hono<WebAppEnv> {
         return c.json({
             token,
             user: {
-                id: telegramUserId,
-                username: result.user.username,
-                firstName: result.user.first_name,
-                lastName: result.user.last_name
+                id: userId,
+                username,
+                firstName,
+                lastName
             }
         })
     })

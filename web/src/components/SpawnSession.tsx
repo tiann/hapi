@@ -3,7 +3,7 @@ import type { ApiClient } from '@/api/client'
 import type { Machine } from '@/types/api'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { getTelegramWebApp } from '@/hooks/useTelegram'
+import { usePlatform } from '@/hooks/usePlatform'
 
 function getMachineTitle(machine: Machine | null): string {
     if (!machine) return 'Machine'
@@ -19,6 +19,7 @@ export function SpawnSession(props: {
     onSuccess: (sessionId: string) => void
     onCancel: () => void
 }) {
+    const { haptic } = usePlatform()
     const [directory, setDirectory] = useState('')
     const [isWorking, setIsWorking] = useState(false)
     const [error, setError] = useState<string | null>(null)
@@ -34,14 +35,14 @@ export function SpawnSession(props: {
         try {
             const result = await props.api.spawnSession(props.machineId, trimmed)
             if (result.type === 'success') {
-                getTelegramWebApp()?.HapticFeedback?.notificationOccurred('success')
+                haptic.notification('success')
                 props.onSuccess(result.sessionId)
                 return
             }
-            getTelegramWebApp()?.HapticFeedback?.notificationOccurred('error')
+            haptic.notification('error')
             setError(result.message)
         } catch (e) {
-            getTelegramWebApp()?.HapticFeedback?.notificationOccurred('error')
+            haptic.notification('error')
             setError(e instanceof Error ? e.message : 'Failed to spawn session')
         } finally {
             setIsWorking(false)

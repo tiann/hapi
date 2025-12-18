@@ -10,7 +10,7 @@ import { HappyComposer } from '@/components/AssistantChat/HappyComposer'
 import { HappyThread } from '@/components/AssistantChat/HappyThread'
 import { useHappyRuntime } from '@/lib/assistant-runtime'
 import { SessionHeader } from '@/components/SessionHeader'
-import { getTelegramWebApp } from '@/hooks/useTelegram'
+import { usePlatform } from '@/hooks/usePlatform'
 
 export function SessionChat(props: {
     api: ApiClient
@@ -27,6 +27,7 @@ export function SessionChat(props: {
     onSend: (text: string) => void
     onRetryMessage?: (localId: string) => void
 }) {
+    const { haptic } = usePlatform()
     const controlsDisabled = !props.session.active
     const normalizedCacheRef = useRef<Map<string, { source: DecryptedMessage; normalized: NormalizedMessage | null }>>(new Map())
 
@@ -63,25 +64,25 @@ export function SessionChat(props: {
     const handlePermissionModeChange = useCallback(async (mode: PermissionMode) => {
         try {
             await props.api.setPermissionMode(props.session.id, mode as 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan')
-            getTelegramWebApp()?.HapticFeedback?.notificationOccurred('success')
+            haptic.notification('success')
             props.onRefresh()
         } catch (e) {
-            getTelegramWebApp()?.HapticFeedback?.notificationOccurred('error')
+            haptic.notification('error')
             console.error('Failed to set permission mode:', e)
         }
-    }, [props.api, props.session.id, props.onRefresh])
+    }, [props.api, props.session.id, props.onRefresh, haptic])
 
     // Model mode change handler
     const handleModelModeChange = useCallback(async (mode: ModelMode) => {
         try {
             await props.api.setModelMode(props.session.id, mode as 'default' | 'sonnet' | 'opus')
-            getTelegramWebApp()?.HapticFeedback?.notificationOccurred('success')
+            haptic.notification('success')
             props.onRefresh()
         } catch (e) {
-            getTelegramWebApp()?.HapticFeedback?.notificationOccurred('error')
+            haptic.notification('error')
             console.error('Failed to set model mode:', e)
         }
-    }, [props.api, props.session.id, props.onRefresh])
+    }, [props.api, props.session.id, props.onRefresh, haptic])
 
     // Abort handler
     const handleAbort = useCallback(async () => {

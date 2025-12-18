@@ -14,7 +14,7 @@ import type { Suggestion } from '@/hooks/useActiveSuggestions'
 import { useActiveWord } from '@/hooks/useActiveWord'
 import { useActiveSuggestions } from '@/hooks/useActiveSuggestions'
 import { applySuggestion } from '@/utils/applySuggestion'
-import { getTelegramWebApp } from '@/hooks/useTelegram'
+import { usePlatform } from '@/hooks/usePlatform'
 import { FloatingOverlay } from '@/components/ChatInput/FloatingOverlay'
 import { Autocomplete } from '@/components/ChatInput/Autocomplete'
 import { StatusBar } from '@/components/AssistantChat/StatusBar'
@@ -95,6 +95,7 @@ export function HappyComposer(props: {
         })
     }, [composerText])
 
+    const { haptic: platformHaptic } = usePlatform()
     const activeWord = useActiveWord(inputState.text, inputState.selection, autocompletePrefixes)
     const [suggestions, selectedIndex, moveUp, moveDown, clearSuggestions] = useActiveSuggestions(
         activeWord,
@@ -103,15 +104,14 @@ export function HappyComposer(props: {
     )
 
     const haptic = useCallback((type: 'light' | 'success' | 'error' = 'light') => {
-        const tg = getTelegramWebApp()
         if (type === 'light') {
-            tg?.HapticFeedback?.impactOccurred('light')
+            platformHaptic.impact('light')
         } else if (type === 'success') {
-            tg?.HapticFeedback?.notificationOccurred('success')
+            platformHaptic.notification('success')
         } else {
-            tg?.HapticFeedback?.notificationOccurred('error')
+            platformHaptic.notification('error')
         }
-    }, [])
+    }, [platformHaptic])
 
     const handleSuggestionSelect = useCallback((index: number) => {
         const suggestion = suggestions[index]

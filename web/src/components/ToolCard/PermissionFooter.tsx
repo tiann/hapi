@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import type { ApiClient } from '@/api/client'
 import type { SessionMetadataSummary } from '@/types/api'
 import type { ChatToolCall, ToolPermission } from '@/chat/types'
-import { getTelegramWebApp } from '@/hooks/useTelegram'
+import { usePlatform } from '@/hooks/usePlatform'
 
 function isObject(value: unknown): value is Record<string, unknown> {
     return Boolean(value) && typeof value === 'object'
@@ -108,6 +108,7 @@ export function PermissionFooter(props: {
     disabled: boolean
     onDone: () => void
 }) {
+    const { haptic } = usePlatform()
     const permission = props.tool.permission
     const [loading, setLoading] = useState<'allow' | 'deny' | 'abort' | null>(null)
     const [loadingAllEdits, setLoadingAllEdits] = useState(false)
@@ -121,15 +122,15 @@ export function PermissionFooter(props: {
     const summary = formatPermissionSummary(permission, props.tool.name, props.tool.input, codex)
     const isPending = permission.status === 'pending'
 
-    const run = async (action: () => Promise<void>, haptic: 'success' | 'error') => {
+    const run = async (action: () => Promise<void>, hapticType: 'success' | 'error') => {
         if (props.disabled) return
         setError(null)
         try {
             await action()
-            getTelegramWebApp()?.HapticFeedback?.notificationOccurred(haptic)
+            haptic.notification(hapticType)
             props.onDone()
         } catch (e) {
-            getTelegramWebApp()?.HapticFeedback?.notificationOccurred('error')
+            haptic.notification('error')
             setError(e instanceof Error ? e.message : 'Request failed')
         }
     }
