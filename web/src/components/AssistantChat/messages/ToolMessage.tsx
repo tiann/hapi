@@ -1,10 +1,11 @@
 import type { ToolCallMessagePartProps } from '@assistant-ui/react'
 import type { ChatBlock } from '@/chat/types'
-import type { AgentEvent, ToolCallBlock } from '@/chat/types'
-import type { MessageStatus } from '@/types/api'
+import type { ToolCallBlock } from '@/chat/types'
+import { renderEventLabel } from '@/chat/presentation'
 import { CodeBlock } from '@/components/CodeBlock'
 import { MarkdownRenderer } from '@/components/MarkdownRenderer'
 import { LazyRainbowText } from '@/components/LazyRainbowText'
+import { MessageStatusIndicator } from '@/components/AssistantChat/messages/MessageStatusIndicator'
 import { ToolCard } from '@/components/ToolCard/ToolCard'
 import { useHappyChatContext } from '@/components/AssistantChat/context'
 
@@ -35,77 +36,6 @@ function isToolCallBlock(value: unknown): value is ToolCallBlock {
     if (value.tool.description !== null && typeof value.tool.description !== 'string') return false
     if (value.tool.state !== 'pending' && value.tool.state !== 'running' && value.tool.state !== 'completed' && value.tool.state !== 'error') return false
     return true
-}
-
-function ErrorIcon() {
-    return (
-        <svg className="h-[14px] w-[14px]" viewBox="0 0 16 16" fill="none">
-            <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="1.5" />
-            <path d="M8 5v4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-            <circle cx="8" cy="11" r="0.75" fill="currentColor" />
-        </svg>
-    )
-}
-
-function MessageStatusIndicator(props: {
-    status?: MessageStatus
-    onRetry?: () => void
-}) {
-    if (props.status !== 'failed') {
-        return null
-    }
-
-    return (
-        <span className="inline-flex items-center gap-1">
-            <span className="text-red-500">
-                <ErrorIcon />
-            </span>
-            {props.onRetry ? (
-                <button
-                    type="button"
-                    onClick={props.onRetry}
-                    className="text-xs text-blue-500 hover:underline"
-                >
-                    重试
-                </button>
-            ) : null}
-        </span>
-    )
-}
-
-function formatUnixTimestamp(value: number): string {
-    const ms = value < 1_000_000_000_000 ? value * 1000 : value
-    const date = new Date(ms)
-    if (Number.isNaN(date.getTime())) return String(value)
-    return date.toLocaleString()
-}
-
-function renderEventLabel(event: AgentEvent): string {
-    if (event.type === 'switch') {
-        const mode = event.mode === 'local' ? 'local' : 'remote'
-        return `🔄 Switched to ${mode}`
-    }
-    if (event.type === 'title-changed') {
-        const title = typeof event.title === 'string' ? event.title : ''
-        return title ? `Title changed to "${title}"` : 'Title changed'
-    }
-    if (event.type === 'permission-mode-changed') {
-        const modeValue = (event as Record<string, unknown>).mode
-        const mode = typeof modeValue === 'string' ? modeValue : 'default'
-        return `🔐 Permission mode: ${mode}`
-    }
-    if (event.type === 'limit-reached') {
-        const endsAt = typeof event.endsAt === 'number' ? event.endsAt : null
-        return endsAt ? `⏳ Usage limit reached until ${formatUnixTimestamp(endsAt)}` : '⏳ Usage limit reached'
-    }
-    if (event.type === 'message') {
-        return typeof event.message === 'string' ? event.message : 'Message'
-    }
-    try {
-        return JSON.stringify(event)
-    } catch {
-        return String(event.type)
-    }
 }
 
 function HappyNestedBlockList(props: {
