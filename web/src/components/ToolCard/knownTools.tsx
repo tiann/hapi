@@ -35,22 +35,6 @@ function countLines(text: string): number {
     return text.split('\n').length
 }
 
-function isDocumentFilePath(filePath: string): boolean {
-    const lower = filePath.toLowerCase()
-    return (
-        lower.endsWith('.md')
-        || lower.endsWith('.mdx')
-        || lower.endsWith('.markdown')
-        || lower.endsWith('.txt')
-    )
-}
-
-function shouldCollapseDocumentWrite(filePath: string | null): boolean {
-    if (!filePath) return false
-    if (!isDocumentFilePath(filePath)) return false
-    return true
-}
-
 function snakeToTitleWithSpaces(value: string): string {
     return value
         .split('_')
@@ -167,10 +151,7 @@ export const knownTools: Record<string, {
             const file = getInputStringAny(opts.input, ['file_path', 'path'])
             return file ? resolveDisplayPath(file, opts.metadata) : 'Edit file'
         },
-        minimal: (opts) => {
-            const file = getInputStringAny(opts.input, ['file_path', 'path'])
-            return isDocumentFilePath(file ?? '')
-        }
+        minimal: true
     },
     MultiEdit: {
         icon: () => <FileDiffIcon className={DEFAULT_ICON_CLASS} />,
@@ -182,10 +163,7 @@ export const knownTools: Record<string, {
             const path = resolveDisplayPath(file, opts.metadata)
             return count > 1 ? `${path} (${count} edits)` : path
         },
-        minimal: (opts) => {
-            const file = getInputStringAny(opts.input, ['file_path', 'path'])
-            return isDocumentFilePath(file ?? '')
-        }
+        minimal: true
     },
     Write: {
         icon: () => <FileDiffIcon className={DEFAULT_ICON_CLASS} />,
@@ -199,10 +177,7 @@ export const knownTools: Record<string, {
             const lines = countLines(content)
             return lines > 1 ? `${lines} lines` : `${content.length} chars`
         },
-        minimal: (opts) => {
-            const file = getInputStringAny(opts.input, ['file_path', 'path'])
-            return shouldCollapseDocumentWrite(file)
-        }
+        minimal: true
     },
     WebFetch: {
         icon: () => <GlobeIcon className={DEFAULT_ICON_CLASS} />,

@@ -67,6 +67,7 @@ function renderDiff(block: ToolViewProps['block'], showFileHeader: boolean) {
             oldString={parsed.oldText}
             newString={parsed.newText}
             filePath={showFileHeader ? parsed.fileName : undefined}
+            variant={showFileHeader ? 'inline' : undefined}
         />
     )
 }
@@ -78,4 +79,3 @@ export function CodexDiffCompactView(props: ToolViewProps) {
 export function CodexDiffFullView(props: ToolViewProps) {
     return renderDiff(props.block, true)
 }
-

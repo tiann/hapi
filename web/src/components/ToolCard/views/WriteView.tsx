@@ -16,7 +16,7 @@ export function WriteView(props: ToolViewProps) {
         <DiffView
             oldString=""
             newString={content}
+            variant="inline"
         />
     )
 }
-

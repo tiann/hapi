@@ -53,6 +53,7 @@ export function MultiEditFullView(props: ToolViewProps) {
                     key={idx}
                     oldString={edit.old_string}
                     newString={edit.new_string}
+                    variant="inline"
                 />
             ))}
         </div>

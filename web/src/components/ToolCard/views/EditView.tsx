@@ -17,7 +17,7 @@ export function EditView(props: ToolViewProps) {
         <DiffView
             oldString={oldString}
             newString={newString}
+            variant="inline"
         />
     )
 }
-
