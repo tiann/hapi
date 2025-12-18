@@ -135,6 +135,14 @@ export function App() {
         return { type: 'sessions' }
     })
 
+    // Navigate and sync browser history (browser only, not Telegram)
+    const navigateTo = useCallback((newScreen: Screen) => {
+        setScreen(newScreen)
+        if (!getTelegramWebApp()?.initData) {
+            history.pushState({ screen: newScreen }, '')
+        }
+    }, [])
+
     const [sessions, setSessions] = useState<SessionSummary[]>([])
     const [sessionsLoading, setSessionsLoading] = useState<boolean>(false)
     const [sessionsError, setSessionsError] = useState<string | null>(null)
@@ -199,7 +207,31 @@ export function App() {
         }
     }, [])
 
+    // Handle browser back button (browser only, not Telegram)
+    useEffect(() => {
+        if (getTelegramWebApp()?.initData) return
+
+        const handlePopState = (event: PopStateEvent) => {
+            if (event.state?.screen) {
+                setScreen(event.state.screen)
+            } else {
+                setScreen({ type: 'sessions' })
+            }
+        }
+
+        window.addEventListener('popstate', handlePopState)
+        history.replaceState({ screen }, '')
+
+        return () => window.removeEventListener('popstate', handlePopState)
+    }, [])
+
     const goBack = useCallback(() => {
+        // Browser: use native back (triggers popstate)
+        if (!getTelegramWebApp()?.initData) {
+            history.back()
+            return
+        }
+        // Telegram: update state directly
         setScreen((prev) => {
             if (prev.type === 'session') return { type: 'sessions' }
             if (prev.type === 'machines') return { type: 'sessions' }
@@ -481,8 +513,8 @@ export function App() {
                     {sessionsError ? <div className="text-sm text-red-600">{sessionsError}</div> : null}
                     <SessionList
                         sessions={sessions}
-                        onSelect={(sessionId) => setScreen({ type: 'session', sessionId })}
-                        onNewSession={() => setScreen({ type: 'machines' })}
+                        onSelect={(sessionId) => navigateTo({ type: 'session', sessionId })}
+                        onNewSession={() => navigateTo({ type: 'machines' })}
                         onRefresh={loadSessions}
                         isLoading={sessionsLoading}
                     />
@@ -570,7 +602,7 @@ export function App() {
 
                     <MachineList
                         machines={machines}
-                        onSelect={(machineId) => setScreen({ type: 'spawn', machineId })}
+                        onSelect={(machineId) => navigateTo({ type: 'spawn', machineId })}
                     />
                 </div>
             ) : (
@@ -586,7 +618,7 @@ export function App() {
                         onCancel={goBack}
                         onSuccess={(sessionId) => {
                             loadSessions()
-                            setScreen({ type: 'session', sessionId })
+                            navigateTo({ type: 'session', sessionId })
                         }}
                     />
                 </div>
