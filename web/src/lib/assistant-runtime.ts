@@ -97,7 +97,7 @@ function toThreadMessageLike(block: ChatBlock): ThreadMessageLike {
             role: 'system',
             id: messageId,
             createdAt: new Date(block.createdAt),
-            content: renderEventLabel(block.event),
+            content: [{ type: 'text', text: renderEventLabel(block.event) }],
             metadata: {
                 custom: { kind: 'event', event: block.event } satisfies HappyChatMessageMetadata
             }
