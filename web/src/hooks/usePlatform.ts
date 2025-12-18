@@ -16,20 +16,51 @@ export type PlatformHaptic = {
 export type Platform = {
     /** Whether running in Telegram Mini App */
     isTelegram: boolean
-    /** Haptic feedback (no-op on browser) */
+    /** Haptic feedback (falls back to Vibration API on browser) */
     haptic: PlatformHaptic
 }
 
 function createHaptic(): PlatformHaptic {
+    const tg = getTelegramWebApp()
+
+    // Vibration patterns for web fallback (in ms)
+    const vibrationPatterns = {
+        light: 10,
+        medium: 20,
+        heavy: 30,
+        rigid: 15,
+        soft: 10,
+        success: 20,
+        warning: [20, 50, 20] as number | number[],
+        error: [30, 50, 30] as number | number[],
+        selection: 5,
+    }
+
+    const vibrate = (pattern: number | number[]) => {
+        navigator.vibrate?.(pattern)
+    }
+
     return {
         impact: (style: HapticStyle) => {
-            getTelegramWebApp()?.HapticFeedback?.impactOccurred(style)
+            if (tg?.HapticFeedback) {
+                tg.HapticFeedback.impactOccurred(style)
+            } else {
+                vibrate(vibrationPatterns[style])
+            }
         },
         notification: (type: HapticNotification) => {
-            getTelegramWebApp()?.HapticFeedback?.notificationOccurred(type)
+            if (tg?.HapticFeedback) {
+                tg.HapticFeedback.notificationOccurred(type)
+            } else {
+                vibrate(vibrationPatterns[type])
+            }
         },
         selection: () => {
-            getTelegramWebApp()?.HapticFeedback?.selectionChanged()
+            if (tg?.HapticFeedback) {
+                tg.HapticFeedback.selectionChanged()
+            } else {
+                vibrate(vibrationPatterns.selection)
+            }
         }
     }
 }

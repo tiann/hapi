@@ -5,7 +5,7 @@
         "lib": ["ES2020", "ESNext", "ESNext.Disposable", "DOM", "DOM.Iterable"],
         "jsx": "react-jsx",
         "noEmit": true,
-        "types": ["vite/client", "react-syntax-highlighter"],
+        "types": ["vite/client"],
         "baseUrl": ".",
         "paths": {
             "@/*": ["./src/*"]
