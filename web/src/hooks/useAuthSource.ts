@@ -78,11 +78,9 @@ export function useAuthSource(): {
         }
 
         // Check if we're likely in a Telegram environment before polling
-        // Hints: Telegram object exists (SDK loading), iframe, or Telegram URL params (in query or hash)
+        // Only use URL params (tgWebApp) as reliable indicator
         const hasTelegramHint =
             typeof window !== 'undefined' && (
-                window.Telegram !== undefined ||
-                window.self !== window.top ||
                 window.location.search.includes('tgWebApp') ||
                 window.location.hash.includes('tgWebApp')
             )
