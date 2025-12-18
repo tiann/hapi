@@ -11,18 +11,20 @@ async function bootstrap() {
         await loadTelegramSdk()
     }
 
-    registerSW({
-        immediate: true,
+    const updateSW = registerSW({
+        onNeedRefresh() {
+            if (confirm('New version available! Reload to update?')) {
+                updateSW(true)
+            }
+        },
         onOfflineReady() {
             console.log('App ready for offline use')
         },
         onRegistered(registration) {
             if (registration) {
-                document.addEventListener('visibilitychange', () => {
-                    if (document.visibilityState === 'visible') {
-                        registration.update()
-                    }
-                })
+                setInterval(() => {
+                    registration.update()
+                }, 60 * 60 * 1000)
             }
         },
         onRegisterError(error) {
