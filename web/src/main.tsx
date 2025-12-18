@@ -4,20 +4,18 @@ import { App } from './App'
 import './index.css'
 import { registerSW } from 'virtual:pwa-register'
 
-const updateSW = registerSW({
-    onNeedRefresh() {
-        if (confirm('New version available! Reload to update?')) {
-            updateSW(true)
-        }
-    },
+registerSW({
+    immediate: true,
     onOfflineReady() {
         console.log('App ready for offline use')
     },
     onRegistered(registration) {
         if (registration) {
-            setInterval(() => {
-                registration.update()
-            }, 60 * 60 * 1000)
+            document.addEventListener('visibilitychange', () => {
+                if (document.visibilityState === 'visible') {
+                    registration.update()
+                }
+            })
         }
     },
     onRegisterError(error) {
