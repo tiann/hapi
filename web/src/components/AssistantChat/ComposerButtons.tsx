@@ -86,6 +86,8 @@ export function ComposerButtons(props: {
                 {props.showSettingsButton ? (
                     <button
                         type="button"
+                        aria-label="Settings"
+                        title="Settings"
                         className="settings-button flex h-8 w-8 items-center justify-center rounded-full text-[var(--app-fg)]/60 transition-colors hover:bg-[var(--app-bg)] hover:text-[var(--app-fg)]"
                         onClick={props.onSettingsToggle}
                         disabled={props.controlsDisabled}
@@ -97,6 +99,8 @@ export function ComposerButtons(props: {
                 {props.showAbortButton ? (
                     <button
                         type="button"
+                        aria-label="Abort"
+                        title="Abort"
                         disabled={props.abortDisabled}
                         className="flex h-8 w-8 items-center justify-center rounded-full text-[var(--app-fg)]/60 transition-colors hover:bg-[var(--app-bg)] hover:text-red-500 disabled:cursor-not-allowed disabled:opacity-50"
                         onClick={props.onAbort}
@@ -108,6 +112,8 @@ export function ComposerButtons(props: {
 
             <ComposerPrimitive.Send
                 disabled={props.controlsDisabled || !props.canSend}
+                aria-label="Send"
+                title="Send"
                 className={`flex h-8 w-8 items-center justify-center rounded-full transition-colors ${
                     props.canSend && !props.controlsDisabled
                         ? 'bg-black text-white'
@@ -119,4 +125,3 @@ export function ComposerButtons(props: {
         </div>
     )
 }
-

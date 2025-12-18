@@ -7,31 +7,39 @@ export function formatUnixTimestamp(value: number): string {
     return date.toLocaleString()
 }
 
-export function renderEventLabel(event: AgentEvent): string {
+export type EventPresentation = {
+    icon: string | null
+    text: string
+}
+
+export function getEventPresentation(event: AgentEvent): EventPresentation {
     if (event.type === 'switch') {
         const mode = event.mode === 'local' ? 'local' : 'remote'
-        return `🔄 Switched to ${mode}`
+        return { icon: '🔄', text: `Switched to ${mode}` }
     }
     if (event.type === 'title-changed') {
         const title = typeof event.title === 'string' ? event.title : ''
-        return title ? `Title changed to "${title}"` : 'Title changed'
+        return { icon: null, text: title ? `Title changed to "${title}"` : 'Title changed' }
     }
     if (event.type === 'permission-mode-changed') {
         const modeValue = (event as Record<string, unknown>).mode
         const mode = typeof modeValue === 'string' ? modeValue : 'default'
-        return `🔐 Permission mode: ${mode}`
+        return { icon: '🔐', text: `Permission mode: ${mode}` }
     }
     if (event.type === 'limit-reached') {
         const endsAt = typeof event.endsAt === 'number' ? event.endsAt : null
-        return endsAt ? `⏳ Usage limit reached until ${formatUnixTimestamp(endsAt)}` : '⏳ Usage limit reached'
+        return { icon: '⏳', text: endsAt ? `Usage limit reached until ${formatUnixTimestamp(endsAt)}` : 'Usage limit reached' }
     }
     if (event.type === 'message') {
-        return typeof event.message === 'string' ? event.message : 'Message'
+        return { icon: null, text: typeof event.message === 'string' ? event.message : 'Message' }
     }
     try {
-        return JSON.stringify(event)
+        return { icon: null, text: JSON.stringify(event) }
     } catch {
-        return String(event.type)
+        return { icon: null, text: String(event.type) }
     }
 }
 
+export function renderEventLabel(event: AgentEvent): string {
+    return getEventPresentation(event).text
+}
