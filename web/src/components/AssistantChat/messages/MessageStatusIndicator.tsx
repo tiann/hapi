@@ -29,10 +29,9 @@ export function MessageStatusIndicator(props: {
                     onClick={props.onRetry}
                     className="text-xs text-blue-500 hover:underline"
                 >
-                    重试
+                    Retry
                 </button>
             ) : null}
         </span>
     )
 }
-
