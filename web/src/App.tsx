@@ -123,7 +123,7 @@ function mergeMessages(existing: DecryptedMessage[], incoming: DecryptedMessage[
 }
 
 export function App() {
-    const { authSource, isLoading: isAuthSourceLoading, isTelegram, setAccessToken, clearAuth } = useAuthSource()
+    const { authSource, isLoading: isAuthSourceLoading, setAccessToken } = useAuthSource()
     const { token, api, isLoading: isAuthLoading, error: authError, user } = useAuth(authSource)
     const { haptic } = usePlatform()
 
