@@ -10,8 +10,8 @@ export default defineConfig({
             registerType: 'autoUpdate',
             includeAssets: ['favicon.ico', 'apple-touch-icon-180x180.png', 'mask-icon.svg'],
             manifest: {
-                name: 'Happy Mini App',
-                short_name: 'Happy',
+                name: 'Hapi',
+                short_name: 'Hapi',
                 description: 'AI-powered development assistant',
                 theme_color: '#ffffff',
                 background_color: '#ffffff',

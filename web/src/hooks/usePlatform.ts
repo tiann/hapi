@@ -68,8 +68,14 @@ function createHaptic(): PlatformHaptic {
 // Singleton haptic instance (functions are stable)
 const haptic = createHaptic()
 
+function checkIsTelegram(): boolean {
+    const tg = getTelegramWebApp()
+    // SDK is always loaded, but initData is only present in actual Telegram environment
+    return tg !== null && Boolean(tg.initData)
+}
+
 export function usePlatform(): Platform {
-    const isTelegram = useMemo(() => getTelegramWebApp() !== null, [])
+    const isTelegram = useMemo(() => checkIsTelegram(), [])
 
     return {
         isTelegram,
@@ -80,7 +86,7 @@ export function usePlatform(): Platform {
 // Non-hook version for use outside React components
 export function getPlatform(): Platform {
     return {
-        isTelegram: getTelegramWebApp() !== null,
+        isTelegram: checkIsTelegram(),
         haptic
     }
 }

@@ -145,3 +145,19 @@ html[data-theme="dark"] .shiki span {
   animation: rainbow-wave 2s linear infinite, sparkle-wave 2s ease-in-out infinite;
   font-weight: 600;
 }
+
+/* PWA install prompt animation */
+@keyframes slide-up {
+  from {
+    transform: translateY(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.animate-slide-up {
+  animation: slide-up 0.3s ease-out;
+}
