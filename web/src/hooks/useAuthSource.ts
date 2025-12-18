@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { getTelegramWebApp } from './useTelegram'
+import { getTelegramWebApp, isTelegramEnvironment } from './useTelegram'
 import type { AuthSource } from './useAuth'
 
 const ACCESS_TOKEN_KEY = 'hapi_access_token'
@@ -77,15 +77,8 @@ export function useAuthSource(): {
             return
         }
 
-        // Check if we're likely in a Telegram environment before polling
-        // Only use URL params (tgWebApp) as reliable indicator
-        const hasTelegramHint =
-            typeof window !== 'undefined' && (
-                window.location.search.includes('tgWebApp') ||
-                window.location.hash.includes('tgWebApp')
-            )
-
-        if (!hasTelegramHint) {
+        // Check if we're in a Telegram environment before polling
+        if (!isTelegramEnvironment()) {
             // Plain browser - show login prompt immediately
             setIsLoading(false)
             return

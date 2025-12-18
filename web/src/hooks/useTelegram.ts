@@ -1,3 +1,30 @@
+/**
+ * Detects if the current environment is Telegram Mini App
+ * by checking URL hash/query parameters that Telegram passes.
+ * This works BEFORE the SDK is loaded.
+ */
+export function isTelegramEnvironment(): boolean {
+    if (typeof window === 'undefined') return false
+
+    // Telegram passes launch params via window.location.hash
+    // Format: #tgWebAppVersion=...&tgWebAppData=...&tgWebAppPlatform=...
+    const hash = window.location.hash.slice(1)
+    const hashParams = new URLSearchParams(hash)
+
+    // Primary detection: check hash parameters
+    if (hashParams.has('tgWebAppVersion') || hashParams.has('tgWebAppData')) {
+        return true
+    }
+
+    // Fallback: check query parameters (alternative flow)
+    const search = window.location.search
+    if (search.includes('tgWebApp') || search.includes('initData')) {
+        return true
+    }
+
+    return false
+}
+
 export type TelegramWebAppThemeParams = {
     bg_color?: string
     text_color?: string
@@ -74,4 +101,44 @@ declare global {
 
 export function getTelegramWebApp(): TelegramWebApp | null {
     return window.Telegram?.WebApp ?? null
+}
+
+/**
+ * Checks if running inside a real Telegram Mini App.
+ * Requires SDK to be loaded. Returns true only if initData is present.
+ */
+export function isTelegramApp(): boolean {
+    const tg = getTelegramWebApp()
+    return tg !== null && Boolean(tg.initData)
+}
+
+/**
+ * Dynamically loads the Telegram Web App SDK with timeout.
+ * Only call this if isTelegramEnvironment() returns true.
+ */
+export function loadTelegramSdk(timeoutMs = 3000): Promise<void> {
+    return new Promise((resolve) => {
+        if (window.Telegram?.WebApp) {
+            resolve()
+            return
+        }
+
+        let settled = false
+        const settle = () => {
+            if (!settled) {
+                settled = true
+                resolve()
+            }
+        }
+
+        // Timeout - don't block app indefinitely
+        setTimeout(settle, timeoutMs)
+
+        const script = document.createElement('script')
+        script.src = 'https://telegram.org/js/telegram-web-app.js'
+        script.async = true
+        script.onload = settle
+        script.onerror = settle
+        document.head.appendChild(script)
+    })
 }

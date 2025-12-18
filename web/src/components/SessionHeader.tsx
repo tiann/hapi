@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import type { Session } from '@/types/api'
-import { getTelegramWebApp } from '@/hooks/useTelegram'
+import { isTelegramApp } from '@/hooks/useTelegram'
 
 function getSessionTitle(session: Session): string {
     if (session.metadata?.name) {
@@ -20,11 +20,10 @@ export function SessionHeader(props: {
     session: Session
     onBack: () => void
 }) {
-    const isTelegram = getTelegramWebApp() !== null
     const title = useMemo(() => getSessionTitle(props.session), [props.session])
 
     // In Telegram, don't render header (Telegram provides its own)
-    if (isTelegram) {
+    if (isTelegramApp()) {
         return null
     }
 

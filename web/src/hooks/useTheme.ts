@@ -53,19 +53,8 @@ function updateScheme(): void {
     }
 }
 
-// Initialize theme on module load
-applyTheme(currentScheme)
-
-// Listen for theme changes
-const tg = getTelegramWebApp()
-if (tg?.onEvent) {
-    // Telegram theme changes
-    tg.onEvent('themeChanged', updateScheme)
-} else if (typeof window !== 'undefined' && window.matchMedia) {
-    // Browser system preference changes
-    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)')
-    mediaQuery.addEventListener('change', updateScheme)
-}
+// Track if theme listeners have been set up
+let listenersInitialized = false
 
 export function useTheme(): { colorScheme: ColorScheme; isDark: boolean } {
     const colorScheme = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
@@ -76,8 +65,22 @@ export function useTheme(): { colorScheme: ColorScheme; isDark: boolean } {
     }
 }
 
-// Call this once at app startup to ensure theme is applied
+// Call this once at app startup to ensure theme is applied and listeners attached
 export function initializeTheme(): void {
     currentScheme = getColorScheme()
     applyTheme(currentScheme)
+
+    // Set up listeners only once (after SDK may have loaded)
+    if (!listenersInitialized) {
+        listenersInitialized = true
+        const tg = getTelegramWebApp()
+        if (tg?.onEvent) {
+            // Telegram theme changes
+            tg.onEvent('themeChanged', updateScheme)
+        } else if (typeof window !== 'undefined' && window.matchMedia) {
+            // Browser system preference changes
+            const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)')
+            mediaQuery.addEventListener('change', updateScheme)
+        }
+    }
 }

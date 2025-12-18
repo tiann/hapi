@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { getTelegramWebApp } from '@/hooks/useTelegram'
+import { getTelegramWebApp, isTelegramApp } from '@/hooks/useTelegram'
 import { initializeTheme } from '@/hooks/useTheme'
 import { useAuth } from '@/hooks/useAuth'
 import { useAuthSource } from '@/hooks/useAuthSource'
@@ -138,7 +138,7 @@ export function App() {
     // Navigate and sync browser history (browser only, not Telegram)
     const navigateTo = useCallback((newScreen: Screen) => {
         setScreen(newScreen)
-        if (!getTelegramWebApp()?.initData) {
+        if (!isTelegramApp()) {
             history.pushState({ screen: newScreen }, '')
         }
     }, [])
@@ -209,7 +209,7 @@ export function App() {
 
     // Handle browser back button (browser only, not Telegram)
     useEffect(() => {
-        if (getTelegramWebApp()?.initData) return
+        if (isTelegramApp()) return
 
         const handlePopState = (event: PopStateEvent) => {
             if (event.state?.screen) {
@@ -227,7 +227,7 @@ export function App() {
 
     const goBack = useCallback(() => {
         // Browser: use native back (triggers popstate)
-        if (!getTelegramWebApp()?.initData) {
+        if (!isTelegramApp()) {
             history.back()
             return
         }

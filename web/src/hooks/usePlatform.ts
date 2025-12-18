@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import { getTelegramWebApp } from './useTelegram'
+import { getTelegramWebApp, isTelegramApp } from './useTelegram'
 
 export type HapticStyle = 'light' | 'medium' | 'heavy' | 'rigid' | 'soft'
 export type HapticNotification = 'error' | 'success' | 'warning'
@@ -20,62 +20,53 @@ export type Platform = {
     haptic: PlatformHaptic
 }
 
-function createHaptic(): PlatformHaptic {
-    const tg = getTelegramWebApp()
+// Vibration patterns for web fallback (in ms)
+const vibrationPatterns = {
+    light: 10,
+    medium: 20,
+    heavy: 30,
+    rigid: 15,
+    soft: 10,
+    success: 20,
+    warning: [20, 50, 20] as number | number[],
+    error: [30, 50, 30] as number | number[],
+    selection: 5,
+}
 
-    // Vibration patterns for web fallback (in ms)
-    const vibrationPatterns = {
-        light: 10,
-        medium: 20,
-        heavy: 30,
-        rigid: 15,
-        soft: 10,
-        success: 20,
-        warning: [20, 50, 20] as number | number[],
-        error: [30, 50, 30] as number | number[],
-        selection: 5,
-    }
+function vibrate(pattern: number | number[]) {
+    navigator.vibrate?.(pattern)
+}
 
-    const vibrate = (pattern: number | number[]) => {
-        navigator.vibrate?.(pattern)
-    }
-
-    return {
-        impact: (style: HapticStyle) => {
-            if (tg?.HapticFeedback) {
-                tg.HapticFeedback.impactOccurred(style)
-            } else {
-                vibrate(vibrationPatterns[style])
-            }
-        },
-        notification: (type: HapticNotification) => {
-            if (tg?.HapticFeedback) {
-                tg.HapticFeedback.notificationOccurred(type)
-            } else {
-                vibrate(vibrationPatterns[type])
-            }
-        },
-        selection: () => {
-            if (tg?.HapticFeedback) {
-                tg.HapticFeedback.selectionChanged()
-            } else {
-                vibrate(vibrationPatterns.selection)
-            }
+// Lazy haptic - checks for Telegram SDK on each call
+const haptic: PlatformHaptic = {
+    impact: (style: HapticStyle) => {
+        const tg = getTelegramWebApp()
+        if (tg?.HapticFeedback) {
+            tg.HapticFeedback.impactOccurred(style)
+        } else {
+            vibrate(vibrationPatterns[style])
+        }
+    },
+    notification: (type: HapticNotification) => {
+        const tg = getTelegramWebApp()
+        if (tg?.HapticFeedback) {
+            tg.HapticFeedback.notificationOccurred(type)
+        } else {
+            vibrate(vibrationPatterns[type])
+        }
+    },
+    selection: () => {
+        const tg = getTelegramWebApp()
+        if (tg?.HapticFeedback) {
+            tg.HapticFeedback.selectionChanged()
+        } else {
+            vibrate(vibrationPatterns.selection)
         }
     }
 }
 
-// Singleton haptic instance (functions are stable)
-const haptic = createHaptic()
-
-function checkIsTelegram(): boolean {
-    const tg = getTelegramWebApp()
-    // SDK is always loaded, but initData is only present in actual Telegram environment
-    return tg !== null && Boolean(tg.initData)
-}
-
 export function usePlatform(): Platform {
-    const isTelegram = useMemo(() => checkIsTelegram(), [])
+    const isTelegram = useMemo(() => isTelegramApp(), [])
 
     return {
         isTelegram,
@@ -86,7 +77,7 @@ export function usePlatform(): Platform {
 // Non-hook version for use outside React components
 export function getPlatform(): Platform {
     return {
-        isTelegram: checkIsTelegram(),
+        isTelegram: isTelegramApp(),
         haptic
     }
 }
