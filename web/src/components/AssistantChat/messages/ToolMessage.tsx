@@ -2,6 +2,7 @@ import type { ToolCallMessagePartProps } from '@assistant-ui/react'
 import type { ChatBlock } from '@/chat/types'
 import type { AgentEvent, ToolCallBlock } from '@/chat/types'
 import type { MessageStatus } from '@/types/api'
+import { CodeBlock } from '@/components/CodeBlock'
 import { MarkdownRenderer } from '@/components/MarkdownRenderer'
 import { LazyRainbowText } from '@/components/LazyRainbowText'
 import { ToolCard } from '@/components/ToolCard/ToolCard'
@@ -11,11 +12,28 @@ function isObject(value: unknown): value is Record<string, unknown> {
     return Boolean(value) && typeof value === 'object'
 }
 
+function safeStringify(value: unknown): string {
+    if (typeof value === 'string') return value
+    try {
+        const stringified = JSON.stringify(value, null, 2)
+        return typeof stringified === 'string' ? stringified : String(value)
+    } catch {
+        return String(value)
+    }
+}
+
 function isToolCallBlock(value: unknown): value is ToolCallBlock {
     if (!isObject(value)) return false
     if (value.kind !== 'tool-call') return false
     if (typeof value.id !== 'string') return false
+    if (value.localId !== null && typeof value.localId !== 'string') return false
+    if (typeof value.createdAt !== 'number') return false
+    if (!Array.isArray(value.children)) return false
     if (!isObject(value.tool)) return false
+    if (typeof value.tool.name !== 'string') return false
+    if (!('input' in value.tool)) return false
+    if (value.tool.description !== null && typeof value.tool.description !== 'string') return false
+    if (value.tool.state !== 'pending' && value.tool.state !== 'running' && value.tool.state !== 'completed' && value.tool.state !== 'error') return false
     return true
 }
 
@@ -182,10 +200,37 @@ export function HappyToolMessage(props: ToolCallMessagePartProps) {
     const artifact = props.artifact
 
     if (!isToolCallBlock(artifact)) {
+        const argsText = typeof props.argsText === 'string' ? props.argsText.trim() : ''
+        const hasArgsText = argsText.length > 0
+        const hasResult = props.result !== undefined
+        const resultText = hasResult ? safeStringify(props.result) : ''
+
         return (
             <div className="py-1">
-                <div className="text-xs text-[var(--app-hint)]">
-                    Tool call: {props.toolName}
+                <div className="rounded-xl bg-[var(--app-secondary-bg)] p-3 shadow-sm">
+                    <div className="flex items-center gap-2 text-xs">
+                        <div className="font-mono text-[var(--app-hint)]">
+                            Tool: {props.toolName}
+                        </div>
+                        {props.isError ? (
+                            <span className="text-red-500">Error</span>
+                        ) : null}
+                        {props.status.type === 'running' && !hasResult ? (
+                            <span className="text-[var(--app-hint)]">Running…</span>
+                        ) : null}
+                    </div>
+
+                    {hasArgsText ? (
+                        <div className="mt-2">
+                            <CodeBlock code={argsText} language="json" />
+                        </div>
+                    ) : null}
+
+                    {hasResult ? (
+                        <div className="mt-2">
+                            <CodeBlock code={resultText} language={typeof props.result === 'string' ? 'text' : 'json'} />
+                        </div>
+                    ) : null}
                 </div>
             </div>
         )

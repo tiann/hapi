@@ -269,85 +269,93 @@ export function HappyComposer(props: {
         haptic('light')
     }, [onModelModeChange, controlsDisabled, haptic])
 
+    const showPermissionSettings = Boolean(onPermissionModeChange)
+    const showModelSettings = Boolean(onModelModeChange)
     const showSettingsButton = Boolean(onPermissionModeChange || onModelModeChange)
     const showAbortButton = true
 
     const overlays = useMemo(() => {
-        if (showSettings) {
+        if (showSettings && (showPermissionSettings || showModelSettings)) {
             return (
                 <div className="absolute bottom-[100%] mb-2 w-full">
                     <FloatingOverlay maxHeight={320}>
-                        <div className="py-2">
-                            <div className="px-3 pb-1 text-xs font-semibold text-[var(--app-hint)]">
-                                Permission Mode
-                            </div>
-                            {PERMISSION_MODES.map((mode) => (
-                                <button
-                                    key={mode}
-                                    type="button"
-                                    disabled={controlsDisabled}
-                                    className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
-                                        controlsDisabled
-                                            ? 'cursor-not-allowed opacity-50'
-                                            : 'cursor-pointer hover:bg-[var(--app-secondary-bg)]'
-                                    }`}
-                                    onClick={() => handlePermissionChange(mode)}
-                                    onMouseDown={(e) => e.preventDefault()}
-                                >
-                                    <div
-                                        className={`flex h-4 w-4 items-center justify-center rounded-full border-2 ${
-                                            permissionMode === mode
-                                                ? 'border-[var(--app-link)]'
-                                                : 'border-[var(--app-hint)]'
+                        {showPermissionSettings ? (
+                            <div className="py-2">
+                                <div className="px-3 pb-1 text-xs font-semibold text-[var(--app-hint)]">
+                                    Permission Mode
+                                </div>
+                                {PERMISSION_MODES.map((mode) => (
+                                    <button
+                                        key={mode}
+                                        type="button"
+                                        disabled={controlsDisabled}
+                                        className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
+                                            controlsDisabled
+                                                ? 'cursor-not-allowed opacity-50'
+                                                : 'cursor-pointer hover:bg-[var(--app-secondary-bg)]'
                                         }`}
+                                        onClick={() => handlePermissionChange(mode)}
+                                        onMouseDown={(e) => e.preventDefault()}
                                     >
-                                        {permissionMode === mode && (
-                                            <div className="h-2 w-2 rounded-full bg-[var(--app-link)]" />
-                                        )}
-                                    </div>
-                                    <span className={permissionMode === mode ? 'text-[var(--app-link)]' : ''}>
-                                        {PERMISSION_MODE_LABELS[mode]}
-                                    </span>
-                                </button>
-                            ))}
-                        </div>
-
-                        <div className="mx-3 h-px bg-[var(--app-divider)]" />
-
-                        <div className="py-2">
-                            <div className="px-3 pb-1 text-xs font-semibold text-[var(--app-hint)]">
-                                Model
+                                        <div
+                                            className={`flex h-4 w-4 items-center justify-center rounded-full border-2 ${
+                                                permissionMode === mode
+                                                    ? 'border-[var(--app-link)]'
+                                                    : 'border-[var(--app-hint)]'
+                                            }`}
+                                        >
+                                            {permissionMode === mode && (
+                                                <div className="h-2 w-2 rounded-full bg-[var(--app-link)]" />
+                                            )}
+                                        </div>
+                                        <span className={permissionMode === mode ? 'text-[var(--app-link)]' : ''}>
+                                            {PERMISSION_MODE_LABELS[mode]}
+                                        </span>
+                                    </button>
+                                ))}
                             </div>
-                            {MODEL_MODES.map((mode) => (
-                                <button
-                                    key={mode}
-                                    type="button"
-                                    disabled={controlsDisabled}
-                                    className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
-                                        controlsDisabled
-                                            ? 'cursor-not-allowed opacity-50'
-                                            : 'cursor-pointer hover:bg-[var(--app-secondary-bg)]'
-                                    }`}
-                                    onClick={() => handleModelChange(mode)}
-                                    onMouseDown={(e) => e.preventDefault()}
-                                >
-                                    <div
-                                        className={`flex h-4 w-4 items-center justify-center rounded-full border-2 ${
-                                            modelMode === mode
-                                                ? 'border-[var(--app-link)]'
-                                                : 'border-[var(--app-hint)]'
+                        ) : null}
+
+                        {showPermissionSettings && showModelSettings ? (
+                            <div className="mx-3 h-px bg-[var(--app-divider)]" />
+                        ) : null}
+
+                        {showModelSettings ? (
+                            <div className="py-2">
+                                <div className="px-3 pb-1 text-xs font-semibold text-[var(--app-hint)]">
+                                    Model
+                                </div>
+                                {MODEL_MODES.map((mode) => (
+                                    <button
+                                        key={mode}
+                                        type="button"
+                                        disabled={controlsDisabled}
+                                        className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
+                                            controlsDisabled
+                                                ? 'cursor-not-allowed opacity-50'
+                                                : 'cursor-pointer hover:bg-[var(--app-secondary-bg)]'
                                         }`}
+                                        onClick={() => handleModelChange(mode)}
+                                        onMouseDown={(e) => e.preventDefault()}
                                     >
-                                        {modelMode === mode && (
-                                            <div className="h-2 w-2 rounded-full bg-[var(--app-link)]" />
-                                        )}
-                                    </div>
-                                    <span className={modelMode === mode ? 'text-[var(--app-link)]' : ''}>
-                                        {MODEL_MODE_LABELS[mode]}
-                                    </span>
-                                </button>
-                            ))}
-                        </div>
+                                        <div
+                                            className={`flex h-4 w-4 items-center justify-center rounded-full border-2 ${
+                                                modelMode === mode
+                                                    ? 'border-[var(--app-link)]'
+                                                    : 'border-[var(--app-hint)]'
+                                            }`}
+                                        >
+                                            {modelMode === mode && (
+                                                <div className="h-2 w-2 rounded-full bg-[var(--app-link)]" />
+                                            )}
+                                        </div>
+                                        <span className={modelMode === mode ? 'text-[var(--app-link)]' : ''}>
+                                            {MODEL_MODE_LABELS[mode]}
+                                        </span>
+                                    </button>
+                                ))}
+                            </div>
+                        ) : null}
                     </FloatingOverlay>
                 </div>
             )
@@ -370,6 +378,8 @@ export function HappyComposer(props: {
         return null
     }, [
         showSettings,
+        showPermissionSettings,
+        showModelSettings,
         suggestions,
         selectedIndex,
         controlsDisabled,
