@@ -35,6 +35,9 @@ function applyPlatform(): void {
 let currentScheme: ColorScheme = getColorScheme()
 const listeners = new Set<() => void>()
 
+// Apply theme immediately at module load (before React renders)
+applyTheme(currentScheme)
+
 function subscribe(callback: () => void): () => void {
     listeners.add(callback)
     return () => listeners.delete(callback)
