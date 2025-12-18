@@ -401,6 +401,7 @@ export function HappyComposer(props: {
                         thinking={thinking}
                         agentState={agentState}
                         contextSize={contextSize}
+                        modelMode={modelMode}
                         permissionMode={permissionMode}
                     />
 

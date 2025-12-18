@@ -1,5 +1,6 @@
 import { useMemo } from 'react'
-import type { AgentState, PermissionMode } from '@/types/api'
+import type { AgentState, ModelMode, PermissionMode } from '@/types/api'
+import { getContextBudgetTokens } from '@/chat/modelConfig'
 
 const PERMISSION_MODE_LABELS: Record<string, string> = {
     default: 'Default',
@@ -7,9 +8,6 @@ const PERMISSION_MODE_LABELS: Record<string, string> = {
     plan: 'Plan Mode',
     bypassPermissions: 'Bypass All'
 }
-
-// Max context size for percentage calculation
-const MAX_CONTEXT_SIZE = 190000
 
 // Vibing messages for thinking state
 const VIBING_MESSAGES = [
@@ -73,9 +71,9 @@ function getConnectionStatus(
     }
 }
 
-function getContextWarning(contextSize: number): { text: string; color: string } | null {
-    const percentageUsed = (contextSize / MAX_CONTEXT_SIZE) * 100
-    const percentageRemaining = 100 - percentageUsed
+function getContextWarning(contextSize: number, maxContextSize: number): { text: string; color: string } | null {
+    const percentageUsed = (contextSize / maxContextSize) * 100
+    const percentageRemaining = Math.max(0, 100 - percentageUsed)
 
     if (percentageRemaining <= 5) {
         return { text: `${Math.round(percentageRemaining)}% left`, color: 'text-red-500' }
@@ -91,6 +89,7 @@ export function StatusBar(props: {
     thinking: boolean
     agentState: AgentState | null | undefined
     contextSize?: number
+    modelMode?: ModelMode
     permissionMode?: PermissionMode
 }) {
     const connectionStatus = useMemo(
@@ -99,8 +98,13 @@ export function StatusBar(props: {
     )
 
     const contextWarning = useMemo(
-        () => props.contextSize !== undefined ? getContextWarning(props.contextSize) : null,
-        [props.contextSize]
+        () => {
+            if (props.contextSize === undefined) return null
+            const maxContextSize = getContextBudgetTokens(props.modelMode)
+            if (!maxContextSize) return null
+            return getContextWarning(props.contextSize, maxContextSize)
+        },
+        [props.contextSize, props.modelMode]
     )
 
     const permissionMode = props.permissionMode
@@ -136,4 +140,3 @@ export function StatusBar(props: {
         </div>
     )
 }
-
