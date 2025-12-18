@@ -14,5 +14,9 @@
         "typecheck:server": "cd server && bun run typecheck",
         "typecheck:web": "cd web && bun run typecheck",
         "test": "cd cli && bun run test"
+    },
+    "devDependencies": {
+        "vite-plugin-pwa": "^1.2.0",
+        "workbox-window": "^7.4.0"
     }
 }

@@ -11,6 +11,8 @@ import { SessionChat } from '@/components/SessionChat'
 import { MachineList } from '@/components/MachineList'
 import { SpawnSession } from '@/components/SpawnSession'
 import { LoginPrompt } from '@/components/LoginPrompt'
+import { InstallPrompt } from '@/components/InstallPrompt'
+import { OfflineBanner } from '@/components/OfflineBanner'
 
 type Screen =
     | { type: 'sessions' }
@@ -471,8 +473,10 @@ export function App() {
         : null
 
     return (
-        <div className="h-full flex flex-col">
-            {screen.type === 'sessions' ? (
+        <>
+            <OfflineBanner />
+            <div className="h-full flex flex-col">
+                {screen.type === 'sessions' ? (
                 <div className="flex-1 overflow-y-auto p-4 space-y-4">
                     {sessionsError ? <div className="text-sm text-red-600">{sessionsError}</div> : null}
                     <SessionList
@@ -587,6 +591,8 @@ export function App() {
                     />
                 </div>
             )}
-        </div>
+            </div>
+            <InstallPrompt />
+        </>
     )
 }
