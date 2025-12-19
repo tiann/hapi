@@ -3,13 +3,19 @@ import { getEventPresentation } from '@/chat/presentation'
 import type { HappyChatMessageMetadata } from '@/lib/assistant-runtime'
 
 export function HappySystemMessage() {
-    const message = useAssistantState(({ message }) => message)
-    if (message.role !== 'system') return null
+    const role = useAssistantState(({ message }) => message.role)
+    const text = useAssistantState(({ message }) => {
+        if (message.role !== 'system') return ''
+        return message.content[0]?.type === 'text' ? message.content[0].text : ''
+    })
+    const icon = useAssistantState(({ message }) => {
+        if (message.role !== 'system') return null
+        const custom = message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
+        const event = custom?.kind === 'event' ? custom.event : undefined
+        return event ? getEventPresentation(event).icon : null
+    })
 
-    const text = message.content[0]?.type === 'text' ? message.content[0].text : ''
-    const custom = message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
-    const event = custom?.kind === 'event' ? custom.event : undefined
-    const icon = event ? getEventPresentation(event).icon : null
+    if (role !== 'system') return null
 
     return (
         <div className="py-1">

@@ -6,14 +6,23 @@ import { MessageStatusIndicator } from '@/components/AssistantChat/messages/Mess
 
 export function HappyUserMessage() {
     const ctx = useHappyChatContext()
-    const message = useAssistantState(({ message }) => message)
+    const role = useAssistantState(({ message }) => message.role)
+    const text = useAssistantState(({ message }) => {
+        if (message.role !== 'user') return ''
+        return message.content.find((part) => part.type === 'text')?.text ?? ''
+    })
+    const status = useAssistantState(({ message }) => {
+        if (message.role !== 'user') return undefined
+        const custom = message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
+        return custom?.status
+    })
+    const localId = useAssistantState(({ message }) => {
+        if (message.role !== 'user') return null
+        const custom = message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
+        return custom?.localId ?? null
+    })
 
-    if (message.role !== 'user') return null
-
-    const text = message.content.find((part) => part.type === 'text')?.text ?? ''
-    const custom = message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
-    const status = custom?.status
-    const localId = custom?.localId
+    if (role !== 'user') return null
     const canRetry = status === 'failed' && typeof localId === 'string' && Boolean(ctx.onRetryMessage)
     const onRetry = canRetry ? () => ctx.onRetryMessage!(localId) : undefined
 
