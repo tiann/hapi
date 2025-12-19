@@ -1,7 +1,7 @@
 import type { ToolCallBlock } from '@/chat/types'
 import type { ApiClient } from '@/api/client'
 import type { SessionMetadataSummary } from '@/types/api'
-import { useEffect, useState, type ReactNode } from 'react'
+import { memo, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { CodeBlock } from '@/components/CodeBlock'
 import { MarkdownRenderer } from '@/components/MarkdownRenderer'
@@ -45,12 +45,14 @@ function truncate(text: string, maxLen: number): string {
     return text.slice(0, maxLen - 3) + '...'
 }
 
+const ELAPSED_INTERVAL_MS = 1000
+
 function ElapsedView(props: { from: number; active: boolean }) {
     const [now, setNow] = useState(() => Date.now())
 
     useEffect(() => {
         if (!props.active) return
-        const id = setInterval(() => setNow(Date.now()), 250)
+        const id = setInterval(() => setNow(Date.now()), ELAPSED_INTERVAL_MS)
         return () => clearInterval(id)
     }, [props.active])
 
@@ -96,7 +98,7 @@ function TaskStateIcon(props: { state: ToolCallBlock['tool']['state'] }) {
     return <span className="text-amber-600 animate-pulse">●</span>
 }
 
-function renderTaskSummary(block: ToolCallBlock, metadata: SessionMetadataSummary | null): ReactNode | null {
+function getTaskSummaryChildren(block: ToolCallBlock): { visible: ToolCallBlock[]; remaining: number } | null {
     if (block.tool.name !== 'Task') return null
 
     const children = block.children
@@ -106,7 +108,15 @@ function renderTaskSummary(block: ToolCallBlock, metadata: SessionMetadataSummar
     if (children.length === 0) return null
 
     const visible = children.slice(-3)
-    const remaining = children.length - visible.length
+    return { visible, remaining: children.length - visible.length }
+}
+
+function renderTaskSummary(block: ToolCallBlock, metadata: SessionMetadataSummary | null): ReactNode | null {
+    const summary = getTaskSummaryChildren(block)
+    if (!summary) return null
+
+    const visible = summary.visible
+    const remaining = summary.remaining
 
     return (
         <div className="flex flex-col gap-1 px-1">
@@ -288,22 +298,31 @@ function DetailsIcon() {
     )
 }
 
-export function ToolCard(props: {
+type ToolCardProps = {
     api: ApiClient
     sessionId: string
     metadata: SessionMetadataSummary | null
     disabled: boolean
     onDone: () => void
     block: ToolCallBlock
-}) {
-    const presentation = getToolPresentation({
+}
+
+function ToolCardInner(props: ToolCardProps) {
+    const presentation = useMemo(() => getToolPresentation({
         toolName: props.block.tool.name,
         input: props.block.tool.input,
         result: props.block.tool.result,
         childrenCount: props.block.children.length,
         description: props.block.tool.description,
         metadata: props.metadata
-    })
+    }), [
+        props.block.tool.name,
+        props.block.tool.input,
+        props.block.tool.result,
+        props.block.children.length,
+        props.block.tool.description,
+        props.metadata
+    ])
 
     const toolName = props.block.tool.name
     const toolTitle = presentation.title
@@ -435,3 +454,5 @@ export function ToolCard(props: {
         </Card>
     )
 }
+
+export const ToolCard = memo(ToolCardInner)

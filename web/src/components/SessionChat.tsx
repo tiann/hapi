@@ -2,9 +2,10 @@ import { useCallback, useEffect, useMemo, useRef } from 'react'
 import { AssistantRuntimeProvider } from '@assistant-ui/react'
 import type { ApiClient } from '@/api/client'
 import type { DecryptedMessage, ModelMode, PermissionMode, Session } from '@/types/api'
-import type { NormalizedMessage } from '@/chat/types'
+import type { ChatBlock, NormalizedMessage } from '@/chat/types'
 import { normalizeDecryptedMessage } from '@/chat/normalize'
 import { reduceChatBlocks } from '@/chat/reducer'
+import { reconcileChatBlocks } from '@/chat/reconcile'
 import { Button } from '@/components/ui/button'
 import { HappyComposer } from '@/components/AssistantChat/HappyComposer'
 import { HappyThread } from '@/components/AssistantChat/HappyThread'
@@ -30,9 +31,11 @@ export function SessionChat(props: {
     const { haptic } = usePlatform()
     const controlsDisabled = !props.session.active
     const normalizedCacheRef = useRef<Map<string, { source: DecryptedMessage; normalized: NormalizedMessage | null }>>(new Map())
+    const blocksByIdRef = useRef<Map<string, ChatBlock>>(new Map())
 
     useEffect(() => {
         normalizedCacheRef.current.clear()
+        blocksByIdRef.current.clear()
     }, [props.session.id])
 
     const normalizedMessages: NormalizedMessage[] = useMemo(() => {
@@ -58,7 +61,18 @@ export function SessionChat(props: {
         return normalized
     }, [props.messages])
 
-    const reduced = useMemo(() => reduceChatBlocks(normalizedMessages, props.session.agentState), [normalizedMessages, props.session.agentState])
+    const reduced = useMemo(
+        () => reduceChatBlocks(normalizedMessages, props.session.agentState),
+        [normalizedMessages, props.session.agentState]
+    )
+    const reconciled = useMemo(
+        () => reconcileChatBlocks(reduced.blocks, blocksByIdRef.current),
+        [reduced.blocks]
+    )
+
+    useEffect(() => {
+        blocksByIdRef.current = reconciled.byId
+    }, [reconciled.byId])
 
     // Permission mode change handler
     const handlePermissionModeChange = useCallback(async (mode: PermissionMode) => {
@@ -92,7 +106,7 @@ export function SessionChat(props: {
 
     const runtime = useHappyRuntime({
         session: props.session,
-        blocks: reduced.blocks,
+        blocks: reconciled.blocks,
         isSending: props.isSending,
         onSendMessage: props.onSend,
         onAbort: handleAbort
