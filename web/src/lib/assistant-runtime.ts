@@ -1,6 +1,6 @@
-import { useMemo } from 'react'
-import type { AppendMessage, ExternalStoreAdapter, ThreadMessageLike } from '@assistant-ui/react'
-import { useExternalStoreRuntime } from '@assistant-ui/react'
+import { useCallback, useMemo } from 'react'
+import type { AppendMessage, ThreadMessageLike } from '@assistant-ui/react'
+import { useExternalMessageConverter, useExternalStoreRuntime } from '@assistant-ui/react'
 import { renderEventLabel } from '@/chat/presentation'
 import type { ChatBlock } from '@/chat/types'
 import type { AgentEvent, ToolCallBlock } from '@/chat/types'
@@ -113,23 +113,34 @@ export function useHappyRuntime(props: {
     onSendMessage: (text: string) => void
     onAbort: () => Promise<void>
 }) {
-    const adapter = useMemo(() => {
-        return {
-            isDisabled: !props.session.active || props.isSending,
-            isRunning: props.session.thinking,
-            messages: props.blocks,
-            onNew: async (message: AppendMessage) => {
-                const text = getTextFromAppendMessage(message)
-                if (!text) return
-                props.onSendMessage(text)
-            },
-            onCancel: async () => {
-                await props.onAbort()
-            },
-            convertMessage: (block: ChatBlock) => toThreadMessageLike(block),
-            unstable_capabilities: { copy: true }
-        } satisfies ExternalStoreAdapter<ChatBlock>
-    }, [props.session.active, props.session.thinking, props.isSending, props.blocks, props.onSendMessage, props.onAbort])
+    // Use cached message converter for performance optimization
+    // This prevents re-converting all messages on every render
+    const convertedMessages = useExternalMessageConverter<ChatBlock>({
+        callback: toThreadMessageLike,
+        messages: props.blocks as ChatBlock[],
+        isRunning: props.session.thinking,
+    })
+
+    const onNew = useCallback(async (message: AppendMessage) => {
+        const text = getTextFromAppendMessage(message)
+        if (!text) return
+        props.onSendMessage(text)
+    }, [props.onSendMessage])
+
+    const onCancel = useCallback(async () => {
+        await props.onAbort()
+    }, [props.onAbort])
+
+    // Memoize the adapter to avoid recreating on every render
+    // useExternalStoreRuntime may use adapter identity for subscriptions
+    const adapter = useMemo(() => ({
+        isDisabled: !props.session.active || props.isSending,
+        isRunning: props.session.thinking,
+        messages: convertedMessages,
+        onNew,
+        onCancel,
+        unstable_capabilities: { copy: true }
+    }), [props.session.active, props.isSending, props.session.thinking, convertedMessages, onNew, onCancel])
 
     return useExternalStoreRuntime(adapter)
 }
