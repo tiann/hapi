@@ -58,11 +58,9 @@ function getSessionTitle(session: SessionSummary): string {
 }
 
 function getTodoProgress(session: SessionSummary): { completed: number; total: number } | null {
-    if (!session.todos || session.todos.length === 0) return null
-    const total = session.todos.length
-    const completed = session.todos.filter(t => t.status === 'completed').length
-    if (completed === total) return null
-    return { completed, total }
+    if (!session.todoProgress) return null
+    if (session.todoProgress.completed === session.todoProgress.total) return null
+    return session.todoProgress
 }
 
 export function SessionList(props: {

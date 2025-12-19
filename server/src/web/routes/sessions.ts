@@ -4,31 +4,41 @@ import type { SyncEngine, Session } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 import { requireSessionFromParam, requireSyncEngine } from './guards'
 
+type SessionSummaryMetadata = {
+    name?: string
+    path: string
+    summary?: { text: string }
+}
+
 type SessionSummary = {
     id: string
     active: boolean
-    thinking: boolean
     updatedAt: number
-    createdAt: number
-    permissionMode: Session['permissionMode']
-    modelMode: Session['modelMode']
-    metadata: Session['metadata']
-    todos?: Session['todos']
+    metadata: SessionSummaryMetadata | null
+    todoProgress: { completed: number; total: number } | null
     pendingRequestsCount: number
 }
 
 function toSessionSummary(session: Session): SessionSummary {
     const pendingRequestsCount = session.agentState?.requests ? Object.keys(session.agentState.requests).length : 0
+
+    const metadata: SessionSummaryMetadata | null = session.metadata ? {
+        name: session.metadata.name,
+        path: session.metadata.path,
+        summary: session.metadata.summary ? { text: session.metadata.summary.text } : undefined
+    } : null
+
+    const todoProgress = session.todos?.length ? {
+        completed: session.todos.filter(t => t.status === 'completed').length,
+        total: session.todos.length
+    } : null
+
     return {
         id: session.id,
         active: session.active,
-        thinking: session.thinking,
         updatedAt: session.updatedAt,
-        createdAt: session.createdAt,
-        permissionMode: session.permissionMode,
-        modelMode: session.modelMode,
-        metadata: session.metadata,
-        todos: session.todos,
+        metadata,
+        todoProgress,
         pendingRequestsCount
     }
 }
@@ -50,20 +60,24 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return engine
         }
 
+        const getPendingCount = (s: Session) => s.agentState?.requests ? Object.keys(s.agentState.requests).length : 0
+
         const sessions = engine.getSessions()
-            .map(toSessionSummary)
             .sort((a, b) => {
                 // Active sessions first
                 if (a.active !== b.active) {
                     return a.active ? -1 : 1
                 }
                 // Within active sessions, sort by pending requests count
-                if (a.active && a.pendingRequestsCount !== b.pendingRequestsCount) {
-                    return b.pendingRequestsCount - a.pendingRequestsCount
+                const aPending = getPendingCount(a)
+                const bPending = getPendingCount(b)
+                if (a.active && aPending !== bPending) {
+                    return bPending - aPending
                 }
                 // Then by updatedAt
                 return b.updatedAt - a.updatedAt
             })
+            .map(toSessionSummary)
 
         return c.json({ sessions })
     })

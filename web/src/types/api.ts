@@ -58,16 +58,18 @@ export type Session = {
     modelMode?: ModelMode
 }
 
+export type SessionSummaryMetadata = {
+    name?: string
+    path: string
+    summary?: { text: string }
+}
+
 export type SessionSummary = {
     id: string
     active: boolean
-    thinking: boolean
     updatedAt: number
-    createdAt: number
-    permissionMode: PermissionMode
-    modelMode: ModelMode
-    metadata: SessionMetadataSummary | null
-    todos?: TodoItem[]
+    metadata: SessionSummaryMetadata | null
+    todoProgress: { completed: number; total: number } | null
     pendingRequestsCount: number
 }
 
