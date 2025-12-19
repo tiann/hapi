@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
+import { logger } from 'hono/logger'
 import { join } from 'node:path'
 import { existsSync } from 'node:fs'
 import { serveStatic } from 'hono/bun'
@@ -39,6 +40,8 @@ function createWebApp(options: {
     jwtSecret: Uint8Array
 }): Hono<WebAppEnv> {
     const app = new Hono<WebAppEnv>()
+
+    app.use('*', logger())
 
     const corsOrigins = configuration.corsOrigins
     const corsOriginOption = corsOrigins.includes('*') ? '*' : corsOrigins
