@@ -4,6 +4,7 @@ import type { Machine } from '@/types/api'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { usePlatform } from '@/hooks/usePlatform'
+import { useSpawnSession } from '@/hooks/mutations/useSpawnSession'
 
 function getMachineTitle(machine: Machine | null): string {
     if (!machine) return 'Machine'
@@ -21,8 +22,8 @@ export function SpawnSession(props: {
 }) {
     const { haptic } = usePlatform()
     const [directory, setDirectory] = useState('')
-    const [isWorking, setIsWorking] = useState(false)
     const [error, setError] = useState<string | null>(null)
+    const { spawnSession, isPending, error: spawnError } = useSpawnSession(props.api)
 
     const machineTitle = useMemo(() => getMachineTitle(props.machine), [props.machine])
 
@@ -30,10 +31,9 @@ export function SpawnSession(props: {
         const trimmed = directory.trim()
         if (!trimmed) return
 
-        setIsWorking(true)
         setError(null)
         try {
-            const result = await props.api.spawnSession(props.machineId, trimmed)
+            const result = await spawnSession({ machineId: props.machineId, directory: trimmed })
             if (result.type === 'success') {
                 haptic.notification('success')
                 props.onSuccess(result.sessionId)
@@ -44,8 +44,6 @@ export function SpawnSession(props: {
         } catch (e) {
             haptic.notification('error')
             setError(e instanceof Error ? e.message : 'Failed to spawn session')
-        } finally {
-            setIsWorking(false)
         }
     }
 
@@ -68,9 +66,9 @@ export function SpawnSession(props: {
                             className="w-full rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] p-2 text-sm focus:outline-none focus:ring-2 focus:ring-[var(--app-link)]"
                         />
 
-                        {error ? (
+                        {(error ?? spawnError) ? (
                             <div className="text-sm text-red-600">
-                                {error}
+                                {error ?? spawnError}
                             </div>
                         ) : null}
 
@@ -78,15 +76,15 @@ export function SpawnSession(props: {
                             <Button
                                 variant="secondary"
                                 onClick={props.onCancel}
-                                disabled={isWorking}
+                                disabled={isPending}
                             >
                                 Cancel
                             </Button>
                             <Button
                                 onClick={spawn}
-                                disabled={isWorking || !directory.trim()}
+                                disabled={isPending || !directory.trim()}
                             >
-                                {isWorking ? 'Creating…' : 'Create Session'}
+                                {isPending ? 'Creating…' : 'Create Session'}
                             </Button>
                         </div>
                     </div>

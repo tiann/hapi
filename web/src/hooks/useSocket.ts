@@ -1,6 +1,9 @@
 import { useEffect, useRef } from 'react'
+import { useQueryClient, type InfiniteData } from '@tanstack/react-query'
 import { io } from 'socket.io-client'
-import type { SyncEvent } from '@/types/api'
+import type { MessagesResponse, SyncEvent } from '@/types/api'
+import { queryKeys } from '@/lib/query-keys'
+import { upsertMessagesInCache } from '@/lib/messages'
 
 function isObject(value: unknown): value is Record<string, unknown> {
     return Boolean(value) && typeof value === 'object'
@@ -21,6 +24,7 @@ export function useSocket(options: {
     onDisconnect?: (reason: string) => void
     onError?: (error: unknown) => void
 }): void {
+    const queryClient = useQueryClient()
     const onEventRef = useRef(options.onEvent)
     const onConnectRef = useRef(options.onConnect)
     const onDisconnectRef = useRef(options.onDisconnect)
@@ -75,10 +79,42 @@ export function useSocket(options: {
             onDisconnectRef.current?.(reason)
         }
 
+        const handleSyncEvent = (event: SyncEvent) => {
+            if (event.type === 'message-received') {
+                queryClient.setQueryData<InfiniteData<MessagesResponse>>(
+                    queryKeys.messages(event.sessionId),
+                    (data) => upsertMessagesInCache(data, [event.message]),
+                )
+                // Mark stale so the initial query still fetches history when it mounts.
+                void queryClient.invalidateQueries({
+                    queryKey: queryKeys.messages(event.sessionId),
+                    refetchType: 'none',
+                })
+            }
+
+            if (event.type === 'session-added' || event.type === 'session-updated' || event.type === 'session-removed') {
+                void queryClient.invalidateQueries({ queryKey: queryKeys.sessions })
+                if ('sessionId' in event) {
+                    if (event.type === 'session-removed') {
+                        void queryClient.removeQueries({ queryKey: queryKeys.session(event.sessionId) })
+                        void queryClient.removeQueries({ queryKey: queryKeys.messages(event.sessionId) })
+                    } else {
+                        void queryClient.invalidateQueries({ queryKey: queryKeys.session(event.sessionId) })
+                    }
+                }
+            }
+
+            if (event.type === 'machine-updated') {
+                void queryClient.invalidateQueries({ queryKey: queryKeys.machines })
+            }
+
+            onEventRef.current(event)
+        }
+
         socket.on('update', (event: unknown) => {
             if (!isObject(event)) return
             if (typeof event.type !== 'string') return
-            onEventRef.current(event as SyncEvent)
+            handleSyncEvent(event as SyncEvent)
         })
 
         socket.on('connect_error', (error) => {

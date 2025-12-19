@@ -12,6 +12,7 @@ import { HappyThread } from '@/components/AssistantChat/HappyThread'
 import { useHappyRuntime } from '@/lib/assistant-runtime'
 import { SessionHeader } from '@/components/SessionHeader'
 import { usePlatform } from '@/hooks/usePlatform'
+import { useSessionActions } from '@/hooks/mutations/useSessionActions'
 
 export function SessionChat(props: {
     api: ApiClient
@@ -32,6 +33,7 @@ export function SessionChat(props: {
     const controlsDisabled = !props.session.active
     const normalizedCacheRef = useRef<Map<string, { source: DecryptedMessage; normalized: NormalizedMessage | null }>>(new Map())
     const blocksByIdRef = useRef<Map<string, ChatBlock>>(new Map())
+    const { abortSession, setPermissionMode, setModelMode } = useSessionActions(props.api, props.session.id)
 
     useEffect(() => {
         normalizedCacheRef.current.clear()
@@ -77,32 +79,32 @@ export function SessionChat(props: {
     // Permission mode change handler
     const handlePermissionModeChange = useCallback(async (mode: PermissionMode) => {
         try {
-            await props.api.setPermissionMode(props.session.id, mode as 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan')
+            await setPermissionMode(mode)
             haptic.notification('success')
             props.onRefresh()
         } catch (e) {
             haptic.notification('error')
             console.error('Failed to set permission mode:', e)
         }
-    }, [props.api, props.session.id, props.onRefresh, haptic])
+    }, [setPermissionMode, props.onRefresh, haptic])
 
     // Model mode change handler
     const handleModelModeChange = useCallback(async (mode: ModelMode) => {
         try {
-            await props.api.setModelMode(props.session.id, mode as 'default' | 'sonnet' | 'opus')
+            await setModelMode(mode)
             haptic.notification('success')
             props.onRefresh()
         } catch (e) {
             haptic.notification('error')
             console.error('Failed to set model mode:', e)
         }
-    }, [props.api, props.session.id, props.onRefresh, haptic])
+    }, [setModelMode, props.onRefresh, haptic])
 
     // Abort handler
     const handleAbort = useCallback(async () => {
-        await props.api.abortSession(props.session.id)
+        await abortSession()
         props.onRefresh()
-    }, [props.api, props.session.id, props.onRefresh])
+    }, [abortSession, props.onRefresh])
 
     const runtime = useHappyRuntime({
         session: props.session,
