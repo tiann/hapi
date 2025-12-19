@@ -4,6 +4,20 @@ import { VitePWA } from 'vite-plugin-pwa'
 import { resolve } from 'node:path'
 
 export default defineConfig({
+    server: {
+        host: true,
+        allowedHosts: ['hapidev.weishu.me'],
+        proxy: {
+            '/api': {
+                target: 'http://127.0.0.1:3006',
+                changeOrigin: true
+            },
+            '/socket.io': {
+                target: 'http://127.0.0.1:3006',
+                ws: true
+            }
+        }
+    },
     plugins: [
         react(),
         VitePWA({

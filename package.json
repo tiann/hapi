@@ -3,6 +3,7 @@
     "private": true,
     "workspaces": ["cli", "server", "web"],
     "scripts": {
+        "dev": "concurrently \"bun run dev:server\" \"bun run dev:web\" --kill-others-on-exit",
         "build": "bun run build:cli && bun run build:server && bun run build:web",
         "build:cli": "cd cli && bun run build",
         "build:server": "cd server && bun run build",
@@ -16,6 +17,7 @@
         "test": "cd cli && bun run test"
     },
     "devDependencies": {
+        "concurrently": "^9.2.1",
         "vite-plugin-pwa": "^1.2.0",
         "workbox-window": "^7.4.0"
     }
