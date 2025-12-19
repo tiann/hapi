@@ -16,12 +16,14 @@ import { HappyBot } from './telegram/bot'
 import { startWebServer } from './web/server'
 import { getOrCreateJwtSecret } from './web/jwtSecret'
 import { createSocketServer } from './socket/server'
+import { SSEManager } from './sse/sseManager'
 import type { Server as BunServer } from 'bun'
 import type { WebSocketData } from '@socket.io/bun-engine'
 
 let syncEngine: SyncEngine | null = null
 let happyBot: HappyBot | null = null
 let webServer: BunServer<WebSocketData> | null = null
+let sseManager: SSEManager | null = null
 
 async function main() {
     console.log('Happy Bot starting...')
@@ -34,16 +36,17 @@ async function main() {
     const store = new Store(config.dbPath)
     const jwtSecret = await getOrCreateJwtSecret()
 
+    sseManager = new SSEManager(30_000)
+
     const socketServer = createSocketServer({
         store,
-        jwtSecret,
         onWebappEvent: (event: SyncEvent) => syncEngine?.handleRealtimeEvent(event),
         onSessionAlive: (payload) => syncEngine?.handleSessionAlive(payload),
         onSessionEnd: (payload) => syncEngine?.handleSessionEnd(payload),
         onMachineAlive: (payload) => syncEngine?.handleMachineAlive(payload)
     })
 
-    syncEngine = new SyncEngine(store, socketServer.io, socketServer.rpcRegistry)
+    syncEngine = new SyncEngine(store, socketServer.io, socketServer.rpcRegistry, sseManager)
 
     // Initialize Telegram bot
     happyBot = new HappyBot({ syncEngine })
@@ -51,6 +54,7 @@ async function main() {
     // Start HTTP server for Telegram Mini App
     webServer = await startWebServer({
         getSyncEngine: () => syncEngine,
+        getSseManager: () => sseManager,
         jwtSecret,
         socketEngine: socketServer.engine
     })
@@ -65,6 +69,7 @@ async function main() {
         console.log('\nShutting down...')
         await happyBot?.stop()
         syncEngine?.stop()
+        sseManager?.stop()
         webServer?.stop()
         process.exit(0)
     }

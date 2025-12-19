@@ -8,11 +8,13 @@ import { configuration } from '../configuration'
 import type { SyncEngine } from '../sync/syncEngine'
 import { createAuthMiddleware, type WebAppEnv } from './middleware/auth'
 import { createAuthRoutes } from './routes/auth'
+import { createEventsRoutes } from './routes/events'
 import { createSessionsRoutes } from './routes/sessions'
 import { createMessagesRoutes } from './routes/messages'
 import { createPermissionsRoutes } from './routes/permissions'
 import { createMachinesRoutes } from './routes/machines'
 import { createCliRoutes } from './routes/cli'
+import type { SSEManager } from '../sse/sseManager'
 import type { Server as BunServer } from 'bun'
 import type { Server as SocketEngine } from '@socket.io/bun-engine'
 import type { WebSocketData } from '@socket.io/bun-engine'
@@ -37,6 +39,7 @@ function findWebappDistDir(): { distDir: string; indexHtmlPath: string } {
 
 function createWebApp(options: {
     getSyncEngine: () => SyncEngine | null
+    getSseManager: () => SSEManager | null
     jwtSecret: Uint8Array
 }): Hono<WebAppEnv> {
     const app = new Hono<WebAppEnv>()
@@ -58,6 +61,7 @@ function createWebApp(options: {
     app.route('/api', createAuthRoutes(options.jwtSecret))
 
     app.use('/api/*', createAuthMiddleware(options.jwtSecret))
+    app.route('/api', createEventsRoutes(options.getSseManager))
     app.route('/api', createSessionsRoutes(options.getSyncEngine))
     app.route('/api', createMessagesRoutes(options.getSyncEngine))
     app.route('/api', createPermissionsRoutes(options.getSyncEngine))
@@ -100,11 +104,13 @@ function createWebApp(options: {
 
 export async function startWebServer(options: {
     getSyncEngine: () => SyncEngine | null
+    getSseManager: () => SSEManager | null
     jwtSecret: Uint8Array
     socketEngine: SocketEngine
 }): Promise<BunServer<WebSocketData>> {
     const app = createWebApp({
         getSyncEngine: options.getSyncEngine,
+        getSseManager: options.getSseManager,
         jwtSecret: options.jwtSecret
     })
 

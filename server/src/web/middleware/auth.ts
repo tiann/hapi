@@ -22,10 +22,11 @@ export function createAuthMiddleware(jwtSecret: Uint8Array): MiddlewareHandler<W
 
         const authorization = c.req.header('authorization')
         const tokenFromHeader = authorization?.startsWith('Bearer ') ? authorization.slice('Bearer '.length) : undefined
-        const token = tokenFromHeader
+        const tokenFromQuery = path === '/api/events' ? c.req.query().token : undefined
+        const token = tokenFromHeader ?? tokenFromQuery
 
         if (!token) {
-            return c.json({ error: 'Missing Authorization header' }, 401)
+            return c.json({ error: 'Missing authorization token' }, 401)
         }
 
         try {

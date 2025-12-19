@@ -1,6 +1,5 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { useQueryClient, type InfiniteData } from '@tanstack/react-query'
-import { io } from 'socket.io-client'
 import type { MessagesResponse, SyncEvent } from '@/types/api'
 import { queryKeys } from '@/lib/query-keys'
 import { upsertMessagesInCache } from '@/lib/messages'
@@ -9,16 +8,32 @@ function isObject(value: unknown): value is Record<string, unknown> {
     return Boolean(value) && typeof value === 'object'
 }
 
-type SocketSubscription = {
+type SSESubscription = {
     all?: boolean
     sessionId?: string
     machineId?: string
 }
 
-export function useSocket(options: {
+function buildEventsUrl(token: string, subscription: SSESubscription): string {
+    const params = new URLSearchParams()
+    params.set('token', token)
+    if (subscription.all) {
+        params.set('all', 'true')
+    }
+    if (subscription.sessionId) {
+        params.set('sessionId', subscription.sessionId)
+    }
+    if (subscription.machineId) {
+        params.set('machineId', subscription.machineId)
+    }
+
+    return `/api/events?${params.toString()}`
+}
+
+export function useSSE(options: {
     enabled: boolean
     token: string
-    subscription?: SocketSubscription
+    subscription?: SSESubscription
     onEvent: (event: SyncEvent) => void
     onConnect?: () => void
     onDisconnect?: (reason: string) => void
@@ -29,8 +44,7 @@ export function useSocket(options: {
     const onConnectRef = useRef(options.onConnect)
     const onDisconnectRef = useRef(options.onDisconnect)
     const onErrorRef = useRef(options.onError)
-    const subscriptionRef = useRef<SocketSubscription>(options.subscription ?? {})
-    const socketRef = useRef<ReturnType<typeof io> | null>(null)
+    const eventSourceRef = useRef<EventSource | null>(null)
 
     useEffect(() => {
         onEventRef.current = options.onEvent
@@ -48,47 +62,32 @@ export function useSocket(options: {
         onDisconnectRef.current = options.onDisconnect
     }, [options.onDisconnect])
 
-    useEffect(() => {
-        subscriptionRef.current = options.subscription ?? {}
-    }, [options.subscription])
+    const subscription = options.subscription ?? {}
+    const subscriptionKey = useMemo(() => {
+        return `${subscription.all ? '1' : '0'}|${subscription.sessionId ?? ''}|${subscription.machineId ?? ''}`
+    }, [subscription.all, subscription.sessionId, subscription.machineId])
 
     useEffect(() => {
         if (!options.enabled) {
-            socketRef.current?.disconnect()
-            socketRef.current = null
+            eventSourceRef.current?.close()
+            eventSourceRef.current = null
             return
         }
 
-        const socket = io('/webapp', {
-            auth: { token: options.token },
-            reconnection: true,
-            reconnectionDelay: 1000,
-            reconnectionDelayMax: 5000,
-            reconnectionAttempts: Infinity
-        })
-        socketRef.current = socket
-
-        const sendSubscribe = () => {
-            socket.emit('subscribe', subscriptionRef.current)
-        }
-        const handleConnect = () => {
-            sendSubscribe()
-            onConnectRef.current?.()
-        }
-        const handleDisconnect = (reason: string) => {
-            onDisconnectRef.current?.(reason)
-        }
+        const url = buildEventsUrl(options.token, subscription)
+        const eventSource = new EventSource(url)
+        eventSourceRef.current = eventSource
 
         const handleSyncEvent = (event: SyncEvent) => {
             if (event.type === 'message-received') {
                 queryClient.setQueryData<InfiniteData<MessagesResponse>>(
                     queryKeys.messages(event.sessionId),
-                    (data) => upsertMessagesInCache(data, [event.message]),
+                    (data) => upsertMessagesInCache(data, [event.message])
                 )
                 // Mark stale so the initial query still fetches history when it mounts.
                 void queryClient.invalidateQueries({
                     queryKey: queryKeys.messages(event.sessionId),
-                    refetchType: 'none',
+                    refetchType: 'none'
                 })
             }
 
@@ -111,44 +110,43 @@ export function useSocket(options: {
             onEventRef.current(event)
         }
 
-        socket.on('update', (event: unknown) => {
-            if (!isObject(event)) return
-            if (typeof event.type !== 'string') return
-            handleSyncEvent(event as SyncEvent)
-        })
+        const handleMessage = (message: MessageEvent<string>) => {
+            if (typeof message.data !== 'string') {
+                return
+            }
 
-        socket.on('connect_error', (error) => {
+            let parsed: unknown
+            try {
+                parsed = JSON.parse(message.data)
+            } catch {
+                return
+            }
+
+            if (!isObject(parsed)) {
+                return
+            }
+            if (typeof parsed.type !== 'string') {
+                return
+            }
+
+            handleSyncEvent(parsed as SyncEvent)
+        }
+
+        eventSource.onmessage = handleMessage
+        eventSource.onopen = () => {
+            onConnectRef.current?.()
+        }
+        eventSource.onerror = (error) => {
             onErrorRef.current?.(error)
-        })
-
-        socket.on('error', (error) => {
-            onErrorRef.current?.(error)
-        })
-
-        socket.on('connect', handleConnect)
-        socket.on('disconnect', handleDisconnect)
-        sendSubscribe()
+            const reason = eventSource.readyState === EventSource.CLOSED ? 'closed' : 'error'
+            onDisconnectRef.current?.(reason)
+        }
 
         return () => {
-            socket.off('connect', handleConnect)
-            socket.off('disconnect', handleDisconnect)
-            socket.disconnect()
-            if (socketRef.current === socket) {
-                socketRef.current = null
+            eventSource.close()
+            if (eventSourceRef.current === eventSource) {
+                eventSourceRef.current = null
             }
         }
-    }, [options.enabled, options.token])
-
-    useEffect(() => {
-        if (!options.enabled) {
-            return
-        }
-
-        const socket = socketRef.current
-        if (!socket) {
-            return
-        }
-
-        socket.emit('subscribe', subscriptionRef.current)
-    }, [options.enabled, options.subscription])
+    }, [options.enabled, options.token, subscriptionKey, queryClient])
 }

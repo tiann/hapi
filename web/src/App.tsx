@@ -4,7 +4,7 @@ import { getTelegramWebApp, isTelegramApp } from '@/hooks/useTelegram'
 import { initializeTheme } from '@/hooks/useTheme'
 import { useAuth } from '@/hooks/useAuth'
 import { useAuthSource } from '@/hooks/useAuthSource'
-import { useSocket } from '@/hooks/useSocket'
+import { useSSE } from '@/hooks/useSSE'
 import { queryKeys } from '@/lib/query-keys'
 import { useMessages } from '@/hooks/queries/useMessages'
 import { useMachines } from '@/hooks/queries/useMachines'
@@ -198,7 +198,7 @@ export function App() {
         void refetchMessages()
     }, [selectedSessionId, refetchMessages, refetchSession])
 
-    const handleSocketConnect = useCallback(() => {
+    const handleSseConnect = useCallback(() => {
         void queryClient.invalidateQueries({ queryKey: queryKeys.sessions })
         if (selectedSessionId) {
             void queryClient.invalidateQueries({ queryKey: queryKeys.session(selectedSessionId) })
@@ -206,9 +206,9 @@ export function App() {
         }
     }, [queryClient, selectedSessionId])
 
-    const handleSocketEvent = useCallback(() => {}, [])
+    const handleSseEvent = useCallback(() => {}, [])
 
-    const socketSubscription = useMemo(() => {
+    const eventSubscription = useMemo(() => {
         if (screen.type === 'session') {
             return { sessionId: screen.sessionId }
         }
@@ -218,12 +218,12 @@ export function App() {
         return { all: true }
     }, [screen])
 
-    useSocket({
+    useSSE({
         enabled: Boolean(api && token),
         token: token ?? '',
-        subscription: socketSubscription,
-        onConnect: handleSocketConnect,
-        onEvent: handleSocketEvent,
+        subscription: eventSubscription,
+        onConnect: handleSseConnect,
+        onEvent: handleSseEvent,
     })
 
     // Loading auth source

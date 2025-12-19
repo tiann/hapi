@@ -11,6 +11,7 @@ import { z } from 'zod'
 import type { Server } from 'socket.io'
 import type { Store } from '../store'
 import type { RpcRegistry } from '../socket/rpcRegistry'
+import type { SSEManager } from '../sse/sseManager'
 import { extractTodoWriteTodosFromMessageContent, TodosSchema, type TodoItem } from './todos'
 
 export type ConnectionStatus = 'disconnected' | 'connected'
@@ -152,7 +153,8 @@ export class SyncEngine {
     constructor(
         private readonly store: Store,
         private readonly io: Server,
-        private readonly rpcRegistry: RpcRegistry
+        private readonly rpcRegistry: RpcRegistry,
+        private readonly sseManager: SSEManager
     ) {
         this.reloadAll()
         this.inactivityTimer = setInterval(() => this.expireInactive(), 5_000)
@@ -196,22 +198,7 @@ export class SyncEngine {
                 machineId: event.machineId
             }
 
-        const rooms = new Set<string>()
-        if (webappEvent.sessionId) {
-            rooms.add(`session:${webappEvent.sessionId}`)
-        }
-        if (webappEvent.machineId) {
-            rooms.add(`machine:${webappEvent.machineId}`)
-        }
-
-        if (webappEvent.type !== 'message-received') {
-            rooms.add('webapp:all')
-        }
-
-        const webappNamespace = this.io.of('/webapp')
-        for (const room of rooms) {
-            webappNamespace.to(room).emit('update', webappEvent)
-        }
+        this.sseManager.broadcast(webappEvent)
     }
 
     getConnectionStatus(): ConnectionStatus {

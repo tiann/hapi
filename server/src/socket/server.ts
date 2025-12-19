@@ -2,20 +2,12 @@ import { Server as Engine } from '@socket.io/bun-engine'
 import { Server } from 'socket.io'
 import type { Store } from '../store'
 import { configuration } from '../configuration'
-import { jwtVerify } from 'jose'
-import { z } from 'zod'
 import { registerCliHandlers } from './handlers/cli'
-import { registerWebappHandlers } from './handlers/webapp'
 import { RpcRegistry } from './rpcRegistry'
 import type { SyncEvent } from '../sync/syncEngine'
 
-const webappJwtPayloadSchema = z.object({
-    uid: z.number()
-})
-
 export type SocketServerDeps = {
     store: Store
-    jwtSecret: Uint8Array
     onWebappEvent?: (event: SyncEvent) => void
     onSessionAlive?: (payload: { sid: string; time: number; thinking?: boolean; mode?: 'local' | 'remote' }) => void
     onSessionEnd?: (payload: { sid: string; time: number }) => void
@@ -73,29 +65,6 @@ export function createSocketServer(deps: SocketServerDeps): {
         onMachineAlive: deps.onMachineAlive,
         onWebappEvent: deps.onWebappEvent
     }))
-
-    const webappNs = io.of('/webapp')
-    webappNs.use(async (socket, next) => {
-        const auth = socket.handshake.auth as Record<string, unknown> | undefined
-        const token = typeof auth?.token === 'string' ? auth.token : null
-        if (!token) {
-            return next(new Error('Missing token'))
-        }
-
-        try {
-            const verified = await jwtVerify(token, deps.jwtSecret, { algorithms: ['HS256'] })
-            const parsed = webappJwtPayloadSchema.safeParse(verified.payload)
-            if (!parsed.success) {
-                return next(new Error('Invalid token payload'))
-            }
-
-            socket.data.telegramUserId = parsed.data.uid
-            next()
-        } catch {
-            return next(new Error('Invalid token'))
-        }
-    })
-    webappNs.on('connection', (socket) => registerWebappHandlers(socket, {}))
 
     return { io, engine, rpcRegistry }
 }
