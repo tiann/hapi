@@ -3,8 +3,8 @@
  */
 
 import { spawn } from 'child_process';
-import { projectPath } from '@/projectPath';
 import { join, resolve } from 'path';
+import { projectPath } from '@/projectPath';
 
 export interface RipgrepResult {
     exitCode: number
@@ -16,16 +16,10 @@ export interface RipgrepOptions {
     cwd?: string
 }
 
-/**
- * Run ripgrep with the given arguments
- * @param args - Array of command line arguments to pass to ripgrep
- * @param options - Options for ripgrep execution
- * @returns Promise with exit code, stdout and stderr
- */
 export function run(args: string[], options?: RipgrepOptions): Promise<RipgrepResult> {
-    const RUNNER_PATH = resolve(join(projectPath(), 'scripts', 'ripgrep_launcher.cjs'));
+    const runnerPath = resolve(join(projectPath(), 'scripts', 'ripgrep_launcher.cjs'));
     return new Promise((resolve, reject) => {
-        const child = spawn('node', [RUNNER_PATH, JSON.stringify(args)], {
+        const child = spawn(process.execPath, [runnerPath, JSON.stringify(args)], {
             stdio: ['pipe', 'pipe', 'pipe'],
             cwd: options?.cwd
         });

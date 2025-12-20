@@ -4,7 +4,8 @@
  * ## Background
  * 
  * We built a command-line JavaScript program with the entrypoint at `dist/index.mjs`.
- * This needs to be run with `node`, but we want to hide deprecation warnings and other 
+ * This needs to be run with a JS runtime (Node.js or Bun). For Node we want to hide
+ * deprecation warnings and other
  * noise from end users by passing specific flags: `--no-warnings --no-deprecation`.
  * 
  * Users don't care about these technical details - they just want a clean experience
@@ -40,10 +41,13 @@
  * 
  * ## The Solution
  * 
- * Since we know exactly what needs to happen (run `dist/index.mjs` with specific 
- * Node.js flags), we can bypass all the wrapper layers and do it directly:
+ * Since we know exactly what needs to happen (run `dist/index.mjs` with the current
+ * runtime), we can bypass all the wrapper layers and do it directly:
  * 
- * `spawn('node', ['--no-warnings', '--no-deprecation', 'dist/index.mjs', ...args])`
+ * `spawn(process.execPath, ['--no-warnings', '--no-deprecation', 'dist/index.mjs', ...args])`
+ *
+ * When running under Bun, we spawn the Bun executable with the entrypoint and
+ * omit Node-specific flags.
  * 
  * This works on all platforms and achieves the same result without any of the 
  * middleman steps that were providing workarounds for Windows vs Linux differences.
@@ -58,17 +62,33 @@ import { existsSync } from 'node:fs';
 /**
  * Spawn the Happy CLI with the given arguments in a cross-platform way.
  * 
- * This function bypasses the wrapper script (bin/happy.mjs) and spawns the 
- * actual CLI entrypoint (dist/index.mjs) directly with Node.js, ensuring
- * compatibility across all platforms including Windows.
+ * This function bypasses the wrapper script (bin/happy.mjs) and spawns the
+ * actual CLI entrypoint (dist/index.mjs) directly with the current runtime
+ * (Node.js or Bun), ensuring compatibility across all platforms including Windows.
  * 
  * @param args - Arguments to pass to the Happy CLI
  * @param options - Spawn options (same as child_process.spawn)
  * @returns ChildProcess instance
  */
+function resolveEntrypointForBun(projectRoot: string): string {
+  const distEntrypoint = join(projectRoot, 'dist', 'index.mjs');
+  if (existsSync(distEntrypoint)) {
+    return distEntrypoint;
+  }
+
+  const srcEntrypoint = join(projectRoot, 'src', 'index.ts');
+  if (existsSync(srcEntrypoint)) {
+    return srcEntrypoint;
+  }
+
+  throw new Error('No CLI entrypoint found for Bun runtime (expected dist/index.mjs or src/index.ts)');
+}
+
 export function spawnHappyCLI(args: string[], options: SpawnOptions = {}): ChildProcess {
   const projectRoot = projectPath();
-  const entrypoint = join(projectRoot, 'dist', 'index.mjs');
+  const distEntrypoint = join(projectRoot, 'dist', 'index.mjs');
+  const isBunRuntime = Boolean((process.versions as Record<string, string | undefined>).bun);
+  const entrypoint = isBunRuntime ? resolveEntrypointForBun(projectRoot) : distEntrypoint;
 
   let directory: string | URL | undefined;
   if ('cwd' in options) {
@@ -76,7 +96,7 @@ export function spawnHappyCLI(args: string[], options: SpawnOptions = {}): Child
   } else {
     directory = process.cwd()
   }
-  // Note: We're actually executing 'node' with the calculated entrypoint path below,
+  // Note: We're executing the current runtime with the calculated entrypoint path below,
   // bypassing the 'happy' wrapper that would normally be found in the shell's PATH.
   // However, we log it as 'happy' here because other engineers are typically looking
   // for when "happy" was started and don't care about the underlying node process
@@ -84,8 +104,8 @@ export function spawnHappyCLI(args: string[], options: SpawnOptions = {}): Child
   const fullCommand = `hapi ${args.join(' ')}`;
   logger.debug(`[SPAWN HAPI CLI] Spawning: ${fullCommand} in ${directory}`);
   
-  // Use the same Node.js flags that the wrapper script uses
-  const nodeArgs = [
+  const spawnCommand = process.execPath;
+  const spawnArgs = isBunRuntime ? [entrypoint, ...args] : [
     '--no-warnings',
     '--no-deprecation',
     entrypoint,
@@ -99,5 +119,5 @@ export function spawnHappyCLI(args: string[], options: SpawnOptions = {}): Child
     throw new Error(errorMessage);
   }
   
-  return spawn('node', nodeArgs, options);
+  return spawn(spawnCommand, spawnArgs, options);
 }
