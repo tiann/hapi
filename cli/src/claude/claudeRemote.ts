@@ -2,7 +2,7 @@ import { EnhancedMode, PermissionMode } from "./loop";
 import { query, type QueryOptions as Options, type SDKMessage, type SDKSystemMessage, AbortError, SDKUserMessage } from '@/claude/sdk'
 import { claudeCheckSession } from "./utils/claudeCheckSession";
 import { join, resolve } from 'node:path';
-import { projectPath } from "@/projectPath";
+import { runtimePath } from "@/projectPath";
 import { parseSpecialCommand } from "@/parsers/specialCommands";
 import { logger } from "@/lib";
 import { PushableAsyncIterable } from "@/utils/PushableAsyncIterable";
@@ -122,7 +122,7 @@ export async function claudeRemote(opts: {
         executable: 'node',
         abort: opts.signal,
         pathToClaudeCodeExecutable: (() => {
-            return resolve(join(projectPath(), 'scripts', 'claude_remote_launcher.cjs'));
+            return resolve(join(runtimePath(), 'scripts', 'claude_remote_launcher.cjs'));
         })(),
     }
 

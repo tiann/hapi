@@ -4,7 +4,7 @@
 
 import { spawn } from 'child_process';
 import { join, resolve } from 'path';
-import { projectPath } from '@/projectPath';
+import { runtimePath } from '@/projectPath';
 
 export interface RipgrepResult {
     exitCode: number
@@ -17,7 +17,7 @@ export interface RipgrepOptions {
 }
 
 export function run(args: string[], options?: RipgrepOptions): Promise<RipgrepResult> {
-    const runnerPath = resolve(join(projectPath(), 'scripts', 'ripgrep_launcher.cjs'));
+    const runnerPath = resolve(join(runtimePath(), 'scripts', 'ripgrep_launcher.cjs'));
     return new Promise((resolve, reject) => {
         const child = spawn(process.execPath, [runnerPath, JSON.stringify(args)], {
             stdio: ['pipe', 'pipe', 'pipe'],

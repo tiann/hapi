@@ -5,7 +5,7 @@
 import { spawn } from 'child_process';
 import { join, resolve } from 'path';
 import { platform, arch } from 'os';
-import { projectPath } from '@/projectPath';
+import { runtimePath } from '@/projectPath';
 
 export interface DifftasticResult {
     exitCode: number
@@ -23,7 +23,7 @@ export interface DifftasticOptions {
 function getBinaryPath(): string {
     const platformName = platform();
     const binaryName = platformName === 'win32' ? 'difft.exe' : 'difft';
-    return resolve(join(projectPath(), 'tools', 'unpacked', binaryName));
+    return resolve(join(runtimePath(), 'tools', 'unpacked', binaryName));
 }
 
 /**

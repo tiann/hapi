@@ -6,12 +6,12 @@ import { randomUUID } from "node:crypto";
 import { logger } from "@/ui/logger";
 import { claudeCheckSession } from "./utils/claudeCheckSession";
 import { getProjectPath } from "./utils/path";
-import { projectPath } from "@/projectPath";
+import { runtimePath } from "@/projectPath";
 import { systemPrompt } from "./utils/systemPrompt";
 
 
 // Get Claude CLI path from project root
-export const claudeCliPath = resolve(join(projectPath(), 'scripts', 'claude_local_launcher.cjs'))
+export const claudeCliPath = resolve(join(runtimePath(), 'scripts', 'claude_local_launcher.cjs'))
 
 export async function claudeLocal(opts: {
     abort: AbortSignal,

@@ -15,7 +15,7 @@ import packageJson from '../../package.json';
 import os from 'node:os';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { hashObject } from '@/utils/deterministicJson';
-import { projectPath } from '@/projectPath';
+import { runtimePath } from '@/projectPath';
 import { resolve, join } from 'node:path';
 import fs from 'node:fs';
 import { startHappyServer } from '@/claude/utils/startHappyServer';
@@ -108,8 +108,8 @@ export async function runCodex(opts: {
         machineId: machineId,
         homeDir: os.homedir(),
         happyHomeDir: configuration.happyHomeDir,
-        happyLibDir: projectPath(),
-        happyToolsDir: resolve(projectPath(), 'tools', 'unpacked'),
+        happyLibDir: runtimePath(),
+        happyToolsDir: resolve(runtimePath(), 'tools', 'unpacked'),
         startedFromDaemon: opts.startedBy === 'daemon',
         hostPid: process.pid,
         startedBy: opts.startedBy || 'terminal',
@@ -521,7 +521,7 @@ export async function runCodex(opts: {
 
     // Start Happy MCP server (HTTP) and prepare STDIO bridge config for Codex
     const happyServer = await startHappyServer(session);
-    const bridgeCommand = join(projectPath(), 'bin', 'happy-mcp.mjs');
+    const bridgeCommand = join(runtimePath(), 'bin', 'happy-mcp.mjs');
     const mcpServers = {
         happy: {
             command: bridgeCommand,

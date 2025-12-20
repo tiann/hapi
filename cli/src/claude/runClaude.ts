@@ -18,7 +18,7 @@ import { notifyDaemonSessionStarted } from '@/daemon/controlClient';
 import { initialMachineMetadata } from '@/daemon/run';
 import { startHappyServer } from '@/claude/utils/startHappyServer';
 import { registerKillSessionHandler } from './registerKillSessionHandler';
-import { projectPath } from '../projectPath';
+import { runtimePath } from '../projectPath';
 import { resolve } from 'node:path';
 
 export interface StartOptions {
@@ -76,8 +76,8 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         machineId: machineId,
         homeDir: os.homedir(),
         happyHomeDir: configuration.happyHomeDir,
-        happyLibDir: projectPath(),
-        happyToolsDir: resolve(projectPath(), 'tools', 'unpacked'),
+        happyLibDir: runtimePath(),
+        happyToolsDir: resolve(runtimePath(), 'tools', 'unpacked'),
         startedFromDaemon: options.startedBy === 'daemon',
         hostPid: process.pid,
         startedBy: options.startedBy || 'terminal',

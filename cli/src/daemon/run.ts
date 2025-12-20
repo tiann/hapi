@@ -18,7 +18,7 @@ import { cleanupDaemonState, isDaemonRunningCurrentlyInstalledHappyVersion, stop
 import { startDaemonControlServer } from './controlServer';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { projectPath } from '@/projectPath';
+import { projectPath, runtimePath } from '@/projectPath';
 
 // Prepare initial metadata
 export const initialMachineMetadata: MachineMetadata = {
@@ -27,7 +27,7 @@ export const initialMachineMetadata: MachineMetadata = {
   happyCliVersion: packageJson.version,
   homeDir: os.homedir(),
   happyHomeDir: configuration.happyHomeDir,
-  happyLibDir: projectPath()
+  happyLibDir: runtimePath()
 };
 
 export async function startDaemon(): Promise<void> {

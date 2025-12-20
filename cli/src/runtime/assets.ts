@@ -1,0 +1,142 @@
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { arch, platform } from 'node:os';
+import * as tar from 'tar';
+import packageJson from '../../package.json';
+import { EMBEDDED_ASSETS } from './embeddedAssets';
+import { isBunCompiled, runtimePath } from '@/projectPath';
+
+const RUNTIME_MARKER = '.runtime-version';
+
+function ensureDirectory(path: string): void {
+    mkdirSync(path, { recursive: true });
+}
+
+function copyAssetFile(sourcePath: string, targetPath: string): void {
+    ensureDirectory(dirname(targetPath));
+    copyFileSync(sourcePath, targetPath);
+    try {
+        const stats = statSync(sourcePath);
+        chmodSync(targetPath, stats.mode);
+    } catch {
+        // Best-effort; permission adjustments are not critical.
+    }
+}
+
+function getPlatformDir(): string {
+    const platformName = platform();
+    const archName = arch();
+
+    if (platformName === 'darwin') {
+        if (archName === 'arm64') return 'arm64-darwin';
+        if (archName === 'x64') return 'x64-darwin';
+    } else if (platformName === 'linux') {
+        if (archName === 'arm64') return 'arm64-linux';
+        if (archName === 'x64') return 'x64-linux';
+    } else if (platformName === 'win32') {
+        if (archName === 'x64') return 'x64-win32';
+    }
+
+    throw new Error(`Unsupported platform: ${archName}-${platformName}`);
+}
+
+function areToolsUnpacked(unpackedPath: string): boolean {
+    if (!existsSync(unpackedPath)) {
+        return false;
+    }
+
+    const isWin = platform() === 'win32';
+    const difftBinary = isWin ? 'difft.exe' : 'difft';
+    const rgBinary = isWin ? 'rg.exe' : 'rg';
+
+    const expectedFiles = [
+        join(unpackedPath, difftBinary),
+        join(unpackedPath, rgBinary),
+        join(unpackedPath, 'ripgrep.node')
+    ];
+
+    return expectedFiles.every((file) => existsSync(file));
+}
+
+function unpackTools(runtimeRoot: string): void {
+    const platformDir = getPlatformDir();
+    const toolsDir = join(runtimeRoot, 'tools');
+    const archivesDir = join(toolsDir, 'archives');
+    const unpackedPath = join(toolsDir, 'unpacked');
+
+    if (areToolsUnpacked(unpackedPath)) {
+        return;
+    }
+
+    rmSync(unpackedPath, { recursive: true, force: true });
+    ensureDirectory(unpackedPath);
+
+    const archives = [
+        `difftastic-${platformDir}.tar.gz`,
+        `ripgrep-${platformDir}.tar.gz`
+    ];
+
+    for (const archiveName of archives) {
+        const archivePath = join(archivesDir, archiveName);
+        if (!existsSync(archivePath)) {
+            throw new Error(`Archive not found: ${archivePath}`);
+        }
+        tar.extract({
+            file: archivePath,
+            cwd: unpackedPath,
+            sync: true,
+            preserveOwner: false
+        });
+    }
+
+    if (platform() !== 'win32') {
+        const files = readdirSync(unpackedPath);
+        for (const file of files) {
+            if (file.endsWith('.node')) {
+                continue;
+            }
+            const filePath = join(unpackedPath, file);
+            const stats = statSync(filePath);
+            if (stats.isFile()) {
+                chmodSync(filePath, 0o755);
+            }
+        }
+    }
+}
+
+function runtimeAssetsReady(runtimeRoot: string): boolean {
+    return (
+        existsSync(join(runtimeRoot, 'scripts', 'ripgrep_launcher.cjs')) &&
+        existsSync(join(runtimeRoot, 'bin', 'happy-mcp.mjs')) &&
+        areToolsUnpacked(join(runtimeRoot, 'tools', 'unpacked'))
+    );
+}
+
+export function ensureRuntimeAssets(): void {
+    if (!isBunCompiled()) {
+        return;
+    }
+
+    const runtimeRoot = runtimePath();
+    const markerPath = join(runtimeRoot, RUNTIME_MARKER);
+
+    if (existsSync(markerPath)) {
+        const markerVersion = readFileSync(markerPath, 'utf-8').trim();
+        if (markerVersion === packageJson.version && runtimeAssetsReady(runtimeRoot)) {
+            return;
+        }
+    }
+
+    ensureDirectory(runtimeRoot);
+
+    for (const asset of EMBEDDED_ASSETS) {
+        if (!existsSync(asset.sourcePath)) {
+            throw new Error(`Embedded asset missing: ${asset.sourcePath}`);
+        }
+        const targetPath = join(runtimeRoot, asset.relativePath);
+        copyAssetFile(asset.sourcePath, targetPath);
+    }
+
+    unpackTools(runtimeRoot);
+    writeFileSync(markerPath, packageJson.version, 'utf-8');
+}

@@ -27,9 +27,11 @@ import { spawnHappyCLI } from './utils/spawnHappyCLI'
 import { claudeCliPath } from './claude/claudeLocal'
 import { execFileSync } from 'node:child_process'
 import { initializeToken } from './ui/tokenInit'
+import { ensureRuntimeAssets } from './runtime/assets'
 
 
 (async () => {
+  ensureRuntimeAssets()
   const args = process.argv.slice(2)
 
   // If --version is passed - do not log, its likely daemon inquiring about our version
