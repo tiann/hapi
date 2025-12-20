@@ -13,6 +13,8 @@ import { isAskUserQuestionToolName } from '@/components/ToolCard/askUserQuestion
 import { getToolPresentation } from '@/components/ToolCard/knownTools'
 import { getToolFullViewComponent, getToolViewComponent } from '@/components/ToolCard/views/_all'
 import { getToolResultViewComponent } from '@/components/ToolCard/views/_results'
+import { usePointerFocusRing } from '@/hooks/usePointerFocusRing'
+import { cn } from '@/lib/utils'
 
 function isObject(value: unknown): value is Record<string, unknown> {
     return Boolean(value) && typeof value === 'object'
@@ -341,6 +343,7 @@ function ToolCardInner(props: ToolCardProps) {
     ))
     const hasBody = showInline || taskSummary !== null || showsPermissionFooter
     const stateColor = statusColorClass(props.block.tool.state)
+    const { suppressFocusRing, onTriggerPointerDown, onTriggerKeyDown, onTriggerBlur } = usePointerFocusRing()
 
     const header = (
         <div className="flex flex-col gap-1">
@@ -378,7 +381,16 @@ function ToolCardInner(props: ToolCardProps) {
             <CardHeader className="p-3 space-y-0">
                 <Dialog>
                     <DialogTrigger asChild>
-                        <button type="button" className="w-full text-left">
+                        <button
+                            type="button"
+                            className={cn(
+                                'w-full text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]',
+                                suppressFocusRing && 'focus-visible:ring-0'
+                            )}
+                            onPointerDown={onTriggerPointerDown}
+                            onKeyDown={onTriggerKeyDown}
+                            onBlur={onTriggerBlur}
+                        >
                             {header}
                         </button>
                     </DialogTrigger>

@@ -1,6 +1,7 @@
 import { diffLines } from 'diff'
 import { useMemo } from 'react'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
+import { usePointerFocusRing } from '@/hooks/usePointerFocusRing'
 import { cn } from '@/lib/utils'
 
 export function DiffView(props: {
@@ -10,6 +11,7 @@ export function DiffView(props: {
     variant?: 'preview' | 'inline'
 }) {
     const variant = props.variant ?? 'preview'
+    const { suppressFocusRing, onTriggerPointerDown, onTriggerKeyDown, onTriggerBlur } = usePointerFocusRing()
 
     const stats = useMemo(() => {
         const oldChars = props.oldString.length
@@ -37,7 +39,16 @@ export function DiffView(props: {
     return (
         <Dialog>
             <DialogTrigger asChild>
-                <button type="button" className="w-full text-left">
+                <button
+                    type="button"
+                    className={cn(
+                        'w-full text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]',
+                        suppressFocusRing && 'focus-visible:ring-0'
+                    )}
+                    onPointerDown={onTriggerPointerDown}
+                    onKeyDown={onTriggerKeyDown}
+                    onBlur={onTriggerBlur}
+                >
                     <div className="overflow-hidden rounded-md border border-[var(--app-border)] bg-[var(--app-subtle-bg)] hover:bg-[var(--app-secondary-bg)] transition-colors">
                         {props.filePath ? (
                             <div className="border-b border-[var(--app-border)] bg-[var(--app-subtle-bg)] px-2 py-1 text-xs text-[var(--app-hint)] truncate">
