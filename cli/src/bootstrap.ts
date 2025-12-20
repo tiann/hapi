@@ -2,3 +2,5 @@
 process.env.DEV = 'false';
 
 await import('./index');
+
+export {};

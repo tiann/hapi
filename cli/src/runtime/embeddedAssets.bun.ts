@@ -10,7 +10,6 @@ import ripgrepArchiveLicense from '../../tools/archives/ripgrep-LICENSE' assert 
 import difftasticLicense from '../../tools/licenses/difftastic-LICENSE' assert { type: 'file' };
 import ripgrepLicense from '../../tools/licenses/ripgrep-LICENSE' assert { type: 'file' };
 
-
 export interface EmbeddedAsset {
     relativePath: string;
     sourcePath: string;

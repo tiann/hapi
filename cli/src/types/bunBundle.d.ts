@@ -8,4 +8,6 @@ declare module 'bun:bundle' {
             | 'HAPI_TARGET_WIN32_X64'
             | 'HAPI_TARGET_WIN32_ARM64';
     }
+
+    export function feature(name: Registry['features']): boolean;
 }
