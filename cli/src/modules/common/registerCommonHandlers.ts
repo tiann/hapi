@@ -3,10 +3,11 @@ import { exec, ExecOptions } from 'child_process';
 import { promisify } from 'util';
 import { readFile, writeFile, readdir, stat } from 'fs/promises';
 import { createHash } from 'crypto';
-import { join } from 'path';
+import { join, resolve } from 'path';
 import { run as runRipgrep } from '@/modules/ripgrep/index';
 import { run as runDifftastic } from '@/modules/difftastic/index';
 import { RpcHandlerManager } from '../../api/rpc/RpcHandlerManager';
+import { registerGitHandlers } from './gitHandlers';
 import { validatePath } from './pathSecurity';
 
 const execAsync = promisify(exec);
@@ -203,7 +204,8 @@ export function registerCommonHandlers(rpcHandlerManager: RpcHandlerManager, wor
         }
 
         try {
-            const buffer = await readFile(data.path);
+            const resolvedPath = resolve(workingDirectory, data.path);
+            const buffer = await readFile(resolvedPath);
             const content = buffer.toString('base64');
             return { success: true, content };
         } catch (error) {
@@ -480,4 +482,6 @@ export function registerCommonHandlers(rpcHandlerManager: RpcHandlerManager, wor
             };
         }
     });
+
+    registerGitHandlers(rpcHandlerManager, workingDirectory);
 }

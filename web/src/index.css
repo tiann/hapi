@@ -24,6 +24,13 @@
     --app-diff-removed-bg: #ffeef0;
     --app-diff-removed-text: #24292e;
 
+    /* Git status colors (light) */
+    --app-git-staged-color: #34C759;
+    --app-git-unstaged-color: #FF9500;
+    --app-git-deleted-color: #FF3B30;
+    --app-git-renamed-color: #2563eb;
+    --app-git-untracked-color: #8E8E93;
+
     /* Badge colors (light) */
     --app-badge-warning-bg: rgba(245, 158, 11, 0.2);
     --app-badge-warning-text: #b45309;
@@ -57,6 +64,13 @@
     --app-diff-added-text: #c9d1d9;
     --app-diff-removed-bg: #3f1b23;
     --app-diff-removed-text: #c9d1d9;
+
+    /* Git status colors (dark) */
+    --app-git-staged-color: #4ade80;
+    --app-git-unstaged-color: #f59e0b;
+    --app-git-deleted-color: #f87171;
+    --app-git-renamed-color: #60a5fa;
+    --app-git-untracked-color: #9ca3af;
 
     /* Badge colors (dark) */
     --app-badge-warning-bg: rgba(251, 191, 36, 0.2);

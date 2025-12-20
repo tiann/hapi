@@ -124,6 +124,52 @@ export type SpawnResponse =
     | { type: 'success'; sessionId: string }
     | { type: 'error'; message: string }
 
+export type GitCommandResponse = {
+    success: boolean
+    stdout?: string
+    stderr?: string
+    exitCode?: number
+    error?: string
+}
+
+export type FileSearchItem = {
+    fileName: string
+    filePath: string
+    fullPath: string
+    fileType: 'file' | 'folder'
+}
+
+export type FileSearchResponse = {
+    success: boolean
+    files?: FileSearchItem[]
+    error?: string
+}
+
+export type FileReadResponse = {
+    success: boolean
+    content?: string
+    error?: string
+}
+
+export type GitFileStatus = {
+    fileName: string
+    filePath: string
+    fullPath: string
+    status: 'modified' | 'added' | 'deleted' | 'renamed' | 'untracked' | 'conflicted'
+    isStaged: boolean
+    linesAdded: number
+    linesRemoved: number
+    oldPath?: string
+}
+
+export type GitStatusFiles = {
+    stagedFiles: GitFileStatus[]
+    unstagedFiles: GitFileStatus[]
+    branch: string | null
+    totalStaged: number
+    totalUnstaged: number
+}
+
 export type SyncEvent =
     | { type: 'session-added'; sessionId: string; data?: unknown }
     | { type: 'session-updated'; sessionId: string; data?: unknown }

@@ -112,6 +112,20 @@ export type FetchMessagesResult =
     | { ok: true; messages: DecryptedMessage[] }
     | { ok: false; status: number | null; error: string }
 
+export type RpcCommandResponse = {
+    success: boolean
+    stdout?: string
+    stderr?: string
+    exitCode?: number
+    error?: string
+}
+
+export type RpcReadFileResponse = {
+    success: boolean
+    content?: string
+    error?: string
+}
+
 export type SyncEventType =
     | 'session-added'
     | 'session-updated'
@@ -647,6 +661,26 @@ export class SyncEngine {
         } catch (error) {
             return { type: 'error', message: error instanceof Error ? error.message : String(error) }
         }
+    }
+
+    async getGitStatus(sessionId: string, cwd?: string): Promise<RpcCommandResponse> {
+        return await this.sessionRpc(sessionId, 'git-status', { cwd }) as RpcCommandResponse
+    }
+
+    async getGitDiffNumstat(sessionId: string, options: { cwd?: string; staged?: boolean }): Promise<RpcCommandResponse> {
+        return await this.sessionRpc(sessionId, 'git-diff-numstat', options) as RpcCommandResponse
+    }
+
+    async getGitDiffFile(sessionId: string, options: { cwd?: string; filePath: string; staged?: boolean }): Promise<RpcCommandResponse> {
+        return await this.sessionRpc(sessionId, 'git-diff-file', options) as RpcCommandResponse
+    }
+
+    async readSessionFile(sessionId: string, path: string): Promise<RpcReadFileResponse> {
+        return await this.sessionRpc(sessionId, 'readFile', { path }) as RpcReadFileResponse
+    }
+
+    async runRipgrep(sessionId: string, args: string[], cwd?: string): Promise<RpcCommandResponse> {
+        return await this.sessionRpc(sessionId, 'ripgrep', { args, cwd }) as RpcCommandResponse
     }
 
     private async sessionRpc(sessionId: string, method: string, params: unknown): Promise<unknown> {

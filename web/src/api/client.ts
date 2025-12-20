@@ -1,5 +1,8 @@
 import type {
     AuthResponse,
+    FileReadResponse,
+    FileSearchResponse,
+    GitCommandResponse,
     MachinesResponse,
     MessagesResponse,
     SpawnResponse,
@@ -69,6 +72,43 @@ export class ApiClient {
         const qs = params.toString()
         const url = `/api/sessions/${encodeURIComponent(sessionId)}/messages${qs ? `?${qs}` : ''}`
         return await this.request<MessagesResponse>(url)
+    }
+
+    async getGitStatus(sessionId: string): Promise<GitCommandResponse> {
+        return await this.request<GitCommandResponse>(`/api/sessions/${encodeURIComponent(sessionId)}/git-status`)
+    }
+
+    async getGitDiffNumstat(sessionId: string, staged: boolean): Promise<GitCommandResponse> {
+        const params = new URLSearchParams()
+        params.set('staged', staged ? 'true' : 'false')
+        return await this.request<GitCommandResponse>(`/api/sessions/${encodeURIComponent(sessionId)}/git-diff-numstat?${params.toString()}`)
+    }
+
+    async getGitDiffFile(sessionId: string, path: string, staged?: boolean): Promise<GitCommandResponse> {
+        const params = new URLSearchParams()
+        params.set('path', path)
+        if (staged !== undefined) {
+            params.set('staged', staged ? 'true' : 'false')
+        }
+        return await this.request<GitCommandResponse>(`/api/sessions/${encodeURIComponent(sessionId)}/git-diff-file?${params.toString()}`)
+    }
+
+    async searchSessionFiles(sessionId: string, query: string, limit?: number): Promise<FileSearchResponse> {
+        const params = new URLSearchParams()
+        if (query) {
+            params.set('query', query)
+        }
+        if (limit !== undefined) {
+            params.set('limit', `${limit}`)
+        }
+        const qs = params.toString()
+        return await this.request<FileSearchResponse>(`/api/sessions/${encodeURIComponent(sessionId)}/files${qs ? `?${qs}` : ''}`)
+    }
+
+    async readSessionFile(sessionId: string, path: string): Promise<FileReadResponse> {
+        const params = new URLSearchParams()
+        params.set('path', path)
+        return await this.request<FileReadResponse>(`/api/sessions/${encodeURIComponent(sessionId)}/file?${params.toString()}`)
     }
 
     async sendMessage(sessionId: string, text: string, localId?: string | null): Promise<void> {

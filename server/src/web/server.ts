@@ -13,6 +13,7 @@ import { createSessionsRoutes } from './routes/sessions'
 import { createMessagesRoutes } from './routes/messages'
 import { createPermissionsRoutes } from './routes/permissions'
 import { createMachinesRoutes } from './routes/machines'
+import { createGitRoutes } from './routes/git'
 import { createCliRoutes } from './routes/cli'
 import type { SSEManager } from '../sse/sseManager'
 import type { Server as BunServer } from 'bun'
@@ -66,6 +67,7 @@ function createWebApp(options: {
     app.route('/api', createMessagesRoutes(options.getSyncEngine))
     app.route('/api', createPermissionsRoutes(options.getSyncEngine))
     app.route('/api', createMachinesRoutes(options.getSyncEngine))
+    app.route('/api', createGitRoutes(options.getSyncEngine))
 
     const { distDir, indexHtmlPath } = findWebappDistDir()
 

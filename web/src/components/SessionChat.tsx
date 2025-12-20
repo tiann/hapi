@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react'
+import { useNavigate } from '@tanstack/react-router'
 import { AssistantRuntimeProvider } from '@assistant-ui/react'
 import type { ApiClient } from '@/api/client'
 import type { DecryptedMessage, ModelMode, PermissionMode, Session } from '@/types/api'
@@ -30,6 +31,7 @@ export function SessionChat(props: {
     onRetryMessage?: (localId: string) => void
 }) {
     const { haptic } = usePlatform()
+    const navigate = useNavigate()
     const controlsDisabled = !props.session.active
     const normalizedCacheRef = useRef<Map<string, { source: DecryptedMessage; normalized: NormalizedMessage | null }>>(new Map())
     const blocksByIdRef = useRef<Map<string, ChatBlock>>(new Map())
@@ -106,6 +108,13 @@ export function SessionChat(props: {
         props.onRefresh()
     }, [abortSession, props.onRefresh])
 
+    const handleViewFiles = useCallback(() => {
+        navigate({
+            to: '/sessions/$sessionId/files',
+            params: { sessionId: props.session.id }
+        })
+    }, [navigate, props.session.id])
+
     const runtime = useHappyRuntime({
         session: props.session,
         blocks: reconciled.blocks,
@@ -166,6 +175,7 @@ export function SessionChat(props: {
             <SessionHeader
                 session={props.session}
                 onBack={props.onBack}
+                onViewFiles={props.session.metadata?.path ? handleViewFiles : undefined}
             />
 
             {controlsDisabled ? (

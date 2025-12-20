@@ -21,6 +21,8 @@ import { useSession } from '@/hooks/queries/useSession'
 import { useSessions } from '@/hooks/queries/useSessions'
 import { useSendMessage } from '@/hooks/mutations/useSendMessage'
 import { queryKeys } from '@/lib/query-keys'
+import FilesPage from '@/routes/sessions/files'
+import FilePage from '@/routes/sessions/file'
 
 function SessionsPage() {
     const { api } = useAppContext()
@@ -193,6 +195,26 @@ const sessionRoute = createRoute({
     component: SessionPage,
 })
 
+const sessionFilesRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: '/sessions/$sessionId/files',
+    component: FilesPage,
+})
+
+const sessionFileRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: '/sessions/$sessionId/file',
+    validateSearch: (search: Record<string, unknown>) => ({
+        path: typeof search.path === 'string' ? search.path : '',
+        staged: search.staged === true || search.staged === 'true'
+            ? true
+            : search.staged === false || search.staged === 'false'
+                ? false
+                : undefined
+    }),
+    component: FilePage,
+})
+
 const machinesRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: '/machines',
@@ -209,6 +231,8 @@ export const routeTree = rootRoute.addChildren([
     indexRoute,
     sessionsRoute,
     sessionRoute,
+    sessionFilesRoute,
+    sessionFileRoute,
     machinesRoute,
     spawnRoute,
 ])
