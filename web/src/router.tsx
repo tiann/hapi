@@ -240,7 +240,11 @@ export const routeTree = rootRoute.addChildren([
 type RouterHistory = Parameters<typeof createRouter>[0]['history']
 
 export function createAppRouter(history?: RouterHistory) {
-    return createRouter({ routeTree, history })
+    return createRouter({
+        routeTree,
+        history,
+        scrollRestoration: true,
+    })
 }
 
 export type AppRouter = ReturnType<typeof createAppRouter>
