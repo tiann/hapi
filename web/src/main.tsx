@@ -2,15 +2,38 @@ import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { QueryClientProvider } from '@tanstack/react-query'
 import { ReactQueryDevtools } from '@tanstack/react-query-devtools'
-import { App } from './App'
+import { RouterProvider, createMemoryHistory } from '@tanstack/react-router'
 import './index.css'
 import { registerSW } from 'virtual:pwa-register'
-import { isTelegramEnvironment, loadTelegramSdk } from './hooks/useTelegram'
+import { getTelegramWebApp, isTelegramEnvironment, loadTelegramSdk } from './hooks/useTelegram'
 import { queryClient } from './lib/query-client'
+import { createAppRouter } from './router'
+
+function getStartParam(): string | null {
+    const query = new URLSearchParams(window.location.search)
+    const fromQuery = query.get('startapp') || query.get('tgWebAppStartParam')
+    if (fromQuery) return fromQuery
+
+    return getTelegramWebApp()?.initDataUnsafe?.start_param ?? null
+}
+
+function getDeepLinkedSessionId(): string | null {
+    const startParam = getStartParam()
+    if (startParam?.startsWith('session_')) {
+        return startParam.slice('session_'.length)
+    }
+    return null
+}
+
+function getInitialPath(): string {
+    const sessionId = getDeepLinkedSessionId()
+    return sessionId ? `/sessions/${sessionId}` : '/sessions'
+}
 
 async function bootstrap() {
     // Only load Telegram SDK in Telegram environment (with 3s timeout)
-    if (isTelegramEnvironment()) {
+    const isTelegram = isTelegramEnvironment()
+    if (isTelegram) {
         await loadTelegramSdk()
     }
 
@@ -35,10 +58,15 @@ async function bootstrap() {
         }
     })
 
+    const history = isTelegram
+        ? createMemoryHistory({ initialEntries: [getInitialPath()] })
+        : undefined
+    const router = createAppRouter(history)
+
     ReactDOM.createRoot(document.getElementById('root')!).render(
         <React.StrictMode>
             <QueryClientProvider client={queryClient}>
-                <App />
+                <RouterProvider router={router} />
                 {import.meta.env.DEV ? <ReactQueryDevtools initialIsOpen={false} /> : null}
             </QueryClientProvider>
         </React.StrictMode>
