@@ -299,13 +299,29 @@ export const knownTools: Record<string, {
     AskUserQuestion: {
         icon: () => <QuestionIcon className={DEFAULT_ICON_CLASS} />,
         title: (opts) => {
-            const first = isObject(opts.input) && Array.isArray(opts.input.questions) ? opts.input.questions[0] : null
-            const header = isObject(first) && typeof first.header === 'string' ? first.header.trim() : ''
+            const questions = isObject(opts.input) && Array.isArray(opts.input.questions)
+                ? opts.input.questions : []
+            const count = questions.length
+            const first = questions[0] ?? null
+            const header = isObject(first) && typeof first.header === 'string'
+                ? first.header.trim() : ''
+
+            if (count > 1) {
+                return `${count} Questions`
+            }
             return header.length > 0 ? header : 'Question'
         },
         subtitle: (opts) => {
-            const first = isObject(opts.input) && Array.isArray(opts.input.questions) ? opts.input.questions[0] : null
-            const question = isObject(first) && typeof first.question === 'string' ? first.question.trim() : ''
+            const questions = isObject(opts.input) && Array.isArray(opts.input.questions)
+                ? opts.input.questions : []
+            const count = questions.length
+            const first = questions[0] ?? null
+            const question = isObject(first) && typeof first.question === 'string'
+                ? first.question.trim() : ''
+
+            if (count > 1 && question.length > 0) {
+                return truncate(question, 100) + ` (+${count - 1} more)`
+            }
             return question.length > 0 ? truncate(question, 120) : null
         },
         minimal: true
@@ -313,13 +329,29 @@ export const knownTools: Record<string, {
     ask_user_question: {
         icon: () => <QuestionIcon className={DEFAULT_ICON_CLASS} />,
         title: (opts) => {
-            const first = isObject(opts.input) && Array.isArray(opts.input.questions) ? opts.input.questions[0] : null
-            const header = isObject(first) && typeof first.header === 'string' ? first.header.trim() : ''
+            const questions = isObject(opts.input) && Array.isArray(opts.input.questions)
+                ? opts.input.questions : []
+            const count = questions.length
+            const first = questions[0] ?? null
+            const header = isObject(first) && typeof first.header === 'string'
+                ? first.header.trim() : ''
+
+            if (count > 1) {
+                return `${count} Questions`
+            }
             return header.length > 0 ? header : 'Question'
         },
         subtitle: (opts) => {
-            const first = isObject(opts.input) && Array.isArray(opts.input.questions) ? opts.input.questions[0] : null
-            const question = isObject(first) && typeof first.question === 'string' ? first.question.trim() : ''
+            const questions = isObject(opts.input) && Array.isArray(opts.input.questions)
+                ? opts.input.questions : []
+            const count = questions.length
+            const first = questions[0] ?? null
+            const question = isObject(first) && typeof first.question === 'string'
+                ? first.question.trim() : ''
+
+            if (count > 1 && question.length > 0) {
+                return truncate(question, 100) + ` (+${count - 1} more)`
+            }
             return question.length > 0 ? truncate(question, 120) : null
         },
         minimal: true

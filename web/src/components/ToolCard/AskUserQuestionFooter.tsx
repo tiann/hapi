@@ -292,18 +292,18 @@ export function AskUserQuestionFooter(props: {
                 <div className="mt-3">
                     <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0 flex-1">
-                            <div className="flex items-center gap-2">
-                                {questions[clampedStep]?.header ? (
+                            {questions[clampedStep]?.header ? (
+                                <div className="flex items-center gap-2">
                                     <Badge variant="default">
                                         {questions[clampedStep].header}
                                     </Badge>
-                                ) : null}
-                                <Badge variant="default">
-                                    {mode === 'multi' ? 'Multi' : 'Single'}
-                                </Badge>
-                            </div>
+                                </div>
+                            ) : null}
                             {questions[clampedStep]?.question ? (
-                                <div className="mt-2 text-sm text-[var(--app-fg)] break-words">
+                                <div className={cn(
+                                    "text-sm text-[var(--app-fg)] break-words",
+                                    questions[clampedStep]?.header ? "mt-2" : ""
+                                )}>
                                     {questions[clampedStep].question}
                                 </div>
                             ) : null}

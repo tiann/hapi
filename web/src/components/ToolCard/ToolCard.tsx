@@ -386,20 +386,32 @@ function ToolCardInner(props: ToolCardProps) {
                         <DialogHeader>
                             <DialogTitle>{toolTitle}</DialogTitle>
                         </DialogHeader>
-                        <div className="mt-3 flex max-h-[75vh] flex-col gap-4 overflow-auto">
-                            <div>
-                                <div className="mb-1 text-xs font-medium text-[var(--app-hint)]">Input</div>
-                                {FullToolView ? (
-                                    <FullToolView block={props.block} metadata={props.metadata} />
-                                ) : (
-                                    renderToolInput(props.block)
-                                )}
-                            </div>
-                            <div>
-                                <div className="mb-1 text-xs font-medium text-[var(--app-hint)]">Result</div>
-                                <ResultToolView block={props.block} metadata={props.metadata} />
-                            </div>
-                        </div>
+                        {(() => {
+                            const isAskUserQuestionWithAnswers = isAskUserQuestion
+                                && permission?.answers
+                                && Object.keys(permission.answers).length > 0
+
+                            return (
+                                <div className="mt-3 flex max-h-[75vh] flex-col gap-4 overflow-auto">
+                                    <div>
+                                        <div className="mb-1 text-xs font-medium text-[var(--app-hint)]">
+                                            {isAskUserQuestionWithAnswers ? 'Questions & Answers' : 'Input'}
+                                        </div>
+                                        {FullToolView ? (
+                                            <FullToolView block={props.block} metadata={props.metadata} />
+                                        ) : (
+                                            renderToolInput(props.block)
+                                        )}
+                                    </div>
+                                    {!isAskUserQuestionWithAnswers && (
+                                        <div>
+                                            <div className="mb-1 text-xs font-medium text-[var(--app-hint)]">Result</div>
+                                            <ResultToolView block={props.block} metadata={props.metadata} />
+                                        </div>
+                                    )}
+                                </div>
+                            )
+                        })()}
                     </DialogContent>
                 </Dialog>
             </CardHeader>
