@@ -50,9 +50,15 @@ export function useGitStatusFiles(api: ApiClient | null, sessionId: string | nul
         enabled: Boolean(api && sessionId),
     })
 
+    const queryError = query.error instanceof Error
+        ? query.error.message
+        : query.error
+            ? 'Git status unavailable'
+            : null
+
     return {
         status: query.data?.status ?? null,
-        error: query.data?.error ?? null,
+        error: queryError ?? query.data?.error ?? null,
         isLoading: query.isLoading,
         refetch: query.refetch
     }

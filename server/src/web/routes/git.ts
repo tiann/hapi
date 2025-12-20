@@ -155,11 +155,12 @@ export function createGitRoutes(getSyncEngine: () => SyncEngine | null): Hono<We
         }
 
         const result = await runRpc(() => engine.runRipgrep(sessionResult.sessionId, args, sessionPath))
-        if (!('success' in result) || !result.success || !result.stdout) {
+        if (!result.success) {
             return c.json({ success: false, error: result.error ?? 'Failed to list files' })
         }
 
-        const files = result.stdout
+        const stdout = result.stdout ?? ''
+        const files = stdout
             .split('\n')
             .map((line) => line.trim())
             .filter((line) => line.length > 0)

@@ -33,9 +33,15 @@ export function useSessionFileSearch(
         enabled,
     })
 
+    const queryError = result.error instanceof Error
+        ? result.error.message
+        : result.error
+            ? 'Failed to search files'
+            : null
+
     return {
         files: result.data?.files ?? [],
-        error: result.data?.error ?? null,
+        error: queryError ?? result.data?.error ?? null,
         isLoading: result.isLoading,
         refetch: result.refetch
     }
