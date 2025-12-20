@@ -7,7 +7,8 @@ Free. Open source. Code anywhere.
 ## Installation
 
 ```bash
-npm install -g hapi
+# Download the prebuilt hapi binary for your platform
+# (macOS/Linux/Windows x64/arm64) and place it on your PATH.
 ```
 
 ## Usage
@@ -25,6 +26,7 @@ This will:
 
 - `hapi auth` – Manage authentication
 - `hapi codex` – Start Codex mode
+- `hapi mcp` – Start MCP stdio bridge
 - `hapi connect` – Not available in direct-connect mode
 - `hapi notify` – Not available in direct-connect mode
 - `hapi daemon` – Manage background service
@@ -43,16 +45,30 @@ This will:
 
 - `HAPPY_BOT_URL` - Bot URL (default: http://localhost:3006)
 - `CLI_API_TOKEN` - Shared secret for bot authentication (required)
-- `HAPPY_HOME_DIR` - Custom home directory for hapi data (default: ~/.happy)
+- `HAPI_HOME_DIR` - Custom home directory for hapi data (default: ~/.config/hapi)
 - `HAPPY_EXPERIMENTAL` - Enable experimental features (set to `true`, `1`, or `yes`)
 
 ## Requirements
 
-- Node.js >= 20.0.0
-  - Required by `eventsource-parser@3.0.5`, which is required by
-  `@modelcontextprotocol/sdk`, which we used to implement permission forwarding
-  to mobile app
+- Prebuilt hapi binary (no Bun or Node required at runtime)
 - Claude CLI installed & logged in (`claude` command available in PATH)
+- Bun (for building from source)
+
+## Building the executable
+
+```bash
+# From repo root
+bun run build:cli:exe
+bun run build:cli:exe -- --target bun-darwin-x64
+
+# Platform-only target uses the host arch
+bun run build:cli:exe -- --target bun-linux
+
+# Build all targets
+bun run build:cli:exe:all
+```
+
+Note: Windows arm64 builds require arm64 tool archives in `cli/tools/archives`.
 
 ## License
 

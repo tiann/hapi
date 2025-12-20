@@ -23,6 +23,7 @@ import {
     AbortError
 } from './types'
 import { getDefaultClaudeCodePath, getCleanEnv, logDebug, streamToStdin } from './utils'
+import { withBunRuntimeEnv } from '@/utils/bunRuntime'
 import type { Writable } from 'node:stream'
 import { logger } from '@/ui/logger'
 
@@ -262,7 +263,7 @@ export function query(config: {
             customSystemPrompt,
             cwd,
             disallowedTools = [],
-            executable = 'node',
+            executable = process.execPath,
             executableArgs = [],
             maxTurns,
             mcpServers,
@@ -320,7 +321,7 @@ export function query(config: {
     }
 
     // Determine how to spawn Claude Code
-    // - If it's a .js/.cjs file → spawn('node', [path, ...args])
+    // - If it's a .js/.cjs file → spawn(current runtime, [path, ...args])
     // - If it's just 'claude' command → spawn('claude', args) with shell on Windows
     // - If it's a full path to binary → spawn(path, args)
     const isJsFile = pathToClaudeCodeExecutable.endsWith('.js') || pathToClaudeCodeExecutable.endsWith('.cjs')
@@ -338,7 +339,8 @@ export function query(config: {
 
     // Spawn Claude Code process
     // Use clean env for global claude to avoid local node_modules/.bin taking precedence
-    const spawnEnv = isCommandOnly ? getCleanEnv() : process.env
+    const baseEnv = isCommandOnly ? getCleanEnv() : process.env
+    const spawnEnv = withBunRuntimeEnv(baseEnv)
     logDebug(`Spawning Claude Code process: ${spawnCommand} ${spawnArgs.join(' ')} (using ${isCommandOnly ? 'clean' : 'normal'} env)`)
 
     const child = spawn(spawnCommand, spawnArgs, {

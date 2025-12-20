@@ -5,7 +5,9 @@ import packageJson from '../package.json';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const bunRuntime = (globalThis as typeof globalThis & { Bun?: { isCompiled?: boolean } }).Bun;
-const isCompiled = Boolean(bunRuntime?.isCompiled);
+const argv1 = process.argv[1] ?? '';
+const bunFsMarker = argv1.includes('$bunfs');
+const isCompiled = Boolean(bunRuntime?.isCompiled) || bunFsMarker;
 
 export function projectPath(): string {
     return resolve(__dirname, '..');

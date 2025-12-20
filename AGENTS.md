@@ -8,7 +8,7 @@ Bun workspaces monorepo with three packages:
 
 | Package | Path | Purpose |
 |---------|------|---------|
-| `hapi` | `cli/` | CLI tool (npm package) - `hapi` / `hapi-mcp` commands |
+| `hapi` | `cli/` | CLI tool (single executable) - `hapi` / `hapi mcp` |
 | `hapi-server` | `server/` | API server + Telegram bot (serves `web/dist/`) |
 | `hapi-web` | `web/` | Web frontend / Mini App / PWA (Vite → `dist/`) |
 

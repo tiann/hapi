@@ -3,6 +3,7 @@
 
 # Build output
 **/dist/
+**/dist-exe/
 **/*.tsbuildinfo
 
 # Env files (can contain secrets)

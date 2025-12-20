@@ -8,6 +8,7 @@ import { claudeCheckSession } from "./utils/claudeCheckSession";
 import { getProjectPath } from "./utils/path";
 import { runtimePath } from "@/projectPath";
 import { systemPrompt } from "./utils/systemPrompt";
+import { withBunRuntimeEnv } from "@/utils/bunRuntime";
 
 
 // Get Claude CLI path from project root
@@ -108,11 +109,11 @@ export async function claudeLocal(opts: {
             logger.debug(`[ClaudeLocal] Spawning launcher: ${claudeCliPath}`);
             logger.debug(`[ClaudeLocal] Args: ${JSON.stringify(args)}`);
 
-            const child = spawn('node', [claudeCliPath, ...args], {
+            const child = spawn(process.execPath, [claudeCliPath, ...args], {
                 stdio: ['inherit', 'inherit', 'inherit', 'pipe'],
                 signal: opts.abort,
                 cwd: opts.path,
-                env,
+                env: withBunRuntimeEnv(env),
             });
 
             // Listen to the custom fd (fd 3) for thinking state tracking

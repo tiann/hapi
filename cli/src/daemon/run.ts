@@ -1,6 +1,5 @@
 import fs from 'fs/promises';
 import os from 'os';
-import * as tmp from 'tmp';
 
 import { ApiClient } from '@/api/api';
 import { TrackedSession } from './types';
@@ -233,14 +232,14 @@ export async function startDaemon(): Promise<void> {
           if (options.agent === 'codex') {
 
             // Create a temporary directory for Codex
-            const codexHomeDir = tmp.dirSync();
+            const codexHomeDir = await fs.mkdtemp(join(os.tmpdir(), 'hapi-codex-'));
 
             // Write the token to the temporary directory
-            fs.writeFile(join(codexHomeDir.name, 'auth.json'), options.token);
+            await fs.writeFile(join(codexHomeDir, 'auth.json'), options.token);
 
             // Set the environment variable for Codex
             extraEnv = {
-              CODEX_HOME: codexHomeDir.name
+              CODEX_HOME: codexHomeDir
             };
           } else { // Assuming claude
             extraEnv = {

@@ -119,7 +119,7 @@ export async function claudeRemote(opts: {
         allowedTools: initial.mode.allowedTools ? initial.mode.allowedTools.concat(opts.allowedTools) : opts.allowedTools,
         disallowedTools: initial.mode.disallowedTools,
         canCallTool: (toolName: string, input: unknown, options: { signal: AbortSignal }) => opts.canCallTool(toolName, input, mode, options),
-        executable: 'node',
+        executable: process.execPath,
         abort: opts.signal,
         pathToClaudeCodeExecutable: (() => {
             return resolve(join(runtimePath(), 'scripts', 'claude_remote_launcher.cjs'));

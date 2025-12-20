@@ -5,6 +5,7 @@
 import { spawn } from 'child_process';
 import { join, resolve } from 'path';
 import { runtimePath } from '@/projectPath';
+import { withBunRuntimeEnv } from '@/utils/bunRuntime';
 
 export interface RipgrepResult {
     exitCode: number
@@ -21,7 +22,8 @@ export function run(args: string[], options?: RipgrepOptions): Promise<RipgrepRe
     return new Promise((resolve, reject) => {
         const child = spawn(process.execPath, [runnerPath, JSON.stringify(args)], {
             stdio: ['pipe', 'pipe', 'pipe'],
-            cwd: options?.cwd
+            cwd: options?.cwd,
+            env: withBunRuntimeEnv()
         });
 
         let stdout = '';

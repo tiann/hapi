@@ -55,7 +55,7 @@
 
 import { spawn, SpawnOptions, type ChildProcess } from 'child_process';
 import { join } from 'node:path';
-import { projectPath } from '@/projectPath';
+import { isBunCompiled, projectPath } from '@/projectPath';
 import { logger } from '@/ui/logger';
 import { existsSync } from 'node:fs';
 
@@ -84,11 +84,38 @@ function resolveEntrypointForBun(projectRoot: string): string {
   throw new Error('No CLI entrypoint found for Bun runtime (expected dist/index.mjs or src/index.ts)');
 }
 
-export function spawnHappyCLI(args: string[], options: SpawnOptions = {}): ChildProcess {
+export interface HappyCliCommand {
+  command: string;
+  args: string[];
+}
+
+export function getHappyCliCommand(args: string[]): HappyCliCommand {
+  if (isBunCompiled()) {
+    return {
+      command: process.execPath,
+      args
+    };
+  }
+
   const projectRoot = projectPath();
   const distEntrypoint = join(projectRoot, 'dist', 'index.mjs');
   const isBunRuntime = Boolean((process.versions as Record<string, string | undefined>).bun);
   const entrypoint = isBunRuntime ? resolveEntrypointForBun(projectRoot) : distEntrypoint;
+
+  const spawnArgs = isBunRuntime ? [entrypoint, ...args] : [
+    '--no-warnings',
+    '--no-deprecation',
+    entrypoint,
+    ...args
+  ];
+
+  return {
+    command: process.execPath,
+    args: spawnArgs
+  };
+}
+
+export function spawnHappyCLI(args: string[], options: SpawnOptions = {}): ChildProcess {
 
   let directory: string | URL | undefined;
   if ('cwd' in options) {
@@ -104,19 +131,16 @@ export function spawnHappyCLI(args: string[], options: SpawnOptions = {}): Child
   const fullCommand = `hapi ${args.join(' ')}`;
   logger.debug(`[SPAWN HAPI CLI] Spawning: ${fullCommand} in ${directory}`);
   
-  const spawnCommand = process.execPath;
-  const spawnArgs = isBunRuntime ? [entrypoint, ...args] : [
-    '--no-warnings',
-    '--no-deprecation',
-    entrypoint,
-    ...args
-  ];
+  const { command: spawnCommand, args: spawnArgs } = getHappyCliCommand(args);
 
   // Sanity check of the entrypoint path exists
-  if (!existsSync(entrypoint)) {
-    const errorMessage = `Entrypoint ${entrypoint} does not exist`;
-    logger.debug(`[SPAWN HAPI CLI] ${errorMessage}`);
-    throw new Error(errorMessage);
+  if (!isBunCompiled()) {
+    const entrypoint = spawnArgs.find((arg) => arg.endsWith('index.mjs') || arg.endsWith('index.ts'));
+    if (entrypoint && !existsSync(entrypoint)) {
+      const errorMessage = `Entrypoint ${entrypoint} does not exist`;
+      logger.debug(`[SPAWN HAPI CLI] ${errorMessage}`);
+      throw new Error(errorMessage);
+    }
   }
   
   return spawn(spawnCommand, spawnArgs, options);

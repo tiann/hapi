@@ -62,6 +62,8 @@
     "why do we need to build before running tests / dev?": "We need the binary to be built so we run daemon commands which directly run the binary - we don't want them to go out of sync or have custom spawn logic depending how we started happy",
     "typecheck": "tsc --noEmit",
     "build": "shx rm -rf dist && tsc --noEmit && pkgroll",
+    "build:exe": "bun run scripts/build-executable.ts",
+    "build:exe:all": "bun run scripts/build-executable.ts --all",
     "test": "bun run build && tsx --env-file .env.integration-test node_modules/.bin/vitest run",
     "test:win": "bun run build && vitest run",
     "start": "bun run build && ./bin/happy.mjs",
@@ -87,9 +89,9 @@
     "ink": "^6.5.1",
     "ps-list": "^8.1.1",
     "react": "^19.2.0",
+    "react-devtools-core": "^7.0.1",
     "socket.io-client": "^4.8.1",
     "tar": "^7.5.2",
-    "tmp": "^0.2.5",
     "zod": "^3.23.8"
   },
   "devDependencies": {

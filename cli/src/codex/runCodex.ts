@@ -16,6 +16,7 @@ import os from 'node:os';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { hashObject } from '@/utils/deterministicJson';
 import { runtimePath } from '@/projectPath';
+import { getHappyCliCommand } from '@/utils/spawnHappyCLI';
 import { resolve, join } from 'node:path';
 import fs from 'node:fs';
 import { startHappyServer } from '@/claude/utils/startHappyServer';
@@ -521,11 +522,11 @@ export async function runCodex(opts: {
 
     // Start Happy MCP server (HTTP) and prepare STDIO bridge config for Codex
     const happyServer = await startHappyServer(session);
-    const bridgeCommand = join(runtimePath(), 'bin', 'happy-mcp.mjs');
+    const bridgeCommand = getHappyCliCommand(['mcp', '--url', happyServer.url]);
     const mcpServers = {
         happy: {
-            command: bridgeCommand,
-            args: ['--url', happyServer.url]
+            command: bridgeCommand.command,
+            args: bridgeCommand.args
         }
     } as const;
     let first = true;

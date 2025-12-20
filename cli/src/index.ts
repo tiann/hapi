@@ -8,10 +8,11 @@
 
 
 import chalk from 'chalk'
-import { runClaude, StartOptions } from '@/claude/runClaude'
+import type { StartOptions } from '@/claude/runClaude'
 import { logger } from './ui/logger'
 import { authAndSetupMachineIfNeeded } from './ui/auth'
 import packageJson from '../package.json'
+import { isBunCompiled } from './projectPath'
 import { z } from 'zod'
 import { startDaemon } from './daemon/run'
 import { checkIfDaemonRunningAndCleanupStaleState, isDaemonRunningCurrentlyInstalledHappyVersion, stopDaemon } from './daemon/controlClient'
@@ -28,19 +29,48 @@ import { claudeCliPath } from './claude/claudeLocal'
 import { execFileSync } from 'node:child_process'
 import { initializeToken } from './ui/tokenInit'
 import { ensureRuntimeAssets } from './runtime/assets'
+import { runHappyMcpStdioBridge } from './codex/happyMcpStdioBridge'
+import { withBunRuntimeEnv } from './utils/bunRuntime'
 
 
 (async () => {
-  ensureRuntimeAssets()
-  const args = process.argv.slice(2)
+  const args = (() => {
+    if (!isBunCompiled()) {
+      return process.argv.slice(2)
+    }
+
+    const arg1 = process.argv[1] || ''
+    if (arg1 === process.execPath) {
+      return process.argv.slice(2)
+    }
+    if (arg1.includes('$bunfs')) {
+      return process.argv.slice(2)
+    }
+    if (arg1.endsWith('.js') || arg1.endsWith('.mjs') || arg1.endsWith('.ts')) {
+      return process.argv.slice(2)
+    }
+
+    return process.argv.slice(1)
+  })()
+
+  // Check if first argument is a subcommand
+  const subcommand = args[0]
+
+  if (isBunCompiled()) {
+    process.env.DEV = 'false'
+  }
+
+  if (subcommand === 'mcp') {
+    await runHappyMcpStdioBridge(args.slice(1))
+    return
+  }
+
+  await ensureRuntimeAssets()
 
   // If --version is passed - do not log, its likely daemon inquiring about our version
   if (!args.includes('--version')) {
     logger.debug('Starting hapi CLI with args: ', process.argv)
   }
-
-  // Check if first argument is a subcommand
-  const subcommand = args[0]
 
   if (subcommand === 'doctor') {
     // Check for clean subcommand
@@ -290,6 +320,7 @@ ${chalk.bold('Usage:')}
   hapi [options]         Start Claude with Telegram control (direct-connect)
   hapi auth              Manage authentication
   hapi codex             Start Codex mode
+  hapi mcp               Start MCP stdio bridge
   hapi connect           (not available in direct-connect mode)
   hapi notify            (not available in direct-connect mode)
   hapi daemon            Manage background service that allows
@@ -316,7 +347,11 @@ ${chalk.bold.cyan('Claude Code Options (from `claude --help`):')}
       // Run claude --help and display its output
       // Use execFileSync with the current Node executable for cross-platform compatibility
       try {
-        const claudeHelp = execFileSync(process.execPath, [claudeCliPath, '--help'], { encoding: 'utf8' })
+        const claudeHelp = execFileSync(
+          process.execPath,
+          [claudeCliPath, '--help'],
+          { encoding: 'utf8', env: withBunRuntimeEnv() }
+        )
         console.log(claudeHelp)
       } catch (e) {
         console.log(chalk.yellow('Could not retrieve claude help. Make sure claude is installed.'))
@@ -328,7 +363,11 @@ ${chalk.bold.cyan('Claude Code Options (from `claude --help`):')}
     // Show version
     if (showVersion) {
       console.log(`hapi version: ${packageJson.version}`)
-      // Don't exit - continue to pass --version to Claude Code
+      const versionOnly = args.every((value) => value === '-v' || value === '--version')
+      if (versionOnly) {
+        process.exit(0)
+      }
+      // Continue to pass --version to Claude Code when other args are present.
     }
 
     // Normal flow - auth and machine setup
@@ -355,6 +394,7 @@ ${chalk.bold.cyan('Claude Code Options (from `claude --help`):')}
 
     // Start the CLI
     try {
+      const { runClaude } = await import('@/claude/runClaude');
       await runClaude(options);
     } catch (error) {
       console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')

@@ -21,10 +21,12 @@ export async function findAllHappyProcesses(): Promise<Array<{ pid: number, comm
       const name = proc.name || '';
       
       // Check if it's a Happy process
+      const isHappyBinary = name === 'hapi' || name === 'hapi.exe' || /\bhapi(\.exe)?\b/.test(cmd);
       const isHappy = name.includes('happy') || 
                       name === 'node' && (cmd.includes('happy-cli') || cmd.includes('dist/index.mjs')) ||
                       cmd.includes('happy.mjs') ||
                       cmd.includes('happy-coder') ||
+                      isHappyBinary ||
                       (cmd.includes('tsx') && cmd.includes('src/index.ts') && cmd.includes('happy-cli'));
       
       if (!isHappy) continue;

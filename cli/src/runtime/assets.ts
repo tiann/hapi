@@ -3,7 +3,7 @@ import { dirname, join } from 'node:path';
 import { arch, platform } from 'node:os';
 import * as tar from 'tar';
 import packageJson from '../../package.json';
-import { EMBEDDED_ASSETS } from './embeddedAssets';
+import type { EmbeddedAsset } from './embeddedAssets';
 import { isBunCompiled, runtimePath } from '@/projectPath';
 
 const RUNTIME_MARKER = '.runtime-version';
@@ -12,11 +12,21 @@ function ensureDirectory(path: string): void {
     mkdirSync(path, { recursive: true });
 }
 
-function copyAssetFile(sourcePath: string, targetPath: string): void {
+const bunRuntime = (globalThis as typeof globalThis & {
+    Bun?: { file: (source: string | URL) => { arrayBuffer: () => Promise<ArrayBuffer> } };
+}).Bun;
+
+async function copyAssetFile(asset: EmbeddedAsset, targetPath: string): Promise<void> {
     ensureDirectory(dirname(targetPath));
-    copyFileSync(sourcePath, targetPath);
+    if (bunRuntime) {
+        const data = await bunRuntime.file(asset.sourcePath).arrayBuffer();
+        writeFileSync(targetPath, Buffer.from(data));
+        return;
+    }
+
+    copyFileSync(asset.sourcePath, targetPath);
     try {
-        const stats = statSync(sourcePath);
+        const stats = statSync(asset.sourcePath);
         chmodSync(targetPath, stats.mode);
     } catch {
         // Best-effort; permission adjustments are not critical.
@@ -105,21 +115,25 @@ function unpackTools(runtimeRoot: string): void {
 }
 
 function runtimeAssetsReady(runtimeRoot: string): boolean {
-    return (
-        existsSync(join(runtimeRoot, 'scripts', 'ripgrep_launcher.cjs')) &&
-        existsSync(join(runtimeRoot, 'bin', 'happy-mcp.mjs')) &&
-        areToolsUnpacked(join(runtimeRoot, 'tools', 'unpacked'))
-    );
+    const requiredScripts = [
+        join(runtimeRoot, 'scripts', 'claude_local_launcher.cjs'),
+        join(runtimeRoot, 'scripts', 'claude_remote_launcher.cjs'),
+        join(runtimeRoot, 'scripts', 'claude_version_utils.cjs'),
+        join(runtimeRoot, 'scripts', 'ripgrep_launcher.cjs')
+    ];
+
+    return requiredScripts.every((script) => existsSync(script)) &&
+        areToolsUnpacked(join(runtimeRoot, 'tools', 'unpacked'));
 }
 
-export function ensureRuntimeAssets(): void {
+export async function ensureRuntimeAssets(): Promise<void> {
     if (!isBunCompiled()) {
         return;
     }
 
+    const { loadEmbeddedAssets } = await import('./embeddedAssets');
     const runtimeRoot = runtimePath();
     const markerPath = join(runtimeRoot, RUNTIME_MARKER);
-
     if (existsSync(markerPath)) {
         const markerVersion = readFileSync(markerPath, 'utf-8').trim();
         if (markerVersion === packageJson.version && runtimeAssetsReady(runtimeRoot)) {
@@ -129,12 +143,11 @@ export function ensureRuntimeAssets(): void {
 
     ensureDirectory(runtimeRoot);
 
-    for (const asset of EMBEDDED_ASSETS) {
-        if (!existsSync(asset.sourcePath)) {
-            throw new Error(`Embedded asset missing: ${asset.sourcePath}`);
-        }
+    const embeddedAssets = await loadEmbeddedAssets();
+
+    for (const asset of embeddedAssets) {
         const targetPath = join(runtimeRoot, asset.relativePath);
-        copyAssetFile(asset.sourcePath, targetPath);
+        await copyAssetFile(asset, targetPath);
     }
 
     unpackTools(runtimeRoot);

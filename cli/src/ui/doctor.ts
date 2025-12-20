@@ -14,7 +14,7 @@ import { readDaemonState } from '@/persistence'
 import { existsSync, readdirSync, statSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { projectPath } from '@/projectPath'
+import { isBunCompiled, projectPath, runtimePath } from '@/projectPath'
 import packageJson from '../../package.json'
 
 /**
@@ -95,11 +95,16 @@ export async function runDoctorCommand(filter?: 'all' | 'daemon'): Promise<void>
         const wrapperPath = join(projectRoot, 'bin', 'happy.mjs');
         const cliEntrypoint = join(projectRoot, 'dist', 'index.mjs');
         
-        console.log(`Project Root: ${chalk.blue(projectRoot)}`);
-        console.log(`Wrapper Script: ${chalk.blue(wrapperPath)}`);
-        console.log(`CLI Entrypoint: ${chalk.blue(cliEntrypoint)}`);
-        console.log(`Wrapper Exists: ${existsSync(wrapperPath) ? chalk.green('✓ Yes') : chalk.red('❌ No')}`);
-        console.log(`CLI Exists: ${existsSync(cliEntrypoint) ? chalk.green('✓ Yes') : chalk.red('❌ No')}`);
+        if (isBunCompiled()) {
+            console.log(`Executable: ${chalk.blue(process.execPath)}`);
+            console.log(`Runtime Assets: ${chalk.blue(runtimePath())}`);
+        } else {
+            console.log(`Project Root: ${chalk.blue(projectRoot)}`);
+            console.log(`Wrapper Script: ${chalk.blue(wrapperPath)}`);
+            console.log(`CLI Entrypoint: ${chalk.blue(cliEntrypoint)}`);
+            console.log(`Wrapper Exists: ${existsSync(wrapperPath) ? chalk.green('✓ Yes') : chalk.red('❌ No')}`);
+            console.log(`CLI Exists: ${existsSync(cliEntrypoint) ? chalk.green('✓ Yes') : chalk.red('❌ No')}`);
+        }
         console.log('');
 
         // Configuration
