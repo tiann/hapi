@@ -1,11 +1,11 @@
 /**
- * Happy MCP STDIO Bridge
+ * HAPI MCP STDIO Bridge
  *
  * Minimal STDIO MCP server exposing a single tool `change_title`.
- * On invocation it forwards the tool call to an existing Happy HTTP MCP server
+ * On invocation it forwards the tool call to an existing HAPI HTTP MCP server
  * using the StreamableHTTPClientTransport.
  *
- * Configure the target HTTP MCP URL via env var `HAPPY_HTTP_MCP_URL` or
+ * Configure the target HTTP MCP URL via env var `HAPI_HTTP_MCP_URL` or
  * via CLI flag `--url <http://127.0.0.1:PORT>`.
  *
  * Note: This process must not print to stdout as it would break MCP STDIO.
@@ -33,12 +33,12 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
   try {
     // Resolve target HTTP MCP URL
     const { url: urlFromArgs } = parseArgs(argv);
-    const baseUrl = urlFromArgs || process.env.HAPPY_HTTP_MCP_URL || '';
+    const baseUrl = urlFromArgs || process.env.HAPI_HTTP_MCP_URL || '';
 
     if (!baseUrl) {
       // Write to stderr; never stdout.
       process.stderr.write(
-        '[happy-mcp] Missing target URL. Set HAPPY_HTTP_MCP_URL or pass --url <http://127.0.0.1:PORT>\n'
+        '[hapi-mcp] Missing target URL. Set HAPI_HTTP_MCP_URL or pass --url <http://127.0.0.1:PORT>\n'
       );
       process.exit(2);
     }
@@ -48,7 +48,7 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
     async function ensureHttpClient(): Promise<Client> {
       if (httpClient) return httpClient;
       const client = new Client(
-        { name: 'happy-stdio-bridge', version: '1.0.0' },
+        { name: 'hapi-stdio-bridge', version: '1.0.0' },
         { capabilities: {} }
       );
 
@@ -60,7 +60,7 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
 
     // Create STDIO MCP server
     const server = new McpServer({
-      name: 'Happy MCP Bridge',
+      name: 'HAPI MCP Bridge',
       version: '1.0.0',
     });
 
@@ -96,7 +96,7 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
     await server.connect(stdio);
   } catch (err) {
     try {
-      process.stderr.write(`[happy-mcp] Fatal: ${err instanceof Error ? err.message : String(err)}\n`);
+      process.stderr.write(`[hapi-mcp] Fatal: ${err instanceof Error ? err.message : String(err)}\n`);
     } finally {
       process.exit(1);
     }

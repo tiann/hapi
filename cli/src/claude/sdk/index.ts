@@ -1,5 +1,5 @@
 /**
- * Claude Code SDK integration for Happy CLI
+ * Claude Code SDK integration for HAPI CLI
  * Provides clean TypeScript implementation without Bun support
  */
 

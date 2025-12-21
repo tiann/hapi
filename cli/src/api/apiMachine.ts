@@ -1,5 +1,5 @@
 /**
- * WebSocket client for machine/daemon communication with happy-bot
+ * WebSocket client for machine/daemon communication with hapi-server
  */
 
 import { io, type Socket } from 'socket.io-client'

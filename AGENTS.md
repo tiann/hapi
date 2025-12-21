@@ -1,87 +1,35 @@
 # AGENTS.md
 
-Guidelines for AI agents working in this workspace.
+Short guide for AI agents in this repo. Prefer progressive loading: start with the root README, then package READMEs as needed.
 
-## Monorepo Structure
+## Repo layout
+- `cli/` - hapi CLI, daemon, Codex/MCP tooling
+- `server/` - Telegram bot + HTTP API + Socket.IO + SSE
+- `web/` - React Mini App / PWA
 
-Bun workspaces monorepo with three packages:
+## Reference docs
+- `README.md` (user overview)
+- `cli/README.md` (CLI behavior and config)
+- `server/README.md` (server setup and architecture)
+- `web/README.md` (web app behavior and dev workflow)
+- `localdocs/` (optional deep dives)
 
-| Package | Path | Purpose |
-|---------|------|---------|
-| `hapi` | `cli/` | CLI tool (single executable) - `hapi` / `hapi mcp` |
-| `hapi-server` | `server/` | API server + Telegram bot (serves `web/dist/`) |
-| `hapi-web` | `web/` | Web frontend / Mini App / PWA (Vite → `dist/`) |
+## Shared rules
+- TypeScript strict; no untyped code.
+- Bun workspaces; run `bun` commands from repo root.
+- Path alias `@/*` maps to `./src/*` per package.
+- No backward compatibility: breaking format changes are allowed.
+- Prefer 4-space indentation.
 
-```
-hapi/
-├── package.json              # Workspace root
-├── tsconfig.base.json        # Shared TS config
-├── cli/
-│   ├── package.json          # npm: hapi
-│   ├── src/                  # CLI source
-│   └── bin/                  # Executables
-├── server/
-│   ├── package.json          # private
-│   └── src/                  # Hono + Socket.IO + Grammy
-└── web/
-    ├── package.json          # private
-    ├── vite.config.ts
-    └── src/                  # React + Tailwind
-```
+## Common commands (repo root)
+    bun run build
+    bun run build:single-exe
+    bun run typecheck
+    bun run dev:server
+    bun run dev:web
+    bun run test
 
-## Shared Rules
-
-- **TypeScript strict** - No untyped code
-- **Bun workspaces** - Run `bun install` / `bun run ...` from repo root
-- **Path aliases** - `@/*` → `./src/*` (per-package tsconfig)
-- **No backward compatibility** - Break old formats freely
-- **4-space indent** - Prefer 4 spaces
-
-## Commands
-
-Run from repo root:
-
-```bash
-# Build
-bun run build            # Build all packages
-bun run build:cli        # CLI only (pkgroll → CJS + ESM)
-bun run build:server     # Server only (bun build)
-bun run build:web        # Web only (Vite)
-
-# Type check
-bun run typecheck        # All packages
-
-# Development
-bun run dev:server       # Server with --watch
-bun run dev:web          # Vite dev server
-
-# Test
-bun run test             # CLI tests (Vitest)
-```
-
-## Package Details
-
-### cli/ (hapi)
-- **Entry**: `src/index.ts` → `bin/happy.mjs`
-- **Build**: `pkgroll` generates CJS + ESM bundles
-- **Test**: `vitest` with `.env.integration-test`
-- **Publish**: `npm publish` (see `cli/package.json`)
-
-### server/ (hapi-server)
-- **Entry**: `src/index.ts`
-- **Runtime**: Bun
-- **Stack**: Hono (HTTP) + Socket.IO + Grammy (Telegram)
-- **Static**: Serves `../web/dist/` via `src/web/server.ts`
-
-### web/ (hapi-web)
-- **Entry**: `src/main.tsx`
-- **Stack**: React 19 + Tailwind + Vite
-- **Output**: `dist/` (served by server)
-
-## Key Source Directories
-
-| Package | Key Paths |
-|---------|-----------|
-| cli | `src/api/`, `src/claude/`, `src/commands/`, `src/codex/` |
-| server | `src/web/`, `src/socket/`, `src/telegram/`, `src/sync/` |
-| web | `src/components/`, `src/api/`, `src/hooks/` |
+## Key source dirs
+- `cli/src/api/`, `cli/src/claude/`, `cli/src/commands/`, `cli/src/codex/`
+- `server/src/web/`, `server/src/socket/`, `server/src/telegram/`, `server/src/sync/`
+- `web/src/components/`, `web/src/api/`, `web/src/hooks/`

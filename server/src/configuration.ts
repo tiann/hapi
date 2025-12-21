@@ -110,8 +110,8 @@ class Configuration {
         }
 
         // Data directory
-        if (process.env.HAPPY_BOT_DATA_DIR) {
-            const expandedPath = process.env.HAPPY_BOT_DATA_DIR.replace(/^~/, homedir())
+        if (process.env.HAPI_BOT_DATA_DIR) {
+            const expandedPath = process.env.HAPI_BOT_DATA_DIR.replace(/^~/, homedir())
             this.dataDir = expandedPath
         } else {
             this.dataDir = join(homedir(), '.hapi-server')

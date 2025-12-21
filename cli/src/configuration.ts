@@ -1,5 +1,5 @@
 /**
- * Global configuration for happy CLI
+ * Global configuration for HAPI CLI
  *
  * Centralizes all configuration including environment variables and paths
  * Environment files should be loaded using Node's --env-file flag
@@ -28,7 +28,7 @@ class Configuration {
 
     constructor() {
         // Bot server configuration
-        this.serverUrl = process.env.HAPPY_BOT_URL || 'http://localhost:3006'
+        this.serverUrl = process.env.HAPI_BOT_URL || 'http://localhost:3006'
         this._cliApiToken = process.env.CLI_API_TOKEN || ''
 
         // Check if we're running as daemon based on process args
@@ -50,7 +50,7 @@ class Configuration {
         this.daemonStateFile = join(this.happyHomeDir, 'daemon.state.json')
         this.daemonLockFile = join(this.happyHomeDir, 'daemon.state.json.lock')
 
-        this.isExperimentalEnabled = ['true', '1', 'yes'].includes(process.env.HAPPY_EXPERIMENTAL?.toLowerCase() || '')
+        this.isExperimentalEnabled = ['true', '1', 'yes'].includes(process.env.HAPI_EXPERIMENTAL?.toLowerCase() || '')
 
         this.currentCliVersion = packageJson.version
 

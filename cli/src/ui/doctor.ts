@@ -24,8 +24,8 @@ export function getEnvironmentInfo(): Record<string, any> {
     return {
         PWD: process.env.PWD,
         HAPI_HOME_DIR: process.env.HAPI_HOME_DIR,
-        HAPPY_BOT_URL: process.env.HAPPY_BOT_URL,
-        HAPPY_PROJECT_ROOT: process.env.HAPPY_PROJECT_ROOT,
+        HAPI_BOT_URL: process.env.HAPI_BOT_URL,
+        HAPI_PROJECT_ROOT: process.env.HAPI_PROJECT_ROOT,
         CLI_API_TOKEN_SET: Boolean(process.env.CLI_API_TOKEN),
         DANGEROUSLY_LOG_TO_SERVER_FOR_AI_AUTO_DEBUGGING: process.env.DANGEROUSLY_LOG_TO_SERVER_FOR_AI_AUTO_DEBUGGING,
         NODE_ENV: process.env.NODE_ENV,
@@ -117,7 +117,7 @@ export async function runDoctorCommand(filter?: 'all' | 'daemon'): Promise<void>
         console.log(chalk.bold('\n🌍 Environment Variables'));
         const env = getEnvironmentInfo();
         console.log(`HAPI_HOME_DIR: ${env.HAPI_HOME_DIR ? chalk.green(env.HAPI_HOME_DIR) : chalk.gray('not set')}`);
-        console.log(`HAPPY_BOT_URL: ${env.HAPPY_BOT_URL ? chalk.green(env.HAPPY_BOT_URL) : chalk.gray('not set')}`);
+        console.log(`HAPI_BOT_URL: ${env.HAPI_BOT_URL ? chalk.green(env.HAPI_BOT_URL) : chalk.gray('not set')}`);
         console.log(`CLI_API_TOKEN: ${env.CLI_API_TOKEN_SET ? chalk.green('set') : chalk.gray('not set')}`);
         console.log(`DANGEROUSLY_LOG_TO_SERVER: ${env.DANGEROUSLY_LOG_TO_SERVER_FOR_AI_AUTO_DEBUGGING ? chalk.yellow('ENABLED') : chalk.gray('not set')}`);
         console.log(`DEBUG: ${env.DEBUG ? chalk.green(env.DEBUG) : chalk.gray('not set')}`);

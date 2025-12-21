@@ -32,7 +32,7 @@ async function daemonPost(path: string, body?: any): Promise<{ error?: string } 
   }
 
   try {
-    const timeout = process.env.HAPPY_DAEMON_HTTP_TIMEOUT ? parseInt(process.env.HAPPY_DAEMON_HTTP_TIMEOUT) : 10_000;
+    const timeout = process.env.HAPI_DAEMON_HTTP_TIMEOUT ? parseInt(process.env.HAPI_DAEMON_HTTP_TIMEOUT) : 10_000;
     const response = await fetch(`http://127.0.0.1:${state.httpPort}${path}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -90,7 +90,7 @@ export async function stopDaemonHttp(): Promise<void> {
 
 /**
  * The version check is still quite naive.
- * For instance we are not handling the case where we upgraded happy,
+ * For instance we are not handling the case where we upgraded hapi,
  * the daemon is still running, and it recieves a new message to spawn a new session.
  * This is a tough case - we need to somehow figure out to restart ourselves,
  * yet still handle the original request.
@@ -113,7 +113,7 @@ export async function stopDaemonHttp(): Promise<void> {
  * Not just a boolean.
  * 
  * We can destructure the response on the caller for richer output.
- * For instance when running `happy daemon status` we can show more information.
+ * For instance when running `hapi daemon status` we can show more information.
  */
 export async function checkIfDaemonRunningAndCleanupStaleState(): Promise<boolean> {
   const state = await readDaemonState();
@@ -164,7 +164,7 @@ export async function isDaemonRunningCurrentlyInstalledHappyVersion(): Promise<b
     
     // PREVIOUS IMPLEMENTATION - Keeping this commented in case we need it
     // Kirill does not understand how the upgrade of npm packages happen and whether 
-    // we will get a new path or not when happy-coder is upgraded globally.
+    // we will get a new path or not when hapi is upgraded globally.
     // If reading package.json doesn't work correctly after npm upgrades, 
     // we can revert to spawning a process (but should add timeout and cleanup!)
     /*

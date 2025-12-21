@@ -1,7 +1,7 @@
 /**
- * Minimal persistence functions for happy CLI
+ * Minimal persistence functions for HAPI CLI
  * 
- * Handles settings and private key storage in ~/.happy/ or local .happy/
+ * Handles settings and private key storage in ~/.config/hapi/ (or HAPI_HOME_DIR override)
  */
 
 import { FileHandle } from 'node:fs/promises'
@@ -320,4 +320,3 @@ export async function releaseDaemonLock(lockHandle: FileHandle): Promise<void> {
     }
   } catch { }
 }
-

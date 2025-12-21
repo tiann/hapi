@@ -36,7 +36,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
     const sessionTag = randomUUID();
 
     // Log environment info at startup
-    logger.debugLargeJson('[START] Happy process started', getEnvironmentInfo());
+    logger.debugLargeJson('[START] HAPI process started', getEnvironmentInfo());
     logger.debug(`[START] Options: startedBy=${options.startedBy}, startingMode=${options.startingMode}`);
 
     // Validate daemon spawn requirements
@@ -121,9 +121,9 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
     // Create realtime session
     const session = api.sessionSyncClient(response);
 
-    // Start Happy MCP server
+    // Start HAPI MCP server
     const happyServer = await startHappyServer(session);
-    logger.debug(`[START] Happy MCP server started at ${happyServer.url}`);
+    logger.debug(`[START] HAPI MCP server started at ${happyServer.url}`);
 
     // Print log file path
     const logPath = logger.logFilePath;
@@ -303,7 +303,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
                 await session.close();
             }
 
-            // Stop Happy MCP server
+            // Stop HAPI MCP server
             happyServer.stop();
 
             logger.debug('[START] Cleanup complete, exiting');
@@ -339,7 +339,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         startingMode: options.startingMode,
         messageQueue,
         api,
-        allowedTools: happyServer.toolNames.map(toolName => `mcp__happy__${toolName}`),
+        allowedTools: happyServer.toolNames.map(toolName => `mcp__hapi__${toolName}`),
         onModeChange: (newMode) => {
             session.sendSessionEvent({ type: 'switch', mode: newMode });
             session.updateAgentState((currentState) => ({
@@ -351,7 +351,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
             // Intentionally unused
         },
         mcpServers: {
-            'happy': {
+            'hapi': {
                 type: 'http' as const,
                 url: happyServer.url,
             }
@@ -372,9 +372,9 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
     logger.debug('Closing session...');
     await session.close();
 
-    // Stop Happy MCP server
+    // Stop HAPI MCP server
     happyServer.stop();
-    logger.debug('Stopped Happy MCP server');
+    logger.debug('Stopped HAPI MCP server');
 
     // Exit
     process.exit(0);

@@ -47,7 +47,7 @@ function collectTitleChanges(messages: NormalizedMessage[]): Map<string, string>
         if (msg.role !== 'agent') continue
         for (const content of msg.content) {
             if (content.type !== 'tool-call') continue
-            if (content.name !== 'mcp__happy__change_title') continue
+            if (content.name !== 'mcp__hapi__change_title') continue
             const title = extractTitleFromChangeTitleInput(content.input)
             if (!title) continue
             map.set(content.id, title)
@@ -432,7 +432,7 @@ function reduceTimeline(
                 }
 
                 if (c.type === 'tool-call') {
-                    if (c.name === 'mcp__happy__change_title') {
+                    if (c.name === 'mcp__hapi__change_title') {
                         const title = context.titleChangesByToolUseId.get(c.id) ?? extractTitleFromChangeTitleInput(c.input)
                         if (title && !context.emittedTitleChangeToolUseIds.has(c.id)) {
                             context.emittedTitleChangeToolUseIds.add(c.id)

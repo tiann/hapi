@@ -18,7 +18,7 @@
     --app-code-bg: #f6f8fa;
     --app-inline-code-bg: rgba(0, 0, 0, 0.08);
 
-    /* Diff colors (light) - from happy-app */
+    /* Diff colors (light) - from hapi-app */
     --app-diff-added-bg: #e6ffed;
     --app-diff-added-text: #24292e;
     --app-diff-removed-bg: #ffeef0;
@@ -59,7 +59,7 @@
     --app-code-bg: #282c34;
     --app-inline-code-bg: rgba(255, 255, 255, 0.1);
 
-    /* Diff colors (dark) - from happy-app */
+    /* Diff colors (dark) - from hapi-app */
     --app-diff-added-bg: #0d2e1f;
     --app-diff-added-text: #c9d1d9;
     --app-diff-removed-bg: #3f1b23;

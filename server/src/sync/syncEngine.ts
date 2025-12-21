@@ -1,9 +1,9 @@
 /**
- * Sync Engine for Happy Telegram Bot (Direct Connect)
+ * Sync Engine for HAPI Telegram Bot (Direct Connect)
  *
  * In the direct-connect architecture:
- * - happy-bot is the server (Socket.IO + REST)
- * - happy-cli connects directly to the bot (no happy-server relay)
+ * - hapi-server is the server (Socket.IO + REST)
+ * - hapi CLI connects directly to the server (no relay)
  * - No E2E encryption; data is stored as JSON in SQLite
  */
 

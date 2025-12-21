@@ -1,5 +1,5 @@
 /**
- * Telegram Bot for Happy
+ * Telegram Bot for HAPI
  *
  * Main bot class that initializes grammy, applies middleware,
  * and sets up command handlers.
@@ -27,7 +27,7 @@ export interface HappyBotConfig {
 }
 
 /**
- * Happy Telegram Bot
+ * HAPI Telegram Bot
  */
 export class HappyBot {
     private bot: Bot<BotContext>
@@ -92,13 +92,13 @@ export class HappyBot {
     async start(): Promise<void> {
         if (this.isRunning) return
 
-        console.log('[HappyBot] Starting Telegram bot...')
+        console.log('[HAPIBot] Starting Telegram bot...')
         this.isRunning = true
 
         // Start polling
         this.bot.start({
             onStart: (botInfo) => {
-                console.log(`[HappyBot] Bot @${botInfo.username} started`)
+                console.log(`[HAPIBot] Bot @${botInfo.username} started`)
             }
         })
     }
@@ -109,7 +109,7 @@ export class HappyBot {
     async stop(): Promise<void> {
         if (!this.isRunning) return
 
-        console.log('[HappyBot] Stopping Telegram bot...')
+        console.log('[HAPIBot] Stopping Telegram bot...')
 
         // Unsubscribe from sync events
         if (this.unsubscribeSyncEvents) {
@@ -135,7 +135,7 @@ export class HappyBot {
         this.bot.use(async (ctx: BotContext, next: NextFunction) => {
             const chatId = ctx.chat?.id
             if (!chatId || !configuration.allowedChatIds.includes(chatId)) {
-                console.log(`[HappyBot] Rejected message from unauthorized chat: ${chatId}`)
+                console.log(`[HAPIBot] Rejected message from unauthorized chat: ${chatId}`)
                 return // Silently ignore unauthorized users
             }
             await next()
@@ -143,7 +143,7 @@ export class HappyBot {
 
         // Error handling middleware
         this.bot.catch((err) => {
-            console.error('[HappyBot] Error:', err.message)
+            console.error('[HAPIBot] Error:', err.message)
         })
     }
 
@@ -157,7 +157,7 @@ export class HappyBot {
             const machineCount = this.syncEngine?.getOnlineMachines().length ?? 0
 
             await ctx.reply(
-                `Welcome to Happy Bot!\n\n` +
+                `Welcome to HAPI Bot!\n\n` +
                 `Active Sessions: ${sessionCount}\n` +
                 `Online Machines: ${machineCount}\n\n` +
                 `Commands:\n` +
@@ -169,8 +169,8 @@ export class HappyBot {
         // /help - Show help information
         this.bot.command('help', async (ctx) => {
             await ctx.reply(
-                `Happy Bot Help\n\n` +
-                `Happy Bot is a notification layer for Happy sessions.\n\n` +
+                `HAPI Bot Help\n\n` +
+                `HAPI Bot is a notification layer for HAPI sessions.\n\n` +
                 `Commands:\n` +
                 `/start - Start the bot or show status\n` +
                 `/app - Open the Mini App\n` +
@@ -186,7 +186,7 @@ export class HappyBot {
         // /app - Open Telegram Mini App
         this.bot.command('app', async (ctx) => {
             const keyboard = new InlineKeyboard().webApp('📱 Open App', configuration.miniAppUrl)
-            await ctx.reply('Open Happy Mini App:', { reply_markup: keyboard })
+            await ctx.reply('Open HAPI Mini App:', { reply_markup: keyboard })
         })
 
     }
@@ -265,7 +265,7 @@ export class HappyBot {
 
             if (eventType === 'ready') {
                 this.sendReadyNotification(event.sessionId).catch((error) => {
-                    console.error('[HappyBot] Failed to send ready notification:', error)
+                    console.error('[HAPIBot] Failed to send ready notification:', error)
                 })
                 return
             }
@@ -273,7 +273,7 @@ export class HappyBot {
             if (eventType === 'switch') {
                 const mode = messageContent?.data?.mode === 'local' ? 'local' : 'remote'
                 this.sendSwitchNotification(event.sessionId, mode).catch((error) => {
-                    console.error('[HappyBot] Failed to send switch notification:', error)
+                    console.error('[HAPIBot] Failed to send switch notification:', error)
                 })
                 return
             }
@@ -289,7 +289,7 @@ export class HappyBot {
             }
 
             this.sendMessageNotification(event.sessionId, preview).catch((error) => {
-                console.error('[HappyBot] Failed to send message notification:', error)
+                console.error('[HAPIBot] Failed to send message notification:', error)
             })
         }
     }
@@ -450,7 +450,7 @@ export class HappyBot {
         const timer = setTimeout(() => {
             this.notificationDebounce.delete(currentSession.id)
             this.sendPermissionNotification(currentSession.id).catch(err => {
-                console.error('[HappyBot] Failed to send notification:', err)
+                console.error('[HAPIBot] Failed to send notification:', err)
             })
         }, 500)
 
@@ -476,7 +476,7 @@ export class HappyBot {
                     reply_markup: keyboard
                 })
             } catch (error) {
-                console.error(`[HappyBot] Failed to send notification to chat ${chatId}:`, error)
+                console.error(`[HAPIBot] Failed to send notification to chat ${chatId}:`, error)
             }
         }
     }

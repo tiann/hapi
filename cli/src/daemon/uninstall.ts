@@ -10,6 +10,6 @@ export async function uninstall(): Promise<void> {
         throw new Error('Daemon uninstallation requires sudo privileges. Please run with sudo.');
     }
     
-    logger.info('Uninstalling Happy CLI daemon for macOS...');
+    logger.info('Uninstalling HAPI CLI daemon for macOS...');
     await uninstallMac();
 }

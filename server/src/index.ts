@@ -1,7 +1,7 @@
 /**
- * Happy Telegram Bot - Main Entry Point
+ * HAPI Telegram Bot - Main Entry Point
  *
- * This is a Telegram Bot client for Happy that provides:
+ * This is a Telegram Bot client for HAPI that provides:
  * - Session list and detail views
  * - Message viewing and sending
  * - Permission approval workflows
@@ -26,7 +26,7 @@ let webServer: BunServer<WebSocketData> | null = null
 let sseManager: SSEManager | null = null
 
 async function main() {
-    console.log('Happy Bot starting...')
+    console.log('HAPI Bot starting...')
 
     // Load configuration (will throw if required env vars missing)
     const config = getConfiguration()
@@ -62,7 +62,7 @@ async function main() {
     // Start the bot
     await happyBot.start()
 
-    console.log('\nHappy Bot is ready!')
+    console.log('\nHAPI Bot is ready!')
 
     // Handle shutdown
     const shutdown = async () => {

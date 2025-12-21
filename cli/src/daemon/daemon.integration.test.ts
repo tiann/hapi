@@ -10,9 +10,9 @@
  * and the daemon will not work properly!
  * 
  * The integration test environment uses .env.integration-test which sets:
- * - HAPPY_HOME_DIR=~/.happy-dev-test (DIFFERENT from dev's ~/.happy-dev!)
- * - HAPPY_BOT_URL=http://localhost:3006 (local happy-bot)
- * - CLI_API_TOKEN=... (must match the bot)
+ * - HAPI_HOME_DIR=~/.hapi-dev-test (DIFFERENT from dev's ~/.hapi-dev!)
+ * - HAPI_BOT_URL=http://localhost:3006 (local hapi-server)
+ * - CLI_API_TOKEN=... (must match the server)
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -136,7 +136,7 @@ describe.skipIf(!await isServerHealthy())('Daemon Integration Tests', { timeout:
     expect(sessions).toHaveLength(1);
     
     const tracked = sessions[0];
-    expect(tracked.startedBy).toBe('happy directly - likely by user from terminal');
+    expect(tracked.startedBy).toBe('hapi directly - likely by user from terminal');
     expect(tracked.happySessionId).toBe('test-session-123');
     expect(tracked.pid).toBe(99999);
   });
@@ -192,7 +192,7 @@ describe.skipIf(!await isServerHealthy())('Daemon Integration Tests', { timeout:
   });
 
   it('should track both daemon-spawned and terminal sessions', async () => {
-    // Spawn a real happy process that looks like it was started from terminal
+    // Spawn a real hapi process that looks like it was started from terminal
     const terminalHappyProcess = spawnHappyCLI([
       '--hapi-starting-mode', 'remote',
       '--started-by', 'terminal'
@@ -202,7 +202,7 @@ describe.skipIf(!await isServerHealthy())('Daemon Integration Tests', { timeout:
       stdio: 'ignore'
     });
     if (!terminalHappyProcess || !terminalHappyProcess.pid) {
-      throw new Error('Failed to spawn terminal happy process');
+      throw new Error('Failed to spawn terminal hapi process');
     }
     // Give time to start & report itself
     await new Promise(resolve => setTimeout(resolve, 5_000));
@@ -223,7 +223,7 @@ describe.skipIf(!await isServerHealthy())('Daemon Integration Tests', { timeout:
     );
 
     expect(terminalSession).toBeDefined();
-    expect(terminalSession.startedBy).toBe('happy directly - likely by user from terminal');
+    expect(terminalSession.startedBy).toBe('hapi directly - likely by user from terminal');
     
     expect(daemonSession).toBeDefined();
     expect(daemonSession.startedBy).toBe('daemon');
@@ -397,9 +397,9 @@ describe.skipIf(!await isServerHealthy())('Daemon Integration Tests', { timeout:
    * 7. New daemon starts, reads daemon.state.json, sees old version != its compiled version
    * 8. New daemon calls stopDaemon() to kill old daemon, then takes over
    * 
-   * This simulates what happens during `npm upgrade happy-coder`:
+   * This simulates what happens during `npm upgrade hapi`:
    * - Running daemon has OLD version loaded in memory (configuration.currentCliVersion)
-   * - npm replaces node_modules/happy-coder/ with NEW version files
+   * - npm replaces node_modules/hapi/ with NEW version files
    * - package.json on disk now has NEW version
    * - Daemon reads package.json, detects mismatch, triggers self-update
    * - Key difference: npm atomically replaces the entire module directory, while
@@ -451,7 +451,7 @@ describe.skipIf(!await isServerHealthy())('Daemon Integration Tests', { timeout:
 
       // The daemon should automatically detect the version mismatch and restart itself
       // We check once per minute, wait for a little longer than that
-      await new Promise(resolve => setTimeout(resolve, parseInt(process.env.HAPPY_DAEMON_HEARTBEAT_INTERVAL || '30000') + 10_000));
+      await new Promise(resolve => setTimeout(resolve, parseInt(process.env.HAPI_DAEMON_HEARTBEAT_INTERVAL || '30000') + 10_000));
 
       // Check that the daemon is running with the new version
       const finalState = await readDaemonState();
@@ -471,7 +471,7 @@ describe.skipIf(!await isServerHealthy())('Daemon Integration Tests', { timeout:
 
   // TODO: Add a test to see if a corrupted file will work
   
-  // TODO: Test npm uninstall scenario - daemon should gracefully handle when happy-coder is uninstalled
+  // TODO: Test npm uninstall scenario - daemon should gracefully handle when hapi is uninstalled
   // Current behavior: daemon tries to spawn new daemon on version mismatch but dist/index.mjs is gone
   // Expected: daemon should detect missing entrypoint and either exit cleanly or at minimum not respawn infinitely
 });

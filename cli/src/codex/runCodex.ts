@@ -271,7 +271,7 @@ export async function runCodex(opts: {
                 await session.close();
             }
 
-            // Stop Happy MCP server
+            // Stop HAPI MCP server
             happyServer.stop();
 
             logger.debug('[Codex] Session termination complete, exiting');
@@ -520,11 +520,11 @@ export async function runCodex(opts: {
         }
     });
 
-    // Start Happy MCP server (HTTP) and prepare STDIO bridge config for Codex
+    // Start HAPI MCP server (HTTP) and prepare STDIO bridge config for Codex
     const happyServer = await startHappyServer(session);
     const bridgeCommand = getHappyCliCommand(['mcp', '--url', happyServer.url]);
     const mcpServers = {
-        happy: {
+        hapi: {
             command: bridgeCommand.command,
             args: bridgeCommand.args
         }
@@ -727,7 +727,7 @@ export async function runCodex(opts: {
         logger.debug('[codex]: client.disconnect begin');
         await client.disconnect();
         logger.debug('[codex]: client.disconnect done');
-        // Stop Happy MCP server
+        // Stop HAPI MCP server
         logger.debug('[codex]: happyServer.stop');
         happyServer.stop();
 

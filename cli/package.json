@@ -65,7 +65,7 @@
     "package.json"
   ],
   "scripts": {
-    "why do we need to build before running tests / dev?": "We need the binary to be built so we run daemon commands which directly run the binary - we don't want them to go out of sync or have custom spawn logic depending how we started happy",
+    "why do we need to build before running tests / dev?": "We need the binary to be built so we run daemon commands which directly run the binary - we don't want them to go out of sync or have custom spawn logic depending how we started HAPI",
     "typecheck": "tsc --noEmit",
     "build": "shx rm -rf dist && tsc --noEmit && pkgroll",
     "build:exe": "bun run scripts/build-executable.ts",

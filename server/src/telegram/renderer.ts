@@ -249,7 +249,7 @@ function formatMessage(msg: DecryptedMessage): string {
  */
 export function formatMachineList(machines: Machine[]): string {
     if (machines.length === 0) {
-        return 'No machines online.\n\nMake sure you have the Happy daemon running on your machines.'
+        return 'No machines online.\n\nMake sure you have the HAPI daemon running on your machines.'
     }
 
     let message = `Online Machines (${machines.length}):\n\n`

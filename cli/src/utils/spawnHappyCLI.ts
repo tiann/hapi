@@ -1,5 +1,5 @@
 /**
- * Cross-platform Happy CLI spawning utility
+ * Cross-platform HAPI CLI spawning utility
  * 
  * ## Background
  * 
@@ -9,13 +9,13 @@
  * noise from end users by passing specific flags: `--no-warnings --no-deprecation`.
  * 
  * Users don't care about these technical details - they just want a clean experience
- * with no warning output when using Happy.
+ * with no warning output when using HAPI.
  * 
  * ## The Wrapper Strategy
  * 
  * We created a wrapper script `bin/happy.mjs` with a shebang `#!/usr/bin/env node`.
  * This allows direct execution on Unix systems and NPM automatically generates 
- * Windows-specific wrapper scripts (`happy.cmd` and `happy.ps1`) when it sees 
+ * Windows-specific wrapper scripts (`hapi.cmd` and `hapi.ps1`) when it sees 
  * the `bin` field in package.json pointing to a JavaScript file with a shebang.
  * 
  * The wrapper script either directly execs `dist/index.mjs` with the flags we want,
@@ -24,18 +24,18 @@
  * ## Execution Chains
  * 
  * **Unix/Linux/macOS:**
- * 1. User runs `happy` command
+ * 1. User runs `hapi` command
  * 2. Shell directly executes `bin/happy.mjs` (shebang: `#!/usr/bin/env node`)
  * 3. `bin/happy.mjs` either execs `node --no-warnings --no-deprecation dist/index.mjs` or imports `dist/index.mjs` directly
  * 
  * **Windows:**
- * 1. User runs `happy` command  
- * 2. NPM wrapper (`happy.cmd`) calls `node bin/happy.mjs`
+ * 1. User runs `hapi` command  
+ * 2. NPM wrapper (`hapi.cmd`) calls `node bin/happy.mjs`
  * 3. `bin/happy.mjs` either execs `node --no-warnings --no-deprecation dist/index.mjs` or imports `dist/index.mjs` directly
  * 
  * ## The Spawning Problem
  * 
- * When our code needs to spawn Happy cli as a subprocess (for daemon processes), 
+ * When our code needs to spawn HAPI CLI as a subprocess (for daemon processes), 
  * we were trying to execute `bin/happy.mjs` directly. This fails on Windows 
  * because Windows doesn't understand shebangs - you get an `EFTYPE` error.
  * 
@@ -60,13 +60,13 @@ import { logger } from '@/ui/logger';
 import { existsSync } from 'node:fs';
 
 /**
- * Spawn the Happy CLI with the given arguments in a cross-platform way.
+ * Spawn the HAPI CLI with the given arguments in a cross-platform way.
  * 
  * This function bypasses the wrapper script (bin/happy.mjs) and spawns the
  * actual CLI entrypoint (dist/index.mjs) directly with the current runtime
  * (Node.js or Bun), ensuring compatibility across all platforms including Windows.
  * 
- * @param args - Arguments to pass to the Happy CLI
+ * @param args - Arguments to pass to the HAPI CLI
  * @param options - Spawn options (same as child_process.spawn)
  * @returns ChildProcess instance
  */
@@ -124,9 +124,9 @@ export function spawnHappyCLI(args: string[], options: SpawnOptions = {}): Child
     directory = process.cwd()
   }
   // Note: We're executing the current runtime with the calculated entrypoint path below,
-  // bypassing the 'happy' wrapper that would normally be found in the shell's PATH.
-  // However, we log it as 'happy' here because other engineers are typically looking
-  // for when "happy" was started and don't care about the underlying node process
+  // bypassing the 'hapi' wrapper that would normally be found in the shell's PATH.
+  // However, we log it as 'hapi' here because other engineers are typically looking
+  // for when "hapi" was started and don't care about the underlying node process
   // details and flags we use to achieve the same result.
   const fullCommand = `hapi ${args.join(' ')}`;
   logger.debug(`[SPAWN HAPI CLI] Spawning: ${fullCommand} in ${directory}`);

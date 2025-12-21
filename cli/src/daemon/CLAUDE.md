@@ -1,12 +1,12 @@
-# Happy CLI Daemon: Control Flow and Lifecycle
+# HAPI CLI Daemon: Control Flow and Lifecycle
 
-The daemon is a persistent background process that manages Happy sessions, enables remote control from the mobile app, and handles auto-updates when the CLI version changes.
+The daemon is a persistent background process that manages HAPI sessions, enables remote control from the mobile app, and handles auto-updates when the CLI version changes.
 
 ## 1. Daemon Lifecycle
 
 ### Starting the Daemon
 
-Command: `happy daemon start`
+Command: `hapi daemon start`
 
 Control Flow:
 1. `src/index.ts` receives `daemon start` command
@@ -23,7 +23,7 @@ Control Flow:
    - HTTP server: starts on random port for local CLI control (list, stop, spawn)
    - WebSocket: establishes persistent connection to backend via `ApiMachineClient`
    - RPC registration: exposes `spawn-happy-session`, `stop-session`, `requestShutdown` handlers
-   - Heartbeat loop: every 60s (or HAPPY_DAEMON_HEARTBEAT_INTERVAL) checks for version updates and prunes dead sessions
+   - Heartbeat loop: every 60s (or HAPI_DAEMON_HEARTBEAT_INTERVAL) checks for version updates and prunes dead sessions
 5. Awaits shutdown promise which resolves when:
    - OS signal received (SIGINT/SIGTERM)
    - HTTP `/stop` endpoint called
@@ -40,7 +40,7 @@ Control Flow:
 
 ### Version Mismatch Auto-Update
 
-The daemon detects when `npm upgrade happy-coder` occurs:
+The daemon detects when `npm upgrade hapi` occurs:
 1. Heartbeat reads package.json from disk
 2. Compares `JSON.parse(package.json).version` with compiled `configuration.currentCliVersion`
 3. If mismatch detected:
@@ -52,7 +52,7 @@ The daemon detects when `npm upgrade happy-coder` occurs:
 
 ### Stopping the Daemon
 
-Command: `happy daemon stop`
+Command: `hapi daemon stop`
 
 Control Flow:
 1. `stopDaemon()` in `controlClient.ts` reads daemon.state.json
@@ -74,10 +74,10 @@ Initiated by mobile app via backend RPC:
 2. `ApiMachineClient` invokes `spawnSession()` handler
 3. `spawnSession()`:
    - Creates directory if needed
-   - Spawns detached Happy process with `--hapi-starting-mode remote --started-by daemon`
+   - Spawns detached HAPI process with `--hapi-starting-mode remote --started-by daemon`
    - Adds to `pidToTrackedSession` map
    - Sets up 10-second awaiter for session webhook
-4. New Happy process:
+4. New HAPI process:
    - Creates session with backend, receives `happySessionId`
    - Calls `notifyDaemonSessionStarted()` to POST to daemon's `/session-started`
 5. Daemon updates tracking with `happySessionId`, resolves awaiter
@@ -85,10 +85,10 @@ Initiated by mobile app via backend RPC:
 
 ### Terminal-Spawned Sessions
 
-User runs `happy` directly:
+User runs `hapi` directly:
 1. CLI auto-starts daemon if configured
-2. Happy process calls `notifyDaemonSessionStarted()` 
-3. Daemon receives webhook, creates `TrackedSession` with `startedBy: 'happy directly...'`
+2. HAPI process calls `notifyDaemonSessionStarted()` 
+3. Daemon receives webhook, creates `TrackedSession` with `startedBy: 'hapi directly...'`
 4. Session tracked for health monitoring
 
 ### Session Termination
@@ -111,14 +111,14 @@ Local HTTP server (127.0.0.1 only) provides:
 
 ### Doctor Command
 
-`happy doctor` uses `ps aux | grep` to find all Happy processes:
+`hapi doctor` uses `ps aux | grep` to find all HAPI processes:
 - Production: matches `happy.mjs`, `happy-coder`, `dist/index.mjs`
 - Development: matches `tsx.*src/index.ts`
 - Categorizes by command args: daemon, daemon-spawned, user-session, doctor
 
 ### Clean Runaway Processes
 
-`happy doctor clean`:
+`hapi doctor clean`:
 1. `findRunawayHappyProcesses()` filters for likely orphans
 2. `killRunawayHappyProcesses()`:
    - Sends SIGTERM
@@ -178,7 +178,7 @@ I do not like how
 
 # Machine Sync Architecture - Separated Metadata & Daemon State
 
-> Direct-connect note: the “server” is `happy-bot` (not `happy-server`), payloads are plain JSON (no base64/encryption),
+> Direct-connect note: the “server” is `hapi-server`, payloads are plain JSON (no base64/encryption),
 > and authentication uses `CLI_API_TOKEN` (REST `Authorization: Bearer ...` + Socket.IO `handshake.auth.token`).
 
 ## Data Structure (Similar to Session's metadata + agentState)
@@ -222,7 +222,7 @@ Checks if machine ID exists in settings:
     "platform": "darwin",
     "happyCliVersion": "1.0.0",
     "homeDir": "/Users/john",
-    "happyHomeDir": "/Users/john/.happy"
+    "happyHomeDir": "/Users/john/.config/hapi"
   },
   "daemonState": {
     "status": "running",
@@ -318,16 +318,16 @@ socket.emit('machine-update-metadata', {
     "platform": "darwin",
     "happyCliVersion": "1.0.1",
     "homeDir": "/Users/john",
-    "happyHomeDir": "/Users/john/.happy"
+    "happyHomeDir": "/Users/john/.config/hapi"
   },
   "expectedVersion": 1
 }, callback)
 ```
 
-## 5. Mini App RPC Calls (via happy-bot)
+## 5. Mini App RPC Calls (via hapi-server)
 
-The Telegram Mini App calls REST endpoints on `happy-bot` (for example `POST /api/machines/:id/spawn`).
-`happy-bot` then relays those requests to the daemon via Socket.IO `rpc-request` on the `/cli` namespace.
+The Telegram Mini App calls REST endpoints on `hapi-server` (for example `POST /api/machines/:id/spawn`).
+`hapi-server` then relays those requests to the daemon via Socket.IO `rpc-request` on the `/cli` namespace.
 
 RPC method naming (machine-scoped) uses a `${machineId}:` prefix, for example:
 - `${machineId}:spawn-happy-session`
