@@ -95,14 +95,18 @@ function CodeHeader(props: CodeHeaderProps) {
 }
 
 function Pre(props: ComponentPropsWithoutRef<'pre'>) {
+    const { className, ...rest } = props
+
     return (
-        <pre
-            {...props}
-            className={cn(
-                'aui-md-pre overflow-auto rounded-b-md rounded-t-none bg-[var(--app-code-bg)] p-2 text-xs',
-                props.className
-            )}
-        />
+        <div className="aui-md-pre-wrapper min-w-0 w-full max-w-full overflow-x-auto overflow-y-hidden">
+            <pre
+                {...rest}
+                className={cn(
+                    'aui-md-pre m-0 w-max min-w-full rounded-b-md rounded-t-none bg-[var(--app-code-bg)] p-2 text-xs',
+                    className
+                )}
+            />
+        </div>
     )
 }
 
@@ -122,7 +126,7 @@ function Code(props: ComponentPropsWithoutRef<'code'>) {
         <code
             {...props}
             className={cn(
-                'aui-md-code rounded bg-[var(--app-inline-code-bg)] px-[0.3em] py-[0.1em] font-mono text-[0.9em]',
+                'aui-md-code break-words rounded bg-[var(--app-inline-code-bg)] px-[0.3em] py-[0.1em] font-mono text-[0.9em]',
                 props.className
             )}
         />
@@ -174,7 +178,13 @@ function Hr(props: ComponentPropsWithoutRef<'hr'>) {
 }
 
 function Table(props: ComponentPropsWithoutRef<'table'>) {
-    return <table {...props} className={cn('aui-md-table w-full border-collapse', props.className)} />
+    const { className, ...rest } = props
+
+    return (
+        <div className="aui-md-table-wrapper max-w-full overflow-x-auto">
+            <table {...rest} className={cn('aui-md-table w-full border-collapse', className)} />
+        </div>
+    )
 }
 
 function Thead(props: ComponentPropsWithoutRef<'thead'>) {
@@ -275,7 +285,7 @@ export function MarkdownText() {
         <MarkdownTextPrimitive
             remarkPlugins={MARKDOWN_PLUGINS}
             components={defaultComponents}
-            className={cn('aui-md text-sm')}
+            className={cn('aui-md min-w-0 max-w-full break-words text-sm')}
         />
     )
 }

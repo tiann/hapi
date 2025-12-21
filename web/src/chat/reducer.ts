@@ -1,6 +1,10 @@
 import type { AgentState } from '@/types/api'
-import type { AgentEvent, ChatBlock, ChatToolCall, NormalizedMessage, ToolCallBlock, ToolPermission, UsageData } from '@/chat/types'
+import type { AgentEvent, ChatBlock, ChatToolCall, CliOutputBlock, NormalizedMessage, ToolCallBlock, ToolPermission, UsageData } from '@/chat/types'
 import { traceMessages, type TracedMessage } from '@/chat/tracer'
+
+const CLI_TAG_REGEX = /<(?:local-command-[a-z-]+|command-(?:name|message|args))>/i
+const CLI_COMMAND_NAME_REGEX = /<command-name>/i
+const CLI_COMMAND_STDOUT_REGEX = /<local-command-stdout>/i
 
 // Calculate context size from usage data
 function calculateContextSize(usage: UsageData): number {
@@ -161,6 +165,76 @@ function getPermissions(agentState: AgentState | null | undefined): Map<string, 
     return map
 }
 
+function getMetaSentFrom(meta: unknown): string | null {
+    if (!meta || typeof meta !== 'object') return null
+    const sentFrom = (meta as { sentFrom?: unknown }).sentFrom
+    return typeof sentFrom === 'string' ? sentFrom : null
+}
+
+function hasCliOutputTags(text: string): boolean {
+    return CLI_TAG_REGEX.test(text)
+}
+
+function hasCommandNameTag(text: string): boolean {
+    return CLI_COMMAND_NAME_REGEX.test(text)
+}
+
+function hasLocalCommandStdoutTag(text: string): boolean {
+    return CLI_COMMAND_STDOUT_REGEX.test(text)
+}
+
+function isCliOutputText(text: string, meta: unknown): boolean {
+    return getMetaSentFrom(meta) === 'cli' && hasCliOutputTags(text)
+}
+
+function createCliOutputBlock(props: {
+    id: string
+    localId: string | null
+    createdAt: number
+    text: string
+    source: CliOutputBlock['source']
+    meta?: unknown
+}): CliOutputBlock {
+    return {
+        kind: 'cli-output',
+        id: props.id,
+        localId: props.localId,
+        createdAt: props.createdAt,
+        text: props.text,
+        source: props.source,
+        meta: props.meta
+    }
+}
+
+function mergeCliOutputBlocks(blocks: ChatBlock[]): ChatBlock[] {
+    const merged: ChatBlock[] = []
+
+    for (const block of blocks) {
+        if (block.kind !== 'cli-output') {
+            merged.push(block)
+            continue
+        }
+
+        const prev = merged[merged.length - 1]
+        if (
+            prev
+            && prev.kind === 'cli-output'
+            && prev.source === block.source
+            && hasCommandNameTag(prev.text)
+            && !hasLocalCommandStdoutTag(prev.text)
+            && hasLocalCommandStdoutTag(block.text)
+        ) {
+            const separator = prev.text.endsWith('\n') || block.text.startsWith('\n') ? '' : '\n'
+            merged[merged.length - 1] = { ...prev, text: `${prev.text}${separator}${block.text}` }
+            continue
+        }
+
+        merged.push(block)
+    }
+
+    return merged
+}
+
 function ensureToolBlock(
     blocks: ChatBlock[],
     toolBlocksById: Map<string, ToolCallBlock>,
@@ -296,6 +370,17 @@ function reduceTimeline(
         }
 
         if (msg.role === 'user') {
+            if (isCliOutputText(msg.content.text, msg.meta)) {
+                blocks.push(createCliOutputBlock({
+                    id: msg.id,
+                    localId: msg.localId,
+                    createdAt: msg.createdAt,
+                    text: msg.content.text,
+                    source: 'user',
+                    meta: msg.meta
+                }))
+                continue
+            }
             blocks.push({
                 kind: 'user-text',
                 id: msg.id,
@@ -313,6 +398,17 @@ function reduceTimeline(
             for (let idx = 0; idx < msg.content.length; idx += 1) {
                 const c = msg.content[idx]
                 if (c.type === 'text') {
+                    if (isCliOutputText(c.text, msg.meta)) {
+                        blocks.push(createCliOutputBlock({
+                            id: `${msg.id}:${idx}`,
+                            localId: msg.localId,
+                            createdAt: msg.createdAt,
+                            text: c.text,
+                            source: 'assistant',
+                            meta: msg.meta
+                        }))
+                        continue
+                    }
                     blocks.push({
                         kind: 'agent-text',
                         id: `${msg.id}:${idx}`,
@@ -447,7 +543,7 @@ function reduceTimeline(
         }
     }
 
-    return { blocks, toolBlocksById, hasReadyEvent }
+    return { blocks: mergeCliOutputBlocks(blocks), toolBlocksById, hasReadyEvent }
 }
 
 export type LatestUsage = {

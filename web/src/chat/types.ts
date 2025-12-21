@@ -122,6 +122,16 @@ export type AgentTextBlock = {
     meta?: unknown
 }
 
+export type CliOutputBlock = {
+    kind: 'cli-output'
+    id: string
+    localId: string | null
+    createdAt: number
+    text: string
+    source: 'user' | 'assistant'
+    meta?: unknown
+}
+
 export type AgentEventBlock = {
     kind: 'agent-event'
     id: string
@@ -140,4 +150,4 @@ export type ToolCallBlock = {
     meta?: unknown
 }
 
-export type ChatBlock = UserTextBlock | AgentTextBlock | ToolCallBlock | AgentEventBlock
+export type ChatBlock = UserTextBlock | AgentTextBlock | CliOutputBlock | ToolCallBlock | AgentEventBlock

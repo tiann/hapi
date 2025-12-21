@@ -3,6 +3,7 @@ import type {
     AgentEventBlock,
     AgentTextBlock,
     ChatBlock,
+    CliOutputBlock,
     ToolCallBlock,
     ToolPermission,
     UserTextBlock,
@@ -105,6 +106,14 @@ function areAgentTextBlocksEqual(left: AgentTextBlock, right: AgentTextBlock): b
         && left.meta === right.meta
 }
 
+function areCliOutputBlocksEqual(left: CliOutputBlock, right: CliOutputBlock): boolean {
+    return left.text === right.text
+        && left.localId === right.localId
+        && left.createdAt === right.createdAt
+        && left.source === right.source
+        && left.meta === right.meta
+}
+
 function areAgentEventBlocksEqual(left: AgentEventBlock, right: AgentEventBlock): boolean {
     return left.createdAt === right.createdAt
         && left.meta === right.meta
@@ -171,6 +180,11 @@ function reconcileBlock(block: ChatBlock, prevById: ChatBlocksById): ChatBlock {
     if (block.kind === 'agent-text') {
         const prevBlock = prev as AgentTextBlock
         return areAgentTextBlocksEqual(prevBlock, block) ? prevBlock : block
+    }
+
+    if (block.kind === 'cli-output') {
+        const prevBlock = prev as CliOutputBlock
+        return areCliOutputBlocksEqual(prevBlock, block) ? prevBlock : block
     }
 
     const prevBlock = prev as AgentEventBlock

@@ -112,11 +112,9 @@ body {
 .markdown-content table { border-collapse: collapse; width: 100%; }
 .markdown-content th, .markdown-content td { border: 1px solid var(--app-border); padding: 0.25rem 0.5rem; }
 
-/* assistant-ui markdown + shiki */
 .aui-md-codeblock pre.shiki {
     margin: 0;
     padding: 0.5rem;
-    overflow: auto;
     background-color: transparent !important;
     font-size: 0.75rem;
 }

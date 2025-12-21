@@ -2,7 +2,7 @@ import { useCallback, useMemo } from 'react'
 import type { AppendMessage, ThreadMessageLike } from '@assistant-ui/react'
 import { useExternalMessageConverter, useExternalStoreRuntime } from '@assistant-ui/react'
 import { renderEventLabel } from '@/chat/presentation'
-import type { ChatBlock } from '@/chat/types'
+import type { ChatBlock, CliOutputBlock } from '@/chat/types'
 import type { AgentEvent, ToolCallBlock } from '@/chat/types'
 import type { MessageStatus as HappyMessageStatus, Session } from '@/types/api'
 
@@ -17,12 +17,13 @@ function safeStringify(value: unknown): string {
 }
 
 export type HappyChatMessageMetadata = {
-    kind: 'user' | 'assistant' | 'tool' | 'event'
+    kind: 'user' | 'assistant' | 'tool' | 'event' | 'cli-output'
     status?: HappyMessageStatus
     localId?: string | null
     originalText?: string
     toolCallId?: string
     event?: AgentEvent
+    source?: CliOutputBlock['source']
 }
 
 function toThreadMessageLike(block: ChatBlock): ThreadMessageLike {
@@ -66,6 +67,19 @@ function toThreadMessageLike(block: ChatBlock): ThreadMessageLike {
             content: [{ type: 'text', text: renderEventLabel(block.event) }],
             metadata: {
                 custom: { kind: 'event', event: block.event } satisfies HappyChatMessageMetadata
+            }
+        }
+    }
+
+    if (block.kind === 'cli-output') {
+        const messageId = `cli:${block.id}`
+        return {
+            role: block.source === 'user' ? 'user' : 'assistant',
+            id: messageId,
+            createdAt: new Date(block.createdAt),
+            content: [{ type: 'text', text: block.text }],
+            metadata: {
+                custom: { kind: 'cli-output', source: block.source } satisfies HappyChatMessageMetadata
             }
         }
     }

@@ -72,7 +72,7 @@ export function CodeBlock(props: {
     }
 
     return (
-        <div className="relative overflow-hidden rounded-md bg-[var(--app-code-bg)]">
+        <div className="relative min-w-0 max-w-full">
             {showCopyButton ? (
                 <button
                     type="button"
@@ -84,9 +84,11 @@ export function CodeBlock(props: {
                 </button>
             ) : null}
 
-            <pre className="shiki overflow-auto p-2 pr-8 text-xs font-mono">
-                <code>{highlighted ?? props.code}</code>
-            </pre>
+            <div className="min-w-0 w-full max-w-full overflow-x-auto overflow-y-hidden rounded-md bg-[var(--app-code-bg)]">
+                <pre className="shiki m-0 w-max min-w-full p-2 pr-8 text-xs font-mono">
+                    <code className="block">{highlighted ?? props.code}</code>
+                </pre>
+            </div>
         </div>
     )
 }

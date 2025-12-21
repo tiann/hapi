@@ -8,6 +8,7 @@ import { LazyRainbowText } from '@/components/LazyRainbowText'
 import { MessageStatusIndicator } from '@/components/AssistantChat/messages/MessageStatusIndicator'
 import { ToolCard } from '@/components/ToolCard/ToolCard'
 import { useHappyChatContext } from '@/components/AssistantChat/context'
+import { CliOutputBlock } from '@/components/CliOutputBlock'
 
 function isObject(value: unknown): value is Record<string, unknown> {
     return Boolean(value) && typeof value === 'object'
@@ -76,6 +77,17 @@ function HappyNestedBlockList(props: {
                     )
                 }
 
+                if (block.kind === 'cli-output') {
+                    const alignClass = block.source === 'user' ? 'ml-auto w-full max-w-[92%]' : ''
+                    return (
+                        <div key={`cli:${block.id}`} className="px-1 min-w-0 max-w-full overflow-x-hidden">
+                            <div className={alignClass}>
+                                <CliOutputBlock text={block.text} />
+                            </div>
+                        </div>
+                    )
+                }
+
                 if (block.kind === 'agent-event') {
                     const presentation = getEventPresentation(block.event)
                     return (
@@ -140,7 +152,7 @@ export function HappyToolMessage(props: ToolCallMessagePartProps) {
         const resultText = hasResult ? safeStringify(props.result) : ''
 
         return (
-            <div className="py-1">
+            <div className="py-1 min-w-0 max-w-full overflow-x-hidden">
                 <div className="rounded-xl bg-[var(--app-secondary-bg)] p-3 shadow-sm">
                     <div className="flex items-center gap-2 text-xs">
                         <div className="font-mono text-[var(--app-hint)]">
@@ -174,7 +186,7 @@ export function HappyToolMessage(props: ToolCallMessagePartProps) {
     const isTask = block.tool.name === 'Task'
 
     return (
-        <div className="py-1">
+        <div className="py-1 min-w-0 max-w-full overflow-x-hidden">
             <ToolCard
                 api={ctx.api}
                 sessionId={ctx.sessionId}
