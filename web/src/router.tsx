@@ -34,7 +34,7 @@ function SessionsPage() {
     }, [refetch])
 
     return (
-        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+        <div className="flex-1 overflow-y-auto p-4 pt-[calc(1rem+env(safe-area-inset-top))] space-y-4">
             {error ? <div className="text-sm text-red-600">{error}</div> : null}
             <SessionList
                 sessions={sessions}
@@ -114,7 +114,7 @@ function MachinesPage() {
 
     return (
         <div className="flex-1 overflow-y-auto">
-            <div className="flex items-center gap-2 border-b border-[var(--app-border)] bg-[var(--app-bg)] p-3">
+            <div className="flex items-center gap-2 border-b border-[var(--app-border)] bg-[var(--app-bg)] p-3 pt-[calc(0.75rem+env(safe-area-inset-top))]">
                 <div className="flex-1 font-semibold">Machines</div>
             </div>
 
@@ -158,7 +158,7 @@ function SpawnPage() {
 
     return (
         <div className="flex-1 overflow-y-auto">
-            <div className="flex items-center gap-2 border-b border-[var(--app-border)] bg-[var(--app-bg)] p-3">
+            <div className="flex items-center gap-2 border-b border-[var(--app-border)] bg-[var(--app-bg)] p-3 pt-[calc(0.75rem+env(safe-area-inset-top))]">
                 <div className="flex-1 font-semibold">Create Session</div>
             </div>
 

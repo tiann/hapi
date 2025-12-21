@@ -175,7 +175,7 @@ export default function FilePage() {
 
     return (
         <div className="flex h-full flex-col">
-            <div className="bg-[var(--app-bg)] border-b border-[var(--app-border)]">
+            <div className="bg-[var(--app-bg)] border-b border-[var(--app-border)] pt-[env(safe-area-inset-top)]">
                 <div className="mx-auto w-full max-w-[720px] flex items-center gap-2 p-3">
                     <button
                         type="button"
