@@ -29,6 +29,10 @@ function isSkippableAgentContent(content: unknown): boolean {
     return Boolean(data.isMeta) || Boolean(data.isCompactSummary)
 }
 
+function isCodexContent(content: unknown): boolean {
+    return isObject(content) && content.type === 'codex'
+}
+
 type RoleWrappedRecord = {
     role: string
     content: unknown
@@ -404,6 +408,9 @@ export function normalizeDecryptedMessage(message: DecryptedMessage): Normalized
             return null
         }
         const normalized = normalizeAgentRecord(message.id, message.localId, message.createdAt, record.content, record.meta)
+        if (!normalized && isCodexContent(record.content)) {
+            return null
+        }
         return normalized
             ? { ...normalized, status: message.status, originalText: message.originalText }
             : {
