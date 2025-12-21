@@ -102,6 +102,16 @@ export function getHappyCliCommand(args: string[]): HappyCliCommand {
   const isBunRuntime = Boolean((process.versions as Record<string, string | undefined>).bun);
   const entrypoint = isBunRuntime ? resolveEntrypointForBun(projectRoot) : distEntrypoint;
 
+  const argv1 = process.argv[1] ?? '';
+  const runningFromSource = argv1.endsWith(join('src', 'index.ts')) || process.execArgv.some((arg) => arg.includes('tsx'));
+  const srcEntrypoint = join(projectRoot, 'src', 'index.ts');
+  if (!isBunRuntime && runningFromSource && existsSync(srcEntrypoint)) {
+    return {
+      command: process.execPath,
+      args: [...process.execArgv, srcEntrypoint, ...args]
+    };
+  }
+
   const spawnArgs = isBunRuntime ? [entrypoint, ...args] : [
     '--no-warnings',
     '--no-deprecation',
