@@ -50,8 +50,10 @@ export function HappyComposer(props: {
     thinking?: boolean
     agentState?: AgentState | null
     contextSize?: number
+    controlledByUser?: boolean
     onPermissionModeChange?: (mode: PermissionMode) => void
     onModelModeChange?: (mode: ModelMode) => void
+    onSwitchToRemote?: () => void
     autocompletePrefixes?: string[]
     autocompleteSuggestions?: (query: string) => Promise<Suggestion[]>
 }) {
@@ -63,8 +65,10 @@ export function HappyComposer(props: {
         thinking = false,
         agentState,
         contextSize,
+        controlledByUser = false,
         onPermissionModeChange,
         onModelModeChange,
+        onSwitchToRemote,
         autocompletePrefixes = ['@', '/'],
         autocompleteSuggestions = defaultSuggestionHandler
     } = props
@@ -85,6 +89,7 @@ export function HappyComposer(props: {
     })
     const [showSettings, setShowSettings] = useState(false)
     const [isAborting, setIsAborting] = useState(false)
+    const [isSwitching, setIsSwitching] = useState(false)
 
     const textareaRef = useRef<HTMLTextAreaElement>(null)
 
@@ -146,6 +151,8 @@ export function HappyComposer(props: {
     }, [api, suggestions, inputState, autocompletePrefixes, haptic])
 
     const abortDisabled = controlsDisabled || isAborting || !threadIsRunning
+    const switchDisabled = controlsDisabled || isSwitching || !controlledByUser
+    const showSwitchButton = Boolean(controlledByUser && onSwitchToRemote)
 
     useEffect(() => {
         if (!isAborting) return
@@ -153,12 +160,29 @@ export function HappyComposer(props: {
         setIsAborting(false)
     }, [isAborting, threadIsRunning])
 
+    useEffect(() => {
+        if (!isSwitching) return
+        if (controlledByUser) return
+        setIsSwitching(false)
+    }, [isSwitching, controlledByUser])
+
     const handleAbort = useCallback(() => {
         if (abortDisabled) return
         haptic('error')
         setIsAborting(true)
         api.thread().cancelRun()
     }, [abortDisabled, api, haptic])
+
+    const handleSwitch = useCallback(async () => {
+        if (switchDisabled || !onSwitchToRemote) return
+        haptic('light')
+        setIsSwitching(true)
+        try {
+            await onSwitchToRemote()
+        } catch {
+            setIsSwitching(false)
+        }
+    }, [switchDisabled, onSwitchToRemote, haptic])
 
     const handleKeyDown = useCallback((e: ReactKeyboardEvent<HTMLTextAreaElement>) => {
         const key = e.key
@@ -430,6 +454,10 @@ export function HappyComposer(props: {
                             abortDisabled={abortDisabled}
                             isAborting={isAborting}
                             onAbort={handleAbort}
+                            showSwitchButton={showSwitchButton}
+                            switchDisabled={switchDisabled}
+                            isSwitching={isSwitching}
+                            onSwitch={handleSwitch}
                         />
                     </div>
                 </ComposerPrimitive.Root>

@@ -125,6 +125,13 @@ export class ApiClient {
         })
     }
 
+    async switchSession(sessionId: string): Promise<void> {
+        await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/switch`, {
+            method: 'POST',
+            body: JSON.stringify({})
+        })
+    }
+
     async setPermissionMode(sessionId: string, mode: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan'): Promise<void> {
         await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/permission-mode`, {
             method: 'POST',

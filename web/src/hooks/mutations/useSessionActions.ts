@@ -22,6 +22,7 @@ function toModelMode(mode: ModelMode): ModelModeValue {
 
 export function useSessionActions(api: ApiClient | null, sessionId: string | null): {
     abortSession: () => Promise<void>
+    switchSession: () => Promise<void>
     setPermissionMode: (mode: PermissionMode) => Promise<void>
     setModelMode: (mode: ModelMode) => Promise<void>
     isPending: boolean
@@ -40,6 +41,16 @@ export function useSessionActions(api: ApiClient | null, sessionId: string | nul
                 throw new Error('Session unavailable')
             }
             await api.abortSession(sessionId)
+        },
+        onSuccess: () => void invalidateSession(),
+    })
+
+    const switchMutation = useMutation({
+        mutationFn: async () => {
+            if (!api || !sessionId) {
+                throw new Error('Session unavailable')
+            }
+            await api.switchSession(sessionId)
         },
         onSuccess: () => void invalidateSession(),
     })
@@ -66,8 +77,9 @@ export function useSessionActions(api: ApiClient | null, sessionId: string | nul
 
     return {
         abortSession: abortMutation.mutateAsync,
+        switchSession: switchMutation.mutateAsync,
         setPermissionMode: permissionMutation.mutateAsync,
         setModelMode: modelMutation.mutateAsync,
-        isPending: abortMutation.isPending || permissionMutation.isPending || modelMutation.isPending,
+        isPending: abortMutation.isPending || switchMutation.isPending || permissionMutation.isPending || modelMutation.isPending,
     }
 }

@@ -35,7 +35,7 @@ export function SessionChat(props: {
     const controlsDisabled = !props.session.active
     const normalizedCacheRef = useRef<Map<string, { source: DecryptedMessage; normalized: NormalizedMessage | null }>>(new Map())
     const blocksByIdRef = useRef<Map<string, ChatBlock>>(new Map())
-    const { abortSession, setPermissionMode, setModelMode } = useSessionActions(props.api, props.session.id)
+    const { abortSession, switchSession, setPermissionMode, setModelMode } = useSessionActions(props.api, props.session.id)
 
     useEffect(() => {
         normalizedCacheRef.current.clear()
@@ -107,6 +107,12 @@ export function SessionChat(props: {
         await abortSession()
         props.onRefresh()
     }, [abortSession, props.onRefresh])
+
+    // Switch to remote handler
+    const handleSwitchToRemote = useCallback(async () => {
+        await switchSession()
+        props.onRefresh()
+    }, [switchSession, props.onRefresh])
 
     const handleViewFiles = useCallback(() => {
         navigate({
@@ -204,8 +210,10 @@ export function SessionChat(props: {
                         thinking={props.session.thinking}
                         agentState={props.session.agentState}
                         contextSize={reduced.latestUsage?.contextSize}
+                        controlledByUser={props.session.agentState?.controlledByUser === true}
                         onPermissionModeChange={handlePermissionModeChange}
                         onModelModeChange={handleModelModeChange}
+                        onSwitchToRemote={handleSwitchToRemote}
                     />
                 </div>
             </AssistantRuntimeProvider>

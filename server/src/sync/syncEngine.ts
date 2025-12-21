@@ -622,6 +622,10 @@ export class SyncEngine {
         await this.sessionRpc(sessionId, 'abort', { reason: 'User aborted via Telegram Bot' })
     }
 
+    async switchSession(sessionId: string, to: 'remote' | 'local'): Promise<void> {
+        await this.sessionRpc(sessionId, 'switch', { to })
+    }
+
     async setPermissionMode(
         sessionId: string,
         mode: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan'
