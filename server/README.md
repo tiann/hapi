@@ -26,7 +26,7 @@ Optional:
 - `WEBAPP_PORT` - HTTP port (default: 3006).
 - `WEBAPP_URL` - public URL for Telegram Mini App button.
 - `CORS_ORIGINS` - comma-separated origins, or `*`.
-- `HAPI_BOT_DATA_DIR` - data directory (default: ~/.hapi-server).
+- `HAPI_HOME` - data directory (default: ~/.hapi).
 - `DB_PATH` - SQLite database path.
 
 ## Running

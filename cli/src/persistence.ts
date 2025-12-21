@@ -1,7 +1,7 @@
 /**
  * Minimal persistence functions for HAPI CLI
  * 
- * Handles settings and private key storage in ~/.config/hapi/ (or HAPI_HOME_DIR override)
+ * Handles settings and private key storage in ~/.hapi/ (or HAPI_HOME override)
  */
 
 import { FileHandle } from 'node:fs/promises'

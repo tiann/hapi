@@ -3,7 +3,7 @@
  *
  * Handles CLI_API_TOKEN initialization with priority:
  * 1. Environment variable (highest - allows temporary override)
- * 2. Settings file (~/.config/hapi/settings.json)
+ * 2. Settings file (~/.hapi/settings.json)
  * 3. Interactive prompt (only when both above are missing)
  */
 
@@ -57,7 +57,7 @@ async function promptForToken(): Promise<string> {
         if (!token.trim()) {
             throw new Error('Token cannot be empty')
         }
-        console.log(chalk.green('\nToken saved to ~/.config/hapi/settings.json'))
+        console.log(chalk.green(`\nToken saved to ${configuration.settingsFile}`))
         return token.trim()
     } finally {
         rl.close()

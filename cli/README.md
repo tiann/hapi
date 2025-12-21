@@ -37,10 +37,10 @@ Required:
 - `CLI_API_TOKEN` - shared secret; must match the server
 - `HAPI_BOT_URL` - server base URL (default: http://localhost:3006)
 
-`CLI_API_TOKEN` can be set via env or stored in `~/.config/hapi/settings.json` (env wins).
+`CLI_API_TOKEN` can be set via env or stored in `~/.hapi/settings.json` (env wins).
 
 Optional:
-- `HAPI_HOME_DIR` - config/data directory (default: ~/.config/hapi)
+- `HAPI_HOME` - config/data directory (default: ~/.hapi)
 - `HAPI_EXPERIMENTAL` - enable experimental features (true/1/yes)
 - `HAPI_HTTP_MCP_URL` - default MCP target for `hapi mcp`
 - `HAPI_CLAUDE_PATH` - path to a specific `claude` executable

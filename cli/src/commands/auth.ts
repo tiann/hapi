@@ -50,7 +50,7 @@ export async function handleAuthCommand(args: string[]): Promise<void> {
                 cliApiToken: token.trim()
             }))
             configuration._setCliApiToken(token.trim())
-            console.log(chalk.green('\nToken saved to ~/.config/hapi/settings.json'))
+            console.log(chalk.green(`\nToken saved to ${configuration.settingsFile}`))
         } finally {
             rl.close()
         }
@@ -84,7 +84,7 @@ ${chalk.bold('Usage:')}
 
 ${chalk.bold('Token priority (highest to lowest):')}
   1. CLI_API_TOKEN environment variable
-  2. ~/.config/hapi/settings.json
+  2. ~/.hapi/settings.json
   3. Interactive prompt (on first run)
 `)
 }

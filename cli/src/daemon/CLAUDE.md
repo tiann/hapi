@@ -222,7 +222,7 @@ Checks if machine ID exists in settings:
     "platform": "darwin",
     "happyCliVersion": "1.0.0",
     "homeDir": "/Users/john",
-    "happyHomeDir": "/Users/john/.config/hapi"
+    "happyHomeDir": "/Users/john/.hapi"
   },
   "daemonState": {
     "status": "running",
@@ -318,7 +318,7 @@ socket.emit('machine-update-metadata', {
     "platform": "darwin",
     "happyCliVersion": "1.0.1",
     "homeDir": "/Users/john",
-    "happyHomeDir": "/Users/john/.config/hapi"
+    "happyHomeDir": "/Users/john/.hapi"
   },
   "expectedVersion": 1
 }, callback)

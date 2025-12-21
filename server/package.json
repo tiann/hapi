@@ -2,7 +2,7 @@
     "name": "hapi-server",
     "private": true,
     "version": "0.1.0",
-  "description": "Telegram Bot client for HAPI - control Claude Code sessions",
+    "description": "Telegram Bot client for HAPI - control Claude Code sessions",
     "author": "Kirill Dubovitskiy",
     "license": "MIT",
     "type": "module",
@@ -23,7 +23,7 @@
     },
     "devDependencies": {
         "@types/node": ">=20",
-        "bun-types": "^1.2.21",
+        "bun-types": "^1.3.5",
         "typescript": "^5"
     }
 }

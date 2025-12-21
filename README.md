@@ -40,7 +40,7 @@ The CLI will prompt for `CLI_API_TOKEN` and save it locally.
 - In a browser, open `WEBAPP_URL` and log in with `CLI_API_TOKEN`.
 
 ## CLI config file
-You can store the token in `~/.config/hapi/settings.json` instead of an env var.
+You can store the token in `~/.hapi/settings.json` instead of an env var.
 Environment variables take priority over the file.
 
 Example:

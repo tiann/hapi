@@ -35,13 +35,13 @@ class Configuration {
         const args = process.argv.slice(2)
         this.isDaemonProcess = args.length >= 2 && args[0] === 'daemon' && (args[1] === 'start-sync')
 
-        // Directory configuration - Priority: HAPI_HOME_DIR env > default home dir
-        if (process.env.HAPI_HOME_DIR) {
+        // Directory configuration - Priority: HAPI_HOME env > default home dir
+        if (process.env.HAPI_HOME) {
             // Expand ~ to home directory if present
-            const expandedPath = process.env.HAPI_HOME_DIR.replace(/^~/, homedir())
+            const expandedPath = process.env.HAPI_HOME.replace(/^~/, homedir())
             this.happyHomeDir = expandedPath
         } else {
-            this.happyHomeDir = join(homedir(), '.config', 'hapi')
+            this.happyHomeDir = join(homedir(), '.hapi')
         }
 
         this.logsDir = join(this.happyHomeDir, 'logs')

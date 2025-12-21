@@ -149,7 +149,7 @@ hapi daemon status
 ```
 
 ## Daemon Logs
-- Daemon logs are stored in `~/.hapi-dev/logs/` (or `$HAPI_HOME_DIR/logs/`)
+- Daemon logs are stored in `~/.hapi/logs/` (or `$HAPI_HOME/logs/`)
 - Named with format: `YYYY-MM-DD-HH-MM-SS-daemon.log`
 
 # Session Forking `claude` and sdk behavior
