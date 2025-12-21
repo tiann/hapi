@@ -8,6 +8,8 @@
         "build:cli": "cd cli && bun run build",
         "build:cli:exe": "cd cli && bun run build:exe",
         "build:cli:exe:all": "cd cli && bun run build:exe:all",
+        "build:single-exe": "bun run build:web && (cd server && bun run generate:embedded-web-assets) && (cd cli && bun run build:exe:allinone)",
+        "build:single-exe:all": "bun run build:web && (cd server && bun run generate:embedded-web-assets) && (cd cli && bun run build:exe:allinone:all)",
         "build:server": "cd server && bun run build",
         "build:web": "cd web && bun run build",
         "dev:server": "cd server && bun run dev",

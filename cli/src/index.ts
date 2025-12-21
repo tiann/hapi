@@ -65,6 +65,19 @@ import { withBunRuntimeEnv } from './utils/bunRuntime'
     return
   }
 
+  if (subcommand === 'server') {
+    try {
+      await import('../../server/src/index')
+    } catch (error) {
+      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
+      if (process.env.DEBUG) {
+        console.error(error)
+      }
+      process.exit(1)
+    }
+    return
+  }
+
   await ensureRuntimeAssets()
 
   // If --version is passed - do not log, its likely daemon inquiring about our version
@@ -323,6 +336,7 @@ ${chalk.bold('Usage:')}
   hapi mcp               Start MCP stdio bridge
   hapi connect           (not available in direct-connect mode)
   hapi notify            (not available in direct-connect mode)
+  hapi server            Start the API + web server
   hapi daemon            Manage background service that allows
                             to spawn new sessions away from your computer
   hapi doctor            System diagnostics & troubleshooting

@@ -70,6 +70,8 @@
     "build": "shx rm -rf dist && tsc --noEmit && pkgroll",
     "build:exe": "bun run scripts/build-executable.ts",
     "build:exe:all": "bun run scripts/build-executable.ts --all",
+    "build:exe:allinone": "bun run scripts/build-executable.ts --with-web-assets",
+    "build:exe:allinone:all": "bun run scripts/build-executable.ts --with-web-assets --all",
     "test": "bun run build && tsx --env-file .env.integration-test node_modules/.bin/vitest run",
     "test:win": "bun run build && vitest run",
     "start": "bun run build && ./bin/happy.mjs",

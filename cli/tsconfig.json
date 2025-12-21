@@ -6,12 +6,13 @@
       "es2022"
     ],
     "jsx": "react",
-    "rootDir": "src",
+    "rootDir": "..",
     "experimentalDecorators": true,
     "outDir": "dist",
     "noEmit": true,
-    "typeRoots": [
-      "./node_modules/@types"
+    "types": [
+      "node",
+      "bun-types"
     ],
     "paths": {
       "@/*": [
@@ -25,6 +26,8 @@
   "include": [
     "src/**/*.ts",
     "src/**/*.tsx",
-    "src/**/*.d.ts"
+    "src/**/*.d.ts",
+    "../server/src/**/*.ts",
+    "../server/src/**/*.d.ts"
   ]
 }

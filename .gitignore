@@ -5,6 +5,7 @@
 **/dist/
 **/dist-exe/
 **/*.tsbuildinfo
+server/src/web/embeddedAssets.generated.ts
 
 # Env files (can contain secrets)
 **/.env

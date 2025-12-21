@@ -19,6 +19,7 @@ import type { SSEManager } from '../sse/sseManager'
 import type { Server as BunServer } from 'bun'
 import type { Server as SocketEngine } from '@socket.io/bun-engine'
 import type { WebSocketData } from '@socket.io/bun-engine'
+import { loadEmbeddedAssetMap, type EmbeddedWebAsset } from './embeddedAssets'
 
 function findWebappDistDir(): { distDir: string; indexHtmlPath: string } {
     const candidates = [
@@ -38,10 +39,19 @@ function findWebappDistDir(): { distDir: string; indexHtmlPath: string } {
     return { distDir, indexHtmlPath: join(distDir, 'index.html') }
 }
 
+function serveEmbeddedAsset(asset: EmbeddedWebAsset): Response {
+    return new Response(Bun.file(asset.sourcePath), {
+        headers: {
+            'Content-Type': asset.mimeType
+        }
+    })
+}
+
 function createWebApp(options: {
     getSyncEngine: () => SyncEngine | null
     getSseManager: () => SSEManager | null
     jwtSecret: Uint8Array
+    embeddedAssetMap: Map<string, EmbeddedWebAsset> | null
 }): Hono<WebAppEnv> {
     const app = new Hono<WebAppEnv>()
 
@@ -68,6 +78,51 @@ function createWebApp(options: {
     app.route('/api', createPermissionsRoutes(options.getSyncEngine))
     app.route('/api', createMachinesRoutes(options.getSyncEngine))
     app.route('/api', createGitRoutes(options.getSyncEngine))
+
+    if (options.embeddedAssetMap) {
+        const embeddedAssetMap = options.embeddedAssetMap
+        const indexHtmlAsset = embeddedAssetMap.get('/index.html')
+
+        if (!indexHtmlAsset) {
+            app.get('*', (c) => {
+                return c.text(
+                    'Embedded Mini App is missing index.html. Rebuild the executable after running bun run build:web.',
+                    503
+                )
+            })
+            return app
+        }
+
+        app.use('*', async (c, next) => {
+            if (c.req.path.startsWith('/api')) {
+                await next()
+                return
+            }
+
+            if (c.req.method !== 'GET' && c.req.method !== 'HEAD') {
+                await next()
+                return
+            }
+
+            const asset = embeddedAssetMap.get(c.req.path)
+            if (asset) {
+                return serveEmbeddedAsset(asset)
+            }
+
+            await next()
+        })
+
+        app.get('*', async (c, next) => {
+            if (c.req.path.startsWith('/api')) {
+                await next()
+                return
+            }
+
+            return serveEmbeddedAsset(indexHtmlAsset)
+        })
+
+        return app
+    }
 
     const { distDir, indexHtmlPath } = findWebappDistDir()
 
@@ -110,10 +165,12 @@ export async function startWebServer(options: {
     jwtSecret: Uint8Array
     socketEngine: SocketEngine
 }): Promise<BunServer<WebSocketData>> {
+    const embeddedAssetMap = Bun.isCompiled ? await loadEmbeddedAssetMap() : null
     const app = createWebApp({
         getSyncEngine: options.getSyncEngine,
         getSseManager: options.getSseManager,
-        jwtSecret: options.jwtSecret
+        jwtSecret: options.jwtSecret,
+        embeddedAssetMap
     })
 
     const socketHandler = options.socketEngine.handler()
