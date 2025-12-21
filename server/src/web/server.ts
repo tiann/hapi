@@ -95,13 +95,11 @@ function createWebApp(options: {
 
         app.use('*', async (c, next) => {
             if (c.req.path.startsWith('/api')) {
-                await next()
-                return
+                return await next()
             }
 
             if (c.req.method !== 'GET' && c.req.method !== 'HEAD') {
-                await next()
-                return
+                return await next()
             }
 
             const asset = embeddedAssetMap.get(c.req.path)
@@ -109,7 +107,7 @@ function createWebApp(options: {
                 return serveEmbeddedAsset(asset)
             }
 
-            await next()
+            return await next()
         })
 
         app.get('*', async (c, next) => {
@@ -165,7 +163,8 @@ export async function startWebServer(options: {
     jwtSecret: Uint8Array
     socketEngine: SocketEngine
 }): Promise<BunServer<WebSocketData>> {
-    const embeddedAssetMap = Bun.isCompiled ? await loadEmbeddedAssetMap() : null
+    const bunRuntime = (globalThis as typeof globalThis & { Bun?: { isCompiled?: boolean } }).Bun
+    const embeddedAssetMap = bunRuntime?.isCompiled ? await loadEmbeddedAssetMap() : null
     const app = createWebApp({
         getSyncEngine: options.getSyncEngine,
         getSseManager: options.getSseManager,

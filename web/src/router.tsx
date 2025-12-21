@@ -201,17 +201,24 @@ const sessionFilesRoute = createRoute({
     component: FilesPage,
 })
 
+type SessionFileSearch = {
+    path: string
+    staged?: boolean
+}
+
 const sessionFileRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: '/sessions/$sessionId/file',
-    validateSearch: (search: Record<string, unknown>) => ({
-        path: typeof search.path === 'string' ? search.path : '',
-        staged: search.staged === true || search.staged === 'true'
+    validateSearch: (search: Record<string, unknown>): SessionFileSearch => {
+        const path = typeof search.path === 'string' ? search.path : ''
+        const staged = search.staged === true || search.staged === 'true'
             ? true
             : search.staged === false || search.staged === 'false'
                 ? false
                 : undefined
-    }),
+
+        return staged === undefined ? { path } : { path, staged }
+    },
     component: FilePage,
 })
 
