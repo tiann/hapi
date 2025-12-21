@@ -1,4 +1,3 @@
-import '@assistant-ui/react-markdown/styles/dot.css'
 import type { ComponentPropsWithoutRef } from 'react'
 import { useState } from 'react'
 import {
