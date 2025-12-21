@@ -39,6 +39,25 @@ function isToolCallBlock(value: unknown): value is ToolCallBlock {
     return true
 }
 
+function isPendingPermissionBlock(block: ChatBlock): boolean {
+    return block.kind === 'tool-call' && block.tool.permission?.status === 'pending'
+}
+
+function splitTaskChildren(block: ToolCallBlock): { pending: ChatBlock[]; rest: ChatBlock[] } {
+    const pending: ChatBlock[] = []
+    const rest: ChatBlock[] = []
+
+    for (const child of block.children) {
+        if (isPendingPermissionBlock(child)) {
+            pending.push(child)
+        } else {
+            rest.push(child)
+        }
+    }
+
+    return { pending, rest }
+}
+
 function HappyNestedBlockList(props: {
     blocks: ChatBlock[]
 }) {
@@ -104,6 +123,7 @@ function HappyNestedBlockList(props: {
 
                 if (block.kind === 'tool-call') {
                     const isTask = block.tool.name === 'Task'
+                    const taskChildren = isTask ? splitTaskChildren(block) : null
 
                     return (
                         <div key={`tool:${block.id}`} className="py-1">
@@ -117,14 +137,23 @@ function HappyNestedBlockList(props: {
                             />
                             {block.children.length > 0 ? (
                                 isTask ? (
-                                    <details className="mt-2">
-                                        <summary className="cursor-pointer text-xs text-[var(--app-hint)]">
-                                            Task details ({block.children.length})
-                                        </summary>
-                                        <div className="mt-2 pl-3">
-                                            <HappyNestedBlockList blocks={block.children} />
-                                        </div>
-                                    </details>
+                                    <>
+                                        {taskChildren && taskChildren.pending.length > 0 ? (
+                                            <div className="mt-2 pl-3">
+                                                <HappyNestedBlockList blocks={taskChildren.pending} />
+                                            </div>
+                                        ) : null}
+                                        {taskChildren && taskChildren.rest.length > 0 ? (
+                                            <details className="mt-2">
+                                                <summary className="cursor-pointer text-xs text-[var(--app-hint)]">
+                                                    Task details ({taskChildren.rest.length})
+                                                </summary>
+                                                <div className="mt-2 pl-3">
+                                                    <HappyNestedBlockList blocks={taskChildren.rest} />
+                                                </div>
+                                            </details>
+                                        ) : null}
+                                    </>
                                 ) : (
                                     <div className="mt-2 pl-3">
                                         <HappyNestedBlockList blocks={block.children} />
@@ -184,6 +213,7 @@ export function HappyToolMessage(props: ToolCallMessagePartProps) {
 
     const block = artifact
     const isTask = block.tool.name === 'Task'
+    const taskChildren = isTask ? splitTaskChildren(block) : null
 
     return (
         <div className="py-1 min-w-0 max-w-full overflow-x-hidden">
@@ -197,14 +227,23 @@ export function HappyToolMessage(props: ToolCallMessagePartProps) {
             />
             {block.children.length > 0 ? (
                 isTask ? (
-                    <details className="mt-2">
-                        <summary className="cursor-pointer text-xs text-[var(--app-hint)]">
-                            Task details ({block.children.length})
-                        </summary>
-                        <div className="mt-2 pl-3">
-                            <HappyNestedBlockList blocks={block.children} />
-                        </div>
-                    </details>
+                    <>
+                        {taskChildren && taskChildren.pending.length > 0 ? (
+                            <div className="mt-2 pl-3">
+                                <HappyNestedBlockList blocks={taskChildren.pending} />
+                            </div>
+                        ) : null}
+                        {taskChildren && taskChildren.rest.length > 0 ? (
+                            <details className="mt-2">
+                                <summary className="cursor-pointer text-xs text-[var(--app-hint)]">
+                                    Task details ({taskChildren.rest.length})
+                                </summary>
+                                <div className="mt-2 pl-3">
+                                    <HappyNestedBlockList blocks={taskChildren.rest} />
+                                </div>
+                            </details>
+                        ) : null}
+                    </>
                 ) : (
                     <div className="mt-2 pl-3">
                         <HappyNestedBlockList blocks={block.children} />
