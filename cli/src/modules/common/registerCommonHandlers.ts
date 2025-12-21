@@ -121,7 +121,7 @@ export interface SpawnSessionOptions {
     directory: string;
     sessionId?: string;
     approvedNewDirectoryCreation?: boolean;
-    agent?: 'claude' | 'codex';
+    agent?: 'claude' | 'codex' | 'gemini';
     token?: string;
 }
 

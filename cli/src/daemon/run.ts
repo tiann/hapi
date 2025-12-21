@@ -241,7 +241,7 @@ export async function startDaemon(): Promise<void> {
             extraEnv = {
               CODEX_HOME: codexHomeDir
             };
-          } else { // Assuming claude
+          } else if (options.agent === 'claude' || !options.agent) {
             extraEnv = {
               CLAUDE_CODE_OAUTH_TOKEN: options.token
             };
@@ -249,8 +249,13 @@ export async function startDaemon(): Promise<void> {
         }
 
         // Construct arguments for the CLI
+        const agentCommand = options.agent === 'codex'
+          ? 'codex'
+          : options.agent === 'gemini'
+            ? 'gemini'
+            : 'claude';
         const args = [
-          options.agent === 'claude' ? 'claude' : 'codex',
+          agentCommand,
           '--hapi-starting-mode', 'remote',
           '--started-by', 'daemon'
         ];

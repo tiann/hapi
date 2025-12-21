@@ -146,6 +146,30 @@ import { withBunRuntimeEnv } from './utils/bunRuntime'
       process.exit(1)
     }
     return;
+  } else if (subcommand === 'gemini') {
+    // Handle gemini command
+    try {
+      await import('./agent/runners/gemini');
+      const { runAgentSession } = await import('./agent/runners/runAgentSession');
+
+      let startedBy: 'daemon' | 'terminal' | undefined = undefined;
+      for (let i = 1; i < args.length; i++) {
+        if (args[i] === '--started-by') {
+          startedBy = args[++i] as 'daemon' | 'terminal';
+        }
+      }
+
+      await initializeToken();
+      await authAndSetupMachineIfNeeded();
+      await runAgentSession({ agentType: 'gemini', startedBy });
+    } catch (error) {
+      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
+      if (process.env.DEBUG) {
+        console.error(error)
+      }
+      process.exit(1)
+    }
+    return;
   } else if (subcommand === 'logout') {
     // Keep for backward compatibility - redirect to auth logout
     console.log(chalk.yellow('Note: "hapi logout" is deprecated. Use "hapi auth logout" instead.\n'));
@@ -333,6 +357,7 @@ ${chalk.bold('Usage:')}
   hapi [options]         Start Claude with Telegram control (direct-connect)
   hapi auth              Manage authentication
   hapi codex             Start Codex mode
+  hapi gemini            Start Gemini ACP mode
   hapi mcp               Start MCP stdio bridge
   hapi connect           (not available in direct-connect mode)
   hapi notify            (not available in direct-connect mode)

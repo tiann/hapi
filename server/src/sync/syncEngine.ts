@@ -644,7 +644,7 @@ export class SyncEngine {
     async spawnSession(
         machineId: string,
         directory: string,
-        agent: 'claude' | 'codex' = 'claude'
+        agent: 'claude' | 'codex' | 'gemini' = 'claude'
     ): Promise<{ type: 'success'; sessionId: string } | { type: 'error'; message: string }> {
         try {
             const result = await this.machineRpc(machineId, 'spawn-happy-session', { type: 'spawn-in-directory', directory, agent })

@@ -32,7 +32,10 @@ function isToolAllowedForSession(toolName: string, toolInput: unknown, allowedTo
 }
 
 function isCodexSession(metadata: SessionMetadataSummary | null, toolName: string): boolean {
-    return metadata?.flavor === 'codex' || toolName.startsWith('Codex')
+    return metadata?.flavor === 'codex'
+        || metadata?.flavor === 'gemini'
+        || toolName.startsWith('Codex')
+        || toolName.startsWith('Gemini')
 }
 
 function formatPermissionSummary(permission: ToolPermission, toolName: string, toolInput: unknown, codex: boolean): string {
