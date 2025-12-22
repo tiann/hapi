@@ -100,7 +100,7 @@ export function HappyComposer(props: {
         })
     }, [composerText])
 
-    const { haptic: platformHaptic } = usePlatform()
+    const { haptic: platformHaptic, isTouch } = usePlatform()
     const activeWord = useActiveWord(inputState.text, inputState.selection, autocompletePrefixes)
     const [suggestions, selectedIndex, moveUp, moveDown, clearSuggestions] = useActiveSuggestions(
         activeWord,
@@ -433,6 +433,7 @@ export function HappyComposer(props: {
                         <div className="flex items-center px-4 py-3">
                             <ComposerPrimitive.Input
                                 ref={textareaRef}
+                                autoFocus={!controlsDisabled && !isTouch}
                                 placeholder="Type a message..."
                                 disabled={controlsDisabled}
                                 maxRows={5}

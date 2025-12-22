@@ -16,6 +16,8 @@ export type PlatformHaptic = {
 export type Platform = {
     /** Whether running in Telegram Mini App */
     isTelegram: boolean
+    /** Whether using a touch device (coarse pointer) */
+    isTouch: boolean
     /** Haptic feedback (falls back to Vibration API on browser) */
     haptic: PlatformHaptic
 }
@@ -67,17 +69,24 @@ const haptic: PlatformHaptic = {
 
 export function usePlatform(): Platform {
     const isTelegram = useMemo(() => isTelegramApp(), [])
+    const isTouch = useMemo(
+        () => typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches,
+        []
+    )
 
     return {
         isTelegram,
+        isTouch,
         haptic
     }
 }
 
 // Non-hook version for use outside React components
 export function getPlatform(): Platform {
+    const isTouch = typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches
     return {
         isTelegram: isTelegramApp(),
+        isTouch,
         haptic
     }
 }
