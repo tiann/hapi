@@ -13,6 +13,7 @@ interface PermissionResponse {
     id: string;
     approved: boolean;
     decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort';
+    reason?: string;
 }
 
 interface PendingRequest {
@@ -24,6 +25,7 @@ interface PendingRequest {
 
 interface PermissionResult {
     decision: 'approved' | 'approved_for_session' | 'denied' | 'abort';
+    reason?: string;
 }
 
 export class CodexPermissionHandler {
@@ -104,9 +106,16 @@ export class CodexPermissionHandler {
                 this.pendingRequests.delete(response.id);
 
                 // Resolve the permission request
+                const reason = typeof response.reason === 'string' ? response.reason : undefined;
                 const result: PermissionResult = response.approved
-                    ? { decision: response.decision === 'approved_for_session' ? 'approved_for_session' : 'approved' }
-                    : { decision: response.decision === 'denied' ? 'denied' : 'abort' };
+                    ? {
+                        decision: response.decision === 'approved_for_session' ? 'approved_for_session' : 'approved',
+                        reason
+                    }
+                    : {
+                        decision: response.decision === 'denied' ? 'denied' : 'abort',
+                        reason
+                    };
 
                 pending.resolve(result);
 
@@ -128,7 +137,8 @@ export class CodexPermissionHandler {
                                 ...request,
                                 completedAt: Date.now(),
                                 status: response.approved ? 'approved' : 'denied',
-                                decision: result.decision
+                                decision: result.decision,
+                                reason: result.reason
                             }
                         }
                     } satisfies AgentState;

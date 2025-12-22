@@ -10,6 +10,126 @@ import { z } from 'zod';
 import { ElicitRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { CodexPermissionHandler } from './utils/permissionHandler';
 import { execSync } from 'child_process';
+import { randomUUID } from 'node:crypto';
+
+type ElicitResponseValue = string | number | boolean | string[];
+type ElicitRequestedSchema = {
+    type?: string;
+    properties?: Record<string, unknown>;
+    required?: string[];
+};
+
+function isObject(value: unknown): value is Record<string, unknown> {
+    return Boolean(value) && typeof value === 'object';
+}
+
+function extractRequestedSchema(params: Record<string, unknown>): ElicitRequestedSchema | null {
+    const raw = params.requestedSchema;
+    if (!isObject(raw)) return null;
+    const properties = isObject(raw.properties) ? (raw.properties as Record<string, unknown>) : undefined;
+    const required = Array.isArray(raw.required) ? raw.required.filter((item) => typeof item === 'string') : undefined;
+    const type = typeof raw.type === 'string' ? raw.type : undefined;
+    return { type, properties, required };
+}
+
+function extractToolCallId(params: Record<string, unknown>): string | null {
+    const candidateKeys = [
+        'codex_call_id',
+        'codex_mcp_tool_call_id',
+        'codex_event_id',
+        'call_id',
+        'tool_call_id',
+        'toolCallId',
+        'mcp_tool_call_id',
+        'mcpToolCallId',
+        'id'
+    ];
+
+    for (const key of candidateKeys) {
+        const value = params[key];
+        if (typeof value === 'string' && value.length > 0) {
+            return value;
+        }
+    }
+
+    return null;
+}
+
+function extractCommand(params: Record<string, unknown>): string[] | null {
+    const command = params.codex_command ?? params.command ?? params.cmd;
+    if (Array.isArray(command) && command.every((item) => typeof item === 'string')) {
+        return command as string[];
+    }
+    if (typeof command === 'string' && command.length > 0) {
+        return [command];
+    }
+    return null;
+}
+
+function extractCwd(params: Record<string, unknown>): string | null {
+    const cwd = params.codex_cwd ?? params.cwd;
+    return typeof cwd === 'string' && cwd.length > 0 ? cwd : null;
+}
+
+function buildElicitationResult(
+    decision: 'approved' | 'approved_for_session' | 'denied' | 'abort',
+    requestedSchema: ElicitRequestedSchema | null,
+    reason?: string
+): {
+    action: 'accept' | 'decline' | 'cancel';
+    content?: Record<string, ElicitResponseValue>;
+    decision?: string;
+    reason?: string;
+} {
+    const action: 'accept' | 'decline' | 'cancel' =
+        decision === 'approved' || decision === 'approved_for_session'
+            ? 'accept'
+            : decision === 'abort'
+                ? 'cancel'
+                : 'decline';
+
+    if (!requestedSchema?.properties || Object.keys(requestedSchema.properties).length === 0) {
+        return reason ? { action, decision, reason } : { action, decision };
+    }
+
+    if (action !== 'accept') {
+        return reason ? { action, decision, reason } : { action, decision };
+    }
+
+    const properties = requestedSchema?.properties ?? null;
+    const content: Record<string, ElicitResponseValue> = {};
+
+    if (properties && Object.keys(properties).length > 0) {
+        const approved = decision === 'approved' || decision === 'approved_for_session';
+
+        if (Object.prototype.hasOwnProperty.call(properties, 'decision')) {
+            content.decision = decision;
+        }
+        if (Object.prototype.hasOwnProperty.call(properties, 'approved')) {
+            content.approved = approved;
+        }
+        if (Object.prototype.hasOwnProperty.call(properties, 'allow')) {
+            content.allow = approved;
+        }
+        if (reason && Object.prototype.hasOwnProperty.call(properties, 'reason')) {
+            content.reason = reason;
+        }
+
+        if (Object.keys(content).length === 0) {
+            const [fallbackKey] = Object.keys(properties);
+            if (fallbackKey) {
+                content[fallbackKey] = decision;
+            }
+        }
+    } else {
+        content.decision = decision;
+        if (reason) {
+            content.reason = reason;
+        }
+    }
+
+    return reason ? { action, content, decision, reason } : { action, content, decision };
+}
 
 const DEFAULT_TIMEOUT = 14 * 24 * 60 * 60 * 1000; // 14 days, which is the half of the maximum possible timeout (~28 days for int32 value in NodeJS)
 
@@ -111,49 +231,38 @@ export class CodexMcpClient {
         this.client.setRequestHandler(
             ElicitRequestSchema,
             async (request) => {
-                console.log('[CodexMCP] Received elicitation request:', request.params);
+                const params = request.params as Record<string, unknown>;
+                const requestedSchema = extractRequestedSchema(params);
 
                 // Load params
-                const params = request.params as unknown as {
-                    message: string,
-                    codex_elicitation: string,
-                    codex_mcp_tool_call_id: string,
-                    codex_event_id: string,
-                    codex_call_id: string,
-                    codex_command: string[],
-                    codex_cwd: string
-                }
+                const toolCallId = extractToolCallId(params) ?? randomUUID();
+                const command = extractCommand(params);
+                const cwd = extractCwd(params);
                 const toolName = 'CodexBash';
 
                 // If no permission handler set, deny by default
                 if (!this.permissionHandler) {
                     logger.debug('[CodexMCP] No permission handler set, denying by default');
-                    return {
-                        decision: 'denied' as const,
-                    };
+                    return buildElicitationResult('denied', requestedSchema, 'Permission handler not configured');
                 }
 
                 try {
                     // Request permission through the handler
                     const result = await this.permissionHandler.handleToolCall(
-                        params.codex_call_id,
+                        toolCallId,
                         toolName,
                         {
-                            command: params.codex_command,
-                            cwd: params.codex_cwd
+                            command: command ?? [],
+                            cwd: cwd ?? ''
                         }
                     );
 
                     logger.debug('[CodexMCP] Permission result:', result);
-                    return {
-                        decision: result.decision
-                    }
+                    return buildElicitationResult(result.decision, requestedSchema, result.reason);
                 } catch (error) {
                     logger.debug('[CodexMCP] Error handling permission request:', error);
-                    return {
-                        decision: 'denied' as const,
-                        reason: error instanceof Error ? error.message : 'Permission request failed'
-                    };
+                    const reason = error instanceof Error ? error.message : 'Permission request failed';
+                    return buildElicitationResult('denied', requestedSchema, reason);
                 }
             }
         );
