@@ -59,8 +59,8 @@ export function HappyComposer(props: {
 }) {
     const {
         disabled = false,
-        permissionMode = 'default',
-        modelMode = 'default',
+        permissionMode: rawPermissionMode,
+        modelMode: rawModelMode,
         active = true,
         thinking = false,
         agentState,
@@ -72,6 +72,10 @@ export function HappyComposer(props: {
         autocompletePrefixes = ['@', '/'],
         autocompleteSuggestions = defaultSuggestionHandler
     } = props
+
+    // Use ?? to handle both null and undefined (destructuring defaults only work for undefined)
+    const permissionMode = rawPermissionMode ?? 'default'
+    const modelMode = rawModelMode ?? 'default'
 
     const api = useAssistantApi()
     const composerText = useAssistantState(({ composer }) => composer.text)
