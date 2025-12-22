@@ -10,16 +10,36 @@ import type {
     SessionsResponse
 } from '@/types/api'
 
+type ApiClientOptions = {
+    getToken?: () => string | null
+    onUnauthorized?: () => Promise<string | null>
+}
+
 export class ApiClient {
     private token: string
+    private readonly getToken: (() => string | null) | null
+    private readonly onUnauthorized: (() => Promise<string | null>) | null
 
-    constructor(token: string) {
+    constructor(token: string, options?: ApiClientOptions) {
         this.token = token
+        this.getToken = options?.getToken ?? null
+        this.onUnauthorized = options?.onUnauthorized ?? null
     }
 
-    private async request<T>(path: string, init?: RequestInit): Promise<T> {
+    private async request<T>(
+        path: string,
+        init?: RequestInit,
+        attempt: number = 0,
+        overrideToken?: string | null
+    ): Promise<T> {
         const headers = new Headers(init?.headers)
-        headers.set('authorization', `Bearer ${this.token}`)
+        const liveToken = this.getToken ? this.getToken() : null
+        const authToken = overrideToken !== undefined
+            ? (overrideToken ?? (liveToken ?? this.token))
+            : (liveToken ?? this.token)
+        if (authToken) {
+            headers.set('authorization', `Bearer ${authToken}`)
+        }
         if (init?.body !== undefined && !headers.has('content-type')) {
             headers.set('content-type', 'application/json')
         }
@@ -28,6 +48,17 @@ export class ApiClient {
             ...init,
             headers
         })
+
+        if (res.status === 401) {
+            if (attempt === 0 && this.onUnauthorized) {
+                const refreshed = await this.onUnauthorized()
+                if (refreshed) {
+                    this.token = refreshed
+                    return await this.request<T>(path, init, attempt + 1, refreshed)
+                }
+            }
+            throw new Error('Session expired. Please sign in again.')
+        }
 
         if (!res.ok) {
             const body = await res.text().catch(() => '')
