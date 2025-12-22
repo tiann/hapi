@@ -1,6 +1,7 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react'
-import { Box, Text, useStdout, useInput } from 'ink'
+import React, { useState, useEffect } from 'react'
+import { Box, Text, useStdout } from 'ink'
 import { MessageBuffer, type BufferedMessage } from './messageBuffer'
+import { useSwitchControls } from './useSwitchControls'
 
 interface RemoteModeDisplayProps {
     messageBuffer: MessageBuffer
@@ -11,9 +12,10 @@ interface RemoteModeDisplayProps {
 
 export const RemoteModeDisplay: React.FC<RemoteModeDisplayProps> = ({ messageBuffer, logPath, onExit, onSwitchToLocal }) => {
     const [messages, setMessages] = useState<BufferedMessage[]>([])
-    const [confirmationMode, setConfirmationMode] = useState<'exit' | 'switch' | null>(null)
-    const [actionInProgress, setActionInProgress] = useState<'exiting' | 'switching' | null>(null)
-    const confirmationTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+    const { confirmationMode, actionInProgress } = useSwitchControls({
+        onExit,
+        onSwitch: onSwitchToLocal
+    })
     const { stdout } = useStdout()
     const terminalWidth = stdout.columns || 80
     const terminalHeight = stdout.rows || 24
@@ -27,73 +29,8 @@ export const RemoteModeDisplay: React.FC<RemoteModeDisplayProps> = ({ messageBuf
 
         return () => {
             unsubscribe()
-            if (confirmationTimeoutRef.current) {
-                clearTimeout(confirmationTimeoutRef.current)
-            }
         }
     }, [messageBuffer])
-
-    const resetConfirmation = useCallback(() => {
-        setConfirmationMode(null)
-        if (confirmationTimeoutRef.current) {
-            clearTimeout(confirmationTimeoutRef.current)
-            confirmationTimeoutRef.current = null
-        }
-    }, [])
-
-    const setConfirmationWithTimeout = useCallback((mode: 'exit' | 'switch') => {
-        setConfirmationMode(mode)
-        if (confirmationTimeoutRef.current) {
-            clearTimeout(confirmationTimeoutRef.current)
-        }
-        confirmationTimeoutRef.current = setTimeout(() => {
-            resetConfirmation()
-        }, 15000) // 15 seconds timeout
-    }, [resetConfirmation])
-
-    useInput(useCallback(async (input, key) => {
-        // Don't process input if action is in progress
-        if (actionInProgress) return
-        
-        // Handle Ctrl-C
-        if (key.ctrl && input === 'c') {
-            if (confirmationMode === 'exit') {
-                // Second Ctrl-C, exit
-                resetConfirmation()
-                setActionInProgress('exiting')
-                // Small delay to show the status message
-                await new Promise(resolve => setTimeout(resolve, 100))
-                onExit?.()
-            } else {
-                // First Ctrl-C, show confirmation
-                setConfirmationWithTimeout('exit')
-            }
-            return
-        }
-
-        const isSpace = input === ' ' || key.name === 'space'
-
-        // Handle double space
-        if (isSpace) {
-            if (confirmationMode === 'switch') {
-                // Second space, switch to local
-                resetConfirmation()
-                setActionInProgress('switching')
-                // Small delay to show the status message
-                await new Promise(resolve => setTimeout(resolve, 100))
-                onSwitchToLocal?.()
-            } else {
-                // First space, show confirmation
-                setConfirmationWithTimeout('switch')
-            }
-            return
-        }
-
-        // Any other key cancels confirmation
-        if (confirmationMode) {
-            resetConfirmation()
-        }
-    }, [confirmationMode, actionInProgress, onExit, onSwitchToLocal, setConfirmationWithTimeout, resetConfirmation]))
 
     const getMessageColor = (type: BufferedMessage['type']): string => {
         switch (type) {

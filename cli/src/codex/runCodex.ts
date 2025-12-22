@@ -4,6 +4,7 @@ import { resolve } from 'node:path';
 
 import { ApiClient } from '@/api/api';
 import { logger } from '@/ui/logger';
+import { restoreTerminalState } from '@/ui/terminalState';
 import { loop, type EnhancedMode, type PermissionMode } from './loop';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { hashObject } from '@/utils/deterministicJson';
@@ -136,6 +137,7 @@ export async function runCodex(opts: {
         }
         cleanupStarted = true;
         logger.debug('[codex] Cleanup start');
+        restoreTerminalState();
         try {
             if (sessionWrapper) {
                 sessionWrapper.stopKeepAlive();

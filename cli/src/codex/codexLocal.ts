@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { logger } from '@/ui/logger';
+import { restoreTerminalState } from '@/ui/terminalState';
 
 export async function codexLocal(opts: {
     abort: AbortSignal;
@@ -91,5 +92,6 @@ export async function codexLocal(opts: {
         });
     } finally {
         process.stdin.resume();
+        restoreTerminalState();
     }
 }

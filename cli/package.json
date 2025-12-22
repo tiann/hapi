@@ -64,7 +64,8 @@
     "ts-node": "^10",
     "tsx": "^4.20.6",
     "typescript": "^5",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.4",
+    "react-test-renderer": "^19.2.0"
   },
   "resolutions": {
     "whatwg-url": "14.2.0",

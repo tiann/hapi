@@ -19,6 +19,7 @@ import { startHappyServer } from '@/claude/utils/startHappyServer';
 import { emitReadyIfIdle } from './utils/emitReadyIfIdle';
 import type { CodexSession } from './session';
 import type { EnhancedMode } from './loop';
+import { restoreTerminalState } from '@/ui/terminalState';
 
 export async function codexRemoteLauncher(session: CodexSession): Promise<'switch' | 'exit'> {
     const hasTTY = process.stdout.isTTY && process.stdin.isTTY;
@@ -467,9 +468,7 @@ export async function codexRemoteLauncher(session: CodexSession): Promise<'switc
         reasoningProcessor.abort();
         diffProcessor.reset();
 
-        if (process.stdin.isTTY) {
-            try { process.stdin.setRawMode(false); } catch {}
-        }
+        restoreTerminalState();
         if (hasTTY) {
             try { process.stdin.pause(); } catch {}
         }
