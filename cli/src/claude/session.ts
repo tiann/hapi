@@ -1,76 +1,50 @@
-import { ApiClient, ApiSessionClient } from "@/lib";
-import { MessageQueue2 } from "@/utils/MessageQueue2";
-import { EnhancedMode } from "./loop";
-import { logger } from "@/ui/logger";
+import { ApiClient, ApiSessionClient } from '@/lib';
+import { MessageQueue2 } from '@/utils/MessageQueue2';
+import { logger } from '@/ui/logger';
+import { AgentSessionBase } from '@/agent/sessionBase';
+import type { EnhancedMode } from './loop';
 
-export class Session {
-    readonly path: string;
-    readonly logPath: string;
-    readonly api: ApiClient;
-    readonly client: ApiSessionClient;
-    readonly queue: MessageQueue2<EnhancedMode>;
+export class Session extends AgentSessionBase<EnhancedMode> {
     readonly claudeEnvVars?: Record<string, string>;
-    claudeArgs?: string[];  // Made mutable to allow filtering
+    claudeArgs?: string[];
     readonly mcpServers: Record<string, any>;
     readonly allowedTools?: string[];
-    readonly _onModeChange: (mode: 'local' | 'remote') => void;
-
-    sessionId: string | null;
-    mode: 'local' | 'remote' = 'local';
-    thinking: boolean = false;
 
     constructor(opts: {
-        api: ApiClient,
-        client: ApiSessionClient,
-        path: string,
-        logPath: string,
-        sessionId: string | null,
-        claudeEnvVars?: Record<string, string>,
-        claudeArgs?: string[],
-        mcpServers: Record<string, any>,
-        messageQueue: MessageQueue2<EnhancedMode>,
-        onModeChange: (mode: 'local' | 'remote') => void,
-        allowedTools?: string[],
+        api: ApiClient;
+        client: ApiSessionClient;
+        path: string;
+        logPath: string;
+        sessionId: string | null;
+        claudeEnvVars?: Record<string, string>;
+        claudeArgs?: string[];
+        mcpServers: Record<string, any>;
+        messageQueue: MessageQueue2<EnhancedMode>;
+        onModeChange: (mode: 'local' | 'remote') => void;
+        allowedTools?: string[];
+        mode?: 'local' | 'remote';
     }) {
-        this.path = opts.path;
-        this.api = opts.api;
-        this.client = opts.client;
-        this.logPath = opts.logPath;
-        this.sessionId = opts.sessionId;
-        this.queue = opts.messageQueue;
+        super({
+            api: opts.api,
+            client: opts.client,
+            path: opts.path,
+            logPath: opts.logPath,
+            sessionId: opts.sessionId,
+            messageQueue: opts.messageQueue,
+            onModeChange: opts.onModeChange,
+            mode: opts.mode,
+            sessionLabel: 'Session',
+            sessionIdLabel: 'Claude Code',
+            applySessionIdToMetadata: (metadata, sessionId) => ({
+                ...metadata,
+                claudeSessionId: sessionId
+            })
+        });
+
         this.claudeEnvVars = opts.claudeEnvVars;
         this.claudeArgs = opts.claudeArgs;
         this.mcpServers = opts.mcpServers;
         this.allowedTools = opts.allowedTools;
-        this._onModeChange = opts.onModeChange;
-
-        // Start keep alive
-        this.client.keepAlive(this.thinking, this.mode);
-        setInterval(() => {
-            this.client.keepAlive(this.thinking, this.mode);
-        }, 2000);
-    }
-
-    onThinkingChange = (thinking: boolean) => {
-        this.thinking = thinking;
-        this.client.keepAlive(thinking, this.mode);
-    }
-
-    onModeChange = (mode: 'local' | 'remote') => {
-        this.mode = mode;
-        this.client.keepAlive(this.thinking, mode);
-        this._onModeChange(mode);
-    }
-
-    onSessionFound = (sessionId: string) => {
-        this.sessionId = sessionId;
-        
-        // Update metadata with Claude Code session ID
-        this.client.updateMetadata((metadata) => ({
-            ...metadata,
-            claudeSessionId: sessionId
-        }));
-        logger.debug(`[Session] Claude Code session ID ${sessionId} added to metadata`);
     }
 
     /**
@@ -79,7 +53,7 @@ export class Session {
     clearSessionId = (): void => {
         this.sessionId = null;
         logger.debug('[Session] Session ID cleared');
-    }
+    };
 
     /**
      * Consume one-time Claude flags from claudeArgs after Claude spawn
@@ -87,7 +61,7 @@ export class Session {
      */
     consumeOneTimeFlags = (): void => {
         if (!this.claudeArgs) return;
-        
+
         const filteredArgs: string[] = [];
         for (let i = 0; i < this.claudeArgs.length; i++) {
             if (this.claudeArgs[i] === '--resume') {
@@ -111,8 +85,8 @@ export class Session {
                 filteredArgs.push(this.claudeArgs[i]);
             }
         }
-        
+
         this.claudeArgs = filteredArgs.length > 0 ? filteredArgs : undefined;
         logger.debug(`[Session] Consumed one-time flags, remaining args:`, this.claudeArgs);
-    }
+    };
 }

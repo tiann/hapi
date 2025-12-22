@@ -1,6 +1,7 @@
 import { ApiSessionClient } from "@/api/apiSession"
 import { MessageQueue2 } from "@/utils/MessageQueue2"
 import { logger } from "@/ui/logger"
+import { runLocalRemoteLoop } from "@/agent/loopBase"
 import { Session } from "./session"
 import { claudeLocalLauncher } from "./claudeLocalLauncher"
 import { claudeRemoteLauncher } from "./claudeRemoteLauncher"
@@ -49,7 +50,8 @@ export async function loop(opts: LoopOptions) {
         logPath: logPath,
         messageQueue: opts.messageQueue,
         allowedTools: opts.allowedTools,
-        onModeChange: opts.onModeChange
+        onModeChange: opts.onModeChange,
+        mode: opts.startingMode
     });
 
     // Notify that session is ready
@@ -57,38 +59,11 @@ export async function loop(opts: LoopOptions) {
         opts.onSessionReady(session);
     }
 
-    let mode: 'local' | 'remote' = opts.startingMode ?? 'local';
-    while (true) {
-        logger.debug(`[loop] Iteration with mode: ${mode}`);
-
-        // Run local mode if applicable
-        if (mode === 'local') {
-            let reason = await claudeLocalLauncher(session);
-            if (reason === 'exit') { // Normal exit - Exit loop
-                return;
-            }
-
-            // Non "exit" reason means we need to switch to remote mode
-            mode = 'remote';
-            if (opts.onModeChange) {
-                opts.onModeChange(mode);
-            }
-            continue;
-        }
-
-        // Start remote mode
-        if (mode === 'remote') {
-            let reason = await claudeRemoteLauncher(session);
-            if (reason === 'exit') { // Normal exit - Exit loop
-                return;
-            }
-
-            // Non "exit" reason means we need to switch to local mode
-            mode = 'local';
-            if (opts.onModeChange) {
-                opts.onModeChange(mode);
-            }
-            continue;
-        }
-    }
+    await runLocalRemoteLoop({
+        session,
+        startingMode: opts.startingMode,
+        logTag: 'loop',
+        runLocal: claudeLocalLauncher,
+        runRemote: claudeRemoteLauncher
+    });
 }
