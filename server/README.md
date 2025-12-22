@@ -18,13 +18,15 @@ Telegram bot + HTTP API + realtime updates for hapi.
 
 ## Configuration
 Required:
+- `CLI_API_TOKEN` - shared secret used by CLI and web login.
+
+Optional (Telegram):
 - `TELEGRAM_BOT_TOKEN` - token from @BotFather.
 - `ALLOWED_CHAT_IDS` - comma-separated chat IDs allowed to use the bot.
-- `CLI_API_TOKEN` - shared secret used by CLI and web login.
+- `WEBAPP_URL` - public HTTPS URL for Telegram Mini App access.
 
 Optional:
 - `WEBAPP_PORT` - HTTP port (default: 3006).
-- `WEBAPP_URL` - public URL for Telegram Mini App button.
 - `CORS_ORIGINS` - comma-separated origins, or `*`.
 - `HAPI_HOME` - data directory (default: ~/.hapi).
 - `DB_PATH` - SQLite database path.
@@ -39,6 +41,10 @@ export WEBAPP_URL="https://your-domain.example"
 
 hapi server
 ```
+
+If you only need web + CLI, you can omit TELEGRAM_BOT_TOKEN and ALLOWED_CHAT_IDS.
+To enable Telegram, set TELEGRAM_BOT_TOKEN and WEBAPP_URL, start the server, send `/start`
+to the bot to get your chat ID, set ALLOWED_CHAT_IDS, and restart the server.
 
 From source:
 ```bash
@@ -69,7 +75,7 @@ The server is the hub for direct-connect mode. It accepts CLI connections over S
 
 ## Security model
 Access is controlled by:
-- Telegram chat ID allowlist.
+- Telegram chat ID allowlist (when Telegram is enabled).
 - `CLI_API_TOKEN` shared secret for CLI and browser access.
 
 Transport security depends on HTTPS in front of the server.

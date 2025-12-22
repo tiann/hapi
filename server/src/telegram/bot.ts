@@ -6,7 +6,6 @@
  */
 
 import { Bot, Context, NextFunction, InlineKeyboard } from 'grammy'
-import { configuration } from '../configuration'
 import { SyncEngine, SyncEvent, Session } from '../sync/syncEngine'
 import { getSessionName, truncate } from './renderer'
 import {
@@ -24,6 +23,9 @@ export interface BotContext extends Context {
 
 export interface HappyBotConfig {
     syncEngine: SyncEngine
+    botToken: string
+    allowedChatIds: number[]
+    miniAppUrl: string
 }
 
 /**
@@ -33,6 +35,9 @@ export class HappyBot {
     private bot: Bot<BotContext>
     private syncEngine: SyncEngine | null = null
     private isRunning = false
+    private readonly allowedChatIds: number[]
+    private readonly miniAppUrl: string
+    private readonly allowlistConfigured: boolean
 
     // Track last known permission requests per session to detect new ones
     private lastKnownRequests: Map<string, Set<string>> = new Map() // sessionId -> requestIds
@@ -48,12 +53,17 @@ export class HappyBot {
 
     constructor(config: HappyBotConfig) {
         this.syncEngine = config.syncEngine
+        this.allowedChatIds = config.allowedChatIds
+        this.miniAppUrl = config.miniAppUrl
+        this.allowlistConfigured = this.allowedChatIds.length > 0
 
-        this.bot = new Bot<BotContext>(configuration.telegramBotToken)
+        this.bot = new Bot<BotContext>(config.botToken)
         this.setupMiddleware()
         this.setupCommands()
-        this.setupCallbacks()
-        this.setupMessageHandler()
+        if (this.allowlistConfigured) {
+            this.setupCallbacks()
+            this.setupMessageHandler()
+        }
 
         // Subscribe to sync events immediately if engine is available
         if (this.syncEngine) {
@@ -134,9 +144,21 @@ export class HappyBot {
         // Security middleware: only allow configured chat IDs
         this.bot.use(async (ctx: BotContext, next: NextFunction) => {
             const chatId = ctx.chat?.id
-            if (!chatId || !configuration.allowedChatIds.includes(chatId)) {
-                console.log(`[HAPIBot] Rejected message from unauthorized chat: ${chatId}`)
-                return // Silently ignore unauthorized users
+            if (this.allowlistConfigured) {
+                if (!chatId || !this.allowedChatIds.includes(chatId)) {
+                    console.log(`[HAPIBot] Rejected message from unauthorized chat: ${chatId}`)
+                    return // Silently ignore unauthorized users
+                }
+                await next()
+                return
+            }
+
+            const messageText = ctx.message?.text ?? ''
+            if (!messageText.startsWith('/start')) {
+                if (chatId) {
+                    console.log(`[HAPIBot] Allowlist empty; ignoring chat: ${chatId}`)
+                }
+                return
             }
             await next()
         })
@@ -151,6 +173,21 @@ export class HappyBot {
      * Setup command handlers
      */
     private setupCommands(): void {
+        if (!this.allowlistConfigured) {
+            this.bot.command('start', async (ctx) => {
+                const chatId = ctx.chat?.id
+                const chatIdDisplay = chatId ? String(chatId) : 'unknown'
+                const example = chatId ? `ALLOWED_CHAT_IDS="${chatId}"` : 'ALLOWED_CHAT_IDS="12345678"'
+
+                await ctx.reply(
+                    `HAPI bot is not fully configured yet.\n\n` +
+                    `Your chat ID is: ${chatIdDisplay}\n` +
+                    `Set ${example} and restart the server.`
+                )
+            })
+            return
+        }
+
         // /start - Status + help
         this.bot.command('start', async (ctx) => {
             const sessionCount = this.syncEngine?.getActiveSessions().length ?? 0
@@ -185,7 +222,7 @@ export class HappyBot {
 
         // /app - Open Telegram Mini App
         this.bot.command('app', async (ctx) => {
-            const keyboard = new InlineKeyboard().webApp('📱 Open App', configuration.miniAppUrl)
+            const keyboard = new InlineKeyboard().webApp('📱 Open App', this.miniAppUrl)
             await ctx.reply('Open HAPI Mini App:', { reply_markup: keyboard })
         })
 
@@ -239,7 +276,7 @@ export class HappyBot {
                 return
             }
 
-            const keyboard = new InlineKeyboard().webApp('📱 Open App', configuration.miniAppUrl)
+            const keyboard = new InlineKeyboard().webApp('📱 Open App', this.miniAppUrl)
             await ctx.reply(
                 'Chat and session controls are available in the Mini App.',
                 { reply_markup: keyboard }
@@ -251,6 +288,10 @@ export class HappyBot {
      * Handle sync engine events for notifications
      */
     private handleSyncEvent(event: SyncEvent): void {
+        if (!this.allowlistConfigured) {
+            return
+        }
+
         if (event.type === 'session-updated' && event.sessionId) {
             const session = this.syncEngine?.getSession(event.sessionId)
             if (session) {
@@ -320,11 +361,11 @@ export class HappyBot {
 
         const name = getSessionName(session)
 
-        const url = buildMiniAppDeepLink(configuration.miniAppUrl, `session_${sessionId}`)
+        const url = buildMiniAppDeepLink(this.miniAppUrl, `session_${sessionId}`)
         const keyboard = new InlineKeyboard()
             .webApp('📱 Open Session', url)
 
-        for (const chatId of configuration.allowedChatIds) {
+        for (const chatId of this.allowedChatIds) {
             await this.bot.api.sendMessage(
                 chatId,
                 `✅ ${name} is ready\n\nClaude is waiting for your next message.`,
@@ -340,11 +381,11 @@ export class HappyBot {
         }
         const name = getSessionName(session)
 
-        const url = buildMiniAppDeepLink(configuration.miniAppUrl, `session_${sessionId}`)
+        const url = buildMiniAppDeepLink(this.miniAppUrl, `session_${sessionId}`)
         const keyboard = new InlineKeyboard()
             .webApp('📱 Details', url)
 
-        for (const chatId of configuration.allowedChatIds) {
+        for (const chatId of this.allowedChatIds) {
             await this.bot.api.sendMessage(
                 chatId,
                 `🔄 ${name} switched to ${mode}`,
@@ -360,13 +401,13 @@ export class HappyBot {
         }
         const name = getSessionName(session)
 
-        const url = buildMiniAppDeepLink(configuration.miniAppUrl, `session_${sessionId}`)
+        const url = buildMiniAppDeepLink(this.miniAppUrl, `session_${sessionId}`)
         const keyboard = new InlineKeyboard()
             .webApp('📱 Open Session', url)
 
         const body = truncate(previewText, 600)
 
-        for (const chatId of configuration.allowedChatIds) {
+        for (const chatId of this.allowedChatIds) {
             await this.bot.api.sendMessage(
                 chatId,
                 `💬 ${name}\n\n${body}`,
@@ -470,7 +511,7 @@ export class HappyBot {
         const keyboard = createNotificationKeyboard(session)
 
         // Send to all allowed chat IDs
-        for (const chatId of configuration.allowedChatIds) {
+        for (const chatId of this.allowedChatIds) {
             try {
                 await this.bot.api.sendMessage(chatId, text, {
                     reply_markup: keyboard

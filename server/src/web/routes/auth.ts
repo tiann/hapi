@@ -3,6 +3,7 @@ import { SignJWT } from 'jose'
 import { z } from 'zod'
 import { configuration } from '../../configuration'
 import { validateTelegramInitData } from '../telegramInitData'
+import { getOrCreateOwnerId } from '../ownerId'
 import type { WebAppEnv } from '../middleware/auth'
 
 const telegramAuthSchema = z.object({
@@ -35,21 +36,29 @@ export function createAuthRoutes(jwtSecret: Uint8Array): Hono<WebAppEnv> {
             if (parsed.data.accessToken !== configuration.cliApiToken) {
                 return c.json({ error: 'Invalid access token' }, 401)
             }
-            // Use first allowed chat ID as the shared user identity
-            userId = configuration.allowedChatIds[0]
+            userId = await getOrCreateOwnerId()
             firstName = 'Web User'
         } else {
+            if (!configuration.telegramEnabled || !configuration.telegramBotToken) {
+                return c.json({ error: 'Telegram authentication is disabled. Configure TELEGRAM_BOT_TOKEN.' }, 503)
+            }
+
+            if (configuration.allowedChatIds.length === 0) {
+                return c.json({ error: 'Telegram allowlist is empty. Configure ALLOWED_CHAT_IDS and restart.' }, 403)
+            }
+
             // Telegram initData authentication
             const result = validateTelegramInitData(parsed.data.initData, configuration.telegramBotToken)
             if (!result.ok) {
                 return c.json({ error: result.error }, 401)
             }
 
-            userId = result.user.id
-            if (!configuration.isChatIdAllowed(userId)) {
+            const telegramUserId = result.user.id
+            if (!configuration.isChatIdAllowed(telegramUserId)) {
                 return c.json({ error: 'User not allowed' }, 403)
             }
 
+            userId = await getOrCreateOwnerId()
             username = result.user.username
             firstName = result.user.first_name
             lastName = result.user.last_name
@@ -74,4 +83,3 @@ export function createAuthRoutes(jwtSecret: Uint8Array): Hono<WebAppEnv> {
 
     return app
 }
-

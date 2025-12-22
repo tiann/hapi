@@ -11,13 +11,17 @@ Run Claude Code / Codex / Coding Agent sessions locally and control them remotel
 2. Start the server on a machine you control:
 
 ```bash
-export TELEGRAM_BOT_TOKEN="..."
-export ALLOWED_CHAT_IDS="12345678"
 export CLI_API_TOKEN="shared-secret"
 export WEBAPP_URL="https://your-domain.example"   # required for Telegram Mini App
+export TELEGRAM_BOT_TOKEN="..."
+export ALLOWED_CHAT_IDS="12345678"
 
 hapi server
 ```
+
+If you only want the web app + CLI, you can skip TELEGRAM_BOT_TOKEN and ALLOWED_CHAT_IDS.
+To enable Telegram later, set TELEGRAM_BOT_TOKEN and WEBAPP_URL, start the server, send `/start`
+to the bot to get your chat ID, set ALLOWED_CHAT_IDS, and restart the server.
 
 3. If the server has no public IP, expose it over HTTPS:
 - Cloudflare Tunnel docs: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/

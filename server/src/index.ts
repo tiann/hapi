@@ -1,12 +1,11 @@
 /**
- * HAPI Telegram Bot - Main Entry Point
+ * HAPI Server - Main Entry Point
  *
- * This is a Telegram Bot client for HAPI that provides:
- * - Session list and detail views
- * - Message viewing and sending
- * - Permission approval workflows
- * - Session control (abort, mode switching, model selection)
- * - New session creation on remote machines
+ * Provides:
+ * - Web app + HTTP API
+ * - Socket.IO for CLI connections
+ * - SSE updates for the web UI
+ * - Optional Telegram bot for notifications and Mini App entrypoint
  */
 
 import { getConfiguration } from './configuration'
@@ -26,12 +25,18 @@ let webServer: BunServer<WebSocketData> | null = null
 let sseManager: SSEManager | null = null
 
 async function main() {
-    console.log('HAPI Bot starting...')
+    console.log('HAPI Server starting...')
 
     // Load configuration (will throw if required env vars missing)
     const config = getConfiguration()
-    console.log(`Mini App: ${config.miniAppUrl} (port ${config.webappPort})`)
-    console.log(`Allowed chat IDs: ${config.allowedChatIds.join(', ')}`)
+    console.log(`[Server] Mini App: ${config.miniAppUrl} (port ${config.webappPort})`)
+    if (!config.telegramEnabled) {
+        console.log('[Server] Telegram: disabled (missing TELEGRAM_BOT_TOKEN)')
+    } else if (config.allowedChatIds.length === 0) {
+        console.log('[Server] Telegram: enabled (allowlist empty; /start shows chat ID)')
+    } else {
+        console.log(`[Server] Telegram: enabled (chat IDs: ${config.allowedChatIds.join(', ')})`)
+    }
 
     const store = new Store(config.dbPath)
     const jwtSecret = await getOrCreateJwtSecret()
@@ -48,8 +53,15 @@ async function main() {
 
     syncEngine = new SyncEngine(store, socketServer.io, socketServer.rpcRegistry, sseManager)
 
-    // Initialize Telegram bot
-    happyBot = new HappyBot({ syncEngine })
+    // Initialize Telegram bot (optional)
+    if (config.telegramEnabled && config.telegramBotToken) {
+        happyBot = new HappyBot({
+            syncEngine,
+            botToken: config.telegramBotToken,
+            allowedChatIds: config.allowedChatIds,
+            miniAppUrl: config.miniAppUrl
+        })
+    }
 
     // Start HTTP server for Telegram Mini App
     webServer = await startWebServer({
@@ -59,10 +71,12 @@ async function main() {
         socketEngine: socketServer.engine
     })
 
-    // Start the bot
-    await happyBot.start()
+    // Start the bot if configured
+    if (happyBot) {
+        await happyBot.start()
+    }
 
-    console.log('\nHAPI Bot is ready!')
+    console.log('\nHAPI Server is ready!')
 
     // Handle shutdown
     const shutdown = async () => {

@@ -2,9 +2,11 @@
  * Configuration for hapi-server (Direct Connect)
  *
  * Required environment variables:
+ * - CLI_API_TOKEN: Shared secret for hapi CLI authentication
+ *
+ * Optional Telegram environment variables:
  * - TELEGRAM_BOT_TOKEN: Telegram Bot API token from @BotFather
  * - ALLOWED_CHAT_IDS: Comma-separated list of allowed Telegram chat IDs
- * - CLI_API_TOKEN: Shared secret for hapi CLI authentication
  */
 
 import { existsSync, mkdirSync } from 'node:fs'
@@ -13,10 +15,13 @@ import { join } from 'node:path'
 
 class Configuration {
     /** Telegram Bot API token */
-    public readonly telegramBotToken: string
+    public readonly telegramBotToken: string | null
 
     /** List of allowed Telegram chat IDs (security whitelist) */
     public readonly allowedChatIds: number[]
+
+    /** Telegram bot enabled status (token present) */
+    public readonly telegramEnabled: boolean
 
     /** CLI auth token (shared secret) */
     public readonly cliApiToken: string
@@ -37,26 +42,19 @@ class Configuration {
     public readonly corsOrigins: string[]
 
     constructor() {
-        // Required: Telegram Bot Token
+        // Optional: Telegram Bot Token
         const botToken = process.env.TELEGRAM_BOT_TOKEN
-        if (!botToken) {
-            throw new Error('TELEGRAM_BOT_TOKEN environment variable is required')
-        }
-        this.telegramBotToken = botToken
+        this.telegramBotToken = botToken ?? null
+        this.telegramEnabled = Boolean(this.telegramBotToken)
 
-        // Required: Allowed Chat IDs
+        // Optional: Allowed Chat IDs
         const chatIdsStr = process.env.ALLOWED_CHAT_IDS
-        if (!chatIdsStr) {
-            throw new Error('ALLOWED_CHAT_IDS environment variable is required (comma-separated list)')
-        }
         this.allowedChatIds = chatIdsStr
-            .split(',')
-            .map(id => parseInt(id.trim(), 10))
-            .filter(id => !isNaN(id))
-
-        if (this.allowedChatIds.length === 0) {
-            throw new Error('ALLOWED_CHAT_IDS must contain at least one valid chat ID')
-        }
+            ? chatIdsStr
+                .split(',')
+                .map(id => parseInt(id.trim(), 10))
+                .filter(id => !isNaN(id))
+            : []
 
         // Required: CLI API token (shared secret)
         const cliApiToken = process.env.CLI_API_TOKEN

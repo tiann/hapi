@@ -4,7 +4,7 @@ import { jwtVerify } from 'jose'
 
 export type WebAppEnv = {
     Variables: {
-        telegramUserId: number
+        userId: number
     }
 }
 
@@ -36,7 +36,7 @@ export function createAuthMiddleware(jwtSecret: Uint8Array): MiddlewareHandler<W
                 return c.json({ error: 'Invalid token payload' }, 401)
             }
 
-            c.set('telegramUserId', parsed.data.uid)
+            c.set('userId', parsed.data.uid)
             await next()
             return
         } catch {
