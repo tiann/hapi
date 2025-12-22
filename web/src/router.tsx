@@ -117,9 +117,7 @@ function SessionPage() {
             isSending={isSending}
             onBack={goBack}
             onRefresh={refreshSelectedSession}
-            onLoadMore={() => {
-                void loadMoreMessages()
-            }}
+            onLoadMore={loadMoreMessages}
             onSend={sendMessage}
             onRetryMessage={retryMessage}
         />

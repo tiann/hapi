@@ -7,7 +7,6 @@ import type { ChatBlock, NormalizedMessage } from '@/chat/types'
 import { normalizeDecryptedMessage } from '@/chat/normalize'
 import { reduceChatBlocks } from '@/chat/reducer'
 import { reconcileChatBlocks } from '@/chat/reconcile'
-import { Button } from '@/components/ui/button'
 import { HappyComposer } from '@/components/AssistantChat/HappyComposer'
 import { HappyThread } from '@/components/AssistantChat/HappyThread'
 import { useHappyRuntime } from '@/lib/assistant-runtime'
@@ -26,7 +25,7 @@ export function SessionChat(props: {
     isSending: boolean
     onBack: () => void
     onRefresh: () => void
-    onLoadMore: () => void
+    onLoadMore: () => Promise<unknown>
     onSend: (text: string) => void
     onRetryMessage?: (localId: string) => void
 }) {
@@ -129,53 +128,6 @@ export function SessionChat(props: {
         onAbort: handleAbort
     })
 
-    const threadHeader = useMemo(() => {
-        if (props.isLoadingMessages) {
-            return (
-                <div className="text-sm text-[var(--app-hint)]">
-                    Loading…
-                </div>
-            )
-        }
-
-        return (
-            <>
-                {props.messagesWarning ? (
-                    <div className="mb-3 rounded-md bg-amber-500/10 p-2 text-xs">
-                        {props.messagesWarning}
-                    </div>
-                ) : null}
-
-                {props.hasMoreMessages ? (
-                    <div className="mb-3">
-                        <Button
-                            variant="secondary"
-                            size="sm"
-                            onClick={props.onLoadMore}
-                            disabled={props.isLoadingMoreMessages}
-                        >
-                            {props.isLoadingMoreMessages ? 'Loading…' : 'Load older'}
-                        </Button>
-                    </div>
-                ) : null}
-
-                {import.meta.env.DEV && normalizedMessages.length === 0 && props.messages.length > 0 ? (
-                    <div className="mb-2 rounded-md bg-amber-500/10 p-2 text-xs">
-                        Message normalization returned 0 items for {props.messages.length} messages (see `web/src/chat/normalize.ts`).
-                    </div>
-                ) : null}
-            </>
-        )
-    }, [
-        props.isLoadingMessages,
-        props.messagesWarning,
-        props.hasMoreMessages,
-        props.isLoadingMoreMessages,
-        props.onLoadMore,
-        props.messages.length,
-        normalizedMessages.length
-    ])
-
     return (
         <div className="flex h-full flex-col">
             <SessionHeader
@@ -200,7 +152,13 @@ export function SessionChat(props: {
                         disabled={controlsDisabled}
                         onRefresh={props.onRefresh}
                         onRetryMessage={props.onRetryMessage}
-                        header={threadHeader}
+                        isLoadingMessages={props.isLoadingMessages}
+                        messagesWarning={props.messagesWarning}
+                        hasMoreMessages={props.hasMoreMessages}
+                        isLoadingMoreMessages={props.isLoadingMoreMessages}
+                        onLoadMore={props.onLoadMore}
+                        rawMessagesCount={props.messages.length}
+                        normalizedMessagesCount={normalizedMessages.length}
                     />
 
                     <HappyComposer
