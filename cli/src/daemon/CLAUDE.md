@@ -112,7 +112,7 @@ Local HTTP server (127.0.0.1 only) provides:
 ### Doctor Command
 
 `hapi doctor` uses `ps aux | grep` to find all HAPI processes:
-- Production: matches `happy.mjs`, `happy-coder`, `dist/index.mjs`
+- Production: matches `hapi` binary, `happy-coder`
 - Development: matches `tsx.*src/index.ts`
 - Categorizes by command args: daemon, daemon-spawned, user-session, doctor
 

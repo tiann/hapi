@@ -92,17 +92,14 @@ export async function runDoctorCommand(filter?: 'all' | 'daemon'): Promise<void>
         // Daemon spawn diagnostics
         console.log(chalk.bold('🔧 Daemon Spawn Diagnostics'));
         const projectRoot = projectPath();
-        const wrapperPath = join(projectRoot, 'bin', 'happy.mjs');
-        const cliEntrypoint = join(projectRoot, 'dist', 'index.mjs');
-        
+        const cliEntrypoint = join(projectRoot, 'src', 'index.ts');
+
         if (isBunCompiled()) {
             console.log(`Executable: ${chalk.blue(process.execPath)}`);
             console.log(`Runtime Assets: ${chalk.blue(runtimePath())}`);
         } else {
             console.log(`Project Root: ${chalk.blue(projectRoot)}`);
-            console.log(`Wrapper Script: ${chalk.blue(wrapperPath)}`);
             console.log(`CLI Entrypoint: ${chalk.blue(cliEntrypoint)}`);
-            console.log(`Wrapper Exists: ${existsSync(wrapperPath) ? chalk.green('✓ Yes') : chalk.red('❌ No')}`);
             console.log(`CLI Exists: ${existsSync(cliEntrypoint) ? chalk.green('✓ Yes') : chalk.red('❌ No')}`);
         }
         console.log('');

@@ -1,56 +1,28 @@
 /**
  * Cross-platform HAPI CLI spawning utility
- * 
- * ## Background
- * 
- * We built a command-line JavaScript program with the entrypoint at `dist/index.mjs`.
- * This needs to be run with a JS runtime (Node.js or Bun). For Node we want to hide
- * deprecation warnings and other
- * noise from end users by passing specific flags: `--no-warnings --no-deprecation`.
- * 
- * Users don't care about these technical details - they just want a clean experience
- * with no warning output when using HAPI.
- * 
- * ## The Wrapper Strategy
- * 
- * We created a wrapper script `bin/happy.mjs` with a shebang `#!/usr/bin/env node`.
- * This allows direct execution on Unix systems and NPM automatically generates 
- * Windows-specific wrapper scripts (`hapi.cmd` and `hapi.ps1`) when it sees 
- * the `bin` field in package.json pointing to a JavaScript file with a shebang.
- * 
- * The wrapper script either directly execs `dist/index.mjs` with the flags we want,
- * or imports it directly if Node.js already has the right flags.
- * 
- * ## Execution Chains
- * 
- * **Unix/Linux/macOS:**
- * 1. User runs `hapi` command
- * 2. Shell directly executes `bin/happy.mjs` (shebang: `#!/usr/bin/env node`)
- * 3. `bin/happy.mjs` either execs `node --no-warnings --no-deprecation dist/index.mjs` or imports `dist/index.mjs` directly
- * 
- * **Windows:**
- * 1. User runs `hapi` command  
- * 2. NPM wrapper (`hapi.cmd`) calls `node bin/happy.mjs`
- * 3. `bin/happy.mjs` either execs `node --no-warnings --no-deprecation dist/index.mjs` or imports `dist/index.mjs` directly
- * 
- * ## The Spawning Problem
- * 
- * When our code needs to spawn HAPI CLI as a subprocess (for daemon processes), 
- * we were trying to execute `bin/happy.mjs` directly. This fails on Windows 
- * because Windows doesn't understand shebangs - you get an `EFTYPE` error.
- * 
- * ## The Solution
- * 
- * Since we know exactly what needs to happen (run `dist/index.mjs` with the current
- * runtime), we can bypass all the wrapper layers and do it directly:
- * 
- * `spawn(process.execPath, ['--no-warnings', '--no-deprecation', 'dist/index.mjs', ...args])`
  *
- * When running under Bun, we spawn the Bun executable with the entrypoint and
- * omit Node-specific flags.
- * 
- * This works on all platforms and achieves the same result without any of the 
- * middleman steps that were providing workarounds for Windows vs Linux differences.
+ * ## Background
+ *
+ * HAPI CLI runs in two modes:
+ * 1. **Compiled binary**: A single executable built with `bun build --compile`
+ * 2. **Development mode**: Running TypeScript directly via `tsx` or `bun`
+ *
+ * ## Execution Modes
+ *
+ * **Compiled Binary (Production):**
+ * - The executable is self-contained and runs directly
+ * - `process.execPath` points to the compiled binary itself
+ * - No additional entrypoint needed - just pass args to `process.execPath`
+ *
+ * **Development Mode:**
+ * - Running via `tsx src/index.ts` or `bun src/index.ts`
+ * - Spawn child processes using the same runtime with `src/index.ts` entrypoint
+ *
+ * ## Cross-Platform Support
+ *
+ * This utility handles spawning HAPI CLI subprocesses (for daemon processes)
+ * in a cross-platform way, detecting the current runtime mode and using
+ * the appropriate command and arguments.
  */
 
 import { spawn, SpawnOptions, type ChildProcess } from 'child_process';
@@ -60,28 +32,15 @@ import { logger } from '@/ui/logger';
 import { existsSync } from 'node:fs';
 
 /**
- * Spawn the HAPI CLI with the given arguments in a cross-platform way.
- * 
- * This function bypasses the wrapper script (bin/happy.mjs) and spawns the
- * actual CLI entrypoint (dist/index.mjs) directly with the current runtime
- * (Node.js or Bun), ensuring compatibility across all platforms including Windows.
- * 
- * @param args - Arguments to pass to the HAPI CLI
- * @param options - Spawn options (same as child_process.spawn)
- * @returns ChildProcess instance
+ * Resolve the TypeScript entrypoint for development mode.
  */
-function resolveEntrypointForBun(projectRoot: string): string {
-  const distEntrypoint = join(projectRoot, 'dist', 'index.mjs');
-  if (existsSync(distEntrypoint)) {
-    return distEntrypoint;
-  }
-
+function resolveEntrypoint(projectRoot: string): string {
   const srcEntrypoint = join(projectRoot, 'src', 'index.ts');
   if (existsSync(srcEntrypoint)) {
     return srcEntrypoint;
   }
 
-  throw new Error('No CLI entrypoint found for Bun runtime (expected dist/index.mjs or src/index.ts)');
+  throw new Error('No CLI entrypoint found (expected src/index.ts)');
 }
 
 export interface HappyCliCommand {
@@ -90,6 +49,7 @@ export interface HappyCliCommand {
 }
 
 export function getHappyCliCommand(args: string[]): HappyCliCommand {
+  // Compiled binary mode: just use the executable directly
   if (isBunCompiled()) {
     return {
       command: process.execPath,
@@ -97,31 +57,23 @@ export function getHappyCliCommand(args: string[]): HappyCliCommand {
     };
   }
 
+  // Development mode: spawn with TypeScript entrypoint
   const projectRoot = projectPath();
-  const distEntrypoint = join(projectRoot, 'dist', 'index.mjs');
+  const entrypoint = resolveEntrypoint(projectRoot);
   const isBunRuntime = Boolean((process.versions as Record<string, string | undefined>).bun);
-  const entrypoint = isBunRuntime ? resolveEntrypointForBun(projectRoot) : distEntrypoint;
 
-  const argv1 = process.argv[1] ?? '';
-  const runningFromSource = argv1.endsWith(join('src', 'index.ts')) || process.execArgv.some((arg) => arg.includes('tsx'));
-  const srcEntrypoint = join(projectRoot, 'src', 'index.ts');
-  if (!isBunRuntime && runningFromSource && existsSync(srcEntrypoint)) {
+  if (isBunRuntime) {
+    // Bun can run TypeScript directly
     return {
       command: process.execPath,
-      args: [...process.execArgv, srcEntrypoint, ...args]
+      args: [entrypoint, ...args]
     };
   }
 
-  const spawnArgs = isBunRuntime ? [entrypoint, ...args] : [
-    '--no-warnings',
-    '--no-deprecation',
-    entrypoint,
-    ...args
-  ];
-
+  // Node.js with tsx: preserve execArgv (which includes tsx loader)
   return {
     command: process.execPath,
-    args: spawnArgs
+    args: [...process.execArgv, entrypoint, ...args]
   };
 }
 
@@ -143,9 +95,9 @@ export function spawnHappyCLI(args: string[], options: SpawnOptions = {}): Child
   
   const { command: spawnCommand, args: spawnArgs } = getHappyCliCommand(args);
 
-  // Sanity check of the entrypoint path exists
+  // Sanity check that the entrypoint path exists
   if (!isBunCompiled()) {
-    const entrypoint = spawnArgs.find((arg) => arg.endsWith('index.mjs') || arg.endsWith('index.ts'));
+    const entrypoint = spawnArgs.find((arg) => arg.endsWith('index.ts'));
     if (entrypoint && !existsSync(entrypoint)) {
       const errorMessage = `Entrypoint ${entrypoint} does not exist`;
       logger.debug(`[SPAWN HAPI CLI] ${errorMessage}`);

@@ -407,7 +407,7 @@ describe.skipIf(!await isServerHealthy())('Daemon Integration Tests', { timeout:
    * 
    * Critical timing constraints:
    * - Heartbeat must be long enough (30s) for yarn build to complete before daemon tries to spawn
-   * - If heartbeat fires during rebuild, spawn fails (dist/index.mjs missing) and test fails
+   * - If heartbeat fires during rebuild, spawn fails (entrypoint missing) and test fails
    * - pkgroll doesn't reliably update compiled version, must use full yarn build
    * - Test modifies package.json BEFORE rebuild to ensure new version is compiled in
    * 
@@ -472,6 +472,6 @@ describe.skipIf(!await isServerHealthy())('Daemon Integration Tests', { timeout:
   // TODO: Add a test to see if a corrupted file will work
   
   // TODO: Test npm uninstall scenario - daemon should gracefully handle when hapi is uninstalled
-  // Current behavior: daemon tries to spawn new daemon on version mismatch but dist/index.mjs is gone
+  // Current behavior: daemon tries to spawn new daemon on version mismatch but entrypoint is gone
   // Expected: daemon should detect missing entrypoint and either exit cleanly or at minimum not respawn infinitely
 });
