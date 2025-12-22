@@ -83,9 +83,7 @@ export function App() {
     }, [goBack, pathname])
     const queryClient = useQueryClient()
     const sessionMatch = matchRoute({ to: '/sessions/$sessionId' })
-    const spawnMatch = matchRoute({ to: '/machines/$machineId/spawn' })
     const selectedSessionId = sessionMatch ? sessionMatch.sessionId : null
-    const spawnMachineId = spawnMatch ? spawnMatch.machineId : null
 
     const handleSseConnect = useCallback(() => {
         void queryClient.invalidateQueries({ queryKey: queryKeys.sessions })
@@ -101,11 +99,8 @@ export function App() {
         if (selectedSessionId) {
             return { sessionId: selectedSessionId }
         }
-        if (spawnMachineId) {
-            return { machineId: spawnMachineId }
-        }
         return { all: true }
-    }, [selectedSessionId, spawnMachineId])
+    }, [selectedSessionId])
 
     useSSE({
         enabled: Boolean(api && token),

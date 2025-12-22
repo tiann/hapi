@@ -11,8 +11,7 @@ import {
 import { App } from '@/App'
 import { SessionChat } from '@/components/SessionChat'
 import { SessionList } from '@/components/SessionList'
-import { MachineList } from '@/components/MachineList'
-import { SpawnSession } from '@/components/SpawnSession'
+import { NewSession } from '@/components/NewSession'
 import { useAppContext } from '@/lib/app-context'
 import { useAppGoBack } from '@/hooks/useAppGoBack'
 import { isTelegramApp } from '@/hooks/useTelegram'
@@ -62,7 +61,7 @@ function SessionsPage() {
                     to: '/sessions/$sessionId',
                     params: { sessionId },
                 })}
-                onNewSession={() => navigate({ to: '/machines' })}
+                onNewSession={() => navigate({ to: '/sessions/new' })}
                 onRefresh={handleRefresh}
                 isLoading={isLoading}
             />
@@ -127,56 +126,15 @@ function SessionPage() {
     )
 }
 
-function MachinesPage() {
+function NewSessionPage() {
     const { api } = useAppContext()
-    const navigate = useNavigate()
-    const goBack = useAppGoBack()
-    const { machines, error: machinesError } = useMachines(api, true)
-
-    return (
-        <div className="flex-1 overflow-y-auto">
-            <div className="flex items-center gap-2 border-b border-[var(--app-border)] bg-[var(--app-bg)] p-3 pt-[calc(0.75rem+env(safe-area-inset-top))]">
-                {!isTelegramApp() && (
-                    <button
-                        type="button"
-                        onClick={goBack}
-                        className="flex h-8 w-8 items-center justify-center rounded-full text-[var(--app-hint)] transition-colors hover:bg-[var(--app-secondary-bg)] hover:text-[var(--app-fg)]"
-                    >
-                        <BackIcon />
-                    </button>
-                )}
-                <div className="flex-1 font-semibold">Machines</div>
-            </div>
-
-            {machinesError ? (
-                <div className="p-3 text-sm text-red-600">
-                    {machinesError}
-                </div>
-            ) : null}
-
-            <MachineList
-                machines={machines}
-                onSelect={(machineId) => navigate({
-                    to: '/machines/$machineId/spawn',
-                    params: { machineId },
-                })}
-            />
-        </div>
-    )
-}
-
-function SpawnPage() {
-    const { api } = useAppContext()
-    const { machineId } = useParams({ from: '/machines/$machineId/spawn' })
-    const { machines } = useMachines(api, true)
     const navigate = useNavigate()
     const goBack = useAppGoBack()
     const queryClient = useQueryClient()
-
-    const machineForSpawn = machines.find((machine) => machine.id === machineId) ?? null
+    const { machines, isLoading: machinesLoading, error: machinesError } = useMachines(api, true)
 
     const handleCancel = useCallback(() => {
-        navigate({ to: '/machines' })
+        navigate({ to: '/sessions' })
     }, [navigate])
 
     const handleSuccess = useCallback((sessionId: string) => {
@@ -207,10 +165,16 @@ function SpawnPage() {
                 <div className="flex-1 font-semibold">Create Session</div>
             </div>
 
-            <SpawnSession
+            {machinesError ? (
+                <div className="p-3 text-sm text-red-600">
+                    {machinesError}
+                </div>
+            ) : null}
+
+            <NewSession
                 api={api}
-                machineId={machineId}
-                machine={machineForSpawn}
+                machines={machines}
+                isLoading={machinesLoading}
                 onCancel={handleCancel}
                 onSuccess={handleSuccess}
             />
@@ -267,16 +231,10 @@ const sessionFileRoute = createRoute({
     component: FilePage,
 })
 
-const machinesRoute = createRoute({
+const newSessionRoute = createRoute({
     getParentRoute: () => rootRoute,
-    path: '/machines',
-    component: MachinesPage,
-})
-
-const spawnRoute = createRoute({
-    getParentRoute: () => rootRoute,
-    path: '/machines/$machineId/spawn',
-    component: SpawnPage,
+    path: '/sessions/new',
+    component: NewSessionPage,
 })
 
 export const routeTree = rootRoute.addChildren([
@@ -285,8 +243,7 @@ export const routeTree = rootRoute.addChildren([
     sessionRoute,
     sessionFilesRoute,
     sessionFileRoute,
-    machinesRoute,
-    spawnRoute,
+    newSessionRoute,
 ])
 
 type RouterHistory = Parameters<typeof createRouter>[0]['history']

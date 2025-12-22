@@ -8,17 +8,12 @@ export function useAppGoBack(): () => void {
 
     return useCallback(() => {
         // Use explicit path navigation for consistent behavior across all environments
-        if (pathname.startsWith('/sessions/')) {
+        if (pathname === '/sessions/new') {
             navigate({ to: '/sessions' })
             return
         }
 
-        if (pathname.endsWith('/spawn')) {
-            navigate({ to: '/machines' })
-            return
-        }
-
-        if (pathname.startsWith('/machines')) {
+        if (pathname.startsWith('/sessions/')) {
             navigate({ to: '/sessions' })
             return
         }
