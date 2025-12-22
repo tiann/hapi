@@ -193,6 +193,7 @@ export function SessionChat(props: {
             <AssistantRuntimeProvider runtime={runtime}>
                 <div className="relative flex min-h-0 flex-1 flex-col">
                     <HappyThread
+                        key={props.session.id}
                         api={props.api}
                         sessionId={props.session.id}
                         metadata={props.session.metadata}

@@ -32,7 +32,7 @@ export function HappyThread(props: {
             onRetryMessage: props.onRetryMessage
         }}>
             <ThreadPrimitive.Root className="flex min-h-0 flex-1 flex-col">
-                <ThreadPrimitive.Viewport className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden" autoScroll={false}>
+                <ThreadPrimitive.Viewport className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden" autoScroll>
                     <div className="mx-auto w-full max-w-[720px] min-w-0 p-3">
                         {props.header}
                         <div className="flex flex-col gap-3">
