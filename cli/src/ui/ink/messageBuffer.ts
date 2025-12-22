@@ -5,6 +5,8 @@ export interface BufferedMessage {
     type: 'user' | 'assistant' | 'system' | 'tool' | 'result' | 'status'
 }
 
+const MAX_MESSAGE_COUNT = 500
+
 export class MessageBuffer {
     private messages: BufferedMessage[] = []
     private listeners: Array<(messages: BufferedMessage[]) => void> = []
@@ -18,6 +20,9 @@ export class MessageBuffer {
             type
         }
         this.messages.push(message)
+        if (this.messages.length > MAX_MESSAGE_COUNT) {
+            this.messages.splice(0, this.messages.length - MAX_MESSAGE_COUNT)
+        }
         this.notifyListeners()
     }
 

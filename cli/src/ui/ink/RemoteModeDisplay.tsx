@@ -71,8 +71,10 @@ export const RemoteModeDisplay: React.FC<RemoteModeDisplayProps> = ({ messageBuf
             return
         }
 
+        const isSpace = input === ' ' || key.name === 'space'
+
         // Handle double space
-        if (input === ' ') {
+        if (isSpace) {
             if (confirmationMode === 'switch') {
                 // Second space, switch to local
                 resetConfirmation()

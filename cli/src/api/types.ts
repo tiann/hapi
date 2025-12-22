@@ -16,6 +16,7 @@ export type Metadata = {
     }
     machineId?: string
     claudeSessionId?: string
+    codexSessionId?: string
     tools?: string[]
     slashCommands?: string[]
     homeDir: string
@@ -44,6 +45,7 @@ export const MetadataSchema = z.object({
     }).optional(),
     machineId: z.string().optional(),
     claudeSessionId: z.string().optional(),
+    codexSessionId: z.string().optional(),
     tools: z.array(z.string()).optional(),
     slashCommands: z.array(z.string()).optional(),
     homeDir: z.string(),
