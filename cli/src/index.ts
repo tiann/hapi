@@ -436,7 +436,27 @@ ${chalk.bold.cyan('Claude Code Options (from `claude --help`):')}
       const { runClaude } = await import('@/claude/runClaude');
       await runClaude(options);
     } catch (error) {
-      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
+      // Categorize errors for better user experience
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      const messageLower = message.toLowerCase();
+      const axiosCode = (error as any)?.code;
+      const httpStatus = (error as any)?.response?.status;
+
+      if (axiosCode === 'ECONNREFUSED' || axiosCode === 'ETIMEDOUT' || axiosCode === 'ENOTFOUND' ||
+          messageLower.includes('econnrefused') || messageLower.includes('etimedout') ||
+          messageLower.includes('enotfound') || messageLower.includes('network error')) {
+        const { configuration } = await import('@/configuration');
+        console.error(chalk.yellow('Unable to connect to HAPI server'));
+        console.error(chalk.gray(`  Server URL: ${configuration.serverUrl}`));
+        console.error(chalk.gray('  Please check your network connection or server status'));
+      } else if (httpStatus === 401 || httpStatus === 403 ||
+                 messageLower.includes('unauthorized') || messageLower.includes('forbidden')) {
+        console.error(chalk.red('Authentication error:'), message);
+        console.error(chalk.gray('  Run: hapi auth login'));
+      } else {
+        console.error(chalk.red('Error:'), message);
+      }
+
       if (process.env.DEBUG) {
         console.error(error)
       }
