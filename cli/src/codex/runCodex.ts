@@ -22,6 +22,7 @@ export { emitReadyIfIdle } from './utils/emitReadyIfIdle';
 
 export async function runCodex(opts: {
     startedBy?: 'daemon' | 'terminal';
+    codexArgs?: string[];
 }): Promise<void> {
     const workingDirectory = process.cwd();
     const sessionTag = randomUUID();
@@ -188,6 +189,7 @@ export async function runCodex(opts: {
             messageQueue,
             api,
             session,
+            codexArgs: opts.codexArgs,
             onModeChange: (newMode) => {
                 session.sendSessionEvent({ type: 'switch', mode: newMode });
                 session.updateAgentState((currentState) => ({

@@ -22,6 +22,12 @@ import type { EnhancedMode } from './loop';
 import { restoreTerminalState } from '@/ui/terminalState';
 
 export async function codexRemoteLauncher(session: CodexSession): Promise<'switch' | 'exit'> {
+    // Warn if CLI args were passed that won't apply in remote mode
+    if (session.codexArgs && session.codexArgs.length > 0) {
+        logger.debug(`[codex-remote] Warning: CLI args [${session.codexArgs.join(', ')}] are ignored in remote mode. ` +
+            `Remote mode uses message-based configuration (model/sandbox set via web interface).`);
+    }
+
     const hasTTY = process.stdout.isTTY && process.stdin.isTTY;
     const messageBuffer = new MessageBuffer();
     let inkInstance: any = null;

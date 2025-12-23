@@ -125,18 +125,25 @@ import { withBunRuntimeEnv } from './utils/bunRuntime'
     // Handle codex command
     try {
       const { runCodex } = await import('@/codex/runCodex');
-      
-      // Parse startedBy argument
-      let startedBy: 'daemon' | 'terminal' | undefined = undefined;
+
+      // Parse known arguments and collect unknown ones for passthrough
+      const options: { startedBy?: 'daemon' | 'terminal'; codexArgs?: string[] } = {};
+      const unknownArgs: string[] = [];
       for (let i = 1; i < args.length; i++) {
-        if (args[i] === '--started-by') {
-          startedBy = args[++i] as 'daemon' | 'terminal';
+        const arg = args[i];
+        if (arg === '--started-by') {
+          options.startedBy = args[++i] as 'daemon' | 'terminal';
+        } else {
+          unknownArgs.push(arg);
         }
+      }
+      if (unknownArgs.length > 0) {
+        options.codexArgs = unknownArgs;
       }
 
       await initializeToken();
       await authAndSetupMachineIfNeeded();
-      await runCodex({ startedBy });
+      await runCodex(options);
       // Do not force exit here; allow instrumentation to show lingering handles
     } catch (error) {
       console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')

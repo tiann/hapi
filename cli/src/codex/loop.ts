@@ -20,6 +20,7 @@ interface LoopOptions {
     messageQueue: MessageQueue2<EnhancedMode>;
     session: ApiSessionClient;
     api: ApiClient;
+    codexArgs?: string[];
     onSessionReady?: (session: CodexSession) => void;
 }
 
@@ -33,7 +34,8 @@ export async function loop(opts: LoopOptions): Promise<void> {
         logPath,
         messageQueue: opts.messageQueue,
         onModeChange: opts.onModeChange,
-        mode: opts.startingMode ?? 'local'
+        mode: opts.startingMode ?? 'local',
+        codexArgs: opts.codexArgs
     });
 
     if (opts.onSessionReady) {

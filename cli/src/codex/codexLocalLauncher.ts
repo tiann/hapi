@@ -78,7 +78,8 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
                     path: session.path,
                     sessionId: session.sessionId,
                     onSessionFound: handleSessionFound,
-                    abort: processAbortController.signal
+                    abort: processAbortController.signal,
+                    codexArgs: session.codexArgs
                 });
 
                 if (!exitReason) {

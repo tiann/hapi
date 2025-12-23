@@ -2,6 +2,25 @@ import { spawn } from 'node:child_process';
 import { logger } from '@/ui/logger';
 import { restoreTerminalState } from '@/ui/terminalState';
 
+/**
+ * Filter out 'resume' subcommand which is managed internally by hapi.
+ * Codex CLI format is `codex resume <session-id>`, so subcommand is always first.
+ */
+export function filterResumeSubcommand(args: string[]): string[] {
+    if (args.length === 0 || args[0] !== 'resume') {
+        return args;
+    }
+
+    // First arg is 'resume', filter it and optional session ID
+    if (args.length > 1 && !args[1].startsWith('-')) {
+        logger.debug(`[CodexLocal] Filtered 'resume ${args[1]}' - session managed by hapi`);
+        return args.slice(2);
+    }
+
+    logger.debug(`[CodexLocal] Filtered 'resume' - session managed by hapi`);
+    return args.slice(1);
+}
+
 export async function codexLocal(opts: {
     abort: AbortSignal;
     sessionId: string | null;
@@ -9,6 +28,7 @@ export async function codexLocal(opts: {
     model?: string;
     sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access';
     onSessionFound: (id: string) => void;
+    codexArgs?: string[];
 }): Promise<void> {
     const args: string[] = [];
 
@@ -23,6 +43,11 @@ export async function codexLocal(opts: {
 
     if (opts.sandbox) {
         args.push('--sandbox', opts.sandbox);
+    }
+
+    if (opts.codexArgs) {
+        const safeArgs = filterResumeSubcommand(opts.codexArgs);
+        args.push(...safeArgs);
     }
 
     logger.debug(`[CodexLocal] Spawning codex with args: ${JSON.stringify(args)}`);

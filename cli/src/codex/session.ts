@@ -4,6 +4,8 @@ import { AgentSessionBase } from '@/agent/sessionBase';
 import type { EnhancedMode } from './loop';
 
 export class CodexSession extends AgentSessionBase<EnhancedMode> {
+    readonly codexArgs?: string[];
+
     constructor(opts: {
         api: ApiClient;
         client: ApiSessionClient;
@@ -13,6 +15,7 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
         messageQueue: MessageQueue2<EnhancedMode>;
         onModeChange: (mode: 'local' | 'remote') => void;
         mode?: 'local' | 'remote';
+        codexArgs?: string[];
     }) {
         super({
             api: opts.api,
@@ -30,6 +33,8 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
                 codexSessionId: sessionId
             })
         });
+
+        this.codexArgs = opts.codexArgs;
     }
 
     sendCodexMessage = (message: unknown): void => {
