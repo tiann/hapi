@@ -9,6 +9,7 @@ export class Session extends AgentSessionBase<EnhancedMode> {
     claudeArgs?: string[];
     readonly mcpServers: Record<string, any>;
     readonly allowedTools?: string[];
+    readonly hookSettingsPath: string;
 
     constructor(opts: {
         api: ApiClient;
@@ -23,6 +24,7 @@ export class Session extends AgentSessionBase<EnhancedMode> {
         onModeChange: (mode: 'local' | 'remote') => void;
         allowedTools?: string[];
         mode?: 'local' | 'remote';
+        hookSettingsPath: string;
     }) {
         super({
             api: opts.api,
@@ -45,6 +47,7 @@ export class Session extends AgentSessionBase<EnhancedMode> {
         this.claudeArgs = opts.claudeArgs;
         this.mcpServers = opts.mcpServers;
         this.allowedTools = opts.allowedTools;
+        this.hookSettingsPath = opts.hookSettingsPath;
     }
 
     /**

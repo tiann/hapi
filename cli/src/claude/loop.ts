@@ -33,6 +33,7 @@ interface LoopOptions {
     messageQueue: MessageQueue2<EnhancedMode>
     allowedTools?: string[]
     onSessionReady?: (session: Session) => void
+    hookSettingsPath: string
 }
 
 export async function loop(opts: LoopOptions) {
@@ -51,7 +52,8 @@ export async function loop(opts: LoopOptions) {
         messageQueue: opts.messageQueue,
         allowedTools: opts.allowedTools,
         onModeChange: opts.onModeChange,
-        mode: opts.startingMode
+        mode: opts.startingMode,
+        hookSettingsPath: opts.hookSettingsPath
     });
 
     // Notify that session is ready

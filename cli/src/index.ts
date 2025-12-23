@@ -82,6 +82,12 @@ import { withBunRuntimeEnv } from './utils/bunRuntime'
     return
   }
 
+  if (subcommand === 'hook-forwarder') {
+    const { runSessionHookForwarder } = await import('@/claude/utils/sessionHookForwarder')
+    await runSessionHookForwarder(args.slice(1))
+    return
+  }
+
   await ensureRuntimeAssets()
 
   logger.debug('Starting hapi CLI with args: ', process.argv)

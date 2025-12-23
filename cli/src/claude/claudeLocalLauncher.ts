@@ -18,6 +18,11 @@ export async function claudeLocalLauncher(session: Session): Promise<'switch' | 
         }
     });
 
+    const handleSessionFound = (sessionId: string) => {
+        scanner.onNewSession(sessionId);
+    };
+    session.addSessionFoundCallback(handleSessionFound);
+
 
     // Handle abort
     let exitReason: 'switch' | 'exit' | null = null;
@@ -78,7 +83,6 @@ export async function claudeLocalLauncher(session: Session): Promise<'switch' | 
         // Handle session start
         const handleSessionStart = (sessionId: string) => {
             session.onSessionFound(sessionId);
-            scanner.onNewSession(sessionId);
         }
 
         // Run local mode
@@ -100,6 +104,7 @@ export async function claudeLocalLauncher(session: Session): Promise<'switch' | 
                     claudeArgs: session.claudeArgs,
                     mcpServers: session.mcpServers,
                     allowedTools: session.allowedTools,
+                    hookSettingsPath: session.hookSettingsPath,
                 });
 
                 // Consume one-time Claude flags after spawn
@@ -133,6 +138,7 @@ export async function claudeLocalLauncher(session: Session): Promise<'switch' | 
         session.queue.setOnMessage(null);
 
         // Cleanup
+        session.removeSessionFoundCallback(handleSessionFound);
         await scanner.cleanup();
     }
 

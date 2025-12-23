@@ -116,6 +116,11 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
         version: process.env.npm_package_version
     }, permissionHandler.getResponses());
 
+    const handleSessionFound = (sessionId: string) => {
+        sdkToLogConverter.updateSessionId(sessionId);
+    };
+    session.addSessionFoundCallback(handleSessionFound);
+
 
     // Handle messages
     let planModeToolCalls = new Set<string>();
@@ -329,6 +334,7 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
                     path: session.path,
                     allowedTools: session.allowedTools ?? [],
                     mcpServers: session.mcpServers,
+                    hookSettingsPath: session.hookSettingsPath,
                     canCallTool: permissionHandler.handleToolCall,
                     isAborted: (toolCallId: string) => {
                         return permissionHandler.isAborted(toolCallId);
@@ -363,8 +369,6 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
                         return null;
                     },
                     onSessionFound: (sessionId) => {
-                        // Update converter's session ID when new session is found
-                        sdkToLogConverter.updateSessionId(sessionId);
                         session.onSessionFound(sessionId);
                     },
                     onThinkingChange: session.onThinkingChange,
@@ -430,6 +434,8 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
             }
         }
     } finally {
+
+        session.removeSessionFoundCallback(handleSessionFound);
 
         // Clean up permission handler
         permissionHandler.reset();

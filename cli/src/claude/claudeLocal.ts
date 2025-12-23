@@ -16,6 +16,7 @@ export async function claudeLocal(opts: {
     claudeEnvVars?: Record<string, string>,
     claudeArgs?: string[]
     allowedTools?: string[]
+    hookSettingsPath: string
 }) {
 
     // Ensure project directory exists
@@ -72,6 +73,10 @@ export async function claudeLocal(opts: {
             if (opts.claudeArgs) {
                 args.push(...opts.claudeArgs)
             }
+
+            // Add hook settings for session tracking
+            args.push('--settings', opts.hookSettingsPath)
+            logger.debug(`[ClaudeLocal] Using hook settings: ${opts.hookSettingsPath}`);
 
             // Prepare environment variables
             // Note: Local mode uses global Claude installation with --session-id flag

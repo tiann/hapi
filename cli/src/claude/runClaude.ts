@@ -17,9 +17,12 @@ import { configuration } from '@/configuration';
 import { notifyDaemonSessionStarted } from '@/daemon/controlClient';
 import { initialMachineMetadata } from '@/daemon/run';
 import { startHappyServer } from '@/claude/utils/startHappyServer';
+import { startHookServer } from '@/claude/utils/startHookServer';
+import { generateHookSettingsFile, cleanupHookSettingsFile } from '@/claude/utils/generateHookSettings';
 import { registerKillSessionHandler } from './registerKillSessionHandler';
 import { runtimePath } from '../projectPath';
 import { resolve } from 'node:path';
+import type { Session } from './session';
 
 export interface StartOptions {
     model?: string
@@ -124,6 +127,28 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
     // Start HAPI MCP server
     const happyServer = await startHappyServer(session);
     logger.debug(`[START] HAPI MCP server started at ${happyServer.url}`);
+
+    // Variable to track current session instance (updated via onSessionReady callback)
+    let currentSession: Session | null = null;
+
+    // Start Hook server for receiving Claude session notifications
+    const hookServer = await startHookServer({
+        onSessionHook: (sessionId, data) => {
+            logger.debug(`[START] Session hook received: ${sessionId}`, data);
+
+            if (currentSession) {
+                const previousSessionId = currentSession.sessionId;
+                if (previousSessionId !== sessionId) {
+                    logger.debug(`[START] Claude session ID changed: ${previousSessionId} -> ${sessionId}`);
+                    currentSession.onSessionFound(sessionId);
+                }
+            }
+        }
+    });
+    logger.debug(`[START] Hook server started on port ${hookServer.port}`);
+
+    const hookSettingsPath = generateHookSettingsFile(hookServer.port);
+    logger.debug(`[START] Generated hook settings file: ${hookSettingsPath}`);
 
     // Print log file path
     const logPath = logger.logFilePath;
@@ -306,6 +331,10 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
             // Stop HAPI MCP server
             happyServer.stop();
 
+            // Stop Hook server and cleanup settings file
+            hookServer.stop();
+            cleanupHookSettingsFile(hookSettingsPath);
+
             logger.debug('[START] Cleanup complete, exiting');
             process.exit(0);
         } catch (error) {
@@ -347,8 +376,8 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
                 controlledByUser: newMode === 'local'
             }));
         },
-        onSessionReady: (_sessionInstance) => {
-            // Intentionally unused
+        onSessionReady: (sessionInstance) => {
+            currentSession = sessionInstance;
         },
         mcpServers: {
             'hapi': {
@@ -358,7 +387,8 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         },
         session,
         claudeEnvVars: options.claudeEnvVars,
-        claudeArgs: options.claudeArgs
+        claudeArgs: options.claudeArgs,
+        hookSettingsPath
     });
 
     // Send session death message
@@ -375,6 +405,11 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
     // Stop HAPI MCP server
     happyServer.stop();
     logger.debug('Stopped HAPI MCP server');
+
+    // Stop Hook server and cleanup settings file
+    hookServer.stop();
+    cleanupHookSettingsFile(hookSettingsPath);
+    logger.debug('Stopped Hook server and cleaned up settings file');
 
     // Exit
     process.exit(0);

@@ -19,6 +19,7 @@ export async function claudeRemote(opts: {
     claudeEnvVars?: Record<string, string>,
     claudeArgs?: string[],
     allowedTools: string[],
+    hookSettingsPath: string,
     signal?: AbortSignal,
     canCallTool: (toolName: string, input: unknown, mode: EnhancedMode, options: { signal: AbortSignal }) => Promise<PermissionResult>,
 
@@ -122,6 +123,7 @@ export async function claudeRemote(opts: {
         executable: process.execPath,
         abort: opts.signal,
         pathToClaudeCodeExecutable: 'claude',
+        settingsPath: opts.hookSettingsPath,
     }
 
     // Track thinking state

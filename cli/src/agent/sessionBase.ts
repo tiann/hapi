@@ -29,6 +29,7 @@ export class AgentSessionBase<Mode> {
     mode: 'local' | 'remote' = 'local';
     thinking: boolean = false;
 
+    private sessionFoundCallbacks: ((sessionId: string) => void)[] = [];
     private readonly applySessionIdToMetadata: (metadata: Metadata, sessionId: string) => Metadata;
     private readonly sessionLabel: string;
     private readonly sessionIdLabel: string;
@@ -68,6 +69,21 @@ export class AgentSessionBase<Mode> {
         this.sessionId = sessionId;
         this.client.updateMetadata((metadata) => this.applySessionIdToMetadata(metadata, sessionId));
         logger.debug(`[${this.sessionLabel}] ${this.sessionIdLabel} session ID ${sessionId} added to metadata`);
+
+        for (const callback of this.sessionFoundCallbacks) {
+            callback(sessionId);
+        }
+    };
+
+    addSessionFoundCallback = (callback: (sessionId: string) => void): void => {
+        this.sessionFoundCallbacks.push(callback);
+    };
+
+    removeSessionFoundCallback = (callback: (sessionId: string) => void): void => {
+        const index = this.sessionFoundCallbacks.indexOf(callback);
+        if (index !== -1) {
+            this.sessionFoundCallbacks.splice(index, 1);
+        }
     };
 
     stopKeepAlive = (): void => {

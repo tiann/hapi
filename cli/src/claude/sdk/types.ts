@@ -171,6 +171,7 @@ export interface QueryOptions {
     resume?: string
     model?: string
     fallbackModel?: string
+    settingsPath?: string
     strictMcpConfig?: boolean
     canCallTool?: CanCallToolCallback
 }
