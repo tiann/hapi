@@ -18,7 +18,8 @@
         "typecheck:cli": "cd cli && bun run typecheck",
         "typecheck:server": "cd server && bun run typecheck",
         "typecheck:web": "cd web && bun run typecheck",
-        "test": "cd cli && bun run test"
+        "test": "cd cli && bun run test",
+        "clean-session": "bun run server/scripts/cleanup-sessions.ts"
     },
     "devDependencies": {
         "concurrently": "^9.2.1",
