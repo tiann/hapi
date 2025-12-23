@@ -1,5 +1,6 @@
-import React, { useEffect } from 'react';
-import TestRenderer, { act, type ReactTestRenderer } from 'react-test-renderer';
+import React, { act, useEffect } from 'react';
+import { PassThrough } from 'node:stream';
+import { render, type Instance } from 'ink';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useSwitchControls, type ConfirmationMode, type ActionInProgress } from './useSwitchControls';
 
@@ -16,11 +17,48 @@ type SwitchState = {
 
 let inputHandler: ((input: string, key: Key) => void | Promise<void>) | null = null;
 
-vi.mock('ink', () => ({
-    useInput: (handler: (input: string, key: Key) => void | Promise<void>) => {
-        inputHandler = handler;
-    }
-}));
+vi.mock('ink', async () => {
+    const actual = await vi.importActual<typeof import('ink')>('ink');
+    return {
+        ...actual,
+        useInput: (handler: (input: string, key: Key) => void | Promise<void>) => {
+            inputHandler = handler;
+        }
+    };
+});
+
+const createInkStreams = (): {
+    stdout: NodeJS.WriteStream;
+    stderr: NodeJS.WriteStream;
+    stdin: NodeJS.ReadStream;
+} => {
+    const stdout = new PassThrough() as NodeJS.WriteStream & {
+        isTTY?: boolean;
+        columns?: number;
+        rows?: number;
+    };
+    const stderr = new PassThrough() as NodeJS.WriteStream & {
+        isTTY?: boolean;
+        columns?: number;
+        rows?: number;
+    };
+    const stdin = new PassThrough() as NodeJS.ReadStream & {
+        isTTY?: boolean;
+    };
+
+    Object.assign(stdout, { isTTY: true, columns: 80, rows: 24 });
+    Object.assign(stderr, { isTTY: true, columns: 80, rows: 24 });
+    Object.assign(stdin, { isTTY: false });
+
+    return { stdout, stderr, stdin };
+};
+
+const getActEnvironment = (): boolean | undefined =>
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
+
+const setActEnvironment = (value: boolean | undefined) => {
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = value;
+};
 
 function HookProbe(props: {
     onExit?: () => void;
@@ -41,18 +79,27 @@ function HookProbe(props: {
 }
 
 describe('useSwitchControls', () => {
-    let renderer: ReactTestRenderer | null = null;
+    let renderer: Instance | null = null;
     let latestState: SwitchState | null = null;
+    let previousActEnvironment: boolean | undefined;
 
     const mount = async (opts: { onExit?: () => void; onSwitch?: () => void }) => {
+        const { stdout, stderr, stdin } = createInkStreams();
         await act(async () => {
-            renderer = TestRenderer.create(
+            renderer = render(
                 React.createElement(HookProbe, {
                     ...opts,
                     onState: (state) => {
                         latestState = state;
                     }
-                })
+                }),
+                {
+                    stdout,
+                    stderr,
+                    stdin,
+                    exitOnCtrlC: false,
+                    patchConsole: false
+                }
             );
         });
     };
@@ -84,20 +131,26 @@ describe('useSwitchControls', () => {
     };
 
     beforeEach(() => {
+        previousActEnvironment = getActEnvironment();
+        setActEnvironment(true);
         vi.useFakeTimers();
         inputHandler = null;
         latestState = null;
     });
 
-    afterEach(() => {
+    afterEach(async () => {
+        await act(async () => {
+            vi.runOnlyPendingTimers();
+        });
         if (renderer) {
-            act(() => {
-                renderer?.unmount();
+            await act(async () => {
+                renderer.unmount();
             });
+            renderer.cleanup();
             renderer = null;
         }
-        vi.runOnlyPendingTimers();
         vi.useRealTimers();
+        setActEnvironment(previousActEnvironment);
     });
 
     it('forwards Ctrl-C to process when onExit is missing', async () => {
