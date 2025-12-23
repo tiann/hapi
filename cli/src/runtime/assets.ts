@@ -61,8 +61,7 @@ function areToolsUnpacked(unpackedPath: string): boolean {
 
     const expectedFiles = [
         join(unpackedPath, difftBinary),
-        join(unpackedPath, rgBinary),
-        join(unpackedPath, 'ripgrep.node')
+        join(unpackedPath, rgBinary)
     ];
 
     return expectedFiles.every((file) => existsSync(file));
@@ -115,12 +114,7 @@ function unpackTools(runtimeRoot: string): void {
 }
 
 function runtimeAssetsReady(runtimeRoot: string): boolean {
-    const requiredScripts = [
-        join(runtimeRoot, 'scripts', 'ripgrep_launcher.cjs')
-    ];
-
-    return requiredScripts.every((script) => existsSync(script)) &&
-        areToolsUnpacked(join(runtimeRoot, 'tools', 'unpacked'));
+    return areToolsUnpacked(join(runtimeRoot, 'tools', 'unpacked'));
 }
 
 export async function ensureRuntimeAssets(): Promise<void> {

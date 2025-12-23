@@ -57,8 +57,7 @@ function areToolsUnpacked(toolsDir) {
     
     const expectedFiles = [
         path.join(unpackedPath, difftBinary),
-        path.join(unpackedPath, rgBinary),
-        path.join(unpackedPath, 'ripgrep.node')
+        path.join(unpackedPath, rgBinary)
     ];
     
     return expectedFiles.every(file => fs.existsSync(file));

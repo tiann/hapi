@@ -4,6 +4,7 @@
 
 import { spawn } from 'child_process';
 import { join, resolve } from 'path';
+import { platform } from 'os';
 import { runtimePath } from '@/projectPath';
 import { withBunRuntimeEnv } from '@/utils/bunRuntime';
 
@@ -17,10 +18,16 @@ export interface RipgrepOptions {
     cwd?: string
 }
 
+function getBinaryPath(): string {
+    const platformName = platform();
+    const binaryName = platformName === 'win32' ? 'rg.exe' : 'rg';
+    return resolve(join(runtimePath(), 'tools', 'unpacked', binaryName));
+}
+
 export function run(args: string[], options?: RipgrepOptions): Promise<RipgrepResult> {
-    const runnerPath = resolve(join(runtimePath(), 'scripts', 'ripgrep_launcher.cjs'));
+    const binaryPath = getBinaryPath();
     return new Promise((resolve, reject) => {
-        const child = spawn(process.execPath, [runnerPath, JSON.stringify(args)], {
+        const child = spawn(binaryPath, args, {
             stdio: ['pipe', 'pipe', 'pipe'],
             cwd: options?.cwd,
             env: withBunRuntimeEnv()
