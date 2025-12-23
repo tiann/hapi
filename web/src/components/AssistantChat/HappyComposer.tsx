@@ -94,8 +94,10 @@ export function HappyComposer(props: {
     const [showSettings, setShowSettings] = useState(false)
     const [isAborting, setIsAborting] = useState(false)
     const [isSwitching, setIsSwitching] = useState(false)
+    const [showContinueHint, setShowContinueHint] = useState(false)
 
     const textareaRef = useRef<HTMLTextAreaElement>(null)
+    const prevControlledByUser = useRef(controlledByUser)
 
     useEffect(() => {
         setInputState((prev) => {
@@ -103,6 +105,17 @@ export function HappyComposer(props: {
             return { ...prev, text: composerText }
         })
     }, [composerText])
+
+    // Track one-time "continue" hint after switching from local to remote.
+    useEffect(() => {
+        if (prevControlledByUser.current === true && controlledByUser === false) {
+            setShowContinueHint(true)
+        }
+        if (controlledByUser) {
+            setShowContinueHint(false)
+        }
+        prevControlledByUser.current = controlledByUser
+    }, [controlledByUser])
 
     const { haptic: platformHaptic, isTouch } = usePlatform()
     const activeWord = useActiveWord(inputState.text, inputState.selection, autocompletePrefixes)
@@ -283,6 +296,10 @@ export function HappyComposer(props: {
         setShowSettings(prev => !prev)
     }, [haptic])
 
+    const handleSubmit = useCallback(() => {
+        setShowContinueHint(false)
+    }, [])
+
     const handlePermissionChange = useCallback((mode: PermissionMode) => {
         if (!onPermissionModeChange || controlsDisabled) return
         onPermissionModeChange(mode)
@@ -438,7 +455,7 @@ export function HappyComposer(props: {
                             <ComposerPrimitive.Input
                                 ref={textareaRef}
                                 autoFocus={!controlsDisabled && !isTouch}
-                                placeholder="Type a message..."
+                                placeholder={showContinueHint ? "Type 'continue' to resume..." : "Type a message..."}
                                 disabled={controlsDisabled}
                                 maxRows={5}
                                 submitOnEnter
@@ -446,6 +463,7 @@ export function HappyComposer(props: {
                                 onChange={handleChange}
                                 onSelect={handleSelect}
                                 onKeyDown={handleKeyDown}
+                                onSubmit={handleSubmit}
                                 className="flex-1 resize-none bg-transparent text-sm leading-snug text-[var(--app-fg)] placeholder-[var(--app-hint)] focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
                             />
                         </div>
