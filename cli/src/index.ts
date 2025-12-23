@@ -52,6 +52,11 @@ import { withBunRuntimeEnv } from './utils/bunRuntime'
     return process.argv.slice(1)
   })()
 
+  if (args.includes('-v') || args.includes('--version')) {
+    console.log(`hapi version: ${packageJson.version}`)
+    process.exit(0)
+  }
+
   // Check if first argument is a subcommand
   const subcommand = args[0]
 
@@ -79,10 +84,7 @@ import { withBunRuntimeEnv } from './utils/bunRuntime'
 
   await ensureRuntimeAssets()
 
-  // If --version is passed - do not log, its likely daemon inquiring about our version
-  if (!args.includes('--version')) {
-    logger.debug('Starting hapi CLI with args: ', process.argv)
-  }
+  logger.debug('Starting hapi CLI with args: ', process.argv)
 
   if (subcommand === 'doctor') {
     // Check for clean subcommand
@@ -318,7 +320,6 @@ ${chalk.bold('To clean up runaway processes:')} Use ${chalk.cyan('hapi doctor cl
     // Parse command line arguments for main command
     const options: StartOptions = {}
     let showHelp = false
-    let showVersion = false
     const unknownArgs: string[] = [] // Collect unknown args to pass through to claude
 
     for (let i = 0; i < args.length; i++) {
@@ -327,10 +328,6 @@ ${chalk.bold('To clean up runaway processes:')} Use ${chalk.cyan('hapi doctor cl
       if (arg === '-h' || arg === '--help') {
         showHelp = true
         // Also pass through to claude
-        unknownArgs.push(arg)
-      } else if (arg === '-v' || arg === '--version') {
-        showVersion = true
-        // Also pass through to claude (will show after our version)
         unknownArgs.push(arg)
       } else if (arg === '--hapi-starting-mode') {
         options.startingMode = z.enum(['local', 'remote']).parse(args[++i])
@@ -402,16 +399,6 @@ ${chalk.bold.cyan('Claude Code Options (from `claude --help`):')}
       }
       
       process.exit(0)
-    }
-
-    // Show version
-    if (showVersion) {
-      console.log(`hapi version: ${packageJson.version}`)
-      const versionOnly = args.every((value) => value === '-v' || value === '--version')
-      if (versionOnly) {
-        process.exit(0)
-      }
-      // Continue to pass --version to Claude Code when other args are present.
     }
 
     // Normal flow - auth and machine setup

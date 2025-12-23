@@ -6,10 +6,31 @@
 import { logger } from '@/ui/logger';
 import { clearDaemonState, readDaemonState } from '@/persistence';
 import { Metadata } from '@/api/types';
-import { projectPath } from '@/projectPath';
-import { readFileSync } from 'fs';
-import { join } from 'path';
-import { configuration } from '@/configuration';
+import packageJson from '../../package.json';
+import { existsSync, statSync } from 'node:fs';
+import { join } from 'node:path';
+import { isBunCompiled, projectPath } from '@/projectPath';
+
+export function getInstalledCliMtimeMs(): number | undefined {
+  if (isBunCompiled()) {
+    try {
+      return statSync(process.execPath).mtimeMs;
+    } catch {
+      return undefined;
+    }
+  }
+
+  const packageJsonPath = join(projectPath(), 'package.json');
+  if (!existsSync(packageJsonPath)) {
+    return undefined;
+  }
+
+  try {
+    return statSync(packageJsonPath).mtimeMs;
+  } catch {
+    return undefined;
+  }
+}
 
 async function daemonPost(path: string, body?: any): Promise<{ error?: string } | any> {
   const state = await readDaemonState();
@@ -154,11 +175,13 @@ export async function isDaemonRunningCurrentlyInstalledHappyVersion(): Promise<b
   }
   
   try {
-    // Read package.json on demand from disk - so we are guaranteed to get the latest version
-    const packageJsonPath = join(projectPath(), 'package.json');
-    const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
+    const currentCliMtimeMs = getInstalledCliMtimeMs();
+    if (typeof currentCliMtimeMs === 'number' && typeof state.startedWithCliMtimeMs === 'number') {
+      logger.debug(`[DAEMON CONTROL] Current CLI mtime: ${currentCliMtimeMs}, Daemon started with mtime: ${state.startedWithCliMtimeMs}`);
+      return currentCliMtimeMs === state.startedWithCliMtimeMs;
+    }
+
     const currentCliVersion = packageJson.version;
-    
     logger.debug(`[DAEMON CONTROL] Current CLI version: ${currentCliVersion}, Daemon started with version: ${state.startedWithCliVersion}`);
     return currentCliVersion === state.startedWithCliVersion;
     

@@ -476,13 +476,17 @@ export class SyncEngine {
             return { host, platform, happyCliVersion, displayName, ...data }
         })()
 
+        const storedActiveAt = stored.activeAt ?? stored.createdAt
+        const existingActiveAt = existing?.activeAt ?? 0
+        const useStoredActivity = storedActiveAt > existingActiveAt
+
         const machine: Machine = {
             id: stored.id,
             seq: stored.seq,
             createdAt: stored.createdAt,
             updatedAt: stored.updatedAt,
-            active: existing?.active ?? stored.active,
-            activeAt: existing?.activeAt ?? (stored.activeAt ?? stored.createdAt),
+            active: useStoredActivity ? stored.active : (existing?.active ?? stored.active),
+            activeAt: useStoredActivity ? storedActiveAt : (existingActiveAt || storedActiveAt),
             metadata,
             metadataVersion: stored.metadataVersion,
             daemonState: stored.daemonState,

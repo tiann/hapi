@@ -13,11 +13,10 @@ import { getEnvironmentInfo } from '@/ui/doctor';
 import { spawnHappyCLI } from '@/utils/spawnHappyCLI';
 import { writeDaemonState, DaemonLocallyPersistedState, readDaemonState, acquireDaemonLock, releaseDaemonLock } from '@/persistence';
 
-import { cleanupDaemonState, isDaemonRunningCurrentlyInstalledHappyVersion, stopDaemon } from './controlClient';
+import { cleanupDaemonState, getInstalledCliMtimeMs, isDaemonRunningCurrentlyInstalledHappyVersion, stopDaemon } from './controlClient';
 import { startDaemonControlServer } from './controlServer';
-import { readFileSync } from 'fs';
 import { join } from 'path';
-import { projectPath, runtimePath } from '@/projectPath';
+import { runtimePath } from '@/projectPath';
 
 // Prepare initial metadata
 export const initialMachineMetadata: MachineMetadata = {
@@ -403,12 +402,15 @@ export async function startDaemon(): Promise<void> {
       onHappySessionWebhook
     });
 
+    const startedWithCliMtimeMs = getInstalledCliMtimeMs();
+
     // Write initial daemon state (no lock needed for state file)
     const fileState: DaemonLocallyPersistedState = {
       pid: process.pid,
       httpPort: controlPort,
       startTime: new Date().toLocaleString(),
       startedWithCliVersion: packageJson.version,
+      startedWithCliMtimeMs,
       daemonLogPath: logger.logFilePath
     };
     writeDaemonState(fileState);
@@ -476,10 +478,10 @@ export async function startDaemon(): Promise<void> {
       }
 
       // Check if daemon needs update
-      // If version on disk is different from the one in package.json - we need to restart
-      // BIG if - does this get updated from underneath us on npm upgrade?
-      const projectVersion = JSON.parse(readFileSync(join(projectPath(), 'package.json'), 'utf-8')).version;
-      if (projectVersion !== configuration.currentCliVersion) {
+      const installedCliMtimeMs = getInstalledCliMtimeMs();
+      if (typeof installedCliMtimeMs === 'number' &&
+          typeof startedWithCliMtimeMs === 'number' &&
+          installedCliMtimeMs !== startedWithCliMtimeMs) {
         logger.debug('[DAEMON RUN] Daemon is outdated, triggering self-restart with latest version, clearing heartbeat interval');
 
         clearInterval(restartOnStaleVersionAndHeartbeat);
@@ -521,6 +523,7 @@ export async function startDaemon(): Promise<void> {
           httpPort: controlPort,
           startTime: fileState.startTime,
           startedWithCliVersion: packageJson.version,
+          startedWithCliMtimeMs,
           lastHeartbeat: new Date().toLocaleString(),
           daemonLogPath: fileState.daemonLogPath
         };
