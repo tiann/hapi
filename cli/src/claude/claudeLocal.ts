@@ -1,6 +1,5 @@
 import { spawn } from "node:child_process";
 import { resolve, join } from "node:path";
-import { createInterface } from "node:readline";
 import { mkdirSync, existsSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { logger } from "@/ui/logger";
@@ -20,7 +19,6 @@ export async function claudeLocal(opts: {
     mcpServers?: Record<string, any>,
     path: string,
     onSessionFound: (id: string) => void,
-    onThinkingChange?: (thinking: boolean) => void,
     claudeEnvVars?: Record<string, string>,
     claudeArgs?: string[]
     allowedTools?: string[]
@@ -50,19 +48,6 @@ export async function claudeLocal(opts: {
         logger.debug(`[ClaudeLocal] Resuming session: ${startFrom}`);
         opts.onSessionFound(startFrom!);
     }
-
-    // Thinking state
-    let thinking = false;
-    let stopThinkingTimeout: NodeJS.Timeout | null = null;
-    const updateThinking = (newThinking: boolean) => {
-        if (thinking !== newThinking) {
-            thinking = newThinking;
-            logger.debug(`[ClaudeLocal] Thinking state changed to: ${thinking}`);
-            if (opts.onThinkingChange) {
-                opts.onThinkingChange(thinking);
-            }
-        }
-    };
 
     // Spawn the process
     try {
@@ -100,7 +85,6 @@ export async function claudeLocal(opts: {
 
             // Prepare environment variables
             // Note: Local mode uses global Claude installation with --session-id flag
-            // Launcher only intercepts fetch for thinking state tracking
             const env = {
                 ...process.env,
                 ...opts.claudeEnvVars
@@ -110,79 +94,11 @@ export async function claudeLocal(opts: {
             logger.debug(`[ClaudeLocal] Args: ${JSON.stringify(args)}`);
 
             const child = spawn(process.execPath, [claudeCliPath, ...args], {
-                stdio: ['inherit', 'inherit', 'inherit', 'pipe'],
+                stdio: ['inherit', 'inherit', 'inherit'],
                 signal: opts.abort,
                 cwd: opts.path,
                 env: withBunRuntimeEnv(env),
             });
-
-            // Listen to the custom fd (fd 3) for thinking state tracking
-            if (child.stdio[3]) {
-                const rl = createInterface({
-                    input: child.stdio[3] as any,
-                    crlfDelay: Infinity
-                });
-
-                // Track active fetches for thinking state
-                const activeFetches = new Map<number, { hostname: string, path: string, startTime: number }>();
-
-                rl.on('line', (line) => {
-                    try {
-                        const message = JSON.parse(line);
-
-                        switch (message.type) {
-                            case 'fetch-start':
-                                activeFetches.set(message.id, {
-                                    hostname: message.hostname,
-                                    path: message.path,
-                                    startTime: message.timestamp
-                                });
-
-                                // Clear any pending stop timeout
-                                if (stopThinkingTimeout) {
-                                    clearTimeout(stopThinkingTimeout);
-                                    stopThinkingTimeout = null;
-                                }
-
-                                // Start thinking
-                                updateThinking(true);
-                                break;
-
-                            case 'fetch-end':
-                                activeFetches.delete(message.id);
-
-                                // Stop thinking when no active fetches
-                                if (activeFetches.size === 0 && thinking && !stopThinkingTimeout) {
-                                    stopThinkingTimeout = setTimeout(() => {
-                                        if (activeFetches.size === 0) {
-                                            updateThinking(false);
-                                        }
-                                        stopThinkingTimeout = null;
-                                    }, 500); // Small delay to avoid flickering
-                                }
-                                break;
-
-                            default:
-                                logger.debug(`[ClaudeLocal] Unknown message type: ${message.type}`);
-                        }
-                    } catch (e) {
-                        // Not JSON, ignore (could be other output)
-                        logger.debug(`[ClaudeLocal] Non-JSON line from fd3: ${line}`);
-                    }
-                });
-
-                rl.on('error', (err) => {
-                    console.error('Error reading from fd 3:', err);
-                });
-
-                // Cleanup on child exit
-                child.on('exit', () => {
-                    if (stopThinkingTimeout) {
-                        clearTimeout(stopThinkingTimeout);
-                    }
-                    updateThinking(false);
-                });
-            }
             child.on('error', (error) => {
                 // Ignore
             });
@@ -199,11 +115,6 @@ export async function claudeLocal(opts: {
         });
     } finally {
         process.stdin.resume();
-        if (stopThinkingTimeout) {
-            clearTimeout(stopThinkingTimeout);
-            stopThinkingTimeout = null;
-        }
-        updateThinking(false);
     }
 
     return effectiveSessionId;

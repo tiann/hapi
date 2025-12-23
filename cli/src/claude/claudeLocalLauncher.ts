@@ -95,7 +95,6 @@ export async function claudeLocalLauncher(session: Session): Promise<'switch' | 
                     path: session.path,
                     sessionId: session.sessionId,
                     onSessionFound: handleSessionStart,
-                    onThinkingChange: session.onThinkingChange,
                     abort: processAbortController.signal,
                     claudeEnvVars: session.claudeEnvVars,
                     claudeArgs: session.claudeArgs,
