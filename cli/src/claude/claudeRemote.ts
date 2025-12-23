@@ -1,8 +1,7 @@
 import { EnhancedMode, PermissionMode } from "./loop";
 import { query, type QueryOptions as Options, type SDKMessage, type SDKSystemMessage, AbortError, SDKUserMessage } from '@/claude/sdk'
 import { claudeCheckSession } from "./utils/claudeCheckSession";
-import { join, resolve } from 'node:path';
-import { runtimePath } from "@/projectPath";
+import { join } from 'node:path';
 import { parseSpecialCommand } from "@/parsers/specialCommands";
 import { logger } from "@/lib";
 import { PushableAsyncIterable } from "@/utils/PushableAsyncIterable";
@@ -74,6 +73,7 @@ export async function claudeRemote(opts: {
             process.env[key] = value;
         });
     }
+    process.env.DISABLE_AUTOUPDATER = '1';
 
     // Get initial message
     const initial = await opts.nextMessage();
@@ -121,9 +121,7 @@ export async function claudeRemote(opts: {
         canCallTool: (toolName: string, input: unknown, options: { signal: AbortSignal }) => opts.canCallTool(toolName, input, mode, options),
         executable: process.execPath,
         abort: opts.signal,
-        pathToClaudeCodeExecutable: (() => {
-            return resolve(join(runtimePath(), 'scripts', 'claude_remote_launcher.cjs'));
-        })(),
+        pathToClaudeCodeExecutable: 'claude',
     }
 
     // Track thinking state

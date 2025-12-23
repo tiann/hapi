@@ -1,8 +1,5 @@
 import { feature } from 'bun:bundle';
 
-import claudeLocalLauncher from '../../scripts/claude_local_launcher.cjs' assert { type: 'file' };
-import claudeRemoteLauncher from '../../scripts/claude_remote_launcher.cjs' assert { type: 'file' };
-import claudeVersionUtils from '../../scripts/claude_version_utils.cjs' assert { type: 'file' };
 import ripgrepLauncher from '../../scripts/ripgrep_launcher.cjs' assert { type: 'file' };
 
 import difftasticArchiveLicense from '../../tools/archives/difftastic-LICENSE' assert { type: 'file' };
@@ -23,9 +20,6 @@ function asset(relativePath: string, sourcePath: string): EmbeddedAsset {
 }
 
 const COMMON_ASSETS: EmbeddedAsset[] = [
-    asset('scripts/claude_local_launcher.cjs', claudeLocalLauncher),
-    asset('scripts/claude_remote_launcher.cjs', claudeRemoteLauncher),
-    asset('scripts/claude_version_utils.cjs', claudeVersionUtils),
     asset('scripts/ripgrep_launcher.cjs', ripgrepLauncher),
     asset('tools/archives/difftastic-LICENSE', difftasticArchiveLicense),
     asset('tools/archives/ripgrep-LICENSE', ripgrepArchiveLicense),

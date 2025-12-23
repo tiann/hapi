@@ -116,9 +116,6 @@ function unpackTools(runtimeRoot: string): void {
 
 function runtimeAssetsReady(runtimeRoot: string): boolean {
     const requiredScripts = [
-        join(runtimeRoot, 'scripts', 'claude_local_launcher.cjs'),
-        join(runtimeRoot, 'scripts', 'claude_remote_launcher.cjs'),
-        join(runtimeRoot, 'scripts', 'claude_version_utils.cjs'),
         join(runtimeRoot, 'scripts', 'ripgrep_launcher.cjs')
     ];
 

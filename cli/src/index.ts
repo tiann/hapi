@@ -25,7 +25,6 @@ import { listDaemonSessions, stopDaemonSession } from './daemon/controlClient'
 import { handleAuthCommand } from './commands/auth'
 import { handleConnectCommand } from './commands/connect'
 import { spawnHappyCLI } from './utils/spawnHappyCLI'
-import { claudeCliPath } from './claude/claudeLocal'
 import { execFileSync } from 'node:child_process'
 import { initializeToken } from './ui/tokenInit'
 import { ensureRuntimeAssets } from './runtime/assets'
@@ -391,12 +390,11 @@ ${chalk.bold.cyan('Claude Code Options (from `claude --help`):')}
 `)
       
       // Run claude --help and display its output
-      // Use execFileSync with the current Node executable for cross-platform compatibility
       try {
         const claudeHelp = execFileSync(
-          process.execPath,
-          [claudeCliPath, '--help'],
-          { encoding: 'utf8', env: withBunRuntimeEnv() }
+          'claude',
+          ['--help'],
+          { encoding: 'utf8', env: withBunRuntimeEnv(), shell: process.platform === 'win32' }
         )
         console.log(claudeHelp)
       } catch (e) {

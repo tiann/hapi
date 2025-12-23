@@ -1,17 +1,11 @@
 import { spawn } from "node:child_process";
-import { resolve, join } from "node:path";
-import { mkdirSync, existsSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { logger } from "@/ui/logger";
 import { claudeCheckSession } from "./utils/claudeCheckSession";
 import { getProjectPath } from "./utils/path";
-import { runtimePath } from "@/projectPath";
 import { systemPrompt } from "./utils/systemPrompt";
 import { withBunRuntimeEnv } from "@/utils/bunRuntime";
-
-
-// Get Claude CLI path from project root
-export const claudeCliPath = resolve(join(runtimePath(), 'scripts', 'claude_local_launcher.cjs'))
 
 export async function claudeLocal(opts: {
     abort: AbortSignal,
@@ -79,37 +73,48 @@ export async function claudeLocal(opts: {
                 args.push(...opts.claudeArgs)
             }
 
-            if (!claudeCliPath || !existsSync(claudeCliPath)) {
-                throw new Error('Claude local launcher not found. Please ensure HAPI_PROJECT_ROOT is set correctly for development.');
-            }
-
             // Prepare environment variables
             // Note: Local mode uses global Claude installation with --session-id flag
             const env = {
                 ...process.env,
+                DISABLE_AUTOUPDATER: '1',
                 ...opts.claudeEnvVars
             }
 
-            logger.debug(`[ClaudeLocal] Spawning launcher: ${claudeCliPath}`);
+            logger.debug('[ClaudeLocal] Spawning claude');
             logger.debug(`[ClaudeLocal] Args: ${JSON.stringify(args)}`);
 
-            const child = spawn(process.execPath, [claudeCliPath, ...args], {
+            const child = spawn('claude', args, {
                 stdio: ['inherit', 'inherit', 'inherit'],
                 signal: opts.abort,
                 cwd: opts.path,
                 env: withBunRuntimeEnv(env),
+                shell: process.platform === 'win32'
             });
+            let settled = false;
+            const finalize = (error?: Error) => {
+                if (settled) {
+                    return;
+                }
+                settled = true;
+                if (error) {
+                    reject(error);
+                } else {
+                    r();
+                }
+            };
             child.on('error', (error) => {
-                // Ignore
+                const message = error instanceof Error ? error.message : String(error);
+                finalize(new Error(`Failed to spawn claude: ${message}. Is Claude installed and on PATH?`));
             });
             child.on('exit', (code, signal) => {
                 if (signal === 'SIGTERM' && opts.abort.aborted) {
                     // Normal termination due to abort signal
-                    r();
+                    finalize();
                 } else if (signal) {
-                    reject(new Error(`Process terminated with signal: ${signal}`));
+                    finalize(new Error(`Process terminated with signal: ${signal}`));
                 } else {
-                    r();
+                    finalize();
                 }
             });
         });
