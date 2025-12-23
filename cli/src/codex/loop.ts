@@ -5,6 +5,7 @@ import { CodexSession } from './session';
 import { codexLocalLauncher } from './codexLocalLauncher';
 import { codexRemoteLauncher } from './codexRemoteLauncher';
 import { ApiClient, ApiSessionClient } from '@/lib';
+import type { CodexCliOverrides } from './utils/codexCliOverrides';
 
 export type PermissionMode = 'default' | 'read-only' | 'safe-yolo' | 'yolo';
 
@@ -21,6 +22,7 @@ interface LoopOptions {
     session: ApiSessionClient;
     api: ApiClient;
     codexArgs?: string[];
+    codexCliOverrides?: CodexCliOverrides;
     onSessionReady?: (session: CodexSession) => void;
 }
 
@@ -35,7 +37,8 @@ export async function loop(opts: LoopOptions): Promise<void> {
         messageQueue: opts.messageQueue,
         onModeChange: opts.onModeChange,
         mode: opts.startingMode ?? 'local',
-        codexArgs: opts.codexArgs
+        codexArgs: opts.codexArgs,
+        codexCliOverrides: opts.codexCliOverrides
     });
 
     if (opts.onSessionReady) {

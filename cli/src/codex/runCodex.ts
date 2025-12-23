@@ -17,6 +17,7 @@ import type { AgentState, Metadata } from '@/api/types';
 import packageJson from '../../package.json';
 import { runtimePath } from '@/projectPath';
 import type { CodexSession } from './session';
+import { parseCodexCliOverrides } from './utils/codexCliOverrides';
 
 export { emitReadyIfIdle } from './utils/emitReadyIfIdle';
 
@@ -92,6 +93,8 @@ export async function runCodex(opts: {
         permissionMode: mode.permissionMode,
         model: mode.model
     }));
+
+    const codexCliOverrides = parseCodexCliOverrides(opts.codexArgs);
 
     let currentPermissionMode: PermissionMode | undefined = undefined;
     let currentModel: string | undefined = undefined;
@@ -190,6 +193,7 @@ export async function runCodex(opts: {
             api,
             session,
             codexArgs: opts.codexArgs,
+            codexCliOverrides,
             onModeChange: (newMode) => {
                 session.sendSessionEvent({ type: 'switch', mode: newMode });
                 session.updateAgentState((currentState) => ({

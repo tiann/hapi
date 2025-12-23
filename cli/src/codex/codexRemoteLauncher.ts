@@ -12,7 +12,6 @@ import { DiffProcessor } from './utils/diffProcessor';
 import { logger } from '@/ui/logger';
 import { MessageBuffer } from '@/ui/ink/messageBuffer';
 import { CodexDisplay } from '@/ui/ink/CodexDisplay';
-import { trimIdent } from '@/utils/trimIdent';
 import type { CodexSessionConfig } from './types';
 import { getHappyCliCommand } from '@/utils/spawnHappyCLI';
 import { startHappyServer } from '@/claude/utils/startHappyServer';
@@ -20,12 +19,19 @@ import { emitReadyIfIdle } from './utils/emitReadyIfIdle';
 import type { CodexSession } from './session';
 import type { EnhancedMode } from './loop';
 import { restoreTerminalState } from '@/ui/terminalState';
+import { hasCodexCliOverrides } from './utils/codexCliOverrides';
+import { buildCodexStartConfig } from './utils/codexStartConfig';
 
 export async function codexRemoteLauncher(session: CodexSession): Promise<'switch' | 'exit'> {
     // Warn if CLI args were passed that won't apply in remote mode
     if (session.codexArgs && session.codexArgs.length > 0) {
-        logger.debug(`[codex-remote] Warning: CLI args [${session.codexArgs.join(', ')}] are ignored in remote mode. ` +
-            `Remote mode uses message-based configuration (model/sandbox set via web interface).`);
+        if (hasCodexCliOverrides(session.codexCliOverrides)) {
+            logger.debug(`[codex-remote] CLI args include sandbox/approval overrides; other args ` +
+                `are ignored in remote mode.`);
+        } else {
+            logger.debug(`[codex-remote] Warning: CLI args [${session.codexArgs.join(', ')}] are ignored in remote mode. ` +
+                `Remote mode uses message-based configuration (model/sandbox set via web interface).`);
+        }
     }
 
     const hasTTY = process.stdout.isTTY && process.stdin.isTTY;
@@ -373,33 +379,14 @@ export async function codexRemoteLauncher(session: CodexSession): Promise<'switc
             currentModeHash = message.hash;
 
             try {
-                const approvalPolicy = (() => {
-                    switch (message.mode.permissionMode) {
-                        case 'default': return 'untrusted' as const;
-                        case 'read-only': return 'never' as const;
-                        case 'safe-yolo': return 'on-failure' as const;
-                        case 'yolo': return 'on-failure' as const;
-                    }
-                })();
-                const sandbox = (() => {
-                    switch (message.mode.permissionMode) {
-                        case 'default': return 'workspace-write' as const;
-                        case 'read-only': return 'read-only' as const;
-                        case 'safe-yolo': return 'workspace-write' as const;
-                        case 'yolo': return 'danger-full-access' as const;
-                    }
-                })();
-
                 if (!wasCreated) {
-                    const startConfig: CodexSessionConfig = {
-                        prompt: first ? message.message + '\n\n' + trimIdent(`Based on this message, call functions.hapi__change_title to change chat session title that would represent the current task. If chat idea would change dramatically - call this function again to update the title.`) : message.message,
-                        sandbox,
-                        'approval-policy': approvalPolicy,
-                        config: { mcp_servers: mcpServers }
-                    };
-                    if (message.mode.model) {
-                        startConfig.model = message.mode.model;
-                    }
+                    const startConfig: CodexSessionConfig = buildCodexStartConfig({
+                        message: message.message,
+                        mode: message.mode,
+                        first,
+                        mcpServers,
+                        cliOverrides: session.codexCliOverrides
+                    });
 
                     let resumeFile: string | null = null;
                     if (nextExperimentalResume) {

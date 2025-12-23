@@ -2,9 +2,11 @@ import { ApiClient, ApiSessionClient } from '@/lib';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { AgentSessionBase } from '@/agent/sessionBase';
 import type { EnhancedMode } from './loop';
+import type { CodexCliOverrides } from './utils/codexCliOverrides';
 
 export class CodexSession extends AgentSessionBase<EnhancedMode> {
     readonly codexArgs?: string[];
+    readonly codexCliOverrides?: CodexCliOverrides;
 
     constructor(opts: {
         api: ApiClient;
@@ -16,6 +18,7 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
         onModeChange: (mode: 'local' | 'remote') => void;
         mode?: 'local' | 'remote';
         codexArgs?: string[];
+        codexCliOverrides?: CodexCliOverrides;
     }) {
         super({
             api: opts.api,
@@ -35,6 +38,7 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
         });
 
         this.codexArgs = opts.codexArgs;
+        this.codexCliOverrides = opts.codexCliOverrides;
     }
 
     sendCodexMessage = (message: unknown): void => {
