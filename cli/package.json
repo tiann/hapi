@@ -27,6 +27,7 @@
     "build:exe:all": "bun run scripts/build-executable.ts --all",
     "build:exe:allinone": "bun run scripts/build-executable.ts --with-web-assets",
     "build:exe:allinone:all": "bun run scripts/build-executable.ts --with-web-assets --all",
+    "tools:unpack": "bun run scripts/unpack-tools.ts",
     "test": "tsx --env-file .env.integration-test node_modules/.bin/vitest run",
     "test:win": "vitest run",
     "dev": "tsx src/index.ts",
