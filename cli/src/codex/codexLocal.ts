@@ -95,7 +95,8 @@ export async function codexLocal(opts: {
 
             child.on('error', (error) => {
                 cleanupAbortHandler();
-                reject(error);
+                const message = error instanceof Error ? error.message : String(error);
+                reject(new Error(`Failed to spawn codex: ${message}. Is Codex CLI installed and on PATH?`, { cause: error }));
             });
 
             child.on('exit', (code, signal) => {

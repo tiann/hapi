@@ -65,7 +65,11 @@ export class AcpStdioTransport {
 
         this.process.on('error', (error) => {
             logger.debug('[ACP] Process error', error);
-            this.rejectAllPending(error instanceof Error ? error : new Error(String(error)));
+            const message = error instanceof Error ? error.message : String(error);
+            this.rejectAllPending(new Error(
+                `Failed to spawn ${options.command}: ${message}. Is it installed and on PATH?`,
+                { cause: error }
+            ));
         });
     }
 
