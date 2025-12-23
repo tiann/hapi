@@ -8,15 +8,18 @@ type SessionSummaryMetadata = {
     name?: string
     path: string
     summary?: { text: string }
+    flavor?: string | null
 }
 
 type SessionSummary = {
     id: string
     active: boolean
+    activeAt: number
     updatedAt: number
     metadata: SessionSummaryMetadata | null
     todoProgress: { completed: number; total: number } | null
     pendingRequestsCount: number
+    modelMode?: 'default' | 'sonnet' | 'opus' | null
 }
 
 function toSessionSummary(session: Session): SessionSummary {
@@ -25,7 +28,8 @@ function toSessionSummary(session: Session): SessionSummary {
     const metadata: SessionSummaryMetadata | null = session.metadata ? {
         name: session.metadata.name,
         path: session.metadata.path,
-        summary: session.metadata.summary ? { text: session.metadata.summary.text } : undefined
+        summary: session.metadata.summary ? { text: session.metadata.summary.text } : undefined,
+        flavor: session.metadata.flavor ?? null
     } : null
 
     const todoProgress = session.todos?.length ? {
@@ -36,10 +40,12 @@ function toSessionSummary(session: Session): SessionSummary {
     return {
         id: session.id,
         active: session.active,
+        activeAt: session.activeAt,
         updatedAt: session.updatedAt,
         metadata,
         todoProgress,
-        pendingRequestsCount
+        pendingRequestsCount,
+        modelMode: session.modelMode ?? null
     }
 }
 

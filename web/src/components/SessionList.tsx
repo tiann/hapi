@@ -1,5 +1,3 @@
-import { Badge } from '@/components/ui/badge'
-import { Card, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import type { SessionSummary } from '@/types/api'
 
 function PlusIcon(props: { className?: string }) {
@@ -63,6 +61,37 @@ function getTodoProgress(session: SessionSummary): { completed: number; total: n
     return session.todoProgress
 }
 
+function getAgentLabel(session: SessionSummary): string {
+    const flavor = session.metadata?.flavor?.trim()
+    if (flavor) return flavor
+    return 'unknown'
+}
+
+function getModelLabel(session: SessionSummary): string {
+    return session.modelMode ?? 'default'
+}
+
+function formatRelativeTime(value: number): string | null {
+    const ms = value < 1_000_000_000_000 ? value * 1000 : value
+    if (!Number.isFinite(ms)) return null
+    const delta = Date.now() - ms
+    if (delta < 60_000) return 'just now'
+    const minutes = Math.floor(delta / 60_000)
+    if (minutes < 60) return `${minutes}m ago`
+    const hours = Math.floor(minutes / 60)
+    if (hours < 24) return `${hours}h ago`
+    const days = Math.floor(hours / 24)
+    if (days < 7) return `${days}d ago`
+    return new Date(ms).toLocaleDateString()
+}
+
+function getLastSeenLabel(session: SessionSummary): string | null {
+    if (session.active) return null
+    const lastSeen = formatRelativeTime(session.activeAt ?? session.updatedAt)
+    if (!lastSeen) return null
+    return `last seen ${lastSeen}`
+}
+
 export function SessionList(props: {
     sessions: SessionSummary[]
     onSelect: (sessionId: string) => void
@@ -71,54 +100,70 @@ export function SessionList(props: {
     isLoading: boolean
 }) {
     return (
-        <div className="flex flex-col gap-3">
-            <div className="flex items-center justify-between">
-                <div className="text-sm text-[var(--app-hint)]">
+        <div className="flex flex-col">
+            <div className="flex items-center justify-between px-3 py-1">
+                <div className="text-xs text-[var(--app-hint)]">
                     {props.sessions.length} sessions
                 </div>
                 <button
                     type="button"
                     onClick={props.onNewSession}
-                    className="p-1.5 rounded-full text-[var(--app-link)] hover:bg-[var(--app-subtle-bg)] transition-colors"
+                    className="session-list-new-button p-1.5 rounded-full text-[var(--app-link)] transition-colors"
                     title="New Session"
                 >
-                    <PlusIcon />
+                    <PlusIcon className="h-5 w-5" />
                 </button>
             </div>
 
-            <div className="flex flex-col gap-3">
+            <div className="flex flex-col divide-y divide-[var(--app-divider)]">
                 {props.sessions.map((s) => (
-                    <Card key={s.id} className="cursor-pointer" onClick={() => props.onSelect(s.id)}>
-                        <CardHeader className="pb-2">
-                            <div className="flex items-center justify-between gap-2">
-                                <CardTitle className="truncate">{getSessionTitle(s)}</CardTitle>
-                                <div className="flex items-center gap-2 shrink-0">
-                                    {(() => {
-                                        const progress = getTodoProgress(s)
-                                        if (!progress) return null
-                                        return (
-                                            <Badge className="gap-1 border-transparent bg-[var(--app-secondary-bg)] px-2 py-0.5 text-[10px] font-medium text-[var(--app-hint)]">
-                                                <BulbIcon className="h-3 w-3" />
-                                                {progress.completed}/{progress.total}
-                                            </Badge>
-                                        )
-                                    })()}
-                                    {s.active ? (
-                                        s.pendingRequestsCount > 0 ? (
-                                            <Badge variant="warning">{s.pendingRequestsCount} pending</Badge>
-                                        ) : (
-                                            <Badge variant="success">active</Badge>
-                                        )
-                                    ) : (
-                                        <Badge>inactive</Badge>
-                                    )}
+                    <button
+                        key={s.id}
+                        type="button"
+                        onClick={() => props.onSelect(s.id)}
+                        className="session-list-item flex w-full flex-col gap-1.5 px-3 py-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]"
+                    >
+                        <div className="flex items-center justify-between gap-3">
+                            <div className="flex items-center gap-2 min-w-0">
+                                <span
+                                    className={`h-2 w-2 rounded-full ${s.active ? 'bg-[var(--app-badge-success-text)]' : 'bg-[var(--app-hint)]'}`}
+                                    aria-hidden="true"
+                                />
+                                <div className="truncate text-sm font-medium">
+                                    {getSessionTitle(s)}
                                 </div>
                             </div>
-                            <CardDescription className="truncate">
-                                {s.metadata?.path ?? s.id}
-                            </CardDescription>
-                        </CardHeader>
-                    </Card>
+                            <div className="flex items-center gap-2 shrink-0 text-xs">
+                                {(() => {
+                                    const progress = getTodoProgress(s)
+                                    if (!progress) return null
+                                    return (
+                                        <span className="flex items-center gap-1 text-[var(--app-hint)]">
+                                            <BulbIcon className="h-3 w-3" />
+                                            {progress.completed}/{progress.total}
+                                        </span>
+                                    )
+                                })()}
+                                {s.pendingRequestsCount > 0 ? (
+                                    <span className="text-[var(--app-badge-warning-text)]">
+                                        pending {s.pendingRequestsCount}
+                                    </span>
+                                ) : null}
+                            </div>
+                        </div>
+                        <div className="truncate text-xs text-[var(--app-hint)]">
+                            {s.metadata?.path ?? s.id}
+                        </div>
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[var(--app-hint)]">
+                            <span>❖ {getAgentLabel(s)}</span>
+                            <span>model: {getModelLabel(s)}</span>
+                            {(() => {
+                                const lastSeen = getLastSeenLabel(s)
+                                if (!lastSeen) return null
+                                return <span>{lastSeen}</span>
+                            })()}
+                        </div>
+                    </button>
                 ))}
             </div>
         </div>

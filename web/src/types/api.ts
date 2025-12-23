@@ -62,15 +62,18 @@ export type SessionSummaryMetadata = {
     name?: string
     path: string
     summary?: { text: string }
+    flavor?: string | null
 }
 
 export type SessionSummary = {
     id: string
     active: boolean
+    activeAt: number
     updatedAt: number
     metadata: SessionSummaryMetadata | null
     todoProgress: { completed: number; total: number } | null
     pendingRequestsCount: number
+    modelMode?: ModelMode
 }
 
 export type MessageStatus = 'sending' | 'sent' | 'failed'

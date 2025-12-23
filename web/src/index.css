@@ -104,6 +104,13 @@ body {
     height: 100%;
 }
 
+@media (hover: hover) and (pointer: fine) {
+    .session-list-item:hover,
+    .session-list-new-button:hover {
+        background-color: var(--app-subtle-bg);
+    }
+}
+
 /* Markdown styles */
 .markdown-content a { color: var(--app-link); text-decoration: underline; }
 .markdown-content code { background: var(--app-inline-code-bg); padding: 0.1em 0.3em; border-radius: 4px; font-size: 0.9em; }
