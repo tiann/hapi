@@ -1,10 +1,8 @@
 /**
  * Configuration for hapi-server (Direct Connect)
  *
- * Required environment variables:
- * - CLI_API_TOKEN: Shared secret for hapi CLI authentication
- *
- * Optional Telegram environment variables:
+ * Optional environment variables:
+ * - CLI_API_TOKEN: Shared secret for hapi CLI authentication (auto-generated if not set)
  * - TELEGRAM_BOT_TOKEN: Telegram Bot API token from @BotFather
  * - ALLOWED_CHAT_IDS: Comma-separated list of allowed Telegram chat IDs
  */
@@ -24,7 +22,13 @@ class Configuration {
     public readonly telegramEnabled: boolean
 
     /** CLI auth token (shared secret) */
-    public readonly cliApiToken: string
+    public cliApiToken: string
+
+    /** Source of CLI API token ('pending' | 'env' | 'file' | 'generated') */
+    public cliApiTokenSource: string
+
+    /** Path to settings.json file */
+    public readonly settingsFile: string
 
     /** Data directory for credentials and state */
     public readonly dataDir: string
@@ -56,12 +60,9 @@ class Configuration {
                 .filter(id => !isNaN(id))
             : []
 
-        // Required: CLI API token (shared secret)
-        const cliApiToken = process.env.CLI_API_TOKEN
-        if (!cliApiToken) {
-            throw new Error('CLI_API_TOKEN environment variable is required')
-        }
-        this.cliApiToken = cliApiToken
+        // CLI API token - will be set later by getOrCreateCliApiToken()
+        this.cliApiToken = ''
+        this.cliApiTokenSource = 'pending'
 
         // Mini App web server configuration
         const webappPortRaw = process.env.WEBAPP_PORT
@@ -123,6 +124,9 @@ class Configuration {
             this.dbPath = join(this.dataDir, 'hapi.db')
         }
 
+        // Settings file path
+        this.settingsFile = join(this.dataDir, 'settings.json')
+
         // Ensure data directory exists
         if (!existsSync(this.dataDir)) {
             mkdirSync(this.dataDir, { recursive: true })
@@ -132,6 +136,12 @@ class Configuration {
     /** Check if a chat ID is allowed */
     isChatIdAllowed(chatId: number): boolean {
         return this.allowedChatIds.includes(chatId)
+    }
+
+    /** Set CLI API token (called after async initialization) */
+    _setCliApiToken(token: string, source: string): void {
+        this.cliApiToken = token
+        this.cliApiTokenSource = source
     }
 }
 

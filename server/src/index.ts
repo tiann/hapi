@@ -14,6 +14,7 @@ import { SyncEngine, type SyncEvent } from './sync/syncEngine'
 import { HappyBot } from './telegram/bot'
 import { startWebServer } from './web/server'
 import { getOrCreateJwtSecret } from './web/jwtSecret'
+import { getOrCreateCliApiToken } from './web/cliApiToken'
 import { createSocketServer } from './socket/server'
 import { SSEManager } from './sse/sseManager'
 import type { Server as BunServer } from 'bun'
@@ -27,8 +28,30 @@ let sseManager: SSEManager | null = null
 async function main() {
     console.log('HAPI Server starting...')
 
-    // Load configuration (will throw if required env vars missing)
+    // Load configuration
     const config = getConfiguration()
+
+    // Initialize CLI API token
+    const tokenResult = await getOrCreateCliApiToken(config.dataDir)
+    config._setCliApiToken(tokenResult.token, tokenResult.source)
+
+    // Display token information
+    if (tokenResult.isNew) {
+        console.log('')
+        console.log('='.repeat(70))
+        console.log('  NEW CLI_API_TOKEN GENERATED')
+        console.log('='.repeat(70))
+        console.log('')
+        console.log(`  Token: ${tokenResult.token}`)
+        console.log('')
+        console.log(`  Saved to: ${tokenResult.filePath}`)
+        console.log('')
+        console.log('='.repeat(70))
+        console.log('')
+    } else {
+        console.log(`[Server] CLI_API_TOKEN: loaded from ${tokenResult.source}`)
+    }
+
     console.log(`[Server] Mini App: ${config.miniAppUrl} (port ${config.webappPort})`)
     if (!config.telegramEnabled) {
         console.log('[Server] Telegram: disabled (missing TELEGRAM_BOT_TOKEN)')

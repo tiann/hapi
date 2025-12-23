@@ -50,7 +50,10 @@ async function promptForToken(): Promise<string> {
     const rl = readline.createInterface({ input, output })
 
     console.log(chalk.yellow('\nNo CLI_API_TOKEN found.'))
-    console.log(chalk.gray('You can set it via environment variable or enter it now.\n'))
+    console.log(chalk.gray('Where to find the token:'))
+    console.log(chalk.gray('  1. Check the server startup logs (first run shows generated token)'))
+    console.log(chalk.gray('  2. Read ~/.hapi/settings.json on the server'))
+    console.log(chalk.gray('  3. Ask your server administrator (if token is set via env var)\n'))
 
     try {
         const token = await rl.question(chalk.cyan('Enter CLI_API_TOKEN: '))
