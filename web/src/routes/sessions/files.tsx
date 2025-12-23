@@ -249,8 +249,8 @@ export default function FilesPage() {
 
     return (
         <div className="flex h-full flex-col">
-            <div className="bg-[var(--app-bg)] border-b border-[var(--app-border)] pt-[env(safe-area-inset-top)]">
-                <div className="mx-auto w-full max-w-[720px] flex items-center gap-2 p-3">
+            <div className="bg-[var(--app-bg)] pt-[env(safe-area-inset-top)]">
+                <div className="mx-auto w-full max-w-content flex items-center gap-2 p-3 border-b border-[var(--app-border)]">
                     <button
                         type="button"
                         onClick={goBack}
@@ -273,102 +273,108 @@ export default function FilesPage() {
                 </div>
             </div>
 
-            <div className="border-b border-[var(--app-border)] bg-[var(--app-bg)] p-3">
-                <div className="flex items-center gap-2 rounded-md bg-[var(--app-subtle-bg)] px-3 py-2">
-                    <SearchIcon className="text-[var(--app-hint)]" />
-                    <input
-                        value={searchQuery}
-                        onChange={(event) => setSearchQuery(event.target.value)}
-                        placeholder="Search files"
-                        className="w-full bg-transparent text-sm text-[var(--app-fg)] placeholder:text-[var(--app-hint)] focus:outline-none"
-                        autoCapitalize="none"
-                        autoCorrect="off"
-                    />
+            <div className="bg-[var(--app-bg)]">
+                <div className="mx-auto w-full max-w-content p-3 border-b border-[var(--app-border)]">
+                    <div className="flex items-center gap-2 rounded-md bg-[var(--app-subtle-bg)] px-3 py-2">
+                        <SearchIcon className="text-[var(--app-hint)]" />
+                        <input
+                            value={searchQuery}
+                            onChange={(event) => setSearchQuery(event.target.value)}
+                            placeholder="Search files"
+                            className="w-full bg-transparent text-sm text-[var(--app-fg)] placeholder:text-[var(--app-hint)] focus:outline-none"
+                            autoCapitalize="none"
+                            autoCorrect="off"
+                        />
+                    </div>
                 </div>
             </div>
 
             {!gitLoading && gitStatus ? (
-                <div className="border-b border-[var(--app-divider)] bg-[var(--app-bg)] px-3 py-2">
-                    <div className="flex items-center gap-2 text-sm">
-                        <GitBranchIcon className="text-[var(--app-hint)]" />
-                        <span className="font-semibold">{branchLabel}</span>
-                    </div>
-                    <div className="text-xs text-[var(--app-hint)]">
-                        {gitStatus.totalStaged} staged, {gitStatus.totalUnstaged} unstaged
+                <div className="bg-[var(--app-bg)]">
+                    <div className="mx-auto w-full max-w-content px-3 py-2 border-b border-[var(--app-divider)]">
+                        <div className="flex items-center gap-2 text-sm">
+                            <GitBranchIcon className="text-[var(--app-hint)]" />
+                            <span className="font-semibold">{branchLabel}</span>
+                        </div>
+                        <div className="text-xs text-[var(--app-hint)]">
+                            {gitStatus.totalStaged} staged, {gitStatus.totalUnstaged} unstaged
+                        </div>
                     </div>
                 </div>
             ) : null}
 
             <div className="flex-1 overflow-y-auto">
-                {showGitErrorBanner ? (
-                    <div className="border-b border-[var(--app-divider)] bg-amber-500/10 px-3 py-2 text-xs text-[var(--app-hint)]">
-                        {gitError}
-                    </div>
-                ) : null}
-                {gitLoading ? (
-                    <div className="p-6 text-sm text-[var(--app-hint)]">Loading Git status...</div>
-                ) : shouldSearch ? (
-                    searchResults.isLoading ? (
-                        <div className="p-6 text-sm text-[var(--app-hint)]">Loading files...</div>
-                    ) : searchResults.error ? (
-                        <div className="p-6 text-sm text-[var(--app-hint)]">{searchResults.error}</div>
-                    ) : searchResults.files.length === 0 ? (
-                        <div className="p-6 text-sm text-[var(--app-hint)]">
-                            {searchQuery ? 'No files match your search.' : 'No files found in this project.'}
+                <div className="mx-auto w-full max-w-content">
+                    {showGitErrorBanner ? (
+                        <div className="border-b border-[var(--app-divider)] bg-amber-500/10 px-3 py-2 text-xs text-[var(--app-hint)]">
+                            {gitError}
                         </div>
-                    ) : (
-                        <div className="border-t border-[var(--app-divider)]">
-                            {searchResults.files.map((file, index) => (
-                                <SearchResultRow
-                                    key={`${file.fullPath}-${index}`}
-                                    file={file}
-                                    onOpen={() => handleOpenFile(file.fullPath)}
-                                    showDivider={index < searchResults.files.length - 1}
-                                />
-                            ))}
-                        </div>
-                    )
-                ) : (
-                    <div>
-                        {gitStatus?.stagedFiles.length ? (
-                            <div>
-                                <div className="border-b border-[var(--app-divider)] bg-[var(--app-bg)] px-3 py-2 text-xs font-semibold text-[var(--app-git-staged-color)]">
-                                    Staged Changes ({gitStatus.stagedFiles.length})
-                                </div>
-                                {gitStatus.stagedFiles.map((file, index) => (
-                                    <GitFileRow
-                                        key={`staged-${file.fullPath}-${index}`}
-                                        file={file}
-                                        onOpen={() => handleOpenFile(file.fullPath, file.isStaged)}
-                                        showDivider={index < gitStatus.stagedFiles.length - 1 || gitStatus.unstagedFiles.length > 0}
-                                    />
-                                ))}
-                            </div>
-                        ) : null}
-
-                        {gitStatus?.unstagedFiles.length ? (
-                            <div>
-                                <div className="border-b border-[var(--app-divider)] bg-[var(--app-bg)] px-3 py-2 text-xs font-semibold text-[var(--app-git-unstaged-color)]">
-                                    Unstaged Changes ({gitStatus.unstagedFiles.length})
-                                </div>
-                                {gitStatus.unstagedFiles.map((file, index) => (
-                                    <GitFileRow
-                                        key={`unstaged-${file.fullPath}-${index}`}
-                                        file={file}
-                                        onOpen={() => handleOpenFile(file.fullPath, file.isStaged)}
-                                        showDivider={index < gitStatus.unstagedFiles.length - 1}
-                                    />
-                                ))}
-                            </div>
-                        ) : null}
-
-                        {gitStatus && gitStatus.stagedFiles.length === 0 && gitStatus.unstagedFiles.length === 0 ? (
+                    ) : null}
+                    {gitLoading ? (
+                        <div className="p-6 text-sm text-[var(--app-hint)]">Loading Git status...</div>
+                    ) : shouldSearch ? (
+                        searchResults.isLoading ? (
+                            <div className="p-6 text-sm text-[var(--app-hint)]">Loading files...</div>
+                        ) : searchResults.error ? (
+                            <div className="p-6 text-sm text-[var(--app-hint)]">{searchResults.error}</div>
+                        ) : searchResults.files.length === 0 ? (
                             <div className="p-6 text-sm text-[var(--app-hint)]">
-                                No changes detected. Use search to browse files.
+                                {searchQuery ? 'No files match your search.' : 'No files found in this project.'}
                             </div>
-                        ) : null}
-                    </div>
-                )}
+                        ) : (
+                            <div className="border-t border-[var(--app-divider)]">
+                                {searchResults.files.map((file, index) => (
+                                    <SearchResultRow
+                                        key={`${file.fullPath}-${index}`}
+                                        file={file}
+                                        onOpen={() => handleOpenFile(file.fullPath)}
+                                        showDivider={index < searchResults.files.length - 1}
+                                    />
+                                ))}
+                            </div>
+                        )
+                    ) : (
+                        <div>
+                            {gitStatus?.stagedFiles.length ? (
+                                <div>
+                                    <div className="border-b border-[var(--app-divider)] bg-[var(--app-bg)] px-3 py-2 text-xs font-semibold text-[var(--app-git-staged-color)]">
+                                        Staged Changes ({gitStatus.stagedFiles.length})
+                                    </div>
+                                    {gitStatus.stagedFiles.map((file, index) => (
+                                        <GitFileRow
+                                            key={`staged-${file.fullPath}-${index}`}
+                                            file={file}
+                                            onOpen={() => handleOpenFile(file.fullPath, file.isStaged)}
+                                            showDivider={index < gitStatus.stagedFiles.length - 1 || gitStatus.unstagedFiles.length > 0}
+                                        />
+                                    ))}
+                                </div>
+                            ) : null}
+
+                            {gitStatus?.unstagedFiles.length ? (
+                                <div>
+                                    <div className="border-b border-[var(--app-divider)] bg-[var(--app-bg)] px-3 py-2 text-xs font-semibold text-[var(--app-git-unstaged-color)]">
+                                        Unstaged Changes ({gitStatus.unstagedFiles.length})
+                                    </div>
+                                    {gitStatus.unstagedFiles.map((file, index) => (
+                                        <GitFileRow
+                                            key={`unstaged-${file.fullPath}-${index}`}
+                                            file={file}
+                                            onOpen={() => handleOpenFile(file.fullPath, file.isStaged)}
+                                            showDivider={index < gitStatus.unstagedFiles.length - 1}
+                                        />
+                                    ))}
+                                </div>
+                            ) : null}
+
+                            {gitStatus && gitStatus.stagedFiles.length === 0 && gitStatus.unstagedFiles.length === 0 ? (
+                                <div className="p-6 text-sm text-[var(--app-hint)]">
+                                    No changes detected. Use search to browse files.
+                                </div>
+                            ) : null}
+                        </div>
+                    )}
+                </div>
             </div>
         </div>
     )

@@ -437,7 +437,7 @@ export function HappyComposer(props: {
 
     return (
         <div className="px-3 pb-3 pt-2 bg-[var(--app-bg)]">
-            <div className="mx-auto w-full max-w-[720px]">
+            <div className="mx-auto w-full max-w-content">
                 <ComposerPrimitive.Root className="relative">
                     {overlays}
 

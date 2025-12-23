@@ -135,7 +135,7 @@ export function HappyThread(props: {
             <ThreadPrimitive.Root className="flex min-h-0 flex-1 flex-col">
                 <ThreadPrimitive.Viewport asChild autoScroll>
                     <div ref={viewportRef} className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
-                        <div className="mx-auto w-full max-w-[720px] min-w-0 p-3">
+                        <div className="mx-auto w-full max-w-content min-w-0 p-3">
                             <div ref={topSentinelRef} className="h-px w-full" aria-hidden="true" />
                             {props.isLoadingMessages ? (
                                 <div className="text-sm text-[var(--app-hint)]">
