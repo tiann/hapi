@@ -11,18 +11,69 @@ function parsePort(value: string | undefined): number | null {
         return null;
     }
 
-    const port = Number.parseInt(value, 10);
-    if (!port || Number.isNaN(port)) {
+    const port = Number(value);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
         return null;
     }
 
     return port;
 }
 
+function parseArgs(args: string[]): { port: number | null; token: string | null } {
+    let port: number | null = null;
+    let token: string | null = null;
+
+    for (let i = 0; i < args.length; i += 1) {
+        const arg = args[i];
+        if (!arg) {
+            continue;
+        }
+
+        if (arg === '--port' || arg === '-p') {
+            port = parsePort(args[i + 1]);
+            i += 1;
+            continue;
+        }
+
+        if (arg.startsWith('--port=')) {
+            port = parsePort(arg.slice('--port='.length));
+            continue;
+        }
+
+        if (arg === '--token' || arg === '-t') {
+            token = args[i + 1] ?? null;
+            i += 1;
+            continue;
+        }
+
+        if (arg.startsWith('--token=')) {
+            token = arg.slice('--token='.length);
+            continue;
+        }
+
+        if (!port) {
+            port = parsePort(arg);
+            continue;
+        }
+
+        if (!token) {
+            token = arg;
+        }
+    }
+
+    return { port, token };
+}
+
 export async function runSessionHookForwarder(args: string[]): Promise<void> {
-    const port = parsePort(args[0]);
+    const { port, token } = parseArgs(args);
     if (!port) {
         logError('Invalid or missing port argument');
+        process.exitCode = 1;
+        return;
+    }
+
+    if (!token) {
+        logError('Missing hook token');
         process.exitCode = 1;
         return;
     }
@@ -49,7 +100,8 @@ export async function runSessionHookForwarder(args: string[]): Promise<void> {
                 path: '/hook/session-start',
                 headers: {
                     'Content-Type': 'application/json',
-                    'Content-Length': body.length
+                    'Content-Length': body.length,
+                    'x-hapi-hook-token': token
                 }
             }, (res) => {
                 if (res.statusCode && res.statusCode >= 400) {

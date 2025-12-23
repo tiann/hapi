@@ -6,6 +6,7 @@
  */
 
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http';
+import { randomBytes } from 'node:crypto';
 import { logger } from '@/ui/logger';
 
 /**
@@ -24,13 +25,25 @@ export interface SessionHookData {
 export interface HookServerOptions {
     /** Called when a session hook is received with a valid session ID. */
     onSessionHook: (sessionId: string, data: SessionHookData) => void;
+    /** Optional token to require for hook requests. */
+    token?: string;
 }
 
 export interface HookServer {
     /** The port the server is listening on. */
     port: number;
+    /** Token required for hook requests. */
+    token: string;
     /** Stop the server. */
     stop: () => void;
+}
+
+function readHookToken(req: IncomingMessage): string | null {
+    const header = req.headers['x-hapi-hook-token'];
+    if (Array.isArray(header)) {
+        return header[0] ?? null;
+    }
+    return header ?? null;
 }
 
 /**
@@ -38,10 +51,20 @@ export interface HookServer {
  */
 export async function startHookServer(options: HookServerOptions): Promise<HookServer> {
     const { onSessionHook } = options;
+    const hookToken = options.token || randomBytes(16).toString('hex');
 
     return new Promise((resolve, reject) => {
         const server: Server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
-            if (req.method === 'POST' && req.url === '/hook/session-start') {
+            const requestPath = req.url?.split('?')[0];
+            if (req.method === 'POST' && requestPath === '/hook/session-start') {
+                const providedToken = readHookToken(req);
+                if (providedToken !== hookToken) {
+                    logger.debug('[hookServer] Unauthorized hook request');
+                    res.writeHead(401, { 'Content-Type': 'text/plain' }).end('unauthorized');
+                    req.resume();
+                    return;
+                }
+
                 let timedOut = false;
                 const timeout = setTimeout(() => {
                     timedOut = true;
@@ -122,6 +145,7 @@ export async function startHookServer(options: HookServerOptions): Promise<HookS
 
             resolve({
                 port,
+                token: hookToken,
                 stop: () => {
                     server.close();
                     logger.debug('[hookServer] Stopped');

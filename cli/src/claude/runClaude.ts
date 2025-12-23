@@ -147,7 +147,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
     });
     logger.debug(`[START] Hook server started on port ${hookServer.port}`);
 
-    const hookSettingsPath = generateHookSettingsFile(hookServer.port);
+    const hookSettingsPath = generateHookSettingsFile(hookServer.port, hookServer.token);
     logger.debug(`[START] Generated hook settings file: ${hookSettingsPath}`);
 
     // Print log file path

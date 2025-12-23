@@ -30,14 +30,14 @@ function shellJoin(parts: string[]): string {
 /**
  * Generate a temporary settings file with SessionStart hook configuration.
  */
-export function generateHookSettingsFile(port: number): string {
+export function generateHookSettingsFile(port: number, token: string): string {
     const hooksDir = join(configuration.happyHomeDir, 'tmp', 'hooks');
     mkdirSync(hooksDir, { recursive: true });
 
     const filename = `session-hook-${process.pid}.json`;
     const filepath = join(hooksDir, filename);
 
-    const { command, args } = getHappyCliCommand(['hook-forwarder', String(port)]);
+    const { command, args } = getHappyCliCommand(['hook-forwarder', '--port', String(port), '--token', token]);
     const hookCommand = shellJoin([command, ...args]);
 
     const settings = {
