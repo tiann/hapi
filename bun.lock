@@ -11,10 +11,10 @@
       },
     },
     "cli": {
-      "name": "hapi",
+      "name": "@twsxtd/hapi",
       "version": "0.12.0-1",
       "bin": {
-        "hapi": "./src/index.ts",
+        "hapi": "bin/hapi.js",
       },
       "dependencies": {
         "@modelcontextprotocol/sdk": "^1.22.0",
@@ -48,6 +48,13 @@
         "tsx": "^4.20.6",
         "typescript": "^5",
         "vitest": "^3.2.4",
+      },
+      "optionalDependencies": {
+        "@twsxtd/hapi-darwin-arm64": "0.0.0-placeholder",
+        "@twsxtd/hapi-darwin-x64": "0.0.0-placeholder",
+        "@twsxtd/hapi-linux-arm64": "0.0.0-placeholder",
+        "@twsxtd/hapi-linux-x64": "0.0.0-placeholder",
+        "@twsxtd/hapi-win32-x64": "0.0.0-placeholder",
       },
     },
     "server": {
@@ -588,6 +595,8 @@
 
     "@tsconfig/node16": ["@tsconfig/node16@1.0.4", "", {}, "sha512-vxhUy4J8lyeyinH7Azl1pdd43GJhZH/tP2weN8TntQblOY+A0XbT8DJk1/oCPuOOyg/Ja757rG0CgHcWC8OfMA=="],
 
+    "@twsxtd/hapi": ["@twsxtd/hapi@workspace:cli"],
+
     "@types/babel__core": ["@types/babel__core@7.20.5", "", { "dependencies": { "@babel/parser": "^7.20.7", "@babel/types": "^7.20.7", "@types/babel__generator": "*", "@types/babel__template": "*", "@types/babel__traverse": "*" } }, "sha512-qoQprZvz5wQFJwMDqeseRXWv3rqMvhgpbXFfVyWhbx9X47POIA6i/+dXefEmZKoAgOaTdaIgNSMqMIU61yRyzA=="],
 
     "@types/babel__generator": ["@types/babel__generator@7.27.0", "", { "dependencies": { "@babel/types": "^7.0.0" } }, "sha512-ufFd2Xi92OAVPYsy+P4n7/U7e68fex0+Ee8gSG9KX7eo084CWiQ4sdxktvdl0bOPupXtVJPY19zk6EwWqUQ8lg=="],
@@ -1061,8 +1070,6 @@
     "graceful-fs": ["graceful-fs@4.2.11", "", {}, "sha512-RbJ5/jmFcNNCcDV5o9eTnBLJ/HszWV0P73bc+Ff4nS/rJj+YaS6IGyiOL0VoBYX+l1Wrl3k63h/KrH+nhJ0XvQ=="],
 
     "grammy": ["grammy@1.38.4", "", { "dependencies": { "@grammyjs/types": "3.22.2", "abort-controller": "^3.0.0", "debug": "^4.4.3", "node-fetch": "^2.7.0" } }, "sha512-z07Kin3HgRwMdy40KUs+c9fmNBvGlSxGwcqY8NAH0a8KULGFYEMQaFAo3ge0V5tvmgr02Jgubkf54KjHLAMCbw=="],
-
-    "hapi": ["hapi@workspace:cli"],
 
     "hapi-server": ["hapi-server@workspace:server"],
 

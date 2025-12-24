@@ -1,5 +1,5 @@
 {
-  "name": "hapi",
+  "name": "@twsxtd/hapi",
   "version": "0.12.0-1",
   "description": "Mobile and Web client for Claude Code and Codex",
   "author": "Kirill Dubovitskiy",
@@ -13,13 +13,23 @@
     "directory": "cli"
   },
   "bin": {
-    "hapi": "./src/index.ts"
+    "hapi": "bin/hapi.js"
   },
+  "files": [
+    "bin/hapi.js"
+  ],
   "imports": {
     "#embedded-assets": {
       "bun": "./src/runtime/embeddedAssets.bun.ts",
       "default": "./src/runtime/embeddedAssets.stub.ts"
     }
+  },
+  "optionalDependencies": {
+    "@twsxtd/hapi-darwin-arm64": "0.0.0-placeholder",
+    "@twsxtd/hapi-darwin-x64": "0.0.0-placeholder",
+    "@twsxtd/hapi-linux-arm64": "0.0.0-placeholder",
+    "@twsxtd/hapi-linux-x64": "0.0.0-placeholder",
+    "@twsxtd/hapi-win32-x64": "0.0.0-placeholder"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
@@ -27,6 +37,10 @@
     "build:exe:all": "bun run scripts/build-executable.ts --all",
     "build:exe:allinone": "bun run scripts/build-executable.ts --with-web-assets",
     "build:exe:allinone:all": "bun run scripts/build-executable.ts --with-web-assets --all",
+    "prepare-npm-packages": "bun run scripts/prepare-npm-packages.ts",
+    "prepack": "bun run prepare-npm-packages",
+    "publish-npm": "bun run scripts/publish-npm.ts",
+    "publish-npm:dry-run": "bun run scripts/publish-npm.ts --dry-run",
     "tools:unpack": "bun run scripts/unpack-tools.ts",
     "test": "tsx --env-file .env.integration-test node_modules/.bin/vitest run",
     "test:win": "vitest run",

@@ -10,6 +10,14 @@ oclif.manifest.json
 # Unpacked binaries (keep archives)
 /tools/unpacked/
 
+# Build outputs
+/dist-exe/
+
+# Generated npm platform packages (created by prepare-npm-packages.ts)
+/npm/*/package.json
+/npm/*/bin/hapi
+/npm/*/bin/hapi.exe
+
 
 
 pnpm-lock.yaml

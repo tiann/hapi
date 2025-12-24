@@ -1,6 +1,26 @@
-# Exclude unpacked binaries from npm package
-tools/unpacked/
+# npm package only needs bin/hapi.js (defined in package.json "files" field)
+# This file is kept for documentation purposes
 
-# Keep these for npm package
-# tools/archives/
-# tools/licenses/
+# Source code (not needed - binary distribution)
+src/
+scripts/
+tools/
+demo-project/
+
+# Build outputs
+dist-exe/
+npm/
+
+# Config files
+*.md
+!README.md
+.github/
+.release-it.*
+bunfig.toml
+tsconfig.json
+.env*
+
+# Test files
+**/*.test.ts
+**/__fixtures__/
+**/__tests__/
