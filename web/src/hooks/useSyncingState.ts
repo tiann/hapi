@@ -4,10 +4,11 @@ let lastHiddenTimestamp: number | null = null
 
 const MAX_SYNC_DURATION_MS = 10_000 // Auto-clear after 10 seconds
 const BACKGROUND_THRESHOLD_MS = 30_000 // Consider "returning from background" if hidden within 30s
+const DEBOUNCE_MS = 300 // Only show banner if sync takes longer than this
 
 export function useSyncingState() {
     const [isSyncing, setIsSyncing] = useState(false)
-    const endSyncTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+    const startDelayTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
     const maxDurationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
     useEffect(() => {
@@ -21,9 +22,9 @@ export function useSyncingState() {
     }, [])
 
     const clearAllTimeouts = useCallback(() => {
-        if (endSyncTimeoutRef.current) {
-            clearTimeout(endSyncTimeoutRef.current)
-            endSyncTimeoutRef.current = null
+        if (startDelayTimeoutRef.current) {
+            clearTimeout(startDelayTimeoutRef.current)
+            startDelayTimeoutRef.current = null
         }
         if (maxDurationTimeoutRef.current) {
             clearTimeout(maxDurationTimeoutRef.current)
@@ -33,16 +34,18 @@ export function useSyncingState() {
 
     const doStartSync = useCallback(() => {
         clearAllTimeouts()
-        setIsSyncing(true)
-        // Safety timeout: auto-clear after max duration to prevent stuck spinner
-        maxDurationTimeoutRef.current = setTimeout(() => {
-            setIsSyncing(false)
-        }, MAX_SYNC_DURATION_MS)
+        // Debounce: only show banner if sync takes longer than DEBOUNCE_MS
+        startDelayTimeoutRef.current = setTimeout(() => {
+            setIsSyncing(true)
+            // Safety timeout: auto-clear after max duration to prevent stuck spinner
+            maxDurationTimeoutRef.current = setTimeout(() => {
+                setIsSyncing(false)
+            }, MAX_SYNC_DURATION_MS)
+        }, DEBOUNCE_MS)
     }, [clearAllTimeouts])
 
     const startSync = useCallback((options?: { force?: boolean }) => {
         if (options?.force) {
-            // Force show syncing banner (for any reconnect)
             doStartSync()
             return
         }
@@ -53,9 +56,9 @@ export function useSyncingState() {
     }, [doStartSync])
 
     const endSync = useCallback(() => {
-        // Delay ending to avoid flicker
+        // Clear all timeouts - if still in debounce period, banner never shows
         clearAllTimeouts()
-        endSyncTimeoutRef.current = setTimeout(() => setIsSyncing(false), 300)
+        setIsSyncing(false)
     }, [clearAllTimeouts])
 
     useEffect(() => {
