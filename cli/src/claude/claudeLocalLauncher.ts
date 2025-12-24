@@ -80,11 +80,6 @@ export async function claudeLocalLauncher(session: Session): Promise<'switch' | 
             return 'switch';
         }
 
-        // Handle session start
-        const handleSessionStart = (sessionId: string) => {
-            session.onSessionFound(sessionId);
-        }
-
         // Run local mode
         while (true) {
             // If we already have an exit reason, return it
@@ -98,7 +93,6 @@ export async function claudeLocalLauncher(session: Session): Promise<'switch' | 
                 await claudeLocal({
                     path: session.path,
                     sessionId: session.sessionId,
-                    onSessionFound: handleSessionStart,
                     abort: processAbortController.signal,
                     claudeEnvVars: session.claudeEnvVars,
                     claudeArgs: session.claudeArgs,

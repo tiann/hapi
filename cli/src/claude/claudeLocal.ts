@@ -1,6 +1,5 @@
 import { spawn } from "node:child_process";
 import { mkdirSync } from "node:fs";
-import { randomUUID } from "node:crypto";
 import { logger } from "@/ui/logger";
 import { claudeCheckSession } from "./utils/claudeCheckSession";
 import { getProjectPath } from "./utils/path";
@@ -12,7 +11,6 @@ export async function claudeLocal(opts: {
     sessionId: string | null,
     mcpServers?: Record<string, any>,
     path: string,
-    onSessionFound: (id: string) => void,
     claudeEnvVars?: Record<string, string>,
     claudeArgs?: string[]
     allowedTools?: string[]
@@ -23,25 +21,17 @@ export async function claudeLocal(opts: {
     const projectDir = getProjectPath(opts.path);
     mkdirSync(projectDir, { recursive: true });
 
-    // Determine session ID strategy:
-    // - If resuming an existing session: use --resume (Claude keeps the same session ID)
-    // - If starting fresh: generate UUID and pass via --session-id
+    // Check if user passed explicit session control flags.
+    const hasContinueFlag = opts.claudeArgs?.includes('--continue');
+    const hasResumeFlag = opts.claudeArgs?.includes('--resume');
+    const hasUserSessionControl = Boolean(hasContinueFlag || hasResumeFlag);
+
+    // Determine session strategy:
+    // - If resuming an existing session: use --resume (unless user already supplied session control)
+    // - If starting fresh: let Claude create a new session ID (reported via SessionStart hook)
     let startFrom = opts.sessionId;
     if (opts.sessionId && !claudeCheckSession(opts.sessionId, opts.path)) {
         startFrom = null;
-    }
-
-    // Generate new session ID if not resuming
-    const newSessionId = startFrom ? null : randomUUID();
-    const effectiveSessionId = startFrom || newSessionId!;
-    
-    // Notify about session ID immediately (we know it upfront now!)
-    if (newSessionId) {
-        logger.debug(`[ClaudeLocal] Generated new session ID: ${newSessionId}`);
-        opts.onSessionFound(newSessionId);
-    } else {
-        logger.debug(`[ClaudeLocal] Resuming session: ${startFrom}`);
-        opts.onSessionFound(startFrom!);
     }
 
     // Spawn the process
@@ -51,12 +41,9 @@ export async function claudeLocal(opts: {
         await new Promise<void>((r, reject) => {
             const args: string[] = []
             
-            if (startFrom) {
-                // Resume existing session (Claude preserves the session ID)
+            if (startFrom && !hasUserSessionControl) {
+                // Resume existing session
                 args.push('--resume', startFrom)
-            } else {
-                // New session with our generated UUID
-                args.push('--session-id', newSessionId!)
             }
             
             args.push('--append-system-prompt', systemPrompt);
@@ -79,7 +66,7 @@ export async function claudeLocal(opts: {
             logger.debug(`[ClaudeLocal] Using hook settings: ${opts.hookSettingsPath}`);
 
             // Prepare environment variables
-            // Note: Local mode uses global Claude installation with --session-id flag
+            // Note: Local mode uses global Claude installation
             const env = {
                 ...process.env,
                 DISABLE_AUTOUPDATER: '1',
@@ -127,5 +114,5 @@ export async function claudeLocal(opts: {
         process.stdin.resume();
     }
 
-    return effectiveSessionId;
+    return startFrom ?? null;
 }
