@@ -13,8 +13,10 @@ export function useAppGoBack(): () => void {
             return
         }
 
+        // For session routes, navigate to parent path
         if (pathname.startsWith('/sessions/')) {
-            navigate({ to: '/sessions' })
+            const parentPath = pathname.replace(/\/[^/]+$/, '') || '/sessions'
+            navigate({ to: parentPath })
             return
         }
 
