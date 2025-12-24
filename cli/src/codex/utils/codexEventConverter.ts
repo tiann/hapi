@@ -41,6 +41,7 @@ export type CodexMessage = {
 export type CodexConversionResult = {
     sessionId?: string;
     message?: CodexMessage;
+    userMessage?: string;
 };
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -118,7 +119,15 @@ export function convertCodexEvent(rawEvent: unknown): CodexConversionResult | nu
         }
 
         if (eventType === 'user_message') {
-            return null;
+            const message = asString(payloadRecord.message)
+                ?? asString(payloadRecord.text)
+                ?? asString(payloadRecord.content);
+            if (!message) {
+                return null;
+            }
+            return {
+                userMessage: message
+            };
         }
 
         if (eventType === 'agent_message') {

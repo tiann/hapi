@@ -6,7 +6,7 @@ import { backoff } from '@/utils/time'
 import { AsyncLock } from '@/utils/lock'
 import type { RawJSONLines } from '@/claude/types'
 import { configuration } from '@/configuration'
-import type { AgentState, ClientToServerEvents, MessageContent, Metadata, ServerToClientEvents, Session, Update, UserMessage } from './types'
+import type { AgentState, ClientToServerEvents, MessageContent, MessageMeta, Metadata, ServerToClientEvents, Session, Update, UserMessage } from './types'
 import { AgentStateSchema, MetadataSchema, UserMessageSchema } from './types'
 import { RpcHandlerManager } from './rpc/RpcHandlerManager'
 import { registerCommonHandlers } from '../modules/common/registerCommonHandlers'
@@ -182,6 +182,29 @@ export class ApiSessionClient extends EventEmitter {
                 }
             }))
         }
+    }
+
+    sendUserMessage(text: string, meta?: MessageMeta): void {
+        if (!text) {
+            return
+        }
+
+        const content: MessageContent = {
+            role: 'user',
+            content: {
+                type: 'text',
+                text
+            },
+            meta: {
+                sentFrom: 'cli',
+                ...(meta ?? {})
+            }
+        }
+
+        this.socket.emit('message', {
+            sid: this.sessionId,
+            message: content
+        })
     }
 
     sendCodexMessage(body: unknown): void {

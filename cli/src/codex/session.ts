@@ -45,6 +45,10 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
         this.client.sendCodexMessage(message);
     };
 
+    sendUserMessage = (text: string): void => {
+        this.client.sendUserMessage(text);
+    };
+
     sendSessionEvent = (event: Parameters<ApiSessionClient['sendSessionEvent']>[0]): void => {
         this.client.sendSessionEvent(event);
     };

@@ -23,6 +23,15 @@ describe('convertCodexEvent', () => {
         });
     });
 
+    it('converts user_message events', () => {
+        const result = convertCodexEvent({
+            type: 'event_msg',
+            payload: { type: 'user_message', message: 'hello user' }
+        });
+
+        expect(result?.userMessage).toBe('hello user');
+    });
+
     it('converts reasoning events', () => {
         const result = convertCodexEvent({
             type: 'event_msg',

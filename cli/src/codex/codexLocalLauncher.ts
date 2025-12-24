@@ -17,6 +17,9 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
                 session.onSessionFound(converted.sessionId);
                 scanner.onNewSession(converted.sessionId);
             }
+            if (converted?.userMessage) {
+                session.sendUserMessage(converted.userMessage);
+            }
             if (converted?.message) {
                 session.sendCodexMessage(converted.message);
             }
