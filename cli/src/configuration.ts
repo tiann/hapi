@@ -27,8 +27,8 @@ class Configuration {
     public readonly isExperimentalEnabled: boolean
 
     constructor() {
-        // Bot server configuration
-        this.serverUrl = process.env.HAPI_BOT_URL || 'http://localhost:3006'
+        // Server configuration
+        this.serverUrl = process.env.HAPI_SERVER_URL || 'http://localhost:3006'
         this._cliApiToken = process.env.CLI_API_TOKEN || ''
 
         // Check if we're running as daemon based on process args

@@ -31,7 +31,7 @@ npx @twsxtd/hapi server
 
 ```bash
 # If the server is not on localhost:3006
-export HAPI_BOT_URL="https://your-domain.example"
+export HAPI_SERVER_URL="https://your-domain.example"
 
 npx @twsxtd/hapi
 ```

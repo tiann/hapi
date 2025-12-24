@@ -139,7 +139,7 @@ User interface components.
 hapi daemon start
 
 # With custom bot URL (for local development):
-HAPI_BOT_URL=http://localhost:3006 CLI_API_TOKEN=your_token hapi daemon start
+HAPI_SERVER_URL=http://localhost:3006 CLI_API_TOKEN=your_token hapi daemon start
 
 # Stop the daemon:
 hapi daemon stop

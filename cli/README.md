@@ -66,7 +66,7 @@ See `src/configuration.ts` for all options.
 ### Required
 
 - `CLI_API_TOKEN` - Shared secret; must match the server. Can be set via env or `~/.hapi/settings.json` (env wins).
-- `HAPI_BOT_URL` - Server base URL (default: http://localhost:3006).
+- `HAPI_SERVER_URL` - Server base URL (default: http://localhost:3006).
 
 ### Optional
 
