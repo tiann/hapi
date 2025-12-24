@@ -43,6 +43,7 @@ export function HappyThread(props: {
     onLoadMore: () => Promise<unknown>
     rawMessagesCount: number
     normalizedMessagesCount: number
+    renderedMessagesCount: number
 }) {
     const viewportRef = useRef<HTMLDivElement | null>(null)
     const topSentinelRef = useRef<HTMLDivElement | null>(null)
@@ -55,7 +56,7 @@ export function HappyThread(props: {
     // Smart scroll state: autoScroll enabled when user is near bottom
     const [autoScrollEnabled, setAutoScrollEnabled] = useState(true)
     const [newMessageCount, setNewMessageCount] = useState(0)
-    const prevNormalizedCountRef = useRef(props.normalizedMessagesCount)
+    const prevRenderedCountRef = useRef(props.renderedMessagesCount)
     const autoScrollEnabledRef = useRef(autoScrollEnabled)
     const newMessageCountRef = useRef(newMessageCount)
 
@@ -93,11 +94,11 @@ export function HappyThread(props: {
     // Track new messages when autoScroll is disabled
     const wasLoadingMoreRef = useRef(props.isLoadingMoreMessages)
     useEffect(() => {
-        const prevCount = prevNormalizedCountRef.current
-        const currentCount = props.normalizedMessagesCount
+        const prevCount = prevRenderedCountRef.current
+        const currentCount = props.renderedMessagesCount
         const wasLoadingMore = wasLoadingMoreRef.current
         wasLoadingMoreRef.current = props.isLoadingMoreMessages
-        prevNormalizedCountRef.current = currentCount
+        prevRenderedCountRef.current = currentCount
 
         // Skip during loading states
         if (props.isLoadingMoreMessages || props.isLoadingMessages) {
@@ -113,7 +114,7 @@ export function HappyThread(props: {
         if (newCount > 0 && !autoScrollEnabled) {
             setNewMessageCount((prev) => prev + newCount)
         }
-    }, [props.normalizedMessagesCount, props.isLoadingMoreMessages, props.isLoadingMessages, autoScrollEnabled])
+    }, [props.renderedMessagesCount, props.isLoadingMoreMessages, props.isLoadingMessages, autoScrollEnabled])
 
     // Scroll to bottom handler for the indicator button
     const scrollToBottom = useCallback(() => {
@@ -129,7 +130,7 @@ export function HappyThread(props: {
     useEffect(() => {
         setAutoScrollEnabled(true)
         setNewMessageCount(0)
-        prevNormalizedCountRef.current = 0
+        prevRenderedCountRef.current = 0
     }, [props.sessionId])
 
     const handleLoadMore = useCallback(() => {

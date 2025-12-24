@@ -159,6 +159,7 @@ export function SessionChat(props: {
                         onLoadMore={props.onLoadMore}
                         rawMessagesCount={props.messages.length}
                         normalizedMessagesCount={normalizedMessages.length}
+                        renderedMessagesCount={reconciled.blocks.length}
                     />
 
                     <HappyComposer
