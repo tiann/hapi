@@ -267,24 +267,29 @@ export function HappyThread(props: {
                                     ) : null}
 
                                     {props.hasMoreMessages && !props.isLoadingMessages ? (
-                                        <div className="mb-3">
-                                            <Button
-                                                variant="secondary"
-                                                size="sm"
-                                                onClick={handleLoadMore}
-                                                disabled={props.isLoadingMoreMessages || props.isLoadingMessages}
-                                                aria-busy={props.isLoadingMoreMessages}
-                                                className="gap-2"
-                                            >
-                                                {props.isLoadingMoreMessages ? (
-                                                    <>
-                                                        <Spinner size="sm" label={null} className="text-current" />
-                                                        Loading…
-                                                    </>
-                                                ) : (
-                                                    'Load older'
-                                                )}
-                                            </Button>
+                                        <div className="py-1 mb-2">
+                                            <div className="mx-auto w-fit">
+                                                <Button
+                                                    variant="outline"
+                                                    size="sm"
+                                                    onClick={handleLoadMore}
+                                                    disabled={props.isLoadingMoreMessages || props.isLoadingMessages}
+                                                    aria-busy={props.isLoadingMoreMessages}
+                                                    className="gap-1.5 text-xs opacity-80 hover:opacity-100"
+                                                >
+                                                    {props.isLoadingMoreMessages ? (
+                                                        <>
+                                                            <Spinner size="sm" label={null} className="text-current" />
+                                                            Loading…
+                                                        </>
+                                                    ) : (
+                                                        <>
+                                                            <span aria-hidden="true">↑</span>
+                                                            Load older
+                                                        </>
+                                                    )}
+                                                </Button>
+                                            </div>
                                         </div>
                                     ) : null}
 
