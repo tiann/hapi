@@ -52,6 +52,11 @@ export async function codexLocal(opts: {
 
     logger.debug(`[CodexLocal] Spawning codex with args: ${JSON.stringify(args)}`);
 
+    if (opts.abort.aborted) {
+        logger.debug('[CodexLocal] Abort already signaled before spawn; skipping launch');
+        return;
+    }
+
     process.stdin.pause();
     try {
         await new Promise<void>((resolve, reject) => {
@@ -95,6 +100,10 @@ export async function codexLocal(opts: {
 
             child.on('error', (error) => {
                 cleanupAbortHandler();
+                if (opts.abort.aborted) {
+                    resolve();
+                    return;
+                }
                 const message = error instanceof Error ? error.message : String(error);
                 reject(new Error(`Failed to spawn codex: ${message}. Is Codex CLI installed and on PATH?`, { cause: error }));
             });
