@@ -25,6 +25,19 @@
         <!-- Safari Pinned Tab -->
         <link rel="mask-icon" href="/mask-icon.svg" color="#111827" />
 
+        <!-- Prevent flash of white background on dark mode -->
+        <style>
+            html { background: #fff }
+            @media (prefers-color-scheme: dark) {
+                html { background: #1c1c1e; color-scheme: dark }
+            }
+        </style>
+        <script>
+            if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+                document.documentElement.setAttribute('data-theme', 'dark')
+            }
+        </script>
+
         <title>Hapi</title>
     </head>
     <body>
