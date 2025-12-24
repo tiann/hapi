@@ -13,30 +13,30 @@ Run Claude Code / Codex / Gemini sessions locally and control them remotely thro
 - Track session progress with todo lists.
 - Supports multiple AI backends: Claude Code, Codex, and Gemini.
 
-## Quickstart (single executable)
+## Quickstart
 
-1. Download the prebuilt `hapi` binary for your platform and put it on your PATH.
-
-2. Start the server on a machine you control:
+1. Start the server on a machine you control:
 
 ```bash
-hapi server
+npx @twsxtd/hapi server
 ```
 
-3. If the server has no public IP, expose it over HTTPS:
+> Alternatively, download the prebuilt binary from [Releases](https://github.com/tiann/hapi/releases) and run `hapi server`.
+
+2. If the server has no public IP, expose it over HTTPS:
    - Cloudflare Tunnel: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/
    - Tailscale: https://tailscale.com/kb/
 
-4. Run the CLI on the machine where you want sessions:
+3. Run the CLI on the machine where you want sessions:
 
 ```bash
 # If the server is not on localhost:3006
 export HAPI_BOT_URL="https://your-domain.example"
 
-hapi
+npx @twsxtd/hapi
 ```
 
-5. Open the UI in a browser at the server URL and log in with `CLI_API_TOKEN`.
+4. Open the UI in a browser at the server URL and log in with `CLI_API_TOKEN`.
 
 ## Telegram Mini App (optional)
 
@@ -65,9 +65,9 @@ ALLOWED_CHAT_IDS="12345678"
 
 ## Multi-agent support
 
-- `hapi` - Start a Claude Code session.
-- `hapi codex` - Start an OpenAI Codex session.
-- `hapi gemini` - Start a Google Gemini session.
+- `npx @twsxtd/hapi` - Start a Claude Code session.
+- `npx @twsxtd/hapi codex` - Start an OpenAI Codex session.
+- `npx @twsxtd/hapi gemini` - Start a Google Gemini session.
 
 ## CLI config file
 
