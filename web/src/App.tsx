@@ -88,11 +88,21 @@ export function App() {
     const selectedSessionId = sessionMatch ? sessionMatch.sessionId : null
     const { isSyncing, startSync, endSync } = useSyncingState()
     const syncTokenRef = useRef(0)
+    const isFirstConnectRef = useRef(true)
 
     const handleSseConnect = useCallback(() => {
         // Increment token to track this specific connection
         const token = ++syncTokenRef.current
-        startSync({ force: true })
+
+        // Only force show banner on first connect (page load)
+        // Subsequent connects (session switches) use non-forced mode
+        // which only shows banner when returning from background
+        if (isFirstConnectRef.current) {
+            isFirstConnectRef.current = false
+            startSync({ force: true })
+        } else {
+            startSync()
+        }
         const invalidations = [
             queryClient.invalidateQueries({ queryKey: queryKeys.sessions }),
             ...(selectedSessionId ? [
