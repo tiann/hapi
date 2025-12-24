@@ -18,6 +18,7 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const projectRoot = join(__dirname, '..');
+const repoRoot = join(projectRoot, '..');
 
 const PLATFORMS = [
     'darwin-arm64',
@@ -91,10 +92,10 @@ async function main(): Promise<void> {
         process.exit(1);
     }
 
-    // Build binaries
+    // Build binaries (includes web assets)
     if (!skipBuild) {
-        console.log('\n[2/5] Building binaries for all platforms...');
-        run('bun run build:exe:all');
+        console.log('\n[2/5] Building binaries for all platforms (with web assets)...');
+        run('bun run build:single-exe:all', repoRoot);
     } else {
         console.log('\n[2/5] Skipping build (--skip-build)');
         if (!checkBinariesExist()) {
