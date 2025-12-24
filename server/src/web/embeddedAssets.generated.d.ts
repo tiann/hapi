@@ -7,3 +7,8 @@ export interface EmbeddedWebAsset {
 }
 
 export const embeddedAssets: EmbeddedWebAsset[];
+
+declare module '*web/dist/*' {
+    const sourcePath: string;
+    export default sourcePath;
+}
