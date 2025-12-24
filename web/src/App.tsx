@@ -154,8 +154,8 @@ export function App() {
         return <LoginPrompt onLogin={setAccessToken} />
     }
 
-    // Authenticating
-    if (isAuthLoading) {
+    // Authenticating (also covers the gap before useAuth effect starts)
+    if (isAuthLoading || (authSource && !token && !authError)) {
         return (
             <div className="h-full flex items-center justify-center p-4">
                 <LoadingState label="Authorizing…" className="text-sm" />
