@@ -137,8 +137,10 @@ export function SessionChat(props: {
             />
 
             {controlsDisabled ? (
-                <div className="bg-[var(--app-subtle-bg)] p-3 text-sm text-[var(--app-hint)]">
-                    Session is inactive. Controls are disabled.
+                <div className="px-3 pt-3">
+                    <div className="mx-auto w-full max-w-content rounded-md bg-[var(--app-subtle-bg)] p-3 text-sm text-[var(--app-hint)]">
+                        Session is inactive. Controls are disabled.
+                    </div>
                 </div>
             ) : null}
 
