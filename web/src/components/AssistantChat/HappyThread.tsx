@@ -7,6 +7,7 @@ import { HappyAssistantMessage } from '@/components/AssistantChat/messages/Assis
 import { HappyUserMessage } from '@/components/AssistantChat/messages/UserMessage'
 import { HappySystemMessage } from '@/components/AssistantChat/messages/SystemMessage'
 import { Button } from '@/components/ui/button'
+import { Spinner } from '@/components/Spinner'
 
 function NewMessagesIndicator(props: { count: number; onClick: () => void }) {
     if (props.count === 0) {
@@ -20,6 +21,28 @@ function NewMessagesIndicator(props: { count: number; onClick: () => void }) {
         >
             {props.count} new message{props.count > 1 ? 's' : ''} &#8595;
         </button>
+    )
+}
+
+function MessageSkeleton() {
+    const rows = [
+        { align: 'end', width: 'w-2/3', height: 'h-10' },
+        { align: 'start', width: 'w-3/4', height: 'h-12' },
+        { align: 'end', width: 'w-1/2', height: 'h-9' },
+        { align: 'start', width: 'w-5/6', height: 'h-14' }
+    ]
+
+    return (
+        <div role="status" aria-live="polite">
+            <span className="sr-only">Loading messages…</span>
+            <div className="space-y-3 animate-pulse">
+                {rows.map((row, index) => (
+                    <div key={`skeleton-${index}`} className={row.align === 'end' ? 'flex justify-end' : 'flex justify-start'}>
+                        <div className={`${row.height} ${row.width} rounded-xl bg-[var(--app-subtle-bg)]`} />
+                    </div>
+                ))}
+            </div>
+        </div>
     )
 }
 
@@ -234,9 +257,7 @@ export function HappyThread(props: {
                         <div className="mx-auto w-full max-w-content min-w-0 p-3">
                             <div ref={topSentinelRef} className="h-px w-full" aria-hidden="true" />
                             {props.isLoadingMessages ? (
-                                <div className="text-sm text-[var(--app-hint)]">
-                                    Loading...
-                                </div>
+                                <MessageSkeleton />
                             ) : (
                                 <>
                                     {props.messagesWarning ? (
@@ -252,8 +273,17 @@ export function HappyThread(props: {
                                                 size="sm"
                                                 onClick={handleLoadMore}
                                                 disabled={props.isLoadingMoreMessages || props.isLoadingMessages}
+                                                aria-busy={props.isLoadingMoreMessages}
+                                                className="gap-2"
                                             >
-                                                {props.isLoadingMoreMessages ? 'Loading...' : 'Load older'}
+                                                {props.isLoadingMoreMessages ? (
+                                                    <>
+                                                        <Spinner size="sm" label={null} className="text-current" />
+                                                        Loading…
+                                                    </>
+                                                ) : (
+                                                    'Load older'
+                                                )}
                                             </Button>
                                         </div>
                                     ) : null}

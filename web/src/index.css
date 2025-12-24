@@ -9,6 +9,8 @@
     --app-link: var(--tg-theme-link-color, #111827);
     --app-button: var(--tg-theme-button-color, #111827);
     --app-button-text: var(--tg-theme-button-text-color, #ffffff);
+    --app-banner-bg: var(--tg-theme-button-color, #111827);
+    --app-banner-text: var(--tg-theme-button-text-color, #ffffff);
     --app-secondary-bg: var(--tg-theme-secondary-bg-color, #f3f4f6);
 
     /* Theme-aware colors (light mode defaults) */
@@ -51,6 +53,8 @@
     --app-link: var(--tg-theme-link-color, #ffffff);
     --app-button: var(--tg-theme-button-color, #ffffff);
     --app-button-text: var(--tg-theme-button-text-color, #111827);
+    --app-banner-bg: var(--tg-theme-button-color, #3A3A3C);
+    --app-banner-text: var(--tg-theme-button-text-color, #ffffff);
     --app-secondary-bg: var(--tg-theme-secondary-bg-color, #2C2C2E);
 
     --app-border: rgba(255, 255, 255, 0.1);

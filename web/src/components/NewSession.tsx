@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { ApiClient } from '@/api/client'
 import type { Machine } from '@/types/api'
 import { Button } from '@/components/ui/button'
+import { Spinner } from '@/components/Spinner'
 import { usePlatform } from '@/hooks/usePlatform'
 import { useSpawnSession } from '@/hooks/mutations/useSpawnSession'
 import { useRecentPaths } from '@/hooks/useRecentPaths'
@@ -117,7 +118,7 @@ export function NewSession(props: {
                     className="w-full rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] p-2 text-sm focus:outline-none focus:ring-2 focus:ring-[var(--app-link)] disabled:opacity-50"
                 >
                     {props.isLoading && (
-                        <option value="">Loading machines...</option>
+                        <option value="">Loading machines…</option>
                     )}
                     {!props.isLoading && props.machines.length === 0 && (
                         <option value="">No machines available</option>
@@ -212,8 +213,17 @@ export function NewSession(props: {
                 <Button
                     onClick={handleCreate}
                     disabled={!canCreate}
+                    aria-busy={isPending}
+                    className="gap-2"
                 >
-                    {isPending ? 'Creating...' : 'Create'}
+                    {isPending ? (
+                        <>
+                            <Spinner size="sm" label={null} className="text-[var(--app-button-text)]" />
+                            Creating…
+                        </>
+                    ) : (
+                        'Create'
+                    )}
                 </Button>
             </div>
         </div>

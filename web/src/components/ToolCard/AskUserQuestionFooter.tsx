@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { isAskUserQuestionToolName, parseAskUserQuestionInput, type AskUserQuestionQuestion } from '@/components/ToolCard/askUserQuestion'
 import { cn } from '@/lib/utils'
 import { usePlatform } from '@/hooks/usePlatform'
+import { Spinner } from '@/components/Spinner'
 
 function SelectionMark(props: { checked: boolean; mode: 'single' | 'multi' }) {
     const mark = props.mode === 'multi'
@@ -381,8 +382,17 @@ export function AskUserQuestionFooter(props: {
                             size="sm"
                             disabled={props.disabled || loading}
                             onClick={submit}
+                            aria-busy={loading}
+                            className="gap-2"
                         >
-                            {loading ? 'Submitting…' : 'Submit'}
+                            {loading ? (
+                                <>
+                                    <Spinner size="sm" label={null} className="text-[var(--app-button-text)]" />
+                                    Submitting…
+                                </>
+                            ) : (
+                                'Submit'
+                            )}
                         </Button>
                     )}
                 </div>

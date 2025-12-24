@@ -1,4 +1,5 @@
 import { useOnlineStatus } from '@/hooks/useOnlineStatus'
+import { Spinner } from '@/components/Spinner'
 
 export function SyncingBanner({ isSyncing }: { isSyncing: boolean }) {
     const isOnline = useOnlineStatus()
@@ -9,9 +10,9 @@ export function SyncingBanner({ isSyncing }: { isSyncing: boolean }) {
     }
 
     return (
-        <div className="fixed top-0 left-0 right-0 bg-[var(--app-button)] text-[var(--app-button-text)] text-center py-2 text-sm font-medium z-50 flex items-center justify-center gap-2">
-            <span className="inline-block animate-spin">&#8635;</span>
-            Syncing...
+        <div className="fixed top-0 left-0 right-0 bg-[var(--app-banner-bg)] text-[var(--app-banner-text)] text-center py-2 text-sm font-medium z-50 flex items-center justify-center gap-2 border-b border-[var(--app-divider)]">
+            <Spinner size="sm" label={null} className="text-[var(--app-banner-text)]" />
+            Syncing…
         </div>
     )
 }

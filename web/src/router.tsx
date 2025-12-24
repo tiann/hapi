@@ -12,6 +12,7 @@ import { App } from '@/App'
 import { SessionChat } from '@/components/SessionChat'
 import { SessionList } from '@/components/SessionList'
 import { NewSession } from '@/components/NewSession'
+import { LoadingState } from '@/components/LoadingState'
 import { useAppContext } from '@/lib/app-context'
 import { useAppGoBack } from '@/hooks/useAppGoBack'
 import { isTelegramApp } from '@/hooks/useTelegram'
@@ -99,8 +100,8 @@ function SessionPage() {
 
     if (!session) {
         return (
-            <div className="p-4 text-sm text-[var(--app-hint)]">
-                Loading session…
+            <div className="flex-1 flex items-center justify-center p-4">
+                <LoadingState label="Loading session…" className="text-sm" />
             </div>
         )
     }

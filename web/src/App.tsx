@@ -14,6 +14,7 @@ import { LoginPrompt } from '@/components/LoginPrompt'
 import { InstallPrompt } from '@/components/InstallPrompt'
 import { OfflineBanner } from '@/components/OfflineBanner'
 import { SyncingBanner } from '@/components/SyncingBanner'
+import { LoadingState } from '@/components/LoadingState'
 
 export function App() {
     const { authSource, isLoading: isAuthSourceLoading, setAccessToken } = useAuthSource()
@@ -142,8 +143,8 @@ export function App() {
     // Loading auth source
     if (isAuthSourceLoading) {
         return (
-            <div className="p-4">
-                <div className="text-sm text-[var(--app-hint)]">Loading…</div>
+            <div className="h-full flex items-center justify-center p-4">
+                <LoadingState label="Loading…" className="text-sm" />
             </div>
         )
     }
@@ -156,8 +157,8 @@ export function App() {
     // Authenticating
     if (isAuthLoading) {
         return (
-            <div className="p-4">
-                <div className="text-sm text-[var(--app-hint)]">Authorizing…</div>
+            <div className="h-full flex items-center justify-center p-4">
+                <LoadingState label="Authorizing…" className="text-sm" />
             </div>
         )
     }

@@ -80,6 +80,21 @@ function DiffDisplay(props: { diffContent: string }) {
     )
 }
 
+function FileContentSkeleton() {
+    const widths = ['w-full', 'w-11/12', 'w-5/6', 'w-3/4', 'w-2/3', 'w-4/5']
+
+    return (
+        <div role="status" aria-live="polite">
+            <span className="sr-only">Loading file…</span>
+            <div className="animate-pulse space-y-2 rounded-md border border-[var(--app-border)] bg-[var(--app-code-bg)] p-3">
+                {Array.from({ length: 12 }).map((_, index) => (
+                    <div key={`file-skeleton-${index}`} className={`h-3 ${widths[index % widths.length]} rounded bg-[var(--app-subtle-bg)]`} />
+                ))}
+            </div>
+        </div>
+    )
+}
+
 function resolveLanguage(path: string): string | undefined {
     const parts = path.split('.')
     if (parts.length <= 1) return undefined
@@ -229,7 +244,7 @@ export default function FilePage() {
                     {missingPath ? (
                         <div className="text-sm text-[var(--app-hint)]">No file path provided.</div>
                     ) : loading ? (
-                        <div className="text-sm text-[var(--app-hint)]">Loading file...</div>
+                        <FileContentSkeleton />
                     ) : fileError ? (
                         <div className="text-sm text-[var(--app-hint)]">{fileError}</div>
                     ) : binaryFile ? (

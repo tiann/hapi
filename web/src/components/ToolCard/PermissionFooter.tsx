@@ -3,6 +3,7 @@ import type { ApiClient } from '@/api/client'
 import type { SessionMetadataSummary } from '@/types/api'
 import type { ChatToolCall, ToolPermission } from '@/chat/types'
 import { usePlatform } from '@/hooks/usePlatform'
+import { Spinner } from '@/components/Spinner'
 
 function isObject(value: unknown): value is Record<string, unknown> {
     return Boolean(value) && typeof value === 'object'
@@ -63,15 +64,6 @@ function formatPermissionSummary(permission: ToolPermission, toolName: string, t
     return 'Permission'
 }
 
-function SpinnerIcon(props: { className?: string }) {
-    return (
-        <svg className={props.className ?? 'h-4 w-4 animate-spin'} viewBox="0 0 24 24" fill="none">
-            <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="2.5" opacity="0.25" />
-            <path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" opacity="0.75" />
-        </svg>
-    )
-}
-
 function PermissionRowButton(props: {
     label: string
     tone: 'allow' | 'deny' | 'neutral'
@@ -91,12 +83,13 @@ function PermissionRowButton(props: {
             type="button"
             className={`${base} ${tone}`}
             disabled={props.disabled}
+            aria-busy={props.loading === true}
             onClick={props.onClick}
         >
             <span className="flex-1">{props.label}</span>
             {props.loading ? (
                 <span className="ml-2 shrink-0">
-                    <SpinnerIcon />
+                    <Spinner size="sm" label={null} className="text-current" />
                 </span>
             ) : null}
         </button>

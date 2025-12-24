@@ -1,5 +1,6 @@
 import { useCallback, useState } from 'react'
 import { ApiClient } from '@/api/client'
+import { Spinner } from '@/components/Spinner'
 
 type LoginPromptProps = {
     onLogin: (token: string) => void
@@ -72,9 +73,17 @@ export function LoginPrompt(props: LoginPromptProps) {
                     <button
                         type="submit"
                         disabled={isLoading || !accessToken.trim()}
-                        className="w-full py-2.5 rounded-lg bg-[var(--app-button)] text-[var(--app-button-text)] font-medium disabled:opacity-50 hover:opacity-90 transition-opacity"
+                        aria-busy={isLoading}
+                        className="w-full py-2.5 rounded-lg bg-[var(--app-button)] text-[var(--app-button-text)] font-medium disabled:opacity-50 hover:opacity-90 transition-opacity inline-flex items-center justify-center gap-2"
                     >
-                        {isLoading ? 'Signing in...' : 'Sign In'}
+                        {isLoading ? (
+                            <>
+                                <Spinner size="sm" label={null} className="text-[var(--app-button-text)]" />
+                                Signing in…
+                            </>
+                        ) : (
+                            'Sign In'
+                        )}
                     </button>
                 </form>
 
