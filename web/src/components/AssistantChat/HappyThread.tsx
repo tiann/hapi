@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { ThreadPrimitive } from '@assistant-ui/react'
 import type { ApiClient } from '@/api/client'
 import type { SessionMetadataSummary } from '@/types/api'
@@ -7,6 +7,21 @@ import { HappyAssistantMessage } from '@/components/AssistantChat/messages/Assis
 import { HappyUserMessage } from '@/components/AssistantChat/messages/UserMessage'
 import { HappySystemMessage } from '@/components/AssistantChat/messages/SystemMessage'
 import { Button } from '@/components/ui/button'
+
+function NewMessagesIndicator(props: { count: number; onClick: () => void }) {
+    if (props.count === 0) {
+        return null
+    }
+
+    return (
+        <button
+            onClick={props.onClick}
+            className="absolute bottom-20 left-1/2 -translate-x-1/2 bg-[var(--app-button)] text-[var(--app-button-text)] px-3 py-1.5 rounded-full text-sm font-medium shadow-lg animate-bounce-in z-10"
+        >
+            {props.count} new message{props.count > 1 ? 's' : ''} &#8595;
+        </button>
+    )
+}
 
 const THREAD_MESSAGE_COMPONENTS = {
     UserMessage: HappyUserMessage,
@@ -36,6 +51,86 @@ export function HappyThread(props: {
     const prevLoadingMoreRef = useRef(false)
     const loadStartedRef = useRef(false)
     const isLoadingMoreRef = useRef(props.isLoadingMoreMessages)
+
+    // Smart scroll state: autoScroll enabled when user is near bottom
+    const [autoScrollEnabled, setAutoScrollEnabled] = useState(true)
+    const [newMessageCount, setNewMessageCount] = useState(0)
+    const prevNormalizedCountRef = useRef(props.normalizedMessagesCount)
+    const autoScrollEnabledRef = useRef(autoScrollEnabled)
+    const newMessageCountRef = useRef(newMessageCount)
+
+    // Keep refs in sync with state
+    useEffect(() => {
+        autoScrollEnabledRef.current = autoScrollEnabled
+    }, [autoScrollEnabled])
+    useEffect(() => {
+        newMessageCountRef.current = newMessageCount
+    }, [newMessageCount])
+
+    // Track scroll position to toggle autoScroll (stable listener using refs)
+    useEffect(() => {
+        const viewport = viewportRef.current
+        if (!viewport) return
+
+        const THRESHOLD_PX = 120
+
+        const handleScroll = () => {
+            const distanceFromBottom = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight
+            const isNearBottom = distanceFromBottom < THRESHOLD_PX
+
+            if (isNearBottom) {
+                if (!autoScrollEnabledRef.current) setAutoScrollEnabled(true)
+                if (newMessageCountRef.current > 0) setNewMessageCount(0)
+            } else {
+                if (autoScrollEnabledRef.current) setAutoScrollEnabled(false)
+            }
+        }
+
+        viewport.addEventListener('scroll', handleScroll, { passive: true })
+        return () => viewport.removeEventListener('scroll', handleScroll)
+    }, []) // Stable: no dependencies, reads from refs
+
+    // Track new messages when autoScroll is disabled
+    const wasLoadingMoreRef = useRef(props.isLoadingMoreMessages)
+    useEffect(() => {
+        const prevCount = prevNormalizedCountRef.current
+        const currentCount = props.normalizedMessagesCount
+        const wasLoadingMore = wasLoadingMoreRef.current
+        wasLoadingMoreRef.current = props.isLoadingMoreMessages
+        prevNormalizedCountRef.current = currentCount
+
+        // Skip during loading states
+        if (props.isLoadingMoreMessages || props.isLoadingMessages) {
+            return
+        }
+
+        // Skip if load-more just finished (older messages, not new ones)
+        if (wasLoadingMore) {
+            return
+        }
+
+        const newCount = currentCount - prevCount
+        if (newCount > 0 && !autoScrollEnabled) {
+            setNewMessageCount((prev) => prev + newCount)
+        }
+    }, [props.normalizedMessagesCount, props.isLoadingMoreMessages, props.isLoadingMessages, autoScrollEnabled])
+
+    // Scroll to bottom handler for the indicator button
+    const scrollToBottom = useCallback(() => {
+        const viewport = viewportRef.current
+        if (viewport) {
+            viewport.scrollTo({ top: viewport.scrollHeight, behavior: 'smooth' })
+        }
+        setAutoScrollEnabled(true)
+        setNewMessageCount(0)
+    }, [])
+
+    // Reset state when session changes
+    useEffect(() => {
+        setAutoScrollEnabled(true)
+        setNewMessageCount(0)
+        prevNormalizedCountRef.current = 0
+    }, [props.sessionId])
 
     const handleLoadMore = useCallback(() => {
         if (props.isLoadingMessages || !props.hasMoreMessages || props.isLoadingMoreMessages || loadLockRef.current) {
@@ -132,8 +227,8 @@ export function HappyThread(props: {
             onRefresh: props.onRefresh,
             onRetryMessage: props.onRetryMessage
         }}>
-            <ThreadPrimitive.Root className="flex min-h-0 flex-1 flex-col">
-                <ThreadPrimitive.Viewport asChild autoScroll>
+            <ThreadPrimitive.Root className="flex min-h-0 flex-1 flex-col relative">
+                <ThreadPrimitive.Viewport asChild autoScroll={autoScrollEnabled}>
                     <div ref={viewportRef} className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
                         <div className="mx-auto w-full max-w-content min-w-0 p-3">
                             <div ref={topSentinelRef} className="h-px w-full" aria-hidden="true" />
@@ -175,6 +270,7 @@ export function HappyThread(props: {
                         </div>
                     </div>
                 </ThreadPrimitive.Viewport>
+                <NewMessagesIndicator count={newMessageCount} onClick={scrollToBottom} />
             </ThreadPrimitive.Root>
         </HappyChatProvider>
     )

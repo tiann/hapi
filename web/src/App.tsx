@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo } from 'react'
+import { useCallback, useEffect, useMemo, useRef } from 'react'
 import { Outlet, useLocation, useMatchRoute } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
 import { getTelegramWebApp } from '@/hooks/useTelegram'
@@ -6,12 +6,14 @@ import { initializeTheme } from '@/hooks/useTheme'
 import { useAuth } from '@/hooks/useAuth'
 import { useAuthSource } from '@/hooks/useAuthSource'
 import { useSSE } from '@/hooks/useSSE'
+import { useSyncingState } from '@/hooks/useSyncingState'
 import { queryKeys } from '@/lib/query-keys'
 import { AppContextProvider } from '@/lib/app-context'
 import { useAppGoBack } from '@/hooks/useAppGoBack'
 import { LoginPrompt } from '@/components/LoginPrompt'
 import { InstallPrompt } from '@/components/InstallPrompt'
 import { OfflineBanner } from '@/components/OfflineBanner'
+import { SyncingBanner } from '@/components/SyncingBanner'
 
 export function App() {
     const { authSource, isLoading: isAuthSourceLoading, setAccessToken } = useAuthSource()
@@ -84,14 +86,31 @@ export function App() {
     const queryClient = useQueryClient()
     const sessionMatch = matchRoute({ to: '/sessions/$sessionId' })
     const selectedSessionId = sessionMatch ? sessionMatch.sessionId : null
+    const { isSyncing, startSync, endSync } = useSyncingState()
+    const syncTokenRef = useRef(0)
 
     const handleSseConnect = useCallback(() => {
-        void queryClient.invalidateQueries({ queryKey: queryKeys.sessions })
-        if (selectedSessionId) {
-            void queryClient.invalidateQueries({ queryKey: queryKeys.session(selectedSessionId) })
-            void queryClient.invalidateQueries({ queryKey: queryKeys.messages(selectedSessionId) })
-        }
-    }, [queryClient, selectedSessionId])
+        // Increment token to track this specific connection
+        const token = ++syncTokenRef.current
+        startSync({ force: true })
+        const invalidations = [
+            queryClient.invalidateQueries({ queryKey: queryKeys.sessions }),
+            ...(selectedSessionId ? [
+                queryClient.invalidateQueries({ queryKey: queryKeys.session(selectedSessionId) }),
+                queryClient.invalidateQueries({ queryKey: queryKeys.messages(selectedSessionId) })
+            ] : [])
+        ]
+        Promise.all(invalidations)
+            .catch((error) => {
+                console.error('Failed to invalidate queries on SSE connect:', error)
+            })
+            .finally(() => {
+                // Only end sync if this is still the latest connection
+                if (syncTokenRef.current === token) {
+                    endSync()
+                }
+            })
+    }, [queryClient, selectedSessionId, startSync, endSync])
 
     const handleSseEvent = useCallback(() => {}, [])
 
@@ -161,6 +180,7 @@ export function App() {
 
     return (
         <AppContextProvider value={{ api, token }}>
+            <SyncingBanner isSyncing={isSyncing} />
             <OfflineBanner />
             <div className="h-full flex flex-col">
                 <Outlet />
