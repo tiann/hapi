@@ -3,8 +3,8 @@
     "private": true,
     "version": "0.1.0",
     "description": "Telegram Bot client for HAPI - control Claude Code sessions",
-    "author": "Kirill Dubovitskiy",
-    "license": "MIT",
+    "author": "weishu",
+    "license": "LGPL",
     "type": "module",
     "scripts": {
         "start": "bun run src/index.ts",

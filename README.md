@@ -8,18 +8,17 @@ Run Claude Code / Codex / Coding Agent sessions locally and control them remotel
 
 1. Download the prebuilt `hapi` binary for your platform and put it on your PATH.
 
-2. Start the server on a machine you control:
+2. Start the server on a machine you control: `hapi server`
 
-```bash
-export CLI_API_TOKEN="shared-secret"
-export WEBAPP_URL="https://your-domain.example"   # required for Telegram Mini App
-export TELEGRAM_BOT_TOKEN="..."
-export ALLOWED_CHAT_IDS="12345678"
+Optional for telegram, add a `.env` file and then start server:
 
-hapi server
+```
+WEBAPP_URL="https://your-domain.example"   # required for Telegram Mini App
+TELEGRAM_BOT_TOKEN="..."
+ALLOWED_CHAT_IDS="12345678"
 ```
 
-If you only want the web app + CLI, you can skip TELEGRAM_BOT_TOKEN and ALLOWED_CHAT_IDS.
+If you only want the web app + CLI, you can skip these vars.
 To enable Telegram later, set TELEGRAM_BOT_TOKEN and WEBAPP_URL, start the server, send `/start`
 to the bot to get your chat ID, set ALLOWED_CHAT_IDS, and restart the server.
 
@@ -37,8 +36,6 @@ export HAPI_BOT_URL="https://your-domain.example"
 hapi
 ```
 
-The CLI will prompt for `CLI_API_TOKEN` and save it locally.
-
 5. Open the UI:
 - In Telegram, run `/app` in the bot chat.
 - In a browser, open `WEBAPP_URL` and log in with `CLI_API_TOKEN`.
@@ -46,13 +43,6 @@ The CLI will prompt for `CLI_API_TOKEN` and save it locally.
 ## CLI config file
 You can store the token in `~/.hapi/settings.json` instead of an env var.
 Environment variables take priority over the file.
-
-Example:
-```json
-{
-    "cliApiToken": "shared-secret"
-}
-```
 
 ## Requirements
 - Claude CLI installed and logged in (`claude` on PATH).
@@ -70,13 +60,12 @@ Build a single binary with embedded web assets:
 bun run build:single-exe
 ```
 
-Build CLI-only binaries:
-```bash
-bun run build:cli:exe
-bun run build:cli:exe:all
-```
-
 ## Docs
 - `cli/README.md` - CLI usage and config
 - `server/README.md` - server setup and architecture
 - `web/README.md` - web app behavior and dev workflow
+
+## License
+
+- cli: MIT
+- others: LGPLv2

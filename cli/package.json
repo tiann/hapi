@@ -1,15 +1,15 @@
 {
   "name": "@twsxtd/hapi",
-  "version": "0.12.0-1",
-  "description": "Mobile and Web client for Claude Code and Codex",
-  "author": "Kirill Dubovitskiy",
+  "version": "0.1.0",
+  "description": "App for agentic coding - access coding agent anywhere",
+  "author": "Kirill Dubovitskiy & weishu",
   "license": "MIT",
   "type": "module",
-  "homepage": "https://github.com/user/hapi",
-  "bugs": "https://github.com/user/hapi/issues",
+  "homepage": "https://github.com/tiann/hapi",
+  "bugs": "https://github.com/tiann/hapi/issues",
   "repository": {
     "type": "git",
-    "url": "https://github.com/user/hapi",
+    "url": "https://github.com/tiann/hapi",
     "directory": "cli"
   },
   "bin": {
