@@ -341,7 +341,7 @@ export function formatSessionNotification(
 
     switch (eventType) {
         case 'permission': {
-            title = '🔔 Permission Request'
+            title = 'Permission Request'
             const requests = session.agentState?.requests
             if (requests) {
                 const reqId = Object.keys(requests)[0]
@@ -389,14 +389,14 @@ export function createNotificationKeyboard(session: Session): InlineKeyboard {
         keyboard.row()
 
         keyboard.webApp(
-            '📱 Details',
+            'Details',
             buildMiniAppDeepLink(configuration.miniAppUrl, `session_${session.id}`)
         )
         return keyboard
     }
 
     keyboard.webApp(
-        '📱 Open Session',
+        'Open Session',
         buildMiniAppDeepLink(configuration.miniAppUrl, `session_${session.id}`)
     )
     return keyboard

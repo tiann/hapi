@@ -7,7 +7,7 @@
 
 import { Bot, Context, NextFunction, InlineKeyboard } from 'grammy'
 import { SyncEngine, SyncEvent, Session } from '../sync/syncEngine'
-import { getSessionName, truncate } from './renderer'
+import { getSessionName } from './renderer'
 import {
     handleCallback,
     CallbackContext,
@@ -311,27 +311,7 @@ export class HappyBot {
                 return
             }
 
-            if (eventType === 'switch') {
-                const mode = messageContent?.data?.mode === 'local' ? 'local' : 'remote'
-                this.sendSwitchNotification(event.sessionId, mode).catch((error) => {
-                    console.error('[HAPIBot] Failed to send switch notification:', error)
-                })
-                return
-            }
 
-            const role = typeof message?.role === 'string' ? message.role : null
-            if (role !== 'assistant' && role !== 'agent') {
-                return
-            }
-
-            const preview = this.extractMessagePreview(message)
-            if (!preview) {
-                return
-            }
-
-            this.sendMessageNotification(event.sessionId, preview).catch((error) => {
-                console.error('[HAPIBot] Failed to send message notification:', error)
-            })
         }
     }
 
@@ -344,7 +324,7 @@ export class HappyBot {
     }
 
     /**
-     * Send a push notification when Claude is ready for input.
+     * Send a push notification when agent is ready for input.
      */
     private async sendReadyNotification(sessionId: string): Promise<void> {
         const session = this.getNotifiableSession(sessionId)
@@ -359,91 +339,26 @@ export class HappyBot {
         }
         this.lastReadyNotificationAt.set(sessionId, now)
 
-        const name = getSessionName(session)
+        // Get agent name from flavor
+        const flavor = session.metadata?.flavor
+        const agentName = flavor === 'claude' ? 'Claude'
+                        : flavor === 'codex' ? 'Codex'
+                        : flavor === 'gemini' ? 'Gemini'
+                        : 'Agent'
 
         const url = buildMiniAppDeepLink(this.miniAppUrl, `session_${sessionId}`)
         const keyboard = new InlineKeyboard()
-            .webApp('📱 Open Session', url)
+            .webApp('Open Session', url)
 
         for (const chatId of this.allowedChatIds) {
             await this.bot.api.sendMessage(
                 chatId,
-                `✅ ${name} is ready\n\nClaude is waiting for your next message.`,
+                `It's ready!\n\n${agentName} is waiting for your command`,
                 { reply_markup: keyboard }
             )
         }
     }
 
-    private async sendSwitchNotification(sessionId: string, mode: 'local' | 'remote'): Promise<void> {
-        const session = this.getNotifiableSession(sessionId)
-        if (!session) {
-            return
-        }
-        const name = getSessionName(session)
-
-        const url = buildMiniAppDeepLink(this.miniAppUrl, `session_${sessionId}`)
-        const keyboard = new InlineKeyboard()
-            .webApp('📱 Details', url)
-
-        for (const chatId of this.allowedChatIds) {
-            await this.bot.api.sendMessage(
-                chatId,
-                `🔄 ${name} switched to ${mode}`,
-                { reply_markup: keyboard }
-            )
-        }
-    }
-
-    private async sendMessageNotification(sessionId: string, previewText: string): Promise<void> {
-        const session = this.getNotifiableSession(sessionId)
-        if (!session) {
-            return
-        }
-        const name = getSessionName(session)
-
-        const url = buildMiniAppDeepLink(this.miniAppUrl, `session_${sessionId}`)
-        const keyboard = new InlineKeyboard()
-            .webApp('📱 Open Session', url)
-
-        const body = truncate(previewText, 600)
-
-        for (const chatId of this.allowedChatIds) {
-            await this.bot.api.sendMessage(
-                chatId,
-                `💬 ${name}\n\n${body}`,
-                { reply_markup: keyboard }
-            )
-        }
-    }
-
-    private extractMessagePreview(message: any): string | null {
-        const messageContent = message?.content
-
-        if (typeof messageContent === 'string') {
-            return messageContent.trim() || null
-        }
-
-        if (!messageContent || typeof messageContent !== 'object') {
-            return null
-        }
-
-        if (messageContent.type === 'text' && typeof messageContent.text === 'string') {
-            return messageContent.text.trim() || null
-        }
-
-        if (Array.isArray(messageContent)) {
-            const textBlocks = messageContent
-                .filter((block: any) => block?.type === 'text' && typeof block.text === 'string')
-                .map((block: any) => block.text)
-                .filter((text: string) => text.trim().length > 0)
-
-            if (textBlocks.length > 0) {
-                return textBlocks.join('\n')
-            }
-        }
-
-        return null
-    }
 
     /**
      * Check if session has new permission requests and send notification
