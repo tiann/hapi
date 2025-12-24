@@ -17,7 +17,9 @@
         "typecheck:server": "cd server && bun run typecheck",
         "typecheck:web": "cd web && bun run typecheck",
         "test": "cd cli && bun run test",
-        "clean-session": "bun run server/scripts/cleanup-sessions.ts"
+        "clean-session": "bun run server/scripts/cleanup-sessions.ts",
+        "publish-npm": "cd cli && bun run publish-npm",
+        "publish-npm:dry-run": "cd cli && bun run publish-npm:dry-run"
     },
     "devDependencies": {
         "concurrently": "^9.2.1",

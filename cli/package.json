@@ -25,11 +25,11 @@
     }
   },
   "optionalDependencies": {
-    "@twsxtd/hapi-darwin-arm64": "0.0.0-placeholder",
-    "@twsxtd/hapi-darwin-x64": "0.0.0-placeholder",
-    "@twsxtd/hapi-linux-arm64": "0.0.0-placeholder",
-    "@twsxtd/hapi-linux-x64": "0.0.0-placeholder",
-    "@twsxtd/hapi-win32-x64": "0.0.0-placeholder"
+    "@twsxtd/hapi-darwin-arm64": "0.1.0",
+    "@twsxtd/hapi-darwin-x64": "0.1.0",
+    "@twsxtd/hapi-linux-arm64": "0.1.0",
+    "@twsxtd/hapi-linux-x64": "0.1.0",
+    "@twsxtd/hapi-win32-x64": "0.1.0"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

@@ -85,10 +85,6 @@ async function selectEmbeddedAssets(): Promise<EmbeddedAsset[]> {
         ];
     }
 
-    if (feature('HAPI_TARGET_WIN32_ARM64')) {
-        throw new Error('Windows arm64 archives are missing; add arm64 tool archives before building.');
-    }
-
     throw new Error('No build target feature flag set. Build with --feature=HAPI_TARGET_*.');
 }
 

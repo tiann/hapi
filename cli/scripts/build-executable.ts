@@ -7,8 +7,7 @@ const DEFAULT_TARGETS = [
     'bun-darwin-arm64',
     'bun-linux-x64',
     'bun-linux-arm64',
-    'bun-windows-x64',
-    'bun-windows-arm64'
+    'bun-windows-x64'
 ];
 const SUPPORTED_PLATFORMS = new Set(['darwin', 'linux', 'windows']);
 const SUPPORTED_ARCHES = new Set(['x64', 'arm64']);
@@ -99,9 +98,6 @@ function getPlatformDir(platform: string, arch: string): string {
     }
 
     if (platform === 'win32') {
-        if (arch !== 'x64') {
-            throw new Error('Windows arm64 archives are missing; add arm64 tool archives before building.');
-        }
         return 'x64-win32';
     }
 
