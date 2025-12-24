@@ -15,19 +15,16 @@ Short guide for AI agents in this repo. Prefer progressive loading: start with t
 - `localdocs/` (optional deep dives)
 
 ## Shared rules
+- No backward compatibility: breaking old format freely.
 - TypeScript strict; no untyped code.
 - Bun workspaces; run `bun` commands from repo root.
 - Path alias `@/*` maps to `./src/*` per package.
-- No backward compatibility: breaking format changes are allowed.
 - Prefer 4-space indentation.
 
 ## Common commands (repo root)
-    bun run build
-    bun run build:single-exe
-    bun run typecheck
-    bun run dev:server
-    bun run dev:web
-    bun run test
+
+- `bun typecheck`
+- `bun run test`
 
 ## Key source dirs
 - `cli/src/api/`, `cli/src/claude/`, `cli/src/commands/`, `cli/src/codex/`

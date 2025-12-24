@@ -6,8 +6,6 @@ import { useSwitchControls, type ConfirmationMode, type ActionInProgress } from 
 
 type Key = {
     ctrl?: boolean;
-    name?: string;
-    sequence?: string;
 };
 
 type SwitchState = {
@@ -27,24 +25,24 @@ vi.mock('ink', async () => {
     };
 });
 
+type TtyWriteStream = NodeJS.WriteStream & {
+    isTTY?: boolean;
+    columns?: number;
+    rows?: number;
+};
+
+type TtyReadStream = NodeJS.ReadStream & {
+    isTTY?: boolean;
+};
+
 const createInkStreams = (): {
     stdout: NodeJS.WriteStream;
     stderr: NodeJS.WriteStream;
     stdin: NodeJS.ReadStream;
 } => {
-    const stdout = new PassThrough() as NodeJS.WriteStream & {
-        isTTY?: boolean;
-        columns?: number;
-        rows?: number;
-    };
-    const stderr = new PassThrough() as NodeJS.WriteStream & {
-        isTTY?: boolean;
-        columns?: number;
-        rows?: number;
-    };
-    const stdin = new PassThrough() as NodeJS.ReadStream & {
-        isTTY?: boolean;
-    };
+    const stdout = new PassThrough() as unknown as TtyWriteStream;
+    const stderr = new PassThrough() as unknown as TtyWriteStream;
+    const stdin = new PassThrough() as unknown as TtyReadStream;
 
     Object.assign(stdout, { isTTY: true, columns: 80, rows: 24 });
     Object.assign(stderr, { isTTY: true, columns: 80, rows: 24 });
@@ -143,10 +141,11 @@ describe('useSwitchControls', () => {
             vi.runOnlyPendingTimers();
         });
         if (renderer) {
+            const activeRenderer = renderer;
             await act(async () => {
-                renderer.unmount();
+                activeRenderer.unmount();
             });
-            renderer.cleanup();
+            activeRenderer.cleanup();
             renderer = null;
         }
         vi.useRealTimers();
@@ -158,7 +157,7 @@ describe('useSwitchControls', () => {
         const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
         await mount({ onSwitch });
 
-        await triggerInput(' ', { name: 'space' });
+        await triggerInput(' ', {});
         expect(latestState?.confirmationMode).toBe('switch');
         expect(latestState?.actionInProgress).toBe(null);
         expect(onSwitch).not.toHaveBeenCalled();
@@ -187,10 +186,10 @@ describe('useSwitchControls', () => {
         const onSwitch = vi.fn();
         await mount({ onSwitch });
 
-        await triggerInput(' ', { name: 'space' });
+        await triggerInput(' ', {});
         expect(latestState?.confirmationMode).toBe('switch');
 
-        await triggerInput('', { sequence: '\u001b[1:3u' });
+        await triggerInput('\u001b[1:3u', {});
         expect(latestState?.confirmationMode).toBe('switch');
         expect(latestState?.actionInProgress).toBe(null);
     });
@@ -199,7 +198,7 @@ describe('useSwitchControls', () => {
         const onSwitch = vi.fn();
         await mount({ onSwitch });
 
-        await triggerInput('', { sequence: '\u001b[3:3u', name: 'space' });
+        await triggerInput('\u001b[3:3u', {});
         expect(onSwitch).not.toHaveBeenCalled();
         expect(latestState?.confirmationMode).toBe(null);
     });
@@ -208,7 +207,7 @@ describe('useSwitchControls', () => {
         const onSwitch = vi.fn();
         await mount({ onSwitch });
 
-        await triggerInput(' ', { name: 'space' });
+        await triggerInput(' ', {});
         expect(latestState?.confirmationMode).toBe('switch');
 
         await advanceTimers(5000);
