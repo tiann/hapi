@@ -161,8 +161,6 @@ export interface QueryOptions {
     customSystemPrompt?: string
     cwd?: string
     disallowedTools?: string[]
-    executable?: string
-    executableArgs?: string[]
     maxTurns?: number
     mcpServers?: Record<string, unknown>
     pathToClaudeCodeExecutable?: string

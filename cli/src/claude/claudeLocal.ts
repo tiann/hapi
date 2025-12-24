@@ -80,7 +80,7 @@ export async function claudeLocal(opts: {
                 stdio: ['inherit', 'inherit', 'inherit'],
                 signal: opts.abort,
                 cwd: opts.path,
-                env: withBunRuntimeEnv(env),
+                env: withBunRuntimeEnv(env, { allowBunBeBun: false }),
                 shell: process.platform === 'win32'
             });
             let settled = false;

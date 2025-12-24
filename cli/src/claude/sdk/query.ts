@@ -263,8 +263,6 @@ export function query(config: {
             customSystemPrompt,
             cwd,
             disallowedTools = [],
-            executable = process.execPath,
-            executableArgs = [],
             maxTurns,
             mcpServers,
             pathToClaudeCodeExecutable = getDefaultClaudeCodePath(),
@@ -323,10 +321,8 @@ export function query(config: {
     }
 
     // Determine how to spawn Claude Code
-    // - If it's a .js/.cjs file → spawn(current runtime, [path, ...args])
     // - If it's just 'claude' command → spawn('claude', args) with shell on Windows
-    // - If it's a full path to binary → spawn(path, args)
-    const isJsFile = pathToClaudeCodeExecutable.endsWith('.js') || pathToClaudeCodeExecutable.endsWith('.cjs')
+    // - If it's a full path to binary or script → spawn(path, args)
     const isCommandOnly = pathToClaudeCodeExecutable === 'claude'
     
     // Validate executable path (skip for command-only mode)
@@ -334,15 +330,13 @@ export function query(config: {
         throw new ReferenceError(`Claude Code executable not found at ${pathToClaudeCodeExecutable}. Is options.pathToClaudeCodeExecutable set?`)
     }
 
-    const spawnCommand = isJsFile ? executable : pathToClaudeCodeExecutable
-    const spawnArgs = isJsFile 
-        ? [...executableArgs, pathToClaudeCodeExecutable, ...args]
-        : args
+    const spawnCommand = pathToClaudeCodeExecutable
+    const spawnArgs = args
 
     // Spawn Claude Code process
     // Use clean env for global claude to avoid local node_modules/.bin taking precedence
     const baseEnv = isCommandOnly ? getCleanEnv() : process.env
-    const spawnEnv = withBunRuntimeEnv(baseEnv)
+    const spawnEnv = withBunRuntimeEnv(baseEnv, { allowBunBeBun: false })
     logDebug(`Spawning Claude Code process: ${spawnCommand} ${spawnArgs.join(' ')} (using ${isCommandOnly ? 'clean' : 'normal'} env)`)
 
     const child = spawn(spawnCommand, spawnArgs, {
@@ -350,8 +344,8 @@ export function query(config: {
         stdio: ['pipe', 'pipe', 'pipe'],
         signal: config.options?.abort,
         env: spawnEnv,
-        // Use shell on Windows for global binaries and command-only mode
-        shell: !isJsFile && process.platform === 'win32'
+        // Use shell on Windows for command resolution
+        shell: process.platform === 'win32'
     }) as ChildProcessWithoutNullStreams
 
     // Handle stdin

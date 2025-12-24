@@ -44,8 +44,6 @@ Optional:
 - `HAPI_EXPERIMENTAL` - enable experimental features (true/1/yes)
 - `HAPI_HTTP_MCP_URL` - default MCP target for `hapi mcp`
 - `HAPI_CLAUDE_PATH` - path to a specific `claude` executable
-- `HAPI_USE_BUNDLED_CLAUDE` - set to 1 to prefer node_modules claude
-- `HAPI_USE_GLOBAL_CLAUDE` - set to 1 to prefer global claude
 
 ## Requirements
 - Claude CLI installed and logged in (`claude` on PATH).

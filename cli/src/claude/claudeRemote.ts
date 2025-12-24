@@ -120,7 +120,6 @@ export async function claudeRemote(opts: {
         allowedTools: initial.mode.allowedTools ? initial.mode.allowedTools.concat(opts.allowedTools) : opts.allowedTools,
         disallowedTools: initial.mode.disallowedTools,
         canCallTool: (toolName: string, input: unknown, options: { signal: AbortSignal }) => opts.canCallTool(toolName, input, mode, options),
-        executable: process.execPath,
         abort: opts.signal,
         pathToClaudeCodeExecutable: 'claude',
         settingsPath: opts.hookSettingsPath,
