@@ -1,24 +1,17 @@
 /**
  * Telegram Bot for HAPI
  *
- * Main bot class that initializes grammy, applies middleware,
- * and sets up command handlers.
+ * Simplified bot that only handles notifications (permission requests and ready events).
+ * All interactive features are handled by the Telegram Mini App.
  */
 
 import { Bot, Context, NextFunction, InlineKeyboard } from 'grammy'
 import { SyncEngine, SyncEvent, Session } from '../sync/syncEngine'
-import { getSessionName } from './renderer'
-import {
-    handleCallback,
-    CallbackContext,
-} from './callbacks'
-import {
-    formatSessionNotification,
-    createNotificationKeyboard
-} from './sessionView'
+import { handleCallback, CallbackContext } from './callbacks'
+import { formatSessionNotification, createNotificationKeyboard } from './sessionView'
 
 export interface BotContext extends Context {
-    // Extended context for future use (session state, etc.)
+    // Extended context for future use
 }
 
 export interface HappyBotConfig {
@@ -29,7 +22,7 @@ export interface HappyBotConfig {
 }
 
 /**
- * HAPI Telegram Bot
+ * HAPI Telegram Bot - Notification-only mode
  */
 export class HappyBot {
     private bot: Bot<BotContext>
@@ -40,13 +33,13 @@ export class HappyBot {
     private readonly allowlistConfigured: boolean
 
     // Track last known permission requests per session to detect new ones
-    private lastKnownRequests: Map<string, Set<string>> = new Map() // sessionId -> requestIds
+    private lastKnownRequests: Map<string, Set<string>> = new Map()
 
     // Debounce timers for notifications
-    private notificationDebounce: Map<string, NodeJS.Timeout> = new Map() // sessionId -> timer
+    private notificationDebounce: Map<string, NodeJS.Timeout> = new Map()
 
     // Track ready notifications to avoid spam
-    private lastReadyNotificationAt: Map<string, number> = new Map() // sessionId -> timestamp
+    private lastReadyNotificationAt: Map<string, number> = new Map()
 
     // Unsubscribe function for sync events
     private unsubscribeSyncEvents: (() => void) | null = null
@@ -60,9 +53,9 @@ export class HappyBot {
         this.bot = new Bot<BotContext>(config.botToken)
         this.setupMiddleware()
         this.setupCommands()
+
         if (this.allowlistConfigured) {
             this.setupCallbacks()
-            this.setupMessageHandler()
         }
 
         // Subscribe to sync events immediately if engine is available
@@ -173,6 +166,7 @@ export class HappyBot {
      * Setup command handlers
      */
     private setupCommands(): void {
+        // When allowlist is not configured, show setup instructions
         if (!this.allowlistConfigured) {
             this.bot.command('start', async (ctx) => {
                 const chatId = ctx.chat?.id
@@ -188,48 +182,25 @@ export class HappyBot {
             return
         }
 
-        // /start - Status + help
-        this.bot.command('start', async (ctx) => {
-            const sessionCount = this.syncEngine?.getActiveSessions().length ?? 0
-            const machineCount = this.syncEngine?.getOnlineMachines().length ?? 0
-
-            await ctx.reply(
-                `Welcome to HAPI Bot!\n\n` +
-                `Active Sessions: ${sessionCount}\n` +
-                `Online Machines: ${machineCount}\n\n` +
-                `Commands:\n` +
-                `/app - Open the Mini App\n` +
-                `/help - Show help\n`
-            )
-        })
-
-        // /help - Show help information
-        this.bot.command('help', async (ctx) => {
-            await ctx.reply(
-                `HAPI Bot Help\n\n` +
-                `HAPI Bot is a notification layer for HAPI sessions.\n\n` +
-                `Commands:\n` +
-                `/start - Start the bot or show status\n` +
-                `/app - Open the Mini App\n` +
-                `/help - Show this help message\n\n` +
-                `Use the Mini App for:\n` +
-                `- Session list and full chat UI\n` +
-                `- Approving/denying permissions\n` +
-                `- Aborting sessions and changing modes/models\n` +
-                `- Viewing machines and creating new sessions`
-            )
-        })
-
-        // /app - Open Telegram Mini App
+        // /app - Open Telegram Mini App (primary entry point)
         this.bot.command('app', async (ctx) => {
-            const keyboard = new InlineKeyboard().webApp('📱 Open App', this.miniAppUrl)
+            const keyboard = new InlineKeyboard().webApp('Open App', this.miniAppUrl)
             await ctx.reply('Open HAPI Mini App:', { reply_markup: keyboard })
         })
 
+        // /start - Simple welcome with Mini App link
+        this.bot.command('start', async (ctx) => {
+            const keyboard = new InlineKeyboard().webApp('Open App', this.miniAppUrl)
+            await ctx.reply(
+                'Welcome to HAPI Bot!\n\n' +
+                'Use the Mini App for full session management.',
+                { reply_markup: keyboard }
+            )
+        })
     }
 
     /**
-     * Setup callback query handlers (InlineKeyboard buttons)
+     * Setup callback query handlers for notification buttons
      */
     private setupCallbacks(): void {
         this.bot.on('callback_query:data', async (ctx) => {
@@ -240,7 +211,6 @@ export class HappyBot {
 
             const data = ctx.callbackQuery.data
 
-            // Handle other callbacks
             const callbackContext: CallbackContext = {
                 syncEngine: this.syncEngine,
                 answerCallback: async (text?: string) => {
@@ -250,37 +220,10 @@ export class HappyBot {
                     await ctx.editMessageText(text, {
                         reply_markup: keyboard
                     })
-                },
-                sendMessage: async (text, keyboard) => {
-                    await ctx.reply(text, {
-                        reply_markup: keyboard
-                    })
                 }
             }
 
             await handleCallback(data, callbackContext)
-        })
-    }
-
-    /**
-     * Setup text message handler for sending messages to Claude
-     */
-    private setupMessageHandler(): void {
-        // Handle text messages (non-commands)
-        this.bot.on('message:text', async (ctx) => {
-            // Skip if it's a command
-            if (ctx.message.text.startsWith('/')) return
-
-            if (!this.syncEngine) {
-                await ctx.reply('Not ready yet. Try again in a moment.')
-                return
-            }
-
-            const keyboard = new InlineKeyboard().webApp('📱 Open App', this.miniAppUrl)
-            await ctx.reply(
-                'Chat and session controls are available in the Mini App.',
-                { reply_markup: keyboard }
-            )
         })
     }
 
@@ -308,10 +251,7 @@ export class HappyBot {
                 this.sendReadyNotification(event.sessionId).catch((error) => {
                     console.error('[HAPIBot] Failed to send ready notification:', error)
                 })
-                return
             }
-
-
         }
     }
 
@@ -358,7 +298,6 @@ export class HappyBot {
             )
         }
     }
-
 
     /**
      * Check if session has new permission requests and send notification
@@ -422,8 +361,8 @@ export class HappyBot {
             return
         }
 
-        const text = formatSessionNotification(session, 'permission')
-        const keyboard = createNotificationKeyboard(session)
+        const text = formatSessionNotification(session)
+        const keyboard = createNotificationKeyboard(session, this.miniAppUrl)
 
         // Send to all allowed chat IDs
         for (const chatId of this.allowedChatIds) {
