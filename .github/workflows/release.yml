@@ -1,0 +1,38 @@
+name: Release
+
+on:
+    push:
+        tags:
+            - 'v*'
+
+permissions:
+    contents: write
+
+jobs:
+    release:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+            - uses: oven-sh/setup-bun@v2
+            - run: bun install
+            - run: bun run build:single-exe:all
+            - name: Package binaries
+              run: |
+                  cd cli/dist-exe
+                  for dir in bun-*/; do
+                      name="${dir%/}"
+                      if [[ "$name" == *"windows"* ]]; then
+                          zip -r "${name}.zip" "$dir"
+                      else
+                          tar -czvf "${name}.tar.gz" "$dir"
+                      fi
+                  done
+            - name: Create Release
+              env:
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              run: |
+                  gh release create "${GITHUB_REF#refs/tags/}" \
+                      --title "Release ${GITHUB_REF#refs/tags/}" \
+                      --generate-notes \
+                      cli/dist-exe/*.tar.gz \
+                      cli/dist-exe/*.zip
