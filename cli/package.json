@@ -43,7 +43,7 @@
     "update-homebrew-formula": "bun run scripts/update-homebrew-formula.ts",
     "test": "bun run tools:unpack && vitest run",
     "test:win": "vitest run",
-    "dev": "tsx src/index.ts",
+    "dev": "bun src/index.ts",
     "dev:local-server": "tsx --env-file .env.dev-local-server src/index.ts",
     "dev:integration-test-env": "tsx --env-file .env.integration-test src/index.ts",
     "release-all": "bun run scripts/release-all.ts"

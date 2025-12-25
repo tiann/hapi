@@ -24,6 +24,7 @@ import { useSendMessage } from '@/hooks/mutations/useSendMessage'
 import { queryKeys } from '@/lib/query-keys'
 import FilesPage from '@/routes/sessions/files'
 import FilePage from '@/routes/sessions/file'
+import TerminalPage from '@/routes/sessions/terminal'
 
 function BackIcon(props: { className?: string }) {
     return (
@@ -251,6 +252,12 @@ const sessionFilesRoute = createRoute({
     component: FilesPage,
 })
 
+const sessionTerminalRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: '/sessions/$sessionId/terminal',
+    component: TerminalPage,
+})
+
 type SessionFileSearch = {
     path: string
     staged?: boolean
@@ -282,6 +289,7 @@ export const routeTree = rootRoute.addChildren([
     indexRoute,
     sessionsRoute,
     sessionRoute,
+    sessionTerminalRoute,
     sessionFilesRoute,
     sessionFileRoute,
     newSessionRoute,

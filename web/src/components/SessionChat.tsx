@@ -120,6 +120,13 @@ export function SessionChat(props: {
         })
     }, [navigate, props.session.id])
 
+    const handleViewTerminal = useCallback(() => {
+        navigate({
+            to: '/sessions/$sessionId/terminal',
+            params: { sessionId: props.session.id }
+        })
+    }, [navigate, props.session.id])
+
     const runtime = useHappyRuntime({
         session: props.session,
         blocks: reconciled.blocks,
@@ -176,6 +183,7 @@ export function SessionChat(props: {
                         onPermissionModeChange={handlePermissionModeChange}
                         onModelModeChange={handleModelModeChange}
                         onSwitchToRemote={handleSwitchToRemote}
+                        onTerminal={props.session.active ? handleViewTerminal : undefined}
                     />
                 </div>
             </AssistantRuntimeProvider>

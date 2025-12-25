@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events'
 import { randomUUID } from 'node:crypto'
 import { io, type Socket } from 'socket.io-client'
+import type { ZodType } from 'zod'
 import { logger } from '@/ui/logger'
 import { backoff } from '@/utils/time'
 import { AsyncLock } from '@/utils/lock'
@@ -10,6 +11,13 @@ import type { AgentState, ClientToServerEvents, MessageContent, MessageMeta, Met
 import { AgentStateSchema, MetadataSchema, UserMessageSchema } from './types'
 import { RpcHandlerManager } from './rpc/RpcHandlerManager'
 import { registerCommonHandlers } from '../modules/common/registerCommonHandlers'
+import { TerminalManager } from '@/terminal/TerminalManager'
+import {
+    TerminalClosePayloadSchema,
+    TerminalOpenPayloadSchema,
+    TerminalResizePayloadSchema,
+    TerminalWritePayloadSchema
+} from '@/terminal/types'
 
 export class ApiSessionClient extends EventEmitter {
     private readonly token: string
@@ -22,6 +30,7 @@ export class ApiSessionClient extends EventEmitter {
     private pendingMessages: UserMessage[] = []
     private pendingMessageCallback: ((message: UserMessage) => void) | null = null
     readonly rpcHandlerManager: RpcHandlerManager
+    private readonly terminalManager: TerminalManager
     private agentStateLock = new AsyncLock()
     private metadataLock = new AsyncLock()
 
@@ -58,6 +67,15 @@ export class ApiSessionClient extends EventEmitter {
             autoConnect: false
         })
 
+        this.terminalManager = new TerminalManager({
+            sessionId: this.sessionId,
+            getSessionPath: () => this.metadata?.path ?? null,
+            onReady: (payload) => this.socket.emit('terminal:ready', payload),
+            onOutput: (payload) => this.socket.emit('terminal:output', payload),
+            onExit: (payload) => this.socket.emit('terminal:exit', payload),
+            onError: (payload) => this.socket.emit('terminal:error', payload)
+        })
+
         this.socket.on('connect', () => {
             logger.debug('Socket connected successfully')
             this.rpcHandlerManager.onSocketConnect(this.socket)
@@ -70,12 +88,43 @@ export class ApiSessionClient extends EventEmitter {
         this.socket.on('disconnect', (reason) => {
             logger.debug('[API] Socket disconnected:', reason)
             this.rpcHandlerManager.onSocketDisconnect()
+            this.terminalManager.closeAll()
         })
 
         this.socket.on('connect_error', (error) => {
             logger.debug('[API] Socket connection error:', error)
             this.rpcHandlerManager.onSocketDisconnect()
         })
+
+        const handleTerminalEvent = <T extends { sessionId: string }>(
+            schema: ZodType<T>,
+            handler: (payload: T) => void
+        ) => (data: unknown) => {
+            const parsed = schema.safeParse(data)
+            if (!parsed.success) {
+                return
+            }
+            if (parsed.data.sessionId !== this.sessionId) {
+                return
+            }
+            handler(parsed.data)
+        }
+
+        this.socket.on('terminal:open', handleTerminalEvent(TerminalOpenPayloadSchema, (payload) => {
+            this.terminalManager.create(payload.terminalId, payload.cols, payload.rows)
+        }))
+
+        this.socket.on('terminal:write', handleTerminalEvent(TerminalWritePayloadSchema, (payload) => {
+            this.terminalManager.write(payload.terminalId, payload.data)
+        }))
+
+        this.socket.on('terminal:resize', handleTerminalEvent(TerminalResizePayloadSchema, (payload) => {
+            this.terminalManager.resize(payload.terminalId, payload.cols, payload.rows)
+        }))
+
+        this.socket.on('terminal:close', handleTerminalEvent(TerminalClosePayloadSchema, (payload) => {
+            this.terminalManager.close(payload.terminalId)
+        }))
 
         this.socket.on('update', (data: Update) => {
             try {
@@ -458,6 +507,7 @@ export class ApiSessionClient extends EventEmitter {
 
     close(): void {
         this.rpcHandlerManager.onSocketDisconnect()
+        this.terminalManager.closeAll()
         this.socket.disconnect()
     }
 }

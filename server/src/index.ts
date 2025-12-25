@@ -84,6 +84,8 @@ async function main() {
 
     const socketServer = createSocketServer({
         store,
+        jwtSecret,
+        getSession: (sessionId) => syncEngine?.getSession(sessionId) ?? store.getSession(sessionId),
         onWebappEvent: (event: SyncEvent) => syncEngine?.handleRealtimeEvent(event),
         onSessionAlive: (payload) => syncEngine?.handleSessionAlive(payload),
         onSessionEnd: (payload) => syncEngine?.handleSessionEnd(payload),

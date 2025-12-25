@@ -1,6 +1,16 @@
 import { z } from 'zod'
 import { UsageSchema } from '@/claude/types'
 import type { PermissionMode } from '@/claude/loop'
+import type {
+    TerminalClosePayload,
+    TerminalExitPayload,
+    TerminalOpenPayload,
+    TerminalOutputPayload,
+    TerminalReadyPayload,
+    TerminalResizePayload,
+    TerminalWritePayload,
+    TerminalErrorPayload
+} from '@/terminal/types'
 
 export type Usage = z.infer<typeof UsageSchema>
 
@@ -290,6 +300,10 @@ export type MessageContent = z.infer<typeof MessageContentSchema>
 export interface ServerToClientEvents {
     update: (data: Update) => void
     'rpc-request': (data: { method: string; params: string }, callback: (response: string) => void) => void
+    'terminal:open': (data: TerminalOpenPayload) => void
+    'terminal:write': (data: TerminalWritePayload) => void
+    'terminal:resize': (data: TerminalResizePayload) => void
+    'terminal:close': (data: TerminalClosePayload) => void
     error: (data: { message: string }) => void
 }
 
@@ -344,6 +358,10 @@ export interface ClientToServerEvents {
     }) => void) => void
     'rpc-register': (data: { method: string }) => void
     'rpc-unregister': (data: { method: string }) => void
+    'terminal:ready': (data: TerminalReadyPayload) => void
+    'terminal:output': (data: TerminalOutputPayload) => void
+    'terminal:exit': (data: TerminalExitPayload) => void
+    'terminal:error': (data: TerminalErrorPayload) => void
     ping: (callback: () => void) => void
     'usage-report': (data: unknown) => void
 }

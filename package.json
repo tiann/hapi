@@ -16,7 +16,9 @@
         "typecheck:cli": "cd cli && bun run typecheck",
         "typecheck:server": "cd server && bun run typecheck",
         "typecheck:web": "cd web && bun run typecheck",
-        "test": "cd cli && bun run test",
+        "test": "bun run test:cli && bun run test:server",
+        "test:cli": "cd cli && bun run test",
+        "test:server": "cd server && bun run test",
         "clean-session": "bun run server/scripts/cleanup-sessions.ts",
         "release-all": "cd cli && bun run release-all"
     },

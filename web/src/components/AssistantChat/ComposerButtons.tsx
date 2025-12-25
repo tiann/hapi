@@ -38,6 +38,26 @@ function SwitchToRemoteIcon() {
     )
 }
 
+function TerminalIcon() {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+        >
+            <rect x="3" y="4" width="18" height="16" rx="2" ry="2" />
+            <polyline points="7 9 10 12 7 15" />
+            <line x1="12" y1="15" x2="17" y2="15" />
+        </svg>
+    )
+}
+
 function AbortIcon(props: { spinning: boolean }) {
     if (props.spinning) {
         return (
@@ -94,6 +114,9 @@ export function ComposerButtons(props: {
     controlsDisabled: boolean
     showSettingsButton: boolean
     onSettingsToggle: () => void
+    showTerminalButton: boolean
+    terminalDisabled: boolean
+    onTerminal: () => void
     showAbortButton: boolean
     abortDisabled: boolean
     isAborting: boolean
@@ -116,6 +139,19 @@ export function ComposerButtons(props: {
                         disabled={props.controlsDisabled}
                     >
                         <SettingsIcon />
+                    </button>
+                ) : null}
+
+                {props.showTerminalButton ? (
+                    <button
+                        type="button"
+                        aria-label="Terminal"
+                        title="Terminal"
+                        className="flex h-8 w-8 items-center justify-center rounded-full text-[var(--app-fg)]/60 transition-colors hover:bg-[var(--app-bg)] hover:text-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
+                        onClick={props.onTerminal}
+                        disabled={props.terminalDisabled}
+                    >
+                        <TerminalIcon />
                     </button>
                 ) : null}
 
