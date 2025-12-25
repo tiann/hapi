@@ -54,13 +54,17 @@ async function main(): Promise<void> {
     }
     console.log('   ✓ On main branch');
 
-    // Pre-check: Ensure npm is logged in
-    try {
-        const npmUser = execSync('npm whoami', { encoding: 'utf-8' }).trim();
-        console.log(`   ✓ Logged in to npm as: ${npmUser}`);
-    } catch {
-        console.error('❌ Not logged in to npm. Run `npm login` first.');
-        process.exit(1);
+    // Pre-check: Ensure npm is logged in (skip in dry-run mode)
+    if (!dryRun) {
+        try {
+            const npmUser = execSync('npm whoami', { encoding: 'utf-8' }).trim();
+            console.log(`   ✓ Logged in to npm as: ${npmUser}`);
+        } catch {
+            console.error('❌ Not logged in to npm. Run `npm login` first.');
+            process.exit(1);
+        }
+    } else {
+        console.log('   ✓ Skipping npm login check (dry-run)');
     }
 
     // Step 1: Update package.json version
