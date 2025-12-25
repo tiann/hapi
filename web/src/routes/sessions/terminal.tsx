@@ -7,8 +7,6 @@ import { useSession } from '@/hooks/queries/useSession'
 import { useTerminalSocket } from '@/hooks/useTerminalSocket'
 import { TerminalView } from '@/components/Terminal/TerminalView'
 import { LoadingState } from '@/components/LoadingState'
-import { Badge } from '@/components/ui/badge'
-
 function BackIcon() {
     return (
         <svg
@@ -27,17 +25,21 @@ function BackIcon() {
     )
 }
 
-function ConnectionBadge(props: { status: 'idle' | 'connecting' | 'connected' | 'error' }) {
-    switch (props.status) {
-        case 'connected':
-            return <Badge variant="success">Connected</Badge>
-        case 'connecting':
-            return <Badge variant="warning">Connecting</Badge>
-        case 'error':
-            return <Badge variant="destructive">Error</Badge>
-        default:
-            return <Badge variant="default">Idle</Badge>
-    }
+function ConnectionIndicator(props: { status: 'idle' | 'connecting' | 'connected' | 'error' }) {
+    const isConnected = props.status === 'connected'
+    const isConnecting = props.status === 'connecting'
+    const label = isConnected ? 'Connected' : isConnecting ? 'Connecting' : 'Offline'
+    const colorClass = isConnected
+        ? 'bg-emerald-500'
+        : isConnecting
+            ? 'bg-amber-400 animate-pulse'
+            : 'bg-[var(--app-hint)]'
+
+    return (
+        <div className="flex items-center" aria-label={label} title={label} role="status">
+            <span className={`h-2.5 w-2.5 rounded-full ${colorClass}`} />
+        </div>
+    )
 }
 
 export default function TerminalPage() {
@@ -179,7 +181,7 @@ export default function TerminalPage() {
                         <div className="truncate font-semibold">Terminal</div>
                         <div className="truncate text-xs text-[var(--app-hint)]">{subtitle}</div>
                     </div>
-                    <ConnectionBadge status={status} />
+                    <ConnectionIndicator status={status} />
                 </div>
             </div>
 
