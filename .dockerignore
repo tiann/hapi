@@ -1,0 +1,17 @@
+.git
+.github
+
+**/.DS_Store
+
+**/node_modules
+**/dist
+
+cli/dist-exe
+cli/release-artifacts
+
+**/*.log
+
+**/.env
+**/.env.*
+
+.factory
