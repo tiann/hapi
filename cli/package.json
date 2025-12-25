@@ -39,8 +39,6 @@
     "build:exe:allinone:all": "bun run scripts/build-executable.ts --with-web-assets --all",
     "prepare-npm-packages": "bun run scripts/prepare-npm-packages.ts",
     "prepack": "bun run prepare-npm-packages",
-    "publish-npm": "bun run scripts/publish-npm.ts",
-    "publish-npm:dry-run": "bun run scripts/publish-npm.ts --dry-run",
     "tools:unpack": "bun run scripts/unpack-tools.ts",
     "update-homebrew-formula": "bun run scripts/update-homebrew-formula.ts",
     "test": "bun run tools:unpack && vitest run",
@@ -48,8 +46,7 @@
     "dev": "tsx src/index.ts",
     "dev:local-server": "tsx --env-file .env.dev-local-server src/index.ts",
     "dev:integration-test-env": "tsx --env-file .env.integration-test src/index.ts",
-    "release": "release-it",
-    "release:dry-run": "release-it --dry-run"
+    "release-all": "bun run scripts/release-all.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.22.0",
@@ -78,7 +75,6 @@
     "dotenv": "^16.6.1",
     "eslint": "^9",
     "eslint-config-prettier": "^10",
-    "release-it": "^19.2.1",
     "shx": "^0.3.3",
     "ts-node": "^10",
     "tsx": "^4.20.6",

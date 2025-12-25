@@ -12,16 +12,13 @@
         "build:web": "cd web && bun run build",
         "dev:server": "cd server && bun run dev",
         "dev:web": "cd web && bun run dev",
-        "typecheck": "bun run typecheck:cli && bun run typecheck:server && bun run typecheck:web",
+        "typecheck": "bun run typecheck:cli && bun run typecheck:web && bun run typecheck:server",
         "typecheck:cli": "cd cli && bun run typecheck",
         "typecheck:server": "cd server && bun run typecheck",
         "typecheck:web": "cd web && bun run typecheck",
         "test": "cd cli && bun run test",
         "clean-session": "bun run server/scripts/cleanup-sessions.ts",
-        "publish-npm": "cd cli && bun run publish-npm",
-        "publish-npm:dry-run": "cd cli && bun run publish-npm:dry-run",
-        "release": "cd cli && bun run release",
-        "release:dry-run": "cd cli && bun run release:dry-run"
+        "release-all": "cd cli && bun run release-all"
     },
     "devDependencies": {
         "concurrently": "^9.2.1",
