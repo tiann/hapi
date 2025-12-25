@@ -1,6 +1,6 @@
 # hapi
 
-HAPI means "哈皮," a Chinese transliteration of [Happy](https://github.com/anthropics/anthropic-cookbook/tree/main/misc/happy). Great credit to the original project.
+HAPI means "哈皮," a Chinese transliteration of [Happy](https://github.com/slopus/happy). Great credit to the original project.
 
 Run Claude Code / Codex / Gemini sessions locally and control them remotely through a Web / PWA / Telegram Mini App.
 

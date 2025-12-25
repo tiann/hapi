@@ -31,7 +31,7 @@ if (!binPath) {
     console.error('  - win32-x64');
     console.error('');
     console.error('You can download the binary manually from:');
-    console.error('  https://github.com/anthropics/hapi/releases');
+    console.error('  https://github.com/tiann/hapi/releases');
     process.exit(1);
 }
 

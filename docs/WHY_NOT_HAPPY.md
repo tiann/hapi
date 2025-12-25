@@ -1,6 +1,6 @@
 # Why Not Happy?
 
-[Happy](https://github.com/anthropics/anthropic-cookbook/tree/main/misc/happy) is an excellent project. So why build HAPI?
+[Happy](https://github.com/slopus/happy) is an excellent project. So why build HAPI?
 
 **The short answer**: Happy is designed for cloud hosting with multiple users. HAPI is designed for self-hosting with a single user. These different goals lead to fundamentally different architectures.
 
