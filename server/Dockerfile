@@ -1,6 +1,6 @@
 FROM oven/bun:1 AS deps
 
-WORKDIR /app
+WORKDIR /home/bun/app
 
 COPY bun.lock package.json tsconfig.base.json ./
 COPY cli/package.json ./cli/package.json
@@ -12,26 +12,34 @@ RUN bun install --frozen-lockfile
 
 FROM deps AS build
 
-COPY server ./server
+# Build web assets first to improve caching
 COPY web ./web
-
 RUN bun run build:web
+
+# Then build server
+COPY server ./server
 RUN bun run build:server
 
 
 FROM oven/bun:1 AS runtime
 
-WORKDIR /app
+WORKDIR /home/bun/app
 
 ENV NODE_ENV=production
 ENV WEBAPP_PORT=3006
 ENV HAPI_HOME=/data
 
+USER root
+RUN mkdir -p /data && chown bun:bun /data
+USER bun
+
+VOLUME /data
+
 EXPOSE 3006
 
-COPY --from=deps /app/node_modules ./node_modules
-COPY --from=build /app/server/dist ./server/dist
-COPY --from=build /app/web/dist ./web/dist
+COPY --from=deps /home/bun/app/node_modules ./node_modules
+COPY --from=build /home/bun/app/server/dist ./server/dist
+COPY --from=build /home/bun/app/web/dist ./web/dist
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD bun -e "fetch('http://127.0.0.1:' + (process.env.WEBAPP_PORT ?? '3006') + '/').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
