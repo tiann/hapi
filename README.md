@@ -1,8 +1,10 @@
 # hapi
 
-HAPI means "哈皮," a Chinese transliteration of [happy](https://github.com/slopus/happy), great credit to the original Happy project.
+HAPI means "哈皮," a Chinese transliteration of [Happy](https://github.com/anthropics/anthropic-cookbook/tree/main/misc/happy). Great credit to the original project.
 
 Run Claude Code / Codex / Gemini sessions locally and control them remotely through a Web / PWA / Telegram Mini App.
+
+> **Why HAPI?** HAPI is a local-first alternative to Happy. See [Why Not Happy?](docs/WHY_NOT_HAPPY.md) for the key differences.
 
 ## Features
 
@@ -118,6 +120,7 @@ bun run build:single-exe
 
 ## Docs
 
+- `docs/WHY_NOT_HAPPY.md` - Why HAPI exists: architectural differences from Happy
 - `cli/README.md` - CLI usage and config
 - `server/README.md` - Server setup and architecture
 - `web/README.md` - Web app behavior and dev workflow
