@@ -65,16 +65,18 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
     });
 
     // Register the single tool and forward to HTTP MCP
-    server.registerTool(
+    const changeTitleInputSchema: z.ZodTypeAny = z.object({
+      title: z.string().describe('The new title for the chat session'),
+    });
+
+    server.registerTool<any, any>(
       'change_title',
       {
         description: 'Change the title of the current chat session',
         title: 'Change Chat Title',
-        inputSchema: {
-          title: z.string().describe('The new title for the chat session'),
-        },
+        inputSchema: changeTitleInputSchema,
       },
-      async (args) => {
+      async (args: Record<string, unknown>) => {
         try {
           const client = await ensureHttpClient();
           const response = await client.callTool({ name: 'change_title', arguments: args });
@@ -83,7 +85,7 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
         } catch (error) {
           return {
             content: [
-              { type: 'text', text: `Failed to change chat title: ${error instanceof Error ? error.message : String(error)}` },
+              { type: 'text' as const, text: `Failed to change chat title: ${error instanceof Error ? error.message : String(error)}` },
             ],
             isError: true,
           };

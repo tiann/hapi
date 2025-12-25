@@ -178,12 +178,20 @@ export class CodexMcpClient {
             { capabilities: { elicitation: {} } }
         );
 
-        this.client.setNotificationHandler(z.object({
+        // Avoid TS instantiation depth issues by widening the schema type.
+        const codexNotificationSchema: z.ZodTypeAny = z.object({
             method: z.literal('codex/event'),
             params: z.object({
                 msg: z.any()
             })
-        }).passthrough(), (data) => {
+        }).passthrough();
+
+        const setNotificationHandler = this.client.setNotificationHandler as (
+            schema: unknown,
+            handler: (notification: { params: { msg: any } }) => void
+        ) => void;
+
+        setNotificationHandler(codexNotificationSchema, (data) => {
             const msg = data.params.msg;
             this.updateIdentifiersFromEvent(msg);
             this.handler?.(msg);

@@ -39,13 +39,16 @@ export async function startHappyServer(client: ApiSessionClient) {
         version: "1.0.0",
     });
 
-    mcp.registerTool('change_title', {
+    // Avoid TS instantiation depth issues by widening the schema type.
+    const changeTitleInputSchema: z.ZodTypeAny = z.object({
+        title: z.string().describe('The new title for the chat session'),
+    });
+
+    mcp.registerTool<any, any>('change_title', {
         description: 'Change the title of the current chat session',
         title: 'Change Chat Title',
-        inputSchema: {
-            title: z.string().describe('The new title for the chat session'),
-        },
-    }, async (args) => {
+        inputSchema: changeTitleInputSchema,
+    }, async (args: { title: string }) => {
         const response = await handler(args.title);
         logger.debug('[hapiMCP] Response:', response);
         
@@ -53,7 +56,7 @@ export async function startHappyServer(client: ApiSessionClient) {
             return {
                 content: [
                     {
-                        type: 'text',
+                        type: 'text' as const,
                         text: `Successfully changed chat title to: "${args.title}"`,
                     },
                 ],
@@ -63,7 +66,7 @@ export async function startHappyServer(client: ApiSessionClient) {
             return {
                 content: [
                     {
-                        type: 'text',
+                        type: 'text' as const,
                         text: `Failed to change chat title: ${response.error || 'Unknown error'}`,
                     },
                 ],
