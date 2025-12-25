@@ -1,15 +1,37 @@
 /**
  * Configuration for hapi-server (Direct Connect)
  *
+ * Configuration is loaded with priority: environment variable > settings.json > default
+ * When values are read from environment variables and not present in settings.json,
+ * they are automatically saved for future use.
+ *
  * Optional environment variables:
  * - CLI_API_TOKEN: Shared secret for hapi CLI authentication (auto-generated if not set)
  * - TELEGRAM_BOT_TOKEN: Telegram Bot API token from @BotFather
  * - ALLOWED_CHAT_IDS: Comma-separated list of allowed Telegram chat IDs
+ * - WEBAPP_PORT: Port for Mini App HTTP server (default: 3006)
+ * - WEBAPP_URL: Public URL for Telegram Mini App
+ * - CORS_ORIGINS: Comma-separated CORS origins
+ * - HAPI_HOME: Data directory (default: ~/.hapi)
+ * - DB_PATH: SQLite database path (default: {HAPI_HOME}/hapi.db)
  */
 
 import { existsSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { loadServerSettings, type ServerSettings, type ServerSettingsResult } from './serverSettings'
+import { getOrCreateCliApiToken } from './web/cliApiToken'
+
+export type ConfigSource = 'env' | 'file' | 'default'
+
+export interface ConfigSources {
+    telegramBotToken: ConfigSource
+    allowedChatIds: ConfigSource
+    webappPort: ConfigSource
+    webappUrl: ConfigSource
+    corsOrigins: ConfigSource
+    cliApiToken: 'env' | 'file' | 'generated'
+}
 
 class Configuration {
     /** Telegram Bot API token */
@@ -24,8 +46,11 @@ class Configuration {
     /** CLI auth token (shared secret) */
     public cliApiToken: string
 
-    /** Source of CLI API token ('pending' | 'env' | 'file' | 'generated') */
-    public cliApiTokenSource: string
+    /** Source of CLI API token */
+    public cliApiTokenSource: 'env' | 'file' | 'generated' | ''
+
+    /** Whether CLI API token was newly generated (for first-run display) */
+    public cliApiTokenIsNew: boolean
 
     /** Path to settings.json file */
     public readonly settingsFile: string
@@ -45,87 +70,37 @@ class Configuration {
     /** Allowed CORS origins for Mini App + Socket.IO (comma-separated env override) */
     public readonly corsOrigins: string[]
 
-    constructor() {
-        // Optional: Telegram Bot Token
-        const botToken = process.env.TELEGRAM_BOT_TOKEN
-        this.telegramBotToken = botToken ?? null
+    /** Sources of each configuration value */
+    public readonly sources: ConfigSources
+
+    /** Private constructor - use createConfiguration() instead */
+    private constructor(
+        dataDir: string,
+        dbPath: string,
+        serverSettings: ServerSettings,
+        sources: ServerSettingsResult['sources']
+    ) {
+        this.dataDir = dataDir
+        this.dbPath = dbPath
+        this.settingsFile = join(dataDir, 'settings.json')
+
+        // Apply server settings
+        this.telegramBotToken = serverSettings.telegramBotToken
         this.telegramEnabled = Boolean(this.telegramBotToken)
+        this.allowedChatIds = serverSettings.allowedChatIds
+        this.webappPort = serverSettings.webappPort
+        this.miniAppUrl = serverSettings.webappUrl
+        this.corsOrigins = serverSettings.corsOrigins
 
-        // Optional: Allowed Chat IDs
-        const chatIdsStr = process.env.ALLOWED_CHAT_IDS
-        this.allowedChatIds = chatIdsStr
-            ? chatIdsStr
-                .split(',')
-                .map(id => parseInt(id.trim(), 10))
-                .filter(id => !isNaN(id))
-            : []
-
-        // CLI API token - will be set later by getOrCreateCliApiToken()
+        // CLI API token - will be set by _setCliApiToken() before create() returns
         this.cliApiToken = ''
-        this.cliApiTokenSource = 'pending'
+        this.cliApiTokenSource = ''
+        this.cliApiTokenIsNew = false
 
-        // Mini App web server configuration
-        const webappPortRaw = process.env.WEBAPP_PORT
-        const parsedWebappPort = webappPortRaw ? parseInt(webappPortRaw, 10) : 3006
-        if (!Number.isFinite(parsedWebappPort) || parsedWebappPort <= 0) {
-            throw new Error('WEBAPP_PORT must be a valid port number')
-        }
-        this.webappPort = parsedWebappPort
-
-        // For production, Telegram requires HTTPS for Mini Apps.
-        // This URL is what Telegram clients will open when pressing the WebApp button.
-        this.miniAppUrl = process.env.WEBAPP_URL || `http://localhost:${this.webappPort}`
-
-        // CORS origin allowlist (Mini App + Socket.IO browser clients).
-        // - Defaults to the Mini App's origin (derived from WEBAPP_URL).
-        // - If set to "*", allows all origins (not recommended for internet-exposed deployments).
-        const corsOriginsRaw = process.env.CORS_ORIGINS
-        if (corsOriginsRaw) {
-            const entries = corsOriginsRaw
-                .split(',')
-                .map((origin) => origin.trim())
-                .filter(Boolean)
-
-            if (entries.includes('*')) {
-                this.corsOrigins = ['*']
-            } else {
-                const normalized: string[] = []
-                for (const entry of entries) {
-                    try {
-                        normalized.push(new URL(entry).origin)
-                    } catch {
-                        // Keep raw value if it's already an origin-like string.
-                        normalized.push(entry)
-                    }
-                }
-                this.corsOrigins = normalized
-            }
-        } else {
-            try {
-                this.corsOrigins = [new URL(this.miniAppUrl).origin]
-            } catch {
-                this.corsOrigins = []
-            }
-        }
-
-        // Data directory
-        if (process.env.HAPI_HOME) {
-            const expandedPath = process.env.HAPI_HOME.replace(/^~/, homedir())
-            this.dataDir = expandedPath
-        } else {
-            this.dataDir = join(homedir(), '.hapi')
-        }
-
-        // DB path (defaults inside dataDir)
-        if (process.env.DB_PATH) {
-            const expandedPath = process.env.DB_PATH.replace(/^~/, homedir())
-            this.dbPath = expandedPath
-        } else {
-            this.dbPath = join(this.dataDir, 'hapi.db')
-        }
-
-        // Settings file path
-        this.settingsFile = join(this.dataDir, 'settings.json')
+        // Store sources for logging (cliApiToken will be set by _setCliApiToken)
+        this.sources = {
+            ...sources,
+        } as ConfigSources
 
         // Ensure data directory exists
         if (!existsSync(this.dataDir)) {
@@ -133,24 +108,81 @@ class Configuration {
         }
     }
 
+    /** Create configuration asynchronously */
+    static async create(): Promise<Configuration> {
+        // 1. Determine data directory (env only - not persisted)
+        const dataDir = process.env.HAPI_HOME
+            ? process.env.HAPI_HOME.replace(/^~/, homedir())
+            : join(homedir(), '.hapi')
+
+        // Ensure data directory exists before loading settings
+        if (!existsSync(dataDir)) {
+            mkdirSync(dataDir, { recursive: true })
+        }
+
+        // 2. Determine DB path (env only - not persisted)
+        const dbPath = process.env.DB_PATH
+            ? process.env.DB_PATH.replace(/^~/, homedir())
+            : join(dataDir, 'hapi.db')
+
+        // 3. Load server settings (with persistence)
+        const settingsResult = await loadServerSettings(dataDir)
+
+        if (settingsResult.savedToFile) {
+            console.log(`[Server] Configuration saved to ${join(dataDir, 'settings.json')}`)
+        }
+
+        // 4. Create configuration instance
+        const config = new Configuration(
+            dataDir,
+            dbPath,
+            settingsResult.settings,
+            settingsResult.sources
+        )
+
+        // 5. Load CLI API token
+        const tokenResult = await getOrCreateCliApiToken(dataDir)
+        config._setCliApiToken(tokenResult.token, tokenResult.source, tokenResult.isNew)
+
+        return config
+    }
+
     /** Check if a chat ID is allowed */
     isChatIdAllowed(chatId: number): boolean {
         return this.allowedChatIds.includes(chatId)
     }
 
-    /** Set CLI API token (called after async initialization) */
-    _setCliApiToken(token: string, source: string): void {
+    /** Set CLI API token (called during async initialization) */
+    _setCliApiToken(token: string, source: 'env' | 'file' | 'generated', isNew: boolean): void {
         this.cliApiToken = token
         this.cliApiTokenSource = source
+        this.cliApiTokenIsNew = isNew
+        ;(this.sources as { cliApiToken: string }).cliApiToken = source
     }
 }
 
-// Lazy initialization to allow configuration to fail gracefully
+// Singleton instance (set by createConfiguration)
 let _configuration: Configuration | null = null
 
+/**
+ * Create and initialize configuration asynchronously.
+ * Must be called once at startup before getConfiguration() can be used.
+ */
+export async function createConfiguration(): Promise<Configuration> {
+    if (_configuration) {
+        return _configuration
+    }
+    _configuration = await Configuration.create()
+    return _configuration
+}
+
+/**
+ * Get the initialized configuration.
+ * Throws if createConfiguration() has not been called yet.
+ */
 export function getConfiguration(): Configuration {
     if (!_configuration) {
-        _configuration = new Configuration()
+        throw new Error('Configuration not initialized. Call createConfiguration() first.')
     }
     return _configuration
 }

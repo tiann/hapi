@@ -8,17 +8,30 @@
  * - Optional Telegram bot for notifications and Mini App entrypoint
  */
 
-import { getConfiguration } from './configuration'
+import { createConfiguration, type ConfigSource } from './configuration'
 import { Store } from './store'
 import { SyncEngine, type SyncEvent } from './sync/syncEngine'
 import { HappyBot } from './telegram/bot'
 import { startWebServer } from './web/server'
 import { getOrCreateJwtSecret } from './web/jwtSecret'
-import { getOrCreateCliApiToken } from './web/cliApiToken'
 import { createSocketServer } from './socket/server'
 import { SSEManager } from './sse/sseManager'
 import type { Server as BunServer } from 'bun'
 import type { WebSocketData } from '@socket.io/bun-engine'
+
+/** Format config source for logging */
+function formatSource(source: ConfigSource | 'generated'): string {
+    switch (source) {
+        case 'env':
+            return 'environment'
+        case 'file':
+            return 'settings.json'
+        case 'default':
+            return 'default'
+        case 'generated':
+            return 'generated'
+    }
+}
 
 let syncEngine: SyncEngine | null = null
 let happyBot: HappyBot | null = null
@@ -28,37 +41,40 @@ let sseManager: SSEManager | null = null
 async function main() {
     console.log('HAPI Server starting...')
 
-    // Load configuration
-    const config = getConfiguration()
+    // Load configuration (async - loads from env/file with persistence)
+    const config = await createConfiguration()
 
-    // Initialize CLI API token
-    const tokenResult = await getOrCreateCliApiToken(config.dataDir)
-    config._setCliApiToken(tokenResult.token, tokenResult.source)
-
-    // Display token information
-    if (tokenResult.isNew) {
+    // Display CLI API token information
+    if (config.cliApiTokenIsNew) {
         console.log('')
         console.log('='.repeat(70))
         console.log('  NEW CLI_API_TOKEN GENERATED')
         console.log('='.repeat(70))
         console.log('')
-        console.log(`  Token: ${tokenResult.token}`)
+        console.log(`  Token: ${config.cliApiToken}`)
         console.log('')
-        console.log(`  Saved to: ${tokenResult.filePath}`)
+        console.log(`  Saved to: ${config.settingsFile}`)
         console.log('')
         console.log('='.repeat(70))
         console.log('')
     } else {
-        console.log(`[Server] CLI_API_TOKEN: loaded from ${tokenResult.source}`)
+        console.log(`[Server] CLI_API_TOKEN: loaded from ${formatSource(config.sources.cliApiToken)}`)
     }
 
-    console.log(`[Server] Mini App: ${config.miniAppUrl} (port ${config.webappPort})`)
+    // Display other configuration sources
+    console.log(`[Server] WEBAPP_PORT: ${config.webappPort} (${formatSource(config.sources.webappPort)})`)
+    console.log(`[Server] WEBAPP_URL: ${config.miniAppUrl} (${formatSource(config.sources.webappUrl)})`)
+
     if (!config.telegramEnabled) {
-        console.log('[Server] Telegram: disabled (missing TELEGRAM_BOT_TOKEN)')
-    } else if (config.allowedChatIds.length === 0) {
-        console.log('[Server] Telegram: enabled (allowlist empty; /start shows chat ID)')
+        console.log('[Server] Telegram: disabled (no TELEGRAM_BOT_TOKEN)')
     } else {
-        console.log(`[Server] Telegram: enabled (chat IDs: ${config.allowedChatIds.join(', ')})`)
+        const tokenSource = formatSource(config.sources.telegramBotToken)
+        if (config.allowedChatIds.length === 0) {
+            console.log(`[Server] Telegram: enabled (${tokenSource}), allowlist empty - /start shows chat ID`)
+        } else {
+            const idsSource = formatSource(config.sources.allowedChatIds)
+            console.log(`[Server] Telegram: enabled (${tokenSource}), chat IDs: ${config.allowedChatIds.join(', ')} (${idsSource})`)
+        }
     }
 
     const store = new Store(config.dbPath)

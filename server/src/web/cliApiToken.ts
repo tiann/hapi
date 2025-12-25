@@ -10,12 +10,18 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { randomBytes } from 'node:crypto'
 import { dirname, join } from 'node:path'
 
-interface Settings {
+export interface Settings {
     onboardingCompleted?: boolean
     machineId?: string
     machineIdConfirmedByServer?: boolean
     daemonAutoStartWhenRunningHappy?: boolean
     cliApiToken?: string
+    // Server configuration (persisted from environment variables)
+    telegramBotToken?: string
+    allowedChatIds?: number[]
+    webappPort?: number
+    webappUrl?: string
+    corsOrigins?: string[]
 }
 
 export interface CliApiTokenResult {
@@ -53,7 +59,7 @@ function isWeakToken(token: string): boolean {
  * Read settings from file, preserving all existing fields.
  * Returns null if file exists but cannot be parsed (to avoid data loss).
  */
-async function readSettings(settingsFile: string): Promise<Settings | null> {
+export async function readSettings(settingsFile: string): Promise<Settings | null> {
     if (!existsSync(settingsFile)) {
         return {}
     }
@@ -70,7 +76,7 @@ async function readSettings(settingsFile: string): Promise<Settings | null> {
 /**
  * Write settings to file atomically (temp file + rename)
  */
-async function writeSettings(settingsFile: string, settings: Settings): Promise<void> {
+export async function writeSettings(settingsFile: string, settings: Settings): Promise<void> {
     const dir = dirname(settingsFile)
     if (!existsSync(dir)) {
         await mkdir(dir, { recursive: true, mode: 0o700 })
