@@ -1,4 +1,4 @@
-FROM oven/bun:1 AS deps
+FROM oven/bun:1.3.4 AS deps
 
 WORKDIR /home/bun/app
 
@@ -21,7 +21,7 @@ COPY server ./server
 RUN bun run build:server
 
 
-FROM oven/bun:1 AS runtime
+FROM oven/bun:1.3.4 AS runtime
 
 WORKDIR /home/bun/app
 

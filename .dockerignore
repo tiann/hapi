@@ -9,6 +9,9 @@
 cli/dist-exe
 cli/release-artifacts
 
+cli/**
+!cli/package.json
+
 **/*.log
 
 **/.env

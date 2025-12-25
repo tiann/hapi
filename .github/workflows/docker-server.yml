@@ -9,6 +9,10 @@ on:
             - 'v*'
     workflow_dispatch:
 
+concurrency:
+    group: docker-server-${{ github.ref }}
+    cancel-in-progress: true
+
 permissions:
     contents: read
     packages: write
