@@ -11,19 +11,33 @@ import type {
 } from '@/types/api'
 
 type ApiClientOptions = {
+    baseUrl?: string
     getToken?: () => string | null
     onUnauthorized?: () => Promise<string | null>
 }
 
 export class ApiClient {
     private token: string
+    private readonly baseUrl: string | null
     private readonly getToken: (() => string | null) | null
     private readonly onUnauthorized: (() => Promise<string | null>) | null
 
     constructor(token: string, options?: ApiClientOptions) {
         this.token = token
+        this.baseUrl = options?.baseUrl ?? null
         this.getToken = options?.getToken ?? null
         this.onUnauthorized = options?.onUnauthorized ?? null
+    }
+
+    private buildUrl(path: string): string {
+        if (!this.baseUrl) {
+            return path
+        }
+        try {
+            return new URL(path, this.baseUrl).toString()
+        } catch {
+            return path
+        }
     }
 
     private async request<T>(
@@ -44,7 +58,7 @@ export class ApiClient {
             headers.set('content-type', 'application/json')
         }
 
-        const res = await fetch(path, {
+        const res = await fetch(this.buildUrl(path), {
             ...init,
             headers
         })
@@ -69,7 +83,7 @@ export class ApiClient {
     }
 
     async authenticate(auth: { initData: string } | { accessToken: string }): Promise<AuthResponse> {
-        const res = await fetch('/api/auth', {
+        const res = await fetch(this.buildUrl('/api/auth'), {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify(auth)

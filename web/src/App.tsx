@@ -5,6 +5,7 @@ import { getTelegramWebApp } from '@/hooks/useTelegram'
 import { initializeTheme } from '@/hooks/useTheme'
 import { useAuth } from '@/hooks/useAuth'
 import { useAuthSource } from '@/hooks/useAuthSource'
+import { useServerUrl } from '@/hooks/useServerUrl'
 import { useSSE } from '@/hooks/useSSE'
 import { useSyncingState } from '@/hooks/useSyncingState'
 import { queryKeys } from '@/lib/query-keys'
@@ -17,8 +18,9 @@ import { SyncingBanner } from '@/components/SyncingBanner'
 import { LoadingState } from '@/components/LoadingState'
 
 export function App() {
-    const { authSource, isLoading: isAuthSourceLoading, setAccessToken } = useAuthSource()
-    const { token, api, isLoading: isAuthLoading, error: authError } = useAuth(authSource)
+    const { serverUrl, baseUrl, setServerUrl, clearServerUrl } = useServerUrl()
+    const { authSource, isLoading: isAuthSourceLoading, setAccessToken } = useAuthSource(baseUrl)
+    const { token, api, isLoading: isAuthLoading, error: authError } = useAuth(authSource, baseUrl)
     const goBack = useAppGoBack()
     const pathname = useLocation({ select: (location) => location.pathname })
     const matchRoute = useMatchRoute()
@@ -90,6 +92,17 @@ export function App() {
     const { isSyncing, startSync, endSync } = useSyncingState()
     const syncTokenRef = useRef(0)
     const isFirstConnectRef = useRef(true)
+    const baseUrlRef = useRef(baseUrl)
+
+    useEffect(() => {
+        if (baseUrlRef.current === baseUrl) {
+            return
+        }
+        baseUrlRef.current = baseUrl
+        isFirstConnectRef.current = true
+        syncTokenRef.current = 0
+        queryClient.clear()
+    }, [baseUrl, queryClient])
 
     const handleSseConnect = useCallback(() => {
         // Increment token to track this specific connection
@@ -135,6 +148,7 @@ export function App() {
     useSSE({
         enabled: Boolean(api && token),
         token: token ?? '',
+        baseUrl,
         subscription: eventSubscription,
         onConnect: handleSseConnect,
         onEvent: handleSseEvent,
@@ -151,7 +165,15 @@ export function App() {
 
     // No auth source (browser environment, not logged in)
     if (!authSource) {
-        return <LoginPrompt onLogin={setAccessToken} />
+        return (
+            <LoginPrompt
+                onLogin={setAccessToken}
+                baseUrl={baseUrl}
+                serverUrl={serverUrl}
+                setServerUrl={setServerUrl}
+                clearServerUrl={clearServerUrl}
+            />
+        )
     }
 
     // Authenticating (also covers the gap before useAuth effect starts)
@@ -170,6 +192,10 @@ export function App() {
             return (
                 <LoginPrompt
                     onLogin={setAccessToken}
+                    baseUrl={baseUrl}
+                    serverUrl={serverUrl}
+                    setServerUrl={setServerUrl}
+                    clearServerUrl={clearServerUrl}
                     error={authError ?? 'Authentication failed'}
                 />
             )

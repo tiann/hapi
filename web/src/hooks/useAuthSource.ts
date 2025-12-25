@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { getTelegramWebApp, isTelegramEnvironment } from './useTelegram'
 import type { AuthSource } from './useAuth'
 
-const ACCESS_TOKEN_KEY = 'hapi_access_token'
+const ACCESS_TOKEN_PREFIX = 'hapi_access_token::'
 
 function getTelegramInitData(): string | null {
     const tg = getTelegramWebApp()
@@ -21,31 +21,35 @@ function getTelegramInitData(): string | null {
     return initData || null
 }
 
-function getStoredAccessToken(): string | null {
+function getAccessTokenKey(baseUrl: string): string {
+    return `${ACCESS_TOKEN_PREFIX}${baseUrl}`
+}
+
+function getStoredAccessToken(key: string): string | null {
     try {
-        return localStorage.getItem(ACCESS_TOKEN_KEY)
+        return localStorage.getItem(key)
     } catch {
         return null
     }
 }
 
-function storeAccessToken(token: string): void {
+function storeAccessToken(key: string, token: string): void {
     try {
-        localStorage.setItem(ACCESS_TOKEN_KEY, token)
+        localStorage.setItem(key, token)
     } catch {
         // Ignore storage errors
     }
 }
 
-function clearStoredAccessToken(): void {
+function clearStoredAccessToken(key: string): void {
     try {
-        localStorage.removeItem(ACCESS_TOKEN_KEY)
+        localStorage.removeItem(key)
     } catch {
         // Ignore storage errors
     }
 }
 
-export function useAuthSource(): {
+export function useAuthSource(baseUrl: string): {
     authSource: AuthSource | null
     isLoading: boolean
     isTelegram: boolean
@@ -56,9 +60,15 @@ export function useAuthSource(): {
     const [isLoading, setIsLoading] = useState(true)
     const [isTelegram, setIsTelegram] = useState(false)
     const retryCountRef = useRef(0)
+    const accessTokenKey = useMemo(() => getAccessTokenKey(baseUrl), [baseUrl])
 
     // Initialize auth source on mount, with retry for delayed Telegram initData
     useEffect(() => {
+        retryCountRef.current = 0
+        setAuthSource(null)
+        setIsTelegram(false)
+        setIsLoading(true)
+
         const telegramInitData = getTelegramInitData()
 
         if (telegramInitData) {
@@ -70,7 +80,7 @@ export function useAuthSource(): {
         }
 
         // Check for stored access token as fallback
-        const storedToken = getStoredAccessToken()
+        const storedToken = getStoredAccessToken(accessTokenKey)
         if (storedToken) {
             setAuthSource({ type: 'accessToken', token: storedToken })
             setIsLoading(false)
@@ -108,17 +118,17 @@ export function useAuthSource(): {
         return () => {
             clearInterval(interval)
         }
-    }, [])
+    }, [accessTokenKey])
 
     const setAccessToken = useCallback((token: string) => {
-        storeAccessToken(token)
+        storeAccessToken(accessTokenKey, token)
         setAuthSource({ type: 'accessToken', token })
-    }, [])
+    }, [accessTokenKey])
 
     const clearAuth = useCallback(() => {
-        clearStoredAccessToken()
+        clearStoredAccessToken(accessTokenKey)
         setAuthSource(null)
-    }, [])
+    }, [accessTokenKey])
 
     return {
         authSource,

@@ -33,7 +33,7 @@ function getAuthPayload(source: AuthSource): { initData: string } | { accessToke
     return { accessToken: source.token }
 }
 
-export function useAuth(authSource: AuthSource | null): {
+export function useAuth(authSource: AuthSource | null, baseUrl: string): {
     token: string | null
     user: AuthResponse['user'] | null
     api: ApiClient | null
@@ -83,7 +83,7 @@ export function useAuth(authSource: AuthSource | null): {
             lastRefreshAttemptRef.current = now
 
             try {
-                const client = new ApiClient('')
+                const client = new ApiClient('', { baseUrl })
                 const auth = await client.authenticate(getAuthPayload(currentSource))
                 tokenRef.current = auth.token
                 setToken(auth.token)
@@ -115,16 +115,17 @@ export function useAuth(authSource: AuthSource | null): {
                 refreshPromiseRef.current = null
             }
         }
-    }, [])
+    }, [baseUrl])
 
     const api = useMemo(() => (
         token
             ? new ApiClient(token, {
+                baseUrl,
                 getToken: () => tokenRef.current,
                 onUnauthorized: () => refreshAuth({ force: true })
             })
             : null
-    ), [refreshAuth, token])
+    ), [baseUrl, refreshAuth, token])
 
     useEffect(() => {
         let isCancelled = false
@@ -138,7 +139,7 @@ export function useAuth(authSource: AuthSource | null): {
             setIsLoading(true)
             setError(null)
             try {
-                const client = new ApiClient('') // temporary for auth call
+                const client = new ApiClient('', { baseUrl }) // temporary for auth call
                 const auth = await client.authenticate(getAuthPayload(authSource))
                 if (isCancelled) return
                 setToken(auth.token)
@@ -158,7 +159,16 @@ export function useAuth(authSource: AuthSource | null): {
         return () => {
             isCancelled = true
         }
-    }, [authSource])
+    }, [authSource, baseUrl])
+
+    useEffect(() => {
+        tokenRef.current = null
+        refreshPromiseRef.current = null
+        lastRefreshAttemptRef.current = 0
+        setToken(null)
+        setUser(null)
+        setError(null)
+    }, [baseUrl])
 
     useEffect(() => {
         if (!token || !authSource) {

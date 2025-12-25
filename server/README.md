@@ -23,7 +23,7 @@ See `src/configuration.ts` for all options.
 
 - `TELEGRAM_BOT_TOKEN` - Token from @BotFather.
 - `ALLOWED_CHAT_IDS` - Comma-separated chat IDs allowed to use the bot.
-- `WEBAPP_URL` - Public HTTPS URL for Telegram Mini App access.
+- `WEBAPP_URL` - Public HTTPS URL for Telegram Mini App access. Also used to derive default CORS origins for the web app.
 
 ### Optional
 
@@ -200,4 +200,14 @@ The server build output is `server/dist/index.js`, and the web assets are in `we
 ## Networking notes
 
 - Telegram Mini Apps require HTTPS and a public URL. If the server has no public IP, use Cloudflare Tunnel or Tailscale and set `WEBAPP_URL` to the HTTPS endpoint.
-- If the web app is hosted on a different origin, set `CORS_ORIGINS` accordingly.
+- If the web app is hosted on a different origin, set `CORS_ORIGINS` (or `WEBAPP_URL`) to include that static host origin.
+
+## Standalone web hosting
+
+The web UI can be hosted separately from the server (for example on GitHub Pages or Cloudflare Pages):
+
+1. Build and deploy `web/dist` from the repo root.
+2. Set `CORS_ORIGINS` (or `WEBAPP_URL`) to the static host origin.
+3. Open the static site, click the Server button on the login screen, and enter the hapi server origin.
+
+Leaving the server override empty preserves the default same-origin behavior when the server serves the web assets directly.

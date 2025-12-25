@@ -14,7 +14,7 @@ type SSESubscription = {
     machineId?: string
 }
 
-function buildEventsUrl(token: string, subscription: SSESubscription): string {
+function buildEventsUrl(baseUrl: string, token: string, subscription: SSESubscription): string {
     const params = new URLSearchParams()
     params.set('token', token)
     if (subscription.all) {
@@ -27,12 +27,18 @@ function buildEventsUrl(token: string, subscription: SSESubscription): string {
         params.set('machineId', subscription.machineId)
     }
 
-    return `/api/events?${params.toString()}`
+    const path = `/api/events?${params.toString()}`
+    try {
+        return new URL(path, baseUrl).toString()
+    } catch {
+        return path
+    }
 }
 
 export function useSSE(options: {
     enabled: boolean
     token: string
+    baseUrl: string
     subscription?: SSESubscription
     onEvent: (event: SyncEvent) => void
     onConnect?: () => void
@@ -74,7 +80,7 @@ export function useSSE(options: {
             return
         }
 
-        const url = buildEventsUrl(options.token, subscription)
+        const url = buildEventsUrl(options.baseUrl, options.token, subscription)
         const eventSource = new EventSource(url)
         eventSourceRef.current = eventSource
 
@@ -148,5 +154,5 @@ export function useSSE(options: {
                 eventSourceRef.current = null
             }
         }
-    }, [options.enabled, options.token, subscriptionKey, queryClient])
+    }, [options.baseUrl, options.enabled, options.token, subscriptionKey, queryClient])
 }
