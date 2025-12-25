@@ -74,6 +74,10 @@ export async function updateSettings(
   const MAX_LOCK_ATTEMPTS = 50;        // Maximum number of attempts (5 seconds total)
   const STALE_LOCK_TIMEOUT_MS = 10000; // Consider lock stale after 10 seconds
 
+  if (!existsSync(configuration.happyHomeDir)) {
+    await mkdir(configuration.happyHomeDir, { recursive: true });
+  }
+
   const lockFile = configuration.settingsFile + '.lock';
   const tmpFile = configuration.settingsFile + '.tmp';
   let fileHandle;
@@ -114,11 +118,6 @@ export async function updateSettings(
 
     // Apply update
     const updated = await updater(current);
-
-    // Ensure directory exists
-    if (!existsSync(configuration.happyHomeDir)) {
-      await mkdir(configuration.happyHomeDir, { recursive: true });
-    }
 
     // Write atomically using rename
     await writeFile(tmpFile, JSON.stringify(updated, null, 2));
