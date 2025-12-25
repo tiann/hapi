@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
 import { configuration } from '../../configuration'
+import { safeCompareStrings } from '../../utils/crypto'
 import type { SyncEngine } from '../../sync/syncEngine'
 
 const bearerSchema = z.string().regex(/^Bearer\s+(.+)$/i)
@@ -32,7 +33,7 @@ export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono {
         }
 
         const token = parsed.data.replace(/^Bearer\s+/i, '')
-        if (token !== configuration.cliApiToken) {
+        if (!safeCompareStrings(token, configuration.cliApiToken)) {
             return c.json({ error: 'Invalid token' }, 401)
         }
 

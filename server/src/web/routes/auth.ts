@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import { SignJWT } from 'jose'
 import { z } from 'zod'
 import { configuration } from '../../configuration'
+import { safeCompareStrings } from '../../utils/crypto'
 import { validateTelegramInitData } from '../telegramInitData'
 import { getOrCreateOwnerId } from '../ownerId'
 import type { WebAppEnv } from '../middleware/auth'
@@ -33,7 +34,7 @@ export function createAuthRoutes(jwtSecret: Uint8Array): Hono<WebAppEnv> {
 
         // Access Token authentication (CLI_API_TOKEN)
         if ('accessToken' in parsed.data) {
-            if (parsed.data.accessToken !== configuration.cliApiToken) {
+            if (!safeCompareStrings(parsed.data.accessToken, configuration.cliApiToken)) {
                 return c.json({ error: 'Invalid access token' }, 401)
             }
             userId = await getOrCreateOwnerId()
