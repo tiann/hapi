@@ -13,5 +13,7 @@
     "npm": {
         "publish": false
     },
-    "hooks": {}
+    "hooks": {
+        "after:bump": "node .release-it.notes.js ${latestTag} ${version} > ../RELEASE_NOTES.md && git add ../RELEASE_NOTES.md"
+    }
 }

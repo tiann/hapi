@@ -40,10 +40,18 @@ jobs:
               env:
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
               run: |
-                  gh release create "${GITHUB_REF#refs/tags/}" \
-                      --title "Release ${GITHUB_REF#refs/tags/}" \
-                      --generate-notes \
-                      cli/release-artifacts/*
+                  NOTES_FILE="RELEASE_NOTES.md"
+                  if [ -f "$NOTES_FILE" ]; then
+                      gh release create "${GITHUB_REF#refs/tags/}" \
+                          --title "Release ${GITHUB_REF#refs/tags/}" \
+                          --notes-file "$NOTES_FILE" \
+                          cli/release-artifacts/*
+                  else
+                      gh release create "${GITHUB_REF#refs/tags/}" \
+                          --title "Release ${GITHUB_REF#refs/tags/}" \
+                          --generate-notes \
+                          cli/release-artifacts/*
+                  fi
             - name: Update Homebrew formula
               continue-on-error: true
               env:
