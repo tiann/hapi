@@ -10,6 +10,18 @@ COPY web/package.json ./web/package.json
 RUN bun install --frozen-lockfile
 
 
+FROM oven/bun:1.3.4 AS prod-deps
+
+WORKDIR /home/bun/app
+
+COPY bun.lock package.json tsconfig.base.json ./
+COPY cli/package.json ./cli/package.json
+COPY server/package.json ./server/package.json
+COPY web/package.json ./web/package.json
+
+RUN bun install --frozen-lockfile --production --filter hapi-server
+
+
 FROM deps AS build
 
 # Build web assets first to improve caching
@@ -37,7 +49,7 @@ VOLUME /data
 
 EXPOSE 3006
 
-COPY --from=deps /home/bun/app/node_modules ./node_modules
+COPY --from=prod-deps /home/bun/app/node_modules ./node_modules
 COPY --from=build /home/bun/app/server/dist ./server/dist
 COPY --from=build /home/bun/app/web/dist ./web/dist
 
