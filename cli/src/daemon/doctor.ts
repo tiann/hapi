@@ -22,12 +22,13 @@ export async function findAllHappyProcesses(): Promise<Array<{ pid: number, comm
       
       // Check if it's a HAPI process
       const isHappyBinary = name === 'hapi' || name === 'hapi.exe' || /\bhapi(\.exe)?\b/.test(cmd);
+      // Dev mode: running via bun/node with src/index.ts (production uses compiled binary)
+      const isDevMode = cmd.includes('src/index.ts');
       const isHappy = name.includes('happy') ||
                       name === 'node' && cmd.includes('happy-cli') ||
                       cmd.includes('happy-coder') ||
                       isHappyBinary ||
-                      (cmd.includes('tsx') && cmd.includes('src/index.ts') && cmd.includes('happy-cli')) ||
-                      (cmd.includes('bun') && cmd.includes('src/index.ts') && cmd.includes('happy-cli'));
+                      isDevMode;
       
       if (!isHappy) continue;
 
@@ -36,17 +37,17 @@ export async function findAllHappyProcesses(): Promise<Array<{ pid: number, comm
       if (proc.pid === process.pid) {
         type = 'current';
       } else if (cmd.includes('--version')) {
-        type = cmd.includes('tsx') ? 'dev-daemon-version-check' : 'daemon-version-check';
+        type = isDevMode ? 'dev-daemon-version-check' : 'daemon-version-check';
       } else if (cmd.includes('daemon start-sync') || cmd.includes('daemon start')) {
-        type = cmd.includes('tsx') ? 'dev-daemon' : 'daemon';
+        type = isDevMode ? 'dev-daemon' : 'daemon';
       } else if (cmd.includes('--started-by daemon')) {
-        type = cmd.includes('tsx') ? 'dev-daemon-spawned' : 'daemon-spawned-session';
+        type = isDevMode ? 'dev-daemon-spawned' : 'daemon-spawned-session';
       } else if (cmd.includes('doctor')) {
-        type = cmd.includes('tsx') ? 'dev-doctor' : 'doctor';
+        type = isDevMode ? 'dev-doctor' : 'doctor';
       } else if (cmd.includes('--yolo')) {
         type = 'dev-session';
       } else {
-        type = cmd.includes('tsx') ? 'dev-related' : 'user-session';
+        type = isDevMode ? 'dev-related' : 'user-session';
       }
 
       allProcesses.push({ pid: proc.pid, command: cmd || name, type });

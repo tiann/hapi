@@ -264,7 +264,7 @@ All data is plain JSON over TLS; authentication is `CLI_API_TOKEN` (no end-to-en
 
 `hapi doctor` uses `ps aux | grep` to find all HAPI processes:
 - Production: matches `hapi` binary, `happy-coder`
-- Development: matches `tsx.*src/index.ts`
+- Development: matches `src/index.ts` (run via `bun`)
 - Categorizes by command args: daemon, daemon-spawned, user-session, doctor
 
 ### Clean Runaway Processes

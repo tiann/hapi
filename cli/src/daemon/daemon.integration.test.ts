@@ -256,7 +256,7 @@ describe.skipIf(!await isServerHealthy())('Daemon Integration Tests', { timeout:
   it('should not allow starting a second daemon', async () => {
     // Daemon is already running from beforeEach
     // Try to start another daemon
-    const secondChild = spawn('yarn', ['tsx', 'src/index.ts', 'daemon', 'start-sync'], {
+    const secondChild = spawn('bun', ['src/index.ts', 'daemon', 'start-sync'], {
       cwd: process.cwd(),
       env: process.env,
       stdio: ['ignore', 'pipe', 'pipe']

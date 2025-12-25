@@ -5,7 +5,7 @@
  *
  * HAPI CLI runs in two modes:
  * 1. **Compiled binary**: A single executable built with `bun build --compile`
- * 2. **Development mode**: Running TypeScript directly via `tsx` or `bun`
+ * 2. **Development mode**: Running TypeScript directly via `bun`
  *
  * ## Execution Modes
  *
@@ -15,7 +15,7 @@
  * - No additional entrypoint needed - just pass args to `process.execPath`
  *
  * **Development Mode:**
- * - Running via `tsx src/index.ts` or `bun src/index.ts`
+ * - Running via `bun src/index.ts`
  * - Spawn child processes using the same runtime with `src/index.ts` entrypoint
  *
  * ## Cross-Platform Support
@@ -70,7 +70,7 @@ export function getHappyCliCommand(args: string[]): HappyCliCommand {
     };
   }
 
-  // Node.js with tsx: preserve execArgv (which includes tsx loader)
+  // Node.js fallback: preserve execArgv (for compatibility)
   return {
     command: process.execPath,
     args: [...process.execArgv, entrypoint, ...args]
