@@ -13,10 +13,10 @@
     "directory": "cli"
   },
   "bin": {
-    "hapi": "bin/hapi.js"
+    "hapi": "bin/hapi.cjs"
   },
   "files": [
-    "bin/hapi.js"
+    "bin/hapi.cjs"
   ],
   "imports": {
     "#embedded-assets": {
