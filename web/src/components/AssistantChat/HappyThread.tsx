@@ -82,6 +82,7 @@ export function HappyThread(props: {
     const prevRenderedCountRef = useRef(props.renderedMessagesCount)
     const autoScrollEnabledRef = useRef(autoScrollEnabled)
     const newMessageCountRef = useRef(newMessageCount)
+    const hasBootstrappedRef = useRef(false)
 
     // Keep refs in sync with state
     useEffect(() => {
@@ -121,10 +122,22 @@ export function HappyThread(props: {
         const currentCount = props.renderedMessagesCount
         const wasLoadingMore = wasLoadingMoreRef.current
         wasLoadingMoreRef.current = props.isLoadingMoreMessages
+
+        if (props.isLoadingMessages) {
+            prevRenderedCountRef.current = currentCount
+            return
+        }
+
+        if (!hasBootstrappedRef.current) {
+            hasBootstrappedRef.current = true
+            prevRenderedCountRef.current = currentCount
+            return
+        }
+
         prevRenderedCountRef.current = currentCount
 
         // Skip during loading states
-        if (props.isLoadingMoreMessages || props.isLoadingMessages) {
+        if (props.isLoadingMoreMessages) {
             return
         }
 
@@ -154,6 +167,7 @@ export function HappyThread(props: {
         setAutoScrollEnabled(true)
         setNewMessageCount(0)
         prevRenderedCountRef.current = 0
+        hasBootstrappedRef.current = false
     }, [props.sessionId])
 
     const handleLoadMore = useCallback(() => {
