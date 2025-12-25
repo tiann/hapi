@@ -39,6 +39,12 @@ npm install -g @twsxtd/hapi
 
 Download from [Releases](https://github.com/tiann/hapi/releases).
 
+**macOS users**: Remove the quarantine attribute before running:
+
+```bash
+xattr -d com.apple.quarantine ./hapi
+```
+
 ## Quickstart
 
 1. Start the server on a machine you control:
@@ -63,6 +69,22 @@ hapi
 ```
 
 4. Open the UI in a browser at the server URL and log in with `CLI_API_TOKEN`.
+
+### Finding Your Access Token
+
+On first run, an Access Token is automatically generated and saved to `~/.hapi/settings.json`.
+
+View your token:
+
+```bash
+cat ~/.hapi/settings.json | grep cliApiToken
+```
+
+Or set your own via environment variable (takes priority over generated token):
+
+```bash
+export CLI_API_TOKEN="your-secret-token"
+```
 
 ## Telegram Mini App (optional)
 
