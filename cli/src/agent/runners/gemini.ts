@@ -23,7 +23,7 @@ const command = process.env.HAPPY_GEMINI_COMMAND
 
 const args = parseArgs(process.env.HAPPY_GEMINI_ARGS)
     ?? parseArgs(process.env.GEMINI_ACP_ARGS)
-    ?? ['--acp'];
+    ?? ['--experimental-acp'];
 
 AgentRegistry.register('gemini', () => new AcpSdkBackend({
     command,

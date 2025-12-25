@@ -25,6 +25,7 @@ Run Claude Code, Codex, or Gemini sessions from your terminal and control them r
 - `hapi` - Start a Claude Code session (passes through Claude CLI flags). See `src/index.ts`.
 - `hapi codex` - Start Codex mode. See `src/codex/runCodex.ts`.
 - `hapi gemini` - Start Gemini mode via ACP. See `src/agent/runners/runAgentSession.ts`.
+  Note: Gemini runs in remote mode only; it waits for messages from the server UI/Telegram.
 
 ### Authentication
 
@@ -83,7 +84,7 @@ See `src/configuration.ts` for all options.
 ### Gemini/Agent
 
 - `HAPPY_GEMINI_COMMAND` - Gemini executable command (default: gemini).
-- `HAPPY_GEMINI_ARGS` - Gemini arguments (default: --acp).
+- `HAPPY_GEMINI_ARGS` - Gemini arguments (default: --experimental-acp).
 
 ## Storage
 
