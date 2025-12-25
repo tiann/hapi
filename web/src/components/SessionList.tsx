@@ -98,22 +98,27 @@ export function SessionList(props: {
     onNewSession: () => void
     onRefresh: () => void
     isLoading: boolean
+    renderHeader?: boolean
 }) {
+    const { renderHeader = true } = props
+
     return (
         <div className="mx-auto w-full max-w-content flex flex-col">
-            <div className="flex items-center justify-between px-3 py-1">
-                <div className="text-xs text-[var(--app-hint)]">
-                    {props.sessions.length} sessions
+            {renderHeader ? (
+                <div className="flex items-center justify-between px-3 py-1">
+                    <div className="text-xs text-[var(--app-hint)]">
+                        {props.sessions.length} sessions
+                    </div>
+                    <button
+                        type="button"
+                        onClick={props.onNewSession}
+                        className="session-list-new-button p-1.5 rounded-full text-[var(--app-link)] transition-colors"
+                        title="New Session"
+                    >
+                        <PlusIcon className="h-5 w-5" />
+                    </button>
                 </div>
-                <button
-                    type="button"
-                    onClick={props.onNewSession}
-                    className="session-list-new-button p-1.5 rounded-full text-[var(--app-link)] transition-colors"
-                    title="New Session"
-                >
-                    <PlusIcon className="h-5 w-5" />
-                </button>
-            </div>
+            ) : null}
 
             <div className="flex flex-col divide-y divide-[var(--app-divider)]">
                 {props.sessions.map((s) => (
