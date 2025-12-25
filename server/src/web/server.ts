@@ -163,8 +163,8 @@ export async function startWebServer(options: {
     jwtSecret: Uint8Array
     socketEngine: SocketEngine
 }): Promise<BunServer<WebSocketData>> {
-    const bunRuntime = (globalThis as typeof globalThis & { Bun?: { isCompiled?: boolean } }).Bun
-    const embeddedAssetMap = bunRuntime?.isCompiled ? await loadEmbeddedAssetMap() : null
+    const isCompiled = Bun.main?.startsWith('/$bunfs') ?? false
+    const embeddedAssetMap = isCompiled ? await loadEmbeddedAssetMap() : null
     const app = createWebApp({
         getSyncEngine: options.getSyncEngine,
         getSseManager: options.getSseManager,
