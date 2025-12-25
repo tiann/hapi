@@ -104,6 +104,14 @@ export async function getOrCreateCliApiToken(dataDir: string): Promise<CliApiTok
         if (isWeakToken(envToken)) {
             console.warn('[WARN] CLI_API_TOKEN appears to be weak. Consider using a stronger secret.')
         }
+
+        // Persist env token to file if not already saved (prevents token loss on env var issues)
+        const settings = await readSettings(settingsFile)
+        if (settings !== null && !settings.cliApiToken) {
+            settings.cliApiToken = envToken
+            await writeSettings(settingsFile, settings)
+        }
+
         return { token: envToken, source: 'env', isNew: false, filePath: settingsFile }
     }
 
