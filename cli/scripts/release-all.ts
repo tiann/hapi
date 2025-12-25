@@ -45,6 +45,24 @@ async function main(): Promise<void> {
     const flags = [dryRun && 'dry-run', publishNpm && 'publish-npm', skipBuild && 'skip-build'].filter(Boolean);
     console.log(`\n🚀 Starting release v${version}${flags.length ? ` (${flags.join(', ')})` : ''}\n`);
 
+    // Pre-check: Ensure we're on main branch
+    console.log('🔍 Pre-checks...');
+    const currentBranch = execSync('git branch --show-current', { encoding: 'utf-8', cwd: repoRoot }).trim();
+    if (currentBranch !== 'main') {
+        console.error(`❌ Release must be run from main branch (current: ${currentBranch})`);
+        process.exit(1);
+    }
+    console.log('   ✓ On main branch');
+
+    // Pre-check: Ensure npm is logged in
+    try {
+        const npmUser = execSync('npm whoami', { encoding: 'utf-8' }).trim();
+        console.log(`   ✓ Logged in to npm as: ${npmUser}`);
+    } catch {
+        console.error('❌ Not logged in to npm. Run `npm login` first.');
+        process.exit(1);
+    }
+
     // Step 1: Update package.json version
     console.log('📦 Step 1: Updating package.json version...');
     const pkgPath = join(projectRoot, 'package.json');
