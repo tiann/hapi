@@ -24,7 +24,6 @@
     },
     "devDependencies": {
         "concurrently": "^9.2.1",
-        "vite-plugin-pwa": "^1.2.0",
-        "workbox-window": "^7.4.0"
+        "vite-plugin-pwa": "^1.2.0"
     }
 }
