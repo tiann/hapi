@@ -12,4 +12,13 @@ jobs:
             - uses: oven-sh/setup-bun@v2
             - run: bun install
             - run: bun typecheck
+            - name: Create integration test env
+              run: |
+                  {
+                      echo "HAPI_HOME=~/.hapi-dev-test"
+                      echo "HAPI_SERVER_URL=http://localhost:3006"
+                      echo "CLI_API_TOKEN=${CLI_API_TOKEN:-dev-test-token}"
+                      echo "HAPI_DAEMON_HTTP_TIMEOUT=60000"
+                      echo "HAPI_DAEMON_HEARTBEAT_INTERVAL=30000"
+                  } > cli/.env.integration-test
             - run: bun run test
