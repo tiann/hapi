@@ -8,12 +8,10 @@
         "addUntrackedFiles": false
     },
     "github": {
-        "release": true,
-        "releaseName": "v${version}",
-        "releaseNotes": "node .release-it.notes.js ${latestTag} ${version}"
+        "release": false
     },
     "npm": {
-        "publish": true
+        "publish": false
     },
     "hooks": {}
 }

@@ -42,6 +42,7 @@
     "publish-npm": "bun run scripts/publish-npm.ts",
     "publish-npm:dry-run": "bun run scripts/publish-npm.ts --dry-run",
     "tools:unpack": "bun run scripts/unpack-tools.ts",
+    "update-homebrew-formula": "bun run scripts/update-homebrew-formula.ts",
     "test": "tsx --env-file .env.integration-test node_modules/.bin/vitest run",
     "test:win": "vitest run",
     "dev": "tsx src/index.ts",

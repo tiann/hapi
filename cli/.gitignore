@@ -12,6 +12,7 @@ oclif.manifest.json
 
 # Build outputs
 /dist-exe/
+/release-artifacts/
 
 # Generated npm platform packages (created by prepare-npm-packages.ts)
 /npm/*/package.json

@@ -13,15 +13,38 @@ Run Claude Code / Codex / Gemini sessions locally and control them remotely thro
 - Track session progress with todo lists.
 - Supports multiple AI backends: Claude Code, Codex, and Gemini.
 
+## Installation
+
+### Homebrew (macOS/Linux)
+
+```bash
+brew install tiann/tap/hapi
+```
+
+### npm/npx
+
+```bash
+npx @twsxtd/hapi
+```
+
+Or install globally:
+
+```bash
+npm install -g @twsxtd/hapi
+```
+
+### Prebuilt binary
+
+Download from [Releases](https://github.com/tiann/hapi/releases).
+
 ## Quickstart
 
 1. Start the server on a machine you control:
 
 ```bash
-npx @twsxtd/hapi server
+hapi server
+# or: npx @twsxtd/hapi server
 ```
-
-> Alternatively, download the prebuilt binary from [Releases](https://github.com/tiann/hapi/releases) and run `hapi server`.
 
 2. If the server has no public IP, expose it over HTTPS:
    - Cloudflare Tunnel: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/
@@ -33,7 +56,8 @@ npx @twsxtd/hapi server
 # If the server is not on localhost:3006
 export HAPI_SERVER_URL="https://your-domain.example"
 
-npx @twsxtd/hapi
+hapi
+# or: npx @twsxtd/hapi
 ```
 
 4. Open the UI in a browser at the server URL and log in with `CLI_API_TOKEN`.
@@ -65,9 +89,9 @@ ALLOWED_CHAT_IDS="12345678"
 
 ## Multi-agent support
 
-- `npx @twsxtd/hapi` - Start a Claude Code session.
-- `npx @twsxtd/hapi codex` - Start an OpenAI Codex session.
-- `npx @twsxtd/hapi gemini` - Start a Google Gemini session.
+- `hapi` - Start a Claude Code session.
+- `hapi codex` - Start an OpenAI Codex session.
+- `hapi gemini` - Start a Google Gemini session.
 
 ## CLI config file
 

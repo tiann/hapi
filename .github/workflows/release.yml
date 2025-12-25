@@ -16,17 +16,26 @@ jobs:
             - uses: oven-sh/setup-bun@v2
             - run: bun install
             - run: bun run build:single-exe:all
-            - name: Package binaries
+            - name: Package release artifacts
               run: |
                   cd cli/dist-exe
+                  mkdir -p ../release-artifacts
+
                   for dir in bun-*/; do
-                      name="${dir%/}"
-                      if [[ "$name" == *"windows"* ]]; then
-                          zip -r "${name}.zip" "$dir"
+                      target="${dir%/}"
+                      # bun-darwin-arm64 -> hapi-darwin-arm64
+                      name="hapi-${target#bun-}"
+                      name="${name/windows/win32}"
+
+                      if [[ "$target" == *"windows"* ]]; then
+                          zip -j "../release-artifacts/${name}.zip" "$target"/hapi.exe
                       else
-                          tar -czvf "${name}.tar.gz" "$dir"
+                          tar -czvf "../release-artifacts/${name}.tar.gz" -C "$target" hapi
                       fi
                   done
+
+                  cd ../release-artifacts
+                  sha256sum * > checksums.txt
             - name: Create Release
               env:
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -34,5 +43,11 @@ jobs:
                   gh release create "${GITHUB_REF#refs/tags/}" \
                       --title "Release ${GITHUB_REF#refs/tags/}" \
                       --generate-notes \
-                      cli/dist-exe/*.tar.gz \
-                      cli/dist-exe/*.zip
+                      cli/release-artifacts/*
+            - name: Update Homebrew formula
+              continue-on-error: true
+              env:
+                  GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+              run: |
+                  VERSION="${GITHUB_REF#refs/tags/v}"
+                  cd cli && bun run update-homebrew-formula --version "$VERSION" --push
