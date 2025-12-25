@@ -15,6 +15,7 @@ import { useActiveWord } from '@/hooks/useActiveWord'
 import { useActiveSuggestions } from '@/hooks/useActiveSuggestions'
 import { applySuggestion } from '@/utils/applySuggestion'
 import { usePlatform } from '@/hooks/usePlatform'
+import { usePWAInstall } from '@/hooks/usePWAInstall'
 import { FloatingOverlay } from '@/components/ChatInput/FloatingOverlay'
 import { Autocomplete } from '@/components/ChatInput/Autocomplete'
 import { StatusBar } from '@/components/AssistantChat/StatusBar'
@@ -118,6 +119,9 @@ export function HappyComposer(props: {
     }, [controlledByUser])
 
     const { haptic: platformHaptic, isTouch } = usePlatform()
+    const { isStandalone, isIOS } = usePWAInstall()
+    const isIOSPWA = isIOS && isStandalone
+    const bottomPaddingClass = isIOSPWA ? 'pb-0' : 'pb-3'
     const activeWord = useActiveWord(inputState.text, inputState.selection, autocompletePrefixes)
     const [suggestions, selectedIndex, moveUp, moveDown, clearSuggestions] = useActiveSuggestions(
         activeWord,
@@ -436,7 +440,7 @@ export function HappyComposer(props: {
     ])
 
     return (
-        <div className="px-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-2 bg-[var(--app-bg)]">
+        <div className={`px-3 ${bottomPaddingClass} pt-2 bg-[var(--app-bg)]`}>
             <div className="mx-auto w-full max-w-content">
                 <ComposerPrimitive.Root className="relative">
                     {overlays}
