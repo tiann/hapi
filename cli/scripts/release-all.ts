@@ -95,11 +95,7 @@ async function main(): Promise<void> {
         run(`npm publish --access public${dryRun ? ' --dry-run' : ''}`, npmDir);
     }
 
-    // Step 4: bun install to get complete lockfile
-    console.log('\n📥 Step 4: Updating lockfile...');
-    run('bun install', repoRoot);
-
-    // Step 5: Publish main package
+    // Step 4: Publish main package
     console.log('\n📤 Step 5: Publishing main package...');
     run(`npm publish --access public${dryRun ? ' --dry-run' : ''}`);
 
@@ -109,6 +105,10 @@ async function main(): Promise<void> {
         return;
     }
 
+    // Step 5: bun install to get complete lockfile
+    console.log('\n📥 Step 4: Updating lockfile...');
+
+    run('bun install', repoRoot);
     // Step 6: Git commit + tag + push
     console.log('\n📝 Step 6: Creating git commit and tag...');
     run(`git add .`, repoRoot);
