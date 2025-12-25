@@ -30,6 +30,19 @@ RUN bun run build:web
 
 # Then build server
 COPY server ./server
+
+RUN test -f server/src/web/embeddedAssets.generated.ts || cat > server/src/web/embeddedAssets.generated.ts <<'EOF'
+// This file is generated during Docker builds.
+// It intentionally contains no embedded assets.
+
+export interface EmbeddedWebAsset {
+    path: string;
+    sourcePath: string;
+    mimeType: string;
+}
+
+export const embeddedAssets: EmbeddedWebAsset[] = [];
+EOF
 RUN bun run build:server
 
 
