@@ -1,4 +1,3 @@
-import { spawn } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { logger } from "@/ui/logger";
 import { restoreTerminalState } from "@/ui/terminalState";
@@ -6,14 +5,7 @@ import { claudeCheckSession } from "./utils/claudeCheckSession";
 import { getProjectPath } from "./utils/path";
 import { systemPrompt } from "./utils/systemPrompt";
 import { withBunRuntimeEnv } from "@/utils/bunRuntime";
-
-const isAbortError = (error: unknown): boolean => {
-    if (!error || typeof error !== 'object') {
-        return false;
-    }
-    const maybeError = error as { name?: string; code?: string };
-    return maybeError.name === 'AbortError' || maybeError.code === 'ABORT_ERR';
-};
+import { spawnWithAbort } from "@/utils/spawnWithAbort";
 
 export async function claudeLocal(opts: {
     abort: AbortSignal,
@@ -87,118 +79,21 @@ export async function claudeLocal(opts: {
                 ...opts.claudeEnvVars
             }
 
-            logger.debug('[ClaudeLocal] Spawning claude');
-            logger.debug(`[ClaudeLocal] Args: ${JSON.stringify(args)}`);
+            logger.debug(`[ClaudeLocal] Spawning claude with args: ${JSON.stringify(args)}`);
 
-            const child = spawn('claude', args, {
-                stdio: ['inherit', 'inherit', 'inherit'],
-                signal: opts.abort,
-                killSignal: 'SIGINT',
+            spawnWithAbort({
+                command: 'claude',
+                args,
                 cwd: opts.path,
                 env: withBunRuntimeEnv(env, { allowBunBeBun: false }),
+                signal: opts.abort,
+                logLabel: 'ClaudeLocal',
+                spawnName: 'claude',
+                installHint: 'Claude CLI',
+                includeCause: true,
+                logExit: true,
                 shell: process.platform === 'win32'
-            });
-            let settled = false;
-            const abortTimeoutMs = {
-                term: 1000,
-                kill: 3000
-            };
-            let abortTermTimeout: NodeJS.Timeout | null = null;
-            let abortKillTimeout: NodeJS.Timeout | null = null;
-            let forcedTermination = false;
-            let abortStartedAt: number | null = null;
-
-            const isAlive = () => child.exitCode === null && !child.killed;
-            const formatAbortElapsed = () => {
-                if (abortStartedAt === null) {
-                    return 'n/a';
-                }
-                return `${Date.now() - abortStartedAt}ms`;
-            };
-
-            const abortHandler = () => {
-                if (abortTermTimeout || abortKillTimeout) {
-                    logger.debug('[ClaudeLocal] Abort already in progress');
-                    return;
-                }
-                abortStartedAt = Date.now();
-                logger.debug('[ClaudeLocal] Abort signaled, waiting for SIGINT to exit');
-                abortTermTimeout = setTimeout(() => {
-                    if (isAlive()) {
-                        forcedTermination = true;
-                        logger.debug(`[ClaudeLocal] Abort timeout reached (${formatAbortElapsed()}), sending SIGTERM`);
-                        try {
-                            child.kill('SIGTERM');
-                        } catch (error) {
-                            logger.debug('[ClaudeLocal] Failed to send SIGTERM', error);
-                        }
-                    }
-
-                    abortKillTimeout = setTimeout(() => {
-                        if (isAlive()) {
-                            forcedTermination = true;
-                            logger.debug(`[ClaudeLocal] Abort timeout reached (${formatAbortElapsed()}), sending SIGKILL`);
-                            try {
-                                child.kill('SIGKILL');
-                            } catch (error) {
-                                logger.debug('[ClaudeLocal] Failed to send SIGKILL', error);
-                            }
-                        }
-                    }, abortTimeoutMs.kill);
-                }, abortTimeoutMs.term);
-            };
-
-            if (opts.abort.aborted) {
-                abortHandler();
-            } else {
-                opts.abort.addEventListener('abort', abortHandler);
-            }
-
-            const cleanupAbortHandler = () => {
-                if (abortTermTimeout) {
-                    clearTimeout(abortTermTimeout);
-                    abortTermTimeout = null;
-                }
-                if (abortKillTimeout) {
-                    clearTimeout(abortKillTimeout);
-                    abortKillTimeout = null;
-                }
-                opts.abort.removeEventListener('abort', abortHandler);
-            };
-            const finalize = (error?: Error) => {
-                if (settled) {
-                    return;
-                }
-                settled = true;
-                cleanupAbortHandler();
-                if (error) {
-                    reject(error);
-                } else {
-                    r();
-                }
-            };
-            child.on('error', (error) => {
-                if (opts.abort.aborted || isAbortError(error)) {
-                    logger.debug('[ClaudeLocal] Spawn aborted while switching');
-                    if (!child.pid) {
-                        finalize();
-                    }
-                    return;
-                }
-                const message = error instanceof Error ? error.message : String(error);
-                finalize(new Error(`Failed to spawn claude: ${message}. Is Claude installed and on PATH?`));
-            });
-            child.on('exit', (code, signal) => {
-                logger.debug(`[ClaudeLocal] Child exited (code=${code ?? 'null'}, signal=${signal ?? 'null'}, aborted=${opts.abort.aborted}, forced=${forcedTermination}, elapsed=${formatAbortElapsed()})`);
-                if ((signal === 'SIGTERM' || signal === 'SIGINT' || signal === 'SIGKILL') && opts.abort.aborted) {
-                    // Normal termination due to abort signal
-                    finalize();
-                } else if (signal) {
-                    finalize(new Error(`Process terminated with signal: ${signal}`));
-                } else {
-                    finalize();
-                }
-            });
+            }).then(r).catch(reject);
         });
     } finally {
         process.stdin.resume();

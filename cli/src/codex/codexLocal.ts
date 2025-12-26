@@ -1,7 +1,6 @@
-import { spawn } from 'node:child_process';
 import { logger } from '@/ui/logger';
 import { restoreTerminalState } from '@/ui/terminalState';
-import { killProcessByChildProcess } from '@/utils/process';
+import { spawnWithAbort } from '@/utils/spawnWithAbort';
 
 /**
  * Filter out 'resume' subcommand which is managed internally by hapi.
@@ -60,71 +59,17 @@ export async function codexLocal(opts: {
 
     process.stdin.pause();
     try {
-        await new Promise<void>((resolve, reject) => {
-            const child = spawn('codex', args, {
-                stdio: ['inherit', 'inherit', 'inherit'],
-                signal: opts.abort,
-                cwd: opts.path,
-                env: process.env
-            });
-
-            let abortKillTimeout: NodeJS.Timeout | null = null;
-            const abortHandler = () => {
-                if (abortKillTimeout) {
-                    return;
-                }
-                abortKillTimeout = setTimeout(() => {
-                    if (child.exitCode === null && !child.killed) {
-                        logger.debug('[CodexLocal] Abort timeout reached, sending SIGKILL');
-                        try {
-                            void killProcessByChildProcess(child, true);
-                        } catch (error) {
-                            logger.debug('[CodexLocal] Failed to send SIGKILL:', error);
-                        }
-                    }
-                }, 5000);
-            };
-
-            if (opts.abort.aborted) {
-                abortHandler();
-            } else {
-                opts.abort.addEventListener('abort', abortHandler);
-            }
-
-            const cleanupAbortHandler = () => {
-                if (abortKillTimeout) {
-                    clearTimeout(abortKillTimeout);
-                    abortKillTimeout = null;
-                }
-                opts.abort.removeEventListener('abort', abortHandler);
-            };
-
-            child.on('error', (error) => {
-                cleanupAbortHandler();
-                if (opts.abort.aborted) {
-                    resolve();
-                    return;
-                }
-                const message = error instanceof Error ? error.message : String(error);
-                reject(new Error(`Failed to spawn codex: ${message}. Is Codex CLI installed and on PATH?`, { cause: error }));
-            });
-
-            child.on('exit', (code, signal) => {
-                cleanupAbortHandler();
-                if (signal === 'SIGTERM' && opts.abort.aborted) {
-                    resolve();
-                    return;
-                }
-                if (signal) {
-                    reject(new Error(`Process terminated with signal: ${signal}`));
-                    return;
-                }
-                if (typeof code === 'number' && code !== 0) {
-                    reject(new Error(`Process exited with code: ${code}`));
-                    return;
-                }
-                resolve();
-            });
+        await spawnWithAbort({
+            command: 'codex',
+            args,
+            cwd: opts.path,
+            env: process.env,
+            signal: opts.abort,
+            logLabel: 'CodexLocal',
+            spawnName: 'codex',
+            installHint: 'Codex CLI',
+            includeCause: true,
+            logExit: true
         });
     } finally {
         process.stdin.resume();
