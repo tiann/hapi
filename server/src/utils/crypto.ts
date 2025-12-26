@@ -6,8 +6,9 @@ export function safeCompareStrings(a: string | null | undefined, b: string | nul
     }
     const bufA = Buffer.from(a, 'utf8')
     const bufB = Buffer.from(b, 'utf8')
-    if (bufA.length !== bufB.length) {
+    try {
+        return timingSafeEqual(bufA, bufB)
+    } catch {
         return false
     }
-    return timingSafeEqual(bufA, bufB)
 }
