@@ -6,7 +6,8 @@ import packageJson from '../package.json';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 /** Bun embeds compiled code in a virtual filesystem: /$bunfs/ (Linux/macOS) or /~BUN/ (Windows) */
-const isCompiled = Bun.main.includes('$bunfs') || Bun.main.includes('/~BUN/');
+const bunMain = globalThis.Bun?.main ?? '';
+const isCompiled = bunMain.includes('$bunfs') || bunMain.includes('/~BUN/');
 
 export function projectPath(): string {
     return resolve(__dirname, '..');
