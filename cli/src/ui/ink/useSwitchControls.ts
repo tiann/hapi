@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useInput } from 'ink';
+import { useInput, type Key } from 'ink';
+
+// Ink's Key type is incomplete - these properties exist at runtime but aren't typed
+type ExtendedKey = Key & {
+    sequence?: string;
+    name?: string;
+};
 
 export type ConfirmationMode = 'exit' | 'switch' | null;
 export type ActionInProgress = 'exiting' | 'switching' | null;
@@ -44,7 +50,7 @@ export function useSwitchControls(opts: {
         };
     }, []);
 
-    useInput(useCallback(async (input, key) => {
+    useInput(useCallback(async (input, key: ExtendedKey) => {
         if (actionInProgress) {
             return;
         }
