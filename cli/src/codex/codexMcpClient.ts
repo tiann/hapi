@@ -187,10 +187,11 @@ export class CodexMcpClient {
             })
         }).passthrough();
 
-        const setNotificationHandler = this.client.setNotificationHandler as (
-            schema: unknown,
-            handler: (notification: { params: { msg: any } }) => void
-        ) => void;
+        const setNotificationHandler =
+            this.client.setNotificationHandler.bind(this.client) as (
+                schema: unknown,
+                handler: (notification: { params: { msg: any } }) => void
+            ) => void;
 
         setNotificationHandler(codexNotificationSchema, (data) => {
             const msg = data.params.msg;
