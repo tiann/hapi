@@ -130,9 +130,9 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
     logger.debug(`[START] HAPI MCP server started at ${happyServer.url}`);
 
     // Variable to track current session instance (updated via onSessionReady callback)
-    let currentSession: Session | null = null;
+    const currentSessionRef: { current: Session | null } = { current: null };
     let exitCode = 0;
-    let archiveReason: string | null = null;
+    let archiveReason: string | undefined;
 
     const formatFailureReason = (message: string): string => {
         const maxLength = 200;
@@ -147,6 +147,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         onSessionHook: (sessionId, data) => {
             logger.debug(`[START] Session hook received: ${sessionId}`, data);
 
+            const currentSession = currentSessionRef.current;
             if (currentSession) {
                 const previousSessionId = currentSession.sessionId;
                 if (previousSessionId !== sessionId) {
@@ -394,7 +395,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
             }));
         },
         onSessionReady: (sessionInstance) => {
-            currentSession = sessionInstance;
+            currentSessionRef.current = sessionInstance;
         },
         mcpServers: {
             'hapi': {
@@ -409,7 +410,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         hookSettingsPath
     });
 
-    const localFailure = currentSession?.localLaunchFailure;
+    const localFailure = currentSessionRef.current?.localLaunchFailure;
     if (localFailure?.exitReason === 'exit') {
         exitCode = 1;
         archiveReason = `Local launch failed: ${formatFailureReason(localFailure.message)}`;
