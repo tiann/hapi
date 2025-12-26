@@ -6,6 +6,8 @@ import { useSwitchControls, type ConfirmationMode, type ActionInProgress } from 
 
 type Key = {
     ctrl?: boolean;
+    name?: string;
+    sequence?: string;
 };
 
 type SwitchState = {
@@ -192,6 +194,53 @@ describe('useSwitchControls', () => {
         await triggerInput('\u001b[1:3u', {});
         expect(latestState?.confirmationMode).toBe('switch');
         expect(latestState?.actionInProgress).toBe(null);
+    });
+
+    it('accepts CSI u space sequences', async () => {
+        const onSwitch = vi.fn();
+        await mount({ onSwitch });
+
+        await triggerInput('\u001b[32u', {});
+        expect(latestState?.confirmationMode).toBe('switch');
+    });
+
+    it('accepts CSI u space sequences with modifiers', async () => {
+        const onSwitch = vi.fn();
+        await mount({ onSwitch });
+
+        await triggerInput('\u001b[32;2u', {});
+        expect(latestState?.confirmationMode).toBe('switch');
+    });
+
+    it('ignores CSI u key-release space sequences', async () => {
+        const onSwitch = vi.fn();
+        await mount({ onSwitch });
+
+        await triggerInput(' ', {});
+        expect(latestState?.confirmationMode).toBe('switch');
+
+        await triggerInput('\u001b[32;2:3u', {});
+        expect(latestState?.confirmationMode).toBe('switch');
+        expect(onSwitch).not.toHaveBeenCalled();
+    });
+
+    it('accepts space via key name when input is empty', async () => {
+        const onSwitch = vi.fn();
+        await mount({ onSwitch });
+
+        await triggerInput('', { name: 'space' });
+        expect(latestState?.confirmationMode).toBe('switch');
+    });
+
+    it('ignores key-release sequences from key.sequence', async () => {
+        const onSwitch = vi.fn();
+        await mount({ onSwitch });
+
+        await triggerInput(' ', {});
+        expect(latestState?.confirmationMode).toBe('switch');
+
+        await triggerInput('', { sequence: '\u001b[1:3u' });
+        expect(latestState?.confirmationMode).toBe('switch');
     });
 
     it('does not switch on key-release space sequences', async () => {

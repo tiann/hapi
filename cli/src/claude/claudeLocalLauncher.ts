@@ -28,7 +28,7 @@ export async function claudeLocalLauncher(session: Session): Promise<'switch' | 
     // Handle abort
     let exitReason: 'switch' | 'exit' | null = null;
     const processAbortController = new AbortController();
-    let exutFuture = new Future<void>();
+    const exitFuture = new Future<void>();
     try {
         async function abort() {
 
@@ -38,7 +38,7 @@ export async function claudeLocalLauncher(session: Session): Promise<'switch' | 
             }
 
             // Await full exit
-            await exutFuture.promise;
+            await exitFuture.promise;
         }
 
         async function doAbort() {
@@ -133,7 +133,7 @@ export async function claudeLocalLauncher(session: Session): Promise<'switch' | 
     } finally {
 
         // Resolve future
-        exutFuture.resolve(undefined);
+        exitFuture.resolve(undefined);
 
         // Set handlers to no-op
         session.client.rpcHandlerManager.registerHandler('abort', async () => { });

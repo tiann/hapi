@@ -72,8 +72,14 @@ export function useSwitchControls(opts: {
             return;
         }
 
-        const isKeyRelease = /^\u001b\[[0-9;]*:3u$/.test(input);
-        const isSpace = Boolean(onSwitch) && !isKeyRelease && input === ' ';
+        const sequence = typeof key.sequence === 'string' ? key.sequence : input;
+        const isKeyRelease = typeof sequence === 'string' && /^\u001b\[[0-9;]*:3u$/.test(sequence);
+        const csiUMatch = typeof sequence === 'string'
+            ? sequence.match(/^\u001b\[(\d+)(?:;(\d+))?u$/)
+            : null;
+        const csiUCodepoint = csiUMatch ? Number(csiUMatch[1]) : null;
+        const isCsiUSpace = csiUCodepoint === 32;
+        const isSpace = Boolean(onSwitch) && !isKeyRelease && (input === ' ' || key.name === 'space' || isCsiUSpace);
         const hasPrintableInput = typeof input === 'string' && input.length > 0;
 
         if (isSpace) {
