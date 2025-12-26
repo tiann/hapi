@@ -186,6 +186,8 @@ export async function startDaemon(): Promise<void> {
       logger.debugLargeJson('[DAEMON RUN] Spawning session', options);
 
       const { directory, sessionId, machineId, approvedNewDirectoryCreation = true } = options;
+      const agent = options.agent ?? 'claude';
+      const yolo = options.yolo === true;
       let directoryCreated = false;
 
       try {
@@ -256,9 +258,9 @@ export async function startDaemon(): Promise<void> {
         }
 
         // Construct arguments for the CLI
-        const agentCommand = options.agent === 'codex'
+        const agentCommand = agent === 'codex'
           ? 'codex'
-          : options.agent === 'gemini'
+          : agent === 'gemini'
             ? 'gemini'
             : 'claude';
         const args = [
@@ -266,6 +268,15 @@ export async function startDaemon(): Promise<void> {
           '--hapi-starting-mode', 'remote',
           '--started-by', 'daemon'
         ];
+        if (yolo && agent === 'claude') {
+          args.push('--dangerously-skip-permissions');
+        }
+        if (yolo && agent === 'codex') {
+          args.push('--dangerously-bypass-approvals-and-sandbox');
+        }
+        if (yolo && agent === 'gemini') {
+          args.push('--approval-mode', 'yolo');
+        }
 
         // TODO: In future, sessionId could be used with --resume to continue existing sessions
         // For now, we ignore it - each spawn creates a new session

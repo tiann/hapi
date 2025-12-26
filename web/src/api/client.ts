@@ -227,10 +227,15 @@ export class ApiClient {
         return await this.request<MachinesResponse>('/api/machines')
     }
 
-    async spawnSession(machineId: string, directory: string, agent?: 'claude' | 'codex' | 'gemini'): Promise<SpawnResponse> {
+    async spawnSession(
+        machineId: string,
+        directory: string,
+        agent?: 'claude' | 'codex' | 'gemini',
+        yolo?: boolean
+    ): Promise<SpawnResponse> {
         return await this.request<SpawnResponse>(`/api/machines/${encodeURIComponent(machineId)}/spawn`, {
             method: 'POST',
-            body: JSON.stringify({ directory, agent })
+            body: JSON.stringify({ directory, agent, yolo })
         })
     }
 }
