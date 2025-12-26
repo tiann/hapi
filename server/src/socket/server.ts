@@ -4,6 +4,7 @@ import { jwtVerify } from 'jose'
 import { z } from 'zod'
 import type { Store } from '../store'
 import { configuration } from '../configuration'
+import { safeCompareStrings } from '../utils/crypto'
 import { registerCliHandlers } from './handlers/cli'
 import { registerTerminalHandlers } from './handlers/terminal'
 import { RpcRegistry } from './rpcRegistry'
@@ -93,7 +94,7 @@ export function createSocketServer(deps: SocketServerDeps): {
     cliNs.use((socket, next) => {
         const auth = socket.handshake.auth as Record<string, unknown> | undefined
         const token = typeof auth?.token === 'string' ? auth.token : null
-        if (token !== configuration.cliApiToken) {
+        if (!safeCompareStrings(token, configuration.cliApiToken)) {
             return next(new Error('Invalid token'))
         }
         next()
