@@ -45,6 +45,54 @@ Download from [Releases](https://github.com/tiann/hapi/releases).
 xattr -d com.apple.quarantine ./hapi
 ```
 
+### Docker
+
+Pull the pre-built image from GitHub Container Registry:
+
+```bash
+docker pull ghcr.io/tiann/hapi-server:latest
+```
+
+Run the server:
+
+```bash
+docker run -d --name hapi -p 3006:3006 -v hapi-data:/data ghcr.io/tiann/hapi-server:latest
+```
+
+<details>
+<summary>More options (Telegram + environment variables)</summary>
+
+#### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `WEBAPP_PORT` | `3006` | Server listening port |
+| `CLI_API_TOKEN` | (auto-generated) | Access token for CLI and web UI |
+| `TELEGRAM_BOT_TOKEN` | - | Telegram bot token (optional) |
+| `WEBAPP_URL` | - | Public URL for Telegram Mini App |
+| `ALLOWED_CHAT_IDS` | - | Comma-separated Telegram chat IDs |
+
+#### With Telegram Support
+
+```bash
+docker run -d \
+  --name hapi \
+  -p 3006:3006 \
+  -v hapi-data:/data \
+  -e WEBAPP_URL="https://your-domain.example" \
+  -e TELEGRAM_BOT_TOKEN="your-bot-token" \
+  -e ALLOWED_CHAT_IDS="12345678" \
+  ghcr.io/tiann/hapi-server:latest
+```
+
+#### Build from Source
+
+```bash
+docker build -t hapi-server -f server/Dockerfile .
+```
+
+</details>
+
 ## Quickstart
 
 1. Start the server on a machine you control:
