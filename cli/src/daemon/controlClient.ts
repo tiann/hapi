@@ -10,6 +10,7 @@ import packageJson from '../../package.json';
 import { existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { isBunCompiled, projectPath } from '@/projectPath';
+import { isProcessAlive, killProcess } from '@/utils/process';
 
 export function getInstalledCliMtimeMs(): number | undefined {
   if (isBunCompiled()) {
@@ -42,9 +43,7 @@ async function daemonPost(path: string, body?: any): Promise<{ error?: string } 
     };
   }
 
-  try {
-    process.kill(state.pid, 0);
-  } catch (error) {
+  if (!isProcessAlive(state.pid)) {
     const errorMessage = 'Daemon is not running, file is stale';
     logger.debug(`[CONTROL CLIENT] ${errorMessage}`);
     return {
@@ -143,14 +142,13 @@ export async function checkIfDaemonRunningAndCleanupStaleState(): Promise<boolea
   }
 
   // Check if the daemon is running
-  try {
-    process.kill(state.pid, 0);
+  if (isProcessAlive(state.pid)) {
     return true;
-  } catch {
-    logger.debug('[DAEMON RUN] Daemon PID not running, cleaning up state');
-    await cleanupDaemonState();
-    return false;
   }
+
+  logger.debug('[DAEMON RUN] Daemon PID not running, cleaning up state');
+  await cleanupDaemonState();
+  return false;
 }
 
 /**
@@ -239,11 +237,11 @@ export async function stopDaemon() {
     }
 
     // Force kill
-    try {
-      process.kill(state.pid, 'SIGKILL');
+    const killed = await killProcess(state.pid, true);
+    if (killed) {
       logger.debug('Force killed daemon');
-    } catch (error) {
-      logger.debug('Daemon already dead');
+    } else {
+      logger.debug('Daemon already dead or could not be killed');
     }
   } catch (error) {
     logger.debug('Error stopping daemon', error);
@@ -253,12 +251,11 @@ export async function stopDaemon() {
 async function waitForProcessDeath(pid: number, timeout: number): Promise<void> {
   const start = Date.now();
   while (Date.now() - start < timeout) {
-    try {
-      process.kill(pid, 0);
+    if (isProcessAlive(pid)) {
       await new Promise(resolve => setTimeout(resolve, 100));
-    } catch {
-      return; // Process is dead
+      continue;
     }
+    return; // Process is dead
   }
   throw new Error('Process did not die within timeout');
 }

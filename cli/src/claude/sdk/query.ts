@@ -24,6 +24,7 @@ import {
 } from './types'
 import { getDefaultClaudeCodePath, getCleanEnv, logDebug, streamToStdin } from './utils'
 import { withBunRuntimeEnv } from '@/utils/bunRuntime'
+import { killProcessByChildProcess } from '@/utils/process'
 import type { Writable } from 'node:stream'
 import { logger } from '@/ui/logger'
 
@@ -367,7 +368,7 @@ export function query(config: {
     // Setup cleanup
     const cleanup = () => {
         if (!child.killed) {
-            child.kill('SIGTERM')
+            void killProcessByChildProcess(child)
         }
     }
 

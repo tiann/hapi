@@ -12,6 +12,7 @@ import packageJson from '../../package.json';
 import { getEnvironmentInfo } from '@/ui/doctor';
 import { spawnHappyCLI } from '@/utils/spawnHappyCLI';
 import { writeDaemonState, DaemonLocallyPersistedState, readDaemonState, acquireDaemonLock, releaseDaemonLock } from '@/persistence';
+import { isProcessAlive, isWindows, killProcess, killProcessByChildProcess } from '@/utils/process';
 
 import { cleanupDaemonState, getInstalledCliMtimeMs, isDaemonRunningCurrentlyInstalledHappyVersion, stopDaemon } from './controlClient';
 import { startDaemonControlServer } from './controlServer';
@@ -68,6 +69,13 @@ export async function startDaemon(): Promise<void> {
     logger.debug('[DAEMON RUN] Received SIGTERM');
     requestShutdown('os-signal');
   });
+
+  if (isWindows()) {
+    process.on('SIGBREAK', () => {
+      logger.debug('[DAEMON RUN] Received SIGBREAK');
+      requestShutdown('os-signal');
+    });
+  }
 
   process.on('uncaughtException', (error) => {
     logger.debug('[DAEMON RUN] FATAL: Uncaught exception', error);
@@ -362,16 +370,16 @@ export async function startDaemon(): Promise<void> {
 
           if (session.startedBy === 'daemon' && session.childProcess) {
             try {
-              session.childProcess.kill('SIGTERM');
-              logger.debug(`[DAEMON RUN] Sent SIGTERM to daemon-spawned session ${sessionId}`);
+              void killProcessByChildProcess(session.childProcess);
+              logger.debug(`[DAEMON RUN] Requested termination for daemon-spawned session ${sessionId}`);
             } catch (error) {
               logger.debug(`[DAEMON RUN] Failed to kill session ${sessionId}:`, error);
             }
           } else {
             // For externally started sessions, try to kill by PID
             try {
-              process.kill(pid, 'SIGTERM');
-              logger.debug(`[DAEMON RUN] Sent SIGTERM to external session PID ${pid}`);
+              void killProcess(pid);
+              logger.debug(`[DAEMON RUN] Requested termination for external session PID ${pid}`);
             } catch (error) {
               logger.debug(`[DAEMON RUN] Failed to kill external session PID ${pid}:`, error);
             }
@@ -467,11 +475,7 @@ export async function startDaemon(): Promise<void> {
 
       // Prune stale sessions
       for (const [pid, _] of pidToTrackedSession.entries()) {
-        try {
-          // Check if process is still alive (signal 0 doesn't kill, just checks)
-          process.kill(pid, 0);
-        } catch (error) {
-          // Process is dead, remove from tracking
+        if (!isProcessAlive(pid)) {
           logger.debug(`[DAEMON RUN] Removing stale session with PID ${pid} (process no longer exists)`);
           pidToTrackedSession.delete(pid);
         }

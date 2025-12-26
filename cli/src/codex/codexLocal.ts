@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { logger } from '@/ui/logger';
 import { restoreTerminalState } from '@/ui/terminalState';
+import { killProcessByChildProcess } from '@/utils/process';
 
 /**
  * Filter out 'resume' subcommand which is managed internally by hapi.
@@ -76,7 +77,7 @@ export async function codexLocal(opts: {
                     if (child.exitCode === null && !child.killed) {
                         logger.debug('[CodexLocal] Abort timeout reached, sending SIGKILL');
                         try {
-                            child.kill('SIGKILL');
+                            void killProcessByChildProcess(child, true);
                         } catch (error) {
                             logger.debug('[CodexLocal] Failed to send SIGKILL:', error);
                         }

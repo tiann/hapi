@@ -6,7 +6,7 @@
  */
 
 import psList from 'ps-list';
-import spawn from 'cross-spawn';
+import { killProcess } from '@/utils/process';
 
 /**
  * Find all HAPI CLI processes (including current process)
@@ -92,25 +92,17 @@ export async function killRunawayHappyProcesses(): Promise<{ killed: number, err
     try {
       console.log(`Killing runaway process PID ${pid}: ${command}`);
       
-      if (process.platform === 'win32') {
-        // Windows: use taskkill
-        const result = spawn.sync('taskkill', ['/F', '/PID', pid.toString()], { stdio: 'pipe' });
-        if (result.error) throw result.error;
-        if (result.status !== 0) throw new Error(`taskkill exited with code ${result.status}`);
-      } else {
-        // Unix: try SIGTERM first
-        process.kill(pid, 'SIGTERM');
-        
-        // Wait a moment
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        
-        // Check if still alive
-        const processes = await psList();
-        const stillAlive = processes.find(p => p.pid === pid);
-        if (stillAlive) {
-          console.log(`Process PID ${pid} ignored SIGTERM, using SIGKILL`);
-          process.kill(pid, 'SIGKILL');
-        }
+      await killProcess(pid, false);
+
+      // Wait a moment
+      await new Promise(resolve => setTimeout(resolve, 1000));
+
+      // Check if still alive
+      const processes = await psList();
+      const stillAlive = processes.find(p => p.pid === pid);
+      if (stillAlive) {
+        console.log(`Process PID ${pid} ignored termination request, using force kill`);
+        await killProcess(pid, true);
       }
       
       console.log(`Successfully killed runaway process PID ${pid}`);

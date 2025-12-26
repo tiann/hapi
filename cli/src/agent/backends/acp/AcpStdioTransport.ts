@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { logger } from '@/ui/logger';
+import { killProcessByChildProcess } from '@/utils/process';
 
 interface JsonRpcRequest {
     jsonrpc: '2.0';
@@ -107,7 +108,7 @@ export class AcpStdioTransport {
 
     async close(): Promise<void> {
         this.process.stdin.end();
-        this.process.kill();
+        await killProcessByChildProcess(this.process);
         this.rejectAllPending(new Error('ACP transport closed'));
     }
 
@@ -140,7 +141,7 @@ export class AcpStdioTransport {
             logger.debug('[ACP] Failed to parse JSON-RPC line', { line, error });
             this.rejectAllPending(protocolError);
             this.process.stdin.end();
-            this.process.kill();
+            void killProcessByChildProcess(this.process);
             return;
         }
 

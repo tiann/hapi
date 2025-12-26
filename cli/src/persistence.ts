@@ -11,6 +11,7 @@ import { constants } from 'node:fs'
 import { configuration } from '@/configuration'
 import * as z from 'zod';
 import { encodeBase64 } from '@/api/encryption';
+import { isProcessAlive } from '@/utils/process';
 
 interface Settings {
   onboardingCompleted: boolean
@@ -283,9 +284,7 @@ export async function acquireDaemonLock(
         try {
           const lockPid = readFileSync(configuration.daemonLockFile, 'utf-8').trim();
           if (lockPid && !isNaN(Number(lockPid))) {
-            try {
-              process.kill(Number(lockPid), 0); // Check if process exists
-            } catch {
+            if (!isProcessAlive(Number(lockPid))) {
               // Process doesn't exist, remove stale lock
               unlinkSync(configuration.daemonLockFile);
               continue; // Retry acquisition

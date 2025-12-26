@@ -32,6 +32,7 @@ import { readDaemonState, clearDaemonState } from '@/persistence';
 import { Metadata } from '@/api/types';
 import { spawnHappyCLI } from '@/utils/spawnHappyCLI';
 import { getLatestDaemonLog } from '@/ui/logger';
+import { isProcessAlive, isWindows, killProcess, killProcessByChildProcess } from '@/utils/process';
 
 // Utility to wait for condition
 async function waitFor(
@@ -234,7 +235,7 @@ describe.skipIf(!await isServerHealthy())('Daemon Integration Tests', { timeout:
     
     // Also kill the terminal process directly to be sure
     try {
-      terminalHappyProcess.kill('SIGTERM');
+      await killProcessByChildProcess(terminalHappyProcess);
     } catch (e) {
       // Process might already be dead
     }
@@ -325,18 +326,13 @@ describe.skipIf(!await isServerHealthy())('Daemon Integration Tests', { timeout:
     const initialLogs = readdirSync(logsDir).filter(f => f.endsWith('-daemon.log'));
     
     // Send SIGKILL to daemon (force kill)
-    process.kill(daemonPid, 'SIGKILL');
+    await killProcess(daemonPid, true);
     
     // Wait for process to die
     await new Promise(resolve => setTimeout(resolve, 500));
     
     // Check if process is dead
-    let isDead = false;
-    try {
-      process.kill(daemonPid, 0);
-    } catch {
-      isDead = true;
-    }
+    const isDead = !isProcessAlive(daemonPid);
     expect(isDead).toBe(true);
     
     // Check that log file exists (it was created when daemon started)
@@ -350,36 +346,38 @@ describe.skipIf(!await isServerHealthy())('Daemon Integration Tests', { timeout:
     await clearDaemonState();
   });
 
-  it('should die with cleanup logs when SIGTERM is sent', async () => {
-    // SIGTERM test - daemon should cleanup gracefully
+  it('should die with cleanup logs when a graceful shutdown is requested', async () => {
+    // Graceful shutdown test - daemon should cleanup gracefully
     const logFile = await getLatestDaemonLog();
     if (!logFile) {
       throw new Error('No log file found');
     }
     
-    // Send SIGTERM to daemon (graceful shutdown)
-    process.kill(daemonPid, 'SIGTERM');
+    if (isWindows()) {
+      // Windows taskkill does not deliver SIGTERM/SIGBREAK to Node handlers.
+      await stopDaemonHttp();
+    } else {
+      // Send SIGTERM to daemon (graceful shutdown)
+      await killProcess(daemonPid);
+    }
     
     // Wait for graceful shutdown
     await new Promise(resolve => setTimeout(resolve, 4_000));
     
     // Check if process is dead
-    let isDead = false;
-    try {
-      process.kill(daemonPid, 0);
-    } catch {
-      isDead = true;
-    }
+    const isDead = !isProcessAlive(daemonPid);
     expect(isDead).toBe(true);
     
     // Read the log file to check for cleanup messages
     const logContent = readFileSync(logFile.path, 'utf8');
     
     // Should contain cleanup messages
-    expect(logContent).toContain('SIGTERM');
+    if (!isWindows()) {
+      expect(logContent).toContain('SIGTERM');
+    }
     expect(logContent).toContain('cleanup');
     
-    console.log('[TEST] Daemon terminated gracefully with SIGTERM - cleanup logs written');
+    console.log('[TEST] Daemon terminated gracefully - cleanup logs written');
     
     // Clean up state file if it still exists (should have been cleaned by SIGTERM handler)
     await clearDaemonState();

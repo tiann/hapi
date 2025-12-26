@@ -5,6 +5,7 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { logger } from '@/ui/logger';
+import { isProcessAlive, killProcess } from '@/utils/process';
 import type { CodexSessionConfig, CodexToolResponse } from './types';
 import { z } from 'zod';
 import { ElicitRequestSchema } from '@modelcontextprotocol/sdk/types.js';
@@ -435,11 +436,10 @@ export class CodexMcpClient {
 
         // As a last resort, if child still exists, send SIGKILL
         if (pid) {
-            try {
-                process.kill(pid, 0); // check if alive
+            if (isProcessAlive(pid)) {
                 logger.debug('[CodexMCP] Child still alive, sending SIGKILL');
-                try { process.kill(pid, 'SIGKILL'); } catch {}
-            } catch { /* not running */ }
+                await killProcess(pid, true);
+            }
         }
 
         this.transport = null;

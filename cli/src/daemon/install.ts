@@ -2,6 +2,10 @@ import { logger } from '@/ui/logger';
 import { install as installMac } from './mac/install';
 
 export async function install(): Promise<void> {
+    if (process.platform === 'win32') {
+        throw new Error('Daemon installation as Windows service not yet supported. Use "hapi daemon start".');
+    }
+
     if (process.platform !== 'darwin') {
         throw new Error('Daemon installation is currently only supported on macOS');
     }

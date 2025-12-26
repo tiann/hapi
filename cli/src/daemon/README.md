@@ -55,7 +55,7 @@ The daemon detects when CLI binary changes (e.g., after `npm upgrade hapi`):
 
 Every 60 seconds (configurable via `HAPI_DAEMON_HEARTBEAT_INTERVAL`):
 1. **Guard**: Skips if previous heartbeat still running (prevents concurrent heartbeats)
-2. **Session Pruning**: Checks each tracked PID with `process.kill(pid, 0)`, removes dead sessions
+2. **Session Pruning**: Checks each tracked PID with `isProcessAlive(pid)`, removes dead sessions
 3. **Version Check**: Compares CLI binary mtime, triggers self-restart if changed
 4. **PID Ownership**: Verifies daemon still owns state file, self-terminates if another daemon took over
 5. **State Update**: Writes `lastHeartbeat` timestamp to daemon.state.json
@@ -74,7 +74,7 @@ Control Flow:
    - Stops HTTP server
    - Deletes daemon.state.json
    - Releases lock file
-5. If HTTP fails, falls back to `process.kill(pid, 'SIGKILL')`
+5. If HTTP fails, falls back to `killProcess(pid, true)` (uses `taskkill /T /F` on Windows)
 
 ## 2. Multi-Agent Support
 
@@ -135,7 +135,7 @@ When spawning a session, directory handling:
 
 Via RPC `stop-session` or HTTP `/stop-session`:
 1. `stopSession()` finds session by `happySessionId` or `PID-{pid}` format
-2. Sends SIGTERM to process (via `childProcess.kill()` or `process.kill(pid)`)
+2. Sends termination request via `killProcessByChildProcess()` or `killProcess()` (Windows uses `taskkill /T`)
 3. `on('exit')` handler removes from tracking map
 
 ## 4. HTTP Control Server (Fastify)
