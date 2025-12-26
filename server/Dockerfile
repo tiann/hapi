@@ -16,7 +16,8 @@ COPY cli ./cli
 COPY server ./server
 COPY web ./web
 
-RUN bun run build:single-exe \
+RUN bun add --no-save react-devtools-core@6.1.2 \
+    && bun run build:single-exe \
     && mkdir -p /out \
     && cp cli/dist-exe/bun-linux-*/hapi /out/hapi
 

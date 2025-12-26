@@ -18,7 +18,7 @@ cli/**
 !cli/tools/licenses/**
 !cli/tools/archives/difftastic-LICENSE
 !cli/tools/archives/ripgrep-LICENSE
-!cli/tools/archives/*-linux.tar.gz
+!cli/tools/archives/*.tar.gz
 
 **/*.log
 
