@@ -20,6 +20,7 @@ import type { Server as BunServer } from 'bun'
 import type { Server as SocketEngine } from '@socket.io/bun-engine'
 import type { WebSocketData } from '@socket.io/bun-engine'
 import { loadEmbeddedAssetMap, type EmbeddedWebAsset } from './embeddedAssets'
+import { isBunCompiled } from '../utils/bunCompiled'
 
 function findWebappDistDir(): { distDir: string; indexHtmlPath: string } {
     const candidates = [
@@ -163,7 +164,7 @@ export async function startWebServer(options: {
     jwtSecret: Uint8Array
     socketEngine: SocketEngine
 }): Promise<BunServer<WebSocketData>> {
-    const isCompiled = Bun.main?.startsWith('/$bunfs') ?? false
+    const isCompiled = isBunCompiled()
     const embeddedAssetMap = isCompiled ? await loadEmbeddedAssetMap() : null
     const app = createWebApp({
         getSyncEngine: options.getSyncEngine,

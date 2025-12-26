@@ -42,9 +42,6 @@ import { withBunRuntimeEnv } from './utils/bunRuntime'
     if (arg1 === process.execPath) {
       return process.argv.slice(2)
     }
-    if (arg1.includes('$bunfs')) {
-      return process.argv.slice(2)
-    }
     if (arg1.endsWith('.js') || arg1.endsWith('.mjs') || arg1.endsWith('.ts')) {
       return process.argv.slice(2)
     }

@@ -4,10 +4,9 @@ import { configuration } from '@/configuration';
 import packageJson from '../package.json';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const bunRuntime = (globalThis as typeof globalThis & { Bun?: { isCompiled?: boolean } }).Bun;
-const argv1 = process.argv[1] ?? '';
-const bunFsMarker = argv1.includes('$bunfs');
-const isCompiled = Boolean(bunRuntime?.isCompiled) || bunFsMarker;
+
+/** Bun embeds compiled code in a virtual filesystem: /$bunfs/ (Linux/macOS) or /~BUN/ (Windows) */
+const isCompiled = Bun.main.includes('$bunfs') || Bun.main.includes('/~BUN/');
 
 export function projectPath(): string {
     return resolve(__dirname, '..');

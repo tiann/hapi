@@ -1,3 +1,5 @@
+import { isBunCompiled } from '@/projectPath';
+
 export type BunRuntimeEnvOptions = {
     allowBunBeBun?: boolean;
 };
@@ -16,11 +18,7 @@ export function withBunRuntimeEnv(
     env: NodeJS.ProcessEnv = process.env,
     options: BunRuntimeEnvOptions = {}
 ): NodeJS.ProcessEnv {
-    const bunRuntime = (globalThis as typeof globalThis & { Bun?: { isCompiled?: boolean } }).Bun;
-    const argv1 = process.argv[1] ?? '';
-    const isCompiled = Boolean(bunRuntime?.isCompiled) || argv1.includes('$bunfs');
-
-    if (!isCompiled) {
+    if (!isBunCompiled()) {
         return env;
     }
 
