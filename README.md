@@ -56,12 +56,11 @@ docker pull ghcr.io/tiann/hapi-server:latest
 Run the server:
 
 ```bash
-docker run -d \
-  --name hapi \
-  -p 3006:3006 \
-  -v hapi-data:/data \
-  ghcr.io/tiann/hapi-server:latest
+docker run -d --name hapi -p 3006:3006 -v hapi-data:/data ghcr.io/tiann/hapi-server:latest
 ```
+
+<details>
+<summary>More options (Telegram + environment variables)</summary>
 
 #### Environment Variables
 
@@ -91,6 +90,8 @@ docker run -d \
 ```bash
 docker build -t hapi-server -f server/Dockerfile .
 ```
+
+</details>
 
 ## Quickstart
 

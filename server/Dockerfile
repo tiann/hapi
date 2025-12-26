@@ -12,16 +12,13 @@ RUN bun install --frozen-lockfile
 
 FROM deps AS build
 
-# Build web assets first to improve caching
-COPY web ./web
-RUN bun run build:web
-
-# Then build server
+COPY cli ./cli
 COPY server ./server
+COPY web ./web
 
-# Embed built web assets into the compiled server executable
-RUN cd server && bun run generate:embedded-web-assets
-RUN bun build server/src/index.ts --compile --outfile server/dist/hapi-server
+RUN bun run build:single-exe \
+    && mkdir -p /out \
+    && cp cli/dist-exe/bun-linux-*/hapi /out/hapi
 
 
 FROM oven/bun:1.3.4-slim AS runtime
@@ -40,9 +37,9 @@ VOLUME /data
 
 EXPOSE 3006
 
-COPY --from=build /home/bun/app/server/dist/hapi-server ./server/hapi-server
+COPY --from=build /out/hapi ./hapi
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD bun -e "fetch('http://127.0.0.1:' + (process.env.WEBAPP_PORT ?? '3006') + '/').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
 
-CMD ["./server/hapi-server"]
+CMD ["./hapi", "server"]

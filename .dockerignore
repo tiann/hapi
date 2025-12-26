@@ -11,6 +11,14 @@ cli/release-artifacts
 
 cli/**
 !cli/package.json
+!cli/bunfig.toml
+!cli/tsconfig.json
+!cli/src/**
+!cli/scripts/**
+!cli/tools/licenses/**
+!cli/tools/archives/difftastic-LICENSE
+!cli/tools/archives/ripgrep-LICENSE
+!cli/tools/archives/*-linux.tar.gz
 
 **/*.log
 
