@@ -9,6 +9,7 @@ import { existsSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import packageJson from '../package.json'
+import { getCliArgs } from '@/utils/cliArgs'
 
 class Configuration {
     public readonly serverUrl: string
@@ -32,7 +33,7 @@ class Configuration {
         this._cliApiToken = process.env.CLI_API_TOKEN || ''
 
         // Check if we're running as daemon based on process args
-        const args = process.argv.slice(2)
+        const args = getCliArgs()
         this.isDaemonProcess = args.length >= 2 && args[0] === 'daemon' && (args[1] === 'start-sync')
 
         // Directory configuration - Priority: HAPI_HOME env > default home dir
