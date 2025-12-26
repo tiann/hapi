@@ -30,24 +30,11 @@ import { initializeToken } from './ui/tokenInit'
 import { ensureRuntimeAssets } from './runtime/assets'
 import { runHappyMcpStdioBridge } from './codex/happyMcpStdioBridge'
 import { withBunRuntimeEnv } from './utils/bunRuntime'
+import { getCliArgs } from './utils/cliArgs'
 
 
 (async () => {
-  const args = (() => {
-    if (!isBunCompiled()) {
-      return process.argv.slice(2)
-    }
-
-    const arg1 = process.argv[1] || ''
-    if (arg1 === process.execPath) {
-      return process.argv.slice(2)
-    }
-    if (arg1.endsWith('.js') || arg1.endsWith('.mjs') || arg1.endsWith('.ts')) {
-      return process.argv.slice(2)
-    }
-
-    return process.argv.slice(1)
-  })()
+  const args = getCliArgs()
 
   if (args.includes('-v') || args.includes('--version')) {
     console.log(`hapi version: ${packageJson.version}`)
