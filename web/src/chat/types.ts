@@ -51,6 +51,12 @@ export type NormalizedAgentContent =
         uuid: string
         parentUUID: string | null
     }
+    | {
+        type: 'reasoning'
+        text: string
+        uuid: string
+        parentUUID: string | null
+    }
     | ToolUse
     | ToolResult
     | { type: 'summary'; summary: string }
@@ -122,6 +128,15 @@ export type AgentTextBlock = {
     meta?: unknown
 }
 
+export type AgentReasoningBlock = {
+    kind: 'agent-reasoning'
+    id: string
+    localId: string | null
+    createdAt: number
+    text: string
+    meta?: unknown
+}
+
 export type CliOutputBlock = {
     kind: 'cli-output'
     id: string
@@ -150,4 +165,4 @@ export type ToolCallBlock = {
     meta?: unknown
 }
 
-export type ChatBlock = UserTextBlock | AgentTextBlock | CliOutputBlock | ToolCallBlock | AgentEventBlock
+export type ChatBlock = UserTextBlock | AgentTextBlock | AgentReasoningBlock | CliOutputBlock | ToolCallBlock | AgentEventBlock

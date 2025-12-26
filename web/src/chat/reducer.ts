@@ -420,6 +420,18 @@ function reduceTimeline(
                     continue
                 }
 
+                if (c.type === 'reasoning') {
+                    blocks.push({
+                        kind: 'agent-reasoning',
+                        id: `${msg.id}:${idx}`,
+                        localId: msg.localId,
+                        createdAt: msg.createdAt,
+                        text: c.text,
+                        meta: msg.meta
+                    })
+                    continue
+                }
+
                 if (c.type === 'summary') {
                     blocks.push({
                         kind: 'agent-event',

@@ -1,5 +1,6 @@
 import { MessagePrimitive, useAssistantState } from '@assistant-ui/react'
 import { MarkdownText } from '@/components/assistant-ui/markdown-text'
+import { Reasoning, ReasoningGroup } from '@/components/assistant-ui/reasoning'
 import { HappyToolMessage } from '@/components/AssistantChat/messages/ToolMessage'
 import { CliOutputBlock } from '@/components/CliOutputBlock'
 import type { HappyChatMessageMetadata } from '@/lib/assistant-runtime'
@@ -10,6 +11,8 @@ const TOOL_COMPONENTS = {
 
 const MESSAGE_PART_COMPONENTS = {
     Text: MarkdownText,
+    Reasoning: Reasoning,
+    ReasoningGroup: ReasoningGroup,
     tools: TOOL_COMPONENTS
 } as const
 

@@ -281,7 +281,7 @@ function normalizeAgentRecord(
         const data = isObject(content.data) ? content.data : null
         if (!data || typeof data.type !== 'string') return null
 
-        if ((data.type === 'message' || data.type === 'reasoning') && typeof data.message === 'string') {
+        if (data.type === 'message' && typeof data.message === 'string') {
             return {
                 id: messageId,
                 localId,
@@ -289,6 +289,18 @@ function normalizeAgentRecord(
                 role: 'agent',
                 isSidechain: false,
                 content: [{ type: 'text', text: data.message, uuid: messageId, parentUUID: null }],
+                meta
+            }
+        }
+
+        if (data.type === 'reasoning' && typeof data.message === 'string') {
+            return {
+                id: messageId,
+                localId,
+                createdAt,
+                role: 'agent',
+                isSidechain: false,
+                content: [{ type: 'reasoning', text: data.message, uuid: messageId, parentUUID: null }],
                 meta
             }
         }

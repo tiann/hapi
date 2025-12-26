@@ -58,6 +58,19 @@ function toThreadMessageLike(block: ChatBlock): ThreadMessageLike {
         }
     }
 
+    if (block.kind === 'agent-reasoning') {
+        const messageId = `assistant:${block.id}`
+        return {
+            role: 'assistant',
+            id: messageId,
+            createdAt: new Date(block.createdAt),
+            content: [{ type: 'reasoning', text: block.text }],
+            metadata: {
+                custom: { kind: 'assistant' } satisfies HappyChatMessageMetadata
+            }
+        }
+    }
+
     if (block.kind === 'agent-event') {
         const messageId = `event:${block.id}`
         return {
