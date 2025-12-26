@@ -9,6 +9,8 @@ import { getLocalLaunchExitReason } from '@/agent/localLaunchPolicy';
 export async function codexLocalLauncher(session: CodexSession): Promise<'switch' | 'exit'> {
     const scanner = await createCodexSessionScanner({
         sessionId: session.sessionId,
+        cwd: session.path,
+        startupTimestampMs: Date.now(),
         onSessionFound: (sessionId) => {
             session.onSessionFound(sessionId);
         },
