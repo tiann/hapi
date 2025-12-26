@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 
 import { ApiClient } from '@/api/api';
 import { logger } from '@/ui/logger';
+import { restoreTerminalState } from '@/ui/terminalState';
 import { loop } from '@/claude/loop';
 import { AgentState, Metadata } from '@/api/types';
 import packageJson from '../../package.json';
@@ -323,6 +324,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
     // Setup signal handlers for graceful shutdown
     const cleanup = async () => {
         logger.debug('[START] Received termination signal, cleaning up...');
+        restoreTerminalState();
 
         try {
             // Update lifecycle state to archived before closing

@@ -15,6 +15,7 @@ import { EnhancedMode } from "./loop";
 import { RawJSONLines } from "@/claude/types";
 import { OutgoingMessageQueue } from "./utils/OutgoingMessageQueue";
 import { getToolName } from "./utils/getToolName";
+import { restoreTerminalState } from "@/ui/terminalState";
 
 interface PermissionsField {
     date: number;
@@ -442,8 +443,9 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
 
         // Reset Terminal
         process.stdin.off('data', abort);
-        if (process.stdin.isTTY) {
-            process.stdin.setRawMode(false);
+        restoreTerminalState();
+        if (hasTTY) {
+            try { process.stdin.pause(); } catch {}
         }
         if (inkInstance) {
             inkInstance.unmount();
