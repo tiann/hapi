@@ -24,7 +24,7 @@ RUN cd server && bun run generate:embedded-web-assets
 RUN bun build server/src/index.ts --compile --outfile server/dist/hapi-server
 
 
-FROM oven/bun:1.3.4 AS runtime
+FROM oven/bun:1.3.4-slim AS runtime
 
 WORKDIR /home/bun/app
 
