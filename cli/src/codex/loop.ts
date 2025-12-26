@@ -17,6 +17,7 @@ export interface EnhancedMode {
 interface LoopOptions {
     path: string;
     startingMode?: 'local' | 'remote';
+    startedBy?: 'daemon' | 'terminal';
     onModeChange: (mode: 'local' | 'remote') => void;
     messageQueue: MessageQueue2<EnhancedMode>;
     session: ApiSessionClient;
@@ -28,6 +29,8 @@ interface LoopOptions {
 
 export async function loop(opts: LoopOptions): Promise<void> {
     const logPath = logger.getLogPath();
+    const startedBy = opts.startedBy ?? 'terminal';
+    const startingMode = opts.startingMode ?? 'local';
     const session = new CodexSession({
         api: opts.api,
         client: opts.session,
@@ -36,7 +39,9 @@ export async function loop(opts: LoopOptions): Promise<void> {
         logPath,
         messageQueue: opts.messageQueue,
         onModeChange: opts.onModeChange,
-        mode: opts.startingMode ?? 'local',
+        mode: startingMode,
+        startedBy,
+        startingMode,
         codexArgs: opts.codexArgs,
         codexCliOverrides: opts.codexCliOverrides
     });

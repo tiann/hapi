@@ -3,6 +3,7 @@ import { claudeLocal } from "./claudeLocal";
 import { Session } from "./session";
 import { Future } from "@/utils/future";
 import { createSessionScanner } from "./utils/sessionScanner";
+import { getLocalLaunchExitReason } from "@/agent/localLaunchPolicy";
 
 export async function claudeLocalLauncher(session: Session): Promise<'switch' | 'exit'> {
 
@@ -112,12 +113,20 @@ export async function claudeLocalLauncher(session: Session): Promise<'switch' | 
                 }
             } catch (e) {
                 logger.debug('[local]: launch error', e);
+                const message = e instanceof Error ? e.message : String(e);
+                session.client.sendSessionEvent({ type: 'message', message: `Local Claude process failed: ${message}` });
+                const failureExitReason = exitReason ?? getLocalLaunchExitReason({
+                    startedBy: session.startedBy,
+                    startingMode: session.startingMode
+                });
+                session.recordLocalLaunchFailure(message, failureExitReason);
                 if (!exitReason) {
-                    session.client.sendSessionEvent({ type: 'message', message: 'Process exited unexpectedly' });
-                    continue;
-                } else {
-                    break;
+                    exitReason = failureExitReason;
                 }
+                if (failureExitReason === 'exit') {
+                    logger.warn(`[local]: Local Claude process failed: ${message}`);
+                }
+                break;
             }
             logger.debug('[local]: launch done');
         }

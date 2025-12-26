@@ -3,6 +3,12 @@ import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { logger } from '@/ui/logger';
 import { AgentSessionBase } from '@/agent/sessionBase';
 import type { EnhancedMode } from './loop';
+import type { LocalLaunchExitReason } from '@/agent/localLaunchPolicy';
+
+type LocalLaunchFailure = {
+    message: string;
+    exitReason: LocalLaunchExitReason;
+};
 
 export class Session extends AgentSessionBase<EnhancedMode> {
     readonly claudeEnvVars?: Record<string, string>;
@@ -10,6 +16,9 @@ export class Session extends AgentSessionBase<EnhancedMode> {
     readonly mcpServers: Record<string, any>;
     readonly allowedTools?: string[];
     readonly hookSettingsPath: string;
+    readonly startedBy: 'daemon' | 'terminal';
+    readonly startingMode: 'local' | 'remote';
+    localLaunchFailure: LocalLaunchFailure | null = null;
 
     constructor(opts: {
         api: ApiClient;
@@ -24,6 +33,8 @@ export class Session extends AgentSessionBase<EnhancedMode> {
         onModeChange: (mode: 'local' | 'remote') => void;
         allowedTools?: string[];
         mode?: 'local' | 'remote';
+        startedBy: 'daemon' | 'terminal';
+        startingMode: 'local' | 'remote';
         hookSettingsPath: string;
     }) {
         super({
@@ -48,7 +59,13 @@ export class Session extends AgentSessionBase<EnhancedMode> {
         this.mcpServers = opts.mcpServers;
         this.allowedTools = opts.allowedTools;
         this.hookSettingsPath = opts.hookSettingsPath;
+        this.startedBy = opts.startedBy;
+        this.startingMode = opts.startingMode;
     }
+
+    recordLocalLaunchFailure = (message: string, exitReason: LocalLaunchExitReason): void => {
+        this.localLaunchFailure = { message, exitReason };
+    };
 
     /**
      * Clear the current session ID (used by /clear command)

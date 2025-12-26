@@ -3,10 +3,19 @@ import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { AgentSessionBase } from '@/agent/sessionBase';
 import type { EnhancedMode } from './loop';
 import type { CodexCliOverrides } from './utils/codexCliOverrides';
+import type { LocalLaunchExitReason } from '@/agent/localLaunchPolicy';
+
+type LocalLaunchFailure = {
+    message: string;
+    exitReason: LocalLaunchExitReason;
+};
 
 export class CodexSession extends AgentSessionBase<EnhancedMode> {
     readonly codexArgs?: string[];
     readonly codexCliOverrides?: CodexCliOverrides;
+    readonly startedBy: 'daemon' | 'terminal';
+    readonly startingMode: 'local' | 'remote';
+    localLaunchFailure: LocalLaunchFailure | null = null;
 
     constructor(opts: {
         api: ApiClient;
@@ -17,6 +26,8 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
         messageQueue: MessageQueue2<EnhancedMode>;
         onModeChange: (mode: 'local' | 'remote') => void;
         mode?: 'local' | 'remote';
+        startedBy: 'daemon' | 'terminal';
+        startingMode: 'local' | 'remote';
         codexArgs?: string[];
         codexCliOverrides?: CodexCliOverrides;
     }) {
@@ -39,7 +50,13 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
 
         this.codexArgs = opts.codexArgs;
         this.codexCliOverrides = opts.codexCliOverrides;
+        this.startedBy = opts.startedBy;
+        this.startingMode = opts.startingMode;
     }
+
+    recordLocalLaunchFailure = (message: string, exitReason: LocalLaunchExitReason): void => {
+        this.localLaunchFailure = { message, exitReason };
+    };
 
     sendCodexMessage = (message: unknown): void => {
         this.client.sendCodexMessage(message);

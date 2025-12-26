@@ -24,6 +24,7 @@ interface LoopOptions {
     model?: string
     permissionMode?: PermissionMode
     startingMode?: 'local' | 'remote'
+    startedBy?: 'daemon' | 'terminal'
     onModeChange: (mode: 'local' | 'remote') => void
     mcpServers: Record<string, any>
     session: ApiSessionClient
@@ -40,6 +41,8 @@ export async function loop(opts: LoopOptions) {
 
     // Get log path for debug display
     const logPath = logger.logFilePath;
+    const startedBy = opts.startedBy ?? 'terminal';
+    const startingMode = opts.startingMode ?? 'local';
     let session = new Session({
         api: opts.api,
         client: opts.session,
@@ -52,7 +55,9 @@ export async function loop(opts: LoopOptions) {
         messageQueue: opts.messageQueue,
         allowedTools: opts.allowedTools,
         onModeChange: opts.onModeChange,
-        mode: opts.startingMode,
+        mode: startingMode,
+        startedBy,
+        startingMode,
         hookSettingsPath: opts.hookSettingsPath
     });
 

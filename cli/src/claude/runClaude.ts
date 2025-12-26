@@ -37,13 +37,14 @@ export interface StartOptions {
 export async function runClaude(options: StartOptions = {}): Promise<void> {
     const workingDirectory = process.cwd();
     const sessionTag = randomUUID();
+    const startedBy = options.startedBy ?? 'terminal';
 
     // Log environment info at startup
     logger.debugLargeJson('[START] HAPI process started', getEnvironmentInfo());
-    logger.debug(`[START] Options: startedBy=${options.startedBy}, startingMode=${options.startingMode}`);
+    logger.debug(`[START] Options: startedBy=${startedBy}, startingMode=${options.startingMode}`);
 
     // Validate daemon spawn requirements
-    if (options.startedBy === 'daemon' && options.startingMode === 'local') {
+    if (startedBy === 'daemon' && options.startingMode === 'local') {
         logger.debug('Daemon spawn requested with local mode - forcing remote mode');
         options.startingMode = 'remote';
         // TODO: Eventually we should error here instead of silently switching
@@ -81,9 +82,9 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         happyHomeDir: configuration.happyHomeDir,
         happyLibDir: runtimePath(),
         happyToolsDir: resolve(runtimePath(), 'tools', 'unpacked'),
-        startedFromDaemon: options.startedBy === 'daemon',
+        startedFromDaemon: startedBy === 'daemon',
         hostPid: process.pid,
-        startedBy: options.startedBy || 'terminal',
+        startedBy,
         // Initialize lifecycle state
         lifecycleState: 'running',
         lifecycleStateSince: Date.now(),
@@ -130,6 +131,16 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
 
     // Variable to track current session instance (updated via onSessionReady callback)
     let currentSession: Session | null = null;
+    let exitCode = 0;
+    let archiveReason: string | null = null;
+
+    const formatFailureReason = (message: string): string => {
+        const maxLength = 200;
+        if (message.length <= maxLength) {
+            return message;
+        }
+        return `${message.slice(0, maxLength)}...`;
+    };
 
     // Start Hook server for receiving Claude session notifications
     const hookServer = await startHookServer({
@@ -156,9 +167,10 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
     logger.infoDeveloper(`Logs: ${logPath}`);
 
     // Set initial agent state
+    const startingMode = options.startingMode ?? (startedBy === 'daemon' ? 'remote' : 'local');
     session.updateAgentState((currentState) => ({
         ...currentState,
-        controlledByUser: options.startingMode !== 'remote'
+        controlledByUser: startingMode !== 'remote'
     }));
 
     // Import MessageQueue2 and create message queue
@@ -314,12 +326,13 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         try {
             // Update lifecycle state to archived before closing
             if (session) {
+                const reason = archiveReason ?? 'User terminated';
                 session.updateMetadata((currentMetadata) => ({
                     ...currentMetadata,
                     lifecycleState: 'archived',
                     lifecycleStateSince: Date.now(),
                     archivedBy: 'cli',
-                    archiveReason: 'User terminated'
+                    archiveReason: reason
                 }));
                 
                 // Send session death message
@@ -336,7 +349,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
             cleanupHookSettingsFile(hookSettingsPath);
 
             logger.debug('[START] Cleanup complete, exiting');
-            process.exit(0);
+            process.exit(exitCode);
         } catch (error) {
             logger.debug('[START] Error during cleanup:', error);
             process.exit(1);
@@ -350,11 +363,15 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
     // Handle uncaught exceptions and rejections
     process.on('uncaughtException', (error) => {
         logger.debug('[START] Uncaught exception:', error);
+        exitCode = 1;
+        archiveReason = 'Session crashed';
         cleanup();
     });
 
     process.on('unhandledRejection', (reason) => {
         logger.debug('[START] Unhandled rejection:', reason);
+        exitCode = 1;
+        archiveReason = 'Session crashed';
         cleanup();
     });
 
@@ -365,7 +382,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         path: workingDirectory,
         model: options.model,
         permissionMode: options.permissionMode,
-        startingMode: options.startingMode,
+        startingMode,
         messageQueue,
         api,
         allowedTools: happyServer.toolNames.map(toolName => `mcp__hapi__${toolName}`),
@@ -388,8 +405,22 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         session,
         claudeEnvVars: options.claudeEnvVars,
         claudeArgs: options.claudeArgs,
+        startedBy,
         hookSettingsPath
     });
+
+    const localFailure = currentSession?.localLaunchFailure;
+    if (localFailure?.exitReason === 'exit') {
+        exitCode = 1;
+        archiveReason = `Local launch failed: ${formatFailureReason(localFailure.message)}`;
+        session.updateMetadata((currentMetadata) => ({
+            ...currentMetadata,
+            lifecycleState: 'archived',
+            lifecycleStateSince: Date.now(),
+            archivedBy: 'cli',
+            archiveReason
+        }));
+    }
 
     // Send session death message
     session.sendSessionDeath();
@@ -412,5 +443,5 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
     logger.debug('Stopped Hook server and cleaned up settings file');
 
     // Exit
-    process.exit(0);
+    process.exit(exitCode);
 }

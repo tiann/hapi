@@ -4,6 +4,7 @@ import { CodexSession } from './session';
 import { Future } from '@/utils/future';
 import { createCodexSessionScanner } from './utils/codexSessionScanner';
 import { convertCodexEvent } from './utils/codexEventConverter';
+import { getLocalLaunchExitReason } from '@/agent/localLaunchPolicy';
 
 export async function codexLocalLauncher(session: CodexSession): Promise<'switch' | 'exit'> {
     const scanner = await createCodexSessionScanner({
@@ -93,8 +94,16 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
                 logger.debug('[codex-local]: launch error', error);
                 const message = error instanceof Error ? error.message : String(error);
                 session.sendSessionEvent({ type: 'message', message: `Local Codex process failed: ${message}` });
+                const failureExitReason = exitReason ?? getLocalLaunchExitReason({
+                    startedBy: session.startedBy,
+                    startingMode: session.startingMode
+                });
+                session.recordLocalLaunchFailure(message, failureExitReason);
                 if (!exitReason) {
-                    exitReason = 'switch';
+                    exitReason = failureExitReason;
+                }
+                if (failureExitReason === 'exit') {
+                    logger.warn(`[codex-local]: Local Codex process failed: ${message}`);
                 }
                 break;
             }

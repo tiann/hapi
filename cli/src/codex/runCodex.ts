@@ -27,8 +27,9 @@ export async function runCodex(opts: {
 }): Promise<void> {
     const workingDirectory = process.cwd();
     const sessionTag = randomUUID();
+    const startedBy = opts.startedBy ?? 'terminal';
 
-    logger.debug(`[codex] Starting with options: startedBy=${opts.startedBy || 'terminal'}`);
+    logger.debug(`[codex] Starting with options: startedBy=${startedBy}`);
 
     const api = await ApiClient.create();
 
@@ -59,9 +60,9 @@ export async function runCodex(opts: {
         happyHomeDir: configuration.happyHomeDir,
         happyLibDir: runtimePath(),
         happyToolsDir: resolve(runtimePath(), 'tools', 'unpacked'),
-        startedFromDaemon: opts.startedBy === 'daemon',
+        startedFromDaemon: startedBy === 'daemon',
         hostPid: process.pid,
-        startedBy: opts.startedBy || 'terminal',
+        startedBy,
         lifecycleState: 'running',
         lifecycleStateSince: Date.now(),
         flavor: 'codex'
@@ -82,7 +83,7 @@ export async function runCodex(opts: {
         logger.debug('[START] Failed to report to daemon (may not be running):', error);
     }
 
-    const startingMode: 'local' | 'remote' = opts.startedBy === 'daemon' ? 'remote' : 'local';
+    const startingMode: 'local' | 'remote' = startedBy === 'daemon' ? 'remote' : 'local';
 
     session.updateAgentState((currentState) => ({
         ...currentState,
@@ -134,6 +135,15 @@ export async function runCodex(opts: {
 
     let cleanupStarted = false;
     let exitCode = 0;
+    let archiveReason = 'User terminated';
+
+    const formatFailureReason = (message: string): string => {
+        const maxLength = 200;
+        if (message.length <= maxLength) {
+            return message;
+        }
+        return `${message.slice(0, maxLength)}...`;
+    };
 
     const cleanup = async (code: number = exitCode) => {
         if (cleanupStarted) {
@@ -152,7 +162,7 @@ export async function runCodex(opts: {
                 lifecycleState: 'archived',
                 lifecycleStateSince: Date.now(),
                 archivedBy: 'cli',
-                archiveReason: 'User terminated'
+                archiveReason
             }));
 
             session.sendSessionDeath();
@@ -173,12 +183,14 @@ export async function runCodex(opts: {
     process.on('uncaughtException', (error) => {
         logger.debug('[codex] Uncaught exception:', error);
         exitCode = 1;
+        archiveReason = 'Session crashed';
         cleanup(1);
     });
 
     process.on('unhandledRejection', (reason) => {
         logger.debug('[codex] Unhandled rejection:', reason);
         exitCode = 1;
+        archiveReason = 'Session crashed';
         cleanup(1);
     });
 
@@ -194,6 +206,7 @@ export async function runCodex(opts: {
             session,
             codexArgs: opts.codexArgs,
             codexCliOverrides,
+            startedBy,
             onModeChange: (newMode) => {
                 session.sendSessionEvent({ type: 'switch', mode: newMode });
                 session.updateAgentState((currentState) => ({
@@ -208,8 +221,14 @@ export async function runCodex(opts: {
     } catch (error) {
         loopError = error;
         exitCode = 1;
+        archiveReason = 'Session crashed';
         logger.debug('[codex] Loop error:', error);
     } finally {
+        const localFailure = sessionWrapper?.localLaunchFailure;
+        if (localFailure?.exitReason === 'exit') {
+            exitCode = 1;
+            archiveReason = `Local launch failed: ${formatFailureReason(localFailure.message)}`;
+        }
         await cleanup(loopError ? 1 : exitCode);
     }
 }
