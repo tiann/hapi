@@ -116,6 +116,10 @@ function normalizeAssistantOutput(
                 blocks.push({ type: 'text', text: block.text, uuid, parentUUID })
                 continue
             }
+            if (block.type === 'thinking' && typeof block.thinking === 'string') {
+                blocks.push({ type: 'reasoning', text: block.thinking, uuid, parentUUID })
+                continue
+            }
             if (block.type === 'tool_use' && typeof block.id === 'string') {
                 const name = asString(block.name) ?? 'Tool'
                 const input = 'input' in block ? (block as Record<string, unknown>).input : undefined
