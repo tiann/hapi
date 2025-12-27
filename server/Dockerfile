@@ -22,7 +22,7 @@ RUN bun add --no-save react-devtools-core@6.1.2 \
     && cp cli/dist-exe/bun-linux-*/hapi /out/hapi
 
 
-FROM oven/bun:1.3.4-slim AS runtime
+FROM oven/bun:1.3.4 AS runtime
 
 WORKDIR /home/bun/app
 
