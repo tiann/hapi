@@ -88,8 +88,12 @@ export function useSwitchControls(opts: {
         const keySequence = readKeyString(key, 'sequence');
         const keyName = readKeyString(key, 'name');
         const sequence = keySequence ?? input;
-        const isKeyRelease = /^\u001b\[[0-9;]*:3u$/.test(sequence);
-        const csiUMatch = sequence.match(/^\u001b\[(\d+)(?:;(\d+))?u$/);
+        const sequenceString = typeof sequence === 'string' ? sequence : '';
+        const isKeyRelease = sequenceString.length > 0
+            && /^\u001b\[[0-9;]*:3u$/.test(sequenceString);
+        const csiUMatch = sequenceString.length > 0
+            ? sequenceString.match(/^\u001b\[(\d+)(?:;(\d+))?u$/)
+            : null;
         const csiUCodepoint = csiUMatch ? Number(csiUMatch[1]) : null;
         const isCsiUSpace = csiUCodepoint === 32;
         const isSpace = Boolean(onSwitch) && !isKeyRelease && (input === ' ' || keyName === 'space' || isCsiUSpace);
