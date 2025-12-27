@@ -3,8 +3,12 @@ import { dirname, join } from 'node:path';
 import { arch, platform } from 'node:os';
 import * as tar from 'tar';
 import packageJson from '../../package.json';
-import type { EmbeddedAsset } from '#embedded-assets';
 import { isBunCompiled, runtimePath } from '@/projectPath';
+
+export interface EmbeddedAsset {
+    relativePath: string;
+    sourcePath: string;
+}
 
 const RUNTIME_MARKER = '.runtime-version';
 
@@ -122,7 +126,8 @@ export async function ensureRuntimeAssets(): Promise<void> {
         return;
     }
 
-    const { loadEmbeddedAssets } = await import('#embedded-assets');
+    // Use the compiled static version to avoid bun:bundle runtime dependency
+    const { loadEmbeddedAssets } = await import('./embeddedAssets.compiled.js');
     const runtimeRoot = runtimePath();
     const markerPath = join(runtimeRoot, RUNTIME_MARKER);
     if (existsSync(markerPath)) {

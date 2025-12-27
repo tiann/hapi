@@ -179,6 +179,26 @@ async function buildTarget(projectRoot: string, target: string, outdir: string, 
     mkdirSync(dirname(outfile), { recursive: true });
     const featureFlag = getFeatureFlag(platform, arch);
 
+    // Generate static compiled assets file for this target
+    console.log(`[build:exe] Generating compiled assets for ${target}`);
+    const generateAssetsProc = Bun.spawn({
+        cmd: [
+            process.execPath,
+            'run',
+            join(projectRoot, 'scripts', 'generate-compiled-assets.ts'),
+            target
+        ],
+        env: process.env,
+        stdout: 'inherit',
+        stderr: 'inherit',
+        cwd: projectRoot
+    });
+
+    const generateExitCode = await generateAssetsProc.exited;
+    if (generateExitCode !== 0) {
+        throw new Error(`Failed to generate compiled assets for ${target} (exit ${generateExitCode})`);
+    }
+
     const cmd = [
         process.execPath,
         'build',
