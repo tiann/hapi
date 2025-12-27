@@ -268,14 +268,8 @@ export async function startDaemon(): Promise<void> {
           '--hapi-starting-mode', 'remote',
           '--started-by', 'daemon'
         ];
-        if (yolo && agent === 'claude') {
-          args.push('--dangerously-skip-permissions');
-        }
-        if (yolo && agent === 'codex') {
-          args.push('--dangerously-bypass-approvals-and-sandbox');
-        }
-        if (yolo && agent === 'gemini') {
-          args.push('--approval-mode', 'yolo');
+        if (yolo) {
+          args.push('--yolo');
         }
 
         // TODO: In future, sessionId could be used with --resume to continue existing sessions

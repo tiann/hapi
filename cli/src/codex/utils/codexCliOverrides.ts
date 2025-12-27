@@ -34,6 +34,12 @@ export function parseCodexCliOverrides(args?: string[]): CodexCliOverrides {
             continue;
         }
 
+        if (arg === '--yolo') {
+            overrides.approvalPolicy = 'never';
+            overrides.sandbox = 'danger-full-access';
+            continue;
+        }
+
         if (arg === '--dangerously-bypass-approvals-and-sandbox') {
             overrides.approvalPolicy = 'never';
             overrides.sandbox = 'danger-full-access';

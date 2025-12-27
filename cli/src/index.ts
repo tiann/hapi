@@ -147,15 +147,28 @@ import { getCliArgs } from './utils/cliArgs'
   } else if (subcommand === 'gemini') {
     // Handle gemini command
     try {
-      await import('./agent/runners/gemini');
-      const { runAgentSession } = await import('./agent/runners/runAgentSession');
-
       let startedBy: 'daemon' | 'terminal' | undefined = undefined;
+      let yolo = false;
       for (let i = 1; i < args.length; i++) {
         if (args[i] === '--started-by') {
           startedBy = args[++i] as 'daemon' | 'terminal';
+        } else if (args[i] === '--yolo') {
+          yolo = true;
         }
       }
+
+      if (yolo) {
+        const existingArgs = process.env.HAPPY_GEMINI_ARGS ?? process.env.GEMINI_ACP_ARGS ?? '';
+        if (!existingArgs.includes('--yolo')) {
+          const nextArgs = existingArgs.trim().length > 0
+            ? `${existingArgs} --yolo`
+            : '--yolo';
+          process.env.HAPPY_GEMINI_ARGS = nextArgs;
+        }
+      }
+
+      await import('./agent/runners/gemini');
+      const { runAgentSession } = await import('./agent/runners/runAgentSession');
 
       await initializeToken();
       await authAndSetupMachineIfNeeded();
