@@ -7,10 +7,26 @@ import { convertCodexEvent } from './utils/codexEventConverter';
 import { getLocalLaunchExitReason } from '@/agent/localLaunchPolicy';
 
 export async function codexLocalLauncher(session: CodexSession): Promise<'switch' | 'exit'> {
+    let exitReason: 'switch' | 'exit' | null = null;
+    const processAbortController = new AbortController();
+    const exitFuture = new Future<void>();
+
+    const handleSessionMatchFailed = (message: string) => {
+        logger.warn(`[codex-local]: ${message}`);
+        session.sendSessionEvent({ type: 'message', message });
+        if (!exitReason) {
+            exitReason = 'exit';
+        }
+        if (!processAbortController.signal.aborted) {
+            processAbortController.abort();
+        }
+    };
+
     const scanner = await createCodexSessionScanner({
         sessionId: session.sessionId,
         cwd: session.path,
         startupTimestampMs: Date.now(),
+        onSessionMatchFailed: handleSessionMatchFailed,
         onSessionFound: (sessionId) => {
             session.onSessionFound(sessionId);
         },
@@ -28,10 +44,6 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
             }
         }
     });
-
-    let exitReason: 'switch' | 'exit' | null = null;
-    const processAbortController = new AbortController();
-    const exitFuture = new Future<void>();
 
     try {
         async function abortProcess() {
@@ -64,6 +76,9 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
             void doSwitch();
         });
 
+        if (exitReason) {
+            return exitReason;
+        }
         if (session.queue.size() > 0) {
             return 'switch';
         }

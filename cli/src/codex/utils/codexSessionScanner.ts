@@ -1,7 +1,7 @@
 import { InvalidateSync } from '@/utils/sync';
 import { startFileWatcher } from '@/modules/watcher/startFileWatcher';
 import { logger } from '@/ui/logger';
-import { join, resolve } from 'node:path';
+import { join, relative, resolve, sep } from 'node:path';
 import { homedir } from 'node:os';
 import { readFile, readdir, stat } from 'node:fs/promises';
 import type { CodexSessionEvent } from './codexEventConverter';
@@ -10,6 +10,7 @@ interface CodexSessionScannerOptions {
     sessionId: string | null;
     onEvent: (event: CodexSessionEvent) => void;
     onSessionFound?: (sessionId: string) => void;
+    onSessionMatchFailed?: (message: string) => void;
     cwd?: string;
     startupTimestampMs?: number;
     sessionStartWindowMs?: number;
@@ -25,13 +26,9 @@ type PendingEvents = {
     fileSessionId: string | null;
 };
 
-type CandidateReason = 'within-window' | 'outside-window' | 'no-timestamp' | 'unknown-cwd';
-
 type Candidate = {
     sessionId: string;
-    filePath: string;
     score: number;
-    reason: CandidateReason;
 };
 
 const DEFAULT_SESSION_START_WINDOW_MS = 2 * 60 * 1000;
@@ -51,11 +48,27 @@ export async function createCodexSessionScanner(opts: CodexSessionScannerOptions
     let activeSessionId: string | null = opts.sessionId;
     let reportedSessionId: string | null = opts.sessionId;
     let isClosing = false;
+    let matchFailed = false;
 
-    const targetCwd = opts.cwd ? normalizePath(opts.cwd) : null;
+    const targetCwd = opts.cwd && opts.cwd.trim().length > 0 ? normalizePath(opts.cwd) : null;
     const referenceTimestampMs = opts.startupTimestampMs ?? Date.now();
     const sessionStartWindowMs = opts.sessionStartWindowMs ?? DEFAULT_SESSION_START_WINDOW_MS;
+    const matchDeadlineMs = referenceTimestampMs + sessionStartWindowMs;
+    const sessionDatePrefixes = targetCwd
+        ? getSessionDatePrefixes(referenceTimestampMs, sessionStartWindowMs)
+        : null;
     logger.debug(`[CODEX_SESSION_SCANNER] Init: targetCwd=${targetCwd ?? 'none'} startupTs=${new Date(referenceTimestampMs).toISOString()} windowMs=${sessionStartWindowMs}`);
+
+    if (!targetCwd && !opts.sessionId) {
+        matchFailed = true;
+        const message = 'No cwd provided for Codex session matching; refusing to fallback.';
+        logger.warn(`[CODEX_SESSION_SCANNER] ${message}`);
+        opts.onSessionMatchFailed?.(message);
+        return {
+            cleanup: async () => {},
+            onNewSession: () => {}
+        };
+    }
 
     function reportSessionId(sessionId: string): void {
         if (reportedSessionId === sessionId) {
@@ -81,6 +94,9 @@ export async function createCodexSessionScanner(opts: CodexSessionScannerOptions
             const results: string[] = [];
             for (const entry of entries) {
                 const full = join(dir, entry.name);
+                if (!shouldIncludeSessionPath(full, sessionsRoot, sessionDatePrefixes)) {
+                    continue;
+                }
                 if (entry.isDirectory()) {
                     results.push(...await listSessionFiles(full));
                 } else if (entry.isFile() && entry.name.endsWith('.jsonl')) {
@@ -168,44 +184,23 @@ export async function createCodexSessionScanner(opts: CodexSessionScannerOptions
         }
 
         const fileCwd = sessionCwdByFile.get(filePath);
-        if (targetCwd && fileCwd && fileCwd !== targetCwd) {
+        if (targetCwd && fileCwd !== targetCwd) {
             return null;
-        }
-
-        if (targetCwd && !fileCwd) {
-            return {
-                sessionId,
-                filePath,
-                score: Number.POSITIVE_INFINITY,
-                reason: 'unknown-cwd'
-            };
         }
 
         const sessionTimestamp = sessionTimestampByFile.get(filePath);
         if (sessionTimestamp === undefined) {
-            return {
-                sessionId,
-                filePath,
-                score: Number.POSITIVE_INFINITY,
-                reason: 'no-timestamp'
-            };
+            return null;
         }
 
         const diff = Math.abs(sessionTimestamp - referenceTimestampMs);
         if (diff > sessionStartWindowMs) {
-            return {
-                sessionId,
-                filePath,
-                score: diff,
-                reason: 'outside-window'
-            };
+            return null;
         }
 
         return {
             sessionId,
-            filePath,
-            score: diff,
-            reason: 'within-window'
+            score: diff
         };
     }
 
@@ -233,10 +228,6 @@ export async function createCodexSessionScanner(opts: CodexSessionScannerOptions
             const payload = asRecord(event.payload);
             const payloadSessionId = payload ? asString(payload.id) : null;
             const eventSessionId = payloadSessionId ?? fileSessionId ?? null;
-
-            if (!activeSessionId && !targetCwd && eventSessionId) {
-                setActiveSessionId(eventSessionId);
-            }
 
             if (activeSessionId && eventSessionId && eventSessionId !== activeSessionId) {
                 continue;
@@ -268,15 +259,12 @@ export async function createCodexSessionScanner(opts: CodexSessionScannerOptions
     }
 
     const sync = new InvalidateSync(async () => {
-        if (isClosing) {
+        if (isClosing || matchFailed) {
             return;
         }
         const files = await listSessionFiles(sessionsRoot);
         const sortedFiles = await sortFilesByMtime(files);
         let bestWithinWindow: Candidate | null = null;
-        let bestOutsideWindow: Candidate | null = null;
-        let bestNoTimestamp: Candidate | null = null;
-        let bestUnknownCwd: Candidate | null = null;
 
         for (const filePath of sortedFiles) {
             if (isClosing) {
@@ -299,29 +287,10 @@ export async function createCodexSessionScanner(opts: CodexSessionScannerOptions
             processedLineCounts.set(filePath, totalLines);
             const candidate = !activeSessionId && targetCwd ? getCandidateForFile(filePath) : null;
             if (!activeSessionId && targetCwd) {
-                appendPendingEvents(filePath, events, fileSessionId ?? candidate?.sessionId ?? null);
+                appendPendingEvents(filePath, events, fileSessionId ?? null);
                 if (candidate) {
-                    switch (candidate.reason) {
-                        case 'within-window':
-                            if (!bestWithinWindow || candidate.score < bestWithinWindow.score) {
-                                bestWithinWindow = candidate;
-                            }
-                            break;
-                        case 'outside-window':
-                            if (!bestOutsideWindow || candidate.score < bestOutsideWindow.score) {
-                                bestOutsideWindow = candidate;
-                            }
-                            break;
-                        case 'no-timestamp':
-                            if (!bestNoTimestamp) {
-                                bestNoTimestamp = candidate;
-                            }
-                            break;
-                        case 'unknown-cwd':
-                            if (!bestUnknownCwd) {
-                                bestUnknownCwd = candidate;
-                            }
-                            break;
+                    if (!bestWithinWindow || candidate.score < bestWithinWindow.score) {
+                        bestWithinWindow = candidate;
                     }
                 }
                 continue;
@@ -334,18 +303,15 @@ export async function createCodexSessionScanner(opts: CodexSessionScannerOptions
         }
 
         if (!activeSessionId && targetCwd) {
-            const selectedCandidate = bestWithinWindow
-                ?? bestOutsideWindow
-                ?? bestNoTimestamp
-                ?? bestUnknownCwd
-                ?? null;
-            if (selectedCandidate) {
-                if (selectedCandidate.reason === 'within-window') {
-                    logger.debug(`[CODEX_SESSION_SCANNER] Selected session ${selectedCandidate.sessionId} within start window`);
-                } else {
-                    logger.debug(`[CODEX_SESSION_SCANNER] Selected session ${selectedCandidate.sessionId} via fallback (${selectedCandidate.reason})`);
-                }
-                setActiveSessionId(selectedCandidate.sessionId);
+            if (bestWithinWindow) {
+                logger.debug(`[CODEX_SESSION_SCANNER] Selected session ${bestWithinWindow.sessionId} within start window`);
+                setActiveSessionId(bestWithinWindow.sessionId);
+            } else if (Date.now() > matchDeadlineMs) {
+                matchFailed = true;
+                pendingEventsByFile.clear();
+                const message = `No Codex session found within ${sessionStartWindowMs}ms for cwd ${targetCwd}; refusing fallback.`;
+                logger.warn(`[CODEX_SESSION_SCANNER] ${message}`);
+                opts.onSessionMatchFailed?.(message);
             } else if (pendingEventsByFile.size > 0) {
                 logger.debug('[CODEX_SESSION_SCANNER] No session candidate matched yet; pending events buffered');
             }
@@ -417,4 +383,56 @@ function parseTimestamp(value: unknown): number | null {
 function normalizePath(value: string): string {
     const resolved = resolve(value);
     return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
+function getSessionDatePrefixes(referenceTimestampMs: number, windowMs: number): Set<string> {
+    const startDate = new Date(referenceTimestampMs - windowMs);
+    const endDate = new Date(referenceTimestampMs + windowMs);
+    const current = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate());
+    const last = new Date(endDate.getFullYear(), endDate.getMonth(), endDate.getDate());
+    const prefixes = new Set<string>();
+
+    while (current <= last) {
+        const year = String(current.getFullYear());
+        const month = String(current.getMonth() + 1).padStart(2, '0');
+        const day = String(current.getDate()).padStart(2, '0');
+        prefixes.add(`${year}/${month}/${day}`);
+        current.setDate(current.getDate() + 1);
+    }
+
+    return prefixes;
+}
+
+function shouldIncludeSessionPath(
+    fullPath: string,
+    sessionsRoot: string,
+    prefixes: Set<string> | null
+): boolean {
+    if (!prefixes) {
+        return true;
+    }
+
+    const relativePath = relative(sessionsRoot, fullPath);
+    if (!relativePath || relativePath.startsWith('..')) {
+        return true;
+    }
+
+    const normalized = relativePath.split(sep).filter(Boolean).join('/');
+    if (!normalized) {
+        return true;
+    }
+
+    for (const prefix of prefixes) {
+        if (normalized === prefix) {
+            return true;
+        }
+        if (normalized.startsWith(`${prefix}/`)) {
+            return true;
+        }
+        if (prefix.startsWith(`${normalized}/`)) {
+            return true;
+        }
+    }
+
+    return false;
 }
