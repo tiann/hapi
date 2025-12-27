@@ -210,7 +210,7 @@ export default function TerminalPage() {
             ) : null}
 
             <div className="flex-1 overflow-hidden bg-[var(--app-bg)]">
-                <div className="mx-auto h-full w-full max-w-content">
+                <div className="mx-auto h-full w-full max-w-content p-3">
                     <TerminalView
                         onMount={handleTerminalMount}
                         onResize={handleResize}
