@@ -157,18 +157,9 @@ import { getCliArgs } from './utils/cliArgs'
         }
       }
 
-      if (yolo) {
-        const existingArgs = process.env.HAPPY_GEMINI_ARGS ?? process.env.GEMINI_ACP_ARGS ?? '';
-        if (!existingArgs.includes('--yolo')) {
-          const nextArgs = existingArgs.trim().length > 0
-            ? `${existingArgs} --yolo`
-            : '--yolo';
-          process.env.HAPPY_GEMINI_ARGS = nextArgs;
-        }
-      }
-
-      await import('./agent/runners/gemini');
+      const { registerGeminiAgent } = await import('./agent/runners/gemini');
       const { runAgentSession } = await import('./agent/runners/runAgentSession');
+      registerGeminiAgent(yolo);
 
       await initializeToken();
       await authAndSetupMachineIfNeeded();

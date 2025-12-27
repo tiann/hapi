@@ -81,11 +81,6 @@ See `src/configuration.ts` for all options.
 - `HAPI_DAEMON_HEARTBEAT_INTERVAL` - Heartbeat interval in ms (default: 60000).
 - `HAPI_DAEMON_HTTP_TIMEOUT` - HTTP timeout for daemon control in ms (default: 10000).
 
-### Gemini/Agent
-
-- `HAPPY_GEMINI_COMMAND` - Gemini executable command (default: gemini).
-- `HAPPY_GEMINI_ARGS` - Gemini arguments (default: --experimental-acp).
-
 ## Storage
 
 Data is stored in `~/.hapi/` (or `$HAPI_HOME`):
