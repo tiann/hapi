@@ -179,12 +179,6 @@ Environment variables take priority over the file.
 
 ```bash
 bun install
-bun run build
-```
-
-Build a single binary with embedded web assets:
-
-```bash
 bun run build:single-exe
 ```
 
