@@ -5,7 +5,8 @@ import type { WebAppEnv } from '../middleware/auth'
 
 const spawnBodySchema = z.object({
     directory: z.string().min(1),
-    agent: z.enum(['claude', 'codex', 'gemini']).optional()
+    agent: z.enum(['claude', 'codex', 'gemini']).optional(),
+    yolo: z.boolean().optional()
 })
 
 export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Hono<WebAppEnv> {
@@ -39,7 +40,12 @@ export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return c.json({ error: 'Invalid body' }, 400)
         }
 
-        const result = await engine.spawnSession(machineId, parsed.data.directory, parsed.data.agent)
+        const result = await engine.spawnSession(
+            machineId,
+            parsed.data.directory,
+            parsed.data.agent,
+            parsed.data.yolo
+        )
         return c.json(result)
     })
 

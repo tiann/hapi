@@ -22,6 +22,11 @@ describe('parseCodexCliOverrides', () => {
             approvalPolicy: 'on-request'
         });
 
+        expect(parseCodexCliOverrides(['--yolo'])).toEqual({
+            sandbox: 'danger-full-access',
+            approvalPolicy: 'never'
+        });
+
         expect(parseCodexCliOverrides(['--dangerously-bypass-approvals-and-sandbox'])).toEqual({
             sandbox: 'danger-full-access',
             approvalPolicy: 'never'

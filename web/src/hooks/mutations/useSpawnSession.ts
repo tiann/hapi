@@ -7,6 +7,7 @@ type SpawnInput = {
     machineId: string
     directory: string
     agent?: 'claude' | 'codex' | 'gemini'
+    yolo?: boolean
 }
 
 export function useSpawnSession(api: ApiClient | null): {
@@ -21,7 +22,7 @@ export function useSpawnSession(api: ApiClient | null): {
             if (!api) {
                 throw new Error('API unavailable')
             }
-            return await api.spawnSession(input.machineId, input.directory, input.agent)
+            return await api.spawnSession(input.machineId, input.directory, input.agent, input.yolo)
         },
         onSuccess: () => {
             void queryClient.invalidateQueries({ queryKey: queryKeys.sessions })

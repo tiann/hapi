@@ -42,6 +42,13 @@ export function useSwitchControls(opts: {
         }, confirmationTimeoutMs);
     }, [confirmationTimeoutMs, resetConfirmation]);
 
+    const readKeyString = useCallback((keyLike: unknown, prop: 'name' | 'sequence'): string | undefined => {
+        if (!keyLike || typeof keyLike !== 'object') return undefined;
+        if (!(prop in keyLike)) return undefined;
+        const value = (keyLike as Record<string, unknown>)[prop];
+        return typeof value === 'string' ? value : undefined;
+    }, []);
+
     useEffect(() => {
         return () => {
             if (confirmationTimeoutRef.current) {
@@ -78,14 +85,18 @@ export function useSwitchControls(opts: {
             return;
         }
 
-        const sequence = typeof key.sequence === 'string' ? key.sequence : input;
-        const isKeyRelease = typeof sequence === 'string' && /^\u001b\[[0-9;]*:3u$/.test(sequence);
-        const csiUMatch = typeof sequence === 'string'
-            ? sequence.match(/^\u001b\[(\d+)(?:;(\d+))?u$/)
+        const keySequence = readKeyString(key, 'sequence');
+        const keyName = readKeyString(key, 'name');
+        const sequence = keySequence ?? input;
+        const sequenceString = typeof sequence === 'string' ? sequence : '';
+        const isKeyRelease = sequenceString.length > 0
+            && /^\u001b\[[0-9;]*:3u$/.test(sequenceString);
+        const csiUMatch = sequenceString.length > 0
+            ? sequenceString.match(/^\u001b\[(\d+)(?:;(\d+))?u$/)
             : null;
         const csiUCodepoint = csiUMatch ? Number(csiUMatch[1]) : null;
         const isCsiUSpace = csiUCodepoint === 32;
-        const isSpace = Boolean(onSwitch) && !isKeyRelease && (input === ' ' || key.name === 'space' || isCsiUSpace);
+        const isSpace = Boolean(onSwitch) && !isKeyRelease && (input === ' ' || keyName === 'space' || isCsiUSpace);
         const hasPrintableInput = typeof input === 'string' && input.length > 0;
 
         if (isSpace) {

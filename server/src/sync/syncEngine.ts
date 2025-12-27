@@ -652,10 +652,15 @@ export class SyncEngine {
     async spawnSession(
         machineId: string,
         directory: string,
-        agent: 'claude' | 'codex' | 'gemini' = 'claude'
+        agent: 'claude' | 'codex' | 'gemini' = 'claude',
+        yolo?: boolean
     ): Promise<{ type: 'success'; sessionId: string } | { type: 'error'; message: string }> {
         try {
-            const result = await this.machineRpc(machineId, 'spawn-happy-session', { type: 'spawn-in-directory', directory, agent })
+            const result = await this.machineRpc(
+                machineId,
+                'spawn-happy-session',
+                { type: 'spawn-in-directory', directory, agent, yolo }
+            )
             if (result && typeof result === 'object') {
                 const obj = result as Record<string, unknown>
                 if (obj.type === 'success' && typeof obj.sessionId === 'string') {
