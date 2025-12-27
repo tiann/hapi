@@ -41,6 +41,23 @@ function run(cmd: string, cwd = projectRoot): void {
     }
 }
 
+async function runWithTimeoutRetry(cmd: string, cwd = projectRoot): Promise<void> {
+    const timeoutCmd = `timeout 60s ${cmd}`;
+    while (true) {
+        console.log(`\n$ ${timeoutCmd}`);
+        if (dryRun) {
+            return;
+        }
+        try {
+            execSync(timeoutCmd, { cwd, stdio: 'inherit' });
+            return;
+        } catch {
+            console.warn(`⚠️ ${cmd} failed or timed out. Retrying in 60s...`);
+            await new Promise(resolve => setTimeout(resolve, 60_000));
+        }
+    }
+}
+
 async function main(): Promise<void> {
     const flags = [dryRun && 'dry-run', publishNpm && 'publish-npm', skipBuild && 'skip-build'].filter(Boolean);
     console.log(`\n🚀 Starting release v${version}${flags.length ? ` (${flags.join(', ')})` : ''}\n`);
@@ -108,7 +125,7 @@ async function main(): Promise<void> {
     // Step 5: bun install to get complete lockfile
     console.log('\n📥 Step 4: Updating lockfile...');
 
-    run('bun install', repoRoot);
+    await runWithTimeoutRetry('bun install', repoRoot);
     // Step 6: Git commit + tag + push
     console.log('\n📝 Step 6: Creating git commit and tag...');
     run(`git add .`, repoRoot);
