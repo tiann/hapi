@@ -3,9 +3,10 @@ import { useQuery } from '@tanstack/react-query'
 import { useParams, useSearch } from '@tanstack/react-router'
 import type { GitCommandResponse } from '@/types/api'
 import { FileIcon } from '@/components/FileIcon'
+import { CopyIcon, CheckIcon } from '@/components/icons'
 import { useAppContext } from '@/lib/app-context'
 import { useAppGoBack } from '@/hooks/useAppGoBack'
-import { usePlatform } from '@/hooks/usePlatform'
+import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
 import { queryKeys } from '@/lib/query-keys'
 import { langAlias, useShikiHighlighter } from '@/lib/shiki'
 
@@ -120,55 +121,9 @@ function extractCommandError(result: GitCommandResponse | undefined): string | n
     return result.error ?? result.stderr ?? 'Failed to load diff'
 }
 
-function safeCopyToClipboard(text: string): Promise<void> {
-    if (navigator.clipboard?.writeText) {
-        return navigator.clipboard.writeText(text)
-    }
-    return Promise.reject(new Error('Clipboard API not available'))
-}
-
-function CopyIcon(props: { className?: string }) {
-    return (
-        <svg
-            xmlns="http://www.w3.org/2000/svg"
-            width="14"
-            height="14"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            className={props.className}
-        >
-            <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
-            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-        </svg>
-    )
-}
-
-function CheckIcon(props: { className?: string }) {
-    return (
-        <svg
-            xmlns="http://www.w3.org/2000/svg"
-            width="14"
-            height="14"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            className={props.className}
-        >
-            <polyline points="20 6 9 17 4 12" />
-        </svg>
-    )
-}
-
 export default function FilePage() {
     const { api } = useAppContext()
-    const { haptic } = usePlatform()
+    const { copied, copy } = useCopyToClipboard()
     const goBack = useAppGoBack()
     const { sessionId } = useParams({ from: '/sessions/$sessionId/file' })
     const search = useSearch({ from: '/sessions/$sessionId/file' })
@@ -218,18 +173,6 @@ export default function FilePage() {
     const highlighted = useShikiHighlighter(decodedContent, language)
 
     const [displayMode, setDisplayMode] = useState<'diff' | 'file'>('diff')
-    const [copied, setCopied] = useState(false)
-
-    const handleCopyPath = async () => {
-        try {
-            await safeCopyToClipboard(filePath)
-            haptic.notification('success')
-            setCopied(true)
-            setTimeout(() => setCopied(false), 1500)
-        } catch {
-            haptic.notification('error')
-        }
-    }
 
     useEffect(() => {
         if (diffSuccess && !diffContent) {
@@ -272,11 +215,11 @@ export default function FilePage() {
                     <span className="min-w-0 flex-1 truncate text-xs text-[var(--app-hint)]">{filePath}</span>
                     <button
                         type="button"
-                        onClick={handleCopyPath}
+                        onClick={() => copy(filePath)}
                         className="shrink-0 rounded p-1 text-[var(--app-hint)] hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] transition-colors"
                         title="Copy path"
                     >
-                        {copied ? <CheckIcon /> : <CopyIcon />}
+                        {copied ? <CheckIcon className="h-3.5 w-3.5" /> : <CopyIcon className="h-3.5 w-3.5" />}
                     </button>
                 </div>
             </div>
