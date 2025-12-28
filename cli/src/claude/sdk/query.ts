@@ -25,6 +25,7 @@ import {
 import { getDefaultClaudeCodePath, getCleanEnv, logDebug, streamToStdin } from './utils'
 import { withBunRuntimeEnv } from '@/utils/bunRuntime'
 import { killProcessByChildProcess } from '@/utils/process'
+import { writeMcpConfigFile } from '@/utils/mcpConfig'
 import type { Writable } from 'node:stream'
 import { logger } from '@/ui/logger'
 
@@ -302,7 +303,8 @@ export function query(config: {
     if (allowedTools.length > 0) args.push('--allowedTools', allowedTools.join(','))
     if (disallowedTools.length > 0) args.push('--disallowedTools', disallowedTools.join(','))
     if (mcpServers && Object.keys(mcpServers).length > 0) {
-        args.push('--mcp-config', JSON.stringify({ mcpServers }))
+        const mcpConfigPath = writeMcpConfigFile(mcpServers);
+        args.push('--mcp-config', mcpConfigPath);
     }
     if (strictMcpConfig) args.push('--strict-mcp-config')
     if (permissionMode) args.push('--permission-mode', permissionMode)

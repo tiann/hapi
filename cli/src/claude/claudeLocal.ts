@@ -6,6 +6,7 @@ import { getProjectPath } from "./utils/path";
 import { systemPrompt } from "./utils/systemPrompt";
 import { withBunRuntimeEnv } from "@/utils/bunRuntime";
 import { spawnWithAbort } from "@/utils/spawnWithAbort";
+import { writeMcpConfigFile } from "@/utils/mcpConfig";
 
 export async function claudeLocal(opts: {
     abort: AbortSignal,
@@ -55,7 +56,8 @@ export async function claudeLocal(opts: {
             args.push('--append-system-prompt', systemPrompt);
 
             if (opts.mcpServers && Object.keys(opts.mcpServers).length > 0) {
-                args.push('--mcp-config', JSON.stringify({ mcpServers: opts.mcpServers }));
+                const mcpConfigPath = writeMcpConfigFile(opts.mcpServers);
+                args.push('--mcp-config', mcpConfigPath);
             }
 
             if (opts.allowedTools && opts.allowedTools.length > 0) {

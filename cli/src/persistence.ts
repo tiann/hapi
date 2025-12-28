@@ -81,14 +81,16 @@ export async function updateSettings(
 
   const lockFile = configuration.settingsFile + '.lock';
   const tmpFile = configuration.settingsFile + '.tmp';
-  let fileHandle;
+  let lockAcquired = false;
   let attempts = 0;
 
   // Acquire exclusive lock with retries
+  // Use writeFileSync with 'wx' flag for cross-platform compatibility (Windows + Bun fix)
   while (attempts < MAX_LOCK_ATTEMPTS) {
     try {
-      // O_CREAT | O_EXCL | O_WRONLY = create exclusively, fail if exists
-      fileHandle = await open(lockFile, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY);
+      // 'wx' flag = O_CREAT | O_EXCL | O_WRONLY, more compatible than open() with constants
+      writeFileSync(lockFile, String(process.pid), { flag: 'wx' });
+      lockAcquired = true;
       break;
     } catch (err: any) {
       if (err.code === 'EEXIST') {
@@ -109,7 +111,7 @@ export async function updateSettings(
     }
   }
 
-  if (!fileHandle) {
+  if (!lockAcquired) {
     throw new Error(`Failed to acquire settings lock after ${MAX_LOCK_ATTEMPTS * LOCK_RETRY_INTERVAL_MS / 1000} seconds`);
   }
 
@@ -127,7 +129,6 @@ export async function updateSettings(
     return updated;
   } finally {
     // Release lock
-    await fileHandle.close();
     await unlink(lockFile).catch(() => { }); // Remove lock file
   }
 }
