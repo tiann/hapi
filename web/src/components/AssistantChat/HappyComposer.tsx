@@ -26,12 +26,16 @@ export interface TextInputState {
     selection: { start: number; end: number }
 }
 
-const PERMISSION_MODES = ['default', 'acceptEdits', 'plan', 'bypassPermissions'] as const
+const CLAUDE_PERMISSION_MODES = ['default', 'acceptEdits', 'plan', 'bypassPermissions'] as const
+const CODEX_PERMISSION_MODES = ['default', 'read-only', 'safe-yolo', 'yolo'] as const
 const PERMISSION_MODE_LABELS: Record<string, string> = {
     default: 'Default',
     acceptEdits: 'Accept Edits',
     plan: 'Plan Mode',
-    bypassPermissions: 'Bypass All'
+    bypassPermissions: 'Yolo',
+    'read-only': 'Read Only',
+    'safe-yolo': 'Safe Yolo',
+    yolo: 'Yolo'
 }
 
 const MODEL_MODES = ['default', 'sonnet', 'opus'] as const
@@ -52,6 +56,7 @@ export function HappyComposer(props: {
     agentState?: AgentState | null
     contextSize?: number
     controlledByUser?: boolean
+    agentFlavor?: string | null
     onPermissionModeChange?: (mode: PermissionMode) => void
     onModelModeChange?: (mode: ModelMode) => void
     onSwitchToRemote?: () => void
@@ -68,6 +73,7 @@ export function HappyComposer(props: {
         agentState,
         contextSize,
         controlledByUser = false,
+        agentFlavor,
         onPermissionModeChange,
         onModelModeChange,
         onSwitchToRemote,
@@ -76,7 +82,7 @@ export function HappyComposer(props: {
         autocompleteSuggestions = defaultSuggestionHandler
     } = props
 
-    // Use ?? to handle both null and undefined (destructuring defaults only work for undefined)
+    // Use ?? so missing values fall back to default (destructuring defaults only handle undefined)
     const permissionMode = rawPermissionMode ?? 'default'
     const modelMode = rawModelMode ?? 'default'
 
@@ -211,6 +217,16 @@ export function HappyComposer(props: {
         }
     }, [switchDisabled, onSwitchToRemote, haptic])
 
+    const permissionModes = useMemo(() => {
+        if (agentFlavor === 'codex') {
+            return CODEX_PERMISSION_MODES as readonly PermissionMode[]
+        }
+        if (agentFlavor === 'gemini') {
+            return [] as readonly PermissionMode[]
+        }
+        return CLAUDE_PERMISSION_MODES as readonly PermissionMode[]
+    }, [agentFlavor])
+
     const handleKeyDown = useCallback((e: ReactKeyboardEvent<HTMLTextAreaElement>) => {
         const key = e.key
 
@@ -249,11 +265,12 @@ export function HappyComposer(props: {
             return
         }
 
-        if (key === 'Tab' && e.shiftKey && onPermissionModeChange) {
+        if (key === 'Tab' && e.shiftKey && onPermissionModeChange && permissionModes.length > 0) {
             e.preventDefault()
-            const currentIndex = PERMISSION_MODES.indexOf(permissionMode as typeof PERMISSION_MODES[number])
-            const nextIndex = (currentIndex + 1) % PERMISSION_MODES.length
-            onPermissionModeChange(PERMISSION_MODES[nextIndex])
+            const currentIndex = permissionModes.indexOf(permissionMode)
+            const nextIndex = (currentIndex + 1) % permissionModes.length
+            const nextMode = permissionModes[nextIndex] ?? 'default'
+            onPermissionModeChange(nextMode)
             haptic('light')
         }
     }, [
@@ -267,12 +284,13 @@ export function HappyComposer(props: {
         handleAbort,
         onPermissionModeChange,
         permissionMode,
+        permissionModes,
         haptic
     ])
 
     useEffect(() => {
         const handleGlobalKeyDown = (e: globalThis.KeyboardEvent) => {
-            if (e.key === 'm' && (e.metaKey || e.ctrlKey) && onModelModeChange) {
+            if (e.key === 'm' && (e.metaKey || e.ctrlKey) && onModelModeChange && agentFlavor !== 'codex' && agentFlavor !== 'gemini') {
                 e.preventDefault()
                 const currentIndex = MODEL_MODES.indexOf(modelMode as typeof MODEL_MODES[number])
                 const nextIndex = (currentIndex + 1) % MODEL_MODES.length
@@ -283,7 +301,7 @@ export function HappyComposer(props: {
 
         window.addEventListener('keydown', handleGlobalKeyDown)
         return () => window.removeEventListener('keydown', handleGlobalKeyDown)
-    }, [modelMode, onModelModeChange, haptic])
+    }, [modelMode, onModelModeChange, haptic, agentFlavor])
 
     const handleChange = useCallback((e: ReactChangeEvent<HTMLTextAreaElement>) => {
         const selection = {
@@ -324,9 +342,9 @@ export function HappyComposer(props: {
         haptic('light')
     }, [onModelModeChange, controlsDisabled, haptic])
 
-    const showPermissionSettings = Boolean(onPermissionModeChange)
-    const showModelSettings = Boolean(onModelModeChange)
-    const showSettingsButton = Boolean(onPermissionModeChange || onModelModeChange)
+    const showPermissionSettings = Boolean(onPermissionModeChange && permissionModes.length > 0)
+    const showModelSettings = Boolean(onModelModeChange && agentFlavor !== 'codex' && agentFlavor !== 'gemini')
+    const showSettingsButton = Boolean(showPermissionSettings || showModelSettings)
     const showAbortButton = true
 
     const overlays = useMemo(() => {
@@ -339,7 +357,7 @@ export function HappyComposer(props: {
                                 <div className="px-3 pb-1 text-xs font-semibold text-[var(--app-hint)]">
                                     Permission Mode
                                 </div>
-                                {PERMISSION_MODES.map((mode) => (
+                                {permissionModes.map((mode) => (
                                     <button
                                         key={mode}
                                         type="button"
@@ -440,6 +458,7 @@ export function HappyComposer(props: {
         controlsDisabled,
         permissionMode,
         modelMode,
+        permissionModes,
         handlePermissionChange,
         handleModelChange,
         handleSuggestionSelect
@@ -458,6 +477,7 @@ export function HappyComposer(props: {
                         contextSize={contextSize}
                         modelMode={modelMode}
                         permissionMode={permissionMode}
+                        agentFlavor={agentFlavor}
                     />
 
                     <div className="overflow-hidden rounded-[20px] bg-[var(--app-secondary-bg)]">

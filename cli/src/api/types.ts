@@ -1,6 +1,5 @@
 import { z } from 'zod'
 import { UsageSchema } from '@/claude/types'
-import type { PermissionMode } from '@/claude/loop'
 import type {
     TerminalClosePayload,
     TerminalExitPayload,
@@ -13,6 +12,11 @@ import type {
 } from '@/terminal/types'
 
 export type Usage = z.infer<typeof UsageSchema>
+
+export type ClaudePermissionMode = 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan'
+export type CodexPermissionMode = 'default' | 'read-only' | 'safe-yolo' | 'yolo'
+export type SessionPermissionMode = ClaudePermissionMode | CodexPermissionMode
+export type SessionModelMode = 'default' | 'sonnet' | 'opus'
 
 export type Metadata = {
     path: string
@@ -145,8 +149,8 @@ export type Session = {
     agentStateVersion: number
     thinking?: boolean
     thinkingAt?: number
-    permissionMode?: PermissionMode | null
-    modelMode?: 'default' | 'sonnet' | 'opus' | null
+    permissionMode?: SessionPermissionMode
+    modelMode?: SessionModelMode
 }
 
 export const MachineMetadataSchema = z.object({
@@ -273,8 +277,6 @@ export type CreateMachineResponse = z.infer<typeof CreateMachineResponseSchema>
 
 export const MessageMetaSchema = z.object({
     sentFrom: z.string().optional(),
-    permissionMode: z.string().optional(),
-    model: z.string().nullable().optional(),
     fallbackModel: z.string().nullable().optional(),
     customSystemPrompt: z.string().nullable().optional(),
     appendSystemPrompt: z.string().nullable().optional(),
@@ -323,7 +325,14 @@ export interface ServerToClientEvents {
 
 export interface ClientToServerEvents {
     message: (data: { sid: string; message: unknown; localId?: string }) => void
-    'session-alive': (data: { sid: string; time: number; thinking: boolean; mode?: 'local' | 'remote' }) => void
+    'session-alive': (data: {
+        sid: string
+        time: number
+        thinking: boolean
+        mode?: 'local' | 'remote'
+        permissionMode?: SessionPermissionMode
+        modelMode?: SessionModelMode
+    }) => void
     'session-end': (data: { sid: string; time: number }) => void
     'update-metadata': (data: { sid: string; expectedVersion: number; metadata: unknown }, cb: (answer: {
         result: 'error'

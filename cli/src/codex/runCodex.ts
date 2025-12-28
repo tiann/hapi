@@ -25,6 +25,7 @@ export { emitReadyIfIdle } from './utils/emitReadyIfIdle';
 export async function runCodex(opts: {
     startedBy?: 'daemon' | 'terminal';
     codexArgs?: string[];
+    permissionMode?: PermissionMode;
 }): Promise<void> {
     const workingDirectory = process.cwd();
     const sessionTag = randomUUID();
@@ -99,42 +100,28 @@ export async function runCodex(opts: {
     }));
 
     const codexCliOverrides = parseCodexCliOverrides(opts.codexArgs);
+    const sessionWrapperRef: { current: CodexSession | null } = { current: null };
 
-    let currentPermissionMode: PermissionMode | undefined = undefined;
-    let currentModel: string | undefined = undefined;
+    let currentPermissionMode: PermissionMode = opts.permissionMode ?? 'default';
+
+    const syncSessionMode = () => {
+        const sessionInstance = sessionWrapperRef.current;
+        if (!sessionInstance) {
+            return;
+        }
+        sessionInstance.setPermissionMode(currentPermissionMode);
+        logger.debug(`[Codex] Synced session permission mode for keepalive: ${currentPermissionMode}`);
+    };
 
     session.onUserMessage((message) => {
-        let messagePermissionMode = currentPermissionMode;
-        if (message.meta?.permissionMode) {
-            const validModes: PermissionMode[] = ['default', 'read-only', 'safe-yolo', 'yolo'];
-            if (validModes.includes(message.meta.permissionMode as PermissionMode)) {
-                messagePermissionMode = message.meta.permissionMode as PermissionMode;
-                currentPermissionMode = messagePermissionMode;
-                logger.debug(`[Codex] Permission mode updated from user message to: ${currentPermissionMode}`);
-            } else {
-                logger.debug(`[Codex] Invalid permission mode received: ${message.meta.permissionMode}`);
-            }
-        } else {
-            logger.debug(`[Codex] User message received with no permission mode override, using current: ${currentPermissionMode ?? 'default (effective)'}`);
-        }
-
-        let messageModel = currentModel;
-        if (message.meta?.hasOwnProperty('model')) {
-            messageModel = message.meta.model || undefined;
-            currentModel = messageModel;
-            logger.debug(`[Codex] Model updated from user message: ${messageModel || 'reset to default'}`);
-        } else {
-            logger.debug(`[Codex] User message received with no model override, using current: ${currentModel || 'default'}`);
-        }
+        const messagePermissionMode = currentPermissionMode;
+        logger.debug(`[Codex] User message received with permission mode: ${currentPermissionMode}`);
 
         const enhancedMode: EnhancedMode = {
-            permissionMode: messagePermissionMode || 'default',
-            model: messageModel
+            permissionMode: messagePermissionMode ?? 'default'
         };
         messageQueue.push(message.content.text, enhancedMode);
     });
-
-    const sessionWrapperRef: { current: CodexSession | null } = { current: null };
 
     let cleanupStarted = false;
     let exitCode = 0;
@@ -200,6 +187,24 @@ export async function runCodex(opts: {
 
     registerKillSessionHandler(session.rpcHandlerManager, cleanup);
 
+    session.rpcHandlerManager.registerHandler('set-session-config', async (payload: unknown) => {
+        if (!payload || typeof payload !== 'object') {
+            throw new Error('Invalid session config payload');
+        }
+        const config = payload as { permissionMode?: PermissionMode };
+
+        if (config.permissionMode !== undefined) {
+            const validModes: PermissionMode[] = ['default', 'read-only', 'safe-yolo', 'yolo'];
+            if (!validModes.includes(config.permissionMode)) {
+                throw new Error('Invalid permission mode');
+            }
+            currentPermissionMode = config.permissionMode;
+        }
+
+        syncSessionMode();
+        return { applied: { permissionMode: currentPermissionMode } };
+    });
+
     let loopError: unknown = null;
     try {
         await loop({
@@ -211,6 +216,7 @@ export async function runCodex(opts: {
             codexArgs: opts.codexArgs,
             codexCliOverrides,
             startedBy,
+            permissionMode: currentPermissionMode,
             onModeChange: (newMode) => {
                 session.sendSessionEvent({ type: 'switch', mode: newMode });
                 session.updateAgentState((currentState) => ({
@@ -220,6 +226,7 @@ export async function runCodex(opts: {
             },
             onSessionReady: (instance) => {
                 sessionWrapperRef.current = instance;
+                syncSessionMode();
             }
         });
     } catch (error) {

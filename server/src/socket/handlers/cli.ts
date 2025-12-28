@@ -12,6 +12,8 @@ type SessionAlivePayload = {
     time: number
     thinking?: boolean
     mode?: 'local' | 'remote'
+    permissionMode?: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'read-only' | 'safe-yolo' | 'yolo'
+    modelMode?: 'default' | 'sonnet' | 'opus'
 }
 
 type SessionEndPayload = {

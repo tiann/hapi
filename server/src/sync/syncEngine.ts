@@ -84,8 +84,8 @@ export interface Session {
     thinking: boolean
     thinkingAt: number
     todos?: TodoItem[]
-    permissionMode?: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | null
-    modelMode?: 'default' | 'sonnet' | 'opus' | null
+    permissionMode?: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'read-only' | 'safe-yolo' | 'yolo'
+    modelMode?: 'default' | 'sonnet' | 'opus'
 }
 
 export interface Machine {
@@ -312,7 +312,14 @@ export class SyncEngine {
         this.emit(event)
     }
 
-    handleSessionAlive(payload: { sid: string; time: number; thinking?: boolean; mode?: 'local' | 'remote' }): void {
+    handleSessionAlive(payload: {
+        sid: string
+        time: number
+        thinking?: boolean
+        mode?: 'local' | 'remote'
+        permissionMode?: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'read-only' | 'safe-yolo' | 'yolo'
+        modelMode?: 'default' | 'sonnet' | 'opus'
+    }): void {
         const t = clampAliveTime(payload.time)
         if (!t) return
 
@@ -321,21 +328,40 @@ export class SyncEngine {
 
         const wasActive = session.active
         const wasThinking = session.thinking
+        const previousPermissionMode = session.permissionMode
+        const previousModelMode = session.modelMode
 
         session.active = true
         session.activeAt = Math.max(session.activeAt, t)
         session.thinking = Boolean(payload.thinking)
         session.thinkingAt = t
+        if (payload.permissionMode !== undefined) {
+            session.permissionMode = payload.permissionMode
+        }
+        if (payload.modelMode !== undefined) {
+            session.modelMode = payload.modelMode
+        }
 
         const now = Date.now()
         const lastBroadcastAt = this.lastBroadcastAtBySessionId.get(session.id) ?? 0
+        const modeChanged = previousPermissionMode !== session.permissionMode || previousModelMode !== session.modelMode
         const shouldBroadcast = (!wasActive && session.active)
             || (wasThinking !== session.thinking)
+            || modeChanged
             || (now - lastBroadcastAt > 10_000)
 
         if (shouldBroadcast) {
             this.lastBroadcastAtBySessionId.set(session.id, now)
-            this.emit({ type: 'session-updated', sessionId: session.id, data: { activeAt: session.activeAt, thinking: session.thinking } })
+            this.emit({
+                type: 'session-updated',
+                sessionId: session.id,
+                data: {
+                    activeAt: session.activeAt,
+                    thinking: session.thinking,
+                    permissionMode: session.permissionMode,
+                    modelMode: session.modelMode
+                }
+            })
         }
     }
 
@@ -455,8 +481,8 @@ export class SyncEngine {
             thinking: existing?.thinking ?? false,
             thinkingAt: existing?.thinkingAt ?? 0,
             todos,
-            permissionMode: existing?.permissionMode ?? null,
-            modelMode: existing?.modelMode ?? null
+            permissionMode: existing?.permissionMode,
+            modelMode: existing?.modelMode
         }
 
         this.sessions.set(sessionId, session)
@@ -549,7 +575,6 @@ export class SyncEngine {
     }
 
     async sendMessage(sessionId: string, payload: { text: string; localId?: string | null; sentFrom?: 'telegram-bot' | 'webapp' }): Promise<void> {
-        const session = this.sessions.get(sessionId)
         const sentFrom = payload.sentFrom ?? 'webapp'
 
         const content = {
@@ -559,9 +584,7 @@ export class SyncEngine {
                 text: payload.text
             },
             meta: {
-                sentFrom,
-                permissionMode: session?.permissionMode || 'default',
-                model: session?.modelMode === 'default' ? null : session?.modelMode ?? undefined
+                sentFrom
             }
         }
 
@@ -643,7 +666,7 @@ export class SyncEngine {
 
     async setPermissionMode(
         sessionId: string,
-        mode: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan'
+        mode: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'read-only' | 'safe-yolo' | 'yolo'
     ): Promise<void> {
         const session = this.sessions.get(sessionId)
         if (session) {
@@ -656,6 +679,35 @@ export class SyncEngine {
         const session = this.sessions.get(sessionId)
         if (session) {
             session.modelMode = model
+            this.emit({ type: 'session-updated', sessionId, data: session })
+        }
+    }
+
+    async applySessionConfig(
+        sessionId: string,
+        config: {
+            permissionMode?: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'read-only' | 'safe-yolo' | 'yolo'
+            modelMode?: 'default' | 'sonnet' | 'opus'
+        }
+    ): Promise<void> {
+        const result = await this.sessionRpc(sessionId, 'set-session-config', config)
+        if (!result || typeof result !== 'object') {
+            throw new Error('Invalid response from session config RPC')
+        }
+        const obj = result as { applied?: { permissionMode?: Session['permissionMode']; modelMode?: Session['modelMode'] } }
+        const applied = obj.applied
+        if (!applied || typeof applied !== 'object') {
+            throw new Error('Missing applied session config')
+        }
+
+        const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
+        if (session) {
+            if (applied.permissionMode !== undefined) {
+                session.permissionMode = applied.permissionMode
+            }
+            if (applied.modelMode !== undefined) {
+                session.modelMode = applied.modelMode
+            }
             this.emit({ type: 'session-updated', sessionId, data: session })
         }
     }

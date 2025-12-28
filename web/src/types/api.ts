@@ -1,5 +1,5 @@
-export type PermissionMode = 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | null | undefined
-export type ModelMode = 'default' | 'sonnet' | 'opus' | null | undefined
+export type PermissionMode = 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'read-only' | 'safe-yolo' | 'yolo'
+export type ModelMode = 'default' | 'sonnet' | 'opus'
 
 export type WorktreeMetadata = {
     basePath: string

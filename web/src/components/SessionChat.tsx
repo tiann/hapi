@@ -177,6 +177,7 @@ export function SessionChat(props: {
                         disabled={props.isSending || controlsDisabled}
                         permissionMode={props.session.permissionMode}
                         modelMode={props.session.modelMode}
+                        agentFlavor={props.session.metadata?.flavor ?? 'claude'}
                         active={props.session.active}
                         thinking={props.session.thinking}
                         agentState={props.session.agentState}

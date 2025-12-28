@@ -1,7 +1,7 @@
 import { ApiClient, ApiSessionClient } from '@/lib';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { AgentSessionBase } from '@/agent/sessionBase';
-import type { EnhancedMode } from './loop';
+import type { EnhancedMode, PermissionMode } from './loop';
 import type { CodexCliOverrides } from './utils/codexCliOverrides';
 import type { LocalLaunchExitReason } from '@/agent/localLaunchPolicy';
 
@@ -30,6 +30,7 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
         startingMode: 'local' | 'remote';
         codexArgs?: string[];
         codexCliOverrides?: CodexCliOverrides;
+        permissionMode?: PermissionMode;
     }) {
         super({
             api: opts.api,
@@ -45,14 +46,20 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
             applySessionIdToMetadata: (metadata, sessionId) => ({
                 ...metadata,
                 codexSessionId: sessionId
-            })
+            }),
+            permissionMode: opts.permissionMode
         });
 
         this.codexArgs = opts.codexArgs;
         this.codexCliOverrides = opts.codexCliOverrides;
         this.startedBy = opts.startedBy;
         this.startingMode = opts.startingMode;
+        this.permissionMode = opts.permissionMode;
     }
+
+    setPermissionMode = (mode: PermissionMode): void => {
+        this.permissionMode = mode;
+    };
 
     recordLocalLaunchFailure = (message: string, exitReason: LocalLaunchExitReason): void => {
         this.localLaunchFailure = { message, exitReason };

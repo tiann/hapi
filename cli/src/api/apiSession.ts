@@ -7,7 +7,19 @@ import { backoff } from '@/utils/time'
 import { AsyncLock } from '@/utils/lock'
 import type { RawJSONLines } from '@/claude/types'
 import { configuration } from '@/configuration'
-import type { AgentState, ClientToServerEvents, MessageContent, MessageMeta, Metadata, ServerToClientEvents, Session, Update, UserMessage } from './types'
+import type {
+    AgentState,
+    ClientToServerEvents,
+    MessageContent,
+    MessageMeta,
+    Metadata,
+    ServerToClientEvents,
+    Session,
+    SessionModelMode,
+    SessionPermissionMode,
+    Update,
+    UserMessage
+} from './types'
 import { AgentStateSchema, MetadataSchema, UserMessageSchema } from './types'
 import { RpcHandlerManager } from './rpc/RpcHandlerManager'
 import { registerCommonHandlers } from '../modules/common/registerCommonHandlers'
@@ -300,12 +312,17 @@ export class ApiSessionClient extends EventEmitter {
         })
     }
 
-    keepAlive(thinking: boolean, mode: 'local' | 'remote'): void {
+    keepAlive(
+        thinking: boolean,
+        mode: 'local' | 'remote',
+        runtime?: { permissionMode?: SessionPermissionMode; modelMode?: SessionModelMode }
+    ): void {
         this.socket.volatile.emit('session-alive', {
             sid: this.sessionId,
             time: Date.now(),
             thinking,
-            mode
+            mode,
+            ...(runtime ?? {})
         })
     }
 

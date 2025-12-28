@@ -3,11 +3,11 @@ import type { ApiClient } from '@/api/client'
 import type { ModelMode, PermissionMode } from '@/types/api'
 import { queryKeys } from '@/lib/query-keys'
 
-type PermissionModeValue = 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan'
+type PermissionModeValue = 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'read-only' | 'safe-yolo' | 'yolo'
 type ModelModeValue = 'default' | 'sonnet' | 'opus'
 
 function toPermissionMode(mode: PermissionMode): PermissionModeValue {
-    if (mode === 'acceptEdits' || mode === 'bypassPermissions' || mode === 'plan') {
+    if (mode === 'acceptEdits' || mode === 'bypassPermissions' || mode === 'plan' || mode === 'read-only' || mode === 'safe-yolo' || mode === 'yolo') {
         return mode
     }
     return 'default'

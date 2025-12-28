@@ -2,7 +2,9 @@ import { ApiClient, ApiSessionClient } from '@/lib';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { logger } from '@/ui/logger';
 import { AgentSessionBase } from '@/agent/sessionBase';
+import type { SessionModelMode } from '@/api/types';
 import type { EnhancedMode } from './loop';
+import type { PermissionMode } from './loop';
 import type { LocalLaunchExitReason } from '@/agent/localLaunchPolicy';
 
 type LocalLaunchFailure = {
@@ -36,6 +38,8 @@ export class Session extends AgentSessionBase<EnhancedMode> {
         startedBy: 'daemon' | 'terminal';
         startingMode: 'local' | 'remote';
         hookSettingsPath: string;
+        permissionMode?: PermissionMode;
+        modelMode?: SessionModelMode;
     }) {
         super({
             api: opts.api,
@@ -51,7 +55,9 @@ export class Session extends AgentSessionBase<EnhancedMode> {
             applySessionIdToMetadata: (metadata, sessionId) => ({
                 ...metadata,
                 claudeSessionId: sessionId
-            })
+            }),
+            permissionMode: opts.permissionMode,
+            modelMode: opts.modelMode
         });
 
         this.claudeEnvVars = opts.claudeEnvVars;
@@ -61,7 +67,17 @@ export class Session extends AgentSessionBase<EnhancedMode> {
         this.hookSettingsPath = opts.hookSettingsPath;
         this.startedBy = opts.startedBy;
         this.startingMode = opts.startingMode;
+        this.permissionMode = opts.permissionMode;
+        this.modelMode = opts.modelMode;
     }
+
+    setPermissionMode = (mode: PermissionMode): void => {
+        this.permissionMode = mode;
+    };
+
+    setModelMode = (mode: SessionModelMode): void => {
+        this.modelMode = mode;
+    };
 
     recordLocalLaunchFailure = (message: string, exitReason: LocalLaunchExitReason): void => {
         this.localLaunchFailure = { message, exitReason };

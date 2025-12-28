@@ -1,6 +1,6 @@
 import { ApiClient, ApiSessionClient } from '@/lib';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
-import type { Metadata } from '@/api/types';
+import type { Metadata, SessionModelMode, SessionPermissionMode } from '@/api/types';
 import { logger } from '@/ui/logger';
 
 export type AgentSessionBaseOptions<Mode> = {
@@ -15,6 +15,8 @@ export type AgentSessionBaseOptions<Mode> = {
     sessionLabel: string;
     sessionIdLabel: string;
     applySessionIdToMetadata: (metadata: Metadata, sessionId: string) => Metadata;
+    permissionMode?: SessionPermissionMode;
+    modelMode?: SessionModelMode;
 };
 
 export class AgentSessionBase<Mode> {
@@ -34,6 +36,8 @@ export class AgentSessionBase<Mode> {
     private readonly sessionLabel: string;
     private readonly sessionIdLabel: string;
     private keepAliveInterval: NodeJS.Timeout | null = null;
+    protected permissionMode?: SessionPermissionMode;
+    protected modelMode?: SessionModelMode;
 
     constructor(opts: AgentSessionBaseOptions<Mode>) {
         this.path = opts.path;
@@ -47,21 +51,26 @@ export class AgentSessionBase<Mode> {
         this.sessionLabel = opts.sessionLabel;
         this.sessionIdLabel = opts.sessionIdLabel;
         this.mode = opts.mode ?? 'local';
+        this.permissionMode = opts.permissionMode;
+        this.modelMode = opts.modelMode;
 
-        this.client.keepAlive(this.thinking, this.mode);
+        this.client.keepAlive(this.thinking, this.mode, this.getKeepAliveRuntime());
         this.keepAliveInterval = setInterval(() => {
-            this.client.keepAlive(this.thinking, this.mode);
+            this.client.keepAlive(this.thinking, this.mode, this.getKeepAliveRuntime());
         }, 2000);
     }
 
     onThinkingChange = (thinking: boolean) => {
         this.thinking = thinking;
-        this.client.keepAlive(thinking, this.mode);
+        this.client.keepAlive(thinking, this.mode, this.getKeepAliveRuntime());
     };
 
     onModeChange = (mode: 'local' | 'remote') => {
         this.mode = mode;
-        this.client.keepAlive(this.thinking, mode);
+        this.client.keepAlive(this.thinking, mode, this.getKeepAliveRuntime());
+        const permissionLabel = this.permissionMode ?? 'unset';
+        const modelLabel = this.modelMode ?? 'unset';
+        logger.debug(`[${this.sessionLabel}] Mode switched to ${mode} (permissionMode=${permissionLabel}, modelMode=${modelLabel})`);
         this._onModeChange(mode);
     };
 
@@ -92,4 +101,22 @@ export class AgentSessionBase<Mode> {
             this.keepAliveInterval = null;
         }
     };
+
+    protected getKeepAliveRuntime(): { permissionMode?: SessionPermissionMode; modelMode?: SessionModelMode } | undefined {
+        if (this.permissionMode === undefined && this.modelMode === undefined) {
+            return undefined;
+        }
+        return {
+            permissionMode: this.permissionMode,
+            modelMode: this.modelMode
+        };
+    }
+
+    getPermissionMode(): SessionPermissionMode | undefined {
+        return this.permissionMode;
+    }
+
+    getModelMode(): SessionModelMode | undefined {
+        return this.modelMode;
+    }
 }

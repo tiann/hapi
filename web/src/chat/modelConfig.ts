@@ -12,17 +12,16 @@ import type { ModelMode } from '@/types/api'
  */
 const CONTEXT_HEADROOM_TOKENS = 10_000
 
-const MODEL_CONTEXT_WINDOWS: Record<NonNullable<ModelMode>, number> = {
+const MODEL_CONTEXT_WINDOWS: Record<ModelMode, number> = {
     // Claude Code modes used in this app; currently treated as ~200k context.
     default: 200_000,
     sonnet: 200_000,
     opus: 200_000
 }
 
-export function getContextBudgetTokens(modelMode: ModelMode): number | null {
-    const mode: NonNullable<ModelMode> = modelMode ?? 'default'
+export function getContextBudgetTokens(modelMode: ModelMode | undefined): number | null {
+    const mode: ModelMode = modelMode ?? 'default'
     const windowTokens = MODEL_CONTEXT_WINDOWS[mode]
     if (!windowTokens) return null
     return Math.max(1, windowTokens - CONTEXT_HEADROOM_TOKENS)
 }
-

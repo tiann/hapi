@@ -6,7 +6,10 @@ const PERMISSION_MODE_LABELS: Record<string, string> = {
     default: 'Default',
     acceptEdits: 'Accept Edits',
     plan: 'Plan Mode',
-    bypassPermissions: 'Bypass All'
+    bypassPermissions: 'Yolo',
+    'read-only': 'Read Only',
+    'safe-yolo': 'Safe Yolo',
+    yolo: 'Yolo'
 }
 
 // Vibing messages for thinking state
@@ -91,6 +94,7 @@ export function StatusBar(props: {
     contextSize?: number
     modelMode?: ModelMode
     permissionMode?: PermissionMode
+    agentFlavor?: string | null
 }) {
     const connectionStatus = useMemo(
         () => getConnectionStatus(props.active, props.thinking, props.agentState),
@@ -108,6 +112,9 @@ export function StatusBar(props: {
     )
 
     const permissionMode = props.permissionMode
+    const shouldShowPermissionMode = props.agentFlavor !== 'gemini'
+        && permissionMode
+        && permissionMode !== 'default'
 
     return (
         <div className="flex items-center justify-between px-2 pb-1">
@@ -127,11 +134,14 @@ export function StatusBar(props: {
                 ) : null}
             </div>
 
-            {(permissionMode && permissionMode !== 'default') ? (
+            {shouldShowPermissionMode ? (
                 <span className={`text-xs ${
                     permissionMode === 'acceptEdits' ? 'text-amber-500' :
                     permissionMode === 'bypassPermissions' ? 'text-red-500' :
                     permissionMode === 'plan' ? 'text-blue-500' :
+                    permissionMode === 'read-only' ? 'text-amber-500' :
+                    permissionMode === 'safe-yolo' ? 'text-amber-500' :
+                    permissionMode === 'yolo' ? 'text-red-500' :
                     'text-[var(--app-hint)]'
                 }`}>
                     {PERMISSION_MODE_LABELS[permissionMode]}

@@ -5,7 +5,7 @@ import { ApiClient } from '@/api/api';
 import { logger } from '@/ui/logger';
 import { restoreTerminalState } from '@/ui/terminalState';
 import { loop } from '@/claude/loop';
-import { AgentState, Metadata } from '@/api/types';
+import { AgentState, Metadata, SessionModelMode } from '@/api/types';
 import packageJson from '../../package.json';
 import { readSettings } from '@/persistence';
 import { EnhancedMode, PermissionMode } from './loop';
@@ -190,40 +190,37 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
     }));
 
     // Forward messages to the queue
-    let currentPermissionMode = options.permissionMode;
+    let currentPermissionMode: PermissionMode = options.permissionMode ?? 'default';
     let currentModel = options.model; // Track current model state
+    let currentModelMode: SessionModelMode = currentModel === 'sonnet' || currentModel === 'opus' ? currentModel : 'default';
     let currentFallbackModel: string | undefined = undefined; // Track current fallback model
     let currentCustomSystemPrompt: string | undefined = undefined; // Track current custom system prompt
     let currentAppendSystemPrompt: string | undefined = undefined; // Track current append system prompt
     let currentAllowedTools: string[] | undefined = undefined; // Track current allowed tools
     let currentDisallowedTools: string[] | undefined = undefined; // Track current disallowed tools
+
+    const syncSessionModes = () => {
+        const sessionInstance = currentSessionRef.current;
+        if (!sessionInstance) {
+            return;
+        }
+        sessionInstance.setPermissionMode(currentPermissionMode);
+        sessionInstance.setModelMode(currentModelMode);
+        logger.debug(`[loop] Synced session modes for keepalive: permissionMode=${currentPermissionMode}, modelMode=${currentModelMode}`);
+    };
     session.onUserMessage((message) => {
-
-        // Resolve permission mode from meta
-        let messagePermissionMode = currentPermissionMode;
-        if (message.meta?.permissionMode) {
-            const validModes: PermissionMode[] = ['default', 'acceptEdits', 'bypassPermissions', 'plan'];
-            if (validModes.includes(message.meta.permissionMode as PermissionMode)) {
-                messagePermissionMode = message.meta.permissionMode as PermissionMode;
-                currentPermissionMode = messagePermissionMode;
-                logger.debug(`[loop] Permission mode updated from user message to: ${currentPermissionMode}`);
-
-            } else {
-                logger.debug(`[loop] Invalid permission mode received: ${message.meta.permissionMode}`);
-            }
-        } else {
-            logger.debug(`[loop] User message received with no permission mode override, using current: ${currentPermissionMode}`);
+        const sessionPermissionMode = currentSessionRef.current?.getPermissionMode();
+        if (
+            sessionPermissionMode === 'default'
+            || sessionPermissionMode === 'acceptEdits'
+            || sessionPermissionMode === 'bypassPermissions'
+            || sessionPermissionMode === 'plan'
+        ) {
+            currentPermissionMode = sessionPermissionMode;
         }
-
-        // Resolve model - use message.meta.model if provided, otherwise use current model
-        let messageModel = currentModel;
-        if (message.meta?.hasOwnProperty('model')) {
-            messageModel = message.meta.model || undefined; // null becomes undefined
-            currentModel = messageModel;
-            logger.debug(`[loop] Model updated from user message: ${messageModel || 'reset to default'}`);
-        } else {
-            logger.debug(`[loop] User message received with no model override, using current: ${currentModel || 'default'}`);
-        }
+        const messagePermissionMode = currentPermissionMode;
+        const messageModel = currentModel;
+        logger.debug(`[loop] User message received with permission mode: ${currentPermissionMode}, model: ${currentModelMode}`);
 
         // Resolve custom system prompt - use message.meta.customSystemPrompt if provided, otherwise use current
         let messageCustomSystemPrompt = currentCustomSystemPrompt;
@@ -281,7 +278,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         if (specialCommand.type === 'compact') {
             logger.debug('[start] Detected /compact command');
             const enhancedMode: EnhancedMode = {
-                permissionMode: messagePermissionMode || 'default',
+                permissionMode: messagePermissionMode ?? 'default',
                 model: messageModel,
                 fallbackModel: messageFallbackModel,
                 customSystemPrompt: messageCustomSystemPrompt,
@@ -297,7 +294,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         if (specialCommand.type === 'clear') {
             logger.debug('[start] Detected /clear command');
             const enhancedMode: EnhancedMode = {
-                permissionMode: messagePermissionMode || 'default',
+                permissionMode: messagePermissionMode ?? 'default',
                 model: messageModel,
                 fallbackModel: messageFallbackModel,
                 customSystemPrompt: messageCustomSystemPrompt,
@@ -312,7 +309,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
 
         // Push with resolved permission mode, model, system prompts, and tools
         const enhancedMode: EnhancedMode = {
-            permissionMode: messagePermissionMode || 'default',
+            permissionMode: messagePermissionMode ?? 'default',
             model: messageModel,
             fallbackModel: messageFallbackModel,
             customSystemPrompt: messageCustomSystemPrompt,
@@ -383,6 +380,33 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
 
     registerKillSessionHandler(session.rpcHandlerManager, cleanup);
 
+    session.rpcHandlerManager.registerHandler('set-session-config', async (payload: unknown) => {
+        if (!payload || typeof payload !== 'object') {
+            throw new Error('Invalid session config payload');
+        }
+        const config = payload as { permissionMode?: PermissionMode; modelMode?: SessionModelMode };
+
+        if (config.permissionMode !== undefined) {
+            const validModes: PermissionMode[] = ['default', 'acceptEdits', 'bypassPermissions', 'plan'];
+            if (!validModes.includes(config.permissionMode)) {
+                throw new Error('Invalid permission mode');
+            }
+            currentPermissionMode = config.permissionMode;
+        }
+
+        if (config.modelMode !== undefined) {
+            const validModels: SessionModelMode[] = ['default', 'sonnet', 'opus'];
+            if (!validModels.includes(config.modelMode)) {
+                throw new Error('Invalid model mode');
+            }
+            currentModelMode = config.modelMode;
+            currentModel = config.modelMode === 'default' ? undefined : config.modelMode;
+        }
+
+        syncSessionModes();
+        return { applied: { permissionMode: currentPermissionMode, modelMode: currentModelMode } };
+    });
+
     // Create claude loop
     await loop({
         path: workingDirectory,
@@ -401,6 +425,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         },
         onSessionReady: (sessionInstance) => {
             currentSessionRef.current = sessionInstance;
+            syncSessionModes();
         },
         mcpServers: {
             'hapi': {
