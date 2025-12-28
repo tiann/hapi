@@ -389,54 +389,51 @@ export async function startDaemon(): Promise<void> {
           };
         }
 
-        logger.debug(`[DAEMON RUN] Spawned process with PID ${happyProcess.pid}`);
+        const pid = happyProcess.pid;
+        logger.debug(`[DAEMON RUN] Spawned process with PID ${pid}`);
 
         const trackedSession: TrackedSession = {
           startedBy: 'daemon',
-          pid: happyProcess.pid,
+          pid,
           childProcess: happyProcess,
           directoryCreated,
           message: directoryCreated ? `The path '${directory}' did not exist. We created a new folder and spawned a new session there.` : undefined
         };
 
-        pidToTrackedSession.set(happyProcess.pid, trackedSession);
+        pidToTrackedSession.set(pid, trackedSession);
 
         happyProcess.on('exit', (code, signal) => {
-          logger.debug(`[DAEMON RUN] Child PID ${happyProcess.pid} exited with code ${code}, signal ${signal}`);
+          logger.debug(`[DAEMON RUN] Child PID ${pid} exited with code ${code}, signal ${signal}`);
           if (code !== 0 || signal) {
             logStderrTail();
           }
-          if (happyProcess.pid) {
-            onChildExited(happyProcess.pid);
-          }
+          onChildExited(pid);
         });
 
         happyProcess.on('error', (error) => {
           logger.debug(`[DAEMON RUN] Child process error:`, error);
-          if (happyProcess.pid) {
-            onChildExited(happyProcess.pid);
-          }
+          onChildExited(pid);
         });
 
         // Wait for webhook to populate session with happySessionId
-        logger.debug(`[DAEMON RUN] Waiting for session webhook for PID ${happyProcess.pid}`);
+        logger.debug(`[DAEMON RUN] Waiting for session webhook for PID ${pid}`);
 
         const spawnResult = await new Promise<SpawnSessionResult>((resolve) => {
           // Set timeout for webhook
           const timeout = setTimeout(() => {
-            pidToAwaiter.delete(happyProcess.pid!);
-            logger.debug(`[DAEMON RUN] Session webhook timeout for PID ${happyProcess.pid}`);
+            pidToAwaiter.delete(pid);
+            logger.debug(`[DAEMON RUN] Session webhook timeout for PID ${pid}`);
             logStderrTail();
             resolve({
               type: 'error',
-              errorMessage: `Session webhook timeout for PID ${happyProcess.pid}`
+              errorMessage: `Session webhook timeout for PID ${pid}`
             });
             // 15 second timeout - I have seen timeouts on 10 seconds
             // even though session was still created successfully in ~2 more seconds
           }, 15_000);
 
           // Register awaiter
-          pidToAwaiter.set(happyProcess.pid!, (completedSession) => {
+          pidToAwaiter.set(pid, (completedSession) => {
             clearTimeout(timeout);
             logger.debug(`[DAEMON RUN] Session ${completedSession.happySessionId} fully spawned with webhook`);
             resolve({
