@@ -27,25 +27,18 @@ const BUILTIN_COMMANDS: Record<string, SlashCommand[]> = {
         { name: 'compact', description: 'Compact conversation context', source: 'builtin' },
         { name: 'context', description: 'Show context information', source: 'builtin' },
         { name: 'cost', description: 'Show session cost', source: 'builtin' },
-        { name: 'doctor', description: 'Run diagnostics', source: 'builtin' },
         { name: 'plan', description: 'Toggle plan mode', source: 'builtin' },
-        { name: 'stats', description: 'Show session statistics', source: 'builtin' },
-        { name: 'status', description: 'Show status', source: 'builtin' },
     ],
     codex: [
         { name: 'review', description: 'Review code', source: 'builtin' },
         { name: 'new', description: 'Start new conversation', source: 'builtin' },
         { name: 'compat', description: 'Check compatibility', source: 'builtin' },
         { name: 'undo', description: 'Undo last action', source: 'builtin' },
-        { name: 'diff', description: 'Show changes', source: 'builtin' },
-        { name: 'status', description: 'Show status', source: 'builtin' },
-        { name: 'ps', description: 'Show processes', source: 'builtin' },
     ],
     gemini: [
         { name: 'about', description: 'About Gemini', source: 'builtin' },
         { name: 'clear', description: 'Clear conversation', source: 'builtin' },
         { name: 'compress', description: 'Compress context', source: 'builtin' },
-        { name: 'stats', description: 'Show statistics', source: 'builtin' },
     ],
 };
 
