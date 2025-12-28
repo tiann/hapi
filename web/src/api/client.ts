@@ -5,6 +5,7 @@ import type {
     GitCommandResponse,
     MachinesResponse,
     MessagesResponse,
+    SlashCommandsResponse,
     SpawnResponse,
     SessionResponse,
     SessionsResponse
@@ -239,5 +240,11 @@ export class ApiClient {
             method: 'POST',
             body: JSON.stringify({ directory, agent, yolo, sessionType, worktreeName })
         })
+    }
+
+    async getSlashCommands(sessionId: string): Promise<SlashCommandsResponse> {
+        return await this.request<SlashCommandsResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/slash-commands`
+        )
     }
 }

@@ -12,4 +12,5 @@ export const queryKeys = {
         path,
         staged ? 'staged' : 'unstaged'
     ] as const,
+    slashCommands: (sessionId: string) => ['slash-commands', sessionId] as const,
 }

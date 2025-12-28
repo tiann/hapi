@@ -29,7 +29,10 @@ class ValueSync<T> {
     }
 
     setValue(value: T) {
-        if (this.stopped) return
+        if (this.stopped) {
+            // Reset stopped state - this handles React Strict Mode re-mounting
+            this.stopped = false
+        }
         this.latestValue = value
         this.hasValue = true
         if (!this.processing) {

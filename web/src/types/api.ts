@@ -183,6 +183,18 @@ export type GitStatusFiles = {
     totalUnstaged: number
 }
 
+export type SlashCommand = {
+    name: string
+    description?: string
+    source: 'builtin' | 'user'
+}
+
+export type SlashCommandsResponse = {
+    success: boolean
+    commands?: SlashCommand[]
+    error?: string
+}
+
 export type SyncEvent =
     | { type: 'session-added'; sessionId: string; data?: unknown }
     | { type: 'session-updated'; sessionId: string; data?: unknown }

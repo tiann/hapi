@@ -105,7 +105,10 @@ export function HappyComposer(props: {
     useEffect(() => {
         setInputState((prev) => {
             if (prev.text === composerText) return prev
-            return { ...prev, text: composerText }
+            // When syncing from composerText, update selection to end of text
+            // This ensures activeWord detection works correctly
+            const newPos = composerText.length
+            return { text: composerText, selection: { start: newPos, end: newPos } }
         })
     }, [composerText])
 

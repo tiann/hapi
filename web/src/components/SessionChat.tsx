@@ -4,6 +4,7 @@ import { AssistantRuntimeProvider } from '@assistant-ui/react'
 import type { ApiClient } from '@/api/client'
 import type { DecryptedMessage, ModelMode, PermissionMode, Session } from '@/types/api'
 import type { ChatBlock, NormalizedMessage } from '@/chat/types'
+import type { Suggestion } from '@/hooks/useActiveSuggestions'
 import { normalizeDecryptedMessage } from '@/chat/normalize'
 import { reduceChatBlocks } from '@/chat/reducer'
 import { reconcileChatBlocks } from '@/chat/reconcile'
@@ -28,6 +29,7 @@ export function SessionChat(props: {
     onLoadMore: () => Promise<unknown>
     onSend: (text: string) => void
     onRetryMessage?: (localId: string) => void
+    autocompleteSuggestions?: (query: string) => Promise<Suggestion[]>
 }) {
     const { haptic } = usePlatform()
     const navigate = useNavigate()
@@ -184,6 +186,7 @@ export function SessionChat(props: {
                         onModelModeChange={handleModelModeChange}
                         onSwitchToRemote={handleSwitchToRemote}
                         onTerminal={props.session.active ? handleViewTerminal : undefined}
+                        autocompleteSuggestions={props.autocompleteSuggestions}
                     />
                 </div>
             </AssistantRuntimeProvider>

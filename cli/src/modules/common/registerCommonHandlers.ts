@@ -9,6 +9,7 @@ import { run as runDifftastic } from '@/modules/difftastic/index';
 import { RpcHandlerManager } from '../../api/rpc/RpcHandlerManager';
 import { registerGitHandlers } from './gitHandlers';
 import { validatePath } from './pathSecurity';
+import { listSlashCommands, type ListSlashCommandsRequest, type ListSlashCommandsResponse } from './slashCommands';
 
 const execAsync = promisify(exec);
 
@@ -482,6 +483,22 @@ export function registerCommonHandlers(rpcHandlerManager: RpcHandlerManager, wor
             return {
                 success: false,
                 error: error instanceof Error ? error.message : 'Failed to run difftastic'
+            };
+        }
+    });
+
+    // Slash commands handler - lists available slash commands for an agent
+    rpcHandlerManager.registerHandler<ListSlashCommandsRequest, ListSlashCommandsResponse>('listSlashCommands', async (data) => {
+        logger.debug('List slash commands request for agent:', data.agent);
+
+        try {
+            const commands = await listSlashCommands(data.agent);
+            return { success: true, commands };
+        } catch (error) {
+            logger.debug('Failed to list slash commands:', error);
+            return {
+                success: false,
+                error: error instanceof Error ? error.message : 'Failed to list slash commands'
             };
         }
     });

@@ -133,6 +133,18 @@ export type RpcReadFileResponse = {
     error?: string
 }
 
+export type SlashCommand = {
+    name: string
+    description?: string
+    source: 'builtin' | 'user'
+}
+
+export type RpcSlashCommandsResponse = {
+    success: boolean
+    commands?: SlashCommand[]
+    error?: string
+}
+
 export type SyncEventType =
     | 'session-added'
     | 'session-updated'
@@ -703,6 +715,10 @@ export class SyncEngine {
 
     async runRipgrep(sessionId: string, args: string[], cwd?: string): Promise<RpcCommandResponse> {
         return await this.sessionRpc(sessionId, 'ripgrep', { args, cwd }) as RpcCommandResponse
+    }
+
+    async listSlashCommands(sessionId: string, agent: string): Promise<RpcSlashCommandsResponse> {
+        return await this.sessionRpc(sessionId, 'listSlashCommands', { agent }) as RpcSlashCommandsResponse
     }
 
     private async sessionRpc(sessionId: string, method: string, params: unknown): Promise<unknown> {

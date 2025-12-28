@@ -182,5 +182,31 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         return c.json({ ok: true })
     })
 
+    app.get('/sessions/:id/slash-commands', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        // Session must exist but doesn't need to be active
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        // Get agent type from session metadata, default to 'claude'
+        const agent = sessionResult.session.metadata?.flavor ?? 'claude'
+
+        try {
+            const result = await engine.listSlashCommands(sessionResult.sessionId, agent)
+            return c.json(result)
+        } catch (error) {
+            return c.json({
+                success: false,
+                error: error instanceof Error ? error.message : 'Failed to list slash commands'
+            })
+        }
+    })
+
     return app
 }

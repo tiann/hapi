@@ -20,6 +20,7 @@ import { useMessages } from '@/hooks/queries/useMessages'
 import { useMachines } from '@/hooks/queries/useMachines'
 import { useSession } from '@/hooks/queries/useSession'
 import { useSessions } from '@/hooks/queries/useSessions'
+import { useSlashCommands } from '@/hooks/queries/useSlashCommands'
 import { useSendMessage } from '@/hooks/mutations/useSendMessage'
 import { queryKeys } from '@/lib/query-keys'
 import FilesPage from '@/routes/sessions/files'
@@ -136,6 +137,12 @@ function SessionPage() {
         isSending,
     } = useSendMessage(api, sessionId)
 
+    // Get agent type from session metadata for slash commands
+    const agentType = session?.metadata?.flavor ?? 'claude'
+    const {
+        getSuggestions: getSlashSuggestions,
+    } = useSlashCommands(api, sessionId, agentType)
+
     const refreshSelectedSession = useCallback(() => {
         void refetchSession()
         void refetchMessages()
@@ -164,6 +171,7 @@ function SessionPage() {
             onLoadMore={loadMoreMessages}
             onSend={sendMessage}
             onRetryMessage={retryMessage}
+            autocompleteSuggestions={getSlashSuggestions}
         />
     )
 }
