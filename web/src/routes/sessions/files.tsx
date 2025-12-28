@@ -7,14 +7,7 @@ import { useAppGoBack } from '@/hooks/useAppGoBack'
 import { useGitStatusFiles } from '@/hooks/queries/useGitStatusFiles'
 import { useSession } from '@/hooks/queries/useSession'
 import { useSessionFileSearch } from '@/hooks/queries/useSessionFileSearch'
-
-function encodePath(value: string): string {
-    try {
-        return btoa(value)
-    } catch {
-        return btoa(unescape(encodeURIComponent(value)))
-    }
-}
+import { encodeBase64 } from '@/lib/utils'
 
 function BackIcon(props: { className?: string }) {
     return (
@@ -255,8 +248,8 @@ export default function FilesPage() {
 
     const handleOpenFile = useCallback((path: string, staged?: boolean) => {
         const search = staged === undefined
-            ? { path: encodePath(path) }
-            : { path: encodePath(path), staged }
+            ? { path: encodeBase64(path) }
+            : { path: encodeBase64(path), staged }
         navigate({
             to: '/sessions/$sessionId/file',
             params: { sessionId },

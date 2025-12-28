@@ -9,18 +9,7 @@ import { useAppGoBack } from '@/hooks/useAppGoBack'
 import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
 import { queryKeys } from '@/lib/query-keys'
 import { langAlias, useShikiHighlighter } from '@/lib/shiki'
-
-function decodeBase64(value: string): { text: string; ok: boolean } {
-    try {
-        return { text: atob(value), ok: true }
-    } catch {
-        try {
-            return { text: decodeURIComponent(escape(atob(value))), ok: true }
-        } catch {
-            return { text: '', ok: false }
-        }
-    }
-}
+import { decodeBase64 } from '@/lib/utils'
 
 function decodePath(value: string): string {
     if (!value) return ''
