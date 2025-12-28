@@ -27,6 +27,7 @@ import { withBunRuntimeEnv } from '@/utils/bunRuntime'
 import { killProcessByChildProcess } from '@/utils/process'
 import type { Writable } from 'node:stream'
 import { logger } from '@/ui/logger'
+import { appendMcpConfigArg } from '../utils/mcpConfig'
 
 /**
  * Query class manages Claude Code process interaction
@@ -285,6 +286,7 @@ export function query(config: {
 
     // Build command arguments
     const args = ['--output-format', 'stream-json', '--verbose']
+    let cleanupMcpConfig: (() => void) | null = null
 
     if (customSystemPrompt) args.push('--system-prompt', customSystemPrompt)
     if (appendSystemPrompt) args.push('--append-system-prompt', appendSystemPrompt)
@@ -301,9 +303,6 @@ export function query(config: {
     if (settingsPath) args.push('--settings', settingsPath)
     if (allowedTools.length > 0) args.push('--allowedTools', allowedTools.join(','))
     if (disallowedTools.length > 0) args.push('--disallowedTools', disallowedTools.join(','))
-    if (mcpServers && Object.keys(mcpServers).length > 0) {
-        args.push('--mcp-config', JSON.stringify({ mcpServers }))
-    }
     if (strictMcpConfig) args.push('--strict-mcp-config')
     if (permissionMode) args.push('--permission-mode', permissionMode)
 
@@ -333,6 +332,8 @@ export function query(config: {
 
     const spawnCommand = pathToClaudeCodeExecutable
     const spawnArgs = args
+
+    cleanupMcpConfig = appendMcpConfigArg(spawnArgs, mcpServers)
 
     // Spawn Claude Code process
     // Use clean env for global claude to avoid local node_modules/.bin taking precedence
@@ -394,6 +395,7 @@ export function query(config: {
 
     // Handle process errors
     child.on('error', (error) => {
+        cleanupMcpConfig?.()
         if (config.options?.abort?.aborted) {
             query.setError(new AbortError('Claude Code process aborted by user'))
         } else {
@@ -408,6 +410,7 @@ export function query(config: {
         if (process.env.CLAUDE_SDK_MCP_SERVERS) {
             delete process.env.CLAUDE_SDK_MCP_SERVERS
         }
+        cleanupMcpConfig?.()
     })
 
     return query

@@ -3,6 +3,7 @@ import { logger } from "@/ui/logger";
 import { restoreTerminalState } from "@/ui/terminalState";
 import { claudeCheckSession } from "./utils/claudeCheckSession";
 import { getProjectPath } from "./utils/path";
+import { appendMcpConfigArg } from "./utils/mcpConfig";
 import { systemPrompt } from "./utils/systemPrompt";
 import { withBunRuntimeEnv } from "@/utils/bunRuntime";
 import { spawnWithAbort } from "@/utils/spawnWithAbort";
@@ -41,6 +42,7 @@ export async function claudeLocal(opts: {
     }
 
     // Spawn the process
+    let cleanupMcpConfig: (() => void) | null = null;
     try {
         // Start the interactive process
         process.stdin.pause();
@@ -54,9 +56,9 @@ export async function claudeLocal(opts: {
             
             args.push('--append-system-prompt', systemPrompt);
 
-            if (opts.mcpServers && Object.keys(opts.mcpServers).length > 0) {
-                args.push('--mcp-config', JSON.stringify({ mcpServers: opts.mcpServers }));
-            }
+            cleanupMcpConfig = appendMcpConfigArg(args, opts.mcpServers, {
+                baseDir: projectDir
+            });
 
             if (opts.allowedTools && opts.allowedTools.length > 0) {
                 args.push('--allowedTools', opts.allowedTools.join(','));
@@ -96,6 +98,7 @@ export async function claudeLocal(opts: {
             }).then(r).catch(reject);
         });
     } finally {
+        cleanupMcpConfig?.();
         process.stdin.resume();
         restoreTerminalState();
     }
