@@ -3,6 +3,7 @@
  */
 
 import { io, type Socket } from 'socket.io-client'
+import { stat } from 'node:fs/promises'
 import { logger } from '@/ui/logger'
 import { configuration } from '@/configuration'
 import type { DaemonState, Machine, MachineMetadata, Update, UpdateMachineBody } from './types'
@@ -51,6 +52,14 @@ type MachineRpcHandlers = {
     requestShutdown: () => void
 }
 
+interface PathExistsRequest {
+    paths: string[]
+}
+
+interface PathExistsResponse {
+    exists: Record<string, boolean>
+}
+
 export class ApiMachineClient {
     private socket!: Socket<ServerToDaemonEvents, DaemonToServerEvents>
     private keepAliveInterval: NodeJS.Timeout | null = null
@@ -66,6 +75,25 @@ export class ApiMachineClient {
         })
 
         registerCommonHandlers(this.rpcHandlerManager, process.cwd())
+
+        this.rpcHandlerManager.registerHandler<PathExistsRequest, PathExistsResponse>('path-exists', async (params) => {
+            const rawPaths = Array.isArray(params?.paths) ? params.paths : []
+            const uniquePaths = Array.from(new Set(rawPaths.filter((path): path is string => typeof path === 'string')))
+            const exists: Record<string, boolean> = {}
+
+            await Promise.all(uniquePaths.map(async (path) => {
+                const trimmed = path.trim()
+                if (!trimmed) return
+                try {
+                    const stats = await stat(trimmed)
+                    exists[trimmed] = stats.isDirectory()
+                } catch {
+                    exists[trimmed] = false
+                }
+            }))
+
+            return { exists }
+        })
     }
 
     setRPCHandlers({ spawnSession, stopSession, requestShutdown }: MachineRpcHandlers): void {

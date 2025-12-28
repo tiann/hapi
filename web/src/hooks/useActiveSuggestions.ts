@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useMemo, useRef } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 
 export interface Suggestion {
     key: string
@@ -11,6 +11,7 @@ interface SuggestionOptions {
     clampSelection?: boolean   // If true, clamp instead of preserving exact position
     autoSelectFirst?: boolean  // If true, automatically select first item when suggestions appear
     wrapAround?: boolean       // If true, wrap around when reaching top/bottom
+    allowEmptyQuery?: boolean  // If true, allow empty string queries
 }
 
 /**
@@ -71,7 +72,8 @@ export function useActiveSuggestions(
     const {
         clampSelection = true,
         autoSelectFirst = true,
-        wrapAround = true
+        wrapAround = true,
+        allowEmptyQuery = false
     } = options
 
     // State for suggestions
@@ -129,11 +131,13 @@ export function useActiveSuggestions(
     const handlerRef = useRef(handler)
     handlerRef.current = handler
 
-    const sync = useMemo(() => {
-        return new ValueSync<string | null>(async (query) => {
-            if (!query) return
+    const syncRef = useRef<ValueSync<string | null> | null>(null)
 
-            const suggestions = await handlerRef.current(query)
+    useEffect(() => {
+        const sync = new ValueSync<string | null>(async (nextQuery) => {
+            if (nextQuery === null || (!allowEmptyQuery && nextQuery === '')) return
+
+            const suggestions = await handlerRef.current(nextQuery)
 
             setState((prev) => {
                 if (clampSelection) {
@@ -174,18 +178,23 @@ export function useActiveSuggestions(
                 }
             })
         })
-    }, [clampSelection, autoSelectFirst])
+
+        syncRef.current = sync
+
+        return () => {
+            sync.stop()
+            if (syncRef.current === sync) {
+                syncRef.current = null
+            }
+        }
+    }, [clampSelection, autoSelectFirst, allowEmptyQuery])
 
     useEffect(() => {
-        sync.setValue(query)
-    }, [query, sync])
-
-    useEffect(() => {
-        return () => sync.stop()
-    }, [sync])
+        syncRef.current?.setValue(query)
+    }, [query, handler, clampSelection, autoSelectFirst, allowEmptyQuery])
 
     // If no query return empty suggestions
-    if (!query) {
+    if (query === null || (!allowEmptyQuery && query === '')) {
         return [[], -1, moveUp, moveDown, clear] as const
     }
 

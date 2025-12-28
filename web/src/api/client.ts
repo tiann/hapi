@@ -3,6 +3,7 @@ import type {
     FileReadResponse,
     FileSearchResponse,
     GitCommandResponse,
+    MachinePathsExistsResponse,
     MachinesResponse,
     MessagesResponse,
     SlashCommandsResponse,
@@ -226,6 +227,19 @@ export class ApiClient {
 
     async getMachines(): Promise<MachinesResponse> {
         return await this.request<MachinesResponse>('/api/machines')
+    }
+
+    async checkMachinePathsExists(
+        machineId: string,
+        paths: string[]
+    ): Promise<MachinePathsExistsResponse> {
+        return await this.request<MachinePathsExistsResponse>(
+            `/api/machines/${encodeURIComponent(machineId)}/paths/exists`,
+            {
+                method: 'POST',
+                body: JSON.stringify({ paths })
+            }
+        )
     }
 
     async spawnSession(

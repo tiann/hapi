@@ -133,16 +133,8 @@ export type RpcReadFileResponse = {
     error?: string
 }
 
-export type SlashCommand = {
-    name: string
-    description?: string
-    source: 'builtin' | 'user'
-}
-
-export type RpcSlashCommandsResponse = {
-    success: boolean
-    commands?: SlashCommand[]
-    error?: string
+export type RpcPathExistsResponse = {
+    exists: Record<string, boolean>
 }
 
 export type SyncEventType =
@@ -697,6 +689,24 @@ export class SyncEngine {
         }
     }
 
+    async checkPathsExist(machineId: string, paths: string[]): Promise<Record<string, boolean>> {
+        const result = await this.machineRpc(machineId, 'path-exists', { paths }) as RpcPathExistsResponse | unknown
+        if (!result || typeof result !== 'object') {
+            throw new Error('Unexpected path-exists result')
+        }
+
+        const existsValue = (result as RpcPathExistsResponse).exists
+        if (!existsValue || typeof existsValue !== 'object') {
+            throw new Error('Unexpected path-exists result')
+        }
+
+        const exists: Record<string, boolean> = {}
+        for (const [key, value] of Object.entries(existsValue)) {
+            exists[key] = value === true
+        }
+        return exists
+    }
+
     async getGitStatus(sessionId: string, cwd?: string): Promise<RpcCommandResponse> {
         return await this.sessionRpc(sessionId, 'git-status', { cwd }) as RpcCommandResponse
     }
@@ -715,10 +725,6 @@ export class SyncEngine {
 
     async runRipgrep(sessionId: string, args: string[], cwd?: string): Promise<RpcCommandResponse> {
         return await this.sessionRpc(sessionId, 'ripgrep', { args, cwd }) as RpcCommandResponse
-    }
-
-    async listSlashCommands(sessionId: string, agent: string): Promise<RpcSlashCommandsResponse> {
-        return await this.sessionRpc(sessionId, 'listSlashCommands', { agent }) as RpcSlashCommandsResponse
     }
 
     private async sessionRpc(sessionId: string, method: string, params: unknown): Promise<unknown> {

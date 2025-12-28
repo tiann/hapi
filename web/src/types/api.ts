@@ -70,6 +70,7 @@ export type Session = {
 export type SessionSummaryMetadata = {
     name?: string
     path: string
+    machineId?: string
     summary?: { text: string }
     flavor?: string | null
     worktree?: WorktreeMetadata
@@ -132,6 +133,7 @@ export type MessagesResponse = {
 }
 
 export type MachinesResponse = { machines: Machine[] }
+export type MachinePathsExistsResponse = { exists: Record<string, boolean> }
 
 export type SpawnResponse =
     | { type: 'success'; sessionId: string }

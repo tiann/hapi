@@ -1,10 +1,15 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import type { ApiClient } from '@/api/client'
 import type { Machine } from '@/types/api'
+import { Autocomplete } from '@/components/ChatInput/Autocomplete'
+import { FloatingOverlay } from '@/components/ChatInput/FloatingOverlay'
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/Spinner'
 import { usePlatform } from '@/hooks/usePlatform'
 import { useSpawnSession } from '@/hooks/mutations/useSpawnSession'
+import { useSessions } from '@/hooks/queries/useSessions'
+import { useActiveSuggestions, type Suggestion } from '@/hooks/useActiveSuggestions'
+import { useDirectorySuggestions } from '@/hooks/useDirectorySuggestions'
 import { useRecentPaths } from '@/hooks/useRecentPaths'
 
 type AgentType = 'claude' | 'codex' | 'gemini'
@@ -25,11 +30,15 @@ export function NewSession(props: {
 }) {
     const { haptic } = usePlatform()
     const { spawnSession, isPending, error: spawnError } = useSpawnSession(props.api)
+    const { sessions } = useSessions(props.api)
     const isFormDisabled = isPending || props.isLoading
     const { getRecentPaths, addRecentPath, getLastUsedMachineId, setLastUsedMachineId } = useRecentPaths()
 
     const [machineId, setMachineId] = useState<string | null>(null)
     const [directory, setDirectory] = useState('')
+    const [suppressSuggestions, setSuppressSuggestions] = useState(false)
+    const [isDirectoryFocused, setIsDirectoryFocused] = useState(false)
+    const [pathExistence, setPathExistence] = useState<Record<string, boolean>>({})
     const [agent, setAgent] = useState<AgentType>('claude')
     const [yoloMode, setYoloMode] = useState(false)
     const [sessionType, setSessionType] = useState<SessionType>('simple')
@@ -71,6 +80,61 @@ export function NewSession(props: {
         [getRecentPaths, machineId]
     )
 
+    const allPaths = useDirectorySuggestions(machineId, sessions, recentPaths)
+
+    const pathsToCheck = useMemo(
+        () => Array.from(new Set(allPaths)).slice(0, 1000),
+        [allPaths]
+    )
+
+    useEffect(() => {
+        let cancelled = false
+
+        if (!machineId || pathsToCheck.length === 0) {
+            setPathExistence({})
+            return () => { cancelled = true }
+        }
+
+        void props.api.checkMachinePathsExists(machineId, pathsToCheck)
+            .then((result) => {
+                if (cancelled) return
+                setPathExistence(result.exists ?? {})
+            })
+            .catch(() => {
+                if (cancelled) return
+                setPathExistence({})
+            })
+
+        return () => {
+            cancelled = true
+        }
+    }, [machineId, pathsToCheck, props.api])
+
+    const verifiedPaths = useMemo(
+        () => allPaths.filter((path) => pathExistence[path]),
+        [allPaths, pathExistence]
+    )
+
+    const getSuggestions = useCallback(async (query: string): Promise<Suggestion[]> => {
+        const lowered = query.toLowerCase()
+        return verifiedPaths
+            .filter((path) => path.toLowerCase().includes(lowered))
+            .slice(0, 8)
+            .map((path) => ({
+                key: path,
+                text: path,
+                label: path
+            }))
+    }, [verifiedPaths])
+
+    const activeQuery = (!isDirectoryFocused || suppressSuggestions) ? null : directory
+
+    const [suggestions, selectedIndex, moveUp, moveDown, clearSuggestions] = useActiveSuggestions(
+        activeQuery,
+        getSuggestions,
+        { allowEmptyQuery: true, autoSelectFirst: false }
+    )
+
     const handleMachineChange = useCallback((newMachineId: string) => {
         setMachineId(newMachineId)
         // Auto-fill most recent path for the new machine
@@ -85,6 +149,54 @@ export function NewSession(props: {
     const handlePathClick = useCallback((path: string) => {
         setDirectory(path)
     }, [])
+
+    const handleSuggestionSelect = useCallback((index: number) => {
+        const suggestion = suggestions[index]
+        if (suggestion) {
+            setDirectory(suggestion.text)
+            clearSuggestions()
+            setSuppressSuggestions(true)
+        }
+    }, [suggestions, clearSuggestions])
+
+    const handleDirectoryChange = useCallback((value: string) => {
+        setSuppressSuggestions(false)
+        setDirectory(value)
+    }, [])
+
+    const handleDirectoryFocus = useCallback(() => {
+        setSuppressSuggestions(false)
+        setIsDirectoryFocused(true)
+    }, [])
+
+    const handleDirectoryBlur = useCallback(() => {
+        setIsDirectoryFocused(false)
+    }, [])
+
+    const handleDirectoryKeyDown = useCallback((event: ReactKeyboardEvent<HTMLInputElement>) => {
+        if (suggestions.length === 0) return
+
+        if (event.key === 'ArrowUp') {
+            event.preventDefault()
+            moveUp()
+        }
+
+        if (event.key === 'ArrowDown') {
+            event.preventDefault()
+            moveDown()
+        }
+
+        if (event.key === 'Enter' || event.key === 'Tab') {
+            if (selectedIndex >= 0) {
+                event.preventDefault()
+                handleSuggestionSelect(selectedIndex)
+            }
+        }
+
+        if (event.key === 'Escape') {
+            clearSuggestions()
+        }
+    }, [suggestions, selectedIndex, moveUp, moveDown, clearSuggestions, handleSuggestionSelect])
 
     async function handleCreate() {
         if (!machineId || !directory.trim()) return
@@ -152,14 +264,30 @@ export function NewSession(props: {
                 <label className="text-xs font-medium text-[var(--app-hint)]">
                     Directory
                 </label>
-                <input
-                    type="text"
-                    placeholder="/path/to/project"
-                    value={directory}
-                    onChange={(e) => setDirectory(e.target.value)}
-                    disabled={isFormDisabled}
-                    className="w-full rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] p-2 text-sm focus:outline-none focus:ring-2 focus:ring-[var(--app-link)] disabled:opacity-50"
-                />
+                <div className="relative">
+                    <input
+                        type="text"
+                        placeholder="/path/to/project"
+                        value={directory}
+                        onChange={(event) => handleDirectoryChange(event.target.value)}
+                        onKeyDown={handleDirectoryKeyDown}
+                        onFocus={handleDirectoryFocus}
+                        onBlur={handleDirectoryBlur}
+                        disabled={isFormDisabled}
+                        className="w-full rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] p-2 text-sm focus:outline-none focus:ring-2 focus:ring-[var(--app-link)] disabled:opacity-50"
+                    />
+                    {suggestions.length > 0 && (
+                        <div className="absolute top-full left-0 right-0 z-10 mt-1">
+                            <FloatingOverlay maxHeight={200}>
+                                <Autocomplete
+                                    suggestions={suggestions}
+                                    selectedIndex={selectedIndex}
+                                    onSelect={handleSuggestionSelect}
+                                />
+                            </FloatingOverlay>
+                        </div>
+                    )}
+                </div>
 
                 {/* Recent Paths */}
                 {recentPaths.length > 0 && (
