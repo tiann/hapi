@@ -41,61 +41,58 @@ export async function claudeLocal(opts: {
         return startFrom ?? null;
     }
 
+    // Build args for Claude CLI
+    const args: string[] = [];
+
+    if (startFrom && !hasUserSessionControl) {
+        // Resume existing session
+        args.push('--resume', startFrom);
+    }
+
+    args.push('--append-system-prompt', systemPrompt);
+
+    const cleanupMcpConfig = appendMcpConfigArg(args, opts.mcpServers, {
+        baseDir: projectDir
+    });
+
+    if (opts.allowedTools && opts.allowedTools.length > 0) {
+        args.push('--allowedTools', opts.allowedTools.join(','));
+    }
+
+    // Add custom Claude arguments
+    if (opts.claudeArgs) {
+        args.push(...opts.claudeArgs);
+    }
+
+    // Add hook settings for session tracking
+    args.push('--settings', opts.hookSettingsPath);
+    logger.debug(`[ClaudeLocal] Using hook settings: ${opts.hookSettingsPath}`);
+
+    // Prepare environment variables
+    // Note: Local mode uses global Claude installation
+    const env = {
+        ...process.env,
+        DISABLE_AUTOUPDATER: '1',
+        ...opts.claudeEnvVars
+    }
+
+    logger.debug(`[ClaudeLocal] Spawning claude with args: ${JSON.stringify(args)}`);
+
     // Spawn the process
-    let cleanupMcpConfig: (() => void) | null = null;
     try {
-        // Start the interactive process
         process.stdin.pause();
-        await new Promise<void>((r, reject) => {
-            const args: string[] = []
-            
-            if (startFrom && !hasUserSessionControl) {
-                // Resume existing session
-                args.push('--resume', startFrom)
-            }
-            
-            args.push('--append-system-prompt', systemPrompt);
-
-            cleanupMcpConfig = appendMcpConfigArg(args, opts.mcpServers, {
-                baseDir: projectDir
-            });
-
-            if (opts.allowedTools && opts.allowedTools.length > 0) {
-                args.push('--allowedTools', opts.allowedTools.join(','));
-            }
-
-            // Add custom Claude arguments
-            if (opts.claudeArgs) {
-                args.push(...opts.claudeArgs)
-            }
-
-            // Add hook settings for session tracking
-            args.push('--settings', opts.hookSettingsPath)
-            logger.debug(`[ClaudeLocal] Using hook settings: ${opts.hookSettingsPath}`);
-
-            // Prepare environment variables
-            // Note: Local mode uses global Claude installation
-            const env = {
-                ...process.env,
-                DISABLE_AUTOUPDATER: '1',
-                ...opts.claudeEnvVars
-            }
-
-            logger.debug(`[ClaudeLocal] Spawning claude with args: ${JSON.stringify(args)}`);
-
-            spawnWithAbort({
-                command: 'claude',
-                args,
-                cwd: opts.path,
-                env: withBunRuntimeEnv(env, { allowBunBeBun: false }),
-                signal: opts.abort,
-                logLabel: 'ClaudeLocal',
-                spawnName: 'claude',
-                installHint: 'Claude CLI',
-                includeCause: true,
-                logExit: true,
-                shell: process.platform === 'win32'
-            }).then(r).catch(reject);
+        await spawnWithAbort({
+            command: 'claude',
+            args,
+            cwd: opts.path,
+            env: withBunRuntimeEnv(env, { allowBunBeBun: false }),
+            signal: opts.abort,
+            logLabel: 'ClaudeLocal',
+            spawnName: 'claude',
+            installHint: 'Claude CLI',
+            includeCause: true,
+            logExit: true,
+            shell: process.platform === 'win32'
         });
     } finally {
         cleanupMcpConfig?.();
