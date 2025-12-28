@@ -16,6 +16,7 @@ import { isProcessAlive, isWindows, killProcess, killProcessByChildProcess } fro
 
 import { cleanupDaemonState, getInstalledCliMtimeMs, isDaemonRunningCurrentlyInstalledHappyVersion, stopDaemon } from './controlClient';
 import { startDaemonControlServer } from './controlServer';
+import { createWorktree, removeWorktree, type WorktreeInfo } from './worktree';
 import { join } from 'path';
 import { runtimePath } from '@/projectPath';
 
@@ -188,50 +189,112 @@ export async function startDaemon(): Promise<void> {
       const { directory, sessionId, machineId, approvedNewDirectoryCreation = true } = options;
       const agent = options.agent ?? 'claude';
       const yolo = options.yolo === true;
+      const sessionType = options.sessionType ?? 'simple';
+      const worktreeName = options.worktreeName;
       let directoryCreated = false;
+      let spawnDirectory = directory;
+      let worktreeInfo: WorktreeInfo | null = null;
+      let happyProcess: ReturnType<typeof spawnHappyCLI> | null = null;
 
-      try {
-        await fs.access(directory);
-        logger.debug(`[DAEMON RUN] Directory exists: ${directory}`);
-      } catch (error) {
-        logger.debug(`[DAEMON RUN] Directory doesn't exist, creating: ${directory}`);
-
-        // Check if directory creation is approved
-        if (!approvedNewDirectoryCreation) {
-          logger.debug(`[DAEMON RUN] Directory creation not approved for: ${directory}`);
-          return {
-            type: 'requestToApproveDirectoryCreation',
-            directory
-          };
-        }
-
+      if (sessionType === 'simple') {
         try {
-          await fs.mkdir(directory, { recursive: true });
-          logger.debug(`[DAEMON RUN] Successfully created directory: ${directory}`);
-          directoryCreated = true;
-        } catch (mkdirError: any) {
-          let errorMessage = `Unable to create directory at '${directory}'. `;
+          await fs.access(directory);
+          logger.debug(`[DAEMON RUN] Directory exists: ${directory}`);
+        } catch (error) {
+          logger.debug(`[DAEMON RUN] Directory doesn't exist, creating: ${directory}`);
 
-          // Provide more helpful error messages based on the error code
-          if (mkdirError.code === 'EACCES') {
-            errorMessage += `Permission denied. You don't have write access to create a folder at this location. Try using a different path or check your permissions.`;
-          } else if (mkdirError.code === 'ENOTDIR') {
-            errorMessage += `A file already exists at this path or in the parent path. Cannot create a directory here. Please choose a different location.`;
-          } else if (mkdirError.code === 'ENOSPC') {
-            errorMessage += `No space left on device. Your disk is full. Please free up some space and try again.`;
-          } else if (mkdirError.code === 'EROFS') {
-            errorMessage += `The file system is read-only. Cannot create directories here. Please choose a writable location.`;
-          } else {
-            errorMessage += `System error: ${mkdirError.message || mkdirError}. Please verify the path is valid and you have the necessary permissions.`;
+          // Check if directory creation is approved
+          if (!approvedNewDirectoryCreation) {
+            logger.debug(`[DAEMON RUN] Directory creation not approved for: ${directory}`);
+            return {
+              type: 'requestToApproveDirectoryCreation',
+              directory
+            };
           }
 
-          logger.debug(`[DAEMON RUN] Directory creation failed: ${errorMessage}`);
+          try {
+            await fs.mkdir(directory, { recursive: true });
+            logger.debug(`[DAEMON RUN] Successfully created directory: ${directory}`);
+            directoryCreated = true;
+          } catch (mkdirError: any) {
+            let errorMessage = `Unable to create directory at '${directory}'. `;
+
+            // Provide more helpful error messages based on the error code
+            if (mkdirError.code === 'EACCES') {
+              errorMessage += `Permission denied. You don't have write access to create a folder at this location. Try using a different path or check your permissions.`;
+            } else if (mkdirError.code === 'ENOTDIR') {
+              errorMessage += `A file already exists at this path or in the parent path. Cannot create a directory here. Please choose a different location.`;
+            } else if (mkdirError.code === 'ENOSPC') {
+              errorMessage += `No space left on device. Your disk is full. Please free up some space and try again.`;
+            } else if (mkdirError.code === 'EROFS') {
+              errorMessage += `The file system is read-only. Cannot create directories here. Please choose a writable location.`;
+            } else {
+              errorMessage += `System error: ${mkdirError.message || mkdirError}. Please verify the path is valid and you have the necessary permissions.`;
+            }
+
+            logger.debug(`[DAEMON RUN] Directory creation failed: ${errorMessage}`);
+            return {
+              type: 'error',
+              errorMessage
+            };
+          }
+        }
+      } else {
+        try {
+          await fs.access(directory);
+          logger.debug(`[DAEMON RUN] Worktree base directory exists: ${directory}`);
+        } catch (error) {
+          logger.debug(`[DAEMON RUN] Worktree base directory missing: ${directory}`);
           return {
             type: 'error',
-            errorMessage
+            errorMessage: `Worktree sessions require an existing Git repository. Directory not found: ${directory}`
           };
         }
       }
+
+      if (sessionType === 'worktree') {
+        const worktreeResult = await createWorktree({
+          basePath: directory,
+          nameHint: worktreeName
+        });
+        if (!worktreeResult.ok) {
+          logger.debug(`[DAEMON RUN] Worktree creation failed: ${worktreeResult.error}`);
+          return {
+            type: 'error',
+            errorMessage: worktreeResult.error
+          };
+        }
+        worktreeInfo = worktreeResult.info;
+        spawnDirectory = worktreeInfo.worktreePath;
+        logger.debug(`[DAEMON RUN] Created worktree ${worktreeInfo.worktreePath} (branch ${worktreeInfo.branch})`);
+      }
+
+      const cleanupWorktree = async () => {
+        if (!worktreeInfo) {
+          return;
+        }
+        const result = await removeWorktree({
+          repoRoot: worktreeInfo.basePath,
+          worktreePath: worktreeInfo.worktreePath
+        });
+        if (!result.ok) {
+          logger.debug(`[DAEMON RUN] Failed to remove worktree ${worktreeInfo.worktreePath}: ${result.error}`);
+        }
+      };
+      const maybeCleanupWorktree = async (reason: string) => {
+        if (!worktreeInfo) {
+          return;
+        }
+        const pid = happyProcess?.pid;
+        if (pid && isProcessAlive(pid)) {
+          logger.debug(`[DAEMON RUN] Skipping worktree cleanup after ${reason}; child still running`, {
+            pid,
+            worktreePath: worktreeInfo.worktreePath
+          });
+          return;
+        }
+        await cleanupWorktree();
+      };
 
       try {
 
@@ -257,6 +320,17 @@ export async function startDaemon(): Promise<void> {
           }
         }
 
+        if (worktreeInfo) {
+          extraEnv = {
+            ...extraEnv,
+            HAPI_WORKTREE_BASE_PATH: worktreeInfo.basePath,
+            HAPI_WORKTREE_BRANCH: worktreeInfo.branch,
+            HAPI_WORKTREE_NAME: worktreeInfo.name,
+            HAPI_WORKTREE_PATH: worktreeInfo.worktreePath,
+            HAPI_WORKTREE_CREATED_AT: String(worktreeInfo.createdAt)
+          };
+        }
+
         // Construct arguments for the CLI
         const agentCommand = agent === 'codex'
           ? 'codex'
@@ -274,8 +348,26 @@ export async function startDaemon(): Promise<void> {
 
         // TODO: In future, sessionId could be used with --resume to continue existing sessions
         // For now, we ignore it - each spawn creates a new session
-        const happyProcess = spawnHappyCLI(args, {
-          cwd: directory,
+        const MAX_TAIL_CHARS = 4000;
+        let stderrTail = '';
+        const appendTail = (current: string, chunk: Buffer | string): string => {
+          const text = chunk.toString();
+          if (!text) {
+            return current;
+          }
+          const combined = current + text;
+          return combined.length > MAX_TAIL_CHARS ? combined.slice(-MAX_TAIL_CHARS) : combined;
+        };
+        const logStderrTail = () => {
+          const trimmed = stderrTail.trim();
+          if (!trimmed) {
+            return;
+          }
+          logger.debug('[DAEMON RUN] Child stderr tail', trimmed);
+        };
+
+        happyProcess = spawnHappyCLI(args, {
+          cwd: spawnDirectory,
           detached: true,  // Sessions stay alive when daemon stops
           stdio: ['ignore', 'pipe', 'pipe'],  // Capture stdout/stderr for debugging
           env: {
@@ -284,18 +376,13 @@ export async function startDaemon(): Promise<void> {
           }
         });
 
-        // Log output for debugging
-        if (process.env.DEBUG) {
-          happyProcess.stdout?.on('data', (data) => {
-            logger.debug(`[DAEMON RUN] Child stdout: ${data.toString()}`);
-          });
-          happyProcess.stderr?.on('data', (data) => {
-            logger.debug(`[DAEMON RUN] Child stderr: ${data.toString()}`);
-          });
-        }
+        happyProcess.stderr?.on('data', (data) => {
+          stderrTail = appendTail(stderrTail, data);
+        });
 
         if (!happyProcess.pid) {
           logger.debug('[DAEMON RUN] Failed to spawn process - no PID returned');
+          await maybeCleanupWorktree('no-pid');
           return {
             type: 'error',
             errorMessage: 'Failed to spawn HAPI process - no PID returned'
@@ -316,6 +403,9 @@ export async function startDaemon(): Promise<void> {
 
         happyProcess.on('exit', (code, signal) => {
           logger.debug(`[DAEMON RUN] Child PID ${happyProcess.pid} exited with code ${code}, signal ${signal}`);
+          if (code !== 0 || signal) {
+            logStderrTail();
+          }
           if (happyProcess.pid) {
             onChildExited(happyProcess.pid);
           }
@@ -331,11 +421,12 @@ export async function startDaemon(): Promise<void> {
         // Wait for webhook to populate session with happySessionId
         logger.debug(`[DAEMON RUN] Waiting for session webhook for PID ${happyProcess.pid}`);
 
-        return new Promise((resolve) => {
+        const spawnResult = await new Promise<SpawnSessionResult>((resolve) => {
           // Set timeout for webhook
           const timeout = setTimeout(() => {
             pidToAwaiter.delete(happyProcess.pid!);
             logger.debug(`[DAEMON RUN] Session webhook timeout for PID ${happyProcess.pid}`);
+            logStderrTail();
             resolve({
               type: 'error',
               errorMessage: `Session webhook timeout for PID ${happyProcess.pid}`
@@ -354,9 +445,14 @@ export async function startDaemon(): Promise<void> {
             });
           });
         });
+        if (spawnResult.type !== 'success') {
+          await maybeCleanupWorktree('spawn-error');
+        }
+        return spawnResult;
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
         logger.debug('[DAEMON RUN] Failed to spawn session:', error);
+        await maybeCleanupWorktree('exception');
         return {
           type: 'error',
           errorMessage: `Failed to spawn session: ${errorMessage}`

@@ -51,7 +51,10 @@ export class RpcHandlerManager {
             const result = await handler(params as any)
             return JSON.stringify(result)
         } catch (error) {
-            this.logger('[RPC] [ERROR] Error handling request', { error })
+            const details = error instanceof Error
+                ? { message: error.message, stack: error.stack }
+                : { error: String(error) }
+            this.logger('[RPC] [ERROR] Error handling request', details)
             return JSON.stringify({
                 error: error instanceof Error ? error.message : 'Unknown error'
             })
@@ -91,4 +94,3 @@ export class RpcHandlerManager {
 export function createRpcHandlerManager(config: RpcHandlerConfig): RpcHandlerManager {
     return new RpcHandlerManager(config)
 }
-

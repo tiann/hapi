@@ -9,6 +9,13 @@ type SessionSummaryMetadata = {
     path: string
     summary?: { text: string }
     flavor?: string | null
+    worktree?: {
+        basePath: string
+        branch: string
+        name: string
+        worktreePath?: string
+        createdAt?: number
+    }
 }
 
 type SessionSummary = {
@@ -29,7 +36,8 @@ function toSessionSummary(session: Session): SessionSummary {
         name: session.metadata.name,
         path: session.metadata.path,
         summary: session.metadata.summary ? { text: session.metadata.summary.text } : undefined,
-        flavor: session.metadata.flavor ?? null
+        flavor: session.metadata.flavor ?? null,
+        worktree: session.metadata.worktree
     } : null
 
     const todoProgress = session.todos?.length ? {

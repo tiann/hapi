@@ -124,6 +124,8 @@ export interface SpawnSessionOptions {
     agent?: 'claude' | 'codex' | 'gemini';
     yolo?: boolean;
     token?: string;
+    sessionType?: 'simple' | 'worktree';
+    worktreeName?: string;
 }
 
 export type SpawnSessionResult =

@@ -41,6 +41,13 @@ export type Metadata = {
     archivedBy?: string
     archiveReason?: string
     flavor?: string
+    worktree?: {
+        basePath: string
+        branch: string
+        name: string
+        worktreePath?: string
+        createdAt?: number
+    }
 }
 
 export const MetadataSchema = z.object({
@@ -69,7 +76,14 @@ export const MetadataSchema = z.object({
     lifecycleStateSince: z.number().optional(),
     archivedBy: z.string().optional(),
     archiveReason: z.string().optional(),
-    flavor: z.string().optional()
+    flavor: z.string().optional(),
+    worktree: z.object({
+        basePath: z.string(),
+        branch: z.string(),
+        name: z.string(),
+        worktreePath: z.string().optional(),
+        createdAt: z.number().optional()
+    }).optional()
 }).passthrough()
 
 export type AgentState = {

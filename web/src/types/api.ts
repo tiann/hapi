@@ -1,6 +1,14 @@
 export type PermissionMode = 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | null | undefined
 export type ModelMode = 'default' | 'sonnet' | 'opus' | null | undefined
 
+export type WorktreeMetadata = {
+    basePath: string
+    branch: string
+    name: string
+    worktreePath?: string
+    createdAt?: number
+}
+
 export type SessionMetadataSummary = {
     path: string
     host: string
@@ -11,6 +19,7 @@ export type SessionMetadataSummary = {
     machineId?: string
     tools?: string[]
     flavor?: string | null
+    worktree?: WorktreeMetadata
 }
 
 export type AgentStateRequest = {
@@ -63,6 +72,7 @@ export type SessionSummaryMetadata = {
     path: string
     summary?: { text: string }
     flavor?: string | null
+    worktree?: WorktreeMetadata
 }
 
 export type SessionSummary = {

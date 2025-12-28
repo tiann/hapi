@@ -28,7 +28,14 @@ export const MetadataSchema = z.object({
     }).optional(),
     machineId: z.string().optional(),
     tools: z.array(z.string()).optional(),
-    flavor: z.string().nullish()
+    flavor: z.string().nullish(),
+    worktree: z.object({
+        basePath: z.string(),
+        branch: z.string(),
+        name: z.string(),
+        worktreePath: z.string().optional(),
+        createdAt: z.number().optional()
+    }).optional()
 }).passthrough()
 
 export type Metadata = z.infer<typeof MetadataSchema>
@@ -653,13 +660,15 @@ export class SyncEngine {
         machineId: string,
         directory: string,
         agent: 'claude' | 'codex' | 'gemini' = 'claude',
-        yolo?: boolean
+        yolo?: boolean,
+        sessionType?: 'simple' | 'worktree',
+        worktreeName?: string
     ): Promise<{ type: 'success'; sessionId: string } | { type: 'error'; message: string }> {
         try {
             const result = await this.machineRpc(
                 machineId,
                 'spawn-happy-session',
-                { type: 'spawn-in-directory', directory, agent, yolo }
+                { type: 'spawn-in-directory', directory, agent, yolo, sessionType, worktreeName }
             )
             if (result && typeof result === 'object') {
                 const obj = result as Record<string, unknown>

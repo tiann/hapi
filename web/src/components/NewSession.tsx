@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ApiClient } from '@/api/client'
 import type { Machine } from '@/types/api'
 import { Button } from '@/components/ui/button'
@@ -8,6 +8,7 @@ import { useSpawnSession } from '@/hooks/mutations/useSpawnSession'
 import { useRecentPaths } from '@/hooks/useRecentPaths'
 
 type AgentType = 'claude' | 'codex' | 'gemini'
+type SessionType = 'simple' | 'worktree'
 
 function getMachineTitle(machine: Machine): string {
     if (machine.metadata?.displayName) return machine.metadata.displayName
@@ -31,7 +32,17 @@ export function NewSession(props: {
     const [directory, setDirectory] = useState('')
     const [agent, setAgent] = useState<AgentType>('claude')
     const [yoloMode, setYoloMode] = useState(false)
+    const [sessionType, setSessionType] = useState<SessionType>('simple')
+    const [worktreeName, setWorktreeName] = useState('')
     const [error, setError] = useState<string | null>(null)
+    const worktreeInputRef = useRef<HTMLInputElement>(null)
+
+    // Focus worktree input when switching to worktree mode
+    useEffect(() => {
+        if (sessionType === 'worktree') {
+            worktreeInputRef.current?.focus()
+        }
+    }, [sessionType])
 
     // Initialize with last used machine or first available
     useEffect(() => {
@@ -84,7 +95,9 @@ export function NewSession(props: {
                 machineId,
                 directory: directory.trim(),
                 agent,
-                yolo: yoloMode
+                yolo: yoloMode,
+                sessionType,
+                worktreeName: sessionType === 'worktree' ? (worktreeName.trim() || undefined) : undefined
             })
 
             if (result.type === 'success') {
@@ -168,6 +181,77 @@ export function NewSession(props: {
                         </div>
                     </div>
                 )}
+            </div>
+
+            {/* Session Type */}
+            <div className="flex flex-col gap-1.5 px-3 py-3">
+                <label className="text-xs font-medium text-[var(--app-hint)]">
+                    Session type
+                </label>
+                <div className="flex flex-col gap-1.5">
+                    {(['simple', 'worktree'] as const).map((type) => (
+                        <div key={type} className="flex flex-col gap-2">
+                            {type === 'worktree' ? (
+                                <div className="flex items-center gap-2">
+                                    <input
+                                        id="session-type-worktree"
+                                        type="radio"
+                                        name="sessionType"
+                                        value="worktree"
+                                        checked={sessionType === 'worktree'}
+                                        onChange={() => setSessionType('worktree')}
+                                        disabled={isFormDisabled}
+                                        className="accent-[var(--app-link)]"
+                                    />
+                                    <div className="flex-1">
+                                        <div className="min-h-[34px] flex items-center">
+                                            {sessionType === 'worktree' ? (
+                                                <input
+                                                    ref={worktreeInputRef}
+                                                    type="text"
+                                                    placeholder="Branch name (optional)"
+                                                    value={worktreeName}
+                                                    onChange={(e) => setWorktreeName(e.target.value)}
+                                                    disabled={isFormDisabled}
+                                                    className="w-full rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-[var(--app-link)] disabled:opacity-60"
+                                                />
+                                            ) : (
+                                                <>
+                                                    <label
+                                                        htmlFor="session-type-worktree"
+                                                        className="text-sm capitalize cursor-pointer"
+                                                    >
+                                                        Worktree
+                                                    </label>
+                                                    <span className="ml-2 text-xs text-[var(--app-hint)]">
+                                                        Create a new git worktree next to the repo
+                                                    </span>
+                                                </>
+                                            )}
+                                        </div>
+                                    </div>
+                                </div>
+                            ) : (
+                                <label className="flex items-center gap-2 cursor-pointer min-h-[34px]">
+                                    <input
+                                        id="session-type-simple"
+                                        type="radio"
+                                        name="sessionType"
+                                        value="simple"
+                                        checked={sessionType === 'simple'}
+                                        onChange={() => setSessionType('simple')}
+                                        disabled={isFormDisabled}
+                                        className="accent-[var(--app-link)]"
+                                    />
+                                    <span className="text-sm capitalize">Simple</span>
+                                    <span className="text-xs text-[var(--app-hint)]">
+                                        Use the selected directory as-is
+                                    </span>
+                                </label>
+                            )}
+                        </div>
+                    ))}
+                </div>
             </div>
 
             {/* Agent Selector */}

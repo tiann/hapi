@@ -231,11 +231,13 @@ export class ApiClient {
         machineId: string,
         directory: string,
         agent?: 'claude' | 'codex' | 'gemini',
-        yolo?: boolean
+        yolo?: boolean,
+        sessionType?: 'simple' | 'worktree',
+        worktreeName?: string
     ): Promise<SpawnResponse> {
         return await this.request<SpawnResponse>(`/api/machines/${encodeURIComponent(machineId)}/spawn`, {
             method: 'POST',
-            body: JSON.stringify({ directory, agent, yolo })
+            body: JSON.stringify({ directory, agent, yolo, sessionType, worktreeName })
         })
     }
 }

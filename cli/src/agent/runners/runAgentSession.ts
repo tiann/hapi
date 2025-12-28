@@ -20,6 +20,7 @@ import { initialMachineMetadata } from '@/daemon/run';
 import { startHappyServer } from '@/claude/utils/startHappyServer';
 import { getHappyCliCommand } from '@/utils/spawnHappyCLI';
 import { registerKillSessionHandler } from '@/claude/registerKillSessionHandler';
+import { readWorktreeEnv } from '@/utils/worktreeEnv';
 
 function emitReadyIfIdle(props: {
     queueSize: () => number;
@@ -56,6 +57,7 @@ export async function runAgentSession(opts: {
         controlledByUser: false
     };
 
+    const worktreeInfo = readWorktreeEnv();
     const metadata: Metadata = {
         path: process.cwd(),
         host: os.hostname(),
@@ -71,7 +73,8 @@ export async function runAgentSession(opts: {
         startedBy: opts.startedBy || 'terminal',
         lifecycleState: 'running',
         lifecycleStateSince: Date.now(),
-        flavor: opts.agentType
+        flavor: opts.agentType,
+        worktree: worktreeInfo ?? undefined
     };
 
     const response = await api.getOrCreateSession({ tag: sessionTag, metadata, state });

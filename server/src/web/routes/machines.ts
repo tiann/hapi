@@ -6,7 +6,9 @@ import type { WebAppEnv } from '../middleware/auth'
 const spawnBodySchema = z.object({
     directory: z.string().min(1),
     agent: z.enum(['claude', 'codex', 'gemini']).optional(),
-    yolo: z.boolean().optional()
+    yolo: z.boolean().optional(),
+    sessionType: z.enum(['simple', 'worktree']).optional(),
+    worktreeName: z.string().optional()
 })
 
 export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Hono<WebAppEnv> {
@@ -44,7 +46,9 @@ export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Ho
             machineId,
             parsed.data.directory,
             parsed.data.agent,
-            parsed.data.yolo
+            parsed.data.yolo,
+            parsed.data.sessionType,
+            parsed.data.worktreeName
         )
         return c.json(result)
     })

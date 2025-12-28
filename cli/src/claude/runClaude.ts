@@ -24,6 +24,7 @@ import { registerKillSessionHandler } from './registerKillSessionHandler';
 import { runtimePath } from '../projectPath';
 import { resolve } from 'node:path';
 import type { Session } from './session';
+import { readWorktreeEnv } from '@/utils/worktreeEnv';
 
 export interface StartOptions {
     model?: string
@@ -73,6 +74,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         metadata: initialMachineMetadata
     });
 
+    const worktreeInfo = readWorktreeEnv();
     let metadata: Metadata = {
         path: workingDirectory,
         host: os.hostname(),
@@ -89,7 +91,8 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         // Initialize lifecycle state
         lifecycleState: 'running',
         lifecycleStateSince: Date.now(),
-        flavor: 'claude'
+        flavor: 'claude',
+        worktree: worktreeInfo ?? undefined
     };
     const response = await api.getOrCreateSession({ tag: sessionTag, metadata, state });
     logger.debug(`Session created: ${response.id}`);

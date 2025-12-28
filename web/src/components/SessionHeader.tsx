@@ -42,6 +42,7 @@ export function SessionHeader(props: {
     onViewFiles?: () => void
 }) {
     const title = useMemo(() => getSessionTitle(props.session), [props.session])
+    const worktreeBranch = props.session.metadata?.worktree?.branch
 
     // In Telegram, don't render header (Telegram provides its own)
     if (isTelegramApp()) {
@@ -79,6 +80,7 @@ export function SessionHeader(props: {
                     </div>
                     <div className="text-xs text-[var(--app-hint)] truncate">
                         {props.session.metadata?.path ?? props.session.id}
+                        {worktreeBranch ? ` • worktree: ${worktreeBranch}` : ''}
                     </div>
                 </div>
 

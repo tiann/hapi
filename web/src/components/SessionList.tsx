@@ -162,6 +162,9 @@ export function SessionList(props: {
                         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[var(--app-hint)]">
                             <span>❖ {getAgentLabel(s)}</span>
                             <span>model: {getModelLabel(s)}</span>
+                            {s.metadata?.worktree?.branch ? (
+                                <span>worktree: {s.metadata.worktree.branch}</span>
+                            ) : null}
                             {(() => {
                                 const lastSeen = getLastSeenLabel(s)
                                 if (!lastSeen) return null
