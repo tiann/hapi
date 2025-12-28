@@ -7,7 +7,6 @@
 import { FileHandle } from 'node:fs/promises'
 import { readFile, writeFile, mkdir, open, unlink, rename, stat } from 'node:fs/promises'
 import { existsSync, writeFileSync, readFileSync, unlinkSync } from 'node:fs'
-import { constants } from 'node:fs'
 import { configuration } from '@/configuration'
 import * as z from 'zod';
 import { encodeBase64 } from '@/api/encryption';
@@ -87,8 +86,8 @@ export async function updateSettings(
   // Acquire exclusive lock with retries
   while (attempts < MAX_LOCK_ATTEMPTS) {
     try {
-      // O_CREAT | O_EXCL | O_WRONLY = create exclusively, fail if exists
-      fileHandle = await open(lockFile, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY);
+      // 'wx' = create exclusively, fail if exists (cross-platform compatible)
+      fileHandle = await open(lockFile, 'wx');
       break;
     } catch (err: any) {
       if (err.code === 'EEXIST') {
@@ -270,11 +269,8 @@ export async function acquireDaemonLock(
 ): Promise<FileHandle | null> {
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      // O_EXCL ensures we only create if it doesn't exist (atomic lock acquisition)
-      const fileHandle = await open(
-        configuration.daemonLockFile,
-        constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY
-      );
+      // 'wx' ensures we only create if it doesn't exist (atomic lock acquisition)
+      const fileHandle = await open(configuration.daemonLockFile, 'wx');
       // Write PID to lock file for debugging
       await fileHandle.writeFile(String(process.pid));
       return fileHandle;

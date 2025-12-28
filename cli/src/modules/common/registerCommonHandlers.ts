@@ -3,7 +3,7 @@ import { exec, ExecOptions } from 'child_process';
 import { promisify } from 'util';
 import { readFile, writeFile, readdir, stat } from 'fs/promises';
 import { createHash } from 'crypto';
-import { join, resolve } from 'path';
+import { basename, join, resolve } from 'path';
 import { run as runRipgrep } from '@/modules/ripgrep/index';
 import { run as runDifftastic } from '@/modules/difftastic/index';
 import { RpcHandlerManager } from '../../api/rpc/RpcHandlerManager';
@@ -409,8 +409,8 @@ export function registerCommonHandlers(rpcHandlerManager: RpcHandlerManager, wor
                 return { success: false, error: 'maxDepth must be non-negative' };
             }
 
-            // Get the base name for the root node
-            const baseName = data.path === '/' ? '/' : data.path.split('/').pop() || data.path;
+            // Get the base name for the root node (cross-platform)
+            const baseName = data.path === '/' ? '/' : basename(data.path) || data.path;
 
             // Build the tree starting from the requested path
             const tree = await buildTree(data.path, baseName, 0);
