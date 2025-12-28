@@ -727,6 +727,18 @@ export class SyncEngine {
         return await this.sessionRpc(sessionId, 'ripgrep', { args, cwd }) as RpcCommandResponse
     }
 
+    async listSlashCommands(sessionId: string, agent: string): Promise<{
+        success: boolean
+        commands?: Array<{ name: string; description?: string; source: 'builtin' | 'user' }>
+        error?: string
+    }> {
+        return await this.sessionRpc(sessionId, 'listSlashCommands', { agent }) as {
+            success: boolean
+            commands?: Array<{ name: string; description?: string; source: 'builtin' | 'user' }>
+            error?: string
+        }
+    }
+
     private async sessionRpc(sessionId: string, method: string, params: unknown): Promise<unknown> {
         return await this.rpcCall(`${sessionId}:${method}`, params)
     }
