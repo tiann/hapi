@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import type { SessionSummary } from '@/types/api'
 
 type SessionGroup = {
@@ -23,7 +23,10 @@ function groupSessionsByDirectory(sessions: SessionSummary[]): SessionGroup[] {
     return Array.from(groups.entries())
         .map(([directory, groupSessions]) => {
             const sortedSessions = [...groupSessions].sort((a, b) => b.updatedAt - a.updatedAt)
-            const latestUpdatedAt = Math.max(...groupSessions.map(s => s.updatedAt))
+            const latestUpdatedAt = groupSessions.reduce(
+                (max, s) => (s.updatedAt > max ? s.updatedAt : max),
+                -Infinity
+            )
             const hasActiveSession = groupSessions.some(s => s.active)
             const parts = directory.split('/').filter(Boolean)
             const displayName = parts.length > 0 ? parts[parts.length - 1] : directory
@@ -224,7 +227,10 @@ export function SessionList(props: {
     const { renderHeader = true } = props
     const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set())
 
-    const groups = groupSessionsByDirectory(props.sessions)
+    const groups = useMemo(
+        () => groupSessionsByDirectory(props.sessions),
+        [props.sessions]
+    )
 
     const toggleGroup = (directory: string) => {
         setCollapsedGroups(prev => {
