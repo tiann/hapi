@@ -26,8 +26,8 @@ export default defineConfig({
             registerType: 'autoUpdate',
             includeAssets: ['favicon.ico', 'apple-touch-icon-180x180.png', 'mask-icon.svg'],
             manifest: {
-                name: 'Hapi',
-                short_name: 'Hapi',
+                name: 'HAPI',
+                short_name: 'HAPI',
                 description: 'AI-powered development assistant',
                 theme_color: '#ffffff',
                 background_color: '#ffffff',

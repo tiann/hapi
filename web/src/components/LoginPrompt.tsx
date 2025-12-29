@@ -140,7 +140,7 @@ export function LoginPrompt(props: LoginPromptProps) {
             <div className="w-full max-w-sm space-y-6">
                 {/* Header */}
                 <div className="text-center space-y-2">
-                    <div className="text-2xl font-semibold">Hapi</div>
+                    <div className="text-2xl font-semibold">HAPI</div>
                     <div className="text-sm text-[var(--app-hint)]">
                         Enter your access token to continue
                     </div>

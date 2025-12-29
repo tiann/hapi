@@ -1,4 +1,4 @@
-# hapi
+# HAPI
 
 HAPI means "哈皮," a Chinese transliteration of [Happy](https://github.com/slopus/happy). Great credit to the original project.
 

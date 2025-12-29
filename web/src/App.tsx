@@ -204,7 +204,7 @@ export function App() {
         // Telegram auth failed
         return (
             <div className="p-4 space-y-3">
-                <div className="text-base font-semibold">Hapi</div>
+                <div className="text-base font-semibold">HAPI</div>
                 <div className="text-sm text-red-600">
                     {authError ?? 'Not authorized'}
                 </div>

@@ -20,7 +20,7 @@ export function InstallPrompt() {
                     <div className="w-full max-w-lg bg-[var(--app-bg)] rounded-t-2xl p-5 pb-8 space-y-4 animate-slide-up">
                         <div className="flex items-center justify-between">
                             <h3 className="text-base font-semibold text-[var(--app-fg)]">
-                                Install Hapi
+                                Install HAPI
                             </h3>
                             <button
                                 onClick={() => setShowIOSGuide(false)}
@@ -85,7 +85,7 @@ export function InstallPrompt() {
                 <div className="flex items-center justify-between gap-3">
                     <div className="flex-1 min-w-0">
                         <p className="text-sm font-medium text-[var(--app-fg)]">
-                            Install Hapi
+                            Install HAPI
                         </p>
                         <p className="text-xs text-[var(--app-hint)] mt-0.5">
                             Add to home screen for the best experience
@@ -133,7 +133,7 @@ export function InstallPrompt() {
             <div className="flex items-center justify-between gap-3">
                 <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium text-[var(--app-fg)]">
-                        Install Hapi
+                        Install HAPI
                     </p>
                     <p className="text-xs text-[var(--app-hint)] mt-0.5">
                         Add to home screen for the best experience
