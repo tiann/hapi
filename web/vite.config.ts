@@ -3,6 +3,8 @@ import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 import { resolve } from 'node:path'
 
+const base = process.env.VITE_BASE_URL || '/'
+
 export default defineConfig({
     server: {
         host: true,
@@ -31,8 +33,8 @@ export default defineConfig({
                 background_color: '#ffffff',
                 display: 'standalone',
                 orientation: 'portrait',
-                scope: '/',
-                start_url: '/',
+                scope: base,
+                start_url: base,
                 icons: [
                     {
                         src: 'pwa-64x64.png',
@@ -126,7 +128,7 @@ export default defineConfig({
             }
         })
     ],
-    base: '/',
+    base,
     resolve: {
         alias: {
             '@': resolve(__dirname, 'src')
