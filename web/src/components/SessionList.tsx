@@ -187,6 +187,9 @@ function SessionItem(props: {
                             pending {s.pendingRequestsCount}
                         </span>
                     ) : null}
+                    <span className="text-[var(--app-hint)]">
+                        {formatRelativeTime(s.updatedAt)}
+                    </span>
                 </div>
             </div>
             {showPath ? (
