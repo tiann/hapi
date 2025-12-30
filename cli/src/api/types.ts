@@ -241,6 +241,18 @@ export const UpdateSchema = z.object({
 
 export type Update = z.infer<typeof UpdateSchema>
 
+export const CliMessagesResponseSchema = z.object({
+    messages: z.array(z.object({
+        id: z.string(),
+        seq: z.number(),
+        createdAt: z.number(),
+        localId: z.string().nullable().optional(),
+        content: z.unknown()
+    }))
+})
+
+export type CliMessagesResponse = z.infer<typeof CliMessagesResponseSchema>
+
 export const CreateSessionResponseSchema = z.object({
     session: z.object({
         id: z.string(),

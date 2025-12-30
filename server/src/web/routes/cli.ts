@@ -18,6 +18,11 @@ const createOrLoadMachineSchema = z.object({
     daemonState: z.unknown().nullable().optional()
 })
 
+const getMessagesQuerySchema = z.object({
+    afterSeq: z.coerce.number().int().min(0),
+    limit: z.coerce.number().int().min(1).max(200).optional()
+})
+
 export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono {
     const app = new Hono()
 
@@ -66,6 +71,27 @@ export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono {
             return c.json({ error: 'Session not found' }, 404)
         }
         return c.json({ session })
+    })
+
+    app.get('/sessions/:id/messages', (c) => {
+        const engine = getSyncEngine()
+        if (!engine) {
+            return c.json({ error: 'Not ready' }, 503)
+        }
+        const sessionId = c.req.param('id')
+        const session = engine.getSession(sessionId)
+        if (!session) {
+            return c.json({ error: 'Session not found' }, 404)
+        }
+
+        const parsed = getMessagesQuerySchema.safeParse(c.req.query())
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid query' }, 400)
+        }
+
+        const limit = parsed.data.limit ?? 200
+        const messages = engine.getMessagesAfter(sessionId, { afterSeq: parsed.data.afterSeq, limit })
+        return c.json({ messages })
     })
 
     app.post('/machines', async (c) => {

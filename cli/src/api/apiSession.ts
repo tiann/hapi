@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events'
 import { randomUUID } from 'node:crypto'
 import { io, type Socket } from 'socket.io-client'
+import axios from 'axios'
 import type { ZodType } from 'zod'
 import { logger } from '@/ui/logger'
 import { backoff } from '@/utils/time'
@@ -20,7 +21,7 @@ import type {
     Update,
     UserMessage
 } from './types'
-import { AgentStateSchema, MetadataSchema, UserMessageSchema } from './types'
+import { AgentStateSchema, CliMessagesResponseSchema, MetadataSchema, UserMessageSchema } from './types'
 import { RpcHandlerManager } from './rpc/RpcHandlerManager'
 import { registerCommonHandlers } from '../modules/common/registerCommonHandlers'
 import { TerminalManager } from '@/terminal/TerminalManager'
@@ -41,6 +42,10 @@ export class ApiSessionClient extends EventEmitter {
     private readonly socket: Socket<ServerToClientEvents, ClientToServerEvents>
     private pendingMessages: UserMessage[] = []
     private pendingMessageCallback: ((message: UserMessage) => void) | null = null
+    private lastSeenMessageSeq: number | null = null
+    private backfillInFlight: Promise<void> | null = null
+    private needsBackfill = false
+    private hasConnectedOnce = false
     readonly rpcHandlerManager: RpcHandlerManager
     private readonly terminalManager: TerminalManager
     private agentStateLock = new AsyncLock()
@@ -91,6 +96,11 @@ export class ApiSessionClient extends EventEmitter {
         this.socket.on('connect', () => {
             logger.debug('Socket connected successfully')
             this.rpcHandlerManager.onSocketConnect(this.socket)
+            if (this.hasConnectedOnce) {
+                this.needsBackfill = true
+            }
+            void this.backfillIfNeeded()
+            this.hasConnectedOnce = true
         })
 
         this.socket.on('rpc-request', async (data: { method: string; params: string }, callback: (response: string) => void) => {
@@ -101,6 +111,9 @@ export class ApiSessionClient extends EventEmitter {
             logger.debug('[API] Socket disconnected:', reason)
             this.rpcHandlerManager.onSocketDisconnect()
             this.terminalManager.closeAll()
+            if (this.hasConnectedOnce) {
+                this.needsBackfill = true
+            }
         })
 
         this.socket.on('connect_error', (error) => {
@@ -143,19 +156,7 @@ export class ApiSessionClient extends EventEmitter {
                 if (!data.body) return
 
                 if (data.body.t === 'new-message') {
-                    const content = data.body.message.content
-
-                    const userResult = UserMessageSchema.safeParse(content)
-                    if (userResult.success) {
-                        if (this.pendingMessageCallback) {
-                            this.pendingMessageCallback(userResult.data)
-                        } else {
-                            this.pendingMessages.push(userResult.data)
-                        }
-                        return
-                    }
-
-                    this.emit('message', content)
+                    this.handleIncomingMessage(data.body.message)
                     return
                 }
 
@@ -200,6 +201,118 @@ export class ApiSessionClient extends EventEmitter {
         while (this.pendingMessages.length > 0) {
             callback(this.pendingMessages.shift()!)
         }
+    }
+
+    private enqueueUserMessage(message: UserMessage): void {
+        if (this.pendingMessageCallback) {
+            this.pendingMessageCallback(message)
+        } else {
+            this.pendingMessages.push(message)
+        }
+    }
+
+    private handleIncomingMessage(message: { seq?: number; content: unknown }): void {
+        const seq = typeof message.seq === 'number' ? message.seq : null
+        if (seq !== null) {
+            if (this.lastSeenMessageSeq !== null && seq <= this.lastSeenMessageSeq) {
+                return
+            }
+            this.lastSeenMessageSeq = seq
+        }
+
+        const userResult = UserMessageSchema.safeParse(message.content)
+        if (userResult.success) {
+            this.enqueueUserMessage(userResult.data)
+            return
+        }
+
+        this.emit('message', message.content)
+    }
+
+    private async backfillIfNeeded(): Promise<void> {
+        if (!this.needsBackfill) {
+            return
+        }
+        try {
+            await this.backfillMessages()
+            this.needsBackfill = false
+        } catch (error) {
+            logger.debug('[API] Backfill failed', error)
+            this.needsBackfill = true
+        }
+    }
+
+    private async backfillMessages(): Promise<void> {
+        if (this.backfillInFlight) {
+            await this.backfillInFlight
+            return
+        }
+
+        const startSeq = this.lastSeenMessageSeq
+        if (startSeq === null) {
+            logger.debug('[API] Skipping backfill because no last-seen message sequence is available')
+            return
+        }
+
+        const limit = 200
+        const run = async () => {
+            let cursor = startSeq
+            while (true) {
+                const response = await axios.get(
+                    `${configuration.serverUrl}/cli/sessions/${encodeURIComponent(this.sessionId)}/messages`,
+                    {
+                        params: { afterSeq: cursor, limit },
+                        headers: {
+                            Authorization: `Bearer ${this.token}`,
+                            'Content-Type': 'application/json'
+                        },
+                        timeout: 15_000
+                    }
+                )
+
+                const parsed = CliMessagesResponseSchema.safeParse(response.data)
+                if (!parsed.success) {
+                    throw new Error('Invalid /cli/sessions/:id/messages response')
+                }
+
+                const messages = parsed.data.messages
+                if (messages.length === 0) {
+                    break
+                }
+
+                let maxSeq = cursor
+                for (const message of messages) {
+                    if (typeof message.seq === 'number') {
+                        if (message.seq > maxSeq) {
+                            maxSeq = message.seq
+                        }
+                    }
+                    this.handleIncomingMessage(message)
+                }
+
+                const observedSeq = this.lastSeenMessageSeq ?? maxSeq
+                const nextCursor = Math.max(maxSeq, observedSeq)
+                if (nextCursor <= cursor) {
+                    logger.debug('[API] Backfill stopped due to non-advancing cursor', {
+                        cursor,
+                        maxSeq,
+                        observedSeq
+                    })
+                    break
+                }
+
+                cursor = nextCursor
+                if (messages.length < limit) {
+                    break
+                }
+            }
+        }
+
+        this.backfillInFlight = run().finally(() => {
+            this.backfillInFlight = null
+        })
+
+        await this.backfillInFlight
     }
 
     sendClaudeSessionMessage(body: RawJSONLines): void {

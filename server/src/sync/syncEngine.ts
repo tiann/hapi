@@ -298,6 +298,17 @@ export class SyncEngine {
         }
     }
 
+    getMessagesAfter(sessionId: string, options: { afterSeq: number; limit: number }): DecryptedMessage[] {
+        const stored = this.store.getMessagesAfter(sessionId, options.afterSeq, options.limit)
+        return stored.map((m) => ({
+            id: m.id,
+            seq: m.seq,
+            localId: m.localId,
+            content: m.content,
+            createdAt: m.createdAt
+        }))
+    }
+
     handleRealtimeEvent(event: SyncEvent): void {
         if (event.type === 'session-updated' && event.sessionId) {
             this.refreshSession(event.sessionId)
