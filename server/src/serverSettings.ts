@@ -16,6 +16,20 @@ export interface ServerSettings {
     webappPort: number
     webappUrl: string
     corsOrigins: string[]
+
+    // Lark (Feishu) - WIP notification-only config
+    larkEnabled: boolean
+    larkNotifyTargets: string[]
+
+    // Lark (Feishu) - credentials (WIP)
+    larkAppId: string | null
+    larkAppSecret: string | null
+
+    // Lark (Feishu) - webhook verification token
+    larkVerificationToken: string | null
+
+    // Lark (Feishu) - URL action signing secret
+    larkActionSecret: string | null
 }
 
 export interface ServerSettingsResult {
@@ -25,6 +39,15 @@ export interface ServerSettingsResult {
         webappPort: 'env' | 'file' | 'default'
         webappUrl: 'env' | 'file' | 'default'
         corsOrigins: 'env' | 'file' | 'default'
+
+        larkEnabled: 'env' | 'file' | 'default'
+        larkNotifyTargets: 'env' | 'file' | 'default'
+
+        larkAppId: 'env' | 'file' | 'default'
+        larkAppSecret: 'env' | 'file' | 'default'
+
+        larkVerificationToken: 'env' | 'file' | 'default'
+        larkActionSecret: 'env' | 'file' | 'default'
     }
     savedToFile: boolean
 }
@@ -52,6 +75,18 @@ function parseCorsOrigins(str: string): string[] {
         }
     }
     return normalized
+}
+
+function parseStringList(str: string): string[] {
+    return str
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean)
+}
+
+function parseBoolean(str: string): boolean {
+    const v = str.trim().toLowerCase()
+    return v === '1' || v === 'true' || v === 'yes' || v === 'y' || v === 'on'
 }
 
 /**
@@ -86,6 +121,15 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
         webappPort: 'default',
         webappUrl: 'default',
         corsOrigins: 'default',
+
+        larkEnabled: 'default',
+        larkNotifyTargets: 'default',
+
+        larkAppId: 'default',
+        larkAppSecret: 'default',
+
+        larkVerificationToken: 'default',
+        larkActionSecret: 'default',
     }
 
     // telegramBotToken: env > file > null
@@ -150,6 +194,92 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
         corsOrigins = deriveCorsOrigins(webappUrl)
     }
 
+    // larkEnabled: env > file > false
+    let larkEnabled = false
+    if (process.env.LARK_ENABLED) {
+        larkEnabled = parseBoolean(process.env.LARK_ENABLED)
+        sources.larkEnabled = 'env'
+        if (settings.larkEnabled === undefined) {
+            settings.larkEnabled = larkEnabled
+            needsSave = true
+        }
+    } else if (settings.larkEnabled !== undefined) {
+        larkEnabled = Boolean(settings.larkEnabled)
+        sources.larkEnabled = 'file'
+    }
+
+    // larkNotifyTargets: env > file > []
+    let larkNotifyTargets: string[] = []
+    if (process.env.LARK_NOTIFY_TARGETS) {
+        larkNotifyTargets = parseStringList(process.env.LARK_NOTIFY_TARGETS)
+        sources.larkNotifyTargets = 'env'
+        if (settings.larkNotifyTargets === undefined) {
+            settings.larkNotifyTargets = larkNotifyTargets
+            needsSave = true
+        }
+    } else if (settings.larkNotifyTargets !== undefined) {
+        larkNotifyTargets = Array.isArray(settings.larkNotifyTargets)
+            ? settings.larkNotifyTargets.filter((x) => typeof x === 'string')
+            : []
+        sources.larkNotifyTargets = 'file'
+    }
+
+    // larkAppId: env(APP_ID) > file > null
+    let larkAppId: string | null = null
+    if (process.env.APP_ID) {
+        larkAppId = process.env.APP_ID
+        sources.larkAppId = 'env'
+        if (settings.larkAppId === undefined) {
+            settings.larkAppId = larkAppId
+            needsSave = true
+        }
+    } else if (settings.larkAppId !== undefined) {
+        larkAppId = settings.larkAppId ?? null
+        sources.larkAppId = 'file'
+    }
+
+    // larkAppSecret: env(APP_SECRET) > file > null
+    let larkAppSecret: string | null = null
+    if (process.env.APP_SECRET) {
+        larkAppSecret = process.env.APP_SECRET
+        sources.larkAppSecret = 'env'
+        if (settings.larkAppSecret === undefined) {
+            settings.larkAppSecret = larkAppSecret
+            needsSave = true
+        }
+    } else if (settings.larkAppSecret !== undefined) {
+        larkAppSecret = settings.larkAppSecret ?? null
+        sources.larkAppSecret = 'file'
+    }
+
+    // larkVerificationToken: env(LARK_VERIFICATION_TOKEN) > file > null
+    let larkVerificationToken: string | null = null
+    if (process.env.LARK_VERIFICATION_TOKEN) {
+        larkVerificationToken = process.env.LARK_VERIFICATION_TOKEN
+        sources.larkVerificationToken = 'env'
+        if (settings.larkVerificationToken === undefined) {
+            settings.larkVerificationToken = larkVerificationToken
+            needsSave = true
+        }
+    } else if (settings.larkVerificationToken !== undefined) {
+        larkVerificationToken = settings.larkVerificationToken ?? null
+        sources.larkVerificationToken = 'file'
+    }
+
+    // larkActionSecret: env(LARK_ACTION_SECRET) > file > null
+    let larkActionSecret: string | null = null
+    if (process.env.LARK_ACTION_SECRET) {
+        larkActionSecret = process.env.LARK_ACTION_SECRET
+        sources.larkActionSecret = 'env'
+        if (settings.larkActionSecret === undefined) {
+            settings.larkActionSecret = larkActionSecret
+            needsSave = true
+        }
+    } else if (settings.larkActionSecret !== undefined) {
+        larkActionSecret = settings.larkActionSecret ?? null
+        sources.larkActionSecret = 'file'
+    }
+
     // Save settings if any new values were added
     if (needsSave) {
         await writeSettings(settingsFile, settings)
@@ -161,6 +291,15 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
             webappPort,
             webappUrl,
             corsOrigins,
+
+            larkEnabled,
+            larkNotifyTargets,
+
+            larkAppId,
+            larkAppSecret,
+
+            larkVerificationToken,
+            larkActionSecret,
         },
         sources,
         savedToFile: needsSave,

@@ -17,7 +17,7 @@ const jwtPayloadSchema = z.object({
 export function createAuthMiddleware(jwtSecret: Uint8Array): MiddlewareHandler<WebAppEnv> {
     return async (c, next) => {
         const path = c.req.path
-        if (path === '/api/auth' || path === '/api/bind') {
+        if (path === '/api/auth' || path === '/api/bind' || path === '/api/lark/webhook' || path === '/api/lark/permission') {
             await next()
             return
         }

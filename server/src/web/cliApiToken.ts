@@ -21,6 +21,20 @@ export interface Settings {
     webappPort?: number
     webappUrl?: string
     corsOrigins?: string[]
+
+    // Lark (Feishu) - WIP notification-only config
+    larkEnabled?: boolean
+    larkNotifyTargets?: string[]
+
+    // Lark (Feishu) - credentials (WIP)
+    larkAppId?: string
+    larkAppSecret?: string
+
+    // Lark (Feishu) - webhook verification token
+    larkVerificationToken?: string
+
+    // Lark (Feishu) - URL action signing secret
+    larkActionSecret?: string
 }
 
 export interface CliApiTokenResult {

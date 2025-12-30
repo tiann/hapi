@@ -16,6 +16,8 @@ import { createPermissionsRoutes } from './routes/permissions'
 import { createMachinesRoutes } from './routes/machines'
 import { createGitRoutes } from './routes/git'
 import { createCliRoutes } from './routes/cli'
+import { createLarkWebhookRoutes } from './routes/lark'
+import { createLarkActionRoutes } from './routes/larkAction'
 import type { SSEManager } from '../sse/sseManager'
 import type { Server as BunServer } from 'bun'
 import type { Server as SocketEngine } from '@socket.io/bun-engine'
@@ -83,6 +85,16 @@ function createWebApp(options: {
     app.route('/api', createPermissionsRoutes(options.getSyncEngine))
     app.route('/api', createMachinesRoutes(options.getSyncEngine))
     app.route('/api', createGitRoutes(options.getSyncEngine))
+    app.route('/api', createLarkWebhookRoutes({
+        getSyncEngine: options.getSyncEngine,
+        verificationToken: configuration.larkVerificationToken,
+        appId: configuration.larkAppId,
+        appSecret: configuration.larkAppSecret,
+    }))
+    app.route('/api', createLarkActionRoutes({
+        getSyncEngine: options.getSyncEngine,
+        actionSecret: configuration.larkActionSecret,
+    }))
 
     if (options.embeddedAssetMap) {
         const embeddedAssetMap = options.embeddedAssetMap
