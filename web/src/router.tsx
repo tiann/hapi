@@ -75,12 +75,14 @@ function SessionsPage() {
         void refetch()
     }, [refetch])
 
+    const projectCount = new Set(sessions.map(s => s.metadata?.path ?? 'Other')).size
+
     return (
         <div className="flex h-full flex-col">
             <div className="bg-[var(--app-bg)] pt-[env(safe-area-inset-top)]">
                 <div className="mx-auto w-full max-w-content flex items-center justify-between px-3 py-2">
                     <div className="text-xs text-[var(--app-hint)]">
-                        {sessions.length} sessions
+                        {sessions.length} sessions in {projectCount} projects
                     </div>
                     <button
                         type="button"
