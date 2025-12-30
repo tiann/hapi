@@ -288,22 +288,18 @@ export class MessageQueue2<T> {
      */
     private waitForMessages(abortSignal?: AbortSignal): Promise<boolean> {
         return new Promise((resolve) => {
+            let settled = false;
             let abortHandler: (() => void) | null = null;
+            let waiterFunc: (hasMessages: boolean) => void;
 
-            // Set up abort handler
-            if (abortSignal) {
-                abortHandler = () => {
-                    logger.debug('[MessageQueue2] Wait aborted');
-                    // Clear waiter if it's still set
-                    if (this.waiter === waiterFunc) {
-                        this.waiter = null;
-                    }
-                    resolve(false);
-                };
-                abortSignal.addEventListener('abort', abortHandler);
-            }
-
-            const waiterFunc = (hasMessages: boolean) => {
+            const finish = (hasMessages: boolean) => {
+                if (settled) {
+                    return;
+                }
+                settled = true;
+                if (this.waiter === waiterFunc) {
+                    this.waiter = null;
+                }
                 // Clean up abort handler
                 if (abortHandler && abortSignal) {
                     abortSignal.removeEventListener('abort', abortHandler);
@@ -311,25 +307,33 @@ export class MessageQueue2<T> {
                 resolve(hasMessages);
             };
 
+            waiterFunc = (hasMessages: boolean) => {
+                finish(hasMessages);
+            };
+
+            // Set up abort handler
+            if (abortSignal) {
+                abortHandler = () => {
+                    logger.debug('[MessageQueue2] Wait aborted');
+                    finish(false);
+                };
+                abortSignal.addEventListener('abort', abortHandler);
+            }
+
+            // Set the waiter before checking the queue to avoid missed notifications
+            this.waiter = waiterFunc;
+
             // Check again in case messages arrived or queue closed while setting up
             if (this.queue.length > 0) {
-                if (abortHandler && abortSignal) {
-                    abortSignal.removeEventListener('abort', abortHandler);
-                }
-                resolve(true);
+                finish(true);
                 return;
             }
 
             if (this.closed || abortSignal?.aborted) {
-                if (abortHandler && abortSignal) {
-                    abortSignal.removeEventListener('abort', abortHandler);
-                }
-                resolve(false);
+                finish(false);
                 return;
             }
 
-            // Set the waiter
-            this.waiter = waiterFunc;
             logger.debug('[MessageQueue2] Waiting for messages...');
         });
     }
