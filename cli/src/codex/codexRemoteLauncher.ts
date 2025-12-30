@@ -162,10 +162,10 @@ export async function codexRemoteLauncher(session: CodexSession): Promise<'switc
         return `${normalized.slice(0, maxChars)}...`;
     }
 
-    function buildResumeInstructionsFromFile(resumeFile: string): string | null {
+    function buildResumeInstructionsFromFile(resumeFile: string): string | undefined {
         const result = readResumeFileContent(resumeFile);
         if (!result) {
-            return null;
+            return undefined;
         }
 
         const items: { role: 'user' | 'assistant' | 'tool'; text: string }[] = [];
@@ -211,7 +211,7 @@ export async function codexRemoteLauncher(session: CodexSession): Promise<'switc
         }
 
         if (items.length === 0) {
-            return null;
+            return undefined;
         }
 
         if (items.length > RESUME_CONTEXT_MAX_ITEMS) {
@@ -236,7 +236,7 @@ export async function codexRemoteLauncher(session: CodexSession): Promise<'switc
         }
 
         if (rendered.length === 0) {
-            return null;
+            return undefined;
         }
 
         const header = truncated
