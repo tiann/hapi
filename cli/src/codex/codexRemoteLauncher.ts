@@ -21,6 +21,7 @@ import type { EnhancedMode } from './loop';
 import { restoreTerminalState } from '@/ui/terminalState';
 import { hasCodexCliOverrides } from './utils/codexCliOverrides';
 import { buildCodexStartConfig } from './utils/codexStartConfig';
+import { convertCodexEvent } from './utils/codexEventConverter';
 
 export async function codexRemoteLauncher(session: CodexSession): Promise<'switch' | 'exit'> {
     // Warn if CLI args were passed that won't apply in remote mode
@@ -112,6 +113,136 @@ export async function codexRemoteLauncher(session: CodexSession): Promise<'switc
         } catch {
             return null;
         }
+    }
+
+    const RESUME_CONTEXT_MAX_ITEMS = 40;
+    const RESUME_CONTEXT_MAX_CHARS = 16000;
+    const RESUME_CONTEXT_TOOL_MAX_CHARS = 2000;
+    const RESUME_CONTEXT_REASONING_MAX_CHARS = 2000;
+
+    function readResumeFileContent(resumeFile: string): { content: string; truncated: boolean } | null {
+        try {
+            const stat = fs.statSync(resumeFile);
+            if (!stat.isFile()) {
+                return null;
+            }
+            return { content: fs.readFileSync(resumeFile, 'utf8'), truncated: false };
+        } catch (error) {
+            logger.debug('[Codex] Failed to read resume file:', error);
+            return null;
+        }
+    }
+
+    function safeStringify(value: unknown): string | null {
+        if (value === null || value === undefined) {
+            return null;
+        }
+        if (typeof value === 'string') {
+            return value;
+        }
+        try {
+            return JSON.stringify(value);
+        } catch {
+            return null;
+        }
+    }
+
+    function formatResumeValue(value: unknown, maxChars: number, singleLine = false): string | null {
+        const raw = safeStringify(value);
+        if (!raw) {
+            return null;
+        }
+        const normalized = singleLine ? raw.replace(/\s+/g, ' ').trim() : raw;
+        if (!normalized) {
+            return null;
+        }
+        if (normalized.length <= maxChars) {
+            return normalized;
+        }
+        return `${normalized.slice(0, maxChars)}...`;
+    }
+
+    function buildResumeInstructionsFromFile(resumeFile: string): string | null {
+        const result = readResumeFileContent(resumeFile);
+        if (!result) {
+            return null;
+        }
+
+        const items: { role: 'user' | 'assistant' | 'tool'; text: string }[] = [];
+        let truncated = result.truncated;
+
+        const lines = result.content.split('\n');
+        for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed) {
+                continue;
+            }
+            try {
+                const parsed = JSON.parse(trimmed);
+                const converted = convertCodexEvent(parsed);
+                if (converted?.userMessage) {
+                    items.push({ role: 'user', text: converted.userMessage });
+                }
+                if (converted?.message?.type === 'message') {
+                    items.push({ role: 'assistant', text: converted.message.message });
+                }
+                if (converted?.message?.type === 'reasoning') {
+                    const reasoning = formatResumeValue(converted.message.message, RESUME_CONTEXT_REASONING_MAX_CHARS);
+                    if (reasoning) {
+                        items.push({ role: 'assistant', text: `Reasoning: ${reasoning}` });
+                    }
+                }
+                if (converted?.message?.type === 'tool-call') {
+                    const input = formatResumeValue(converted.message.input, RESUME_CONTEXT_TOOL_MAX_CHARS, true);
+                    const text = input
+                        ? `Call ${converted.message.name} ${input}`
+                        : `Call ${converted.message.name}`;
+                    items.push({ role: 'tool', text });
+                }
+                if (converted?.message?.type === 'tool-call-result') {
+                    const output = formatResumeValue(converted.message.output, RESUME_CONTEXT_TOOL_MAX_CHARS, true);
+                    if (output) {
+                        items.push({ role: 'tool', text: `Result ${output}` });
+                    }
+                }
+            } catch {
+                continue;
+            }
+        }
+
+        if (items.length === 0) {
+            return null;
+        }
+
+        if (items.length > RESUME_CONTEXT_MAX_ITEMS) {
+            items.splice(0, items.length - RESUME_CONTEXT_MAX_ITEMS);
+            truncated = true;
+        }
+
+        const rendered = items.map((item) => {
+            if (item.role === 'user') {
+                return `User: ${item.text}`;
+            }
+            if (item.role === 'tool') {
+                return `Tool: ${item.text}`;
+            }
+            return `Assistant: ${item.text}`;
+        });
+        let totalChars = rendered.reduce((sum, line) => sum + line.length + 1, 0);
+        while (rendered.length > 1 && totalChars > RESUME_CONTEXT_MAX_CHARS) {
+            const removed = rendered.shift();
+            totalChars -= (removed?.length ?? 0) + 1;
+            truncated = true;
+        }
+
+        if (rendered.length === 0) {
+            return null;
+        }
+
+        const header = truncated
+            ? 'Continue from the prior session context below (transcript truncated):'
+            : 'Continue from the prior session context below:';
+        return `${header}\n${rendered.join('\n')}`;
     }
 
     const permissionHandler = new CodexPermissionHandler(session.client);
@@ -380,14 +511,6 @@ export async function codexRemoteLauncher(session: CodexSession): Promise<'switc
 
             try {
                 if (!wasCreated) {
-                    const startConfig: CodexSessionConfig = buildCodexStartConfig({
-                        message: message.message,
-                        mode: message.mode,
-                        first,
-                        mcpServers,
-                        cliOverrides: session.codexCliOverrides
-                    });
-
                     let resumeFile: string | null = null;
                     if (nextExperimentalResume) {
                         resumeFile = nextExperimentalResume;
@@ -401,7 +524,26 @@ export async function codexRemoteLauncher(session: CodexSession): Promise<'switc
                             messageBuffer.addMessage('Resuming from aborted session...', 'status');
                         }
                         storedSessionIdForResume = null;
+                    } else if (first && session.sessionId) {
+                        const localResumeFile = findCodexResumeFile(session.sessionId);
+                        if (localResumeFile) {
+                            resumeFile = localResumeFile;
+                            logger.debug('[Codex] Using resume file from local session:', resumeFile);
+                            messageBuffer.addMessage('Resuming from local session log...', 'status');
+                        }
                     }
+
+                    const developerInstructions = resumeFile
+                        ? buildResumeInstructionsFromFile(resumeFile)
+                        : undefined;
+                    const startConfig: CodexSessionConfig = buildCodexStartConfig({
+                        message: message.message,
+                        mode: message.mode,
+                        first,
+                        mcpServers,
+                        cliOverrides: session.codexCliOverrides,
+                        developerInstructions
+                    });
 
                     if (resumeFile) {
                         (startConfig.config as any).experimental_resume = resumeFile;

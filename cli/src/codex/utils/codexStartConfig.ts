@@ -35,6 +35,7 @@ export function buildCodexStartConfig(args: {
     first: boolean;
     mcpServers: Record<string, { command: string; args: string[] }>;
     cliOverrides?: CodexCliOverrides;
+    developerInstructions?: string;
 }): CodexSessionConfig {
     const approvalPolicy = resolveApprovalPolicy(args.mode);
     const sandbox = resolveSandbox(args.mode);
@@ -44,11 +45,15 @@ export function buildCodexStartConfig(args: {
     const resolvedSandbox = cliOverrides?.sandbox ?? sandbox;
 
     const prompt = args.first ? `${args.message}\n\n${TITLE_INSTRUCTION}` : args.message;
+    const config: Record<string, unknown> = { mcp_servers: args.mcpServers };
+    if (args.developerInstructions) {
+        config.developer_instructions = args.developerInstructions;
+    }
     const startConfig: CodexSessionConfig = {
         prompt,
         sandbox: resolvedSandbox,
         'approval-policy': resolvedApprovalPolicy,
-        config: { mcp_servers: args.mcpServers }
+        config
     };
 
     if (args.mode.model) {
