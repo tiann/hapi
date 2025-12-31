@@ -13,7 +13,6 @@ import { encodeBase64 } from '@/api/encryption';
 import { isProcessAlive } from '@/utils/process';
 
 interface Settings {
-  onboardingCompleted: boolean
   // This ID is used as the actual database ID on the server
   // All machine operations use this ID
   machineId?: string
@@ -22,9 +21,7 @@ interface Settings {
   cliApiToken?: string
 }
 
-const defaultSettings: Settings = {
-  onboardingCompleted: false
-}
+const defaultSettings: Settings = {}
 
 /**
  * Daemon state persisted locally (different from API DaemonState)
