@@ -2,6 +2,7 @@ import type { SyncEvent } from '../sync/syncEngine'
 
 export type SSESubscription = {
     id: string
+    namespace: string
     all: boolean
     sessionId: string | null
     machineId: string | null
@@ -23,6 +24,7 @@ export class SSEManager {
 
     subscribe(options: {
         id: string
+        namespace: string
         all?: boolean
         sessionId?: string | null
         machineId?: string | null
@@ -31,6 +33,7 @@ export class SSEManager {
     }): SSESubscription {
         const subscription: SSEConnection = {
             id: options.id,
+            namespace: options.namespace,
             all: Boolean(options.all),
             sessionId: options.sessionId ?? null,
             machineId: options.machineId ?? null,
@@ -42,6 +45,7 @@ export class SSEManager {
         this.ensureHeartbeat()
         return {
             id: subscription.id,
+            namespace: subscription.namespace,
             all: subscription.all,
             sessionId: subscription.sessionId,
             machineId: subscription.machineId
@@ -96,6 +100,13 @@ export class SSEManager {
     }
 
     private shouldSend(connection: SSEConnection, event: SyncEvent): boolean {
+        if (event.type !== 'connection-changed') {
+            const eventNamespace = event.namespace
+            if (!eventNamespace || eventNamespace !== connection.namespace) {
+                return false
+            }
+        }
+
         if (event.type === 'message-received') {
             return Boolean(event.sessionId && connection.sessionId === event.sessionId)
         }

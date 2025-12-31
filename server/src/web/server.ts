@@ -77,7 +77,7 @@ function createWebApp(options: {
     app.route('/api', createBindRoutes(options.jwtSecret, options.store))
 
     app.use('/api/*', createAuthMiddleware(options.jwtSecret))
-    app.route('/api', createEventsRoutes(options.getSseManager))
+    app.route('/api', createEventsRoutes(options.getSseManager, options.getSyncEngine))
     app.route('/api', createSessionsRoutes(options.getSyncEngine))
     app.route('/api', createMessagesRoutes(options.getSyncEngine))
     app.route('/api', createPermissionsRoutes(options.getSyncEngine))

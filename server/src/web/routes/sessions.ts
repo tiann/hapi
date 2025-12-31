@@ -78,7 +78,8 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
 
         const getPendingCount = (s: Session) => s.agentState?.requests ? Object.keys(s.agentState.requests).length : 0
 
-        const sessions = engine.getSessions()
+        const namespace = c.get('namespace')
+        const sessions = engine.getSessionsByNamespace(namespace)
             .sort((a, b) => {
                 // Active sessions first
                 if (a.active !== b.active) {

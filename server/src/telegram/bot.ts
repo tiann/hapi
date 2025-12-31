@@ -167,10 +167,17 @@ export class HappyBot {
                 return
             }
 
+            const namespace = this.getNamespaceForChatId(ctx.from?.id ?? null)
+            if (!namespace) {
+                await ctx.answerCallbackQuery('Telegram account is not bound')
+                return
+            }
+
             const data = ctx.callbackQuery.data
 
             const callbackContext: CallbackContext = {
                 syncEngine: this.syncEngine,
+                namespace,
                 answerCallback: async (text?: string) => {
                     await ctx.answerCallbackQuery(text)
                 },
@@ -220,8 +227,8 @@ export class HappyBot {
     /**
      * Get bound Telegram chat IDs from storage.
      */
-    private getBoundChatIds(): number[] {
-        const users = this.store.getUsersByPlatform('telegram')
+    private getBoundChatIds(namespace: string): number[] {
+        const users = this.store.getUsersByPlatformAndNamespace('telegram', namespace)
         const ids = new Set<number>()
         for (const user of users) {
             const chatId = Number(user.platformUserId)
@@ -230,6 +237,14 @@ export class HappyBot {
             }
         }
         return Array.from(ids)
+    }
+
+    private getNamespaceForChatId(chatId: number | null | undefined): string | null {
+        if (!chatId) {
+            return null
+        }
+        const stored = this.store.getUser('telegram', String(chatId))
+        return stored?.namespace ?? null
     }
 
     /**
@@ -259,7 +274,7 @@ export class HappyBot {
         const keyboard = new InlineKeyboard()
             .webApp('Open Session', url)
 
-        const chatIds = this.getBoundChatIds()
+        const chatIds = this.getBoundChatIds(session.namespace)
         if (chatIds.length === 0) {
             return
         }
@@ -338,7 +353,7 @@ export class HappyBot {
         const text = formatSessionNotification(session)
         const keyboard = createNotificationKeyboard(session, this.miniAppUrl)
 
-        const chatIds = this.getBoundChatIds()
+        const chatIds = this.getBoundChatIds(session.namespace)
         if (chatIds.length === 0) {
             return
         }

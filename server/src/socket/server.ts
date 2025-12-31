@@ -1,18 +1,21 @@
 import { Server as Engine } from '@socket.io/bun-engine'
-import { Server } from 'socket.io'
+import { Server, type DefaultEventsMap } from 'socket.io'
 import { jwtVerify } from 'jose'
 import { z } from 'zod'
 import type { Store } from '../store'
 import { configuration } from '../configuration'
 import { safeCompareStrings } from '../utils/crypto'
+import { parseAccessToken } from '../utils/accessToken'
 import { registerCliHandlers } from './handlers/cli'
 import { registerTerminalHandlers } from './handlers/terminal'
 import { RpcRegistry } from './rpcRegistry'
 import type { SyncEvent } from '../sync/syncEngine'
 import { TerminalRegistry } from './terminalRegistry'
+import type { SocketData, SocketServer } from './socketTypes'
 
 const jwtPayloadSchema = z.object({
-    uid: z.number()
+    uid: z.number(),
+    ns: z.string()
 })
 
 const DEFAULT_IDLE_TIMEOUT_MS = 15 * 60_000
@@ -30,7 +33,7 @@ function resolveEnvNumber(name: string, fallback: number): number {
 export type SocketServerDeps = {
     store: Store
     jwtSecret: Uint8Array
-    getSession?: (sessionId: string) => { active: boolean } | null
+    getSession?: (sessionId: string) => { active: boolean; namespace: string } | null
     onWebappEvent?: (event: SyncEvent) => void
     onSessionAlive?: (payload: { sid: string; time: number; thinking?: boolean; mode?: 'local' | 'remote' }) => void
     onSessionEnd?: (payload: { sid: string; time: number }) => void
@@ -38,14 +41,14 @@ export type SocketServerDeps = {
 }
 
 export function createSocketServer(deps: SocketServerDeps): {
-    io: Server
+    io: SocketServer
     engine: Engine
     rpcRegistry: RpcRegistry
 } {
     const corsOrigins = configuration.corsOrigins
     const allowAllOrigins = corsOrigins.includes('*')
 
-    const io = new Server({
+    const io = new Server<DefaultEventsMap, DefaultEventsMap, DefaultEventsMap, SocketData>({
         cors: {
             origin: (origin, callback) => {
                 if (!origin) {
@@ -94,9 +97,11 @@ export function createSocketServer(deps: SocketServerDeps): {
     cliNs.use((socket, next) => {
         const auth = socket.handshake.auth as Record<string, unknown> | undefined
         const token = typeof auth?.token === 'string' ? auth.token : null
-        if (!safeCompareStrings(token, configuration.cliApiToken)) {
+        const parsedToken = token ? parseAccessToken(token) : null
+        if (!parsedToken || !safeCompareStrings(parsedToken.baseToken, configuration.cliApiToken)) {
             return next(new Error('Invalid token'))
         }
+        socket.data.namespace = parsedToken.namespace
         next()
     })
     cliNs.on('connection', (socket) => registerCliHandlers(socket, {
@@ -124,6 +129,7 @@ export function createSocketServer(deps: SocketServerDeps): {
                 return next(new Error('Invalid token payload'))
             }
             socket.data.userId = parsed.data.uid
+            socket.data.namespace = parsed.data.ns
             next()
             return
         } catch {

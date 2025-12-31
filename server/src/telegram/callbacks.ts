@@ -20,6 +20,7 @@ export const ACTIONS = {
  */
 export interface CallbackContext {
     syncEngine: SyncEngine
+    namespace: string
     answerCallback: (text?: string) => Promise<void>
     editMessage: (text: string, keyboard?: InlineKeyboard) => Promise<void>
 }
@@ -30,7 +31,7 @@ async function getSessionOrAnswer(
     sessionPrefix: string,
     options?: { requireActive?: boolean }
 ): Promise<Session | null> {
-    const session = findSessionByPrefix(syncEngine.getSessions(), sessionPrefix)
+    const session = findSessionByPrefix(syncEngine.getSessionsByNamespace(ctx.namespace), sessionPrefix)
     if (!session) {
         await ctx.answerCallback('Session not found')
         return null

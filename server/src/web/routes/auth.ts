@@ -3,6 +3,7 @@ import { SignJWT } from 'jose'
 import { z } from 'zod'
 import { configuration } from '../../configuration'
 import { safeCompareStrings } from '../../utils/crypto'
+import { parseAccessToken } from '../../utils/accessToken'
 import { validateTelegramInitData } from '../telegramInitData'
 import { getOrCreateOwnerId } from '../ownerId'
 import type { WebAppEnv } from '../middleware/auth'
@@ -32,14 +33,17 @@ export function createAuthRoutes(jwtSecret: Uint8Array, store: Store): Hono<WebA
         let username: string | undefined
         let firstName: string | undefined
         let lastName: string | undefined
+        let namespace: string
 
         // Access Token authentication (CLI_API_TOKEN)
         if ('accessToken' in parsed.data) {
-            if (!safeCompareStrings(parsed.data.accessToken, configuration.cliApiToken)) {
+            const parsedToken = parseAccessToken(parsed.data.accessToken)
+            if (!parsedToken || !safeCompareStrings(parsedToken.baseToken, configuration.cliApiToken)) {
                 return c.json({ error: 'Invalid access token' }, 401)
             }
             userId = await getOrCreateOwnerId()
             firstName = 'Web User'
+            namespace = parsedToken.namespace
         } else {
             if (!configuration.telegramEnabled || !configuration.telegramBotToken) {
                 return c.json({ error: 'Telegram authentication is disabled. Configure TELEGRAM_BOT_TOKEN.' }, 503)
@@ -61,9 +65,10 @@ export function createAuthRoutes(jwtSecret: Uint8Array, store: Store): Hono<WebA
             username = result.user.username
             firstName = result.user.first_name
             lastName = result.user.last_name
+            namespace = storedUser.namespace
         }
 
-        const token = await new SignJWT({ uid: userId })
+        const token = await new SignJWT({ uid: userId, ns: namespace })
             .setProtectedHeader({ alg: 'HS256' })
             .setIssuedAt()
             .setExpirationTime('15m')

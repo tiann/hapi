@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto'
 export type StoredSession = {
     id: string
     tag: string | null
+    namespace: string
     machineId: string | null
     createdAt: number
     updatedAt: number
@@ -22,6 +23,7 @@ export type StoredSession = {
 
 export type StoredMachine = {
     id: string
+    namespace: string
     createdAt: number
     updatedAt: number
     metadata: unknown | null
@@ -46,6 +48,7 @@ export type StoredUser = {
     id: number
     platform: string
     platformUserId: string
+    namespace: string
     createdAt: number
 }
 
@@ -57,6 +60,7 @@ export type VersionedUpdateResult<T> =
 type DbSessionRow = {
     id: string
     tag: string | null
+    namespace: string
     machine_id: string | null
     created_at: number
     updated_at: number
@@ -73,6 +77,7 @@ type DbSessionRow = {
 
 type DbMachineRow = {
     id: string
+    namespace: string
     created_at: number
     updated_at: number
     metadata: string | null
@@ -97,6 +102,7 @@ type DbUserRow = {
     id: number
     platform: string
     platform_user_id: string
+    namespace: string
     created_at: number
 }
 
@@ -113,6 +119,7 @@ function toStoredSession(row: DbSessionRow): StoredSession {
     return {
         id: row.id,
         tag: row.tag,
+        namespace: row.namespace,
         machineId: row.machine_id,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
@@ -131,6 +138,7 @@ function toStoredSession(row: DbSessionRow): StoredSession {
 function toStoredMachine(row: DbMachineRow): StoredMachine {
     return {
         id: row.id,
+        namespace: row.namespace,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
         metadata: safeJsonParse(row.metadata),
@@ -159,6 +167,7 @@ function toStoredUser(row: DbUserRow): StoredUser {
         id: row.id,
         platform: row.platform,
         platformUserId: row.platform_user_id,
+        namespace: row.namespace,
         createdAt: row.created_at
     }
 }
@@ -206,6 +215,7 @@ export class Store {
             CREATE TABLE IF NOT EXISTS sessions (
                 id TEXT PRIMARY KEY,
                 tag TEXT,
+                namespace TEXT NOT NULL DEFAULT 'default',
                 machine_id TEXT,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
@@ -220,9 +230,11 @@ export class Store {
                 seq INTEGER DEFAULT 0
             );
             CREATE INDEX IF NOT EXISTS idx_sessions_tag ON sessions(tag);
+            CREATE INDEX IF NOT EXISTS idx_sessions_tag_namespace ON sessions(tag, namespace);
 
             CREATE TABLE IF NOT EXISTS machines (
                 id TEXT PRIMARY KEY,
+                namespace TEXT NOT NULL DEFAULT 'default',
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
                 metadata TEXT,
@@ -233,6 +245,7 @@ export class Store {
                 active_at INTEGER,
                 seq INTEGER DEFAULT 0
             );
+            CREATE INDEX IF NOT EXISTS idx_machines_namespace ON machines(namespace);
 
             CREATE TABLE IF NOT EXISTS messages (
                 id TEXT PRIMARY KEY,
@@ -250,27 +263,44 @@ export class Store {
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 platform TEXT NOT NULL,
                 platform_user_id TEXT NOT NULL,
+                namespace TEXT NOT NULL DEFAULT 'default',
                 created_at INTEGER NOT NULL,
                 UNIQUE(platform, platform_user_id)
             );
             CREATE INDEX IF NOT EXISTS idx_users_platform ON users(platform);
+            CREATE INDEX IF NOT EXISTS idx_users_platform_namespace ON users(platform, namespace);
         `)
 
         const sessionColumns = this.db.prepare('PRAGMA table_info(sessions)').all() as Array<{ name: string }>
         const sessionColumnNames = new Set(sessionColumns.map((c) => c.name))
 
+        if (!sessionColumnNames.has('namespace')) {
+            this.db.exec("ALTER TABLE sessions ADD COLUMN namespace TEXT NOT NULL DEFAULT 'default'")
+        }
         if (!sessionColumnNames.has('todos')) {
             this.db.exec('ALTER TABLE sessions ADD COLUMN todos TEXT')
         }
         if (!sessionColumnNames.has('todos_updated_at')) {
             this.db.exec('ALTER TABLE sessions ADD COLUMN todos_updated_at INTEGER')
         }
+
+        const machineColumns = this.db.prepare('PRAGMA table_info(machines)').all() as Array<{ name: string }>
+        const machineColumnNames = new Set(machineColumns.map((c) => c.name))
+        if (!machineColumnNames.has('namespace')) {
+            this.db.exec("ALTER TABLE machines ADD COLUMN namespace TEXT NOT NULL DEFAULT 'default'")
+        }
+
+        const userColumns = this.db.prepare('PRAGMA table_info(users)').all() as Array<{ name: string }>
+        const userColumnNames = new Set(userColumns.map((c) => c.name))
+        if (!userColumnNames.has('namespace')) {
+            this.db.exec("ALTER TABLE users ADD COLUMN namespace TEXT NOT NULL DEFAULT 'default'")
+        }
     }
 
-    getOrCreateSession(tag: string, metadata: unknown, agentState: unknown): StoredSession {
+    getOrCreateSession(tag: string, metadata: unknown, agentState: unknown, namespace: string): StoredSession {
         const existing = this.db.prepare(
-            'SELECT * FROM sessions WHERE tag = ? ORDER BY created_at DESC LIMIT 1'
-        ).get(tag) as DbSessionRow | undefined
+            'SELECT * FROM sessions WHERE tag = ? AND namespace = ? ORDER BY created_at DESC LIMIT 1'
+        ).get(tag, namespace) as DbSessionRow | undefined
 
         if (existing) {
             return toStoredSession(existing)
@@ -284,13 +314,13 @@ export class Store {
 
         this.db.prepare(`
             INSERT INTO sessions (
-                id, tag, machine_id, created_at, updated_at,
+                id, tag, namespace, machine_id, created_at, updated_at,
                 metadata, metadata_version,
                 agent_state, agent_state_version,
                 todos, todos_updated_at,
                 active, active_at, seq
             ) VALUES (
-                @id, @tag, NULL, @created_at, @updated_at,
+                @id, @tag, @namespace, NULL, @created_at, @updated_at,
                 @metadata, 1,
                 @agent_state, 1,
                 NULL, NULL,
@@ -299,6 +329,7 @@ export class Store {
         `).run({
             id,
             tag,
+            namespace,
             created_at: now,
             updated_at: now,
             metadata: metadataJson,
@@ -312,7 +343,12 @@ export class Store {
         return row
     }
 
-    updateSessionMetadata(id: string, metadata: unknown, expectedVersion: number): VersionedUpdateResult<unknown | null> {
+    updateSessionMetadata(
+        id: string,
+        metadata: unknown,
+        expectedVersion: number,
+        namespace: string
+    ): VersionedUpdateResult<unknown | null> {
         try {
             const now = Date.now()
             const json = JSON.stringify(metadata)
@@ -322,14 +358,16 @@ export class Store {
                     metadata_version = metadata_version + 1,
                     updated_at = @updated_at,
                     seq = seq + 1
-                WHERE id = @id AND metadata_version = @expectedVersion
-            `).run({ id, metadata: json, updated_at: now, expectedVersion })
+                WHERE id = @id AND namespace = @namespace AND metadata_version = @expectedVersion
+            `).run({ id, metadata: json, updated_at: now, expectedVersion, namespace })
 
             if (result.changes === 1) {
                 return { result: 'success', version: expectedVersion + 1, value: metadata }
             }
 
-            const current = this.db.prepare('SELECT metadata, metadata_version FROM sessions WHERE id = ?').get(id) as
+            const current = this.db.prepare(
+                'SELECT metadata, metadata_version FROM sessions WHERE id = ? AND namespace = ?'
+            ).get(id, namespace) as
                 | { metadata: string | null; metadata_version: number }
                 | undefined
             if (!current) {
@@ -345,7 +383,12 @@ export class Store {
         }
     }
 
-    updateSessionAgentState(id: string, agentState: unknown, expectedVersion: number): VersionedUpdateResult<unknown | null> {
+    updateSessionAgentState(
+        id: string,
+        agentState: unknown,
+        expectedVersion: number,
+        namespace: string
+    ): VersionedUpdateResult<unknown | null> {
         try {
             const now = Date.now()
             const json = agentState === null || agentState === undefined ? null : JSON.stringify(agentState)
@@ -355,14 +398,16 @@ export class Store {
                     agent_state_version = agent_state_version + 1,
                     updated_at = @updated_at,
                     seq = seq + 1
-                WHERE id = @id AND agent_state_version = @expectedVersion
-            `).run({ id, agent_state: json, updated_at: now, expectedVersion })
+                WHERE id = @id AND namespace = @namespace AND agent_state_version = @expectedVersion
+            `).run({ id, agent_state: json, updated_at: now, expectedVersion, namespace })
 
             if (result.changes === 1) {
                 return { result: 'success', version: expectedVersion + 1, value: agentState === undefined ? null : agentState }
             }
 
-            const current = this.db.prepare('SELECT agent_state, agent_state_version FROM sessions WHERE id = ?').get(id) as
+            const current = this.db.prepare(
+                'SELECT agent_state, agent_state_version FROM sessions WHERE id = ? AND namespace = ?'
+            ).get(id, namespace) as
                 | { agent_state: string | null; agent_state_version: number }
                 | undefined
             if (!current) {
@@ -378,7 +423,7 @@ export class Store {
         }
     }
 
-    setSessionTodos(id: string, todos: unknown, todosUpdatedAt: number): boolean {
+    setSessionTodos(id: string, todos: unknown, todosUpdatedAt: number, namespace: string): boolean {
         try {
             const json = todos === null || todos === undefined ? null : JSON.stringify(todos)
             const result = this.db.prepare(`
@@ -387,12 +432,15 @@ export class Store {
                     todos_updated_at = @todos_updated_at,
                     updated_at = CASE WHEN updated_at > @updated_at THEN updated_at ELSE @updated_at END,
                     seq = seq + 1
-                WHERE id = @id AND (todos_updated_at IS NULL OR todos_updated_at < @todos_updated_at)
+                WHERE id = @id
+                  AND namespace = @namespace
+                  AND (todos_updated_at IS NULL OR todos_updated_at < @todos_updated_at)
             `).run({
                 id,
                 todos: json,
                 todos_updated_at: todosUpdatedAt,
-                updated_at: todosUpdatedAt
+                updated_at: todosUpdatedAt,
+                namespace
             })
 
             return result.changes === 1
@@ -406,15 +454,33 @@ export class Store {
         return row ? toStoredSession(row) : null
     }
 
+    getSessionByNamespace(id: string, namespace: string): StoredSession | null {
+        const row = this.db.prepare(
+            'SELECT * FROM sessions WHERE id = ? AND namespace = ?'
+        ).get(id, namespace) as DbSessionRow | undefined
+        return row ? toStoredSession(row) : null
+    }
+
     getSessions(): StoredSession[] {
         const rows = this.db.prepare('SELECT * FROM sessions ORDER BY updated_at DESC').all() as DbSessionRow[]
         return rows.map(toStoredSession)
     }
 
-    getOrCreateMachine(id: string, metadata: unknown, daemonState: unknown): StoredMachine {
+    getSessionsByNamespace(namespace: string): StoredSession[] {
+        const rows = this.db.prepare(
+            'SELECT * FROM sessions WHERE namespace = ? ORDER BY updated_at DESC'
+        ).all(namespace) as DbSessionRow[]
+        return rows.map(toStoredSession)
+    }
+
+    getOrCreateMachine(id: string, metadata: unknown, daemonState: unknown, namespace: string): StoredMachine {
         const existing = this.db.prepare('SELECT * FROM machines WHERE id = ?').get(id) as DbMachineRow | undefined
         if (existing) {
-            return toStoredMachine(existing)
+            const stored = toStoredMachine(existing)
+            if (stored.namespace !== namespace) {
+                throw new Error('Machine namespace mismatch')
+            }
+            return stored
         }
 
         const now = Date.now()
@@ -423,18 +489,19 @@ export class Store {
 
         this.db.prepare(`
             INSERT INTO machines (
-                id, created_at, updated_at,
+                id, namespace, created_at, updated_at,
                 metadata, metadata_version,
                 daemon_state, daemon_state_version,
                 active, active_at, seq
             ) VALUES (
-                @id, @created_at, @updated_at,
+                @id, @namespace, @created_at, @updated_at,
                 @metadata, 1,
                 @daemon_state, 1,
                 0, NULL, 0
             )
         `).run({
             id,
+            namespace,
             created_at: now,
             updated_at: now,
             metadata: metadataJson,
@@ -448,7 +515,12 @@ export class Store {
         return row
     }
 
-    updateMachineMetadata(id: string, metadata: unknown, expectedVersion: number): VersionedUpdateResult<unknown | null> {
+    updateMachineMetadata(
+        id: string,
+        metadata: unknown,
+        expectedVersion: number,
+        namespace: string
+    ): VersionedUpdateResult<unknown | null> {
         try {
             const now = Date.now()
             const json = JSON.stringify(metadata)
@@ -458,14 +530,16 @@ export class Store {
                     metadata_version = metadata_version + 1,
                     updated_at = @updated_at,
                     seq = seq + 1
-                WHERE id = @id AND metadata_version = @expectedVersion
-            `).run({ id, metadata: json, updated_at: now, expectedVersion })
+                WHERE id = @id AND namespace = @namespace AND metadata_version = @expectedVersion
+            `).run({ id, metadata: json, updated_at: now, expectedVersion, namespace })
 
             if (result.changes === 1) {
                 return { result: 'success', version: expectedVersion + 1, value: metadata }
             }
 
-            const current = this.db.prepare('SELECT metadata, metadata_version FROM machines WHERE id = ?').get(id) as
+            const current = this.db.prepare(
+                'SELECT metadata, metadata_version FROM machines WHERE id = ? AND namespace = ?'
+            ).get(id, namespace) as
                 | { metadata: string | null; metadata_version: number }
                 | undefined
             if (!current) {
@@ -481,7 +555,12 @@ export class Store {
         }
     }
 
-    updateMachineDaemonState(id: string, daemonState: unknown, expectedVersion: number): VersionedUpdateResult<unknown | null> {
+    updateMachineDaemonState(
+        id: string,
+        daemonState: unknown,
+        expectedVersion: number,
+        namespace: string
+    ): VersionedUpdateResult<unknown | null> {
         try {
             const now = Date.now()
             const json = daemonState === null || daemonState === undefined ? null : JSON.stringify(daemonState)
@@ -493,14 +572,16 @@ export class Store {
                     active = 1,
                     active_at = @active_at,
                     seq = seq + 1
-                WHERE id = @id AND daemon_state_version = @expectedVersion
-            `).run({ id, daemon_state: json, updated_at: now, active_at: now, expectedVersion })
+                WHERE id = @id AND namespace = @namespace AND daemon_state_version = @expectedVersion
+            `).run({ id, daemon_state: json, updated_at: now, active_at: now, expectedVersion, namespace })
 
             if (result.changes === 1) {
                 return { result: 'success', version: expectedVersion + 1, value: daemonState === undefined ? null : daemonState }
             }
 
-            const current = this.db.prepare('SELECT daemon_state, daemon_state_version FROM machines WHERE id = ?').get(id) as
+            const current = this.db.prepare(
+                'SELECT daemon_state, daemon_state_version FROM machines WHERE id = ? AND namespace = ?'
+            ).get(id, namespace) as
                 | { daemon_state: string | null; daemon_state_version: number }
                 | undefined
             if (!current) {
@@ -521,8 +602,22 @@ export class Store {
         return row ? toStoredMachine(row) : null
     }
 
+    getMachineByNamespace(id: string, namespace: string): StoredMachine | null {
+        const row = this.db.prepare(
+            'SELECT * FROM machines WHERE id = ? AND namespace = ?'
+        ).get(id, namespace) as DbMachineRow | undefined
+        return row ? toStoredMachine(row) : null
+    }
+
     getMachines(): StoredMachine[] {
         const rows = this.db.prepare('SELECT * FROM machines ORDER BY updated_at DESC').all() as DbMachineRow[]
+        return rows.map(toStoredMachine)
+    }
+
+    getMachinesByNamespace(namespace: string): StoredMachine[] {
+        const rows = this.db.prepare(
+            'SELECT * FROM machines WHERE namespace = ? ORDER BY updated_at DESC'
+        ).all(namespace) as DbMachineRow[]
         return rows.map(toStoredMachine)
     }
 
@@ -607,17 +702,25 @@ export class Store {
         return rows.map(toStoredUser)
     }
 
-    addUser(platform: string, platformUserId: string): StoredUser {
+    getUsersByPlatformAndNamespace(platform: string, namespace: string): StoredUser[] {
+        const rows = this.db.prepare(
+            'SELECT * FROM users WHERE platform = ? AND namespace = ? ORDER BY created_at ASC'
+        ).all(platform, namespace) as DbUserRow[]
+        return rows.map(toStoredUser)
+    }
+
+    addUser(platform: string, platformUserId: string, namespace: string): StoredUser {
         const now = Date.now()
         this.db.prepare(`
             INSERT OR IGNORE INTO users (
-                platform, platform_user_id, created_at
+                platform, platform_user_id, namespace, created_at
             ) VALUES (
-                @platform, @platform_user_id, @created_at
+                @platform, @platform_user_id, @namespace, @created_at
             )
         `).run({
             platform,
             platform_user_id: platformUserId,
+            namespace,
             created_at: now
         })
 

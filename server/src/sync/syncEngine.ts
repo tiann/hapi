@@ -72,6 +72,7 @@ const machineMetadataSchema = z.object({
 
 export interface Session {
     id: string
+    namespace: string
     seq: number
     createdAt: number
     updatedAt: number
@@ -90,6 +91,7 @@ export interface Session {
 
 export interface Machine {
     id: string
+    namespace: string
     seq: number
     createdAt: number
     updatedAt: number
@@ -147,6 +149,7 @@ export type SyncEventType =
 
 export interface SyncEvent {
     type: SyncEventType
+    namespace?: string
     sessionId?: string
     machineId?: string
     data?: unknown
@@ -202,9 +205,12 @@ export class SyncEngine {
     }
 
     private emit(event: SyncEvent): void {
+        const namespace = this.resolveNamespace(event)
+        const enrichedEvent = namespace ? { ...event, namespace } : event
+
         for (const listener of this.listeners) {
             try {
-                listener(event)
+                listener(enrichedEvent)
             } catch (error) {
                 console.error('[SyncEngine] Listener error:', error)
             }
@@ -213,17 +219,32 @@ export class SyncEngine {
         const webappEvent: SyncEvent = event.type === 'message-received'
             ? {
                 type: event.type,
+                namespace,
                 sessionId: event.sessionId,
                 machineId: event.machineId,
                 message: event.message
             }
             : {
                 type: event.type,
+                namespace,
                 sessionId: event.sessionId,
                 machineId: event.machineId
             }
 
         this.sseManager.broadcast(webappEvent)
+    }
+
+    private resolveNamespace(event: SyncEvent): string | undefined {
+        if (event.namespace) {
+            return event.namespace
+        }
+        if (event.sessionId) {
+            return this.sessions.get(event.sessionId)?.namespace
+        }
+        if (event.machineId) {
+            return this.machines.get(event.machineId)?.namespace
+        }
+        return undefined
     }
 
     getConnectionStatus(): ConnectionStatus {
@@ -234,8 +255,20 @@ export class SyncEngine {
         return Array.from(this.sessions.values())
     }
 
+    getSessionsByNamespace(namespace: string): Session[] {
+        return this.getSessions().filter((session) => session.namespace === namespace)
+    }
+
     getSession(sessionId: string): Session | undefined {
         return this.sessions.get(sessionId)
+    }
+
+    getSessionByNamespace(sessionId: string, namespace: string): Session | undefined {
+        const session = this.sessions.get(sessionId)
+        if (!session || session.namespace !== namespace) {
+            return undefined
+        }
+        return session
     }
 
     getActiveSessions(): Session[] {
@@ -246,12 +279,28 @@ export class SyncEngine {
         return Array.from(this.machines.values())
     }
 
+    getMachinesByNamespace(namespace: string): Machine[] {
+        return this.getMachines().filter((machine) => machine.namespace === namespace)
+    }
+
     getMachine(machineId: string): Machine | undefined {
         return this.machines.get(machineId)
     }
 
+    getMachineByNamespace(machineId: string, namespace: string): Machine | undefined {
+        const machine = this.machines.get(machineId)
+        if (!machine || machine.namespace !== namespace) {
+            return undefined
+        }
+        return machine
+    }
+
     getOnlineMachines(): Machine[] {
         return this.getMachines().filter(m => m.active)
+    }
+
+    getOnlineMachinesByNamespace(namespace: string): Machine[] {
+        return this.getMachinesByNamespace(namespace).filter((machine) => machine.active)
     }
 
     getSessionMessages(sessionId: string): DecryptedMessage[] {
@@ -318,6 +367,12 @@ export class SyncEngine {
         if (event.type === 'machine-updated' && event.machineId) {
             this.refreshMachine(event.machineId)
             return
+        }
+
+        if (event.type === 'message-received' && event.sessionId) {
+            if (!this.sessions.has(event.sessionId)) {
+                this.refreshSession(event.sessionId)
+            }
         }
 
         this.emit(event)
@@ -453,7 +508,7 @@ export class SyncEngine {
                 const message = messages[i]
                 const todos = extractTodoWriteTodosFromMessageContent(message.content)
                 if (todos) {
-                    const updated = this.store.setSessionTodos(sessionId, todos, message.createdAt)
+                    const updated = this.store.setSessionTodos(sessionId, todos, message.createdAt, stored.namespace)
                     if (updated) {
                         stored = this.store.getSession(sessionId) ?? stored
                     }
@@ -480,6 +535,7 @@ export class SyncEngine {
 
         const session: Session = {
             id: stored.id,
+            namespace: stored.namespace,
             seq: stored.seq,
             createdAt: stored.createdAt,
             updatedAt: stored.updatedAt,
@@ -530,6 +586,7 @@ export class SyncEngine {
 
         const machine: Machine = {
             id: stored.id,
+            namespace: stored.namespace,
             seq: stored.seq,
             createdAt: stored.createdAt,
             updatedAt: stored.updatedAt,
@@ -558,13 +615,13 @@ export class SyncEngine {
         }
     }
 
-    getOrCreateSession(tag: string, metadata: unknown, agentState: unknown): Session {
-        const stored = this.store.getOrCreateSession(tag, metadata, agentState)
+    getOrCreateSession(tag: string, metadata: unknown, agentState: unknown, namespace: string): Session {
+        const stored = this.store.getOrCreateSession(tag, metadata, agentState, namespace)
         return this.refreshSession(stored.id) ?? (() => { throw new Error('Failed to load session') })()
     }
 
-    getOrCreateMachine(id: string, metadata: unknown, daemonState: unknown): Machine {
-        const stored = this.store.getOrCreateMachine(id, metadata, daemonState)
+    getOrCreateMachine(id: string, metadata: unknown, daemonState: unknown, namespace: string): Machine {
+        const stored = this.store.getOrCreateMachine(id, metadata, daemonState, namespace)
         return this.refreshMachine(stored.id) ?? (() => { throw new Error('Failed to load machine') })()
     }
 

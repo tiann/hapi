@@ -3,6 +3,7 @@ import { SignJWT } from 'jose'
 import { z } from 'zod'
 import { configuration } from '../../configuration'
 import { safeCompareStrings } from '../../utils/crypto'
+import { parseAccessToken } from '../../utils/accessToken'
 import { validateTelegramInitData } from '../telegramInitData'
 import { getOrCreateOwnerId } from '../ownerId'
 import type { WebAppEnv } from '../middleware/auth'
@@ -23,9 +24,11 @@ export function createBindRoutes(jwtSecret: Uint8Array, store: Store): Hono<WebA
             return c.json({ error: 'Invalid body' }, 400)
         }
 
-        if (!safeCompareStrings(parsed.data.accessToken, configuration.cliApiToken)) {
+        const parsedToken = parseAccessToken(parsed.data.accessToken)
+        if (!parsedToken || !safeCompareStrings(parsedToken.baseToken, configuration.cliApiToken)) {
             return c.json({ error: 'Invalid access token' }, 401)
         }
+        const namespace = parsedToken.namespace
 
         if (!configuration.telegramEnabled || !configuration.telegramBotToken) {
             return c.json({ error: 'Telegram authentication is disabled. Configure TELEGRAM_BOT_TOKEN.' }, 503)
@@ -37,11 +40,15 @@ export function createBindRoutes(jwtSecret: Uint8Array, store: Store): Hono<WebA
         }
 
         const telegramUserId = String(result.user.id)
-        store.addUser('telegram', telegramUserId)
+        const existingUser = store.getUser('telegram', telegramUserId)
+        if (existingUser && existingUser.namespace !== namespace) {
+            return c.json({ error: 'already_bound' }, 409)
+        }
+        store.addUser('telegram', telegramUserId, namespace)
 
         const userId = await getOrCreateOwnerId()
 
-        const token = await new SignJWT({ uid: userId })
+        const token = await new SignJWT({ uid: userId, ns: namespace })
             .setProtectedHeader({ alg: 'HS256' })
             .setIssuedAt()
             .setExpirationTime('15m')

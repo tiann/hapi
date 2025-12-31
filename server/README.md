@@ -17,7 +17,7 @@ See `src/configuration.ts` for all options.
 
 ### Required
 
-- `CLI_API_TOKEN` - Shared secret used by CLI and web login. Auto-generated if not set.
+- `CLI_API_TOKEN` - Base shared secret used by CLI and web login. Clients append `:<namespace>` for isolation.
 
 ### Optional (Telegram)
 
@@ -45,7 +45,7 @@ hapi server
 
 If you only need web + CLI, you can omit TELEGRAM_BOT_TOKEN.
 To enable Telegram, set TELEGRAM_BOT_TOKEN and WEBAPP_URL, start the server, open `/app`
-in the bot chat, and bind the Mini App with CLI_API_TOKEN when prompted.
+in the bot chat, and bind the Mini App with `CLI_API_TOKEN:<namespace>` when prompted.
 
 From source:
 
@@ -60,8 +60,8 @@ See `src/web/routes/` for all endpoints.
 
 ### Authentication (`src/web/routes/auth.ts`)
 
-- `POST /api/auth` - Get JWT token (Telegram initData or CLI_API_TOKEN).
-- `POST /api/bind` - Bind a Telegram account using initData + CLI_API_TOKEN.
+- `POST /api/auth` - Get JWT token (Telegram initData or `CLI_API_TOKEN[:namespace]`).
+- `POST /api/bind` - Bind a Telegram account using initData + `CLI_API_TOKEN:<namespace>`.
 
 ### Sessions (`src/web/routes/sessions.ts`)
 
@@ -167,7 +167,7 @@ See `src/store/index.ts` for SQLite persistence:
 - Messages with pagination support.
 - Machines with daemon state.
 - Todo extraction from messages.
-- Users table for Telegram bindings.
+- Users table for Telegram bindings (includes namespace).
 
 ## Source structure
 
@@ -181,8 +181,8 @@ See `src/store/index.ts` for SQLite persistence:
 ## Security model
 
 Access is controlled by:
-- Telegram initData verification plus bound Telegram users (bound via CLI_API_TOKEN).
-- `CLI_API_TOKEN` shared secret for CLI and browser access.
+- Telegram initData verification plus bound Telegram users (bound via `CLI_API_TOKEN:<namespace>`).
+- `CLI_API_TOKEN` base secret for CLI and browser access (namespace is appended by clients).
 
 Transport security depends on HTTPS in front of the server.
 

@@ -198,9 +198,9 @@ export type SlashCommandsResponse = {
 }
 
 export type SyncEvent =
-    | { type: 'session-added'; sessionId: string; data?: unknown }
-    | { type: 'session-updated'; sessionId: string; data?: unknown }
-    | { type: 'session-removed'; sessionId: string }
-    | { type: 'message-received'; sessionId: string; message: DecryptedMessage }
-    | { type: 'machine-updated'; machineId: string; data?: unknown }
-    | { type: 'connection-changed'; data?: { status: string } }
+    | { type: 'session-added'; sessionId: string; data?: unknown; namespace?: string }
+    | { type: 'session-updated'; sessionId: string; data?: unknown; namespace?: string }
+    | { type: 'session-removed'; sessionId: string; namespace?: string }
+    | { type: 'message-received'; sessionId: string; message: DecryptedMessage; namespace?: string }
+    | { type: 'machine-updated'; machineId: string; data?: unknown; namespace?: string }
+    | { type: 'connection-changed'; data?: { status: string }; namespace?: string }
