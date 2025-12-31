@@ -9,54 +9,22 @@ import { homedir } from 'node:os'
 import { logger } from '@/ui/logger'
 
 /**
- * Create a clean environment without local node_modules/.bin in PATH
- * This ensures we find the global claude, not the local one
- */
-export function getCleanEnv(): NodeJS.ProcessEnv {
-    const env = { ...process.env }
-    const cwd = process.cwd()
-    const pathSep = process.platform === 'win32' ? ';' : ':'
-    const pathKey = process.platform === 'win32' ? 'Path' : 'PATH'
-    
-    // Also check for PATH on Windows (case can vary)
-    const actualPathKey = Object.keys(env).find(k => k.toLowerCase() === 'path') || pathKey
-    
-    if (env[actualPathKey]) {
-        // Remove any path that contains the current working directory (local node_modules/.bin)
-        const cleanPath = env[actualPathKey]!
-            .split(pathSep)
-            .filter(p => {
-                const normalizedP = p.replace(/\\/g, '/').toLowerCase()
-                const normalizedCwd = cwd.replace(/\\/g, '/').toLowerCase()
-                return !normalizedP.startsWith(normalizedCwd)
-            })
-            .join(pathSep)
-        env[actualPathKey] = cleanPath
-        logger.debug(`[Claude SDK] Cleaned PATH, removed local paths from: ${cwd}`)
-    }
-    
-    return env
-}
-
-/**
  * Try to find globally installed Claude CLI
  * Returns 'claude' if the command works globally (preferred method for reliability)
  * Falls back to which/where to get actual path on Unix systems
- * Runs from home directory with clean PATH to avoid picking up local node_modules/.bin
+ * Runs from home directory to avoid local cwd side effects
  */
 function findGlobalClaudePath(): string | null {
     const homeDir = homedir()
-    const cleanEnv = getCleanEnv()
     
-    // PRIMARY: Check if 'claude' command works directly from home dir with clean PATH
+    // PRIMARY: Check if 'claude' command works directly from home dir
     try {
         execSync('claude --version', { 
             encoding: 'utf8', 
             stdio: ['pipe', 'pipe', 'pipe'],
-            cwd: homeDir,
-            env: cleanEnv
+            cwd: homeDir
         })
-        logger.debug('[Claude SDK] Global claude command available (checked with clean PATH)')
+        logger.debug('[Claude SDK] Global claude command available')
         return 'claude'
     } catch {
         // claude command not available globally
@@ -68,8 +36,7 @@ function findGlobalClaudePath(): string | null {
             const result = execSync('which claude', { 
                 encoding: 'utf8', 
                 stdio: ['pipe', 'pipe', 'pipe'],
-                cwd: homeDir,
-                env: cleanEnv
+                cwd: homeDir
             }).trim()
             if (result && existsSync(result)) {
                 logger.debug(`[Claude SDK] Found global claude path via which: ${result}`)
