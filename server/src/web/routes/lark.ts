@@ -4,12 +4,13 @@ import type { WebAppEnv } from '../middleware/auth'
 import { LarkClient } from '../../lark/larkClient'
 import { buildPermissionResultCard, type PermissionCardContext } from '../../lark/larkCardBuilder'
 import type { SyncEngine } from '../../sync/syncEngine'
+import type { LarkWipNotifier } from '../../lark/larkWipNotifier'
 
 const larkEventSchema = z.object({
     header: z.object({
         event_type: z.string().optional(),
-        token: z.string()
-    }).passthrough(),
+        token: z.string().optional()
+    }).passthrough().optional(),
     event: z.object({
         message: z.object({
             message_id: z.string(),
@@ -28,11 +29,13 @@ const larkEventSchema = z.object({
     }).optional(),
     open_message_id: z.string().optional(),
     challenge: z.string().optional(),
-    type: z.string().optional() // url_verification
+    type: z.string().optional(), // url_verification
+    token: z.string().optional() // 兼容顶层 token 字段
 }).passthrough()
 
 export function createLarkWebhookRoutes(options: {
     getSyncEngine: () => SyncEngine | null
+    getLarkNotifier?: () => LarkWipNotifier | null
     verificationToken: string | null
     appId: string | null
     appSecret: string | null
@@ -123,6 +126,7 @@ export function createLarkWebhookRoutes(options: {
         // 4. Message Received (Chat)
         if (eventType === 'im.message.receive_v1' && data.event?.message) {
             const message = data.event.message
+            const chatId = message.chat_id
             
             // Ignore non-text messages
             if (message.message_type !== 'text') {
@@ -143,26 +147,78 @@ export function createLarkWebhookRoutes(options: {
                 return c.json({ code: 0, msg: 'empty message' })
             }
 
+            text = text.trim()
+
             const engine = options.getSyncEngine()
             if (!engine) return c.json({ code: 0, msg: 'engine not ready' })
 
+            const notifier = options.getLarkNotifier?.()
+
+            // Handle slash commands
+            if (text.startsWith('/')) {
+                if (notifier) {
+                    const parts = text.split(/\s+/)
+                    const command = parts[0]
+                    const args = parts.slice(1)
+                    notifier.handleSlashCommand(chatId, command, args).catch(err => {
+                        console.error('[LarkWebhook] Slash command failed:', err)
+                    })
+                    return c.json({ code: 0, msg: 'command received' })
+                }
+                return c.json({ code: 0, msg: 'notifier not available' })
+            }
+
             // Routing Strategy:
-            // 1. Find all active sessions
-            // 2. Pick the most recently active one
-            // TODO: Implement better routing (e.g. bind chat_id to session_id)
-            const sessions = engine.getActiveSessions()
-            if (sessions.length === 0) {
-                 // Optionally reply to user via LarkClient (not implemented here to keep webhook fast)
-                 console.log('[LarkWebhook] No active session to handle message')
-                 return c.json({ code: 0, msg: 'no active session' })
+            // 1. Check if this chat has a bound session
+            // 2. Otherwise, find the most recently active session
+            let sessionId = notifier?.getSessionForChat(chatId)
+            
+            if (!sessionId) {
+                const sessions = engine.getActiveSessions()
+                if (sessions.length === 0) {
+                    // No active session - send helpful message
+                    if (notifier) {
+                        notifier.sendTextToChat(chatId, 
+                            '❌ 当前没有活跃的 Session。\n\n' +
+                            '请先在终端运行 `hapi start` 启动一个 Session，然后使用 `/sessions` 查看可用会话。'
+                        ).catch(console.error)
+                    }
+                    console.log('[LarkWebhook] No active session to handle message')
+                    return c.json({ code: 0, msg: 'no active session' })
+                }
+                
+                // Pick the most recently active session
+                const session = sessions.sort((a, b) => b.activeAt - a.activeAt)[0]
+                sessionId = session.id
+                
+                // Bind this chat to the session
+                if (notifier) {
+                    notifier.setSessionForChat(chatId, sessionId)
+                    console.log(`[LarkWebhook] Bound chat ${chatId} to session ${sessionId}`)
+                }
             }
             
-            // Sort by activeAt descending (newest first)
-            const session = sessions.sort((a, b) => b.activeAt - a.activeAt)[0]
+            const session = engine.getSession(sessionId)
+            if (!session) {
+                // Session no longer exists, clear binding
+                if (notifier) {
+                    notifier.sendTextToChat(chatId,
+                        '❌ 绑定的 Session 已不存在。\n\n' +
+                        '使用 `/sessions` 查看可用会话，或使用 `/switch <id>` 切换到其他会话。'
+                    ).catch(console.error)
+                }
+                return c.json({ code: 0, msg: 'session not found' })
+            }
+
+            console.log(`[LarkWebhook] Routing message to session ${sessionId}: ${text.slice(0, 50)}...`)
             
-            console.log(`[LarkWebhook] Routing message to session ${session.id}: ${text.slice(0, 50)}...`)
+            // Send thinking indicator
+            if (notifier) {
+                const sessionName = session.metadata?.name || session.metadata?.path?.split('/').pop() || sessionId
+                notifier.sendThinkingIndicator(chatId, sessionName).catch(console.error)
+            }
             
-            await engine.sendMessage(session.id, {
+            await engine.sendMessage(sessionId, {
                 text,
                 sentFrom: 'lark'
             })
