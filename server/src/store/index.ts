@@ -42,6 +42,13 @@ export type StoredMessage = {
     localId: string | null
 }
 
+export type StoredUser = {
+    id: number
+    platform: string
+    platformUserId: string
+    createdAt: number
+}
+
 export type VersionedUpdateResult<T> =
     | { result: 'success'; version: number; value: T }
     | { result: 'version-mismatch'; version: number; value: T }
@@ -84,6 +91,13 @@ type DbMessageRow = {
     created_at: number
     seq: number
     local_id: string | null
+}
+
+type DbUserRow = {
+    id: number
+    platform: string
+    platform_user_id: string
+    created_at: number
 }
 
 function safeJsonParse(value: string | null): unknown | null {
@@ -137,6 +151,15 @@ function toStoredMessage(row: DbMessageRow): StoredMessage {
         createdAt: row.created_at,
         seq: row.seq,
         localId: row.local_id
+    }
+}
+
+function toStoredUser(row: DbUserRow): StoredUser {
+    return {
+        id: row.id,
+        platform: row.platform,
+        platformUserId: row.platform_user_id,
+        createdAt: row.created_at
     }
 }
 
@@ -222,6 +245,15 @@ export class Store {
             );
             CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, seq);
             CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_local_id ON messages(session_id, local_id) WHERE local_id IS NOT NULL;
+
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                platform TEXT NOT NULL,
+                platform_user_id TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                UNIQUE(platform, platform_user_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_users_platform ON users(platform);
         `)
 
         const sessionColumns = this.db.prepare('PRAGMA table_info(sessions)').all() as Array<{ name: string }>
@@ -559,5 +591,47 @@ export class Store {
         ).all(sessionId, safeAfterSeq, safeLimit) as DbMessageRow[]
 
         return rows.map(toStoredMessage)
+    }
+
+    getUser(platform: string, platformUserId: string): StoredUser | null {
+        const row = this.db.prepare(
+            'SELECT * FROM users WHERE platform = ? AND platform_user_id = ? LIMIT 1'
+        ).get(platform, platformUserId) as DbUserRow | undefined
+        return row ? toStoredUser(row) : null
+    }
+
+    getUsersByPlatform(platform: string): StoredUser[] {
+        const rows = this.db.prepare(
+            'SELECT * FROM users WHERE platform = ? ORDER BY created_at ASC'
+        ).all(platform) as DbUserRow[]
+        return rows.map(toStoredUser)
+    }
+
+    addUser(platform: string, platformUserId: string): StoredUser {
+        const now = Date.now()
+        this.db.prepare(`
+            INSERT OR IGNORE INTO users (
+                platform, platform_user_id, created_at
+            ) VALUES (
+                @platform, @platform_user_id, @created_at
+            )
+        `).run({
+            platform,
+            platform_user_id: platformUserId,
+            created_at: now
+        })
+
+        const row = this.getUser(platform, platformUserId)
+        if (!row) {
+            throw new Error('Failed to create user')
+        }
+        return row
+    }
+
+    removeUser(platform: string, platformUserId: string): boolean {
+        const result = this.db.prepare(
+            'DELETE FROM users WHERE platform = ? AND platform_user_id = ?'
+        ).run(platform, platformUserId)
+        return result.changes > 0
     }
 }

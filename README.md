@@ -70,7 +70,6 @@ docker run -d --name hapi -p 3006:3006 -v hapi-data:/data ghcr.io/tiann/hapi-ser
 | `CLI_API_TOKEN` | (auto-generated) | Access token for CLI and web UI |
 | `TELEGRAM_BOT_TOKEN` | - | Telegram bot token (optional) |
 | `WEBAPP_URL` | - | Public URL for Telegram Mini App |
-| `ALLOWED_CHAT_IDS` | - | Comma-separated Telegram chat IDs |
 
 #### With Telegram Support
 
@@ -81,7 +80,6 @@ docker run -d \
   -v hapi-data:/data \
   -e WEBAPP_URL="https://your-domain.example" \
   -e TELEGRAM_BOT_TOKEN="your-bot-token" \
-  -e ALLOWED_CHAT_IDS="12345678" \
   ghcr.io/tiann/hapi-server:latest
 ```
 
@@ -149,15 +147,11 @@ WEBAPP_URL="https://your-domain.example"
 TELEGRAM_BOT_TOKEN="..."
 ```
 
-4. Start the server and send `/start` to the bot to get your chat ID.
+4. Start the server and send `/start` to the bot.
 
-5. Add your chat ID and restart:
+5. Run `/app` in the bot chat to open the Mini App.
 
-```
-ALLOWED_CHAT_IDS="12345678"
-```
-
-6. Run `/app` in the bot chat to open the Mini App.
+6. If prompted, enter `CLI_API_TOKEN` to bind your Telegram account. After binding, you can open the Mini App without re-entering the token, and notifications only go to bound users.
 
 ## Multi-agent support
 

@@ -17,7 +17,6 @@ export interface Settings {
     cliApiToken?: string
     // Server configuration (persisted from environment variables)
     telegramBotToken?: string
-    allowedChatIds?: number[]
     webappPort?: number
     webappUrl?: string
     corsOrigins?: string[]

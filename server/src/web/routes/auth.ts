@@ -6,6 +6,7 @@ import { safeCompareStrings } from '../../utils/crypto'
 import { validateTelegramInitData } from '../telegramInitData'
 import { getOrCreateOwnerId } from '../ownerId'
 import type { WebAppEnv } from '../middleware/auth'
+import type { Store } from '../../store'
 
 const telegramAuthSchema = z.object({
     initData: z.string()
@@ -17,7 +18,7 @@ const accessTokenAuthSchema = z.object({
 
 const authBodySchema = z.union([telegramAuthSchema, accessTokenAuthSchema])
 
-export function createAuthRoutes(jwtSecret: Uint8Array): Hono<WebAppEnv> {
+export function createAuthRoutes(jwtSecret: Uint8Array, store: Store): Hono<WebAppEnv> {
     const app = new Hono<WebAppEnv>()
 
     app.post('/auth', async (c) => {
@@ -44,19 +45,16 @@ export function createAuthRoutes(jwtSecret: Uint8Array): Hono<WebAppEnv> {
                 return c.json({ error: 'Telegram authentication is disabled. Configure TELEGRAM_BOT_TOKEN.' }, 503)
             }
 
-            if (configuration.allowedChatIds.length === 0) {
-                return c.json({ error: 'Telegram allowlist is empty. Configure ALLOWED_CHAT_IDS and restart.' }, 403)
-            }
-
             // Telegram initData authentication
             const result = validateTelegramInitData(parsed.data.initData, configuration.telegramBotToken)
             if (!result.ok) {
                 return c.json({ error: result.error }, 401)
             }
 
-            const telegramUserId = result.user.id
-            if (!configuration.isChatIdAllowed(telegramUserId)) {
-                return c.json({ error: 'User not allowed' }, 403)
+            const telegramUserId = String(result.user.id)
+            const storedUser = store.getUser('telegram', telegramUserId)
+            if (!storedUser) {
+                return c.json({ error: 'not_bound' }, 401)
             }
 
             userId = await getOrCreateOwnerId()

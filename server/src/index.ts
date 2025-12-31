@@ -69,12 +69,7 @@ async function main() {
         console.log('[Server] Telegram: disabled (no TELEGRAM_BOT_TOKEN)')
     } else {
         const tokenSource = formatSource(config.sources.telegramBotToken)
-        if (config.allowedChatIds.length === 0) {
-            console.log(`[Server] Telegram: enabled (${tokenSource}), allowlist empty - /start shows chat ID`)
-        } else {
-            const idsSource = formatSource(config.sources.allowedChatIds)
-            console.log(`[Server] Telegram: enabled (${tokenSource}), chat IDs: ${config.allowedChatIds.join(', ')} (${idsSource})`)
-        }
+        console.log(`[Server] Telegram: enabled (${tokenSource})`)
     }
 
     const store = new Store(config.dbPath)
@@ -99,8 +94,8 @@ async function main() {
         happyBot = new HappyBot({
             syncEngine,
             botToken: config.telegramBotToken,
-            allowedChatIds: config.allowedChatIds,
-            miniAppUrl: config.miniAppUrl
+            miniAppUrl: config.miniAppUrl,
+            store
         })
     }
 
@@ -109,6 +104,7 @@ async function main() {
         getSyncEngine: () => syncEngine,
         getSseManager: () => sseManager,
         jwtSecret,
+        store,
         socketEngine: socketServer.engine
     })
 

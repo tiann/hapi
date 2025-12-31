@@ -8,6 +8,7 @@ import { configuration } from '../configuration'
 import type { SyncEngine } from '../sync/syncEngine'
 import { createAuthMiddleware, type WebAppEnv } from './middleware/auth'
 import { createAuthRoutes } from './routes/auth'
+import { createBindRoutes } from './routes/bind'
 import { createEventsRoutes } from './routes/events'
 import { createSessionsRoutes } from './routes/sessions'
 import { createMessagesRoutes } from './routes/messages'
@@ -21,6 +22,7 @@ import type { Server as SocketEngine } from '@socket.io/bun-engine'
 import type { WebSocketData } from '@socket.io/bun-engine'
 import { loadEmbeddedAssetMap, type EmbeddedWebAsset } from './embeddedAssets'
 import { isBunCompiled } from '../utils/bunCompiled'
+import type { Store } from '../store'
 
 function findWebappDistDir(): { distDir: string; indexHtmlPath: string } {
     const candidates = [
@@ -52,6 +54,7 @@ function createWebApp(options: {
     getSyncEngine: () => SyncEngine | null
     getSseManager: () => SSEManager | null
     jwtSecret: Uint8Array
+    store: Store
     embeddedAssetMap: Map<string, EmbeddedWebAsset> | null
 }): Hono<WebAppEnv> {
     const app = new Hono<WebAppEnv>()
@@ -70,7 +73,8 @@ function createWebApp(options: {
 
     app.route('/cli', createCliRoutes(options.getSyncEngine))
 
-    app.route('/api', createAuthRoutes(options.jwtSecret))
+    app.route('/api', createAuthRoutes(options.jwtSecret, options.store))
+    app.route('/api', createBindRoutes(options.jwtSecret, options.store))
 
     app.use('/api/*', createAuthMiddleware(options.jwtSecret))
     app.route('/api', createEventsRoutes(options.getSseManager))
@@ -162,6 +166,7 @@ export async function startWebServer(options: {
     getSyncEngine: () => SyncEngine | null
     getSseManager: () => SSEManager | null
     jwtSecret: Uint8Array
+    store: Store
     socketEngine: SocketEngine
 }): Promise<BunServer<WebSocketData>> {
     const isCompiled = isBunCompiled()
@@ -170,6 +175,7 @@ export async function startWebServer(options: {
         getSyncEngine: options.getSyncEngine,
         getSseManager: options.getSseManager,
         jwtSecret: options.jwtSecret,
+        store: options.store,
         embeddedAssetMap
     })
 

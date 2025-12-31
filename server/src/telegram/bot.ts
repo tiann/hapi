@@ -5,10 +5,11 @@
  * All interactive features are handled by the Telegram Mini App.
  */
 
-import { Bot, Context, NextFunction, InlineKeyboard } from 'grammy'
+import { Bot, Context, InlineKeyboard } from 'grammy'
 import { SyncEngine, SyncEvent, Session } from '../sync/syncEngine'
 import { handleCallback, CallbackContext } from './callbacks'
 import { formatSessionNotification, createNotificationKeyboard } from './sessionView'
+import type { Store } from '../store'
 
 export interface BotContext extends Context {
     // Extended context for future use
@@ -17,8 +18,8 @@ export interface BotContext extends Context {
 export interface HappyBotConfig {
     syncEngine: SyncEngine
     botToken: string
-    allowedChatIds: number[]
     miniAppUrl: string
+    store: Store
 }
 
 /**
@@ -28,9 +29,8 @@ export class HappyBot {
     private bot: Bot<BotContext>
     private syncEngine: SyncEngine | null = null
     private isRunning = false
-    private readonly allowedChatIds: number[]
     private readonly miniAppUrl: string
-    private readonly allowlistConfigured: boolean
+    private readonly store: Store
 
     // Track last known permission requests per session to detect new ones
     private lastKnownRequests: Map<string, Set<string>> = new Map()
@@ -46,17 +46,13 @@ export class HappyBot {
 
     constructor(config: HappyBotConfig) {
         this.syncEngine = config.syncEngine
-        this.allowedChatIds = config.allowedChatIds
         this.miniAppUrl = config.miniAppUrl
-        this.allowlistConfigured = this.allowedChatIds.length > 0
+        this.store = config.store
 
         this.bot = new Bot<BotContext>(config.botToken)
         this.setupMiddleware()
         this.setupCommands()
-
-        if (this.allowlistConfigured) {
-            this.setupCallbacks()
-        }
+        this.setupCallbacks()
 
         // Subscribe to sync events immediately if engine is available
         if (this.syncEngine) {
@@ -134,28 +130,6 @@ export class HappyBot {
      * Setup middleware
      */
     private setupMiddleware(): void {
-        // Security middleware: only allow configured chat IDs
-        this.bot.use(async (ctx: BotContext, next: NextFunction) => {
-            const chatId = ctx.chat?.id
-            if (this.allowlistConfigured) {
-                if (!chatId || !this.allowedChatIds.includes(chatId)) {
-                    console.log(`[HAPIBot] Rejected message from unauthorized chat: ${chatId}`)
-                    return // Silently ignore unauthorized users
-                }
-                await next()
-                return
-            }
-
-            const messageText = ctx.message?.text ?? ''
-            if (!messageText.startsWith('/start')) {
-                if (chatId) {
-                    console.log(`[HAPIBot] Allowlist empty; ignoring chat: ${chatId}`)
-                }
-                return
-            }
-            await next()
-        })
-
         // Error handling middleware
         this.bot.catch((err) => {
             console.error('[HAPIBot] Error:', err.message)
@@ -166,22 +140,6 @@ export class HappyBot {
      * Setup command handlers
      */
     private setupCommands(): void {
-        // When allowlist is not configured, show setup instructions
-        if (!this.allowlistConfigured) {
-            this.bot.command('start', async (ctx) => {
-                const chatId = ctx.chat?.id
-                const chatIdDisplay = chatId ? String(chatId) : 'unknown'
-                const example = chatId ? `ALLOWED_CHAT_IDS="${chatId}"` : 'ALLOWED_CHAT_IDS="12345678"'
-
-                await ctx.reply(
-                    `HAPI bot is not fully configured yet.\n\n` +
-                    `Your chat ID is: ${chatIdDisplay}\n` +
-                    `Set ${example} and restart the server.`
-                )
-            })
-            return
-        }
-
         // /app - Open Telegram Mini App (primary entry point)
         this.bot.command('app', async (ctx) => {
             const keyboard = new InlineKeyboard().webApp('Open App', this.miniAppUrl)
@@ -231,10 +189,6 @@ export class HappyBot {
      * Handle sync engine events for notifications
      */
     private handleSyncEvent(event: SyncEvent): void {
-        if (!this.allowlistConfigured) {
-            return
-        }
-
         if (event.type === 'session-updated' && event.sessionId) {
             const session = this.syncEngine?.getSession(event.sessionId)
             if (session) {
@@ -264,6 +218,21 @@ export class HappyBot {
     }
 
     /**
+     * Get bound Telegram chat IDs from storage.
+     */
+    private getBoundChatIds(): number[] {
+        const users = this.store.getUsersByPlatform('telegram')
+        const ids = new Set<number>()
+        for (const user of users) {
+            const chatId = Number(user.platformUserId)
+            if (Number.isFinite(chatId)) {
+                ids.add(chatId)
+            }
+        }
+        return Array.from(ids)
+    }
+
+    /**
      * Send a push notification when agent is ready for input.
      */
     private async sendReadyNotification(sessionId: string): Promise<void> {
@@ -290,7 +259,12 @@ export class HappyBot {
         const keyboard = new InlineKeyboard()
             .webApp('Open Session', url)
 
-        for (const chatId of this.allowedChatIds) {
+        const chatIds = this.getBoundChatIds()
+        if (chatIds.length === 0) {
+            return
+        }
+
+        for (const chatId of chatIds) {
             await this.bot.api.sendMessage(
                 chatId,
                 `It's ready!\n\n${agentName} is waiting for your command`,
@@ -353,7 +327,7 @@ export class HappyBot {
     }
 
     /**
-     * Send permission notification to all allowed chats
+     * Send permission notification to all bound chats
      */
     private async sendPermissionNotification(sessionId: string): Promise<void> {
         const session = this.getNotifiableSession(sessionId)
@@ -364,8 +338,12 @@ export class HappyBot {
         const text = formatSessionNotification(session)
         const keyboard = createNotificationKeyboard(session, this.miniAppUrl)
 
-        // Send to all allowed chat IDs
-        for (const chatId of this.allowedChatIds) {
+        const chatIds = this.getBoundChatIds()
+        if (chatIds.length === 0) {
+            return
+        }
+
+        for (const chatId of chatIds) {
             try {
                 await this.bot.api.sendMessage(chatId, text, {
                     reply_markup: keyboard

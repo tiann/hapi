@@ -22,7 +22,6 @@ See `src/configuration.ts` for all options.
 ### Optional (Telegram)
 
 - `TELEGRAM_BOT_TOKEN` - Token from @BotFather.
-- `ALLOWED_CHAT_IDS` - Comma-separated chat IDs allowed to use the bot.
 - `WEBAPP_URL` - Public HTTPS URL for Telegram Mini App access. Also used to derive default CORS origins for the web app.
 
 ### Optional
@@ -38,16 +37,15 @@ Binary (single executable):
 
 ```bash
 export TELEGRAM_BOT_TOKEN="..."
-export ALLOWED_CHAT_IDS="12345678"
 export CLI_API_TOKEN="shared-secret"
 export WEBAPP_URL="https://your-domain.example"
 
 hapi server
 ```
 
-If you only need web + CLI, you can omit TELEGRAM_BOT_TOKEN and ALLOWED_CHAT_IDS.
-To enable Telegram, set TELEGRAM_BOT_TOKEN and WEBAPP_URL, start the server, send `/start`
-to the bot to get your chat ID, set ALLOWED_CHAT_IDS, and restart the server.
+If you only need web + CLI, you can omit TELEGRAM_BOT_TOKEN.
+To enable Telegram, set TELEGRAM_BOT_TOKEN and WEBAPP_URL, start the server, open `/app`
+in the bot chat, and bind the Mini App with CLI_API_TOKEN when prompted.
 
 From source:
 
@@ -63,6 +61,7 @@ See `src/web/routes/` for all endpoints.
 ### Authentication (`src/web/routes/auth.ts`)
 
 - `POST /api/auth` - Get JWT token (Telegram initData or CLI_API_TOKEN).
+- `POST /api/bind` - Bind a Telegram account using initData + CLI_API_TOKEN.
 
 ### Sessions (`src/web/routes/sessions.ts`)
 
@@ -137,7 +136,7 @@ See `src/telegram/bot.ts` for bot implementation.
 
 ### Commands
 
-- `/start` - Welcome message with chat ID.
+- `/start` - Welcome message with Mini App link.
 - `/app` - Open Mini App.
 
 ### Features
@@ -168,6 +167,7 @@ See `src/store/index.ts` for SQLite persistence:
 - Messages with pagination support.
 - Machines with daemon state.
 - Todo extraction from messages.
+- Users table for Telegram bindings.
 
 ## Source structure
 
@@ -181,7 +181,7 @@ See `src/store/index.ts` for SQLite persistence:
 ## Security model
 
 Access is controlled by:
-- Telegram chat ID allowlist (when Telegram is enabled).
+- Telegram initData verification plus bound Telegram users (bound via CLI_API_TOKEN).
 - `CLI_API_TOKEN` shared secret for CLI and browser access.
 
 Transport security depends on HTTPS in front of the server.

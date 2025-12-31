@@ -13,7 +13,6 @@ import { readSettings, writeSettings, type Settings } from './web/cliApiToken'
 
 export interface ServerSettings {
     telegramBotToken: string | null
-    allowedChatIds: number[]
     webappPort: number
     webappUrl: string
     corsOrigins: string[]
@@ -23,22 +22,11 @@ export interface ServerSettingsResult {
     settings: ServerSettings
     sources: {
         telegramBotToken: 'env' | 'file' | 'default'
-        allowedChatIds: 'env' | 'file' | 'default'
         webappPort: 'env' | 'file' | 'default'
         webappUrl: 'env' | 'file' | 'default'
         corsOrigins: 'env' | 'file' | 'default'
     }
     savedToFile: boolean
-}
-
-/**
- * Parse comma-separated chat IDs from string
- */
-function parseChatIds(str: string): number[] {
-    return str
-        .split(',')
-        .map(id => parseInt(id.trim(), 10))
-        .filter(id => !isNaN(id))
 }
 
 /**
@@ -95,7 +83,6 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
     let needsSave = false
     const sources: ServerSettingsResult['sources'] = {
         telegramBotToken: 'default',
-        allowedChatIds: 'default',
         webappPort: 'default',
         webappUrl: 'default',
         corsOrigins: 'default',
@@ -113,20 +100,6 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
     } else if (settings.telegramBotToken !== undefined) {
         telegramBotToken = settings.telegramBotToken
         sources.telegramBotToken = 'file'
-    }
-
-    // allowedChatIds: env > file > []
-    let allowedChatIds: number[] = []
-    if (process.env.ALLOWED_CHAT_IDS) {
-        allowedChatIds = parseChatIds(process.env.ALLOWED_CHAT_IDS)
-        sources.allowedChatIds = 'env'
-        if (settings.allowedChatIds === undefined) {
-            settings.allowedChatIds = allowedChatIds
-            needsSave = true
-        }
-    } else if (settings.allowedChatIds !== undefined) {
-        allowedChatIds = settings.allowedChatIds
-        sources.allowedChatIds = 'file'
     }
 
     // webappPort: env > file > 3006
@@ -185,7 +158,6 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
     return {
         settings: {
             telegramBotToken,
-            allowedChatIds,
             webappPort,
             webappUrl,
             corsOrigins,

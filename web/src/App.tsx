@@ -20,7 +20,7 @@ import { LoadingState } from '@/components/LoadingState'
 export function App() {
     const { serverUrl, baseUrl, setServerUrl, clearServerUrl } = useServerUrl()
     const { authSource, isLoading: isAuthSourceLoading, setAccessToken } = useAuthSource(baseUrl)
-    const { token, api, isLoading: isAuthLoading, error: authError } = useAuth(authSource, baseUrl)
+    const { token, api, isLoading: isAuthLoading, error: authError, needsBinding, bind } = useAuth(authSource, baseUrl)
     const goBack = useAppGoBack()
     const pathname = useLocation({ select: (location) => location.pathname })
     const matchRoute = useMatchRoute()
@@ -172,6 +172,20 @@ export function App() {
                 serverUrl={serverUrl}
                 setServerUrl={setServerUrl}
                 clearServerUrl={clearServerUrl}
+            />
+        )
+    }
+
+    if (needsBinding) {
+        return (
+            <LoginPrompt
+                mode="bind"
+                onBind={bind}
+                baseUrl={baseUrl}
+                serverUrl={serverUrl}
+                setServerUrl={setServerUrl}
+                clearServerUrl={clearServerUrl}
+                error={authError ?? undefined}
             />
         )
     }
