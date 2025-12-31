@@ -13,6 +13,7 @@ import { Store } from './store'
 import { SyncEngine, type SyncEvent } from './sync/syncEngine'
 import { HappyBot } from './telegram/bot'
 import { LarkWipNotifier } from './lark/larkWipNotifier'
+import { LarkWebSocketClient } from './lark/larkWebSocketClient'
 import { startWebServer } from './web/server'
 import { getOrCreateJwtSecret } from './web/jwtSecret'
 import { createSocketServer } from './socket/server'
@@ -37,6 +38,7 @@ function formatSource(source: ConfigSource | 'generated'): string {
 let syncEngine: SyncEngine | null = null
 let happyBot: HappyBot | null = null
 let larkNotifier: LarkWipNotifier | null = null
+let larkWSClient: LarkWebSocketClient | null = null
 let webServer: BunServer<WebSocketData> | null = null
 let sseManager: SSEManager | null = null
 
@@ -105,15 +107,29 @@ async function main() {
 
     // Initialize Lark notifier (WIP: log-only)
     if (config.larkEnabled) {
-        larkNotifier = new LarkWipNotifier({
-            syncEngine,
-            miniAppUrl: config.miniAppUrl,
-            notifyTargets: config.larkNotifyTargets,
-            appId: config.larkAppId,
-            appSecret: config.larkAppSecret,
-            actionSecret: config.larkActionSecret,
-        })
-        larkNotifier.start()
+        if (config.larkUseWebSocket) {
+            if (!config.larkAppId || !config.larkAppSecret) {
+                console.error('[Server] Lark WebSocket requires APP_ID and APP_SECRET')
+            } else {
+                larkWSClient = new LarkWebSocketClient({
+                    appId: config.larkAppId,
+                    appSecret: config.larkAppSecret,
+                    getSyncEngine: () => syncEngine,
+                    logLevel: 'info'
+                })
+                console.log('[LarkWS] WebSocket mode enabled')
+            }
+        } else {
+            larkNotifier = new LarkWipNotifier({
+                syncEngine,
+                miniAppUrl: config.miniAppUrl,
+                notifyTargets: config.larkNotifyTargets,
+                appId: config.larkAppId,
+                appSecret: config.larkAppSecret,
+                actionSecret: config.larkActionSecret,
+            })
+            larkNotifier.start()
+        }
     }
 
     // Initialize Telegram bot (optional)
@@ -140,12 +156,23 @@ async function main() {
         await happyBot.start()
     }
 
+    // Start Lark WebSocket client if configured
+    if (larkWSClient) {
+        try {
+            await larkWSClient.start()
+            console.log('[LarkWS] WebSocket connection established')
+        } catch (error) {
+            console.error('[LarkWS] Failed to start WebSocket:', error)
+        }
+    }
+
     console.log('\nHAPI Server is ready!')
 
     // Handle shutdown
     const shutdown = async () => {
         console.log('\nShutting down...')
         await happyBot?.stop()
+        await larkWSClient?.stop()
         larkNotifier?.stop()
         syncEngine?.stop()
         sseManager?.stop()

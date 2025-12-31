@@ -19,6 +19,7 @@ export interface ServerSettings {
 
     // Lark (Feishu) - WIP notification-only config
     larkEnabled: boolean
+    larkUseWebSocket: boolean
     larkNotifyTargets: string[]
 
     // Lark (Feishu) - credentials (WIP)
@@ -41,6 +42,7 @@ export interface ServerSettingsResult {
         corsOrigins: 'env' | 'file' | 'default'
 
         larkEnabled: 'env' | 'file' | 'default'
+        larkUseWebSocket: 'env' | 'file' | 'default'
         larkNotifyTargets: 'env' | 'file' | 'default'
 
         larkAppId: 'env' | 'file' | 'default'
@@ -123,6 +125,7 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
         corsOrigins: 'default',
 
         larkEnabled: 'default',
+        larkUseWebSocket: 'default',
         larkNotifyTargets: 'default',
 
         larkAppId: 'default',
@@ -206,6 +209,20 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
     } else if (settings.larkEnabled !== undefined) {
         larkEnabled = Boolean(settings.larkEnabled)
         sources.larkEnabled = 'file'
+    }
+
+    // larkUseWebSocket: env > file > false
+    let larkUseWebSocket = false
+    if (process.env.LARK_USE_WEBSOCKET) {
+        larkUseWebSocket = parseBoolean(process.env.LARK_USE_WEBSOCKET)
+        sources.larkUseWebSocket = 'env'
+        if (settings.larkUseWebSocket === undefined) {
+            settings.larkUseWebSocket = larkUseWebSocket
+            needsSave = true
+        }
+    } else if (settings.larkUseWebSocket !== undefined) {
+        larkUseWebSocket = Boolean(settings.larkUseWebSocket)
+        sources.larkUseWebSocket = 'file'
     }
 
     // larkNotifyTargets: env > file > []
@@ -293,6 +310,7 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
             corsOrigins,
 
             larkEnabled,
+            larkUseWebSocket,
             larkNotifyTargets,
 
             larkAppId,

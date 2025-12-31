@@ -12,6 +12,7 @@
  * - WEBAPP_URL: Public URL for Telegram Mini App
  * - CORS_ORIGINS: Comma-separated CORS origins
  * - LARK_ENABLED: Enable Lark (Feishu) WIP notifier (true/false)
+ * - LARK_USE_WEBSOCKET: Use WebSocket long connection instead of Webhook (true/false, default: false)
  * - LARK_NOTIFY_TARGETS: Comma-separated target identifiers for logging (WIP)
  * - APP_ID: Lark (Feishu) App ID (WIP)
  * - APP_SECRET: Lark (Feishu) App Secret (WIP)
@@ -83,6 +84,9 @@ class Configuration {
     /** Lark (Feishu) notification enabled (WIP) */
     public readonly larkEnabled: boolean
 
+    /** Lark (Feishu) use WebSocket long connection */
+    public readonly larkUseWebSocket: boolean
+
     /** Lark (Feishu) notification targets (WIP, only used for logging now) */
     public readonly larkNotifyTargets: string[]
 
@@ -120,6 +124,7 @@ class Configuration {
         this.corsOrigins = serverSettings.corsOrigins
 
         this.larkEnabled = serverSettings.larkEnabled
+        this.larkUseWebSocket = serverSettings.larkUseWebSocket
         this.larkNotifyTargets = serverSettings.larkNotifyTargets
 
         this.larkAppId = serverSettings.larkAppId

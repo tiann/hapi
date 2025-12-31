@@ -15,10 +15,12 @@
         "generate:embedded-web-assets": "bun run scripts/generate-embedded-web-assets.ts"
     },
     "dependencies": {
+        "@larksuiteoapi/node-sdk": "^1.43.0",
         "@socket.io/bun-engine": "^0.1.0",
         "grammy": "^1.38.4",
         "hono": "^4.11.2",
         "jose": "^6.1.3",
+        "lru-cache": "^11.0.2",
         "socket.io": "^4.8.3",
         "zod": "^4.2.1"
     },
