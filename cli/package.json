@@ -3,7 +3,7 @@
   "version": "0.3.1",
   "description": "App for agentic coding - access coding agent anywhere",
   "author": "Kirill Dubovitskiy & weishu",
-  "license": "MIT",
+  "license": "LGPL-3.0-or-later",
   "type": "module",
   "homepage": "https://github.com/tiann/hapi",
   "bugs": "https://github.com/tiann/hapi/issues",
@@ -16,7 +16,8 @@
     "hapi": "bin/hapi.cjs"
   },
   "files": [
-    "bin/hapi.cjs"
+    "bin/hapi.cjs",
+    "NOTICE"
   ],
   "imports": {
     "#embedded-assets": {

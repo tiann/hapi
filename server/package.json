@@ -4,7 +4,7 @@
     "version": "0.1.0",
     "description": "Telegram Bot client for HAPI - control Claude Code sessions",
     "author": "weishu",
-    "license": "LGPL",
+    "license": "LGPL-3.0-or-later",
     "type": "module",
     "scripts": {
         "start": "bun run src/index.ts",

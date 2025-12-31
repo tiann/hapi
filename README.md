@@ -184,12 +184,6 @@ bun run build:single-exe
 
 ## Docs
 
-- `docs/WHY_NOT_HAPPY.md` - Why HAPI exists: architectural differences from Happy
 - `cli/README.md` - CLI usage and config
 - `server/README.md` - Server setup and architecture
 - `web/README.md` - Web app behavior and dev workflow
-
-## License
-
-- cli: MIT
-- others: LGPLv2
