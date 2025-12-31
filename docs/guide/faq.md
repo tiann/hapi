@@ -44,6 +44,10 @@ The `CLI_API_TOKEN` is a shared secret that authenticates:
 
 It's auto-generated on first server start and saved to `~/.hapi/settings.json`.
 
+### Do you support multiple accounts?
+
+Yes. We support lightweight multi-account access via namespaces for shared team servers. See [Namespace (Advanced)](/guide/namespace).
+
 ### Can I use HAPI without Telegram?
 
 Yes. Telegram is optional. You can use the web app directly in any browser or install it as a PWA.

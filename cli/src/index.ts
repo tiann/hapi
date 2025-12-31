@@ -438,6 +438,8 @@ ${chalk.bold.cyan('Claude Code Options (from `claude --help`):')}
       const messageLower = message.toLowerCase();
       const axiosCode = (error as any)?.code;
       const httpStatus = (error as any)?.response?.status;
+      const responseError = (error as any)?.response?.data?.error;
+      const responseErrorText = typeof responseError === 'string' ? responseError : '';
 
       if (axiosCode === 'ECONNREFUSED' || axiosCode === 'ETIMEDOUT' || axiosCode === 'ENOTFOUND' ||
           messageLower.includes('econnrefused') || messageLower.includes('etimedout') ||
@@ -446,6 +448,14 @@ ${chalk.bold.cyan('Claude Code Options (from `claude --help`):')}
         console.error(chalk.yellow('Unable to connect to HAPI server'));
         console.error(chalk.gray(`  Server URL: ${configuration.serverUrl}`));
         console.error(chalk.gray('  Please check your network connection or server status'));
+      } else if (httpStatus === 403 && responseErrorText === 'Machine access denied') {
+        console.error(chalk.red('Machine access denied.'));
+        console.error(chalk.gray('  This machineId is already registered under a different namespace.'));
+        console.error(chalk.gray('  Fix: run `hapi auth logout`, or set a separate HAPI_HOME per namespace.'));
+      } else if (httpStatus === 403 && responseErrorText === 'Session access denied') {
+        console.error(chalk.red('Session access denied.'));
+        console.error(chalk.gray('  This session belongs to a different namespace.'));
+        console.error(chalk.gray('  Use the matching CLI_API_TOKEN or switch namespaces.'));
       } else if (httpStatus === 401 || httpStatus === 403 ||
                  messageLower.includes('unauthorized') || messageLower.includes('forbidden')) {
         console.error(chalk.red('Authentication error:'), message);

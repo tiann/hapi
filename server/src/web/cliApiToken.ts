@@ -9,6 +9,7 @@ import { existsSync } from 'node:fs'
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { randomBytes } from 'node:crypto'
 import { dirname, join } from 'node:path'
+import { parseAccessToken } from '../utils/accessToken'
 
 export interface Settings {
     machineId?: string
@@ -51,6 +52,28 @@ function isWeakToken(token: string): boolean {
         /^(abc|123|password|secret|token)/i,    // Common prefixes
     ]
     return weakPatterns.some(p => p.test(token))
+}
+
+type CliApiTokenSource = 'env' | 'file'
+
+function normalizeCliApiToken(rawToken: string, source: CliApiTokenSource): { token: string; didStrip: boolean } {
+    const parsed = parseAccessToken(rawToken)
+    if (!parsed) {
+        if (rawToken.includes(':')) {
+            console.warn(`[WARN] CLI_API_TOKEN from ${source} contains ":" but is not a valid token. Server expects a base token without namespace.`)
+        }
+        return { token: rawToken, didStrip: false }
+    }
+
+    if (!rawToken.includes(':')) {
+        return { token: rawToken, didStrip: false }
+    }
+
+    console.warn(
+        `[WARN] CLI_API_TOKEN from ${source} includes namespace suffix "${parsed.namespace}". ` +
+        'Server expects the base token only; stripping the suffix.'
+    )
+    return { token: parsed.baseToken, didStrip: true }
 }
 
 /**
@@ -99,18 +122,19 @@ export async function getOrCreateCliApiToken(dataDir: string): Promise<CliApiTok
     // 1. Environment variable has highest priority (backward compatible)
     const envToken = process.env.CLI_API_TOKEN
     if (envToken) {
-        if (isWeakToken(envToken)) {
+        const normalized = normalizeCliApiToken(envToken, 'env')
+        if (isWeakToken(normalized.token)) {
             console.warn('[WARN] CLI_API_TOKEN appears to be weak. Consider using a stronger secret.')
         }
 
         // Persist env token to file if not already saved (prevents token loss on env var issues)
         const settings = await readSettings(settingsFile)
         if (settings !== null && !settings.cliApiToken) {
-            settings.cliApiToken = envToken
+            settings.cliApiToken = normalized.token
             await writeSettings(settingsFile, settings)
         }
 
-        return { token: envToken, source: 'env', isNew: false, filePath: settingsFile }
+        return { token: normalized.token, source: 'env', isNew: false, filePath: settingsFile }
     }
 
     // 2. Read from settings file
@@ -124,7 +148,12 @@ export async function getOrCreateCliApiToken(dataDir: string): Promise<CliApiTok
     }
 
     if (settings.cliApiToken) {
-        return { token: settings.cliApiToken, source: 'file', isNew: false, filePath: settingsFile }
+        const normalized = normalizeCliApiToken(settings.cliApiToken, 'file')
+        if (normalized.didStrip) {
+            settings.cliApiToken = normalized.token
+            await writeSettings(settingsFile, settings)
+        }
+        return { token: normalized.token, source: 'file', isNew: false, filePath: settingsFile }
     }
 
     // 3. Generate new token and save

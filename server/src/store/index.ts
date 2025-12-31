@@ -211,6 +211,7 @@ export class Store {
     }
 
     private initSchema(): void {
+        // Step 1: Create tables and indexes that don't depend on new columns
         this.db.exec(`
             CREATE TABLE IF NOT EXISTS sessions (
                 id TEXT PRIMARY KEY,
@@ -230,7 +231,6 @@ export class Store {
                 seq INTEGER DEFAULT 0
             );
             CREATE INDEX IF NOT EXISTS idx_sessions_tag ON sessions(tag);
-            CREATE INDEX IF NOT EXISTS idx_sessions_tag_namespace ON sessions(tag, namespace);
 
             CREATE TABLE IF NOT EXISTS machines (
                 id TEXT PRIMARY KEY,
@@ -245,7 +245,6 @@ export class Store {
                 active_at INTEGER,
                 seq INTEGER DEFAULT 0
             );
-            CREATE INDEX IF NOT EXISTS idx_machines_namespace ON machines(namespace);
 
             CREATE TABLE IF NOT EXISTS messages (
                 id TEXT PRIMARY KEY,
@@ -268,9 +267,9 @@ export class Store {
                 UNIQUE(platform, platform_user_id)
             );
             CREATE INDEX IF NOT EXISTS idx_users_platform ON users(platform);
-            CREATE INDEX IF NOT EXISTS idx_users_platform_namespace ON users(platform, namespace);
         `)
 
+        // Step 2: Migrate existing tables (add missing columns)
         const sessionColumns = this.db.prepare('PRAGMA table_info(sessions)').all() as Array<{ name: string }>
         const sessionColumnNames = new Set(sessionColumns.map((c) => c.name))
 
@@ -295,6 +294,13 @@ export class Store {
         if (!userColumnNames.has('namespace')) {
             this.db.exec("ALTER TABLE users ADD COLUMN namespace TEXT NOT NULL DEFAULT 'default'")
         }
+
+        // Step 3: Create indexes that depend on namespace column (after migration)
+        this.db.exec(`
+            CREATE INDEX IF NOT EXISTS idx_sessions_tag_namespace ON sessions(tag, namespace);
+            CREATE INDEX IF NOT EXISTS idx_machines_namespace ON machines(namespace);
+            CREATE INDEX IF NOT EXISTS idx_users_platform_namespace ON users(platform, namespace);
+        `)
     }
 
     getOrCreateSession(tag: string, metadata: unknown, agentState: unknown, namespace: string): StoredSession {
