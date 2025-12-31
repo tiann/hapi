@@ -111,7 +111,7 @@ export class ApiClient {
         return await res.json() as T
     }
 
-    async authenticate(auth: { initData: string } | { accessToken: string }): Promise<AuthResponse> {
+    async authenticate(auth: { initData: string } | { accessToken: string } | { code: string }): Promise<AuthResponse> {
         const res = await fetch(this.buildUrl('/api/auth'), {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -202,6 +202,13 @@ export class ApiClient {
         const params = new URLSearchParams()
         params.set('path', path)
         return await this.request<FileReadResponse>(`/api/sessions/${encodeURIComponent(sessionId)}/file?${params.toString()}`)
+    }
+
+    async writeSessionFile(sessionId: string, path: string, content: string): Promise<void> {
+        await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/file`, {
+            method: 'POST',
+            body: JSON.stringify({ path, content })
+        })
     }
 
     async sendMessage(sessionId: string, text: string, localId?: string | null): Promise<void> {

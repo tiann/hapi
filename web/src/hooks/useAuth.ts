@@ -5,6 +5,7 @@ import type { AuthResponse } from '@/types/api'
 export type AuthSource =
     | { type: 'telegram'; initData: string }
     | { type: 'accessToken'; token: string }
+    | { type: 'lark'; code: string }
 
 function decodeJwtExpMs(token: string): number | null {
     const parts = token.split('.')
@@ -26,9 +27,12 @@ function decodeJwtExpMs(token: string): number | null {
     }
 }
 
-function getAuthPayload(source: AuthSource): { initData: string } | { accessToken: string } {
+function getAuthPayload(source: AuthSource): { initData: string } | { accessToken: string } | { code: string } {
     if (source.type === 'telegram') {
         return { initData: source.initData }
+    }
+    if (source.type === 'lark') {
+        return { code: source.code }
     }
     return { accessToken: source.token }
 }

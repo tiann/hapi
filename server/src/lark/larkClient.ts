@@ -224,4 +224,35 @@ export class LarkClient {
         }
         return ocid
     }
+
+    async validateAuthCode(code: string): Promise<{ open_id: string; name?: string; user_id?: string }> {
+        const token = await this.getTenantAccessToken()
+        const url = `${this.baseUrl}/authen/v1/access_token`
+        const res = await fetch(url, {
+            method: 'POST',
+            headers: {
+                'content-type': 'application/json; charset=utf-8',
+                'authorization': `Bearer ${token}`
+            },
+            body: JSON.stringify({
+                grant_type: 'authorization_code',
+                code
+            })
+        })
+
+        const json = await readJsonOrThrow(res)
+        if (!res.ok) {
+             throw new Error(`validateAuthCode http ${res.status}: ${json?.msg ?? 'unknown error'}`)
+        }
+        if (json.code !== 0) {
+            throw new Error(`validateAuthCode error: code=${json.code} msg=${json.msg}`)
+        }
+        
+        // data: { access_token, token_type, expires_in, name, en_name, avatar_url, open_id, union_id, email, user_id, ... }
+        return {
+            open_id: json.data?.open_id,
+            name: json.data?.name,
+            user_id: json.data?.user_id
+        }
+    }
 }

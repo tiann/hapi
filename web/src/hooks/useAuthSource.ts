@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { getTelegramWebApp, isTelegramEnvironment } from './useTelegram'
+import { isLarkEnvironment, loadLarkSdk } from './useLark'
 import type { AuthSource } from './useAuth'
 
 const ACCESS_TOKEN_PREFIX = 'hapi_access_token::'
@@ -89,6 +90,51 @@ export function useAuthSource(baseUrl: string): {
 
         // Check if we're in a Telegram environment before polling
         if (!isTelegramEnvironment()) {
+            // Check for Lark environment
+            if (isLarkEnvironment()) {
+                loadLarkSdk().then(() => {
+                    // Try to get appId from URL
+                    const query = new URLSearchParams(window.location.search)
+                    const appId = query.get('larkAppId') || ''
+
+                    const handleAuth = () => {
+                        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                        const tt = window.tt as any
+                        if (!tt || !tt.requestAuthCode) {
+                            console.warn('Lark auth API not available')
+                            setIsLoading(false)
+                            return
+                        }
+
+                        tt.requestAuthCode({
+                            appId,
+                            success: (info: any) => {
+                                if (info.code) {
+                                    setAuthSource({ type: 'lark', code: info.code })
+                                    setIsLoading(false)
+                                } else {
+                                    setIsLoading(false)
+                                }
+                            },
+                            fail: (err: any) => {
+                                console.error('Lark auth failed', err)
+                                setIsLoading(false)
+                            }
+                        })
+                    }
+
+                    if (window.h5sdk) {
+                        window.h5sdk.ready(handleAuth)
+                    } else {
+                        handleAuth()
+                    }
+                }).catch(e => {
+                    console.error('Failed to load Lark SDK', e)
+                    setIsLoading(false)
+                })
+                return
+            }
+
             // Plain browser - show login prompt immediately
             setIsLoading(false)
             return

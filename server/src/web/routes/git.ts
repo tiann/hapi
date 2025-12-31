@@ -13,6 +13,11 @@ const filePathSchema = z.object({
     path: z.string().min(1)
 })
 
+const fileWriteSchema = z.object({
+    path: z.string().min(1),
+    content: z.string()
+})
+
 function parseBooleanParam(value: string | undefined): boolean | undefined {
     if (value === 'true') return true
     if (value === 'false') return false
@@ -123,6 +128,32 @@ export function createGitRoutes(getSyncEngine: () => SyncEngine | null): Hono<We
         }
 
         const result = await runRpc(() => engine.readSessionFile(sessionResult.sessionId, parsed.data.path))
+        return c.json(result)
+    })
+
+    app.post('/sessions/:id/file', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const sessionPath = sessionResult.session.metadata?.path
+        if (!sessionPath) {
+            return c.json({ success: false, error: 'Session path not available' })
+        }
+
+        const body = await c.req.json().catch(() => null)
+        const parsed = fileWriteSchema.safeParse(body)
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid body' }, 400)
+        }
+
+        const result = await runRpc(() => engine.writeSessionFile(sessionResult.sessionId, parsed.data.path, parsed.data.content))
         return c.json(result)
     })
 

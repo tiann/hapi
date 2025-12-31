@@ -1,6 +1,8 @@
 import type { SyncEngine, SyncEvent, Session } from '../sync/syncEngine'
 import { LarkClient } from './larkClient'
 import { buildPermissionRequestCard, buildPermissionResultCard } from './larkCardBuilder'
+import { convertMessageToLark, buildHistorySummaryCard, type ConvertedMessage } from './messageConverter'
+import { LarkCardBuilder, buildWelcomeCard, buildSessionListCard, buildThinkingCard } from './cardBuilder'
 
 export interface LarkWipNotifierConfig {
     syncEngine: SyncEngine
@@ -11,11 +13,6 @@ export interface LarkWipNotifierConfig {
     actionSecret: string
 }
 
-/**
- * Lark (Feishu) WIP notifier.
- *
- * KISS: 仅跑通“事件 -> 文本构建 -> 输出(模拟推送)”全流程；不接入真实飞书 API。
- */
 export class LarkWipNotifier {
     private readonly syncEngine: SyncEngine
     private readonly miniAppUrl: string
@@ -29,6 +26,8 @@ export class LarkWipNotifier {
     private lastKnownRequests: Map<string, Set<string>> = new Map()
     private notificationDebounce: Map<string, NodeJS.Timeout> = new Map()
     private lastReadyNotificationAt: Map<string, number> = new Map()
+    private chatSessionMap: Map<string, string> = new Map()
+    private sessionChatMap: Map<string, string> = new Map()
 
     constructor(config: LarkWipNotifierConfig) {
         this.syncEngine = config.syncEngine
@@ -63,6 +62,19 @@ export class LarkWipNotifier {
         console.log('[LarkWIP] notifier stopped')
     }
 
+    getSessionForChat(chatId: string): string | undefined {
+        return this.chatSessionMap.get(chatId)
+    }
+
+    setSessionForChat(chatId: string, sessionId: string): void {
+        this.chatSessionMap.set(chatId, sessionId)
+        this.sessionChatMap.set(sessionId, chatId)
+    }
+
+    getChatForSession(sessionId: string): string | undefined {
+        return this.sessionChatMap.get(sessionId)
+    }
+
     private handleSyncEvent(event: SyncEvent): void {
         if (event.type === 'session-updated' && event.sessionId) {
             const session = this.syncEngine.getSession(event.sessionId)
@@ -75,12 +87,156 @@ export class LarkWipNotifier {
         if (event.type === 'message-received' && event.sessionId) {
             const message = (event.message?.content ?? event.data) as any
             const messageContent = message?.content
+
+            const chatId = this.getChatForSession(event.sessionId)
+            
+            const converted = convertMessageToLark(message)
+            if (converted.length > 0) {
+                if (chatId) {
+                    this.emitConvertedMessagesToChat(chatId, converted)
+                } else {
+                    this.emitConvertedMessages(converted)
+                }
+            }
+
             const eventType = messageContent?.type === 'event' ? messageContent?.data?.type : null
             if (eventType === 'ready') {
                 this.sendReadyNotification(event.sessionId)
                 return
             }
         }
+    }
+
+    private emitConvertedMessages(messages: ConvertedMessage[]): void {
+        for (const msg of messages) {
+            if (msg.type === 'text') {
+                this.emitToTargetsText(msg.content as string)
+            } else {
+                this.emitToTargetsCard({
+                    fallbackText: '[Interactive Card]',
+                    card: msg.content
+                })
+            }
+        }
+    }
+
+    private async emitConvertedMessagesToChat(chatId: string, messages: ConvertedMessage[]): Promise<void> {
+        for (const msg of messages) {
+            if (msg.type === 'text') {
+                await this.sendTextToChat(chatId, msg.content as string)
+            } else {
+                await this.sendCardToChat(chatId, msg.content)
+            }
+        }
+    }
+
+    async handleSlashCommand(chatId: string, command: string, args: string[]): Promise<void> {
+        switch (command) {
+            case '/sessions':
+            case '/list': {
+                const sessions = this.syncEngine.getSessions()
+                const card = buildSessionListCard(sessions.map(s => ({
+                    id: s.id,
+                    name: s.metadata?.name,
+                    path: s.metadata?.path ?? 'Unknown',
+                    active: s.active,
+                    updatedAt: s.updatedAt
+                })))
+                await this.sendCardToChat(chatId, card)
+                break
+            }
+
+            case '/switch': {
+                const sessionId = args[0]
+                if (!sessionId) {
+                    await this.sendTextToChat(chatId, '❌ Usage: /switch <session_id>')
+                    return
+                }
+                const session = this.syncEngine.getSession(sessionId)
+                if (!session) {
+                    await this.sendTextToChat(chatId, `❌ Session not found: ${sessionId}`)
+                    return
+                }
+                this.setSessionForChat(chatId, sessionId)
+                await this.sendTextToChat(chatId, `✅ Switched to session: ${getSessionName(session)}`)
+                break
+            }
+
+            case '/history': {
+                const sessionId = this.getSessionForChat(chatId)
+                if (!sessionId) {
+                    await this.sendTextToChat(chatId, '❌ No active session. Use /switch <session_id> first.')
+                    return
+                }
+                const messages = this.syncEngine.getSessionMessages(sessionId)
+                const card = buildHistorySummaryCard(messages.map(m => ({
+                    content: m.content,
+                    createdAt: m.createdAt
+                })))
+                await this.sendCardToChat(chatId, card)
+                break
+            }
+
+            case '/status': {
+                const sessionId = this.getSessionForChat(chatId)
+                if (!sessionId) {
+                    await this.sendTextToChat(chatId, '❌ No active session.')
+                    return
+                }
+                const session = this.syncEngine.getSession(sessionId)
+                if (!session) {
+                    await this.sendTextToChat(chatId, '❌ Session not found.')
+                    return
+                }
+                const status = session.active ? '🟢 Active' : '⚪ Inactive'
+                const thinking = session.thinking ? '🤔 Thinking...' : '💤 Idle'
+                const card = new LarkCardBuilder()
+                    .setHeader('📊 Session Status', getSessionName(session), session.active ? 'green' : 'grey')
+                    .addMarkdown(`**Status:** ${status}`)
+                    .addMarkdown(`**State:** ${thinking}`)
+                    .addMarkdown(`**Path:** \`${session.metadata?.path ?? 'Unknown'}\``)
+                    .addMarkdown(`**Updated:** ${new Date(session.updatedAt).toLocaleString('zh-CN')}`)
+                    .build()
+                await this.sendCardToChat(chatId, card)
+                break
+            }
+
+            case '/help':
+            default: {
+                const card = buildWelcomeCard()
+                await this.sendCardToChat(chatId, card)
+                break
+            }
+        }
+    }
+
+    async sendTextToChat(chatId: string, text: string): Promise<void> {
+        if (!this.client) {
+            console.log(`[LarkWIP][${chatId}] ${text}`)
+            return
+        }
+        try {
+            await this.client.sendText({ receiveIdType: 'chat_id', receiveId: chatId, text })
+        } catch (err) {
+            console.error(`[LarkWIP] Failed to send text to ${chatId}:`, err)
+        }
+    }
+
+    async sendCardToChat(chatId: string, card: unknown): Promise<void> {
+        if (!this.client) {
+            console.log(`[LarkWIP][${chatId}] [Card]`, JSON.stringify(card).slice(0, 200))
+            return
+        }
+        try {
+            await this.client.sendInteractive({ receiveIdType: 'chat_id', receiveId: chatId, card })
+        } catch (err) {
+            console.error(`[LarkWIP] Failed to send card to ${chatId}:`, err)
+        }
+    }
+
+    async sendThinkingIndicator(chatId: string, sessionName?: string): Promise<void> {
+        const card = buildThinkingCard(sessionName)
+        await this.sendCardToChat(chatId, card)
     }
 
     private getNotifiableSession(sessionId: string): Session | null {
@@ -112,7 +268,12 @@ export class LarkWipNotifier {
             `Link: ${url}`,
         ].join('\n')
 
-        this.emitToTargetsText(text)
+        const chatId = this.getChatForSession(sessionId)
+        if (chatId) {
+            this.sendTextToChat(chatId, text)
+        } else {
+            this.emitToTargetsText(text)
+        }
     }
 
     private checkForPermissionNotification(session: Session): void {
@@ -120,7 +281,6 @@ export class LarkWipNotifier {
         if (!currentSession) return
 
         const requests = currentSession.agentState?.requests
-        // requests 为 undefined/null 时，可能是增量更新，不要清空本地状态
         if (requests == null) return
 
         const newRequestIds = new Set(Object.keys(requests))
@@ -171,16 +331,21 @@ export class LarkWipNotifier {
             actionSecret: this.actionSecret,
         })
 
-        this.emitToTargetsCard({
-            fallbackText: [
-                '【Permission Request】',
-                `Session: ${getSessionName(session)}`,
-                `Tool: ${toolName}`,
-                argsText ? `Args: ${argsText}` : '',
-                `Link: ${buildMiniAppDeepLink(this.miniAppUrl, `session_${session.id}`)}`,
-            ].filter(Boolean).join('\n'),
-            card,
-        })
+        const chatId = this.getChatForSession(sessionId)
+        if (chatId) {
+            this.sendCardToChat(chatId, card)
+        } else {
+            this.emitToTargetsCard({
+                fallbackText: [
+                    '【Permission Request】',
+                    `Session: ${getSessionName(session)}`,
+                    `Tool: ${toolName}`,
+                    argsText ? `Args: ${argsText}` : '',
+                    `Link: ${buildMiniAppDeepLink(this.miniAppUrl, `session_${session.id}`)}`,
+                ].filter(Boolean).join('\n'),
+                card,
+            })
+        }
     }
 
     private emitToTargetsText(text: string): void {
@@ -191,11 +356,6 @@ export class LarkWipNotifier {
                 continue
             }
 
-            // 目标格式：
-            // - open_id:<id> / user_id:<id> / email:<id>
-            // - chat_id:<bigint> （自动转换成 open_chat_id 再发送）
-            // - oc_<id>          （默认当 open_chat_id 发送）
-            // - 纯数字           （默认当 chat_id bigint，自动转换）
             const parsed = parseTarget(target)
             if (!parsed) {
                 console.log(`[LarkWIP][${target}][SKIP] 目标格式不支持`)
@@ -210,7 +370,6 @@ export class LarkWipNotifier {
                 continue
             }
 
-            // kind === 'chat_id' -> cid2ocid -> open_chat_id -> send
             this.client.cid2ocid(parsed.chatId).then((openChatId) => {
                 return this.client!.sendText({ receiveIdType: 'chat_id', receiveId: openChatId, text })
             }).catch(err => {
@@ -241,7 +400,6 @@ export class LarkWipNotifier {
             const onFail = (err: unknown) => {
                 const msg = err instanceof Error ? err.message : String(err)
                 console.error(`[LarkWIP][${target}] Failed to send interactive card: ${msg}`)
-                // 降级：发送纯文本，保证“同等可用性”
                 this.emitToTargetsText(params.fallbackText)
             }
 
@@ -285,7 +443,6 @@ function parseTarget(input: string):
         return id ? { kind: 'direct', receiveIdType: 'email', receiveId: id } : null
     }
 
-    // 常见 open_chat_id 形态：oc_...
     if (t.startsWith('oc_')) {
         return { kind: 'direct', receiveIdType: 'chat_id', receiveId: t }
     }

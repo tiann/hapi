@@ -10,6 +10,19 @@ const larkEventSchema = z.object({
         event_type: z.string().optional(),
         token: z.string()
     }).passthrough(),
+    event: z.object({
+        message: z.object({
+            message_id: z.string(),
+            chat_id: z.string(),
+            message_type: z.string(),
+            content: z.string(), // JSON string
+        }).passthrough(),
+        sender: z.object({
+            sender_id: z.object({
+                open_id: z.string(),
+            }).passthrough(),
+        }).passthrough(),
+    }).optional(),
     action: z.object({
         value: z.any()
     }).optional(),
@@ -105,6 +118,56 @@ export function createLarkWebhookRoutes(options: {
                 console.error('[LarkWebhook] Action failed:', err)
                 return c.json({ code: 1, msg: String(err) })
             }
+        }
+
+        // 4. Message Received (Chat)
+        if (eventType === 'im.message.receive_v1' && data.event?.message) {
+            const message = data.event.message
+            
+            // Ignore non-text messages
+            if (message.message_type !== 'text') {
+                return c.json({ code: 0, msg: 'ignored non-text message' })
+            }
+
+            // Parse content
+            let text = ''
+            try {
+                const content = JSON.parse(message.content)
+                text = content.text
+            } catch {
+                return c.json({ code: 0, msg: 'invalid content json' })
+            }
+
+            // Ignore empty messages
+            if (!text || !text.trim()) {
+                return c.json({ code: 0, msg: 'empty message' })
+            }
+
+            const engine = options.getSyncEngine()
+            if (!engine) return c.json({ code: 0, msg: 'engine not ready' })
+
+            // Routing Strategy:
+            // 1. Find all active sessions
+            // 2. Pick the most recently active one
+            // TODO: Implement better routing (e.g. bind chat_id to session_id)
+            const sessions = engine.getActiveSessions()
+            if (sessions.length === 0) {
+                 // Optionally reply to user via LarkClient (not implemented here to keep webhook fast)
+                 console.log('[LarkWebhook] No active session to handle message')
+                 return c.json({ code: 0, msg: 'no active session' })
+            }
+            
+            // Sort by activeAt descending (newest first)
+            const session = sessions.sort((a, b) => b.activeAt - a.activeAt)[0]
+            
+            console.log(`[LarkWebhook] Routing message to session ${session.id}: ${text.slice(0, 50)}...`)
+            
+            await engine.sendMessage(session.id, {
+                text,
+                sentFrom: 'lark'
+            })
+            
+            return c.json({ code: 0, msg: 'success' })
         }
 
         return c.json({ code: 0, msg: 'ignored' })

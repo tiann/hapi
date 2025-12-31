@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react'
-import { Outlet, useLocation, useMatchRoute } from '@tanstack/react-router'
+import { Outlet, useMatchRoute } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
 import { getTelegramWebApp } from '@/hooks/useTelegram'
 import { initializeTheme } from '@/hooks/useTheme'
@@ -11,6 +11,7 @@ import { useSyncingState } from '@/hooks/useSyncingState'
 import { queryKeys } from '@/lib/query-keys'
 import { AppContextProvider } from '@/lib/app-context'
 import { useAppGoBack } from '@/hooks/useAppGoBack'
+import { usePlatformNavigation } from '@/hooks/usePlatformNavigation'
 import { LoginPrompt } from '@/components/LoginPrompt'
 import { InstallPrompt } from '@/components/InstallPrompt'
 import { OfflineBanner } from '@/components/OfflineBanner'
@@ -22,8 +23,9 @@ export function App() {
     const { authSource, isLoading: isAuthSourceLoading, setAccessToken } = useAuthSource(baseUrl)
     const { token, api, isLoading: isAuthLoading, error: authError, needsBinding, bind } = useAuth(authSource, baseUrl)
     const goBack = useAppGoBack()
-    const pathname = useLocation({ select: (location) => location.pathname })
     const matchRoute = useMatchRoute()
+
+    usePlatformNavigation()
 
     useEffect(() => {
         const tg = getTelegramWebApp()
@@ -68,24 +70,6 @@ export function App() {
         }
     }, [])
 
-    useEffect(() => {
-        const tg = getTelegramWebApp()
-        const backButton = tg?.BackButton
-        if (!backButton) return
-
-        if (pathname === '/' || pathname === '/sessions') {
-            backButton.offClick(goBack)
-            backButton.hide()
-            return
-        }
-
-        backButton.show()
-        backButton.onClick(goBack)
-        return () => {
-            backButton.offClick(goBack)
-            backButton.hide()
-        }
-    }, [goBack, pathname])
     const queryClient = useQueryClient()
     const sessionMatch = matchRoute({ to: '/sessions/$sessionId' })
     const selectedSessionId = sessionMatch ? sessionMatch.sessionId : null

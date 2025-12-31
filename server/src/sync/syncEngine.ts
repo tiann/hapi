@@ -642,7 +642,7 @@ export class SyncEngine {
         }
     }
 
-    async sendMessage(sessionId: string, payload: { text: string; localId?: string | null; sentFrom?: 'telegram-bot' | 'webapp' }): Promise<void> {
+    async sendMessage(sessionId: string, payload: { text: string; localId?: string | null; sentFrom?: 'telegram-bot' | 'webapp' | 'lark' }): Promise<void> {
         const sentFrom = payload.sentFrom ?? 'webapp'
 
         const content = {
@@ -841,6 +841,11 @@ export class SyncEngine {
 
     async readSessionFile(sessionId: string, path: string): Promise<RpcReadFileResponse> {
         return await this.sessionRpc(sessionId, 'readFile', { path }) as RpcReadFileResponse
+    }
+
+    async writeSessionFile(sessionId: string, path: string, content: string): Promise<{ success: boolean; hash?: string; error?: string }> {
+        const base64Content = Buffer.from(content).toString('base64')
+        return await this.sessionRpc(sessionId, 'writeFile', { path, content: base64Content, expectedHash: null }) as { success: boolean; hash?: string; error?: string }
     }
 
     async runRipgrep(sessionId: string, args: string[], cwd?: string): Promise<RpcCommandResponse> {
