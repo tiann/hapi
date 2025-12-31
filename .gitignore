@@ -3,6 +3,7 @@
 
 # Build output
 **/dist/
+**/.vitepress/cache/
 **/dist-exe/
 **/*.tsbuildinfo
 server/src/web/embeddedAssets.generated.ts

@@ -17,152 +17,50 @@ Run Claude Code / Codex / Gemini sessions locally and control them remotely thro
 
 ## Installation
 
-### Homebrew (macOS/Linux)
+```bash
+npm install -g @twsxtd/hapi
+```
+
+Or with Homebrew:
 
 ```bash
 brew install tiann/tap/hapi
 ```
 
-### npm/npx
+Other options: [Installation guide](docs/guide/installation.md)
+
+## Quickstart
+
+1. Start the server:
 
 ```bash
-npx @twsxtd/hapi
+hapi server
 ```
 
-Or install globally:
+2. Start a coding session:
 
 ```bash
-npm install -g @twsxtd/hapi
+hapi
 ```
 
-### Prebuilt binary
+3. Open the UI at `http://localhost:3006` and log in with the token in `~/.hapi/settings.json`.
 
-Download from [Releases](https://github.com/tiann/hapi/releases).
-
-**macOS users**: Remove the quarantine attribute before running:
-
-```bash
-xattr -d com.apple.quarantine ./hapi
-```
-
-### Docker
-
-Pull the pre-built image from GitHub Container Registry:
-
-```bash
-docker pull ghcr.io/tiann/hapi-server:latest
-```
-
-Run the server:
+## Docker (server only)
 
 ```bash
 docker run -d --name hapi -p 3006:3006 -v hapi-data:/data ghcr.io/tiann/hapi-server:latest
 ```
 
-<details>
-<summary>More options (Telegram + environment variables)</summary>
+More setup options: [Installation guide](docs/guide/installation.md)
 
-#### Environment Variables
+## Docs
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `WEBAPP_PORT` | `3006` | Server listening port |
-| `CLI_API_TOKEN` | (auto-generated) | Access token for CLI and web UI |
-| `TELEGRAM_BOT_TOKEN` | - | Telegram bot token (optional) |
-| `WEBAPP_URL` | - | Public URL for Telegram Mini App |
-
-#### With Telegram Support
-
-```bash
-docker run -d \
-  --name hapi \
-  -p 3006:3006 \
-  -v hapi-data:/data \
-  -e WEBAPP_URL="https://your-domain.example" \
-  -e TELEGRAM_BOT_TOKEN="your-bot-token" \
-  ghcr.io/tiann/hapi-server:latest
-```
-
-#### Build from Source
-
-```bash
-docker build -t hapi-server -f server/Dockerfile .
-```
-
-</details>
-
-## Quickstart
-
-1. Start the server on a machine you control:
-
-```bash
-hapi server
-# or: npx @twsxtd/hapi server
-```
-
-2. If the server has no public IP, expose it over HTTPS:
-   - Cloudflare Tunnel: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/
-   - Tailscale: https://tailscale.com/kb/
-
-3. Run the CLI on the machine where you want sessions:
-
-```bash
-# If the server is not on localhost:3006
-export HAPI_SERVER_URL="https://your-domain.example"
-
-hapi
-# or: npx @twsxtd/hapi
-```
-
-4. Open the UI in a browser at the server URL and log in with `CLI_API_TOKEN`.
-
-### Finding Your Access Token
-
-On first run, an Access Token is automatically generated and saved to `~/.hapi/settings.json`.
-
-View your token:
-
-```bash
-cat ~/.hapi/settings.json | grep cliApiToken
-```
-
-Or set your own via environment variable (takes priority over generated token):
-
-```bash
-export CLI_API_TOKEN="your-secret-token"
-```
-
-## Telegram Mini App (optional)
-
-To use Telegram for notifications and the Mini App:
-
-1. Create a bot with @BotFather and get the token.
-
-2. Expose your server over HTTPS (Cloudflare Tunnel, Tailscale, etc.).
-
-3. Add environment variables:
-
-```
-WEBAPP_URL="https://your-domain.example"
-TELEGRAM_BOT_TOKEN="..."
-```
-
-4. Start the server and send `/start` to the bot.
-
-5. Run `/app` in the bot chat to open the Mini App.
-
-6. If prompted, enter `CLI_API_TOKEN` to bind your Telegram account. After binding, you can open the Mini App without re-entering the token, and notifications only go to bound users.
-
-## Multi-agent support
-
-- `hapi` - Start a Claude Code session.
-- `hapi codex` - Start an OpenAI Codex session.
-- `hapi gemini` - Start a Google Gemini session.
-
-## CLI config file
-
-You can store the token in `~/.hapi/settings.json` instead of an env var.
-Environment variables take priority over the file.
+- [Quick Start](docs/guide/quick-start.md)
+- [Installation](docs/guide/installation.md)
+- [PWA](docs/guide/pwa.md)
+- [How it Works](docs/guide/how-it-works.md)
+- [Why HAPI](docs/guide/why-hapi.md)
+- [FAQ](docs/guide/faq.md)
 
 ## Requirements
 
@@ -175,9 +73,3 @@ Environment variables take priority over the file.
 bun install
 bun run build:single-exe
 ```
-
-## Docs
-
-- `cli/README.md` - CLI usage and config
-- `server/README.md` - Server setup and architecture
-- `web/README.md` - Web app behavior and dev workflow

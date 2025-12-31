@@ -1,0 +1,17 @@
+{
+  "name": "hapi-docs",
+  "version": "1.0.0",
+  "description": "HAPI Documentation",
+  "type": "module",
+  "scripts": {
+    "docs:dev": "vitepress dev",
+    "docs:build": "vitepress build",
+    "docs:preview": "vitepress preview"
+  },
+  "keywords": ["hapi", "ai", "agent", "documentation"],
+  "author": "",
+  "license": "LGPL-3.0-or-later",
+  "devDependencies": {
+    "vitepress": "^1.6.4"
+  }
+}
