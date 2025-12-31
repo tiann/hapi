@@ -11,7 +11,6 @@ import { randomBytes } from 'node:crypto'
 import { dirname, join } from 'node:path'
 
 export interface Settings {
-    onboardingCompleted?: boolean
     machineId?: string
     machineIdConfirmedByServer?: boolean
     daemonAutoStartWhenRunningHappy?: boolean
