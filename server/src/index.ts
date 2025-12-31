@@ -42,8 +42,19 @@ let larkWSClient: LarkWebSocketClient | null = null
 let webServer: BunServer<WebSocketData> | null = null
 let sseManager: SSEManager | null = null
 
+const DEBUG = process.env.DEBUG === 'true' || process.env.DEBUG === '1'
+
+function debugLog(...args: any[]) {
+    if (DEBUG) {
+        console.log('[DEBUG]', ...args)
+    }
+}
+
 async function main() {
     console.log('HAPI Server starting...')
+    if (DEBUG) {
+        console.log('[DEBUG] Debug mode enabled')
+    }
 
     // Load configuration (async - loads from env/file with persistence)
     const config = await createConfiguration()

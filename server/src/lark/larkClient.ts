@@ -44,7 +44,10 @@ type TenantAccessTokenResponse = {
 type SendMessageResponse = {
     code: number
     msg: string
-    data?: unknown
+    data?: {
+        message_id?: string
+        [key: string]: unknown
+    }
 }
 
 function nowSec(): number {
@@ -148,7 +151,7 @@ export class LarkClient {
         }
     }
 
-    async sendInteractive(params: SendInteractiveParams): Promise<void> {
+    async sendInteractive(params: SendInteractiveParams): Promise<string | undefined> {
         const token = await this.getTenantAccessToken()
 
         const url = `${this.baseUrl}/im/v1/messages?receive_id_type=${encodeURIComponent(params.receiveIdType)}`
@@ -172,6 +175,7 @@ export class LarkClient {
         if (json.code !== 0) {
             throw new Error(`sendInteractive error: code=${json.code} msg=${json.msg}; response=${jsonSnippet(json)}`)
         }
+        return json.data?.message_id
     }
 
     async patchMessage(params: PatchMessageParams): Promise<void> {

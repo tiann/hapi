@@ -36,24 +36,50 @@ export function createMessagesRoutes(getSyncEngine: () => SyncEngine | null): Ho
     })
 
     app.post('/sessions/:id/messages', async (c) => {
+        const DEBUG = process.env.DEBUG === 'true' || process.env.DEBUG === '1'
+        
+        if (DEBUG) {
+            console.log('[DEBUG] POST /sessions/:id/messages called')
+        }
+        
         const engine = requireSyncEngine(c, getSyncEngine)
         if (engine instanceof Response) {
+            if (DEBUG) console.log('[DEBUG] No SyncEngine available')
             return engine
         }
 
         const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
         if (sessionResult instanceof Response) {
+            if (DEBUG) console.log('[DEBUG] Session not found or not active')
             return sessionResult
         }
         const sessionId = sessionResult.sessionId
 
         const body = await c.req.json().catch(() => null)
+        if (DEBUG) {
+            console.log('[DEBUG] Request body:', body)
+        }
+        
         const parsed = sendMessageBodySchema.safeParse(body)
         if (!parsed.success) {
+            if (DEBUG) console.log('[DEBUG] Invalid body:', parsed.error)
             return c.json({ error: 'Invalid body' }, 400)
         }
 
+        if (DEBUG) {
+            console.log('[DEBUG] Calling engine.sendMessage:', {
+                sessionId,
+                text: parsed.data.text.substring(0, 100),
+                localId: parsed.data.localId
+            })
+        }
+        
         await engine.sendMessage(sessionId, { text: parsed.data.text, localId: parsed.data.localId, sentFrom: 'webapp' })
+        
+        if (DEBUG) {
+            console.log('[DEBUG] Message sent successfully')
+        }
+        
         return c.json({ ok: true })
     })
 

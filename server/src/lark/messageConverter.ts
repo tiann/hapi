@@ -76,6 +76,8 @@ type MessageContent = AssistantMessage | AgentOutputMessage | EventMessage | unk
 export interface ConvertedMessage {
     type: 'text' | 'card'
     content: string | InteractiveCard
+    toolUseId?: string
+    isToolResult?: boolean
 }
 
 export function convertMessageToLark(content: MessageContent): ConvertedMessage[] {
@@ -223,7 +225,12 @@ function convertAssistantMessage(msg: AssistantMessage): ConvertedMessage[] {
         const result = toolResults.get(toolCall.id)
         const card = convertToolCall(toolCall, result)
         if (card) {
-            results.push({ type: 'card', content: card })
+            results.push({
+                type: 'card',
+                content: card,
+                toolUseId: toolCall.id,
+                isToolResult: !!result
+            })
         }
     }
 

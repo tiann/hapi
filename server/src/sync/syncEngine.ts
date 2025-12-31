@@ -359,13 +359,25 @@ export class SyncEngine {
     }
 
     handleRealtimeEvent(event: SyncEvent): void {
+        const DEBUG = process.env.DEBUG === 'true' || process.env.DEBUG === '1'
+        
+        if (DEBUG) {
+            console.log('[DEBUG] handleRealtimeEvent:', {
+                type: event.type,
+                sessionId: event.sessionId,
+                hasMessage: !!event.message
+            })
+        }
+        
         if (event.type === 'session-updated' && event.sessionId) {
             this.refreshSession(event.sessionId)
+            this.emit(event)
             return
         }
 
         if (event.type === 'machine-updated' && event.machineId) {
             this.refreshMachine(event.machineId)
+            this.emit(event)
             return
         }
 
@@ -643,6 +655,16 @@ export class SyncEngine {
     }
 
     async sendMessage(sessionId: string, payload: { text: string; localId?: string | null; sentFrom?: 'telegram-bot' | 'webapp' | 'lark' }): Promise<void> {
+        const DEBUG = process.env.DEBUG === 'true' || process.env.DEBUG === '1'
+        if (DEBUG) {
+            console.log('[DEBUG] SyncEngine.sendMessage called:', {
+                sessionId,
+                text: payload.text.substring(0, 100),
+                sentFrom: payload.sentFrom,
+                localId: payload.localId
+            })
+        }
+        
         const sentFrom = payload.sentFrom ?? 'webapp'
 
         const content = {
@@ -657,6 +679,14 @@ export class SyncEngine {
         }
 
         const msg = this.store.addMessage(sessionId, content, payload.localId ?? undefined)
+        
+        if (DEBUG) {
+            console.log('[DEBUG] Message added to store:', {
+                messageId: msg.id,
+                sessionId,
+                seq: msg.seq
+            })
+        }
 
         const update = {
             id: msg.id,
@@ -674,6 +704,18 @@ export class SyncEngine {
                 }
             }
         }
+        
+        if (DEBUG) {
+            const room = this.io.of('/cli').adapter.rooms.get(`session:${sessionId}`)
+            const socketsInRoom = room ? room.size : 0
+            console.log('[DEBUG] Emitting update to CLI clients:', {
+                sessionId,
+                messageId: msg.id,
+                room: `session:${sessionId}`,
+                socketsInRoom
+            })
+        }
+        
         this.io.of('/cli').to(`session:${sessionId}`).emit('update', update)
 
         // Keep a small in-memory cache for Telegram rendering.

@@ -33,3 +33,8 @@ coverage/
 .claude/settings.local.json
 localdocs/
 execplan/
+
+.hapi-data/**
+.env
+.trae
+.bun-build

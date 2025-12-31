@@ -54,8 +54,14 @@ import { getCliArgs } from './utils/cliArgs'
   }
 
   if (subcommand === 'server') {
+    if (isBunCompiled()) {
+      console.error(chalk.red('Error:'), 'The "server" command is not available in the compiled binary.')
+      console.error(chalk.gray('Please run the server using "bun run" or "npm run" from the source code.'))
+      process.exit(1)
+    }
     try {
-      await import('../../server/src/index')
+      const serverPath = '../../server/src/index'
+      await import(serverPath)
     } catch (error) {
       console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
       if (process.env.DEBUG) {

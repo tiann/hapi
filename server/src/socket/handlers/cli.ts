@@ -137,15 +137,27 @@ export function registerCliHandlers(socket: SocketWithData, deps: CliHandlersDep
         return { ok: false, reason: 'not-found' }
     }
 
+    const DEBUG = process.env.DEBUG === 'true' || process.env.DEBUG === '1'
+    
     const auth = socket.handshake.auth as Record<string, unknown> | undefined
     const sessionId = typeof auth?.sessionId === 'string' ? auth.sessionId : null
     if (sessionId && resolveSessionAccess(sessionId).ok) {
         socket.join(`session:${sessionId}`)
+        if (DEBUG) {
+            console.log(`[DEBUG] CLI socket ${socket.id} joined room session:${sessionId}`)
+        }
+    } else {
+        if (DEBUG) {
+            console.log(`[DEBUG] CLI socket ${socket.id} connected without sessionId, auth:`, auth)
+        }
     }
 
     const machineId = typeof auth?.machineId === 'string' ? auth.machineId : null
     if (machineId && resolveMachineAccess(machineId).ok) {
         socket.join(`machine:${machineId}`)
+        if (DEBUG) {
+            console.log(`[DEBUG] CLI socket ${socket.id} joined room machine:${machineId}`)
+        }
     }
 
     const emitAccessError = (scope: 'session' | 'machine', id: string, reason: AccessErrorReason) => {
