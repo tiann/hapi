@@ -654,18 +654,20 @@ export class SyncEngine {
         }
     }
 
-    async sendMessage(sessionId: string, payload: { text: string; localId?: string | null; sentFrom?: 'telegram-bot' | 'webapp' | 'lark' }): Promise<void> {
+    async sendMessage(sessionId: string, payload: { text: string; localId?: string | null; sentFrom?: 'telegram-bot' | 'webapp' | 'lark'; messageType?: 'text' | 'command' }): Promise<void> {
         const DEBUG = process.env.DEBUG === 'true' || process.env.DEBUG === '1'
         if (DEBUG) {
             console.log('[DEBUG] SyncEngine.sendMessage called:', {
                 sessionId,
                 text: payload.text.substring(0, 100),
                 sentFrom: payload.sentFrom,
+                messageType: payload.messageType,
                 localId: payload.localId
             })
         }
         
         const sentFrom = payload.sentFrom ?? 'webapp'
+        const messageType = payload.messageType ?? 'text'
 
         const content = {
             role: 'user',
@@ -674,7 +676,8 @@ export class SyncEngine {
                 text: payload.text
             },
             meta: {
-                sentFrom
+                sentFrom,
+                messageType
             }
         }
 

@@ -3,6 +3,7 @@ import { LarkClient } from './larkClient'
 import { buildPermissionRequestCard, buildPermissionResultCard } from './larkCardBuilder'
 import { convertMessageToLark, buildHistorySummaryCard, type ConvertedMessage } from './messageConverter'
 import { LarkCardBuilder, buildWelcomeCard, buildSessionListCard, buildThinkingCard } from './cardBuilder'
+import { commandRouter, initializeCommands, type CommandContext, type AgentType } from '../commands'
 
 export interface LarkWipNotifierConfig {
     syncEngine: SyncEngine
@@ -40,6 +41,8 @@ export class LarkWipNotifier {
         if (this.appId && this.appSecret) {
             this.client = new LarkClient({ appId: this.appId, appSecret: this.appSecret })
         }
+
+        initializeCommands()
     }
 
     start(): void {
@@ -130,83 +133,33 @@ export class LarkWipNotifier {
         }
     }
 
-    async handleSlashCommand(chatId: string, command: string, args: string[]): Promise<void> {
-        switch (command) {
-            case '/sessions':
-            case '/list': {
-                const sessions = this.syncEngine.getSessions()
-                const card = buildSessionListCard(sessions.map(s => ({
-                    id: s.id,
-                    name: s.metadata?.name,
-                    path: s.metadata?.path ?? 'Unknown',
-                    active: s.active,
-                    updatedAt: s.updatedAt
-                })))
-                await this.sendCardToChat(chatId, card)
-                break
-            }
+    async handleSlashCommand(chatId: string, text: string, userId?: string, messageId?: string): Promise<void> {
+        const sessionId = this.getSessionForChat(chatId)
+        const session = sessionId ? this.syncEngine.getSession(sessionId) : undefined
+        const agentType = session?.metadata?.flavor as AgentType | undefined
 
-            case '/switch': {
-                const sessionId = args[0]
-                if (!sessionId) {
-                    await this.sendTextToChat(chatId, '❌ Usage: /switch <session_id>')
-                    return
-                }
-                const session = this.syncEngine.getSession(sessionId)
-                if (!session) {
-                    await this.sendTextToChat(chatId, `❌ Session not found: ${sessionId}`)
-                    return
-                }
-                this.setSessionForChat(chatId, sessionId)
-                await this.sendTextToChat(chatId, `✅ Switched to session: ${getSessionName(session)}`)
-                break
-            }
+        const ctx: CommandContext = {
+            chatId,
+            userId: userId || 'unknown',
+            messageId: messageId || 'unknown',
+            sessionId,
+            session,
+            agentType,
+            syncEngine: this.syncEngine,
+            sendText: (msg: string) => this.sendTextToChat(chatId, msg),
+            sendCard: (card: unknown) => this.sendCardToChat(chatId, card),
+            getSessionForChat: (cid: string) => this.getSessionForChat(cid),
+            setSessionForChat: (cid: string, sid: string) => this.setSessionForChat(cid, sid),
+        }
 
-            case '/history': {
-                const sessionId = this.getSessionForChat(chatId)
-                if (!sessionId) {
-                    await this.sendTextToChat(chatId, '❌ No active session. Use /switch <session_id> first.')
-                    return
-                }
-                const messages = this.syncEngine.getSessionMessages(sessionId)
-                const card = buildHistorySummaryCard(messages.map(m => ({
-                    content: m.content,
-                    createdAt: m.createdAt
-                })))
-                await this.sendCardToChat(chatId, card)
-                break
-            }
+        const result = await commandRouter.execute(ctx, text)
 
-            case '/status': {
-                const sessionId = this.getSessionForChat(chatId)
-                if (!sessionId) {
-                    await this.sendTextToChat(chatId, '❌ No active session.')
-                    return
-                }
-                const session = this.syncEngine.getSession(sessionId)
-                if (!session) {
-                    await this.sendTextToChat(chatId, '❌ Session not found.')
-                    return
-                }
-                const status = session.active ? '🟢 Active' : '⚪ Inactive'
-                const thinking = session.thinking ? '🤔 Thinking...' : '💤 Idle'
-                const card = new LarkCardBuilder()
-                    .setHeader('📊 Session Status', getSessionName(session), session.active ? 'green' : 'grey')
-                    .addMarkdown(`**Status:** ${status}`)
-                    .addMarkdown(`**State:** ${thinking}`)
-                    .addMarkdown(`**Path:** \`${session.metadata?.path ?? 'Unknown'}\``)
-                    .addMarkdown(`**Updated:** ${new Date(session.updatedAt).toLocaleString('zh-CN')}`)
-                    .build()
-                await this.sendCardToChat(chatId, card)
-                break
-            }
-
-            case '/help':
-            default: {
-                const card = buildWelcomeCard()
-                await this.sendCardToChat(chatId, card)
-                break
-            }
+        if (result.card) {
+            await this.sendCardToChat(chatId, result.card)
+        } else if (result.message) {
+            await this.sendTextToChat(chatId, result.message)
+        } else if (result.error) {
+            await this.sendTextToChat(chatId, `❌ ${result.error}`)
         }
     }
 

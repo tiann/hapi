@@ -154,13 +154,12 @@ export function createLarkWebhookRoutes(options: {
 
             const notifier = options.getLarkNotifier?.()
 
-            // Handle slash commands
-            if (text.startsWith('/')) {
+            const userId = data.event?.sender?.sender_id?.open_id || 'unknown'
+            const messageId = message.message_id
+
+            if (text.startsWith('/') || text.startsWith('!') || text.startsWith('@')) {
                 if (notifier) {
-                    const parts = text.split(/\s+/)
-                    const command = parts[0]
-                    const args = parts.slice(1)
-                    notifier.handleSlashCommand(chatId, command, args).catch(err => {
+                    notifier.handleSlashCommand(chatId, text, userId, messageId).catch(err => {
                         console.error('[LarkWebhook] Slash command failed:', err)
                     })
                     return c.json({ code: 0, msg: 'command received' })

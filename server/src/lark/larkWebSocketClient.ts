@@ -1,8 +1,9 @@
-import Lark from '@larksuiteoapi/node-sdk'
+import * as Lark from '@larksuiteoapi/node-sdk'
 import { LRUCache } from 'lru-cache'
 import type { SyncEngine, SyncEvent } from '../sync/syncEngine'
 import { LarkClient } from './larkClient'
 import { convertMessageToLark, type ConvertedMessage } from './messageConverter'
+import { commandRouter, initializeCommands, type CommandContext, type AgentType } from '../commands'
 
 export interface LarkWSClientConfig {
     appId: string
@@ -74,6 +75,7 @@ export class LarkWebSocketClient {
             baseUrl: (config.domain || 'https://open.feishu.cn') + '/open-apis'
         })
 
+        initializeCommands()
         console.log('[LarkWS] WebSocket client initialized')
     }
 
@@ -215,10 +217,54 @@ export class LarkWebSocketClient {
 
         console.log(`[LarkWS] Routing message to session ${sessionId}: ${text.slice(0, 50)}...`)
 
+        if (text.startsWith('/') || text.startsWith('!') || text.startsWith('@')) {
+            await this.handleSlashCommand(event.chat_id, text, data.sender.sender_id.open_id, event.message_id)
+            return
+        }
+
         await engine.sendMessage(sessionId, {
             text,
             sentFrom: 'lark'
         })
+    }
+
+    private async handleSlashCommand(chatId: string, text: string, userId: string, messageId: string): Promise<void> {
+        const engine = this.config.getSyncEngine()
+        if (!engine) {
+            console.log('[LarkWS] SyncEngine not ready for command')
+            return
+        }
+
+        const sessionId = this.chatSessions.get(chatId)
+        const session = sessionId ? engine.getSession(sessionId) : undefined
+        const agentType = session?.metadata?.flavor as AgentType | undefined
+
+        const ctx: CommandContext = {
+            chatId,
+            userId,
+            messageId,
+            sessionId,
+            session,
+            agentType,
+            syncEngine: engine,
+            sendText: (msg: string) => this.sendTextToChat(chatId, msg),
+            sendCard: (card: unknown) => this.sendCardToChat(chatId, card),
+            getSessionForChat: (cid: string) => this.chatSessions.get(cid),
+            setSessionForChat: (cid: string, sid: string) => {
+                this.chatSessions.set(cid, sid)
+                this.sessionChats.set(sid, cid)
+            },
+        }
+
+        const result = await commandRouter.execute(ctx, text)
+
+        if (result.card) {
+            await this.sendCardToChat(chatId, result.card)
+        } else if (result.message) {
+            await this.sendTextToChat(chatId, result.message)
+        } else if (result.error) {
+            await this.sendTextToChat(chatId, `❌ ${result.error}`)
+        }
     }
 
     private handleSyncEvent(event: SyncEvent): void {
@@ -354,5 +400,31 @@ export class LarkWebSocketClient {
 
     getSessionForChat(chatId: string): string | undefined {
         return this.chatSessions.get(chatId)
+    }
+
+    async sendTextToChat(chatId: string, text: string): Promise<void> {
+        try {
+            await this.larkClient.sendText({
+                receiveIdType: 'chat_id',
+                receiveId: chatId,
+                text
+            })
+            console.log(`[LarkWS] Sent text to chat ${chatId}`)
+        } catch (error) {
+            console.error(`[LarkWS] Failed to send text to chat ${chatId}:`, error)
+        }
+    }
+
+    async sendCardToChat(chatId: string, card: unknown): Promise<void> {
+        try {
+            await this.larkClient.sendInteractive({
+                receiveIdType: 'chat_id',
+                receiveId: chatId,
+                card
+            })
+            console.log(`[LarkWS] Sent card to chat ${chatId}`)
+        } catch (error) {
+            console.error(`[LarkWS] Failed to send card to chat ${chatId}:`, error)
+        }
     }
 }
