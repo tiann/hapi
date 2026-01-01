@@ -33,6 +33,8 @@ export interface CommandContext {
     sendCard: (card: unknown) => Promise<void>
     getSessionForChat: (chatId: string) => string | undefined
     setSessionForChat: (chatId: string, sessionId: string) => void
+    unbindChat: (chatId: string) => void
+    getAllBindings: () => Map<string, string>
 }
 
 export interface CommandResult {

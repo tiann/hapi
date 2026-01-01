@@ -254,6 +254,14 @@ export class LarkWebSocketClient {
                 this.chatSessions.set(cid, sid)
                 this.sessionChats.set(sid, cid)
             },
+            unbindChat: (cid: string) => {
+                const sid = this.chatSessions.get(cid)
+                if (sid) {
+                    this.sessionChats.delete(sid)
+                }
+                this.chatSessions.delete(cid)
+            },
+            getAllBindings: () => new Map(this.chatSessions),
         }
 
         const result = await commandRouter.execute(ctx, text)
