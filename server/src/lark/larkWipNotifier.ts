@@ -150,6 +150,14 @@ export class LarkWipNotifier {
             sendCard: (card: unknown) => this.sendCardToChat(chatId, card),
             getSessionForChat: (cid: string) => this.getSessionForChat(cid),
             setSessionForChat: (cid: string, sid: string) => this.setSessionForChat(cid, sid),
+            unbindChat: (cid: string) => {
+                const sid = this.chatSessionMap.get(cid)
+                if (sid) {
+                    this.sessionChatMap.delete(sid)
+                }
+                this.chatSessionMap.delete(cid)
+            },
+            getAllBindings: () => new Map(this.chatSessionMap),
         }
 
         const result = await commandRouter.execute(ctx, text)

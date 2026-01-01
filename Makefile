@@ -2,6 +2,14 @@
 
 .DEFAULT_GOAL := help
 
+-include .env
+export
+
+UTUN4_IP := $(shell ifconfig -L utun4 2>/dev/null | grep -o 'inet [0-9.]*' | awk '{print $$2}')
+WEBAPP_PORT ?= 8899
+WEBAPP_URL := http://$(UTUN4_IP):$(WEBAPP_PORT)
+HAPI_SERVER_URL := http://$(UTUN4_IP):$(WEBAPP_PORT)
+
 PID_FILE = .server.pid
 
 help:

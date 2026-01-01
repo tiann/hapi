@@ -34,7 +34,7 @@ coverage/
 localdocs/
 execplan/
 
-.hapi-data/**
+.hapi-data/
 .env
 .trae
 .bun-build

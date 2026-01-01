@@ -229,7 +229,7 @@ export class LarkClient {
         return ocid
     }
 
-    async validateAuthCode(code: string): Promise<{ open_id: string; name?: string; user_id?: string }> {
+    async validateAuthCode(code: string): Promise<{ open_id: string; name?: string; user_id?: string; namespace: string }> {
         const token = await this.getTenantAccessToken()
         const url = `${this.baseUrl}/authen/v1/access_token`
         const res = await fetch(url, {
@@ -252,11 +252,12 @@ export class LarkClient {
             throw new Error(`validateAuthCode error: code=${json.code} msg=${json.msg}`)
         }
         
-        // data: { access_token, token_type, expires_in, name, en_name, avatar_url, open_id, union_id, email, user_id, ... }
+        // data: { access_token, token_type, expires_in, name, en_name, avatar_url, open_id, union_id, email, user_id, tenant_key, ... }
         return {
             open_id: json.data?.open_id,
             name: json.data?.name,
-            user_id: json.data?.user_id
+            user_id: json.data?.user_id,
+            namespace: json.data?.tenant_key || ''
         }
     }
 }
