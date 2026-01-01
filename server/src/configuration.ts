@@ -142,6 +142,7 @@ class Configuration {
         // Store sources for logging (cliApiToken will be set by _setCliApiToken)
         this.sources = {
             ...sources,
+            cliApiToken: 'generated',
         } as ConfigSources
 
         // Ensure data directory exists

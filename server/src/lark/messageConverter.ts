@@ -148,28 +148,28 @@ function convertAgentOutput(msg: AgentOutputMessage): ConvertedMessage[] {
 }
 
 function convertEventMessage(msg: EventMessage): ConvertedMessage[] {
-    const event = msg.content.data
+    const event = msg.content.data as { type: string; mode?: string; message?: string }
     const results: ConvertedMessage[] = []
 
     switch (event.type) {
         case 'switch':
             results.push({
                 type: 'text',
-                content: `🔄 Switched to ${(event as { mode: string }).mode} mode`
+                content: `🔄 Switched to ${event.mode ?? 'unknown'} mode`
             })
             break
 
         case 'message':
             results.push({
                 type: 'text',
-                content: (event as { message: string }).message
+                content: event.message ?? ''
             })
             break
 
         case 'permission-mode-changed':
             results.push({
                 type: 'text',
-                content: `⚙️ Permission mode changed to: ${(event as { mode: string }).mode}`
+                content: `⚙️ Permission mode changed to: ${event.mode ?? 'unknown'}`
             })
             break
 

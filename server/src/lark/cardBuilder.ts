@@ -31,7 +31,7 @@ type CardHeader = {
     }
 }
 
-type InteractiveCard = {
+export type InteractiveCard = {
     config?: CardConfig
     header?: CardHeader
     elements: CardElement[]
@@ -99,7 +99,6 @@ export class LarkCardBuilder {
                 }
             },
             vertical_spacing: '8px',
-            padding: '8px 12px',
             elements: [
                 {
                     tag: 'markdown',

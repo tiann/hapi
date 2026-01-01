@@ -14,19 +14,35 @@ export interface LarkWSClientConfig {
 }
 
 export interface LarkMessageEvent {
-    event_id: string
+    event_id?: string
+    token?: string
+    create_time?: string
+    event_type?: string
+    tenant_key?: string
+    ts?: string
+    uuid?: string
+    type?: string
+    app_id?: string
     message: {
         message_id: string
         chat_id: string
-        chat_type: 'p2p' | 'group'
+        chat_type: string
         message_type: string
         content: string
+        root_id?: string
+        parent_id?: string
+        create_time?: string
+        update_time?: string
+        mentions?: unknown[]
     }
     sender: {
-        sender_id: {
-            open_id: string
+        sender_id?: {
+            open_id?: string
             user_id?: string
+            union_id?: string
         }
+        sender_type?: string
+        tenant_key?: string
     }
 }
 
@@ -152,15 +168,17 @@ export class LarkWebSocketClient {
 
         const event = data.message
 
-        if (this.eventCache.has(data.event_id)) {
-            console.log(`[LarkWS] Ignore duplicate event ${data.event_id}`)
+        const eventId = data.event_id || data.message.message_id
+        if (this.eventCache.has(eventId)) {
+            console.log(`[LarkWS] Ignore duplicate event ${eventId}`)
             return
         }
-        this.eventCache.set(data.event_id, true)
+        this.eventCache.set(eventId, true)
 
-        if (event.chat_type === 'p2p' && !this.p2pChats.has(event.chat_id)) {
-            this.p2pChats.set(event.chat_id, data.sender.sender_id.open_id)
-            this.p2pUsers.set(data.sender.sender_id.open_id, event.chat_id)
+        const senderId = data.sender?.sender_id?.open_id
+        if (event.chat_type === 'p2p' && senderId && !this.p2pChats.has(event.chat_id)) {
+            this.p2pChats.set(event.chat_id, senderId)
+            this.p2pUsers.set(senderId, event.chat_id)
         }
 
         if (event.message_type !== 'text') {
@@ -218,7 +236,7 @@ export class LarkWebSocketClient {
         console.log(`[LarkWS] Routing message to session ${sessionId}: ${text.slice(0, 50)}...`)
 
         if (text.startsWith('/') || text.startsWith('!') || text.startsWith('@')) {
-            await this.handleSlashCommand(event.chat_id, text, data.sender.sender_id.open_id, event.message_id)
+            await this.handleSlashCommand(event.chat_id, text, senderId, event.message_id)
             return
         }
 
@@ -228,7 +246,7 @@ export class LarkWebSocketClient {
         })
     }
 
-    private async handleSlashCommand(chatId: string, text: string, userId: string, messageId: string): Promise<void> {
+    private async handleSlashCommand(chatId: string, text: string, userId: string | undefined, messageId: string): Promise<void> {
         const engine = this.config.getSyncEngine()
         if (!engine) {
             console.log('[LarkWS] SyncEngine not ready for command')
@@ -241,7 +259,7 @@ export class LarkWebSocketClient {
 
         const ctx: CommandContext = {
             chatId,
-            userId,
+            userId: userId || 'unknown',
             messageId,
             sessionId,
             session,
