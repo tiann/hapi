@@ -1,6 +1,8 @@
 # Quick Start
 
-## Step 1: Install HAPI
+<Steps>
+
+## Install HAPI
 
 ::: code-group
 
@@ -20,7 +22,7 @@ npx @twsxtd/hapi
 
 Other install options: [Installation](/guide/installation)
 
-## Step 2: Start the server
+## Start the server
 
 ```bash
 hapi server
@@ -28,7 +30,7 @@ hapi server
 
 On first run, HAPI prints an access token and saves it to `~/.hapi/settings.json`.
 
-## Step 3: Start a coding session
+## Start a coding session
 
 ```bash
 hapi
@@ -36,7 +38,7 @@ hapi
 
 This starts Claude Code wrapped with HAPI. The session appears in the web UI.
 
-## Step 4: Open the UI
+## Open the UI
 
 Open your browser:
 
@@ -51,6 +53,8 @@ http://<your-computer-ip>:3006
 ```
 
 Enter your access token to log in.
+
+</Steps>
 
 ## Next steps
 
