@@ -11,10 +11,34 @@ export interface ClearCommandResult {
     isClear: boolean;
 }
 
+export type SpecialCommandType = 'compact' | 'clear' | 'native' | null;
+
 export interface SpecialCommandResult {
-    type: 'compact' | 'clear' | null;
+    type: SpecialCommandType;
     originalMessage?: string;
+    commandName?: string;
 }
+
+const NATIVE_COMMANDS = [
+    'model',
+    'status',
+    'bug',
+    'config',
+    'cost',
+    'doctor',
+    'help',
+    'init',
+    'login',
+    'logout',
+    'mcp',
+    'memory',
+    'pr-comments',
+    'review',
+    'vim',
+    'think',
+] as const;
+
+export type NativeCommand = typeof NATIVE_COMMANDS[number];
 
 /**
  * Parse /compact command
@@ -56,10 +80,29 @@ export function parseClear(message: string): ClearCommandResult {
 }
 
 /**
+ * Parse native commands that should be passed directly to the agent
+ */
+export function parseNativeCommand(message: string): { isNative: boolean; commandName?: string } {
+    const trimmed = message.trim();
+    if (!trimmed.startsWith('/')) {
+        return { isNative: false };
+    }
+
+    const parts = trimmed.slice(1).split(/\s+/);
+    const commandName = parts[0]?.toLowerCase();
+
+    if (commandName && NATIVE_COMMANDS.includes(commandName as NativeCommand)) {
+        return { isNative: true, commandName };
+    }
+
+    return { isNative: false };
+}
+
+/**
  * Unified parser for special commands
  * Returns the type of command and original message if applicable
  */
-export function parseSpecialCommand(message: string): SpecialCommandResult {
+export function parseSpecialCommand(message: string, messageType?: 'text' | 'command'): SpecialCommandResult {
     const compactResult = parseCompact(message);
     if (compactResult.isCompact) {
         return {
@@ -73,6 +116,17 @@ export function parseSpecialCommand(message: string): SpecialCommandResult {
         return {
             type: 'clear'
         };
+    }
+
+    if (messageType === 'command') {
+        const nativeResult = parseNativeCommand(message);
+        if (nativeResult.isNative) {
+            return {
+                type: 'native',
+                originalMessage: message,
+                commandName: nativeResult.commandName
+            };
+        }
     }
     
     return {

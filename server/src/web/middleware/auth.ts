@@ -5,17 +5,19 @@ import { jwtVerify } from 'jose'
 export type WebAppEnv = {
     Variables: {
         userId: number
+        namespace: string
     }
 }
 
 const jwtPayloadSchema = z.object({
-    uid: z.number()
+    uid: z.number(),
+    ns: z.string()
 })
 
 export function createAuthMiddleware(jwtSecret: Uint8Array): MiddlewareHandler<WebAppEnv> {
     return async (c, next) => {
         const path = c.req.path
-        if (path === '/api/auth') {
+        if (path === '/api/auth' || path === '/api/bind' || path === '/api/lark/webhook' || path === '/api/lark/permission') {
             await next()
             return
         }
@@ -37,6 +39,7 @@ export function createAuthMiddleware(jwtSecret: Uint8Array): MiddlewareHandler<W
             }
 
             c.set('userId', parsed.data.uid)
+            c.set('namespace', parsed.data.ns)
             await next()
             return
         } catch {

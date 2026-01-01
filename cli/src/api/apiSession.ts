@@ -121,6 +121,10 @@ export class ApiSessionClient extends EventEmitter {
             this.rpcHandlerManager.onSocketDisconnect()
         })
 
+        this.socket.on('error', (payload) => {
+            logger.debug('[API] Socket error:', payload)
+        })
+
         const handleTerminalEvent = <T extends { sessionId: string }>(
             schema: ZodType<T>,
             handler: (payload: T) => void
@@ -491,6 +495,13 @@ export class ApiSessionClient extends EventEmitter {
                     this.metadataVersion = obj.version
                     throw new Error('Metadata version mismatch')
                 }
+
+                if (obj.result === 'error') {
+                    const reason = typeof (obj as { reason?: unknown }).reason === 'string'
+                        ? (obj as { reason?: string }).reason
+                        : 'unknown'
+                    throw new Error(`Metadata update failed (${reason})`)
+                }
             })
         })
     }
@@ -542,6 +553,13 @@ export class ApiSessionClient extends EventEmitter {
                     }
                     this.agentStateVersion = obj.version
                     throw new Error('Agent state version mismatch')
+                }
+
+                if (obj.result === 'error') {
+                    const reason = typeof (obj as { reason?: unknown }).reason === 'string'
+                        ? (obj as { reason?: string }).reason
+                        : 'unknown'
+                    throw new Error(`Agent state update failed (${reason})`)
                 }
             })
         })

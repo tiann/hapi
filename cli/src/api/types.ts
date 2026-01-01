@@ -289,6 +289,7 @@ export type CreateMachineResponse = z.infer<typeof CreateMachineResponseSchema>
 
 export const MessageMetaSchema = z.object({
     sentFrom: z.string().optional(),
+    messageType: z.enum(['text', 'command']).optional(),
     fallbackModel: z.string().nullable().optional(),
     customSystemPrompt: z.string().nullable().optional(),
     appendSystemPrompt: z.string().nullable().optional(),
@@ -325,6 +326,8 @@ export const MessageContentSchema = z.union([UserMessageSchema, AgentMessageSche
 
 export type MessageContent = z.infer<typeof MessageContentSchema>
 
+export type SocketErrorReason = 'namespace-missing' | 'access-denied' | 'not-found'
+
 export interface ServerToClientEvents {
     update: (data: Update) => void
     'rpc-request': (data: { method: string; params: string }, callback: (response: string) => void) => void
@@ -332,7 +335,7 @@ export interface ServerToClientEvents {
     'terminal:write': (data: TerminalWritePayload) => void
     'terminal:resize': (data: TerminalResizePayload) => void
     'terminal:close': (data: TerminalClosePayload) => void
-    error: (data: { message: string }) => void
+    error: (data: { message: string; code?: SocketErrorReason; scope?: 'session' | 'machine'; id?: string }) => void
 }
 
 export interface ClientToServerEvents {
@@ -348,6 +351,7 @@ export interface ClientToServerEvents {
     'session-end': (data: { sid: string; time: number }) => void
     'update-metadata': (data: { sid: string; expectedVersion: number; metadata: unknown }, cb: (answer: {
         result: 'error'
+        reason?: SocketErrorReason
     } | {
         result: 'version-mismatch'
         version: number
@@ -359,6 +363,7 @@ export interface ClientToServerEvents {
     }) => void) => void
     'update-state': (data: { sid: string; expectedVersion: number; agentState: unknown | null }, cb: (answer: {
         result: 'error'
+        reason?: SocketErrorReason
     } | {
         result: 'version-mismatch'
         version: number
@@ -371,6 +376,7 @@ export interface ClientToServerEvents {
     'machine-alive': (data: { machineId: string; time: number }) => void
     'machine-update-metadata': (data: { machineId: string; expectedVersion: number; metadata: unknown }, cb: (answer: {
         result: 'error'
+        reason?: SocketErrorReason
     } | {
         result: 'version-mismatch'
         version: number
@@ -382,6 +388,7 @@ export interface ClientToServerEvents {
     }) => void) => void
     'machine-update-state': (data: { machineId: string; expectedVersion: number; daemonState: unknown | null }, cb: (answer: {
         result: 'error'
+        reason?: SocketErrorReason
     } | {
         result: 'version-mismatch'
         version: number

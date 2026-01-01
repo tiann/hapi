@@ -72,6 +72,7 @@ const machineMetadataSchema = z.object({
 
 export interface Session {
     id: string
+    namespace: string
     seq: number
     createdAt: number
     updatedAt: number
@@ -90,6 +91,7 @@ export interface Session {
 
 export interface Machine {
     id: string
+    namespace: string
     seq: number
     createdAt: number
     updatedAt: number
@@ -147,6 +149,7 @@ export type SyncEventType =
 
 export interface SyncEvent {
     type: SyncEventType
+    namespace?: string
     sessionId?: string
     machineId?: string
     data?: unknown
@@ -202,9 +205,12 @@ export class SyncEngine {
     }
 
     private emit(event: SyncEvent): void {
+        const namespace = this.resolveNamespace(event)
+        const enrichedEvent = namespace ? { ...event, namespace } : event
+
         for (const listener of this.listeners) {
             try {
-                listener(event)
+                listener(enrichedEvent)
             } catch (error) {
                 console.error('[SyncEngine] Listener error:', error)
             }
@@ -213,17 +219,32 @@ export class SyncEngine {
         const webappEvent: SyncEvent = event.type === 'message-received'
             ? {
                 type: event.type,
+                namespace,
                 sessionId: event.sessionId,
                 machineId: event.machineId,
                 message: event.message
             }
             : {
                 type: event.type,
+                namespace,
                 sessionId: event.sessionId,
                 machineId: event.machineId
             }
 
         this.sseManager.broadcast(webappEvent)
+    }
+
+    private resolveNamespace(event: SyncEvent): string | undefined {
+        if (event.namespace) {
+            return event.namespace
+        }
+        if (event.sessionId) {
+            return this.sessions.get(event.sessionId)?.namespace
+        }
+        if (event.machineId) {
+            return this.machines.get(event.machineId)?.namespace
+        }
+        return undefined
     }
 
     getConnectionStatus(): ConnectionStatus {
@@ -234,8 +255,20 @@ export class SyncEngine {
         return Array.from(this.sessions.values())
     }
 
+    getSessionsByNamespace(namespace: string): Session[] {
+        return this.getSessions().filter((session) => session.namespace === namespace)
+    }
+
     getSession(sessionId: string): Session | undefined {
         return this.sessions.get(sessionId)
+    }
+
+    getSessionByNamespace(sessionId: string, namespace: string): Session | undefined {
+        const session = this.sessions.get(sessionId)
+        if (!session || session.namespace !== namespace) {
+            return undefined
+        }
+        return session
     }
 
     getActiveSessions(): Session[] {
@@ -246,12 +279,28 @@ export class SyncEngine {
         return Array.from(this.machines.values())
     }
 
+    getMachinesByNamespace(namespace: string): Machine[] {
+        return this.getMachines().filter((machine) => machine.namespace === namespace)
+    }
+
     getMachine(machineId: string): Machine | undefined {
         return this.machines.get(machineId)
     }
 
+    getMachineByNamespace(machineId: string, namespace: string): Machine | undefined {
+        const machine = this.machines.get(machineId)
+        if (!machine || machine.namespace !== namespace) {
+            return undefined
+        }
+        return machine
+    }
+
     getOnlineMachines(): Machine[] {
         return this.getMachines().filter(m => m.active)
+    }
+
+    getOnlineMachinesByNamespace(namespace: string): Machine[] {
+        return this.getMachinesByNamespace(namespace).filter((machine) => machine.active)
     }
 
     getSessionMessages(sessionId: string): DecryptedMessage[] {
@@ -310,14 +359,32 @@ export class SyncEngine {
     }
 
     handleRealtimeEvent(event: SyncEvent): void {
+        const DEBUG = process.env.DEBUG === 'true' || process.env.DEBUG === '1'
+        
+        if (DEBUG) {
+            console.log('[DEBUG] handleRealtimeEvent:', {
+                type: event.type,
+                sessionId: event.sessionId,
+                hasMessage: !!event.message
+            })
+        }
+        
         if (event.type === 'session-updated' && event.sessionId) {
             this.refreshSession(event.sessionId)
+            this.emit(event)
             return
         }
 
         if (event.type === 'machine-updated' && event.machineId) {
             this.refreshMachine(event.machineId)
+            this.emit(event)
             return
+        }
+
+        if (event.type === 'message-received' && event.sessionId) {
+            if (!this.sessions.has(event.sessionId)) {
+                this.refreshSession(event.sessionId)
+            }
         }
 
         this.emit(event)
@@ -453,7 +520,7 @@ export class SyncEngine {
                 const message = messages[i]
                 const todos = extractTodoWriteTodosFromMessageContent(message.content)
                 if (todos) {
-                    const updated = this.store.setSessionTodos(sessionId, todos, message.createdAt)
+                    const updated = this.store.setSessionTodos(sessionId, todos, message.createdAt, stored.namespace)
                     if (updated) {
                         stored = this.store.getSession(sessionId) ?? stored
                     }
@@ -480,6 +547,7 @@ export class SyncEngine {
 
         const session: Session = {
             id: stored.id,
+            namespace: stored.namespace,
             seq: stored.seq,
             createdAt: stored.createdAt,
             updatedAt: stored.updatedAt,
@@ -530,6 +598,7 @@ export class SyncEngine {
 
         const machine: Machine = {
             id: stored.id,
+            namespace: stored.namespace,
             seq: stored.seq,
             createdAt: stored.createdAt,
             updatedAt: stored.updatedAt,
@@ -558,13 +627,13 @@ export class SyncEngine {
         }
     }
 
-    getOrCreateSession(tag: string, metadata: unknown, agentState: unknown): Session {
-        const stored = this.store.getOrCreateSession(tag, metadata, agentState)
+    getOrCreateSession(tag: string, metadata: unknown, agentState: unknown, namespace: string): Session {
+        const stored = this.store.getOrCreateSession(tag, metadata, agentState, namespace)
         return this.refreshSession(stored.id) ?? (() => { throw new Error('Failed to load session') })()
     }
 
-    getOrCreateMachine(id: string, metadata: unknown, daemonState: unknown): Machine {
-        const stored = this.store.getOrCreateMachine(id, metadata, daemonState)
+    getOrCreateMachine(id: string, metadata: unknown, daemonState: unknown, namespace: string): Machine {
+        const stored = this.store.getOrCreateMachine(id, metadata, daemonState, namespace)
         return this.refreshMachine(stored.id) ?? (() => { throw new Error('Failed to load machine') })()
     }
 
@@ -585,8 +654,20 @@ export class SyncEngine {
         }
     }
 
-    async sendMessage(sessionId: string, payload: { text: string; localId?: string | null; sentFrom?: 'telegram-bot' | 'webapp' }): Promise<void> {
+    async sendMessage(sessionId: string, payload: { text: string; localId?: string | null; sentFrom?: 'telegram-bot' | 'webapp' | 'lark'; messageType?: 'text' | 'command' }): Promise<void> {
+        const DEBUG = process.env.DEBUG === 'true' || process.env.DEBUG === '1'
+        if (DEBUG) {
+            console.log('[DEBUG] SyncEngine.sendMessage called:', {
+                sessionId,
+                text: payload.text.substring(0, 100),
+                sentFrom: payload.sentFrom,
+                messageType: payload.messageType,
+                localId: payload.localId
+            })
+        }
+        
         const sentFrom = payload.sentFrom ?? 'webapp'
+        const messageType = payload.messageType ?? 'text'
 
         const content = {
             role: 'user',
@@ -595,11 +676,20 @@ export class SyncEngine {
                 text: payload.text
             },
             meta: {
-                sentFrom
+                sentFrom,
+                messageType
             }
         }
 
         const msg = this.store.addMessage(sessionId, content, payload.localId ?? undefined)
+        
+        if (DEBUG) {
+            console.log('[DEBUG] Message added to store:', {
+                messageId: msg.id,
+                sessionId,
+                seq: msg.seq
+            })
+        }
 
         const update = {
             id: msg.id,
@@ -617,6 +707,18 @@ export class SyncEngine {
                 }
             }
         }
+        
+        if (DEBUG) {
+            const room = this.io.of('/cli').adapter.rooms.get(`session:${sessionId}`)
+            const socketsInRoom = room ? room.size : 0
+            console.log('[DEBUG] Emitting update to CLI clients:', {
+                sessionId,
+                messageId: msg.id,
+                room: `session:${sessionId}`,
+                socketsInRoom
+            })
+        }
+        
         this.io.of('/cli').to(`session:${sessionId}`).emit('update', update)
 
         // Keep a small in-memory cache for Telegram rendering.
@@ -784,6 +886,11 @@ export class SyncEngine {
 
     async readSessionFile(sessionId: string, path: string): Promise<RpcReadFileResponse> {
         return await this.sessionRpc(sessionId, 'readFile', { path }) as RpcReadFileResponse
+    }
+
+    async writeSessionFile(sessionId: string, path: string, content: string): Promise<{ success: boolean; hash?: string; error?: string }> {
+        const base64Content = Buffer.from(content).toString('base64')
+        return await this.sessionRpc(sessionId, 'writeFile', { path, content: base64Content, expectedHash: null }) as { success: boolean; hash?: string; error?: string }
     }
 
     async runRipgrep(sessionId: string, args: string[], cwd?: string): Promise<RpcCommandResponse> {

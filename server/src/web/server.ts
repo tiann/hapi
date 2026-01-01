@@ -8,6 +8,7 @@ import { configuration } from '../configuration'
 import type { SyncEngine } from '../sync/syncEngine'
 import { createAuthMiddleware, type WebAppEnv } from './middleware/auth'
 import { createAuthRoutes } from './routes/auth'
+import { createBindRoutes } from './routes/bind'
 import { createEventsRoutes } from './routes/events'
 import { createSessionsRoutes } from './routes/sessions'
 import { createMessagesRoutes } from './routes/messages'
@@ -15,12 +16,16 @@ import { createPermissionsRoutes } from './routes/permissions'
 import { createMachinesRoutes } from './routes/machines'
 import { createGitRoutes } from './routes/git'
 import { createCliRoutes } from './routes/cli'
+import { createLarkWebhookRoutes } from './routes/lark'
+import { createLarkActionRoutes } from './routes/larkAction'
+import type { LarkWipNotifier } from '../lark/larkWipNotifier'
 import type { SSEManager } from '../sse/sseManager'
 import type { Server as BunServer } from 'bun'
 import type { Server as SocketEngine } from '@socket.io/bun-engine'
 import type { WebSocketData } from '@socket.io/bun-engine'
 import { loadEmbeddedAssetMap, type EmbeddedWebAsset } from './embeddedAssets'
 import { isBunCompiled } from '../utils/bunCompiled'
+import type { Store } from '../store'
 
 function findWebappDistDir(): { distDir: string; indexHtmlPath: string } {
     const candidates = [
@@ -51,7 +56,9 @@ function serveEmbeddedAsset(asset: EmbeddedWebAsset): Response {
 function createWebApp(options: {
     getSyncEngine: () => SyncEngine | null
     getSseManager: () => SSEManager | null
+    getLarkNotifier?: () => LarkWipNotifier | null
     jwtSecret: Uint8Array
+    store: Store
     embeddedAssetMap: Map<string, EmbeddedWebAsset> | null
 }): Hono<WebAppEnv> {
     const app = new Hono<WebAppEnv>()
@@ -70,15 +77,27 @@ function createWebApp(options: {
 
     app.route('/cli', createCliRoutes(options.getSyncEngine))
 
-    app.route('/api', createAuthRoutes(options.jwtSecret))
+    app.route('/api', createAuthRoutes(options.jwtSecret, options.store))
+    app.route('/api', createBindRoutes(options.jwtSecret, options.store))
 
     app.use('/api/*', createAuthMiddleware(options.jwtSecret))
-    app.route('/api', createEventsRoutes(options.getSseManager))
+    app.route('/api', createEventsRoutes(options.getSseManager, options.getSyncEngine))
     app.route('/api', createSessionsRoutes(options.getSyncEngine))
     app.route('/api', createMessagesRoutes(options.getSyncEngine))
     app.route('/api', createPermissionsRoutes(options.getSyncEngine))
     app.route('/api', createMachinesRoutes(options.getSyncEngine))
     app.route('/api', createGitRoutes(options.getSyncEngine))
+    app.route('/api', createLarkWebhookRoutes({
+        getSyncEngine: options.getSyncEngine,
+        getLarkNotifier: options.getLarkNotifier,
+        verificationToken: configuration.larkVerificationToken,
+        appId: configuration.larkAppId,
+        appSecret: configuration.larkAppSecret,
+    }))
+    app.route('/api', createLarkActionRoutes({
+        getSyncEngine: options.getSyncEngine,
+        actionSecret: configuration.larkActionSecret,
+    }))
 
     if (options.embeddedAssetMap) {
         const embeddedAssetMap = options.embeddedAssetMap
@@ -161,7 +180,9 @@ function createWebApp(options: {
 export async function startWebServer(options: {
     getSyncEngine: () => SyncEngine | null
     getSseManager: () => SSEManager | null
+    getLarkNotifier?: () => LarkWipNotifier | null
     jwtSecret: Uint8Array
+    store: Store
     socketEngine: SocketEngine
 }): Promise<BunServer<WebSocketData>> {
     const isCompiled = isBunCompiled()
@@ -169,7 +190,9 @@ export async function startWebServer(options: {
     const app = createWebApp({
         getSyncEngine: options.getSyncEngine,
         getSseManager: options.getSseManager,
+        getLarkNotifier: options.getLarkNotifier,
         jwtSecret: options.jwtSecret,
+        store: options.store,
         embeddedAssetMap
     })
 

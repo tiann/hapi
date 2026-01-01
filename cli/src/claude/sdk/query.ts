@@ -22,7 +22,7 @@ import {
     type PermissionResult,
     AbortError
 } from './types'
-import { getDefaultClaudeCodePath, getCleanEnv, logDebug, streamToStdin } from './utils'
+import { getDefaultClaudeCodePath, logDebug, streamToStdin } from './utils'
 import { withBunRuntimeEnv } from '@/utils/bunRuntime'
 import { killProcessByChildProcess } from '@/utils/process'
 import type { Writable } from 'node:stream'
@@ -336,10 +336,8 @@ export function query(config: {
     cleanupMcpConfig = appendMcpConfigArg(spawnArgs, mcpServers)
 
     // Spawn Claude Code process
-    // Use clean env for global claude to avoid local node_modules/.bin taking precedence
-    const baseEnv = isCommandOnly ? getCleanEnv() : process.env
-    const spawnEnv = withBunRuntimeEnv(baseEnv, { allowBunBeBun: false })
-    logDebug(`Spawning Claude Code process: ${spawnCommand} ${spawnArgs.join(' ')} (using ${isCommandOnly ? 'clean' : 'normal'} env)`)
+    const spawnEnv = withBunRuntimeEnv(process.env, { allowBunBeBun: false })
+    logDebug(`Spawning Claude Code process: ${spawnCommand} ${spawnArgs.join(' ')}`)
 
     const child = spawn(spawnCommand, spawnArgs, {
         cwd,

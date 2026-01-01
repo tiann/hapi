@@ -18,6 +18,33 @@ type ApiClientOptions = {
     onUnauthorized?: () => Promise<string | null>
 }
 
+type ErrorPayload = {
+    error?: unknown
+}
+
+function parseErrorCode(bodyText: string): string | undefined {
+    try {
+        const parsed = JSON.parse(bodyText) as ErrorPayload
+        return typeof parsed.error === 'string' ? parsed.error : undefined
+    } catch {
+        return undefined
+    }
+}
+
+export class ApiError extends Error {
+    status: number
+    code?: string
+    body?: string
+
+    constructor(message: string, status: number, code?: string, body?: string) {
+        super(message)
+        this.name = 'ApiError'
+        this.status = status
+        this.code = code
+        this.body = body
+    }
+}
+
 export class ApiClient {
     private token: string
     private readonly baseUrl: string | null
@@ -84,7 +111,7 @@ export class ApiClient {
         return await res.json() as T
     }
 
-    async authenticate(auth: { initData: string } | { accessToken: string }): Promise<AuthResponse> {
+    async authenticate(auth: { initData: string } | { accessToken: string } | { code: string }): Promise<AuthResponse> {
         const res = await fetch(this.buildUrl('/api/auth'), {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -93,7 +120,26 @@ export class ApiClient {
 
         if (!res.ok) {
             const body = await res.text().catch(() => '')
-            throw new Error(`Auth failed: HTTP ${res.status} ${res.statusText}: ${body}`)
+            const code = parseErrorCode(body)
+            const detail = body ? `: ${body}` : ''
+            throw new ApiError(`Auth failed: HTTP ${res.status} ${res.statusText}${detail}`, res.status, code, body || undefined)
+        }
+
+        return await res.json() as AuthResponse
+    }
+
+    async bind(auth: { initData: string; accessToken: string }): Promise<AuthResponse> {
+        const res = await fetch(this.buildUrl('/api/bind'), {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(auth)
+        })
+
+        if (!res.ok) {
+            const body = await res.text().catch(() => '')
+            const code = parseErrorCode(body)
+            const detail = body ? `: ${body}` : ''
+            throw new ApiError(`Bind failed: HTTP ${res.status} ${res.statusText}${detail}`, res.status, code, body || undefined)
         }
 
         return await res.json() as AuthResponse
@@ -156,6 +202,13 @@ export class ApiClient {
         const params = new URLSearchParams()
         params.set('path', path)
         return await this.request<FileReadResponse>(`/api/sessions/${encodeURIComponent(sessionId)}/file?${params.toString()}`)
+    }
+
+    async writeSessionFile(sessionId: string, path: string, content: string): Promise<void> {
+        await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/file`, {
+            method: 'POST',
+            body: JSON.stringify({ path, content })
+        })
     }
 
     async sendMessage(sessionId: string, text: string, localId?: string | null): Promise<void> {

@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ApiClient } from '@/api/client'
+import { ApiClient, ApiError } from '@/api/client'
 import type { AuthResponse } from '@/types/api'
 
 export type AuthSource =
     | { type: 'telegram'; initData: string }
     | { type: 'accessToken'; token: string }
+    | { type: 'lark'; code: string }
 
 function decodeJwtExpMs(token: string): number | null {
     const parts = token.split('.')
@@ -26,11 +27,18 @@ function decodeJwtExpMs(token: string): number | null {
     }
 }
 
-function getAuthPayload(source: AuthSource): { initData: string } | { accessToken: string } {
+function getAuthPayload(source: AuthSource): { initData: string } | { accessToken: string } | { code: string } {
     if (source.type === 'telegram') {
         return { initData: source.initData }
     }
+    if (source.type === 'lark') {
+        return { code: source.code }
+    }
     return { accessToken: source.token }
+}
+
+function isNotBoundError(error: unknown): boolean {
+    return error instanceof ApiError && error.status === 401 && error.code === 'not_bound'
 }
 
 export function useAuth(authSource: AuthSource | null, baseUrl: string): {
@@ -39,11 +47,14 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
     api: ApiClient | null
     isLoading: boolean
     error: string | null
+    needsBinding: boolean
+    bind: (accessToken: string) => Promise<void>
 } {
     const [token, setToken] = useState<string | null>(null)
     const [user, setUser] = useState<AuthResponse['user'] | null>(null)
     const [isLoading, setIsLoading] = useState<boolean>(false)
     const [error, setError] = useState<string | null>(null)
+    const [needsBinding, setNeedsBinding] = useState<boolean>(false)
     const refreshPromiseRef = useRef<Promise<string | null> | null>(null)
     const tokenRef = useRef<string | null>(null)
     const lastRefreshAttemptRef = useRef<number>(0)
@@ -89,8 +100,17 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
                 setToken(auth.token)
                 setUser(auth.user)
                 setError(null)
+                setNeedsBinding(false)
                 return auth.token
-            } catch {
+            } catch (error) {
+                if (currentSource.type === 'telegram' && isNotBoundError(error)) {
+                    tokenRef.current = null
+                    setToken(null)
+                    setUser(null)
+                    setError(null)
+                    setNeedsBinding(true)
+                    return null
+                }
                 const isExpired = expMs ? Date.now() >= expMs : false
                 if (options?.hardFail || isExpired) {
                     tokenRef.current = null
@@ -117,6 +137,30 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
         }
     }, [baseUrl])
 
+    const bind = useCallback(async (accessToken: string) => {
+        const currentSource = authSourceRef.current
+        if (!currentSource || currentSource.type !== 'telegram') {
+            setError('Binding is only supported in Telegram.')
+            return
+        }
+
+        setIsLoading(true)
+        setError(null)
+        try {
+            const client = new ApiClient('', { baseUrl })
+            const auth = await client.bind({ initData: currentSource.initData, accessToken })
+            tokenRef.current = auth.token
+            setToken(auth.token)
+            setUser(auth.user)
+            setNeedsBinding(false)
+        } catch (error) {
+            setError(error instanceof Error ? error.message : 'Binding failed')
+            throw error
+        } finally {
+            setIsLoading(false)
+        }
+    }, [baseUrl])
+
     const api = useMemo(() => (
         token
             ? new ApiClient(token, {
@@ -133,19 +177,30 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
         async function run() {
             if (!authSource) {
                 // No auth source - waiting for login
+                setNeedsBinding(false)
                 return
             }
 
             setIsLoading(true)
             setError(null)
+            setNeedsBinding(false)
             try {
                 const client = new ApiClient('', { baseUrl }) // temporary for auth call
                 const auth = await client.authenticate(getAuthPayload(authSource))
                 if (isCancelled) return
                 setToken(auth.token)
                 setUser(auth.user)
+                setNeedsBinding(false)
             } catch (e) {
                 if (isCancelled) return
+                if (authSource.type === 'telegram' && isNotBoundError(e)) {
+                    setToken(null)
+                    setUser(null)
+                    setError(null)
+                    setNeedsBinding(true)
+                    return
+                }
+                setNeedsBinding(false)
                 setError(e instanceof Error ? e.message : 'Auth failed')
             } finally {
                 if (!isCancelled) {
@@ -168,6 +223,7 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
         setToken(null)
         setUser(null)
         setError(null)
+        setNeedsBinding(false)
     }, [baseUrl])
 
     useEffect(() => {
@@ -233,5 +289,5 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
         }
     }, [authSource, refreshAuth])
 
-    return { token, user, api, isLoading, error }
+    return { token, user, api, isLoading, error, needsBinding, bind }
 }

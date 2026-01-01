@@ -13,32 +13,45 @@ import { readSettings, writeSettings, type Settings } from './web/cliApiToken'
 
 export interface ServerSettings {
     telegramBotToken: string | null
-    allowedChatIds: number[]
     webappPort: number
     webappUrl: string
     corsOrigins: string[]
+
+    // Lark (Feishu) - WIP notification-only config
+    larkEnabled: boolean
+    larkUseWebSocket: boolean
+    larkNotifyTargets: string[]
+
+    // Lark (Feishu) - credentials (WIP)
+    larkAppId: string | null
+    larkAppSecret: string | null
+
+    // Lark (Feishu) - webhook verification token
+    larkVerificationToken: string | null
+
+    // Lark (Feishu) - URL action signing secret
+    larkActionSecret: string | null
 }
 
 export interface ServerSettingsResult {
     settings: ServerSettings
     sources: {
         telegramBotToken: 'env' | 'file' | 'default'
-        allowedChatIds: 'env' | 'file' | 'default'
         webappPort: 'env' | 'file' | 'default'
         webappUrl: 'env' | 'file' | 'default'
         corsOrigins: 'env' | 'file' | 'default'
+
+        larkEnabled: 'env' | 'file' | 'default'
+        larkUseWebSocket: 'env' | 'file' | 'default'
+        larkNotifyTargets: 'env' | 'file' | 'default'
+
+        larkAppId: 'env' | 'file' | 'default'
+        larkAppSecret: 'env' | 'file' | 'default'
+
+        larkVerificationToken: 'env' | 'file' | 'default'
+        larkActionSecret: 'env' | 'file' | 'default'
     }
     savedToFile: boolean
-}
-
-/**
- * Parse comma-separated chat IDs from string
- */
-function parseChatIds(str: string): number[] {
-    return str
-        .split(',')
-        .map(id => parseInt(id.trim(), 10))
-        .filter(id => !isNaN(id))
 }
 
 /**
@@ -64,6 +77,18 @@ function parseCorsOrigins(str: string): string[] {
         }
     }
     return normalized
+}
+
+function parseStringList(str: string): string[] {
+    return str
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean)
+}
+
+function parseBoolean(str: string): boolean {
+    const v = str.trim().toLowerCase()
+    return v === '1' || v === 'true' || v === 'yes' || v === 'y' || v === 'on'
 }
 
 /**
@@ -95,10 +120,19 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
     let needsSave = false
     const sources: ServerSettingsResult['sources'] = {
         telegramBotToken: 'default',
-        allowedChatIds: 'default',
         webappPort: 'default',
         webappUrl: 'default',
         corsOrigins: 'default',
+
+        larkEnabled: 'default',
+        larkUseWebSocket: 'default',
+        larkNotifyTargets: 'default',
+
+        larkAppId: 'default',
+        larkAppSecret: 'default',
+
+        larkVerificationToken: 'default',
+        larkActionSecret: 'default',
     }
 
     // telegramBotToken: env > file > null
@@ -113,20 +147,6 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
     } else if (settings.telegramBotToken !== undefined) {
         telegramBotToken = settings.telegramBotToken
         sources.telegramBotToken = 'file'
-    }
-
-    // allowedChatIds: env > file > []
-    let allowedChatIds: number[] = []
-    if (process.env.ALLOWED_CHAT_IDS) {
-        allowedChatIds = parseChatIds(process.env.ALLOWED_CHAT_IDS)
-        sources.allowedChatIds = 'env'
-        if (settings.allowedChatIds === undefined) {
-            settings.allowedChatIds = allowedChatIds
-            needsSave = true
-        }
-    } else if (settings.allowedChatIds !== undefined) {
-        allowedChatIds = settings.allowedChatIds
-        sources.allowedChatIds = 'file'
     }
 
     // webappPort: env > file > 3006
@@ -177,6 +197,106 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
         corsOrigins = deriveCorsOrigins(webappUrl)
     }
 
+    // larkEnabled: env > file > false
+    let larkEnabled = false
+    if (process.env.LARK_ENABLED) {
+        larkEnabled = parseBoolean(process.env.LARK_ENABLED)
+        sources.larkEnabled = 'env'
+        if (settings.larkEnabled === undefined) {
+            settings.larkEnabled = larkEnabled
+            needsSave = true
+        }
+    } else if (settings.larkEnabled !== undefined) {
+        larkEnabled = Boolean(settings.larkEnabled)
+        sources.larkEnabled = 'file'
+    }
+
+    // larkUseWebSocket: env > file > false
+    let larkUseWebSocket = false
+    if (process.env.LARK_USE_WEBSOCKET) {
+        larkUseWebSocket = parseBoolean(process.env.LARK_USE_WEBSOCKET)
+        sources.larkUseWebSocket = 'env'
+        if (settings.larkUseWebSocket === undefined) {
+            settings.larkUseWebSocket = larkUseWebSocket
+            needsSave = true
+        }
+    } else if (settings.larkUseWebSocket !== undefined) {
+        larkUseWebSocket = Boolean(settings.larkUseWebSocket)
+        sources.larkUseWebSocket = 'file'
+    }
+
+    // larkNotifyTargets: env > file > []
+    let larkNotifyTargets: string[] = []
+    if (process.env.LARK_NOTIFY_TARGETS) {
+        larkNotifyTargets = parseStringList(process.env.LARK_NOTIFY_TARGETS)
+        sources.larkNotifyTargets = 'env'
+        if (settings.larkNotifyTargets === undefined) {
+            settings.larkNotifyTargets = larkNotifyTargets
+            needsSave = true
+        }
+    } else if (settings.larkNotifyTargets !== undefined) {
+        larkNotifyTargets = Array.isArray(settings.larkNotifyTargets)
+            ? settings.larkNotifyTargets.filter((x) => typeof x === 'string')
+            : []
+        sources.larkNotifyTargets = 'file'
+    }
+
+    // larkAppId: env(APP_ID) > file > null
+    let larkAppId: string | null = null
+    if (process.env.APP_ID) {
+        larkAppId = process.env.APP_ID
+        sources.larkAppId = 'env'
+        if (settings.larkAppId === undefined) {
+            settings.larkAppId = larkAppId
+            needsSave = true
+        }
+    } else if (settings.larkAppId !== undefined) {
+        larkAppId = settings.larkAppId ?? null
+        sources.larkAppId = 'file'
+    }
+
+    // larkAppSecret: env(APP_SECRET) > file > null
+    let larkAppSecret: string | null = null
+    if (process.env.APP_SECRET) {
+        larkAppSecret = process.env.APP_SECRET
+        sources.larkAppSecret = 'env'
+        if (settings.larkAppSecret === undefined) {
+            settings.larkAppSecret = larkAppSecret
+            needsSave = true
+        }
+    } else if (settings.larkAppSecret !== undefined) {
+        larkAppSecret = settings.larkAppSecret ?? null
+        sources.larkAppSecret = 'file'
+    }
+
+    // larkVerificationToken: env(LARK_VERIFICATION_TOKEN) > file > null
+    let larkVerificationToken: string | null = null
+    if (process.env.LARK_VERIFICATION_TOKEN) {
+        larkVerificationToken = process.env.LARK_VERIFICATION_TOKEN
+        sources.larkVerificationToken = 'env'
+        if (settings.larkVerificationToken === undefined) {
+            settings.larkVerificationToken = larkVerificationToken
+            needsSave = true
+        }
+    } else if (settings.larkVerificationToken !== undefined) {
+        larkVerificationToken = settings.larkVerificationToken ?? null
+        sources.larkVerificationToken = 'file'
+    }
+
+    // larkActionSecret: env(LARK_ACTION_SECRET) > file > null
+    let larkActionSecret: string | null = null
+    if (process.env.LARK_ACTION_SECRET) {
+        larkActionSecret = process.env.LARK_ACTION_SECRET
+        sources.larkActionSecret = 'env'
+        if (settings.larkActionSecret === undefined) {
+            settings.larkActionSecret = larkActionSecret
+            needsSave = true
+        }
+    } else if (settings.larkActionSecret !== undefined) {
+        larkActionSecret = settings.larkActionSecret ?? null
+        sources.larkActionSecret = 'file'
+    }
+
     // Save settings if any new values were added
     if (needsSave) {
         await writeSettings(settingsFile, settings)
@@ -185,10 +305,19 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
     return {
         settings: {
             telegramBotToken,
-            allowedChatIds,
             webappPort,
             webappUrl,
             corsOrigins,
+
+            larkEnabled,
+            larkUseWebSocket,
+            larkNotifyTargets,
+
+            larkAppId,
+            larkAppSecret,
+
+            larkVerificationToken,
+            larkActionSecret,
         },
         sources,
         savedToFile: needsSave,

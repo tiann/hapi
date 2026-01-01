@@ -192,6 +192,13 @@ export class ApiMachineClient {
                 this.machine.metadataVersion = obj.version
                 throw new Error('Metadata version mismatch')
             }
+
+            if (obj.result === 'error') {
+                const reason = typeof (obj as { reason?: unknown }).reason === 'string'
+                    ? (obj as { reason?: string }).reason
+                    : 'unknown'
+                throw new Error(`Machine metadata update failed (${reason})`)
+            }
         })
     }
 
@@ -240,6 +247,13 @@ export class ApiMachineClient {
                 }
                 this.machine.daemonStateVersion = obj.version
                 throw new Error('Daemon state version mismatch')
+            }
+
+            if (obj.result === 'error') {
+                const reason = typeof (obj as { reason?: unknown }).reason === 'string'
+                    ? (obj as { reason?: string }).reason
+                    : 'unknown'
+                throw new Error(`Machine state update failed (${reason})`)
             }
         })
     }
@@ -321,6 +335,10 @@ export class ApiMachineClient {
 
         this.socket.on('connect_error', (error) => {
             logger.debug(`[API MACHINE] Connection error: ${error.message}`)
+        })
+
+        this.socket.on('error', (payload) => {
+            logger.debug('[API MACHINE] Socket error:', payload)
         })
     }
 

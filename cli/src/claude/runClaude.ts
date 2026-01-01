@@ -272,8 +272,8 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
             logger.debug(`[loop] User message received with no disallowed tools override, using current: ${currentDisallowedTools ? currentDisallowedTools.join(', ') : 'none'}`);
         }
 
-        // Check for special commands before processing
-        const specialCommand = parseSpecialCommand(message.content.text);
+        const messageType = message.meta?.messageType;
+        const specialCommand = parseSpecialCommand(message.content.text, messageType);
 
         if (specialCommand.type === 'compact') {
             logger.debug('[start] Detected /compact command');

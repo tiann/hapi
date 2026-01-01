@@ -2,6 +2,7 @@ import { diffLines } from 'diff'
 import { useMemo } from 'react'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { usePointerFocusRing } from '@/hooks/usePointerFocusRing'
+import { usePlatform } from '@/hooks/usePlatform'
 import { cn } from '@/lib/utils'
 
 export function DiffView(props: {
@@ -12,6 +13,7 @@ export function DiffView(props: {
 }) {
     const variant = props.variant ?? 'preview'
     const { suppressFocusRing, onTriggerPointerDown, onTriggerKeyDown, onTriggerBlur } = usePointerFocusRing()
+    const { isTouch } = usePlatform()
 
     const stats = useMemo(() => {
         const oldChars = props.oldString.length
@@ -89,6 +91,7 @@ function DiffInlineView(props: {
     filePath?: string
 }) {
     const diff = useMemo(() => diffLines(props.oldString, props.newString), [props.oldString, props.newString])
+    const { isTouch } = usePlatform()
 
     return (
         <div className="overflow-hidden rounded-md border border-[var(--app-border)] bg-[var(--app-subtle-bg)]">
@@ -98,7 +101,7 @@ function DiffInlineView(props: {
                 </div>
             ) : null}
 
-            <div className="font-mono text-xs">
+            <div className={cn('font-mono', isTouch ? 'text-sm' : 'text-xs')}>
                 {diff.map((part, i) => {
                     const lines = part.value.split('\n')
                     if (lines.length > 0 && lines[lines.length - 1] === '') {

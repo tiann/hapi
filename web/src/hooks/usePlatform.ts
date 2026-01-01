@@ -1,5 +1,6 @@
 import { useMemo } from 'react'
 import { getTelegramWebApp, isTelegramApp } from './useTelegram'
+import { isLarkEnvironment } from './useLark'
 
 export type HapticStyle = 'light' | 'medium' | 'heavy' | 'rigid' | 'soft'
 export type HapticNotification = 'error' | 'success' | 'warning'
@@ -16,6 +17,8 @@ export type PlatformHaptic = {
 export type Platform = {
     /** Whether running in Telegram Mini App */
     isTelegram: boolean
+    /** Whether running in Lark Mini App */
+    isLark: boolean
     /** Whether using a touch device (coarse pointer) */
     isTouch: boolean
     /** Haptic feedback (falls back to Vibration API on browser) */
@@ -69,6 +72,7 @@ const haptic: PlatformHaptic = {
 
 export function usePlatform(): Platform {
     const isTelegram = useMemo(() => isTelegramApp(), [])
+    const isLark = useMemo(() => isLarkEnvironment(), [])
     const isTouch = useMemo(
         () => typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches,
         []
@@ -76,6 +80,7 @@ export function usePlatform(): Platform {
 
     return {
         isTelegram,
+        isLark,
         isTouch,
         haptic
     }
@@ -86,6 +91,7 @@ export function getPlatform(): Platform {
     const isTouch = typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches
     return {
         isTelegram: isTelegramApp(),
+        isLark: isLarkEnvironment(),
         isTouch,
         haptic
     }

@@ -7,6 +7,7 @@ import { CopyIcon, CheckIcon } from '@/components/icons'
 import { useAppContext } from '@/lib/app-context'
 import { useAppGoBack } from '@/hooks/useAppGoBack'
 import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
+import { usePlatform } from '@/hooks/usePlatform'
 import { queryKeys } from '@/lib/query-keys'
 import { langAlias, useShikiHighlighter } from '@/lib/shiki'
 import { decodeBase64 } from '@/lib/utils'
@@ -162,6 +163,15 @@ export default function FilePage() {
     const highlighted = useShikiHighlighter(decodedContent, language)
 
     const [displayMode, setDisplayMode] = useState<'diff' | 'file'>('diff')
+    const [isEditing, setIsEditing] = useState(false)
+    const [editContent, setEditContent] = useState('')
+    const { isTouch } = usePlatform()
+
+    useEffect(() => {
+        if (decodedContent) {
+            setEditContent(decodedContent)
+        }
+    }, [decodedContent])
 
     useEffect(() => {
         if (diffSuccess && !diffContent) {
@@ -172,6 +182,18 @@ export default function FilePage() {
             setDisplayMode('file')
         }
     }, [diffSuccess, diffFailed, diffContent])
+
+    const handleSave = async () => {
+        if (!sessionId || !filePath) return
+        try {
+            await api.writeSessionFile(sessionId, filePath, editContent)
+            await fileQuery.refetch()
+            setIsEditing(false)
+        } catch (e) {
+            console.error('Failed to save', e)
+            alert('Failed to save file: ' + String(e))
+        }
+    }
 
     const loading = diffQuery.isLoading || fileQuery.isLoading
     const fileError = fileContentResult && !fileContentResult.success
@@ -213,26 +235,60 @@ export default function FilePage() {
                 </div>
             </div>
 
-            {diffContent ? (
-                <div className="bg-[var(--app-bg)]">
-                    <div className="mx-auto w-full max-w-content px-3 py-2 flex items-center gap-2 border-b border-[var(--app-divider)]">
-                        <button
-                            type="button"
-                            onClick={() => setDisplayMode('diff')}
-                            className={`rounded px-3 py-1 text-xs font-semibold ${displayMode === 'diff' ? 'bg-[var(--app-link)] text-white' : 'bg-[var(--app-subtle-bg)] text-[var(--app-hint)]'}`}
-                        >
-                            Diff
-                        </button>
-                        <button
-                            type="button"
-                            onClick={() => setDisplayMode('file')}
-                            className={`rounded px-3 py-1 text-xs font-semibold ${displayMode === 'file' ? 'bg-[var(--app-link)] text-white' : 'bg-[var(--app-subtle-bg)] text-[var(--app-hint)]'}`}
-                        >
-                            File
-                        </button>
-                    </div>
+            <div className="bg-[var(--app-bg)]">
+                <div className="mx-auto w-full max-w-content px-3 py-2 flex items-center gap-2 border-b border-[var(--app-divider)]">
+                    {diffContent ? (
+                        <>
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setDisplayMode('diff')
+                                    setIsEditing(false)
+                                }}
+                                className={`rounded px-3 py-1 text-xs font-semibold ${displayMode === 'diff' && !isEditing ? 'bg-[var(--app-link)] text-white' : 'bg-[var(--app-subtle-bg)] text-[var(--app-hint)]'}`}
+                            >
+                                Diff
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setDisplayMode('file')}
+                                className={`rounded px-3 py-1 text-xs font-semibold ${displayMode === 'file' && !isEditing ? 'bg-[var(--app-link)] text-white' : 'bg-[var(--app-subtle-bg)] text-[var(--app-hint)]'}`}
+                            >
+                                File
+                            </button>
+                        </>
+                    ) : null}
+
+                    <div className="flex-1" />
+
+                    {!binaryFile && !loading && !fileError && (
+                        <>
+                            {isEditing ? (
+                                <button
+                                    type="button"
+                                    onClick={handleSave}
+                                    className="rounded px-3 py-1 text-xs font-semibold bg-green-600 text-white"
+                                >
+                                    Save
+                                </button>
+                            ) : null}
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setIsEditing(!isEditing)
+                                    if (!isEditing) {
+                                        setDisplayMode('file')
+                                        setEditContent(decodedContent)
+                                    }
+                                }}
+                                className={`rounded px-3 py-1 text-xs font-semibold ${isEditing ? 'bg-[var(--app-subtle-bg)] text-[var(--app-fg)]' : 'bg-[var(--app-subtle-bg)] text-[var(--app-hint)]'}`}
+                            >
+                                {isEditing ? 'Cancel' : 'Edit'}
+                            </button>
+                        </>
+                    )}
                 </div>
-            ) : null}
+            </div>
 
             <div className="flex-1 overflow-y-auto">
                 <div className="mx-auto w-full max-w-content p-4">
@@ -251,6 +307,13 @@ export default function FilePage() {
                         <div className="text-sm text-[var(--app-hint)]">
                             This looks like a binary file. It cannot be displayed.
                         </div>
+                    ) : isEditing ? (
+                        <textarea
+                            className="w-full h-[calc(100vh-200px)] p-3 text-xs font-mono bg-[var(--app-code-bg)] text-[var(--app-fg)] resize-none border border-[var(--app-border)] rounded-md focus:border-[var(--app-link)] outline-none"
+                            value={editContent}
+                            onChange={(e) => setEditContent(e.target.value)}
+                            spellCheck={false}
+                        />
                     ) : displayMode === 'diff' && diffContent ? (
                         <DiffDisplay diffContent={diffContent} />
                     ) : displayMode === 'diff' && diffError ? (
