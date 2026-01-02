@@ -1,10 +1,10 @@
 # HAPI
 
-HAPI means "哈皮," a Chinese transliteration of [Happy](https://github.com/slopus/happy). Great credit to the original project.
+HAPI means "哈皮" a Chinese transliteration of [Happy](https://github.com/slopus/happy). Great credit to the original project.
 
 Run Claude Code / Codex / Gemini sessions locally and control them remotely through a Web / PWA / Telegram Mini App.
 
-> **Why HAPI?** HAPI is a local-first alternative to Happy. See [Why Not Happy?](docs/WHY_NOT_HAPPY.md) for the key differences.
+> **Why HAPI?** HAPI is a local-first alternative to Happy. See [Why Not Happy?](docs/guide/why-hapi.md) for the key differences.
 
 ## Features
 
@@ -19,27 +19,20 @@ Run Claude Code / Codex / Gemini sessions locally and control them remotely thro
 ## Getting Started
 
 ```bash
-npm install -g @twsxtd/hapi
-hapi server
+npx @twsxtd/hapi server # start the server locally
+npx @twsxtd/hapi # run claude code 
 ```
 
-Open `http://localhost:3006` and log in with the token.
+Open `http://<server-ip>:3006` and login with the token, if you need to access it remotely, see [Remote access](/guide/installation#remote-access)
 
 More options: [Quick Start](docs/guide/quick-start.md) | [Installation](docs/guide/installation.md)
 
 ## Docs
 
-- [Quick Start](docs/guide/quick-start.md)
-- [Installation](docs/guide/installation.md)
 - [PWA](docs/guide/pwa.md)
 - [How it Works](docs/guide/how-it-works.md)
 - [Why HAPI](docs/guide/why-hapi.md)
 - [FAQ](docs/guide/faq.md)
-
-## Requirements
-
-- Claude CLI installed and logged in (`claude` on PATH) for Claude Code sessions.
-- Bun if building from source.
 
 ## Build from source
 
