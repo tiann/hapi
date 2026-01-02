@@ -1,6 +1,6 @@
 /**
  * Terminal Font Provider
- * 
+ *
  * Provides font configuration for terminal rendering with Nerd Font support.
  * Follows SOLID principles for easy extensibility.
  */
