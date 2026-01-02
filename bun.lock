@@ -31,6 +31,7 @@
         "react": "^19.2.3",
         "socket.io-client": "^4.8.3",
         "tar": "^7.5.2",
+        "yaml": "^2.8.2",
         "zod": "^4.2.1",
       },
       "devDependencies": {
@@ -828,6 +829,8 @@
     "@twsxtd/hapi-linux-arm64": ["@twsxtd/hapi-linux-arm64@0.3.3", "", { "os": "linux", "cpu": "arm64", "bin": { "hapi": "bin/hapi" } }, "sha512-EEVExDmStfLg4X8SgcIN3BtE7Mmtr0EsRTDjAFNf/fCiH6QeaOERhiYgyRN1wnfN7/f6rbTzrBE1srTZKDwgYg=="],
 
     "@twsxtd/hapi-linux-x64": ["@twsxtd/hapi-linux-x64@0.3.3", "", { "os": "linux", "cpu": "x64", "bin": { "hapi": "bin/hapi" } }, "sha512-c+1iMVNlpyc5eXPXBnybahuH+U1aQAsavyR3DyRpk5EfNKcpp1Df9N4k14IjYvcKo3awIcpElV55n0xIaDDF3A=="],
+
+    "@twsxtd/hapi-win32-x64": ["@twsxtd/hapi-win32-x64@0.3.3", "", { "os": "win32", "cpu": "x64", "bin": { "hapi": "bin/hapi.exe" } }, "sha512-hHhzpDtoqD8VaqmfTdBKNGNnzOq3561rlPYJqWc1e1Q3D0lt1v85UiwOSikkxJdn/8DPr9+dfLhYrrrF48iCVA=="],
 
     "@types/babel__core": ["@types/babel__core@7.20.5", "", { "dependencies": { "@babel/parser": "^7.20.7", "@babel/types": "^7.20.7", "@types/babel__generator": "*", "@types/babel__template": "*", "@types/babel__traverse": "*" } }, "sha512-qoQprZvz5wQFJwMDqeseRXWv3rqMvhgpbXFfVyWhbx9X47POIA6i/+dXefEmZKoAgOaTdaIgNSMqMIU61yRyzA=="],
 

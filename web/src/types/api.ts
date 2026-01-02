@@ -189,6 +189,7 @@ export type SlashCommand = {
     name: string
     description?: string
     source: 'builtin' | 'user'
+    content?: string  // Expanded content for Codex user prompts
 }
 
 export type SlashCommandsResponse = {

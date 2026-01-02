@@ -5,6 +5,8 @@ export interface Suggestion {
     text: string
     label: string
     description?: string
+    content?: string  // Expanded content for Codex user prompts
+    source?: 'builtin' | 'user'
 }
 
 interface SuggestionOptions {

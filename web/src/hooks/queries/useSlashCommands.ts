@@ -89,7 +89,9 @@ export function useSlashCommands(
                 key: `/${cmd.name}`,
                 text: `/${cmd.name}`,
                 label: `/${cmd.name}`,
-                description: cmd.description ?? (cmd.source === 'user' ? 'Custom command' : undefined)
+                description: cmd.description ?? (cmd.source === 'user' ? 'Custom command' : undefined),
+                content: cmd.content,
+                source: cmd.source
             }))
     }, [commands])
 
