@@ -393,19 +393,28 @@ export class Store {
         id: string,
         metadata: unknown,
         expectedVersion: number,
-        namespace: string
+        namespace: string,
+        options?: { touchUpdatedAt?: boolean }
     ): VersionedUpdateResult<unknown | null> {
         try {
             const now = Date.now()
             const json = JSON.stringify(metadata)
+            const touchUpdatedAt = options?.touchUpdatedAt !== false
             const result = this.db.prepare(`
                 UPDATE sessions
                 SET metadata = @metadata,
                     metadata_version = metadata_version + 1,
-                    updated_at = @updated_at,
+                    updated_at = CASE WHEN @touch_updated_at = 1 THEN @updated_at ELSE updated_at END,
                     seq = seq + 1
                 WHERE id = @id AND namespace = @namespace AND metadata_version = @expectedVersion
-            `).run({ id, metadata: json, updated_at: now, expectedVersion, namespace })
+            `).run({
+                id,
+                metadata: json,
+                updated_at: now,
+                expectedVersion,
+                namespace,
+                touch_updated_at: touchUpdatedAt ? 1 : 0
+            })
 
             if (result.changes === 1) {
                 return { result: 'success', version: expectedVersion + 1, value: metadata }

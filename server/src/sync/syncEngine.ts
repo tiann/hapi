@@ -769,7 +769,8 @@ export class SyncEngine {
             sessionId,
             newMetadata,
             session.metadataVersion,
-            session.namespace
+            session.namespace,
+            { touchUpdatedAt: false }
         )
 
         if (result.result === 'error') {
