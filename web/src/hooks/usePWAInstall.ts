@@ -117,7 +117,7 @@ export function usePWAInstall(): {
 
     return {
         installState,
-        canInstall: installState === 'available',
+        canInstall: installState === 'available' && !dismissed,
         canInstallIOS: isIOS && !isStandalone && !dismissed,
         isStandalone,
         isIOS,

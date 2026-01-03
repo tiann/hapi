@@ -3,25 +3,9 @@ import type { ApiClient } from '@/api/client'
 import type { ModelMode, PermissionMode } from '@/types/api'
 import { queryKeys } from '@/lib/query-keys'
 
-type PermissionModeValue = 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'read-only' | 'safe-yolo' | 'yolo'
-type ModelModeValue = 'default' | 'sonnet' | 'opus'
-
-function toPermissionMode(mode: PermissionMode): PermissionModeValue {
-    if (mode === 'acceptEdits' || mode === 'bypassPermissions' || mode === 'plan' || mode === 'read-only' || mode === 'safe-yolo' || mode === 'yolo') {
-        return mode
-    }
-    return 'default'
-}
-
-function toModelMode(mode: ModelMode): ModelModeValue {
-    if (mode === 'sonnet' || mode === 'opus') {
-        return mode
-    }
-    return 'default'
-}
-
 export function useSessionActions(api: ApiClient | null, sessionId: string | null): {
     abortSession: () => Promise<void>
+    archiveSession: () => Promise<void>
     switchSession: () => Promise<void>
     setPermissionMode: (mode: PermissionMode) => Promise<void>
     setModelMode: (mode: ModelMode) => Promise<void>
@@ -47,6 +31,16 @@ export function useSessionActions(api: ApiClient | null, sessionId: string | nul
         onSuccess: () => void invalidateSession(),
     })
 
+    const archiveMutation = useMutation({
+        mutationFn: async () => {
+            if (!api || !sessionId) {
+                throw new Error('Session unavailable')
+            }
+            await api.archiveSession(sessionId)
+        },
+        onSuccess: () => void invalidateSession(),
+    })
+
     const switchMutation = useMutation({
         mutationFn: async () => {
             if (!api || !sessionId) {
@@ -62,7 +56,7 @@ export function useSessionActions(api: ApiClient | null, sessionId: string | nul
             if (!api || !sessionId) {
                 throw new Error('Session unavailable')
             }
-            await api.setPermissionMode(sessionId, toPermissionMode(mode))
+            await api.setPermissionMode(sessionId, mode)
         },
         onSuccess: () => void invalidateSession(),
     })
@@ -72,7 +66,7 @@ export function useSessionActions(api: ApiClient | null, sessionId: string | nul
             if (!api || !sessionId) {
                 throw new Error('Session unavailable')
             }
-            await api.setModelMode(sessionId, toModelMode(mode))
+            await api.setModelMode(sessionId, mode)
         },
         onSuccess: () => void invalidateSession(),
     })
@@ -104,11 +98,18 @@ export function useSessionActions(api: ApiClient | null, sessionId: string | nul
 
     return {
         abortSession: abortMutation.mutateAsync,
+        archiveSession: archiveMutation.mutateAsync,
         switchSession: switchMutation.mutateAsync,
         setPermissionMode: permissionMutation.mutateAsync,
         setModelMode: modelMutation.mutateAsync,
         renameSession: renameMutation.mutateAsync,
         deleteSession: deleteMutation.mutateAsync,
-        isPending: abortMutation.isPending || switchMutation.isPending || permissionMutation.isPending || modelMutation.isPending || renameMutation.isPending || deleteMutation.isPending,
+        isPending: abortMutation.isPending
+            || archiveMutation.isPending
+            || switchMutation.isPending
+            || permissionMutation.isPending
+            || modelMutation.isPending
+            || renameMutation.isPending
+            || deleteMutation.isPending,
     }
 }

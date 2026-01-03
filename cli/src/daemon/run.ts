@@ -3,11 +3,10 @@ import os from 'os';
 
 import { ApiClient } from '@/api/api';
 import { TrackedSession } from './types';
-import { MachineMetadata, DaemonState, Metadata } from '@/api/types';
+import { DaemonState, Metadata } from '@/api/types';
 import { SpawnSessionOptions, SpawnSessionResult } from '@/modules/common/registerCommonHandlers';
 import { logger } from '@/ui/logger';
 import { authAndSetupMachineIfNeeded } from '@/ui/auth';
-import { configuration } from '@/configuration';
 import packageJson from '../../package.json';
 import { getEnvironmentInfo } from '@/ui/doctor';
 import { spawnHappyCLI } from '@/utils/spawnHappyCLI';
@@ -18,17 +17,7 @@ import { cleanupDaemonState, getInstalledCliMtimeMs, isDaemonRunningCurrentlyIns
 import { startDaemonControlServer } from './controlServer';
 import { createWorktree, removeWorktree, type WorktreeInfo } from './worktree';
 import { join } from 'path';
-import { runtimePath } from '@/projectPath';
-
-// Prepare initial metadata
-export const initialMachineMetadata: MachineMetadata = {
-  host: os.hostname(),
-  platform: os.platform(),
-  happyCliVersion: packageJson.version,
-  homeDir: os.homedir(),
-  happyHomeDir: configuration.happyHomeDir,
-  happyLibDir: runtimePath()
-};
+import { buildMachineMetadata } from '@/agent/sessionFactory';
 
 export async function startDaemon(): Promise<void> {
   // We don't have cleanup function at the time of server construction
@@ -536,7 +525,7 @@ export async function startDaemon(): Promise<void> {
     // Get or create machine
     const machine = await api.getOrCreateMachine({
       machineId,
-      metadata: initialMachineMetadata,
+      metadata: buildMachineMetadata(),
       daemonState: initialDaemonState
     });
     logger.debug(`[DAEMON RUN] Machine registered: ${machine.id}`);

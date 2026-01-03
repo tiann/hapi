@@ -1,0 +1,18 @@
+{
+    "name": "@hapi/protocol",
+    "private": true,
+    "version": "0.1.0",
+    "type": "module",
+    "main": "./src/index.ts",
+    "types": "./src/index.ts",
+    "exports": {
+        ".": "./src/index.ts",
+        "./modes": "./src/modes.ts",
+        "./schemas": "./src/schemas.ts",
+        "./types": "./src/types.ts"
+    },
+    "sideEffects": false,
+    "dependencies": {
+        "zod": "^4.2.1"
+    }
+}

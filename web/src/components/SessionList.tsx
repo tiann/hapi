@@ -177,7 +177,7 @@ function SessionItem(props: {
     const [archiveOpen, setArchiveOpen] = useState(false)
     const [deleteOpen, setDeleteOpen] = useState(false)
 
-    const { abortSession, renameSession, deleteSession, isPending } = useSessionActions(api, s.id)
+    const { archiveSession, renameSession, deleteSession, isPending } = useSessionActions(api, s.id)
 
     const longPressHandlers = useLongPress({
         onLongPress: () => {
@@ -273,7 +273,7 @@ function SessionItem(props: {
                 description={`Are you sure you want to archive "${sessionName}"? This will disconnect the active session.`}
                 confirmLabel="Archive"
                 confirmingLabel="Archiving..."
-                onConfirm={abortSession}
+                onConfirm={archiveSession}
                 isPending={isPending}
                 destructive
             />

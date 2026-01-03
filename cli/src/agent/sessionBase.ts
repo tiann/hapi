@@ -58,6 +58,7 @@ export class AgentSessionBase<Mode> {
         this.keepAliveInterval = setInterval(() => {
             this.client.keepAlive(this.thinking, this.mode, this.getKeepAliveRuntime());
         }, 2000);
+
     }
 
     onThinkingChange = (thinking: boolean) => {

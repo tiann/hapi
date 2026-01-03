@@ -74,7 +74,7 @@ export function SessionHeader(props: {
     const [archiveOpen, setArchiveOpen] = useState(false)
     const [deleteOpen, setDeleteOpen] = useState(false)
 
-    const { abortSession, renameSession, deleteSession, isPending } = useSessionActions(api, session.id)
+    const { archiveSession, renameSession, deleteSession, isPending } = useSessionActions(api, session.id)
 
     const handleDelete = async () => {
         await deleteSession()
@@ -168,7 +168,7 @@ export function SessionHeader(props: {
                 description={`Are you sure you want to archive "${title}"? This will disconnect the active session.`}
                 confirmLabel="Archive"
                 confirmingLabel="Archiving..."
-                onConfirm={abortSession}
+                onConfirm={archiveSession}
                 isPending={isPending}
                 destructive
             />

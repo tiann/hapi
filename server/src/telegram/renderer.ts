@@ -6,6 +6,7 @@
  */
 
 import type { Session } from '../sync/syncEngine'
+import { getSessionName as getSharedSessionName } from '../notifications/sessionInfo'
 
 // Telegram limits
 const MAX_MESSAGE_LENGTH = 4096
@@ -20,15 +21,10 @@ export function truncate(text: string, maxLen: number = MAX_MESSAGE_LENGTH - 100
 }
 
 /**
- * Get session name (project name or directory name)
+ * Get session name for notifications
  */
 export function getSessionName(session: Session): string {
-    if (session.metadata?.name) return session.metadata.name
-    if (session.metadata?.path) {
-        const parts = session.metadata.path.split('/')
-        return parts[parts.length - 1] || session.metadata.path
-    }
-    return 'Unknown'
+    return getSharedSessionName(session)
 }
 
 /**

@@ -1,3 +1,4 @@
+import { getPermissionModesForFlavor, MODEL_MODE_LABELS, MODEL_MODES, PERMISSION_MODE_LABELS } from '@hapi/protocol'
 import { ComposerPrimitive, useAssistantApi, useAssistantState } from '@assistant-ui/react'
 import {
     type ChangeEvent as ReactChangeEvent,
@@ -24,25 +25,6 @@ import { ComposerButtons } from '@/components/AssistantChat/ComposerButtons'
 export interface TextInputState {
     text: string
     selection: { start: number; end: number }
-}
-
-const CLAUDE_PERMISSION_MODES = ['default', 'acceptEdits', 'plan', 'bypassPermissions'] as const
-const CODEX_PERMISSION_MODES = ['default', 'read-only', 'safe-yolo', 'yolo'] as const
-const PERMISSION_MODE_LABELS: Record<string, string> = {
-    default: 'Default',
-    acceptEdits: 'Accept Edits',
-    plan: 'Plan Mode',
-    bypassPermissions: 'Yolo',
-    'read-only': 'Read Only',
-    'safe-yolo': 'Safe Yolo',
-    yolo: 'Yolo'
-}
-
-const MODEL_MODES = ['default', 'sonnet', 'opus'] as const
-const MODEL_MODE_LABELS: Record<string, string> = {
-    default: 'Default',
-    sonnet: 'Sonnet',
-    opus: 'Opus'
 }
 
 const defaultSuggestionHandler = async (): Promise<Suggestion[]> => []
@@ -225,15 +207,10 @@ export function HappyComposer(props: {
         }
     }, [switchDisabled, onSwitchToRemote, haptic])
 
-    const permissionModes = useMemo(() => {
-        if (agentFlavor === 'codex') {
-            return CODEX_PERMISSION_MODES as readonly PermissionMode[]
-        }
-        if (agentFlavor === 'gemini') {
-            return [] as readonly PermissionMode[]
-        }
-        return CLAUDE_PERMISSION_MODES as readonly PermissionMode[]
-    }, [agentFlavor])
+    const permissionModes = useMemo(
+        () => getPermissionModesForFlavor(agentFlavor),
+        [agentFlavor]
+    )
 
     const handleKeyDown = useCallback((e: ReactKeyboardEvent<HTMLTextAreaElement>) => {
         const key = e.key

@@ -1,3 +1,5 @@
+import { AgentStateSchema, MetadataSchema, ModelModeSchema, PermissionModeSchema, TodosSchema } from '@hapi/protocol/schemas'
+import type { ModelMode, PermissionMode } from '@hapi/protocol/types'
 import { z } from 'zod'
 import { UsageSchema } from '@/claude/types'
 import type {
@@ -13,145 +15,11 @@ import type {
 
 export type Usage = z.infer<typeof UsageSchema>
 
-export type ClaudePermissionMode = 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan'
-export type CodexPermissionMode = 'default' | 'read-only' | 'safe-yolo' | 'yolo'
-export type SessionPermissionMode = ClaudePermissionMode | CodexPermissionMode
-export type SessionModelMode = 'default' | 'sonnet' | 'opus'
+export type { AgentState, ClaudePermissionMode, CodexPermissionMode, Metadata, Session } from '@hapi/protocol/types'
+export type SessionPermissionMode = PermissionMode
+export type SessionModelMode = ModelMode
 
-export type Metadata = {
-    path: string
-    host: string
-    version?: string
-    name?: string
-    os?: string
-    summary?: {
-        text: string
-        updatedAt: number
-    }
-    machineId?: string
-    claudeSessionId?: string
-    codexSessionId?: string
-    tools?: string[]
-    slashCommands?: string[]
-    homeDir: string
-    happyHomeDir: string
-    happyLibDir: string
-    happyToolsDir: string
-    startedFromDaemon?: boolean
-    hostPid?: number
-    startedBy?: 'daemon' | 'terminal'
-    lifecycleState?: 'running' | 'archiveRequested' | 'archived' | string
-    lifecycleStateSince?: number
-    archivedBy?: string
-    archiveReason?: string
-    flavor?: string
-    worktree?: {
-        basePath: string
-        branch: string
-        name: string
-        worktreePath?: string
-        createdAt?: number
-    }
-}
-
-export const MetadataSchema = z.object({
-    path: z.string(),
-    host: z.string(),
-    version: z.string().optional(),
-    name: z.string().optional(),
-    os: z.string().optional(),
-    summary: z.object({
-        text: z.string(),
-        updatedAt: z.number()
-    }).optional(),
-    machineId: z.string().optional(),
-    claudeSessionId: z.string().optional(),
-    codexSessionId: z.string().optional(),
-    tools: z.array(z.string()).optional(),
-    slashCommands: z.array(z.string()).optional(),
-    homeDir: z.string(),
-    happyHomeDir: z.string(),
-    happyLibDir: z.string(),
-    happyToolsDir: z.string(),
-    startedFromDaemon: z.boolean().optional(),
-    hostPid: z.number().optional(),
-    startedBy: z.enum(['daemon', 'terminal']).optional(),
-    lifecycleState: z.string().optional(),
-    lifecycleStateSince: z.number().optional(),
-    archivedBy: z.string().optional(),
-    archiveReason: z.string().optional(),
-    flavor: z.string().optional(),
-    worktree: z.object({
-        basePath: z.string(),
-        branch: z.string(),
-        name: z.string(),
-        worktreePath: z.string().optional(),
-        createdAt: z.number().optional()
-    }).optional()
-}).passthrough()
-
-export type AgentState = {
-    controlledByUser?: boolean | null | undefined
-    requests?: {
-        [id: string]: {
-            tool: string
-            arguments?: unknown
-            createdAt?: number | null | undefined
-        }
-    }
-    completedRequests?: {
-        [id: string]: {
-            tool: string
-            arguments?: unknown
-            createdAt?: number | null | undefined
-            completedAt?: number | null | undefined
-            status: 'canceled' | 'denied' | 'approved'
-            reason?: string
-            mode?: string
-            decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort'
-            allowTools?: string[]
-            answers?: Record<string, string[]>
-        }
-    }
-}
-
-export const AgentStateSchema = z.object({
-    controlledByUser: z.boolean().nullish(),
-    requests: z.record(z.string(), z.object({
-        tool: z.string(),
-        arguments: z.unknown(),
-        createdAt: z.number().nullish()
-    })).optional(),
-    completedRequests: z.record(z.string(), z.object({
-        tool: z.string(),
-        arguments: z.unknown(),
-        createdAt: z.number().nullish(),
-        completedAt: z.number().nullish(),
-        status: z.enum(['canceled', 'denied', 'approved']),
-        reason: z.string().optional(),
-        mode: z.string().optional(),
-        decision: z.enum(['approved', 'approved_for_session', 'denied', 'abort']).optional(),
-        allowTools: z.array(z.string()).optional(),
-        answers: z.record(z.string(), z.array(z.string())).optional()
-    })).optional()
-}).passthrough()
-
-export type Session = {
-    id: string
-    seq: number
-    createdAt: number
-    updatedAt: number
-    active: boolean
-    activeAt: number
-    metadata: Metadata | null
-    metadataVersion: number
-    agentState: AgentState | null
-    agentStateVersion: number
-    thinking?: boolean
-    thinkingAt?: number
-    permissionMode?: SessionPermissionMode
-    modelMode?: SessionModelMode
-}
+export { AgentStateSchema, MetadataSchema }
 
 export const MachineMetadataSchema = z.object({
     host: z.string(),
@@ -256,6 +124,7 @@ export type CliMessagesResponse = z.infer<typeof CliMessagesResponseSchema>
 export const CreateSessionResponseSchema = z.object({
     session: z.object({
         id: z.string(),
+        namespace: z.string(),
         seq: z.number(),
         createdAt: z.number(),
         updatedAt: z.number(),
@@ -264,7 +133,12 @@ export const CreateSessionResponseSchema = z.object({
         metadata: z.unknown().nullable(),
         metadataVersion: z.number(),
         agentState: z.unknown().nullable(),
-        agentStateVersion: z.number()
+        agentStateVersion: z.number(),
+        thinking: z.boolean(),
+        thinkingAt: z.number(),
+        todos: TodosSchema.optional(),
+        permissionMode: PermissionModeSchema.optional(),
+        modelMode: ModelModeSchema.optional()
     })
 })
 

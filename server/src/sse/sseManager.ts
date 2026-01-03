@@ -108,7 +108,7 @@ export class SSEManager {
         }
 
         if (event.type === 'message-received') {
-            return Boolean(event.sessionId && connection.sessionId === event.sessionId)
+            return connection.sessionId === event.sessionId
         }
 
         if (event.type === 'connection-changed') {
@@ -119,11 +119,11 @@ export class SSEManager {
             return true
         }
 
-        if (event.sessionId && connection.sessionId === event.sessionId) {
+        if ('sessionId' in event && connection.sessionId === event.sessionId) {
             return true
         }
 
-        if (event.machineId && connection.machineId === event.machineId) {
+        if ('machineId' in event && connection.machineId === event.machineId) {
             return true
         }
 

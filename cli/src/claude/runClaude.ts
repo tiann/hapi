@@ -1,30 +1,19 @@
-import os from 'node:os';
-import { randomUUID } from 'node:crypto';
-
-import { ApiClient } from '@/api/api';
 import { logger } from '@/ui/logger';
 import { restoreTerminalState } from '@/ui/terminalState';
 import { loop } from '@/claude/loop';
-import { AgentState, Metadata, SessionModelMode } from '@/api/types';
-import packageJson from '../../package.json';
-import { readSettings } from '@/persistence';
+import { AgentState, SessionModelMode } from '@/api/types';
 import { EnhancedMode, PermissionMode } from './loop';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { hashObject } from '@/utils/deterministicJson';
 import { extractSDKMetadataAsync } from '@/claude/sdk/metadataExtractor';
 import { parseSpecialCommand } from '@/parsers/specialCommands';
 import { getEnvironmentInfo } from '@/ui/doctor';
-import { configuration } from '@/configuration';
-import { notifyDaemonSessionStarted } from '@/daemon/controlClient';
-import { initialMachineMetadata } from '@/daemon/run';
 import { startHappyServer } from '@/claude/utils/startHappyServer';
 import { startHookServer } from '@/claude/utils/startHookServer';
 import { generateHookSettingsFile, cleanupHookSettingsFile } from '@/claude/utils/generateHookSettings';
 import { registerKillSessionHandler } from './registerKillSessionHandler';
-import { runtimePath } from '../projectPath';
-import { resolve } from 'node:path';
 import type { Session } from './session';
-import { readWorktreeEnv } from '@/utils/worktreeEnv';
+import { bootstrapSession } from '@/agent/sessionFactory';
 
 export interface StartOptions {
     model?: string
@@ -38,7 +27,6 @@ export interface StartOptions {
 
 export async function runClaude(options: StartOptions = {}): Promise<void> {
     const workingDirectory = process.cwd();
-    const sessionTag = randomUUID();
     const startedBy = options.startedBy ?? 'terminal';
 
     // Log environment info at startup
@@ -53,69 +41,21 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         // throw new Error('Daemon-spawned sessions cannot use local/interactive mode');
     }
 
-    // Create session service
-    const api = await ApiClient.create();
-
-    // Create a new session
-    let state: AgentState = {};
-
-    // Get machine ID from settings (should already be set up)
-    const settings = await readSettings();
-    let machineId = settings?.machineId
-    if (!machineId) {
-        console.error(`[START] No machine ID found in settings, which is unexpected since authAndSetupMachineIfNeeded should have created it. Please report this issue on ${packageJson.bugs}`);
-        process.exit(1);
-    }
-    logger.debug(`Using machineId: ${machineId}`);
-
-    // Create machine if it doesn't exist
-    await api.getOrCreateMachine({
-        machineId,
-        metadata: initialMachineMetadata
-    });
-
-    const worktreeInfo = readWorktreeEnv();
-    let metadata: Metadata = {
-        path: workingDirectory,
-        host: os.hostname(),
-        version: packageJson.version,
-        os: os.platform(),
-        machineId: machineId,
-        homeDir: os.homedir(),
-        happyHomeDir: configuration.happyHomeDir,
-        happyLibDir: runtimePath(),
-        happyToolsDir: resolve(runtimePath(), 'tools', 'unpacked'),
-        startedFromDaemon: startedBy === 'daemon',
-        hostPid: process.pid,
-        startedBy,
-        // Initialize lifecycle state
-        lifecycleState: 'running',
-        lifecycleStateSince: Date.now(),
+    const initialState: AgentState = {};
+    const { api, session, sessionInfo } = await bootstrapSession({
         flavor: 'claude',
-        worktree: worktreeInfo ?? undefined
-    };
-    const response = await api.getOrCreateSession({ tag: sessionTag, metadata, state });
-    logger.debug(`Session created: ${response.id}`);
-
-    // Always report to daemon if it exists
-    try {
-        logger.debug(`[START] Reporting session ${response.id} to daemon`);
-        const result = await notifyDaemonSessionStarted(response.id, metadata);
-        if (result.error) {
-            logger.debug(`[START] Failed to report to daemon (may not be running):`, result.error);
-        } else {
-            logger.debug(`[START] Reported session ${response.id} to daemon`);
-        }
-    } catch (error) {
-        logger.debug('[START] Failed to report to daemon (may not be running):', error);
-    }
+        startedBy,
+        workingDirectory,
+        agentState: initialState
+    });
+    logger.debug(`Session created: ${sessionInfo.id}`);
 
     // Extract SDK metadata in background and update session when ready
     extractSDKMetadataAsync(async (sdkMetadata) => {
         logger.debug('[start] SDK metadata extracted, updating session:', sdkMetadata);
         try {
             // Update session metadata with tools and slash commands
-            api.sessionSyncClient(response).updateMetadata((currentMetadata) => ({
+            session.updateMetadata((currentMetadata) => ({
                 ...currentMetadata,
                 tools: sdkMetadata.tools,
                 slashCommands: sdkMetadata.slashCommands
@@ -125,9 +65,6 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
             logger.debug('[start] Failed to update session metadata:', error);
         }
     });
-
-    // Create realtime session
-    const session = api.sessionSyncClient(response);
 
     // Start HAPI MCP server
     const happyServer = await startHappyServer(session);
@@ -168,7 +105,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
 
     // Print log file path
     const logPath = logger.logFilePath;
-    logger.infoDeveloper(`Session: ${response.id}`);
+    logger.infoDeveloper(`Session: ${sessionInfo.id}`);
     logger.infoDeveloper(`Logs: ${logPath}`);
 
     // Set initial agent state

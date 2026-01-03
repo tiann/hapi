@@ -55,6 +55,7 @@ export class ApiClient {
 
         return {
             id: raw.id,
+            namespace: raw.namespace,
             seq: raw.seq,
             createdAt: raw.createdAt,
             updatedAt: raw.updatedAt,
@@ -63,7 +64,12 @@ export class ApiClient {
             metadata,
             metadataVersion: raw.metadataVersion,
             agentState,
-            agentStateVersion: raw.agentStateVersion
+            agentStateVersion: raw.agentStateVersion,
+            thinking: raw.thinking,
+            thinkingAt: raw.thinkingAt,
+            todos: raw.todos,
+            permissionMode: raw.permissionMode,
+            modelMode: raw.modelMode
         }
     }
 

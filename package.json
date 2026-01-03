@@ -1,7 +1,7 @@
 {
     "name": "hapi",
     "private": true,
-    "workspaces": ["cli", "server", "web", "website", "docs"],
+    "workspaces": ["cli", "shared", "server", "web", "website", "docs"],
     "scripts": {
         "build:site": "bun run --cwd website build && bun run --cwd docs docs:build && cp -r docs/.vitepress/dist website/dist/public/docs",
         "dev": "concurrently \"bun run dev:server\" \"bun run dev:web\" --kill-others-on-exit",

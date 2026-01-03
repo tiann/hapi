@@ -1,15 +1,8 @@
-import { z } from 'zod'
+import { TodoItemSchema, TodosSchema } from '@hapi/protocol/schemas'
+import type { TodoItem } from '@hapi/protocol/types'
 
-export const TodoItemSchema = z.object({
-    content: z.string(),
-    status: z.enum(['pending', 'in_progress', 'completed']),
-    priority: z.enum(['high', 'medium', 'low']),
-    id: z.string()
-}).passthrough()
-
-export type TodoItem = z.infer<typeof TodoItemSchema>
-
-export const TodosSchema = z.array(TodoItemSchema)
+export { TodoItemSchema, TodosSchema }
+export type { TodoItem }
 
 function isObject(value: unknown): value is Record<string, unknown> {
     return Boolean(value) && typeof value === 'object'

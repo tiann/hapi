@@ -145,6 +145,16 @@ export function InstallPrompt() {
                 >
                     Install
                 </button>
+                <button
+                    onClick={() => {
+                        haptic.impact('light')
+                        dismissInstall()
+                    }}
+                    className="shrink-0 p-2 text-[var(--app-hint)] active:opacity-60"
+                    aria-label="Dismiss"
+                >
+                    <CloseIcon className="w-4 h-4" />
+                </button>
             </div>
         </div>
     )

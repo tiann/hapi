@@ -1,24 +1,13 @@
-import os from 'node:os';
-import { randomUUID } from 'node:crypto';
-import { resolve } from 'node:path';
-
-import { ApiClient } from '@/api/api';
 import { logger } from '@/ui/logger';
 import { restoreTerminalState } from '@/ui/terminalState';
 import { loop, type EnhancedMode, type PermissionMode } from './loop';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { hashObject } from '@/utils/deterministicJson';
-import { readSettings } from '@/persistence';
-import { configuration } from '@/configuration';
-import { notifyDaemonSessionStarted } from '@/daemon/controlClient';
-import { initialMachineMetadata } from '@/daemon/run';
 import { registerKillSessionHandler } from '@/claude/registerKillSessionHandler';
-import type { AgentState, Metadata } from '@/api/types';
-import packageJson from '../../package.json';
-import { runtimePath } from '@/projectPath';
+import type { AgentState } from '@/api/types';
 import type { CodexSession } from './session';
 import { parseCodexCliOverrides } from './utils/codexCliOverrides';
-import { readWorktreeEnv } from '@/utils/worktreeEnv';
+import { bootstrapSession } from '@/agent/sessionFactory';
 
 export { emitReadyIfIdle } from './utils/emitReadyIfIdle';
 
@@ -28,64 +17,19 @@ export async function runCodex(opts: {
     permissionMode?: PermissionMode;
 }): Promise<void> {
     const workingDirectory = process.cwd();
-    const sessionTag = randomUUID();
     const startedBy = opts.startedBy ?? 'terminal';
 
     logger.debug(`[codex] Starting with options: startedBy=${startedBy}`);
 
-    const api = await ApiClient.create();
-
-    const settings = await readSettings();
-    const machineId = settings?.machineId;
-    if (!machineId) {
-        console.error(`[START] No machine ID found in settings, which is unexpected since authAndSetupMachineIfNeeded should have created it. Please report this issue on ${packageJson.bugs}`);
-        process.exit(1);
-    }
-    logger.debug(`Using machineId: ${machineId}`);
-
-    await api.getOrCreateMachine({
-        machineId,
-        metadata: initialMachineMetadata
-    });
-
     let state: AgentState = {
         controlledByUser: false
     };
-
-    const worktreeInfo = readWorktreeEnv();
-    const metadata: Metadata = {
-        path: workingDirectory,
-        host: os.hostname(),
-        version: packageJson.version,
-        os: os.platform(),
-        machineId: machineId,
-        homeDir: os.homedir(),
-        happyHomeDir: configuration.happyHomeDir,
-        happyLibDir: runtimePath(),
-        happyToolsDir: resolve(runtimePath(), 'tools', 'unpacked'),
-        startedFromDaemon: startedBy === 'daemon',
-        hostPid: process.pid,
-        startedBy,
-        lifecycleState: 'running',
-        lifecycleStateSince: Date.now(),
+    const { api, session } = await bootstrapSession({
         flavor: 'codex',
-        worktree: worktreeInfo ?? undefined
-    };
-
-    const response = await api.getOrCreateSession({ tag: sessionTag, metadata, state });
-    const session = api.sessionSyncClient(response);
-
-    try {
-        logger.debug(`[START] Reporting session ${response.id} to daemon`);
-        const result = await notifyDaemonSessionStarted(response.id, metadata);
-        if (result.error) {
-            logger.debug(`[START] Failed to report to daemon (may not be running):`, result.error);
-        } else {
-            logger.debug(`[START] Reported session ${response.id} to daemon`);
-        }
-    } catch (error) {
-        logger.debug('[START] Failed to report to daemon (may not be running):', error);
-    }
+        startedBy,
+        workingDirectory,
+        agentState: state
+    });
 
     const startingMode: 'local' | 'remote' = startedBy === 'daemon' ? 'remote' : 'local';
 

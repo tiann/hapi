@@ -11,6 +11,8 @@
 import { createConfiguration, type ConfigSource } from './configuration'
 import { Store } from './store'
 import { SyncEngine, type SyncEvent } from './sync/syncEngine'
+import { NotificationHub } from './notifications/notificationHub'
+import type { NotificationChannel } from './notifications/notificationTypes'
 import { HappyBot } from './telegram/bot'
 import { startWebServer } from './web/server'
 import { getOrCreateJwtSecret } from './web/jwtSecret'
@@ -18,7 +20,7 @@ import { createSocketServer } from './socket/server'
 import { SSEManager } from './sse/sseManager'
 import { getOrCreateVapidKeys } from './push/vapidKeys'
 import { PushService } from './push/pushService'
-import { PushNotifier } from './push/pushNotifier'
+import { PushNotificationChannel } from './push/pushNotificationChannel'
 import type { Server as BunServer } from 'bun'
 import type { WebSocketData } from '@socket.io/bun-engine'
 
@@ -40,7 +42,7 @@ let syncEngine: SyncEngine | null = null
 let happyBot: HappyBot | null = null
 let webServer: BunServer<WebSocketData> | null = null
 let sseManager: SSEManager | null = null
-let pushNotifier: PushNotifier | null = null
+let notificationHub: NotificationHub | null = null
 
 async function main() {
     console.log('HAPI Server starting...')
@@ -95,7 +97,10 @@ async function main() {
     })
 
     syncEngine = new SyncEngine(store, socketServer.io, socketServer.rpcRegistry, sseManager)
-    pushNotifier = new PushNotifier(syncEngine, pushService, config.miniAppUrl)
+
+    const notificationChannels: NotificationChannel[] = [
+        new PushNotificationChannel(pushService, config.miniAppUrl)
+    ]
 
     // Initialize Telegram bot (optional)
     if (config.telegramEnabled && config.telegramBotToken) {
@@ -105,7 +110,10 @@ async function main() {
             miniAppUrl: config.miniAppUrl,
             store
         })
+        notificationChannels.push(happyBot)
     }
+
+    notificationHub = new NotificationHub(syncEngine, notificationChannels)
 
     // Start HTTP server for Telegram Mini App
     webServer = await startWebServer({
@@ -128,7 +136,7 @@ async function main() {
     const shutdown = async () => {
         console.log('\nShutting down...')
         await happyBot?.stop()
-        pushNotifier?.stop()
+        notificationHub?.stop()
         syncEngine?.stop()
         sseManager?.stop()
         webServer?.stop()

@@ -1,16 +1,7 @@
+import { PERMISSION_MODE_LABELS } from '@hapi/protocol'
 import { useMemo } from 'react'
 import type { AgentState, ModelMode, PermissionMode } from '@/types/api'
 import { getContextBudgetTokens } from '@/chat/modelConfig'
-
-const PERMISSION_MODE_LABELS: Record<string, string> = {
-    default: 'Default',
-    acceptEdits: 'Accept Edits',
-    plan: 'Plan Mode',
-    bypassPermissions: 'Yolo',
-    'read-only': 'Read Only',
-    'safe-yolo': 'Safe Yolo',
-    yolo: 'Yolo'
-}
 
 // Vibing messages for thinking state
 const VIBING_MESSAGES = [
@@ -112,9 +103,11 @@ export function StatusBar(props: {
     )
 
     const permissionMode = props.permissionMode
-    const shouldShowPermissionMode = props.agentFlavor !== 'gemini'
+    const displayPermissionMode = props.agentFlavor !== 'gemini'
         && permissionMode
         && permissionMode !== 'default'
+        ? permissionMode
+        : null
 
     return (
         <div className="flex items-center justify-between px-2 pb-1">
@@ -134,17 +127,17 @@ export function StatusBar(props: {
                 ) : null}
             </div>
 
-            {shouldShowPermissionMode ? (
+            {displayPermissionMode ? (
                 <span className={`text-xs ${
-                    permissionMode === 'acceptEdits' ? 'text-amber-500' :
-                    permissionMode === 'bypassPermissions' ? 'text-red-500' :
-                    permissionMode === 'plan' ? 'text-blue-500' :
-                    permissionMode === 'read-only' ? 'text-amber-500' :
-                    permissionMode === 'safe-yolo' ? 'text-amber-500' :
-                    permissionMode === 'yolo' ? 'text-red-500' :
+                    displayPermissionMode === 'acceptEdits' ? 'text-amber-500' :
+                    displayPermissionMode === 'bypassPermissions' ? 'text-red-500' :
+                    displayPermissionMode === 'plan' ? 'text-blue-500' :
+                    displayPermissionMode === 'read-only' ? 'text-amber-500' :
+                    displayPermissionMode === 'safe-yolo' ? 'text-amber-500' :
+                    displayPermissionMode === 'yolo' ? 'text-red-500' :
                     'text-[var(--app-hint)]'
                 }`}>
-                    {PERMISSION_MODE_LABELS[permissionMode]}
+                    {PERMISSION_MODE_LABELS[displayPermissionMode]}
                 </span>
             ) : null}
         </div>

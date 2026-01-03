@@ -6,9 +6,11 @@
  */
 
 import { Bot, Context, InlineKeyboard } from 'grammy'
-import { SyncEngine, SyncEvent, Session } from '../sync/syncEngine'
+import { SyncEngine, Session } from '../sync/syncEngine'
 import { handleCallback, CallbackContext } from './callbacks'
 import { formatSessionNotification, createNotificationKeyboard } from './sessionView'
+import { getAgentName } from '../notifications/sessionInfo'
+import type { NotificationChannel } from '../notifications/notificationTypes'
 import type { Store } from '../store'
 
 export interface BotContext extends Context {
@@ -25,24 +27,12 @@ export interface HappyBotConfig {
 /**
  * HAPI Telegram Bot - Notification-only mode
  */
-export class HappyBot {
+export class HappyBot implements NotificationChannel {
     private bot: Bot<BotContext>
     private syncEngine: SyncEngine | null = null
     private isRunning = false
     private readonly miniAppUrl: string
     private readonly store: Store
-
-    // Track last known permission requests per session to detect new ones
-    private lastKnownRequests: Map<string, Set<string>> = new Map()
-
-    // Debounce timers for notifications
-    private notificationDebounce: Map<string, NodeJS.Timeout> = new Map()
-
-    // Track ready notifications to avoid spam
-    private lastReadyNotificationAt: Map<string, number> = new Map()
-
-    // Unsubscribe function for sync events
-    private unsubscribeSyncEvents: (() => void) | null = null
 
     constructor(config: HappyBotConfig) {
         this.syncEngine = config.syncEngine
@@ -54,7 +44,6 @@ export class HappyBot {
         this.setupCommands()
         this.setupCallbacks()
 
-        // Subscribe to sync events immediately if engine is available
         if (this.syncEngine) {
             this.setSyncEngine(this.syncEngine)
         }
@@ -64,18 +53,7 @@ export class HappyBot {
      * Update the sync engine reference (after auth)
      */
     setSyncEngine(engine: SyncEngine): void {
-        // Unsubscribe from old engine
-        if (this.unsubscribeSyncEvents) {
-            this.unsubscribeSyncEvents()
-            this.unsubscribeSyncEvents = null
-        }
-
         this.syncEngine = engine
-
-        // Subscribe to events for notifications
-        this.unsubscribeSyncEvents = engine.subscribe((event) => {
-            this.handleSyncEvent(event)
-        })
     }
 
     /**
@@ -109,18 +87,6 @@ export class HappyBot {
         if (!this.isRunning) return
 
         console.log('[HAPIBot] Stopping Telegram bot...')
-
-        // Unsubscribe from sync events
-        if (this.unsubscribeSyncEvents) {
-            this.unsubscribeSyncEvents()
-            this.unsubscribeSyncEvents = null
-        }
-
-        // Clear notification debounce timers
-        for (const timer of this.notificationDebounce.values()) {
-            clearTimeout(timer)
-        }
-        this.notificationDebounce.clear()
 
         await this.bot.stop()
         this.isRunning = false
@@ -193,38 +159,6 @@ export class HappyBot {
     }
 
     /**
-     * Handle sync engine events for notifications
-     */
-    private handleSyncEvent(event: SyncEvent): void {
-        if (event.type === 'session-updated' && event.sessionId) {
-            const session = this.syncEngine?.getSession(event.sessionId)
-            if (session) {
-                this.checkForPermissionNotification(session)
-            }
-        }
-
-        if (event.type === 'message-received' && event.sessionId) {
-            const message = (event.message?.content ?? event.data) as any
-            const messageContent = message?.content
-            const eventType = messageContent?.type === 'event' ? messageContent?.data?.type : null
-
-            if (eventType === 'ready') {
-                this.sendReadyNotification(event.sessionId).catch((error) => {
-                    console.error('[HAPIBot] Failed to send ready notification:', error)
-                })
-            }
-        }
-    }
-
-    private getNotifiableSession(sessionId: string): Session | null {
-        const session = this.syncEngine?.getSession(sessionId)
-        if (!session || !session.active) {
-            return null
-        }
-        return session
-    }
-
-    /**
      * Get bound Telegram chat IDs from storage.
      */
     private getBoundChatIds(namespace: string): number[] {
@@ -248,29 +182,15 @@ export class HappyBot {
     }
 
     /**
-     * Send a push notification when agent is ready for input.
+     * Send a notification when agent is ready for input.
      */
-    private async sendReadyNotification(sessionId: string): Promise<void> {
-        const session = this.getNotifiableSession(sessionId)
-        if (!session) {
+    async sendReady(session: Session): Promise<void> {
+        if (!session.active) {
             return
         }
 
-        const now = Date.now()
-        const last = this.lastReadyNotificationAt.get(sessionId) ?? 0
-        if (now - last < 5000) {
-            return
-        }
-        this.lastReadyNotificationAt.set(sessionId, now)
-
-        // Get agent name from flavor
-        const flavor = session.metadata?.flavor
-        const agentName = flavor === 'claude' ? 'Claude'
-                        : flavor === 'codex' ? 'Codex'
-                        : flavor === 'gemini' ? 'Gemini'
-                        : 'Agent'
-
-        const url = buildMiniAppDeepLink(this.miniAppUrl, `session_${sessionId}`)
+        const agentName = getAgentName(session)
+        const url = buildMiniAppDeepLink(this.miniAppUrl, `session_${session.id}`)
         const keyboard = new InlineKeyboard()
             .webApp('Open Session', url)
 
@@ -280,73 +200,23 @@ export class HappyBot {
         }
 
         for (const chatId of chatIds) {
-            await this.bot.api.sendMessage(
-                chatId,
-                `It's ready!\n\n${agentName} is waiting for your command`,
-                { reply_markup: keyboard }
-            )
-        }
-    }
-
-    /**
-     * Check if session has new permission requests and send notification
-     */
-    private checkForPermissionNotification(session: Session): void {
-        const currentSession = this.getNotifiableSession(session.id)
-        if (!currentSession) {
-            return
-        }
-
-        const requests = currentSession.agentState?.requests
-
-        // If requests field is undefined/null, skip - don't clear tracked state on partial updates
-        if (requests == null) {
-            return
-        }
-
-        const newRequestIds = new Set(Object.keys(requests))
-
-        // Get previously known requests for this session
-        const oldRequestIds = this.lastKnownRequests.get(session.id) || new Set()
-
-        // Find NEW requests (in new but not in old)
-        let hasNewRequests = false
-        for (const requestId of newRequestIds) {
-            if (!oldRequestIds.has(requestId)) {
-                hasNewRequests = true
-                break
+            try {
+                await this.bot.api.sendMessage(
+                    chatId,
+                    `It's ready!\n\n${agentName} is waiting for your command`,
+                    { reply_markup: keyboard }
+                )
+            } catch (error) {
+                console.error(`[HAPIBot] Failed to send ready notification to chat ${chatId}:`, error)
             }
         }
-
-        // Update tracked state for this session
-        this.lastKnownRequests.set(session.id, newRequestIds)
-
-        if (!hasNewRequests) {
-            return
-        }
-
-        // Debounce notifications per session (500ms)
-        const existingTimer = this.notificationDebounce.get(currentSession.id)
-        if (existingTimer) {
-            clearTimeout(existingTimer)
-        }
-
-        const timer = setTimeout(() => {
-            this.notificationDebounce.delete(currentSession.id)
-            this.sendPermissionNotification(currentSession.id).catch(err => {
-                console.error('[HAPIBot] Failed to send notification:', err)
-            })
-        }, 500)
-
-        this.notificationDebounce.set(currentSession.id, timer)
     }
 
     /**
      * Send permission notification to all bound chats
      */
-    private async sendPermissionNotification(sessionId: string): Promise<void> {
-        const session = this.getNotifiableSession(sessionId)
-        if (!session) {
+    async sendPermissionRequest(session: Session): Promise<void> {
+        if (!session.active) {
             return
         }
 

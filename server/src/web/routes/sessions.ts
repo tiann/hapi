@@ -1,5 +1,8 @@
+import { isModelModeAllowedForFlavor, isPermissionModeAllowedForFlavor } from '@hapi/protocol'
+import { ModelModeSchema, PermissionModeSchema } from '@hapi/protocol/schemas'
 import { Hono } from 'hono'
 import { z } from 'zod'
+import type { ModelMode } from '@hapi/protocol/types'
 import type { SyncEngine, Session } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 import { requireSessionFromParam, requireSyncEngine } from './guards'
@@ -27,7 +30,7 @@ type SessionSummary = {
     metadata: SessionSummaryMetadata | null
     todoProgress: { completed: number; total: number } | null
     pendingRequestsCount: number
-    modelMode?: 'default' | 'sonnet' | 'opus'
+    modelMode?: ModelMode
 }
 
 function toSessionSummary(session: Session): SessionSummary {
@@ -60,11 +63,11 @@ function toSessionSummary(session: Session): SessionSummary {
 }
 
 const permissionModeSchema = z.object({
-    mode: z.enum(['default', 'acceptEdits', 'bypassPermissions', 'plan', 'read-only', 'safe-yolo', 'yolo'])
+    mode: PermissionModeSchema
 })
 
 const modelModeSchema = z.object({
-    model: z.enum(['default', 'sonnet', 'opus'])
+    model: ModelModeSchema
 })
 
 const renameSessionSchema = z.object({
@@ -132,6 +135,21 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         return c.json({ ok: true })
     })
 
+    app.post('/sessions/:id/archive', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        await engine.archiveSession(sessionResult.sessionId)
+        return c.json({ ok: true })
+    })
+
     app.post('/sessions/:id/switch', async (c) => {
         const engine = requireSyncEngine(c, getSyncEngine)
         if (engine instanceof Response) {
@@ -166,14 +184,12 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
 
         const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
         const mode = parsed.data.mode
-        const claudeModes = new Set(['default', 'acceptEdits', 'bypassPermissions', 'plan'])
-        const codexModes = new Set(['default', 'read-only', 'safe-yolo', 'yolo'])
 
         if (flavor === 'gemini') {
             return c.json({ error: 'Permission mode not supported for Gemini sessions' }, 400)
         }
 
-        if (flavor === 'codex' ? !codexModes.has(mode) : !claudeModes.has(mode)) {
+        if (!isPermissionModeAllowedForFlavor(mode, flavor)) {
             return c.json({ error: 'Invalid permission mode for session flavor' }, 400)
         }
 
@@ -204,7 +220,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
 
         const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
-        if (flavor !== 'claude') {
+        if (!isModelModeAllowedForFlavor(parsed.data.model, flavor)) {
             return c.json({ error: 'Model mode is only supported for Claude sessions' }, 400)
         }
 
