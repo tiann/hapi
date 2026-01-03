@@ -9,7 +9,7 @@
   "bugs": "https://github.com/tiann/hapi/issues",
   "repository": {
     "type": "git",
-    "url": "https://github.com/tiann/hapi",
+    "url": "git+https://github.com/tiann/hapi.git",
     "directory": "cli"
   },
   "bin": {
