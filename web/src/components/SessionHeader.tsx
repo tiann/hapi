@@ -74,7 +74,11 @@ export function SessionHeader(props: {
     const [archiveOpen, setArchiveOpen] = useState(false)
     const [deleteOpen, setDeleteOpen] = useState(false)
 
-    const { archiveSession, renameSession, deleteSession, isPending } = useSessionActions(api, session.id)
+    const { archiveSession, renameSession, deleteSession, isPending } = useSessionActions(
+        api,
+        session.id,
+        session.metadata?.flavor ?? null
+    )
 
     const handleDelete = async () => {
         await deleteSession()

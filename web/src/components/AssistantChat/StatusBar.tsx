@@ -1,4 +1,5 @@
-import { PERMISSION_MODE_LABELS } from '@hapi/protocol'
+import { getPermissionModeLabel, getPermissionModeTone, isPermissionModeAllowedForFlavor } from '@hapi/protocol'
+import type { PermissionModeTone } from '@hapi/protocol'
 import { useMemo } from 'react'
 import type { AgentState, ModelMode, PermissionMode } from '@/types/api'
 import { getContextBudgetTokens } from '@/chat/modelConfig'
@@ -21,6 +22,13 @@ const VIBING_MESSAGES = [
     "Transmuting", "Unfurling", "Unravelling", "Vibing", "Wandering", "Whirring",
     "Wibbling", "Wizarding", "Working", "Wrangling"
 ]
+
+const PERMISSION_TONE_CLASSES: Record<PermissionModeTone, string> = {
+    neutral: 'text-[var(--app-hint)]',
+    info: 'text-blue-500',
+    warning: 'text-amber-500',
+    danger: 'text-red-500'
+}
 
 function getConnectionStatus(
     active: boolean,
@@ -103,11 +111,15 @@ export function StatusBar(props: {
     )
 
     const permissionMode = props.permissionMode
-    const displayPermissionMode = props.agentFlavor !== 'gemini'
-        && permissionMode
+    const displayPermissionMode = permissionMode
         && permissionMode !== 'default'
+        && isPermissionModeAllowedForFlavor(permissionMode, props.agentFlavor)
         ? permissionMode
         : null
+
+    const permissionModeLabel = displayPermissionMode ? getPermissionModeLabel(displayPermissionMode) : null
+    const permissionModeTone = displayPermissionMode ? getPermissionModeTone(displayPermissionMode) : null
+    const permissionModeColor = permissionModeTone ? PERMISSION_TONE_CLASSES[permissionModeTone] : 'text-[var(--app-hint)]'
 
     return (
         <div className="flex items-center justify-between px-2 pb-1">
@@ -128,16 +140,8 @@ export function StatusBar(props: {
             </div>
 
             {displayPermissionMode ? (
-                <span className={`text-xs ${
-                    displayPermissionMode === 'acceptEdits' ? 'text-amber-500' :
-                    displayPermissionMode === 'bypassPermissions' ? 'text-red-500' :
-                    displayPermissionMode === 'plan' ? 'text-blue-500' :
-                    displayPermissionMode === 'read-only' ? 'text-amber-500' :
-                    displayPermissionMode === 'safe-yolo' ? 'text-amber-500' :
-                    displayPermissionMode === 'yolo' ? 'text-red-500' :
-                    'text-[var(--app-hint)]'
-                }`}>
-                    {PERMISSION_MODE_LABELS[displayPermissionMode]}
+                <span className={`text-xs ${permissionModeColor}`}>
+                    {permissionModeLabel}
                 </span>
             ) : null}
         </div>

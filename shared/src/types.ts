@@ -15,5 +15,7 @@ export type {
     ClaudePermissionMode,
     CodexPermissionMode,
     ModelMode,
-    PermissionMode
+    PermissionMode,
+    PermissionModeOption,
+    PermissionModeTone
 } from './modes'

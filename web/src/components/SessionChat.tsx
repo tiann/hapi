@@ -36,7 +36,12 @@ export function SessionChat(props: {
     const controlsDisabled = !props.session.active
     const normalizedCacheRef = useRef<Map<string, { source: DecryptedMessage; normalized: NormalizedMessage | null }>>(new Map())
     const blocksByIdRef = useRef<Map<string, ChatBlock>>(new Map())
-    const { abortSession, switchSession, setPermissionMode, setModelMode } = useSessionActions(props.api, props.session.id)
+    const agentFlavor = props.session.metadata?.flavor ?? null
+    const { abortSession, switchSession, setPermissionMode, setModelMode } = useSessionActions(
+        props.api,
+        props.session.id,
+        agentFlavor
+    )
 
     useEffect(() => {
         normalizedCacheRef.current.clear()
@@ -179,7 +184,7 @@ export function SessionChat(props: {
                         disabled={props.isSending || controlsDisabled}
                         permissionMode={props.session.permissionMode}
                         modelMode={props.session.modelMode}
-                        agentFlavor={props.session.metadata?.flavor ?? 'claude'}
+                        agentFlavor={agentFlavor}
                         active={props.session.active}
                         thinking={props.session.thinking}
                         agentState={props.session.agentState}

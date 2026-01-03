@@ -177,7 +177,11 @@ function SessionItem(props: {
     const [archiveOpen, setArchiveOpen] = useState(false)
     const [deleteOpen, setDeleteOpen] = useState(false)
 
-    const { archiveSession, renameSession, deleteSession, isPending } = useSessionActions(api, s.id)
+    const { archiveSession, renameSession, deleteSession, isPending } = useSessionActions(
+        api,
+        s.id,
+        s.metadata?.flavor ?? null
+    )
 
     const longPressHandlers = useLongPress({
         onLongPress: () => {

@@ -30,10 +30,36 @@ export const PERMISSION_MODE_LABELS: Record<PermissionMode, string> = {
     yolo: 'Yolo'
 }
 
+export type PermissionModeTone = 'neutral' | 'info' | 'warning' | 'danger'
+
+export const PERMISSION_MODE_TONES: Record<PermissionMode, PermissionModeTone> = {
+    default: 'neutral',
+    acceptEdits: 'warning',
+    plan: 'info',
+    bypassPermissions: 'danger',
+    'read-only': 'warning',
+    'safe-yolo': 'warning',
+    yolo: 'danger'
+}
+
+export type PermissionModeOption = {
+    mode: PermissionMode
+    label: string
+    tone: PermissionModeTone
+}
+
 export const MODEL_MODE_LABELS: Record<ModelMode, string> = {
     default: 'Default',
     sonnet: 'Sonnet',
     opus: 'Opus'
+}
+
+export function getPermissionModeLabel(mode: PermissionMode): string {
+    return PERMISSION_MODE_LABELS[mode]
+}
+
+export function getPermissionModeTone(mode: PermissionMode): PermissionModeTone {
+    return PERMISSION_MODE_TONES[mode]
 }
 
 export function getPermissionModesForFlavor(flavor?: string | null): readonly PermissionMode[] {
@@ -44,6 +70,14 @@ export function getPermissionModesForFlavor(flavor?: string | null): readonly Pe
         return []
     }
     return CLAUDE_PERMISSION_MODES
+}
+
+export function getPermissionModeOptionsForFlavor(flavor?: string | null): PermissionModeOption[] {
+    return getPermissionModesForFlavor(flavor).map((mode) => ({
+        mode,
+        label: getPermissionModeLabel(mode),
+        tone: getPermissionModeTone(mode)
+    }))
 }
 
 export function isPermissionModeAllowedForFlavor(mode: PermissionMode, flavor?: string | null): boolean {
