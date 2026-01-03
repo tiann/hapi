@@ -4,7 +4,7 @@ import os from 'os';
 import { ApiClient } from '@/api/api';
 import { TrackedSession } from './types';
 import { DaemonState, Metadata } from '@/api/types';
-import { SpawnSessionOptions, SpawnSessionResult } from '@/modules/common/registerCommonHandlers';
+import { SpawnSessionOptions, SpawnSessionResult } from '@/modules/common/rpcTypes';
 import { logger } from '@/ui/logger';
 import { authAndSetupMachineIfNeeded } from '@/ui/auth';
 import packageJson from '../../package.json';

@@ -10,7 +10,8 @@ import type { DaemonState, Machine, MachineMetadata, Update, UpdateMachineBody }
 import { DaemonStateSchema, MachineMetadataSchema } from './types'
 import { backoff } from '@/utils/time'
 import { RpcHandlerManager } from './rpc/RpcHandlerManager'
-import { registerCommonHandlers, type SpawnSessionOptions, type SpawnSessionResult } from '../modules/common/registerCommonHandlers'
+import { registerCommonHandlers } from '../modules/common/registerCommonHandlers'
+import type { SpawnSessionOptions, SpawnSessionResult } from '../modules/common/rpcTypes'
 
 interface ServerToDaemonEvents {
     update: (data: Update) => void

@@ -4,6 +4,7 @@ import * as readline from 'node:readline/promises'
 import { stdin as input, stdout as output } from 'node:process'
 import { configuration } from '@/configuration'
 import { readSettings, clearMachineId, updateSettings } from '@/persistence'
+import type { CommandDefinition } from './types'
 
 export async function handleAuthCommand(args: string[]): Promise<void> {
     const subcommand = args[0]
@@ -97,4 +98,20 @@ ${chalk.bold('Token priority (highest to lowest):')}
   2. ~/.hapi/settings.json
   3. Interactive prompt (on first run)
 `)
+}
+
+export const authCommand: CommandDefinition = {
+    name: 'auth',
+    requiresRuntimeAssets: true,
+    run: async ({ commandArgs }) => {
+        try {
+            await handleAuthCommand(commandArgs)
+        } catch (error) {
+            console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
+            if (process.env.DEBUG) {
+                console.error(error)
+            }
+            process.exit(1)
+        }
+    }
 }

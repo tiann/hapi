@@ -7,95 +7,43 @@
  * - No E2E encryption; data is stored as JSON in SQLite
  */
 
-import { AgentStateSchema, MetadataSchema } from '@hapi/protocol/schemas'
 import type { ClaudePermissionMode, DecryptedMessage, ModelMode, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
-import { z } from 'zod'
 import type { Server } from 'socket.io'
 import type { Store } from '../store'
 import type { RpcRegistry } from '../socket/rpcRegistry'
 import type { SSEManager } from '../sse/sseManager'
-import { extractTodoWriteTodosFromMessageContent, TodosSchema } from './todos'
+import { EventPublisher, type SyncEventListener } from './eventPublisher'
+import { MachineCache, type Machine } from './machineCache'
+import { MessageService } from './messageService'
+import { RpcGateway, type RpcCommandResponse, type RpcPathExistsResponse, type RpcReadFileResponse } from './rpcGateway'
+import { SessionCache } from './sessionCache'
 
 export type ConnectionStatus = 'disconnected' | 'connected'
 export type { Session, SyncEvent } from '@hapi/protocol/types'
-
-const machineMetadataSchema = z.object({
-    host: z.string().optional(),
-    platform: z.string().optional(),
-    happyCliVersion: z.string().optional(),
-    displayName: z.string().optional()
-}).passthrough()
-
-export interface Machine {
-    id: string
-    namespace: string
-    seq: number
-    createdAt: number
-    updatedAt: number
-    active: boolean
-    activeAt: number
-    metadata: {
-        host: string
-        platform: string
-        happyCliVersion: string
-        displayName?: string
-        [key: string]: unknown
-    } | null
-    metadataVersion: number
-    daemonState: unknown | null
-    daemonStateVersion: number
-}
-
-export type FetchMessagesResult =
-    | { ok: true; messages: DecryptedMessage[] }
-    | { ok: false; status: number | null; error: string }
-
-export type RpcCommandResponse = {
-    success: boolean
-    stdout?: string
-    stderr?: string
-    exitCode?: number
-    error?: string
-}
-
-export type RpcReadFileResponse = {
-    success: boolean
-    content?: string
-    error?: string
-}
-
-export type RpcPathExistsResponse = {
-    exists: Record<string, boolean>
-}
-
-export type SyncEventListener = (event: SyncEvent) => void
-
-function clampAliveTime(t: number): number | null {
-    if (!Number.isFinite(t)) return null
-    const now = Date.now()
-    if (t > now) return now
-    if (t < now - 1000 * 60 * 10) return null
-    return t
-}
+export type { Machine } from './machineCache'
+export type { SyncEventListener } from './eventPublisher'
+export type { RpcCommandResponse, RpcPathExistsResponse, RpcReadFileResponse } from './rpcGateway'
 
 export class SyncEngine {
-    private sessions: Map<string, Session> = new Map()
-    private machines: Map<string, Machine> = new Map()
-    private sessionMessages: Map<string, DecryptedMessage[]> = new Map()
-    private listeners: Set<SyncEventListener> = new Set()
+    private readonly eventPublisher: EventPublisher
+    private readonly sessionCache: SessionCache
+    private readonly machineCache: MachineCache
+    private readonly messageService: MessageService
+    private readonly rpcGateway: RpcGateway
     private connectionStatus: ConnectionStatus = 'connected'
-
-    private readonly lastBroadcastAtBySessionId: Map<string, number> = new Map()
-    private readonly lastBroadcastAtByMachineId: Map<string, number> = new Map()
-    private readonly todoBackfillAttemptedSessionIds: Set<string> = new Set()
     private inactivityTimer: NodeJS.Timeout | null = null
 
     constructor(
-        private readonly store: Store,
-        private readonly io: Server,
-        private readonly rpcRegistry: RpcRegistry,
-        private readonly sseManager: SSEManager
+        store: Store,
+        io: Server,
+        rpcRegistry: RpcRegistry,
+        sseManager: SSEManager
     ) {
+        this.eventPublisher = new EventPublisher(sseManager, (event) => this.resolveNamespace(event))
+        this.sessionCache = new SessionCache(store, this.eventPublisher)
+        this.machineCache = new MachineCache(store, this.eventPublisher)
+        this.messageService = new MessageService(store, io, this.eventPublisher)
+        this.rpcGateway = new RpcGateway(io, rpcRegistry)
         this.reloadAll()
         this.inactivityTimer = setInterval(() => this.expireInactive(), 5_000)
     }
@@ -112,23 +60,7 @@ export class SyncEngine {
     }
 
     subscribe(listener: SyncEventListener): () => void {
-        this.listeners.add(listener)
-        return () => this.listeners.delete(listener)
-    }
-
-    private emit(event: SyncEvent): void {
-        const namespace = this.resolveNamespace(event)
-        const enrichedEvent = namespace ? { ...event, namespace } : event
-
-        for (const listener of this.listeners) {
-            try {
-                listener(enrichedEvent)
-            } catch (error) {
-                console.error('[SyncEngine] Listener error:', error)
-            }
-        }
-
-        this.sseManager.broadcast(enrichedEvent)
+        return this.eventPublisher.subscribe(listener)
     }
 
     private resolveNamespace(event: SyncEvent): string | undefined {
@@ -136,10 +68,10 @@ export class SyncEngine {
             return event.namespace
         }
         if ('sessionId' in event) {
-            return this.sessions.get(event.sessionId)?.namespace
+            return this.sessionCache.getSession(event.sessionId)?.namespace
         }
         if ('machineId' in event) {
-            return this.machines.get(event.machineId)?.namespace
+            return this.machineCache.getMachine(event.machineId)?.namespace
         }
         return undefined
     }
@@ -149,59 +81,47 @@ export class SyncEngine {
     }
 
     getSessions(): Session[] {
-        return Array.from(this.sessions.values())
+        return this.sessionCache.getSessions()
     }
 
     getSessionsByNamespace(namespace: string): Session[] {
-        return this.getSessions().filter((session) => session.namespace === namespace)
+        return this.sessionCache.getSessionsByNamespace(namespace)
     }
 
     getSession(sessionId: string): Session | undefined {
-        return this.sessions.get(sessionId)
+        return this.sessionCache.getSession(sessionId)
     }
 
     getSessionByNamespace(sessionId: string, namespace: string): Session | undefined {
-        const session = this.sessions.get(sessionId)
-        if (!session || session.namespace !== namespace) {
-            return undefined
-        }
-        return session
+        return this.sessionCache.getSessionByNamespace(sessionId, namespace)
     }
 
     getActiveSessions(): Session[] {
-        return this.getSessions().filter(s => s.active)
+        return this.sessionCache.getActiveSessions()
     }
 
     getMachines(): Machine[] {
-        return Array.from(this.machines.values())
+        return this.machineCache.getMachines()
     }
 
     getMachinesByNamespace(namespace: string): Machine[] {
-        return this.getMachines().filter((machine) => machine.namespace === namespace)
+        return this.machineCache.getMachinesByNamespace(namespace)
     }
 
     getMachine(machineId: string): Machine | undefined {
-        return this.machines.get(machineId)
+        return this.machineCache.getMachine(machineId)
     }
 
     getMachineByNamespace(machineId: string, namespace: string): Machine | undefined {
-        const machine = this.machines.get(machineId)
-        if (!machine || machine.namespace !== namespace) {
-            return undefined
-        }
-        return machine
+        return this.machineCache.getMachineByNamespace(machineId, namespace)
     }
 
     getOnlineMachines(): Machine[] {
-        return this.getMachines().filter(m => m.active)
+        return this.machineCache.getOnlineMachines()
     }
 
     getOnlineMachinesByNamespace(namespace: string): Machine[] {
-        return this.getMachinesByNamespace(namespace).filter((machine) => machine.active)
-    }
-
-    getSessionMessages(sessionId: string): DecryptedMessage[] {
-        return this.sessionMessages.get(sessionId) || []
+        return this.machineCache.getOnlineMachinesByNamespace(namespace)
     }
 
     getMessagesPage(sessionId: string, options: { limit: number; beforeSeq: number | null }): {
@@ -213,66 +133,31 @@ export class SyncEngine {
             hasMore: boolean
         }
     } {
-        const stored = this.store.getMessages(sessionId, options.limit, options.beforeSeq ?? undefined)
-        const messages: DecryptedMessage[] = stored.map((m) => ({
-            id: m.id,
-            seq: m.seq,
-            localId: m.localId,
-            content: m.content,
-            createdAt: m.createdAt
-        }))
-
-        let oldestSeq: number | null = null
-        for (const message of messages) {
-            if (typeof message.seq !== 'number') continue
-            if (oldestSeq === null || message.seq < oldestSeq) {
-                oldestSeq = message.seq
-            }
-        }
-
-        const nextBeforeSeq = oldestSeq
-        const hasMore = nextBeforeSeq !== null && this.store.getMessages(sessionId, 1, nextBeforeSeq).length > 0
-
-        return {
-            messages,
-            page: {
-                limit: options.limit,
-                beforeSeq: options.beforeSeq,
-                nextBeforeSeq,
-                hasMore
-            }
-        }
+        return this.messageService.getMessagesPage(sessionId, options)
     }
 
     getMessagesAfter(sessionId: string, options: { afterSeq: number; limit: number }): DecryptedMessage[] {
-        const stored = this.store.getMessagesAfter(sessionId, options.afterSeq, options.limit)
-        return stored.map((m) => ({
-            id: m.id,
-            seq: m.seq,
-            localId: m.localId,
-            content: m.content,
-            createdAt: m.createdAt
-        }))
+        return this.messageService.getMessagesAfter(sessionId, options)
     }
 
     handleRealtimeEvent(event: SyncEvent): void {
         if (event.type === 'session-updated' && event.sessionId) {
-            this.refreshSession(event.sessionId)
+            this.sessionCache.refreshSession(event.sessionId)
             return
         }
 
         if (event.type === 'machine-updated' && event.machineId) {
-            this.refreshMachine(event.machineId)
+            this.machineCache.refreshMachine(event.machineId)
             return
         }
 
         if (event.type === 'message-received' && event.sessionId) {
-            if (!this.sessions.has(event.sessionId)) {
-                this.refreshSession(event.sessionId)
+            if (!this.sessionCache.getSession(event.sessionId)) {
+                this.sessionCache.refreshSession(event.sessionId)
             }
         }
 
-        this.emit(event)
+        this.eventPublisher.emit(event)
     }
 
     handleSessionAlive(payload: {
@@ -283,312 +168,40 @@ export class SyncEngine {
         permissionMode?: PermissionMode
         modelMode?: ModelMode
     }): void {
-        const t = clampAliveTime(payload.time)
-        if (!t) return
-
-        const session = this.sessions.get(payload.sid) ?? this.refreshSession(payload.sid)
-        if (!session) return
-
-        const wasActive = session.active
-        const wasThinking = session.thinking
-        const previousPermissionMode = session.permissionMode
-        const previousModelMode = session.modelMode
-
-        session.active = true
-        session.activeAt = Math.max(session.activeAt, t)
-        session.thinking = Boolean(payload.thinking)
-        session.thinkingAt = t
-        if (payload.permissionMode !== undefined) {
-            session.permissionMode = payload.permissionMode
-        }
-        if (payload.modelMode !== undefined) {
-            session.modelMode = payload.modelMode
-        }
-
-        const now = Date.now()
-        const lastBroadcastAt = this.lastBroadcastAtBySessionId.get(session.id) ?? 0
-        const modeChanged = previousPermissionMode !== session.permissionMode || previousModelMode !== session.modelMode
-        const shouldBroadcast = (!wasActive && session.active)
-            || (wasThinking !== session.thinking)
-            || modeChanged
-            || (now - lastBroadcastAt > 10_000)
-
-        if (shouldBroadcast) {
-            this.lastBroadcastAtBySessionId.set(session.id, now)
-            this.emit({
-                type: 'session-updated',
-                sessionId: session.id,
-                data: {
-                    activeAt: session.activeAt,
-                    thinking: session.thinking,
-                    permissionMode: session.permissionMode,
-                    modelMode: session.modelMode
-                }
-            })
-        }
+        this.sessionCache.handleSessionAlive(payload)
     }
 
     handleSessionEnd(payload: { sid: string; time: number }): void {
-        const t = clampAliveTime(payload.time) ?? Date.now()
-
-        const session = this.sessions.get(payload.sid) ?? this.refreshSession(payload.sid)
-        if (!session) return
-
-        if (!session.active && !session.thinking) {
-            return
-        }
-
-        session.active = false
-        session.thinking = false
-        session.thinkingAt = t
-
-        this.emit({ type: 'session-updated', sessionId: session.id, data: { active: false, thinking: false } })
+        this.sessionCache.handleSessionEnd(payload)
     }
 
     handleMachineAlive(payload: { machineId: string; time: number }): void {
-        const t = clampAliveTime(payload.time)
-        if (!t) return
-
-        const machine = this.machines.get(payload.machineId) ?? this.refreshMachine(payload.machineId)
-        if (!machine) return
-
-        const wasActive = machine.active
-        machine.active = true
-        machine.activeAt = Math.max(machine.activeAt, t)
-
-        const now = Date.now()
-        const lastBroadcastAt = this.lastBroadcastAtByMachineId.get(machine.id) ?? 0
-        const shouldBroadcast = (!wasActive && machine.active) || (now - lastBroadcastAt > 10_000)
-        if (shouldBroadcast) {
-            this.lastBroadcastAtByMachineId.set(machine.id, now)
-            this.emit({ type: 'machine-updated', machineId: machine.id, data: { activeAt: machine.activeAt } })
-        }
+        this.machineCache.handleMachineAlive(payload)
     }
 
     private expireInactive(): void {
-        const now = Date.now()
-        const sessionTimeoutMs = 30_000
-        const machineTimeoutMs = 45_000
-
-        for (const session of this.sessions.values()) {
-            if (!session.active) continue
-            if (now - session.activeAt <= sessionTimeoutMs) continue
-            session.active = false
-            session.thinking = false
-            this.emit({ type: 'session-updated', sessionId: session.id, data: { active: false } })
-        }
-
-        for (const machine of this.machines.values()) {
-            if (!machine.active) continue
-            if (now - machine.activeAt <= machineTimeoutMs) continue
-            machine.active = false
-            this.emit({ type: 'machine-updated', machineId: machine.id, data: { active: false } })
-        }
-    }
-
-    private refreshSession(sessionId: string): Session | null {
-        let stored = this.store.getSession(sessionId)
-        if (!stored) {
-            const existed = this.sessions.delete(sessionId)
-            if (existed) {
-                this.emit({ type: 'session-removed', sessionId })
-            }
-            return null
-        }
-
-        const existing = this.sessions.get(sessionId)
-
-        if (stored.todos === null && !this.todoBackfillAttemptedSessionIds.has(sessionId)) {
-            this.todoBackfillAttemptedSessionIds.add(sessionId)
-            const messages = this.store.getMessages(sessionId, 200)
-            for (let i = messages.length - 1; i >= 0; i -= 1) {
-                const message = messages[i]
-                const todos = extractTodoWriteTodosFromMessageContent(message.content)
-                if (todos) {
-                    const updated = this.store.setSessionTodos(sessionId, todos, message.createdAt, stored.namespace)
-                    if (updated) {
-                        stored = this.store.getSession(sessionId) ?? stored
-                    }
-                    break
-                }
-            }
-        }
-
-        const metadata = (() => {
-            const parsed = MetadataSchema.safeParse(stored.metadata)
-            return parsed.success ? parsed.data : null
-        })()
-
-        const agentState = (() => {
-            const parsed = AgentStateSchema.safeParse(stored.agentState)
-            return parsed.success ? parsed.data : null
-        })()
-
-        const todos = (() => {
-            if (stored.todos === null) return undefined
-            const parsed = TodosSchema.safeParse(stored.todos)
-            return parsed.success ? parsed.data : undefined
-        })()
-
-        const session: Session = {
-            id: stored.id,
-            namespace: stored.namespace,
-            seq: stored.seq,
-            createdAt: stored.createdAt,
-            updatedAt: stored.updatedAt,
-            active: existing?.active ?? stored.active,
-            activeAt: existing?.activeAt ?? (stored.activeAt ?? stored.createdAt),
-            metadata,
-            metadataVersion: stored.metadataVersion,
-            agentState,
-            agentStateVersion: stored.agentStateVersion,
-            thinking: existing?.thinking ?? false,
-            thinkingAt: existing?.thinkingAt ?? 0,
-            todos,
-            permissionMode: existing?.permissionMode,
-            modelMode: existing?.modelMode
-        }
-
-        this.sessions.set(sessionId, session)
-        this.emit({ type: existing ? 'session-updated' : 'session-added', sessionId, data: session })
-        return session
-    }
-
-    private refreshMachine(machineId: string): Machine | null {
-        const stored = this.store.getMachine(machineId)
-        if (!stored) {
-            const existed = this.machines.delete(machineId)
-            if (existed) {
-                this.emit({ type: 'machine-updated', machineId, data: null })
-            }
-            return null
-        }
-
-        const existing = this.machines.get(machineId)
-
-        const metadata = (() => {
-            const parsed = machineMetadataSchema.safeParse(stored.metadata)
-            if (!parsed.success) return null
-            const data = parsed.data as Record<string, unknown>
-            const host = typeof data.host === 'string' ? data.host : 'unknown'
-            const platform = typeof data.platform === 'string' ? data.platform : 'unknown'
-            const happyCliVersion = typeof data.happyCliVersion === 'string' ? data.happyCliVersion : 'unknown'
-            const displayName = typeof data.displayName === 'string' ? data.displayName : undefined
-            return { host, platform, happyCliVersion, displayName, ...data }
-        })()
-
-        const storedActiveAt = stored.activeAt ?? stored.createdAt
-        const existingActiveAt = existing?.activeAt ?? 0
-        const useStoredActivity = storedActiveAt > existingActiveAt
-
-        const machine: Machine = {
-            id: stored.id,
-            namespace: stored.namespace,
-            seq: stored.seq,
-            createdAt: stored.createdAt,
-            updatedAt: stored.updatedAt,
-            active: useStoredActivity ? stored.active : (existing?.active ?? stored.active),
-            activeAt: useStoredActivity ? storedActiveAt : (existingActiveAt || storedActiveAt),
-            metadata,
-            metadataVersion: stored.metadataVersion,
-            daemonState: stored.daemonState,
-            daemonStateVersion: stored.daemonStateVersion
-        }
-
-        this.machines.set(machineId, machine)
-        this.emit({ type: 'machine-updated', machineId, data: machine })
-        return machine
+        this.sessionCache.expireInactive()
+        this.machineCache.expireInactive()
     }
 
     private reloadAll(): void {
-        const sessions = this.store.getSessions()
-        for (const s of sessions) {
-            this.refreshSession(s.id)
-        }
-
-        const machines = this.store.getMachines()
-        for (const m of machines) {
-            this.refreshMachine(m.id)
-        }
+        this.sessionCache.reloadAll()
+        this.machineCache.reloadAll()
     }
 
     getOrCreateSession(tag: string, metadata: unknown, agentState: unknown, namespace: string): Session {
-        const stored = this.store.getOrCreateSession(tag, metadata, agentState, namespace)
-        return this.refreshSession(stored.id) ?? (() => { throw new Error('Failed to load session') })()
+        return this.sessionCache.getOrCreateSession(tag, metadata, agentState, namespace)
     }
 
     getOrCreateMachine(id: string, metadata: unknown, daemonState: unknown, namespace: string): Machine {
-        const stored = this.store.getOrCreateMachine(id, metadata, daemonState, namespace)
-        return this.refreshMachine(stored.id) ?? (() => { throw new Error('Failed to load machine') })()
+        return this.machineCache.getOrCreateMachine(id, metadata, daemonState, namespace)
     }
 
-    async fetchMessages(sessionId: string): Promise<FetchMessagesResult> {
-        try {
-            const stored = this.store.getMessages(sessionId, 200)
-            const messages: DecryptedMessage[] = stored.map((m) => ({
-                id: m.id,
-                seq: m.seq,
-                localId: m.localId,
-                content: m.content,
-                createdAt: m.createdAt
-            }))
-            this.sessionMessages.set(sessionId, messages)
-            return { ok: true, messages }
-        } catch (error) {
-            return { ok: false, status: null, error: error instanceof Error ? error.message : 'Failed to load messages' }
-        }
-    }
-
-    async sendMessage(sessionId: string, payload: { text: string; localId?: string | null; sentFrom?: 'telegram-bot' | 'webapp' }): Promise<void> {
-        const sentFrom = payload.sentFrom ?? 'webapp'
-
-        const content = {
-            role: 'user',
-            content: {
-                type: 'text',
-                text: payload.text
-            },
-            meta: {
-                sentFrom
-            }
-        }
-
-        const msg = this.store.addMessage(sessionId, content, payload.localId ?? undefined)
-
-        const update = {
-            id: msg.id,
-            seq: Date.now(),
-            createdAt: msg.createdAt,
-            body: {
-                t: 'new-message' as const,
-                sid: sessionId,
-                message: {
-                    id: msg.id,
-                    seq: msg.seq,
-                    createdAt: msg.createdAt,
-                    localId: msg.localId,
-                    content: msg.content
-                }
-            }
-        }
-        this.io.of('/cli').to(`session:${sessionId}`).emit('update', update)
-
-        // Keep a small in-memory cache for Telegram rendering.
-        const cached = this.sessionMessages.get(sessionId) ?? []
-        cached.push({ id: msg.id, seq: msg.seq, localId: msg.localId, content: msg.content, createdAt: msg.createdAt })
-        this.sessionMessages.set(sessionId, cached.slice(-200))
-
-        this.emit({
-            type: 'message-received',
-            sessionId,
-            message: {
-                id: msg.id,
-                seq: msg.seq,
-                localId: msg.localId,
-                content: msg.content,
-                createdAt: msg.createdAt
-            }
-        })
+    async sendMessage(
+        sessionId: string,
+        payload: { text: string; localId?: string | null; sentFrom?: 'telegram-bot' | 'webapp' }
+    ): Promise<void> {
+        await this.messageService.sendMessage(sessionId, payload)
     }
 
     async approvePermission(
@@ -599,14 +212,7 @@ export class SyncEngine {
         decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort',
         answers?: Record<string, string[]>
     ): Promise<void> {
-        await this.sessionRpc(sessionId, 'permission', {
-            id: requestId,
-            approved: true,
-            mode,
-            allowTools,
-            decision,
-            answers
-        })
+        await this.rpcGateway.approvePermission(sessionId, requestId, mode, allowTools, decision, answers)
     }
 
     async denyPermission(
@@ -614,94 +220,28 @@ export class SyncEngine {
         requestId: string,
         decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort'
     ): Promise<void> {
-        await this.sessionRpc(sessionId, 'permission', {
-            id: requestId,
-            approved: false,
-            decision
-        })
+        await this.rpcGateway.denyPermission(sessionId, requestId, decision)
     }
 
     async abortSession(sessionId: string): Promise<void> {
-        await this.sessionRpc(sessionId, 'abort', { reason: 'User aborted via Telegram Bot' })
+        await this.rpcGateway.abortSession(sessionId)
     }
 
     async archiveSession(sessionId: string): Promise<void> {
-        await this.sessionRpc(sessionId, 'killSession', {})
+        await this.rpcGateway.killSession(sessionId)
         this.handleSessionEnd({ sid: sessionId, time: Date.now() })
     }
 
     async switchSession(sessionId: string, to: 'remote' | 'local'): Promise<void> {
-        await this.sessionRpc(sessionId, 'switch', { to })
-    }
-
-    async setPermissionMode(
-        sessionId: string,
-        mode: PermissionMode
-    ): Promise<void> {
-        const session = this.sessions.get(sessionId)
-        if (session) {
-            session.permissionMode = mode
-            this.emit({ type: 'session-updated', sessionId, data: session })
-        }
-    }
-
-    async setModelMode(sessionId: string, model: ModelMode): Promise<void> {
-        const session = this.sessions.get(sessionId)
-        if (session) {
-            session.modelMode = model
-            this.emit({ type: 'session-updated', sessionId, data: session })
-        }
+        await this.rpcGateway.switchSession(sessionId, to)
     }
 
     async renameSession(sessionId: string, name: string): Promise<void> {
-        const session = this.sessions.get(sessionId)
-        if (!session) {
-            throw new Error('Session not found')
-        }
-
-        const currentMetadata = session.metadata ?? { path: '', host: '' }
-        const newMetadata = { ...currentMetadata, name }
-
-        const result = this.store.updateSessionMetadata(
-            sessionId,
-            newMetadata,
-            session.metadataVersion,
-            session.namespace,
-            { touchUpdatedAt: false }
-        )
-
-        if (result.result === 'error') {
-            throw new Error('Failed to update session metadata')
-        }
-
-        if (result.result === 'version-mismatch') {
-            throw new Error('Session was modified concurrently. Please try again.')
-        }
-
-        this.refreshSession(sessionId)
+        await this.sessionCache.renameSession(sessionId, name)
     }
 
     async deleteSession(sessionId: string): Promise<void> {
-        const session = this.sessions.get(sessionId)
-        if (!session) {
-            throw new Error('Session not found')
-        }
-
-        if (session.active) {
-            throw new Error('Cannot delete active session')
-        }
-
-        const deleted = this.store.deleteSession(sessionId, session.namespace)
-        if (!deleted) {
-            throw new Error('Failed to delete session')
-        }
-
-        this.sessions.delete(sessionId)
-        this.sessionMessages.delete(sessionId)
-        this.lastBroadcastAtBySessionId.delete(sessionId)
-        this.todoBackfillAttemptedSessionIds.delete(sessionId)
-
-        this.emit({ type: 'session-removed', sessionId, namespace: session.namespace })
+        await this.sessionCache.deleteSession(sessionId)
     }
 
     async applySessionConfig(
@@ -711,7 +251,7 @@ export class SyncEngine {
             modelMode?: ModelMode
         }
     ): Promise<void> {
-        const result = await this.sessionRpc(sessionId, 'set-session-config', config)
+        const result = await this.rpcGateway.requestSessionConfig(sessionId, config)
         if (!result || typeof result !== 'object') {
             throw new Error('Invalid response from session config RPC')
         }
@@ -721,16 +261,7 @@ export class SyncEngine {
             throw new Error('Missing applied session config')
         }
 
-        const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
-        if (session) {
-            if (applied.permissionMode !== undefined) {
-                session.permissionMode = applied.permissionMode
-            }
-            if (applied.modelMode !== undefined) {
-                session.modelMode = applied.modelMode
-            }
-            this.emit({ type: 'session-updated', sessionId, data: session })
-        }
+        this.sessionCache.applySessionConfig(sessionId, applied)
     }
 
     async spawnSession(
@@ -741,63 +272,31 @@ export class SyncEngine {
         sessionType?: 'simple' | 'worktree',
         worktreeName?: string
     ): Promise<{ type: 'success'; sessionId: string } | { type: 'error'; message: string }> {
-        try {
-            const result = await this.machineRpc(
-                machineId,
-                'spawn-happy-session',
-                { type: 'spawn-in-directory', directory, agent, yolo, sessionType, worktreeName }
-            )
-            if (result && typeof result === 'object') {
-                const obj = result as Record<string, unknown>
-                if (obj.type === 'success' && typeof obj.sessionId === 'string') {
-                    return { type: 'success', sessionId: obj.sessionId }
-                }
-                if (obj.type === 'error' && typeof obj.errorMessage === 'string') {
-                    return { type: 'error', message: obj.errorMessage }
-                }
-            }
-            return { type: 'error', message: 'Unexpected spawn result' }
-        } catch (error) {
-            return { type: 'error', message: error instanceof Error ? error.message : String(error) }
-        }
+        return await this.rpcGateway.spawnSession(machineId, directory, agent, yolo, sessionType, worktreeName)
     }
 
     async checkPathsExist(machineId: string, paths: string[]): Promise<Record<string, boolean>> {
-        const result = await this.machineRpc(machineId, 'path-exists', { paths }) as RpcPathExistsResponse | unknown
-        if (!result || typeof result !== 'object') {
-            throw new Error('Unexpected path-exists result')
-        }
-
-        const existsValue = (result as RpcPathExistsResponse).exists
-        if (!existsValue || typeof existsValue !== 'object') {
-            throw new Error('Unexpected path-exists result')
-        }
-
-        const exists: Record<string, boolean> = {}
-        for (const [key, value] of Object.entries(existsValue)) {
-            exists[key] = value === true
-        }
-        return exists
+        return await this.rpcGateway.checkPathsExist(machineId, paths)
     }
 
     async getGitStatus(sessionId: string, cwd?: string): Promise<RpcCommandResponse> {
-        return await this.sessionRpc(sessionId, 'git-status', { cwd }) as RpcCommandResponse
+        return await this.rpcGateway.getGitStatus(sessionId, cwd)
     }
 
     async getGitDiffNumstat(sessionId: string, options: { cwd?: string; staged?: boolean }): Promise<RpcCommandResponse> {
-        return await this.sessionRpc(sessionId, 'git-diff-numstat', options) as RpcCommandResponse
+        return await this.rpcGateway.getGitDiffNumstat(sessionId, options)
     }
 
     async getGitDiffFile(sessionId: string, options: { cwd?: string; filePath: string; staged?: boolean }): Promise<RpcCommandResponse> {
-        return await this.sessionRpc(sessionId, 'git-diff-file', options) as RpcCommandResponse
+        return await this.rpcGateway.getGitDiffFile(sessionId, options)
     }
 
     async readSessionFile(sessionId: string, path: string): Promise<RpcReadFileResponse> {
-        return await this.sessionRpc(sessionId, 'readFile', { path }) as RpcReadFileResponse
+        return await this.rpcGateway.readSessionFile(sessionId, path)
     }
 
     async runRipgrep(sessionId: string, args: string[], cwd?: string): Promise<RpcCommandResponse> {
-        return await this.sessionRpc(sessionId, 'ripgrep', { args, cwd }) as RpcCommandResponse
+        return await this.rpcGateway.runRipgrep(sessionId, args, cwd)
     }
 
     async listSlashCommands(sessionId: string, agent: string): Promise<{
@@ -805,45 +304,6 @@ export class SyncEngine {
         commands?: Array<{ name: string; description?: string; source: 'builtin' | 'user' }>
         error?: string
     }> {
-        return await this.sessionRpc(sessionId, 'listSlashCommands', { agent }) as {
-            success: boolean
-            commands?: Array<{ name: string; description?: string; source: 'builtin' | 'user' }>
-            error?: string
-        }
-    }
-
-    private async sessionRpc(sessionId: string, method: string, params: unknown): Promise<unknown> {
-        return await this.rpcCall(`${sessionId}:${method}`, params)
-    }
-
-    private async machineRpc(machineId: string, method: string, params: unknown): Promise<unknown> {
-        return await this.rpcCall(`${machineId}:${method}`, params)
-    }
-
-    private async rpcCall(method: string, params: unknown): Promise<unknown> {
-        const socketId = this.rpcRegistry.getSocketIdForMethod(method)
-        if (!socketId) {
-            throw new Error(`RPC handler not registered: ${method}`)
-        }
-
-        const socket = this.io.of('/cli').sockets.get(socketId)
-        if (!socket) {
-            throw new Error(`RPC socket disconnected: ${method}`)
-        }
-
-        const response = await socket.timeout(30_000).emitWithAck('rpc-request', {
-            method,
-            params: JSON.stringify(params)
-        }) as unknown
-
-        if (typeof response !== 'string') {
-            return response
-        }
-
-        try {
-            return JSON.parse(response) as unknown
-        } catch {
-            return response
-        }
+        return await this.rpcGateway.listSlashCommands(sessionId, agent)
     }
 }
