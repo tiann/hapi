@@ -254,7 +254,8 @@ export class Store {
         const currentVersion = this.getUserVersion()
         if (currentVersion === 0) {
             if (this.hasAnyUserTables()) {
-                throw this.buildSchemaMismatchError(currentVersion)
+                this.setUserVersion(SCHEMA_VERSION)
+                return
             }
 
             this.createSchema()
