@@ -303,6 +303,19 @@ export class SyncEngine {
         return this.getMachinesByNamespace(namespace).filter((machine) => machine.active)
     }
 
+    getStats(): {
+        totalSessions: number
+        totalMachines: number
+        totalMessages: number
+        sessionsByDay: Array<{ date: string; count: number }>
+        messagesByDay: Array<{ date: string; count: number }>
+        modelStats: Record<string, number>
+        oldestSessionDate: number | null
+        newestSessionDate: number | null
+    } {
+        return this.store.getStats()
+    }
+
     getSessionMessages(sessionId: string): DecryptedMessage[] {
         return this.sessionMessages.get(sessionId) || []
     }
@@ -771,6 +784,52 @@ export class SyncEngine {
 
     async abortSession(sessionId: string): Promise<void> {
         await this.sessionRpc(sessionId, 'abort', { reason: 'User aborted via Telegram Bot' })
+    }
+
+    async closeSession(sessionId: string): Promise<void> {
+        return this.abortSession(sessionId)
+    }
+
+    async renameSession(sessionId: string, newName: string): Promise<void> {
+        const session = this.sessions.get(sessionId)
+        if (!session) {
+            throw new Error(`Session not found: ${sessionId}`)
+        }
+
+        const newMetadata = { ...session.metadata, name: newName }
+        const result = this.store.updateSessionMetadata(
+            sessionId,
+            newMetadata,
+            session.metadataVersion,
+            session.namespace
+        )
+
+        if (result.result === 'success') {
+            session.metadata = newMetadata as Metadata
+            session.metadataVersion = result.version
+            this.emit({ type: 'session-updated', sessionId, data: session })
+        } else if (result.result === 'version-mismatch') {
+            // Retry once with new version
+            const freshSession = this.refreshSession(sessionId)
+            if (freshSession) {
+                const freshMetadata = { ...freshSession.metadata, name: newName }
+                const retryResult = this.store.updateSessionMetadata(
+                    sessionId,
+                    freshMetadata,
+                    freshSession.metadataVersion,
+                    freshSession.namespace
+                )
+                if (retryResult.result === 'success') {
+                    freshSession.metadata = freshMetadata as Metadata
+                    freshSession.metadataVersion = retryResult.version
+                    this.emit({ type: 'session-updated', sessionId, data: freshSession })
+                    return
+                }
+            }
+            throw new Error('Failed to rename session due to version mismatch')
+        } else {
+            throw new Error('Failed to rename session')
+        }
     }
 
     async switchSession(sessionId: string, to: 'remote' | 'local'): Promise<void> {

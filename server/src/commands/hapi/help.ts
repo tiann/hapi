@@ -8,6 +8,7 @@ export const helpCommand: CommandDefinition = {
     category: 'hapi',
     description: '显示帮助信息',
     usage: '/help [command]',
+    examples: ['/help', '/help hapi_sessions'],
     args: [
         {
             name: 'command',
@@ -36,6 +37,13 @@ export const helpCommand: CommandDefinition = {
                 }).join('\n')
                 : '  无参数'
 
+            const examplesHelp = command.examples && command.examples.length > 0
+                ? [
+                    '**示例:**',
+                    command.examples.map(ex => `  \`${ex}\``).join('\n')
+                ].join('\n')
+                : ''
+
             return {
                 success: true,
                 message: [
@@ -47,6 +55,8 @@ export const helpCommand: CommandDefinition = {
                     '',
                     '**参数:**',
                     argsHelp,
+                    '',
+                    examplesHelp,
                     '',
                     command.aliases.length > 0 ? `**别名:** ${command.aliases.join(', ')}` : ''
                 ].filter(Boolean).join('\n')

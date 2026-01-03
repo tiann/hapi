@@ -1,77 +1,28 @@
 /**
- * Message Converter
+ * Universal Agent Message Converter
  * 
- * Converts Claude Code messages to Lark card format.
- * Handles different message types: text, tool calls, events, etc.
+ * Converts standard Agent Protocol messages to Lark card format.
+ * Supports any agent that outputs the standardized block format.
  */
 
 import {
     LarkCardBuilder,
     buildTextCard,
-    buildToolResultCard,
-    buildThinkingCard,
     buildErrorCard,
     type InteractiveCard
 } from './cardBuilder'
 
-type ToolUseBlock = {
-    type: 'tool_use'
-    id: string
-    name: string
-    input: unknown
-}
-
-type TextBlock = {
-    type: 'text'
-    text: string
-}
-
-type ThinkingBlock = {
-    type: 'thinking'
-    thinking: string
-}
-
-type ToolResultBlock = {
-    type: 'tool_result'
-    tool_use_id: string
-    content: string | Array<{ type: 'text'; text: string }>
-    is_error?: boolean
-}
-
-type ContentBlock = ToolUseBlock | TextBlock | ThinkingBlock | ToolResultBlock
-
-type AssistantMessage = {
-    role: 'assistant'
-    content: ContentBlock[]
-}
-
-type AgentOutputMessage = {
-    role: 'agent'
-    content: {
-        type: 'output'
-        data: {
-            type: string
-            message?: {
-                role: string
-                content: ContentBlock[]
-            }
-            [key: string]: unknown
-        }
-    }
-}
-
-type EventMessage = {
-    role: 'agent'
-    content: {
-        type: 'event'
-        data: {
-            type: string
-            [key: string]: unknown
-        }
-    }
-}
-
-type MessageContent = AssistantMessage | AgentOutputMessage | EventMessage | unknown
+import type {
+    MessageContent,
+    AgentOutputMessage,
+    EventMessage,
+    AgentMessage,
+    ContentBlock,
+    ToolUseBlock,
+    ToolResultBlock,
+    TextBlock,
+    ThinkingBlock
+} from '../types/agentProtocol'
 
 export interface ConvertedMessage {
     type: 'text' | 'card'
@@ -88,15 +39,15 @@ export function convertMessageToLark(content: MessageContent): ConvertedMessage[
     const msg = content as Record<string, unknown>
 
     if (msg.role === 'agent' && isAgentOutput(msg)) {
-        return convertAgentOutput(msg as AgentOutputMessage)
+        return convertAgentOutput(msg as unknown as AgentOutputMessage)
     }
 
     if (msg.role === 'agent' && isEventMessage(msg)) {
-        return convertEventMessage(msg as EventMessage)
+        return convertEventMessage(msg as unknown as EventMessage)
     }
 
     if (msg.role === 'assistant') {
-        return convertAssistantMessage(msg as AssistantMessage)
+        return convertAssistantMessage(msg as unknown as AgentMessage)
     }
 
     return []
@@ -117,28 +68,36 @@ function convertAgentOutput(msg: AgentOutputMessage): ConvertedMessage[] {
     const results: ConvertedMessage[] = []
 
     if (data.type === 'assistant' && data.message) {
-        const assistantMsg = data.message as AssistantMessage
-        return convertAssistantMessage(assistantMsg)
+        return convertAssistantMessage(data.message)
     }
 
     if (data.type === 'result') {
-        const result = data as { type: 'result'; subtype?: string; result?: string; error?: string }
-        if (result.error) {
+        if (data.error) {
             results.push({
                 type: 'card',
-                content: buildErrorCard(result.error)
+                content: buildErrorCard(data.error)
             })
+        } else if (data.result) {
+            const cleanResult = stripAnsi(data.result)
+            if (cleanResult.trim()) {
+                results.push({
+                    type: 'card',
+                    content: new LarkCardBuilder()
+                        .setHeader('✅ Result', undefined, 'green')
+                        .addCodeBlock(cleanResult, 'text')
+                        .build()
+                })
+            }
         }
         return results
     }
 
-    if (data.type === 'summary') {
-        const summary = data as { type: 'summary'; summary: string }
+    if (data.type === 'summary' && data.summary) {
         results.push({
             type: 'card',
             content: new LarkCardBuilder()
                 .setHeader('📝 Summary', undefined, 'green')
-                .addMarkdown(summary.summary)
+                .addMarkdown(data.summary)
                 .build()
         })
         return results
@@ -148,7 +107,7 @@ function convertAgentOutput(msg: AgentOutputMessage): ConvertedMessage[] {
 }
 
 function convertEventMessage(msg: EventMessage): ConvertedMessage[] {
-    const event = msg.content.data as { type: string; mode?: string; message?: string }
+    const event = msg.content.data
     const results: ConvertedMessage[] = []
 
     switch (event.type) {
@@ -184,7 +143,7 @@ function convertEventMessage(msg: EventMessage): ConvertedMessage[] {
     return results
 }
 
-function convertAssistantMessage(msg: AssistantMessage): ConvertedMessage[] {
+function convertAssistantMessage(msg: AgentMessage): ConvertedMessage[] {
     const results: ConvertedMessage[] = []
     const textParts: string[] = []
     const toolCalls: ToolUseBlock[] = []
@@ -324,9 +283,12 @@ function convertToolCall(toolCall: ToolUseBlock, result?: ToolResultBlock): Inte
     }
 
     if (result) {
-        const resultContent = typeof result.content === 'string'
-            ? result.content
-            : result.content.map(c => c.text).join('\n')
+        let resultContent = ''
+        if (typeof result.content === 'string') {
+            resultContent = result.content
+        } else if (Array.isArray(result.content)) {
+            resultContent = result.content.map(c => c.text).join('\n')
+        }
 
         if (resultContent && resultContent.length > 0) {
             const truncated = resultContent.length > 2000
@@ -387,4 +349,9 @@ export function buildHistorySummaryCard(messages: Array<{
 function truncateText(text: string, maxLength: number): string {
     if (text.length <= maxLength) return text
     return text.slice(0, maxLength - 3) + '...'
+}
+
+function stripAnsi(str: string): string {
+    // eslint-disable-next-line no-control-regex
+    return str.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, '')
 }

@@ -1,5 +1,7 @@
 import type { CommandDefinition, CommandContext, ParsedArgs, CommandResult } from '../types'
 
+import { buildModeSelectionCard } from '../cards/interactionCards'
+
 const PERMISSION_MODES = [
     'default', 'plan', 'read-only', 'acceptEdits',
     'safe-yolo', 'yolo', 'bypassPermissions'
@@ -7,10 +9,11 @@ const PERMISSION_MODES = [
 
 export const approveCommand: CommandDefinition = {
     name: 'hapi_approve',
-    aliases: ['approve'],
+    aliases: ['y'],
     category: 'hapi',
     description: '批准权限请求',
     usage: '/hapi_approve [request_id]',
+    examples: ['/hapi_approve', '/hapi_approve req_123'],
     args: [
         {
             name: 'request_id',
@@ -51,10 +54,11 @@ export const approveCommand: CommandDefinition = {
 
 export const denyCommand: CommandDefinition = {
     name: 'hapi_deny',
-    aliases: ['deny'],
+    aliases: ['n'],
     category: 'hapi',
     description: '拒绝权限请求',
     usage: '/hapi_deny [request_id]',
+    examples: ['/hapi_deny', '/hapi_deny req_123'],
     args: [
         {
             name: 'request_id',
@@ -95,30 +99,38 @@ export const denyCommand: CommandDefinition = {
 
 export const modeCommand: CommandDefinition = {
     name: 'hapi_mode',
-    aliases: ['mode'],
+    aliases: [],
     category: 'hapi',
     description: '切换权限模式',
     usage: '/hapi_mode <mode>',
+    examples: ['/hapi_mode auto', '/hapi_mode manual'],
     args: [
         {
             name: 'mode',
             type: 'enum',
-            required: true,
+            required: false,
             choices: [...PERMISSION_MODES],
             description: '权限模式'
         }
     ],
     handler: async (ctx: CommandContext, args: ParsedArgs): Promise<CommandResult> => {
         const mode = args.positional[0]
+        const sessionId = ctx.getSessionForChat(ctx.chatId)
+
+        if (!sessionId) {
+            return { success: false, error: '未绑定 Session' }
+        }
+
+        const session = ctx.syncEngine.getSession(sessionId)
+        if (!session) {
+            return { success: false, error: 'Session 不存在' }
+        }
 
         if (!mode) {
-            const sessionId = ctx.getSessionForChat(ctx.chatId)
-            const session = sessionId ? ctx.syncEngine.getSession(sessionId) : null
-            const currentMode = session?.permissionMode || 'default'
-
+            const card = buildModeSelectionCard(session)
             return {
                 success: true,
-                message: `当前权限模式: ${currentMode}\n\n可用模式:\n${PERMISSION_MODES.map(m => `• ${m}`).join('\n')}`
+                card
             }
         }
 
@@ -127,11 +139,6 @@ export const modeCommand: CommandDefinition = {
                 success: false,
                 error: `无效的权限模式: ${mode}\n\n可用模式:\n${PERMISSION_MODES.map(m => `• ${m}`).join('\n')}`
             }
-        }
-
-        const sessionId = ctx.getSessionForChat(ctx.chatId)
-        if (!sessionId) {
-            return { success: false, error: '未绑定 Session' }
         }
 
         try {

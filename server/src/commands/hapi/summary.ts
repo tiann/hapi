@@ -2,10 +2,11 @@ import type { CommandDefinition, CommandContext, ParsedArgs, CommandResult } fro
 
 export const summaryCommand: CommandDefinition = {
     name: 'hapi_summary',
-    aliases: ['summary'],
+    aliases: [],
     category: 'hapi',
-    description: '生成对话摘要',
+    description: '生成当前对话摘要',
     usage: '/hapi_summary [--limit <n>]',
+    examples: ['/hapi_summary', '/hapi_summary --limit 50'],
     args: [
         {
             name: 'limit',

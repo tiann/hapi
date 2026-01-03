@@ -2,7 +2,7 @@ import type { SyncEngine, Session } from '../sync/syncEngine'
 
 export type AgentType = 'claude' | 'gemini' | 'codex'
 
-export type CommandCategory = 'hapi' | 'native' | 'shortcut'
+export type CommandCategory = 'hapi' | 'agent' | 'native' | 'shortcut'
 
 export type CommandArgType = 'string' | 'number' | 'boolean' | 'enum'
 
@@ -50,6 +50,7 @@ export interface CommandDefinition {
     category: CommandCategory
     description: string
     usage: string
+    examples?: string[]
     args: CommandArg[]
     agentTypes?: AgentType[]
     handler: (ctx: CommandContext, args: ParsedArgs) => Promise<CommandResult>

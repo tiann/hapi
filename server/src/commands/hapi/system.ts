@@ -1,15 +1,17 @@
 import type { CommandDefinition, CommandContext, ParsedArgs, CommandResult } from '../types'
 import { buildMachineListCard } from '../cards/machineCards'
+import { buildStatsCard, type StatsTab } from '../cards/statsCards'
 
 const VERSION = '0.1.0'
 const BUILD_TIME = new Date().toISOString().split('T')[0]
 
 export const machinesCommand: CommandDefinition = {
     name: 'hapi_machines',
-    aliases: ['machines'],
+    aliases: [],
     category: 'hapi',
-    description: '列出已连接机器',
+    description: '列出已连接的机器',
     usage: '/hapi_machines [--online]',
+    examples: ['/hapi_machines', '/hapi_machines --online'],
     args: [
         {
             name: 'online',
@@ -40,61 +42,47 @@ export const machinesCommand: CommandDefinition = {
 
 export const statsCommand: CommandDefinition = {
     name: 'hapi_stats',
-    aliases: ['stats'],
+    aliases: [],
     category: 'hapi',
     description: '查看系统统计',
-    usage: '/hapi_stats',
-    args: [],
-    handler: async (ctx: CommandContext, _args: ParsedArgs): Promise<CommandResult> => {
+    usage: '/hapi_stats [--tab <overview|models>]',
+    examples: ['/hapi_stats', '/hapi_stats --tab models'],
+    args: [
+        {
+            name: 'tab',
+            type: 'enum',
+            required: false,
+            default: 'overview',
+            choices: ['overview', 'models'],
+            description: '显示的 Tab (overview 或 models)'
+        }
+    ],
+    handler: async (ctx: CommandContext, args: ParsedArgs): Promise<CommandResult> => {
+        const tab = (args.flags['tab'] as StatsTab) || 'overview'
         const sessions = ctx.syncEngine.getSessions()
         const machines = ctx.syncEngine.getMachines()
-        const bindings = ctx.getAllBindings()
+        const dbStats = ctx.syncEngine.getStats()
 
-        const activeSessions = sessions.filter(s => s.active).length
-        const onlineMachines = machines.filter(m => m.active).length
-        const thinkingSessions = sessions.filter(s => s.thinking).length
-
-        const agentStats = sessions.reduce((acc, s) => {
-            const agent = s.metadata?.flavor || 'unknown'
-            acc[agent] = (acc[agent] || 0) + 1
-            return acc
-        }, {} as Record<string, number>)
-
-        const statsLines = [
-            '📊 **系统统计**',
-            '',
-            '**Sessions:**',
-            `  • 总数: ${sessions.length}`,
-            `  • 活跃: ${activeSessions}`,
-            `  • 思考中: ${thinkingSessions}`,
-            '',
-            '**Machines:**',
-            `  • 总数: ${machines.length}`,
-            `  • 在线: ${onlineMachines}`,
-            '',
-            '**绑定:**',
-            `  • 群聊绑定数: ${bindings.size}`,
-            '',
-            '**Agent 分布:**',
-        ]
-
-        for (const [agent, count] of Object.entries(agentStats)) {
-            statsLines.push(`  • ${agent}: ${count}`)
-        }
+        const card = buildStatsCard({
+            sessions,
+            machines,
+            dbStats
+        }, tab)
 
         return {
             success: true,
-            message: statsLines.join('\n')
+            card
         }
     }
 }
 
 export const pingCommand: CommandDefinition = {
     name: 'hapi_ping',
-    aliases: ['ping'],
+    aliases: [],
     category: 'hapi',
     description: '检查连接状态',
     usage: '/hapi_ping',
+    examples: ['/hapi_ping'],
     args: [],
     handler: async (ctx: CommandContext, _args: ParsedArgs): Promise<CommandResult> => {
         const startTime = Date.now()
@@ -125,10 +113,11 @@ export const pingCommand: CommandDefinition = {
 
 export const versionCommand: CommandDefinition = {
     name: 'hapi_version',
-    aliases: ['version', 'ver'],
+    aliases: [],
     category: 'hapi',
-    description: '显示版本信息',
+    description: '查看版本信息',
     usage: '/hapi_version',
+    examples: ['/hapi_version'],
     args: [],
     handler: async (_ctx: CommandContext, _args: ParsedArgs): Promise<CommandResult> => {
         return {

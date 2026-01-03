@@ -3,10 +3,11 @@ import { buildHistoryCard } from '../cards/historyCards'
 
 export const historyCommand: CommandDefinition = {
     name: 'hapi_history',
-    aliases: ['history'],
+    aliases: ['h'],
     category: 'hapi',
-    description: '查看消息历史',
+    description: '查看当前 Session 的消息历史',
     usage: '/hapi_history [--limit <n>]',
+    examples: ['/hapi_history', '/hapi_history --limit 20'],
     args: [
         {
             name: 'limit',

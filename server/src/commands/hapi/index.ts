@@ -7,6 +7,7 @@ import { summaryCommands } from './summary'
 import { sessionManageCommands } from './sessionManage'
 import { notifyCommands } from './notify'
 import { systemCommands } from './system'
+import { agentCommands } from './agent'
 import type { CommandDefinition } from '../types'
 
 export const hapiCommands: CommandDefinition[] = [
@@ -19,6 +20,7 @@ export const hapiCommands: CommandDefinition[] = [
     ...sessionManageCommands,
     ...notifyCommands,
     ...systemCommands,
+    ...agentCommands,
 ]
 
 export { isNotifyEnabled } from './notify'

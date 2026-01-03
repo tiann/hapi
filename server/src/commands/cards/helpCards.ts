@@ -63,7 +63,7 @@ export function buildHelpCard(params: HelpCardParams): unknown {
     elements.push({
         tag: 'note',
         elements: [
-            { tag: 'plain_text', content: '💡 直接输入文字即可与 Agent 对话' }
+            { tag: 'plain_text', content: '💡 使用 /help <command> 查看详细用法和示例。直接输入文字即可与 Agent 对话。' }
         ]
     })
 

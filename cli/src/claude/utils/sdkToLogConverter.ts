@@ -173,9 +173,25 @@ export class SDKToLogConverter {
             }
 
             case 'result': {
-                // Result messages are not converted to log messages
-                // They're SDK-specific messages that indicate session completion
-                // Not part of the actual conversation log
+                const resultMsg = sdkMessage as SDKResultMessage
+                const contentBlocks: any[] = []
+                if (resultMsg.result) {
+                    contentBlocks.push({ type: 'text', text: resultMsg.result })
+                }
+                logMessage = {
+                    ...baseFields,
+                    type: 'assistant',
+                    message: {
+                        role: 'assistant',
+                        content: contentBlocks,
+                        usage: resultMsg.usage
+                    },
+                    num_turns: resultMsg.num_turns,
+                    total_cost_usd: resultMsg.total_cost_usd,
+                    duration_ms: resultMsg.duration_ms,
+                    duration_api_ms: resultMsg.duration_api_ms,
+                    is_error: resultMsg.is_error
+                } as any
                 break
             }
 

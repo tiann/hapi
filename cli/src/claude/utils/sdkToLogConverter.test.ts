@@ -158,7 +158,7 @@ describe('SDKToLogConverter', () => {
     })
 
     describe('Result messages', () => {
-        it('should not convert result messages', () => {
+        it('should convert success result messages to assistant text', () => {
             const sdkMessage: SDKResultMessage = {
                 type: 'result',
                 subtype: 'success',
@@ -177,10 +177,16 @@ describe('SDKToLogConverter', () => {
 
             const logMessage = converter.convert(sdkMessage)
 
-            expect(logMessage).toBeNull()
+            expect(logMessage?.type).toBe('assistant')
+            const blocks = (logMessage as any)?.message?.content ?? []
+            expect(Array.isArray(blocks)).toBe(true)
+            expect(blocks[0]?.type).toBe('text')
+            expect(blocks[0]?.text).toBe('Task completed')
+            expect((logMessage as any)?.message?.usage?.input_tokens).toBe(100)
+            expect((logMessage as any)?.message?.usage?.output_tokens).toBe(200)
         })
 
-        it('should not convert error results', () => {
+        it('should convert error results to assistant with empty content', () => {
             const sdkMessage: SDKResultMessage = {
                 type: 'result',
                 subtype: 'error_max_turns',
@@ -194,8 +200,11 @@ describe('SDKToLogConverter', () => {
 
             const logMessage = converter.convert(sdkMessage)
 
-            // Error results are not converted to summaries
-            expect(logMessage).toBeFalsy()
+            expect(logMessage?.type).toBe('assistant')
+            const blocks = (logMessage as any)?.message?.content ?? []
+            expect(Array.isArray(blocks)).toBe(true)
+            expect(blocks.length).toBe(0)
+            expect((logMessage as any)?.is_error).toBe(true)
         })
     })
 

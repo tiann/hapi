@@ -1,29 +1,40 @@
 import type { CommandDefinition, CommandContext, ParsedArgs, CommandResult } from '../types'
+import { buildSwitchSessionCard } from '../cards/interactionCards'
 
 export const bindCommand: CommandDefinition = {
     name: 'hapi_bind',
-    aliases: ['bind'],
+    aliases: [],
     category: 'hapi',
-    description: '绑定群聊到 Session',
+    description: '绑定当前群聊到 Session',
     usage: '/hapi_bind <session_id>',
+    examples: ['/hapi_bind abc12345'],
     args: [
         {
             name: 'session_id',
             type: 'string',
-            required: true,
+            required: false,
             description: 'Session ID 或名称'
         }
     ],
     handler: async (ctx: CommandContext, args: ParsedArgs): Promise<CommandResult> => {
         const target = args.positional[0]
+        const sessions = ctx.syncEngine.getSessions()
+        sessions.sort((a, b) => b.activeAt - a.activeAt)
+
         if (!target) {
+             if (sessions.length === 0) {
+                return {
+                    success: false,
+                    error: '当前没有可用的 Session'
+                }
+            }
+            const currentSessionId = ctx.getSessionForChat(ctx.chatId)
             return {
-                success: false,
-                error: '请指定 Session ID 或名称\n用法: /hapi_bind <session_id>'
+                success: true,
+                card: buildSwitchSessionCard(sessions, currentSessionId)
             }
         }
 
-        const sessions = ctx.syncEngine.getSessions()
         const session = sessions.find(s =>
             s.id === target ||
             s.id.startsWith(target) ||
@@ -64,10 +75,11 @@ export const bindCommand: CommandDefinition = {
 
 export const unbindCommand: CommandDefinition = {
     name: 'hapi_unbind',
-    aliases: ['unbind'],
+    aliases: [],
     category: 'hapi',
-    description: '解除群聊绑定',
+    description: '解除当前群聊绑定',
     usage: '/hapi_unbind',
+    examples: ['/hapi_unbind'],
     args: [],
     handler: async (ctx: CommandContext, _args: ParsedArgs): Promise<CommandResult> => {
         const currentSessionId = ctx.getSessionForChat(ctx.chatId)

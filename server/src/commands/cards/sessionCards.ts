@@ -18,13 +18,16 @@ export function buildSessionListCard(params: SessionListCardParams): unknown {
             content: '暂无 Session\n\n请在终端运行 `hapi start` 启动一个 Session'
         })
     } else {
-        for (const session of sessions.slice(0, 10)) {
+        for (let i = 0; i < Math.min(sessions.length, 10); i++) {
+            const session = sessions[i]
+            const idx = i + 1
             const status = session.active ? '🟢' : '⚪'
             const isCurrent = session.id === currentSessionId
             const name = session.metadata?.name ||
                 session.metadata?.path?.split('/').pop() ||
                 session.id.slice(0, 8)
             const displayName = isCurrent ? `${name} ★` : name
+            const shortId = session.id.slice(0, 8)
 
             const agentType = session.metadata?.flavor || 'unknown'
             const agentEmoji = agentType === 'claude' ? '🤖' :
@@ -37,9 +40,10 @@ export function buildSessionListCard(params: SessionListCardParams): unknown {
             elements.push({
                 tag: 'markdown',
                 content: [
-                    `${status} **${displayName}**`,
+                    `${status} **[${idx}] ${displayName}**`,
                     `📁 \`${truncatePath(path, 40)}\``,
-                    `${agentEmoji} ${capitalize(agentType)} · 🕐 ${timeAgo}`
+                    `${agentEmoji} ${capitalize(agentType)} · 🕐 ${timeAgo}`,
+                    `🆔 \`${shortId}\` → \`/hapi_switch ${shortId}\``
                 ].join('\n')
             })
             elements.push({ tag: 'hr' })

@@ -12,12 +12,19 @@ function getNotifySettings(chatId: string) {
     return notifySettings.get(chatId)!
 }
 
+export function setNotifyState(chatId: string, enabled: boolean, mutedUntil?: number) {
+    const settings = getNotifySettings(chatId)
+    settings.enabled = enabled
+    settings.mutedUntil = mutedUntil
+}
+
 export const notifyCommand: CommandDefinition = {
     name: 'hapi_notify',
-    aliases: ['notify'],
+    aliases: [],
     category: 'hapi',
-    description: '开关消息通知',
+    description: '设置消息通知',
     usage: '/hapi_notify [on|off]',
+    examples: ['/hapi_notify on', '/hapi_notify off'],
     args: [
         {
             name: 'state',
@@ -69,10 +76,11 @@ export const notifyCommand: CommandDefinition = {
 
 export const muteCommand: CommandDefinition = {
     name: 'hapi_mute',
-    aliases: ['mute'],
+    aliases: [],
     category: 'hapi',
-    description: '静音通知',
+    description: '暂时静音通知',
     usage: '/hapi_mute [duration]',
+    examples: ['/hapi_mute 30m', '/hapi_mute 1h', '/hapi_mute off (取消静音)'],
     args: [
         {
             name: 'duration',

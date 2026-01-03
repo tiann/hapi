@@ -58,7 +58,7 @@ export class CommandRouter {
             }
         }
 
-        if (command && command.category === 'hapi') {
+        if (command && (command.category === 'hapi' || command.category === 'agent')) {
             return {
                 type: 'hapi',
                 command,
@@ -85,7 +85,14 @@ export class CommandRouter {
                 return { success: false, error: 'Command not found' }
 
             case 'native':
-                return this.passToAgent(ctx, route.originalText)
+                const passResult = await this.passToAgent(ctx, route.originalText)
+                if (!passResult.success) {
+                    return passResult
+                }
+                if (route.command) {
+                    return route.command.handler(ctx, route.args)
+                }
+                return { success: true }
 
             case 'passthrough':
                 return this.passToAgent(ctx, route.originalText)

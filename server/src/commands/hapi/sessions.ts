@@ -1,12 +1,14 @@
 import type { CommandDefinition, CommandContext, ParsedArgs, CommandResult } from '../types'
 import { buildSessionListCard, buildSessionInfoCard } from '../cards/sessionCards'
+import { buildSwitchSessionCard } from '../cards/interactionCards'
 
 export const sessionsCommand: CommandDefinition = {
     name: 'hapi_sessions',
-    aliases: ['sessions', 'list'],
+    aliases: ['s'],
     category: 'hapi',
     description: '列出所有 Session',
     usage: '/hapi_sessions [--active]',
+    examples: ['/hapi_sessions', '/hapi_sessions --active'],
     args: [
         {
             name: 'active',
@@ -43,34 +45,54 @@ export const sessionsCommand: CommandDefinition = {
 
 export const switchCommand: CommandDefinition = {
     name: 'hapi_switch',
-    aliases: ['switch'],
+    aliases: ['sw'],
     category: 'hapi',
     description: '切换到指定 Session',
-    usage: '/hapi_switch <session_id|name>',
+    usage: '/hapi_switch <session_id|name|编号>',
+    examples: [
+        '/hapi_switch 1          (切换到列表第1个)',
+        '/hapi_switch cli        (切换到名为cli的会话)',
+        '/hapi_switch abc12345   (切换到ID为abc12345的会话)'
+    ],
     args: [
         {
             name: 'target',
             type: 'string',
-            required: true,
+            required: false,
             description: 'Session ID 或名称'
         }
     ],
     handler: async (ctx: CommandContext, args: ParsedArgs): Promise<CommandResult> => {
         const target = args.positional[0]
+        const sessions = ctx.syncEngine.getSessions()
+        sessions.sort((a, b) => b.activeAt - a.activeAt)
+
         if (!target) {
+            if (sessions.length === 0) {
+                return {
+                    success: false,
+                    error: '当前没有可用的 Session，请先使用 /hapi_new 创建'
+                }
+            }
+            const currentSessionId = ctx.getSessionForChat(ctx.chatId)
             return {
-                success: false,
-                error: '请指定 Session ID 或名称\n用法: /hapi_switch <session_id|name>'
+                success: true,
+                card: buildSwitchSessionCard(sessions, currentSessionId)
             }
         }
 
-        const sessions = ctx.syncEngine.getSessions()
-        const session = sessions.find(s =>
-            s.id === target ||
-            s.id.startsWith(target) ||
-            s.metadata?.name === target ||
-            s.metadata?.path?.endsWith(target)
-        )
+        let session = null
+        const idx = parseInt(target, 10)
+        if (!isNaN(idx) && idx >= 1 && idx <= sessions.length) {
+            session = sessions[idx - 1]
+        } else {
+            session = sessions.find(s =>
+                s.id === target ||
+                s.id.startsWith(target) ||
+                s.metadata?.name === target ||
+                s.metadata?.path?.endsWith(target)
+            )
+        }
 
         if (!session) {
             return {
@@ -81,23 +103,28 @@ export const switchCommand: CommandDefinition = {
 
         ctx.setSessionForChat(ctx.chatId, session.id)
 
-        const sessionName = session.metadata?.name ||
-            session.metadata?.path?.split('/').pop() ||
-            session.id.slice(0, 8)
+        const messages = ctx.syncEngine.getSessionMessages(session.id)
+        const card = buildSessionInfoCard({
+            session,
+            messageCount: messages.length,
+            isCurrent: true
+        })
 
         return {
             success: true,
-            message: `✅ 已切换到 Session: ${sessionName}`
+            message: `✅ 已切换到 Session: ${session.id.slice(0, 8)}`, // Fallback text
+            card
         }
     }
 }
 
 export const infoCommand: CommandDefinition = {
     name: 'hapi_info',
-    aliases: ['info'],
+    aliases: ['i'],
     category: 'hapi',
     description: '查看当前 Session 详情',
     usage: '/hapi_info [session_id]',
+    examples: ['/hapi_info', '/hapi_info abc12345'],
     args: [
         {
             name: 'session_id',

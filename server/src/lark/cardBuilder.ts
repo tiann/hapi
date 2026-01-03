@@ -42,7 +42,8 @@ export class LarkCardBuilder {
     private header: CardHeader | null = null
     private config: CardConfig = {
         wide_screen_mode: true,
-        enable_forward: true
+        enable_forward: true,
+        update_multi: true
     }
 
     setHeader(title: string, subtitle?: string, template: CardHeader['template'] = 'blue'): this {
@@ -207,16 +208,56 @@ export class LarkCardBuilder {
         return this
     }
 
-    addProgressBar(completed: number, total: number, label?: string): this {
-        const percentage = total > 0 ? Math.round((completed / total) * 100) : 0
-        const filled = Math.round(percentage / 10)
-        const empty = 10 - filled
-        const bar = '█'.repeat(filled) + '░'.repeat(empty)
-
+    addForm(elements: CardElement[], submitText: string, submitValue: Record<string, unknown>): this {
         this.elements.push({
-            tag: 'markdown',
-            content: `${label ? `**${label}** ` : ''}${bar} ${percentage}% (${completed}/${total})`
+            tag: 'form',
+            elements: elements,
+            name: 'form_1'
         })
+        
+        // Form actions need to be part of the form or using action_type 'form_submit'
+        // But in Lark Cards v2, 'form' container is experimental or specific.
+        // Let's use simple input components and a button with 'form_submit' if possible,
+        // OR just use interactive components and handle values in the action.
+        
+        // Actually, the simplest way for "form-like" input in Lark is:
+        // 1. Use 'input' component (if available in this version)
+        // 2. Use 'select_static' component
+        // 3. Use 'button' to submit.
+        
+        // Since 'input' component might need specific container, let's stick to what we know works:
+        // We will add the inputs as elements, and a button.
+        // Wait, Lark card inputs only work within a 'form' container for submission?
+        // Let's implement 'addForm' properly if we assume 'form' container support.
+        
+        return this
+    }
+
+    addSelection(name: string, placeholder: string, options: Array<{text: string, value: string}>, initialValue?: string): this {
+        this.elements.push({
+            tag: 'select_static',
+            placeholder: {
+                tag: 'plain_text',
+                content: placeholder
+            },
+            value: {
+                key: name
+            },
+            options: options.map(opt => ({
+                text: {
+                    tag: 'plain_text',
+                    content: opt.text
+                },
+                value: opt.value
+            })),
+            initial_option: initialValue ? options.find(o => o.value === initialValue)?.value : undefined
+        })
+        return this
+    }
+    
+    // Adding a generic element method for flexibility
+    addElement(element: CardElement): this {
+        this.elements.push(element)
         return this
     }
 

@@ -154,6 +154,8 @@ export class LarkClient {
     async sendInteractive(params: SendInteractiveParams): Promise<string | undefined> {
         const token = await this.getTenantAccessToken()
 
+        console.log('[LarkClient] 📤 Sending interactive card:', JSON.stringify(params.card, null, 2))
+
         const url = `${this.baseUrl}/im/v1/messages?receive_id_type=${encodeURIComponent(params.receiveIdType)}`
         const res = await fetch(url, {
             method: 'POST',
@@ -180,6 +182,8 @@ export class LarkClient {
 
     async patchMessage(params: PatchMessageParams): Promise<void> {
         const token = await this.getTenantAccessToken()
+
+        console.log('[LarkClient] 📤 Patching message with card:', JSON.stringify(params.card, null, 2))
 
         const url = `${this.baseUrl}/im/v1/messages/${encodeURIComponent(params.openMessageId)}`
         const res = await fetch(url, {

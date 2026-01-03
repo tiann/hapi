@@ -1,24 +1,33 @@
 import type { CommandDefinition, CommandContext, ParsedArgs, CommandResult } from '../types'
 
+import { buildSessionCreateCard } from '../cards/sessionCreateCard'
+import { buildCloseConfirmationCard, buildRenameCard } from '../cards/interactionCards'
+
 const AGENT_TYPES = ['claude', 'gemini', 'codex'] as const
 
-export const newCommand: CommandDefinition = {
+export const newSessionCommand: CommandDefinition = {
     name: 'hapi_new',
-    aliases: ['new'],
+    aliases: [],
     category: 'hapi',
     description: '创建新 Session',
-    usage: '/hapi_new <machine_id> <directory> [--agent <type>] [--yolo]',
+    usage: '/hapi_new [path] [machine] [--agent <type>] [--yolo]',
+    examples: [
+        '/hapi_new                         (在当前目录创建)',
+        '/hapi_new /path/to/project        (指定目录)',
+        '/hapi_new . mac-mini              (指定机器)',
+        '/hapi_new . --agent gemini        (使用 Gemini Agent)'
+    ],
     args: [
         {
             name: 'machine_id',
             type: 'string',
-            required: true,
+            required: false,
             description: 'Machine ID'
         },
         {
             name: 'directory',
             type: 'string',
-            required: true,
+            required: false,
             description: '工作目录路径'
         },
         {
@@ -40,17 +49,20 @@ export const newCommand: CommandDefinition = {
         const machineId = args.positional[0]
         const directory = args.positional[1]
 
+        // 如果没有提供参数，显示交互式创建卡片
         if (!machineId || !directory) {
+            const machines = ctx.syncEngine.getOnlineMachines()
+            const card = buildSessionCreateCard(machines)
             return {
-                success: false,
-                error: '请指定 Machine ID 和工作目录\n用法: /hapi_new <machine_id> <directory>'
+                success: true,
+                card
             }
         }
 
         const machine = ctx.syncEngine.getMachine(machineId) ||
             ctx.syncEngine.getMachines().find(m =>
                 m.id.startsWith(machineId) ||
-                m.metadata?.hostname === machineId
+                (m.metadata?.host === machineId) // Updated property check
             )
 
         if (!machine) {
@@ -111,122 +123,116 @@ export const newCommand: CommandDefinition = {
     }
 }
 
-export const closeCommand: CommandDefinition = {
+export const closeSessionCommand: CommandDefinition = {
     name: 'hapi_close',
-    aliases: ['close'],
+    aliases: [],
     category: 'hapi',
     description: '关闭 Session',
     usage: '/hapi_close [session_id]',
+    examples: ['/hapi_close', '/hapi_close abc12345'],
     args: [
         {
             name: 'session_id',
             type: 'string',
             required: false,
-            description: 'Session ID（可选，默认当前 Session）'
+            description: 'Session ID'
         }
     ],
     handler: async (ctx: CommandContext, args: ParsedArgs): Promise<CommandResult> => {
-        const targetId = args.positional[0] || ctx.getSessionForChat(ctx.chatId)
+        let sessionId: string | undefined = args.positional[0]
 
-        if (!targetId) {
-            return {
-                success: false,
-                error: '请指定 Session ID 或先绑定一个 Session'
+        // 如果未指定 ID，默认使用当前绑定的 Session
+        if (!sessionId) {
+            sessionId = ctx.getSessionForChat(ctx.chatId) || undefined
+            if (!sessionId) {
+                return { success: false, error: '未指定 Session ID 且未绑定 Session' }
+            }
+            
+            // 如果是无参调用，显示确认卡片
+            const session = ctx.syncEngine.getSession(sessionId)
+            if (session) {
+                return {
+                    success: true,
+                    card: buildCloseConfirmationCard(session)
+                }
             }
         }
-
-        const session = ctx.syncEngine.getSession(targetId)
-        if (!session) {
-            return {
-                success: false,
-                error: `Session 不存在: ${targetId}`
-            }
-        }
-
-        const sessionName = session.metadata?.name ||
-            session.metadata?.path?.split('/').pop() ||
-            session.id.slice(0, 8)
 
         try {
-            await ctx.syncEngine.abortSession(targetId)
-
-            const currentSessionId = ctx.getSessionForChat(ctx.chatId)
-            if (currentSessionId === targetId) {
+            await ctx.syncEngine.abortSession(sessionId)
+            
+            // 如果关闭的是当前绑定的 Session，解除绑定
+            const currentBound = ctx.getSessionForChat(ctx.chatId)
+            if (currentBound === sessionId) {
                 ctx.unbindChat(ctx.chatId)
             }
-
-            return {
-                success: true,
-                message: `✅ 已关闭 Session: ${sessionName}`
-            }
+            
+            return { success: true, message: `✅ Session ${sessionId} 已关闭` }
         } catch (err) {
             return {
                 success: false,
-                error: `关闭 Session 失败: ${err instanceof Error ? err.message : String(err)}`
+                error: `关闭失败: ${err instanceof Error ? err.message : String(err)}`
             }
         }
     }
 }
 
-export const renameCommand: CommandDefinition = {
+export const renameSessionCommand: CommandDefinition = {
     name: 'hapi_rename',
-    aliases: ['rename'],
+    aliases: [],
     category: 'hapi',
     description: '重命名 Session',
     usage: '/hapi_rename <new_name> [session_id]',
+    examples: ['/hapi_rename my-project', '/hapi_rename backend-api abc12345'],
     args: [
         {
             name: 'new_name',
             type: 'string',
-            required: true,
+            required: false,
             description: '新名称'
         },
         {
             name: 'session_id',
             type: 'string',
             required: false,
-            description: 'Session ID（可选，默认当前 Session）'
+            description: 'Session ID'
         }
     ],
     handler: async (ctx: CommandContext, args: ParsedArgs): Promise<CommandResult> => {
         const newName = args.positional[0]
-        const targetId = args.positional[1] || ctx.getSessionForChat(ctx.chatId)
+        let sessionId: string | undefined = args.positional[1]
 
+        if (!sessionId) {
+            sessionId = ctx.getSessionForChat(ctx.chatId) || undefined
+        }
+
+        if (!sessionId) {
+            return { success: false, error: '未指定 Session ID 且未绑定 Session' }
+        }
+
+        const session = ctx.syncEngine.getSession(sessionId)
+        if (!session) {
+            return { success: false, error: 'Session 不存在' }
+        }
+
+        // 如果未指定新名称，显示交互卡片
         if (!newName) {
             return {
-                success: false,
-                error: '请指定新名称\n用法: /hapi_rename <new_name>'
+                success: true,
+                card: buildRenameCard(session)
             }
         }
 
-        if (!targetId) {
+        try {
+            await ctx.syncEngine.renameSession(sessionId, newName)
+            return { success: true, message: `✅ Session 已重命名为: ${newName}` }
+        } catch (err) {
             return {
                 success: false,
-                error: '请指定 Session ID 或先绑定一个 Session'
+                error: `重命名失败: ${err instanceof Error ? err.message : String(err)}`
             }
-        }
-
-        const session = ctx.syncEngine.getSession(targetId)
-        if (!session) {
-            return {
-                success: false,
-                error: `Session 不存在: ${targetId}`
-            }
-        }
-
-        const oldName = session.metadata?.name ||
-            session.metadata?.path?.split('/').pop() ||
-            session.id.slice(0, 8)
-
-        if (session.metadata) {
-            session.metadata.name = newName
-        }
-
-        return {
-            success: true,
-            message: `✅ 已将 Session "${oldName}" 重命名为 "${newName}"`
         }
     }
 }
 
-export const sessionManageCommands = [newCommand, closeCommand, renameCommand]
+export const sessionManageCommands = [newSessionCommand, closeSessionCommand, renameSessionCommand]

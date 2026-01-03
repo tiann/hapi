@@ -743,4 +743,62 @@ export class Store {
         ).run(platform, platformUserId)
         return result.changes > 0
     }
+
+    getStats(): {
+        totalSessions: number
+        totalMachines: number
+        totalMessages: number
+        sessionsByDay: Array<{ date: string; count: number }>
+        messagesByDay: Array<{ date: string; count: number }>
+        modelStats: Record<string, number>
+        oldestSessionDate: number | null
+        newestSessionDate: number | null
+    } {
+        const totalSessions = (this.db.prepare('SELECT COUNT(*) as count FROM sessions').get() as { count: number }).count
+        const totalMachines = (this.db.prepare('SELECT COUNT(*) as count FROM machines').get() as { count: number }).count
+        const totalMessages = (this.db.prepare('SELECT COUNT(*) as count FROM messages').get() as { count: number }).count
+
+        const sessionsByDayRows = this.db.prepare(`
+            SELECT date(created_at / 1000, 'unixepoch', 'localtime') as date, COUNT(*) as count
+            FROM sessions
+            GROUP BY date
+            ORDER BY date ASC
+        `).all() as Array<{ date: string; count: number }>
+
+        const messagesByDayRows = this.db.prepare(`
+            SELECT date(created_at / 1000, 'unixepoch', 'localtime') as date, COUNT(*) as count
+            FROM messages
+            GROUP BY date
+            ORDER BY date ASC
+        `).all() as Array<{ date: string; count: number }>
+
+        const modelStatsRows = this.db.prepare(`
+            SELECT json_extract(metadata, '$.flavor') as model, COUNT(*) as count
+            FROM sessions
+            WHERE json_extract(metadata, '$.flavor') IS NOT NULL
+            GROUP BY model
+        `).all() as Array<{ model: string | null; count: number }>
+
+        const modelStats: Record<string, number> = {}
+        for (const row of modelStatsRows) {
+            if (row.model) {
+                modelStats[row.model] = row.count
+            }
+        }
+
+        const dateRange = this.db.prepare(`
+            SELECT MIN(created_at) as oldest, MAX(created_at) as newest FROM sessions
+        `).get() as { oldest: number | null; newest: number | null }
+
+        return {
+            totalSessions,
+            totalMachines,
+            totalMessages,
+            sessionsByDay: sessionsByDayRows,
+            messagesByDay: messagesByDayRows,
+            modelStats,
+            oldestSessionDate: dateRange.oldest,
+            newestSessionDate: dateRange.newest
+        }
+    }
 }
