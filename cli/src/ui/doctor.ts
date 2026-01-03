@@ -7,7 +7,7 @@
 
 import chalk from 'chalk'
 import { configuration } from '@/configuration'
-import { readSettings, readCredentials } from '@/persistence'
+import { readSettings } from '@/persistence'
 import { checkIfDaemonRunningAndCleanupStaleState } from '@/daemon/controlClient'
 import { findRunawayHappyProcesses, findAllHappyProcesses } from '@/daemon/doctor'
 import { readDaemonState } from '@/persistence'
@@ -147,15 +147,6 @@ export async function runDoctorCommand(filter?: 'all' | 'daemon'): Promise<void>
             console.log(chalk.gray('  Run `hapi auth login` to configure or set CLI_API_TOKEN env var'));
         }
 
-        // Legacy credentials (unused in direct-connect mode)
-        try {
-            const credentials = await readCredentials();
-            if (credentials) {
-                console.log(chalk.yellow('⚠️  Legacy credentials file present (unused in direct-connect mode)'));
-            }
-        } catch {
-            // ignore
-        }
     }
 
     // Daemon status - shown for both 'all' and 'daemon' filters

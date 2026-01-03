@@ -1,0 +1,37 @@
+import { Button } from '@/components/ui/button'
+import { Spinner } from '@/components/Spinner'
+
+export function ActionButtons(props: {
+    isPending: boolean
+    canCreate: boolean
+    isDisabled: boolean
+    onCancel: () => void
+    onCreate: () => void
+}) {
+    return (
+        <div className="flex gap-2 px-3 py-3">
+            <Button
+                variant="secondary"
+                onClick={props.onCancel}
+                disabled={props.isDisabled}
+            >
+                Cancel
+            </Button>
+            <Button
+                onClick={props.onCreate}
+                disabled={!props.canCreate}
+                aria-busy={props.isPending}
+                className="gap-2"
+            >
+                {props.isPending ? (
+                    <>
+                        <Spinner size="sm" label={null} className="text-[var(--app-button-text)]" />
+                        Creating...
+                    </>
+                ) : (
+                    'Create'
+                )}
+            </Button>
+        </div>
+    )
+}
