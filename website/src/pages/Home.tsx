@@ -281,8 +281,8 @@ export default function Home() {
                       <h3 className="font-bold">{t('installation.npm.step1')}</h3>
                     </div>
                     <div className="bg-slate-950 text-slate-50 p-4 rounded-xl font-mono text-sm flex justify-between items-center border-2 border-slate-800">
-                      <code>npm install -g hapi</code>
-                      <Button variant="ghost" size="icon" className="text-slate-400 hover:text-white hover:bg-slate-800" onClick={() => copyToClipboard("npm install -g hapi", "install")}>
+                      <code>npm install -g @twsxtd/hapi</code>
+                      <Button variant="ghost" size="icon" className="text-slate-400 hover:text-white hover:bg-slate-800" onClick={() => copyToClipboard("npm install -g @twsxtd/hapi", "install")}>
                         {copied === "install" ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
                       </Button>
                     </div>
