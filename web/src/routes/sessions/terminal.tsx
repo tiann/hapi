@@ -42,6 +42,13 @@ function ConnectionIndicator(props: { status: 'idle' | 'connecting' | 'connected
     )
 }
 
+const QUICK_INPUTS = [
+    { label: 'Esc', sequence: '\u001b', description: 'Escape' },
+    { label: 'Tab', sequence: '\t', description: 'Tab' },
+    { label: 'Home', sequence: '\u001b[H', description: 'Home' },
+    { label: 'End', sequence: '\u001b[F', description: 'End' }
+]
+
 export default function TerminalPage() {
     const { sessionId } = useParams({ from: '/sessions/$sessionId/terminal' })
     const { api, token } = useAppContext()
@@ -154,6 +161,15 @@ export default function TerminalPage() {
         }
     }, [terminalState.status])
 
+    const quickInputDisabled = !session?.active || terminalState.status !== 'connected'
+    const handleQuickInput = useCallback((sequence: string) => {
+        if (quickInputDisabled) {
+            return
+        }
+        write(sequence)
+        terminalRef.current?.focus()
+    }, [quickInputDisabled, write])
+
     if (!session) {
         return (
             <div className="flex h-full items-center justify-center">
@@ -216,6 +232,26 @@ export default function TerminalPage() {
                         onResize={handleResize}
                         className="h-full w-full"
                     />
+                </div>
+            </div>
+
+            <div className="bg-[var(--app-bg)] border-t border-[var(--app-border)] pb-[env(safe-area-inset-bottom)]">
+                <div className="mx-auto w-full max-w-content px-3">
+                    <div className="flex items-stretch overflow-hidden rounded-md bg-[var(--app-secondary-bg)]">
+                        {QUICK_INPUTS.map((input) => (
+                            <button
+                                key={input.label}
+                                type="button"
+                                onClick={() => handleQuickInput(input.sequence)}
+                                disabled={quickInputDisabled}
+                                className="flex-1 border-l border-[var(--app-border)] px-3 py-1.5 text-sm font-medium text-[var(--app-fg)] transition-colors hover:bg-[var(--app-subtle-bg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-button)] focus-visible:ring-inset disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent first:border-l-0"
+                                aria-label={input.description}
+                                title={input.description}
+                            >
+                                {input.label}
+                            </button>
+                        ))}
+                    </div>
                 </div>
             </div>
         </div>
