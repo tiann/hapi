@@ -15,7 +15,7 @@ type SessionActionMenuProps = {
     onRename: () => void
     onArchive: () => void
     onDelete: () => void
-    anchorRef?: RefObject<HTMLElement>
+    anchorRef?: RefObject<HTMLElement | null>
     align?: 'start' | 'end'
 }
 
