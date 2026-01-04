@@ -1,10 +1,12 @@
 import {
-    Dialog,
-    DialogContent,
-    DialogHeader,
-    DialogTitle
-} from '@/components/ui/dialog'
-import { Button } from '@/components/ui/button'
+    useCallback,
+    useEffect,
+    useLayoutEffect,
+    useRef,
+    useState,
+    type CSSProperties,
+    type RefObject
+} from 'react'
 
 type SessionActionMenuProps = {
     isOpen: boolean
@@ -13,6 +15,8 @@ type SessionActionMenuProps = {
     onRename: () => void
     onArchive: () => void
     onDelete: () => void
+    anchorRef?: RefObject<HTMLElement>
+    align?: 'start' | 'end'
 }
 
 function EditIcon(props: { className?: string }) {
@@ -79,8 +83,25 @@ function TrashIcon(props: { className?: string }) {
     )
 }
 
+type MenuPosition = {
+    top: number
+    left: number
+    transformOrigin: string
+}
+
 export function SessionActionMenu(props: SessionActionMenuProps) {
-    const { isOpen, onClose, sessionActive, onRename, onArchive, onDelete } = props
+    const {
+        isOpen,
+        onClose,
+        sessionActive,
+        onRename,
+        onArchive,
+        onDelete,
+        anchorRef,
+        align = 'end'
+    } = props
+    const menuRef = useRef<HTMLDivElement | null>(null)
+    const [menuPosition, setMenuPosition] = useState<MenuPosition | null>(null)
 
     const handleRename = () => {
         onClose()
@@ -97,43 +118,141 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
         onDelete()
     }
 
-    return (
-        <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
-            <DialogContent className="max-w-sm">
-                <DialogHeader>
-                    <DialogTitle>Session Actions</DialogTitle>
-                </DialogHeader>
-                <div className="mt-4 flex flex-col gap-2">
-                    <Button
-                        variant="secondary"
-                        className="justify-start gap-3 h-12"
-                        onClick={handleRename}
-                    >
-                        <EditIcon className="text-[var(--app-hint)]" />
-                        Rename
-                    </Button>
+    const updatePosition = useCallback(() => {
+        const menuEl = menuRef.current
+        if (!menuEl) return
 
-                    {sessionActive ? (
-                        <Button
-                            variant="secondary"
-                            className="justify-start gap-3 h-12 text-red-500"
-                            onClick={handleArchive}
-                        >
-                            <ArchiveIcon className="text-red-500" />
-                            Archive
-                        </Button>
-                    ) : (
-                        <Button
-                            variant="secondary"
-                            className="justify-start gap-3 h-12 text-red-500"
-                            onClick={handleDelete}
-                        >
-                            <TrashIcon className="text-red-500" />
-                            Delete
-                        </Button>
-                    )}
-                </div>
-            </DialogContent>
-        </Dialog>
+        const menuRect = menuEl.getBoundingClientRect()
+        const viewportWidth = window.innerWidth
+        const viewportHeight = window.innerHeight
+        const padding = 8
+        const gap = 8
+
+        let top = (viewportHeight - menuRect.height) / 2
+        let left = (viewportWidth - menuRect.width) / 2
+        let transformOrigin = 'top center'
+
+        const anchorEl = anchorRef?.current
+        if (anchorEl) {
+            const anchorRect = anchorEl.getBoundingClientRect()
+            const spaceBelow = viewportHeight - anchorRect.bottom
+            const spaceAbove = anchorRect.top
+            const openAbove = spaceBelow < menuRect.height + gap && spaceAbove > spaceBelow
+
+            top = openAbove ? anchorRect.top - menuRect.height - gap : anchorRect.bottom + gap
+            if (align === 'start') {
+                left = anchorRect.left
+                transformOrigin = openAbove ? 'bottom left' : 'top left'
+            } else {
+                left = anchorRect.right - menuRect.width
+                transformOrigin = openAbove ? 'bottom right' : 'top right'
+            }
+        }
+
+        top = Math.min(Math.max(top, padding), viewportHeight - menuRect.height - padding)
+        left = Math.min(Math.max(left, padding), viewportWidth - menuRect.width - padding)
+
+        setMenuPosition({ top, left, transformOrigin })
+    }, [align, anchorRef])
+
+    useLayoutEffect(() => {
+        if (!isOpen) return
+        updatePosition()
+    }, [isOpen, updatePosition])
+
+    useEffect(() => {
+        if (!isOpen) {
+            setMenuPosition(null)
+            return
+        }
+
+        const handlePointerDown = (event: PointerEvent) => {
+            const target = event.target as Node
+            if (menuRef.current?.contains(target)) return
+            if (anchorRef?.current?.contains(target)) return
+            onClose()
+        }
+
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.key === 'Escape') {
+                onClose()
+            }
+        }
+
+        const handleReflow = () => {
+            updatePosition()
+        }
+
+        document.addEventListener('pointerdown', handlePointerDown)
+        document.addEventListener('keydown', handleKeyDown)
+        window.addEventListener('resize', handleReflow)
+        window.addEventListener('scroll', handleReflow, true)
+
+        return () => {
+            document.removeEventListener('pointerdown', handlePointerDown)
+            document.removeEventListener('keydown', handleKeyDown)
+            window.removeEventListener('resize', handleReflow)
+            window.removeEventListener('scroll', handleReflow, true)
+        }
+    }, [anchorRef, isOpen, onClose, updatePosition])
+
+    if (!isOpen) return null
+
+    const menuStyle: CSSProperties | undefined = menuPosition
+        ? {
+            top: menuPosition.top,
+            left: menuPosition.left,
+            transformOrigin: menuPosition.transformOrigin
+        }
+        : undefined
+
+    const baseItemClassName =
+        'flex w-full items-center gap-3 rounded-md px-3 py-2 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]'
+
+    return (
+        <div
+            ref={menuRef}
+            role="menu"
+            aria-label="Session actions"
+            className="fixed z-50 min-w-[200px] rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] p-1 shadow-lg animate-menu-pop"
+            style={menuStyle}
+        >
+            <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--app-hint)]">
+                Session actions
+            </div>
+            <div className="flex flex-col gap-1">
+                <button
+                    type="button"
+                    role="menuitem"
+                    className={`${baseItemClassName} hover:bg-[var(--app-subtle-bg)]`}
+                    onClick={handleRename}
+                >
+                    <EditIcon className="text-[var(--app-hint)]" />
+                    Rename
+                </button>
+
+                {sessionActive ? (
+                    <button
+                        type="button"
+                        role="menuitem"
+                        className={`${baseItemClassName} text-red-500 hover:bg-red-500/10`}
+                        onClick={handleArchive}
+                    >
+                        <ArchiveIcon className="text-red-500" />
+                        Archive
+                    </button>
+                ) : (
+                    <button
+                        type="button"
+                        role="menuitem"
+                        className={`${baseItemClassName} text-red-500 hover:bg-red-500/10`}
+                        onClick={handleDelete}
+                    >
+                        <TrashIcon className="text-red-500" />
+                        Delete
+                    </button>
+                )}
+            </div>
+        </div>
     )
 }

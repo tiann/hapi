@@ -173,6 +173,7 @@ function SessionItem(props: {
     const { session: s, onSelect, showPath = true, api } = props
     const { haptic } = usePlatform()
     const [menuOpen, setMenuOpen] = useState(false)
+    const menuAnchorRef = useRef<HTMLButtonElement | null>(null)
     const [renameOpen, setRenameOpen] = useState(false)
     const [archiveOpen, setArchiveOpen] = useState(false)
     const [deleteOpen, setDeleteOpen] = useState(false)
@@ -202,6 +203,7 @@ function SessionItem(props: {
             <button
                 type="button"
                 {...longPressHandlers}
+                ref={menuAnchorRef}
                 className="session-list-item flex w-full flex-col gap-1.5 px-3 py-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] select-none"
                 style={{ WebkitTouchCallout: 'none' }}
             >
@@ -263,6 +265,8 @@ function SessionItem(props: {
                 onRename={() => setRenameOpen(true)}
                 onArchive={() => setArchiveOpen(true)}
                 onDelete={() => setDeleteOpen(true)}
+                anchorRef={menuAnchorRef}
+                align="end"
             />
 
             <RenameSessionDialog

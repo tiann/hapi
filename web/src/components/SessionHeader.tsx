@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import type { Session } from '@/types/api'
 import type { ApiClient } from '@/api/client'
 import { isTelegramApp } from '@/hooks/useTelegram'
@@ -70,6 +70,7 @@ export function SessionHeader(props: {
     const worktreeBranch = session.metadata?.worktree?.branch
 
     const [menuOpen, setMenuOpen] = useState(false)
+    const menuAnchorRef = useRef<HTMLButtonElement | null>(null)
     const [renameOpen, setRenameOpen] = useState(false)
     const [archiveOpen, setArchiveOpen] = useState(false)
     const [deleteOpen, setDeleteOpen] = useState(false)
@@ -139,7 +140,10 @@ export function SessionHeader(props: {
 
                     <button
                         type="button"
-                        onClick={() => setMenuOpen(true)}
+                        onClick={() => setMenuOpen((open) => !open)}
+                        ref={menuAnchorRef}
+                        aria-haspopup="menu"
+                        aria-expanded={menuOpen}
                         className="flex h-8 w-8 items-center justify-center rounded-full text-[var(--app-hint)] transition-colors hover:bg-[var(--app-secondary-bg)] hover:text-[var(--app-fg)]"
                         title="More actions"
                     >
@@ -155,6 +159,8 @@ export function SessionHeader(props: {
                 onRename={() => setRenameOpen(true)}
                 onArchive={() => setArchiveOpen(true)}
                 onDelete={() => setDeleteOpen(true)}
+                anchorRef={menuAnchorRef}
+                align="end"
             />
 
             <RenameSessionDialog
