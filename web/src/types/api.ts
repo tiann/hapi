@@ -33,6 +33,7 @@ export type SessionSummaryMetadata = {
 export type SessionSummary = {
     id: string
     active: boolean
+    thinking: boolean
     activeAt: number
     updatedAt: number
     metadata: SessionSummaryMetadata | null

@@ -25,6 +25,7 @@ type SessionSummaryMetadata = {
 type SessionSummary = {
     id: string
     active: boolean
+    thinking: boolean
     activeAt: number
     updatedAt: number
     metadata: SessionSummaryMetadata | null
@@ -53,6 +54,7 @@ function toSessionSummary(session: Session): SessionSummary {
     return {
         id: session.id,
         active: session.active,
+        thinking: session.thinking,
         activeAt: session.activeAt,
         updatedAt: session.updatedAt,
         metadata,

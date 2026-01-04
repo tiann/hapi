@@ -193,6 +193,9 @@ function SessionItem(props: {
     })
 
     const sessionName = getSessionTitle(s)
+    const statusDotClass = s.active
+        ? (s.thinking ? 'bg-[#007AFF]' : 'bg-[var(--app-badge-success-text)]')
+        : 'bg-[var(--app-hint)]'
 
     return (
         <>
@@ -206,7 +209,7 @@ function SessionItem(props: {
                     <div className="flex items-center gap-2 min-w-0">
                         <span className="flex h-4 w-4 items-center justify-center" aria-hidden="true">
                             <span
-                                className={`h-2 w-2 rounded-full ${s.active ? 'bg-[var(--app-badge-success-text)]' : 'bg-[var(--app-hint)]'}`}
+                                className={`h-2 w-2 rounded-full ${statusDotClass}`}
                             />
                         </span>
                         <div className="truncate text-sm font-medium">
