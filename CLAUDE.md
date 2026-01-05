@@ -92,9 +92,29 @@ bun run build:single-exe  # Build ARM64 binary
 
 ## Deployment
 
-After changes, rebuild and deploy:
+**Claude CAN and SHOULD deploy autonomously** when the user requests deployment or approves changes that require it. Do NOT ask the user to run these commands manually.
+
+### Deployment Procedure
+
+After building with `bun run build:single-exe`, deploy the new binary:
+
 ```bash
+# 1. Stop the service
 systemctl --user stop hapimatic
+
+# 2. Kill any lingering processes (handles "Text file busy" error)
+pkill -9 -f hapimatic; sleep 2
+
+# 3. Copy new binary
 cp cli/dist-exe/bun-linux-arm64/hapi ~/.local/bin/hapimatic
+
+# 4. Start service and verify
 systemctl --user start hapimatic
+systemctl --user status hapimatic --no-pager
 ```
+
+### Important Notes
+
+- **Always warn user first** about session disconnection (see Server Restart Warning above)
+- If `cp` fails with "Text file busy", use `pkill -9 -f hapimatic` to kill lingering processes
+- Verify service is running after deployment with `systemctl --user status hapimatic`
