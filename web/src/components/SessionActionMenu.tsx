@@ -1,6 +1,7 @@
 import {
     useCallback,
     useEffect,
+    useId,
     useLayoutEffect,
     useRef,
     useState,
@@ -17,6 +18,7 @@ type SessionActionMenuProps = {
     onDelete: () => void
     anchorRef?: RefObject<HTMLElement | null>
     align?: 'start' | 'end'
+    menuId?: string
 }
 
 function EditIcon(props: { className?: string }) {
@@ -98,10 +100,14 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
         onArchive,
         onDelete,
         anchorRef,
-        align = 'end'
+        align = 'end',
+        menuId
     } = props
     const menuRef = useRef<HTMLDivElement | null>(null)
     const [menuPosition, setMenuPosition] = useState<MenuPosition | null>(null)
+    const internalId = useId()
+    const resolvedMenuId = menuId ?? `session-action-menu-${internalId}`
+    const headingId = `${resolvedMenuId}-heading`
 
     const handleRename = () => {
         onClose()
@@ -196,6 +202,17 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
         }
     }, [anchorRef, isOpen, onClose, updatePosition])
 
+    useEffect(() => {
+        if (!isOpen) return
+
+        const frame = window.requestAnimationFrame(() => {
+            const firstItem = menuRef.current?.querySelector<HTMLElement>('[role="menuitem"]')
+            firstItem?.focus()
+        })
+
+        return () => window.cancelAnimationFrame(frame)
+    }, [isOpen])
+
     if (!isOpen) return null
 
     const menuStyle: CSSProperties | undefined = menuPosition
@@ -212,15 +229,21 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
     return (
         <div
             ref={menuRef}
-            role="menu"
-            aria-label="Session actions"
             className="fixed z-50 min-w-[200px] rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] p-1 shadow-lg animate-menu-pop"
             style={menuStyle}
         >
-            <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--app-hint)]">
+            <div
+                id={headingId}
+                className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--app-hint)]"
+            >
                 Session actions
             </div>
-            <div className="flex flex-col gap-1">
+            <div
+                id={resolvedMenuId}
+                role="menu"
+                aria-labelledby={headingId}
+                className="flex flex-col gap-1"
+            >
                 <button
                     type="button"
                     role="menuitem"
