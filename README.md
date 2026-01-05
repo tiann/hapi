@@ -12,6 +12,7 @@ HAPImatic provides local-first remote access to Claude Code sessions through a w
 
 | Aspect | Value |
 |--------|-------|
+| Version | 0.6.0 (based on upstream HAPI) |
 | Web UI | `http://rp1:3007` (via Tailscale) |
 | Port | 3007 |
 | Service | `hapimatic.service` |
@@ -45,6 +46,39 @@ hm update       # Update Claude Code + HAPImatic (see Updating section)
 
 ~/.config/systemd/user/hapimatic.service  # Systemd service
 ```
+
+## Development
+
+### Prerequisites
+
+- **Bun**: Package manager and runtime (`curl -fsSL https://bun.sh/install | bash`)
+- **Node.js**: For Claude Code SDK compatibility
+
+### Common Commands
+
+```bash
+# Development (live reload)
+bun run dev              # Start server + web dev servers
+bun run dev:server       # Server only
+bun run dev:web          # Web UI only
+
+# Building
+bun run build            # Build all packages
+bun run build:single-exe # Build self-contained binary
+
+# Quality checks
+bun run typecheck        # TypeScript type checking
+bun run test             # Run test suites
+```
+
+### Project Structure
+
+See `AGENTS.md` for detailed architecture documentation:
+
+- **`cli/`** - CLI tool, daemon, Claude SDK integration
+- **`server/`** - HTTP API, Socket.IO, SSE endpoints
+- **`web/`** - React PWA frontend
+- **`shared/`** - Shared types and utilities
 
 ## Updating
 
@@ -195,6 +229,27 @@ ss -tlnp | grep 3007
 ### PWA Not Updating
 
 Clear browser cache or uninstall/reinstall the PWA on your device.
+
+## Git Configuration
+
+This fork maintains an `upstream` remote for syncing with the original HAPI project:
+
+```bash
+# Verify remotes are configured
+git remote -v
+# origin    https://github.com/MattStarfield/hapimatic.git (fetch/push)
+# upstream  https://github.com/tiann/hapi.git (fetch/push)
+
+# If upstream is missing, add it:
+git remote add upstream https://github.com/tiann/hapi.git
+```
+
+## CI/CD
+
+GitHub Actions workflows (inherited from upstream):
+- **test.yml** - Run tests on PR/push
+- **release.yml** - Build and publish releases
+- **webapp.yml** - Build and deploy web app
 
 ## License
 
