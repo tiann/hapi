@@ -99,7 +99,7 @@ HAPI supports push notifications to alert you when agents need attention.
 | Ready | Agent finished and awaits input |
 
 ::: tip
-If push notifications don't work in your region (e.g., FCM unavailable), use [Telegram integration](/guide/installation#telegram-setup) instead.
+If push notifications don't work in your region (e.g., FCM unavailable), use [Telegram integration](/docs/guide/installation.md#telegram-setup) instead.
 :::
 
 ## Managing Your PWA
@@ -197,4 +197,4 @@ If PWA doesn't suit your needs, consider the Telegram Mini App:
 - Same features as PWA
 - Integrated notifications
 
-See [Installation Guide](/guide/installation#telegram-setup) for Telegram setup.
+See [Installation Guide](/docs/guide/installation.md#telegram-setup) for Telegram setup.

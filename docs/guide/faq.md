@@ -48,7 +48,7 @@ It's auto-generated on first server start and saved to `~/.hapi/settings.json`.
 
 ### Do you support multiple accounts?
 
-Yes. We support lightweight multi-account access via namespaces for shared team servers. See [Namespace (Advanced)](/guide/namespace).
+Yes. We support lightweight multi-account access via namespaces for shared team servers. See [Namespace (Advanced)](/docs/guide/namespace.md).
 
 ### Can I use HAPI without Telegram?
 
@@ -68,7 +68,7 @@ Yes. Telegram is optional. You can use the web app directly in any browser or in
 HAPI supports two methods:
 
 1. **PWA Push Notifications** - Enable when prompted, works even when app is closed
-2. **Telegram Bot** - See [Telegram Setup](/guide/installation#telegram-setup)
+2. **Telegram Bot** - See [Telegram Setup](/docs/guide/installation.md#telegram-setup)
 
 ### Can I start sessions remotely?
 
@@ -164,7 +164,7 @@ This checks server connectivity, token validity, agent availability, and more.
 | Deployment | Multiple services | Single binary |
 | Data | Encrypted on server | Never leaves your machine |
 
-See [Why HAPI](/guide/why-hapi) for detailed comparison.
+See [Why HAPI](/docs/guide/why-hapi.md) for detailed comparison.
 
 ### HAPI vs running Claude Code directly
 

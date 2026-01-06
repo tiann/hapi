@@ -22,7 +22,7 @@ npx @twsxtd/hapi server # start the server locally
 npx @twsxtd/hapi # run claude code 
 ```
 
-Open `http://<server-ip>:3006` and login with the token, if you need to access it remotely, see [Remote access](/guide/installation#remote-access)
+Open `http://<server-ip>:3006` and login with the token, if you need to access it remotely, see [Remote access](/docs/guide/installation.md#remote-access)
 
 More options: [Quick Start](docs/guide/quick-start.md) | [Installation](docs/guide/installation.md)
 

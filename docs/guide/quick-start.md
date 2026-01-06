@@ -20,7 +20,7 @@ npx @twsxtd/hapi
 
 :::
 
-Other install options: [Installation](/guide/installation)
+Other install options: [Installation](/docs/guide/installation.md)
 
 ## Start the server
 
@@ -52,7 +52,7 @@ Enter your access token to log in.
 
 ## Next steps
 
-- [Seamless Handoff](/guide/how-it-works#seamless-handoff) - Switch between terminal and phone seamlessly
-- [Remote access](/guide/installation#remote-access) - Access HAPI from anywhere
-- [Notifications](/guide/installation#telegram-setup) - Set up Telegram notifications
-- [Install the app](/guide/pwa) - Add HAPI to your home screen
+- [Seamless Handoff](/docs/guide/how-it-works.md#seamless-handoff) - Switch between terminal and phone seamlessly
+- [Remote access](/docs/guide/installation.md#remote-access) - Access HAPI from anywhere
+- [Notifications](/docs/guide/installation.md#telegram-setup) - Set up Telegram notifications
+- [Install the app](/docs/guide/pwa.md) - Add HAPI to your home screen
