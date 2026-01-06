@@ -9,12 +9,11 @@ Run Claude Code / Codex / Gemini sessions locally and control them remotely thro
 ## Features
 
 - **Seamless Handoff** - Work locally with native Claude Code or Codex, switch to remote when needed, switch back anytime.
-- Start AI coding sessions from any machine.
-- Monitor and control sessions from your phone or browser.
-- Approve or deny tool permissions remotely.
-- Browse files and view git diffs.
-- Track session progress with todo lists.
-- Supports multiple AI backends: Claude Code, Codex, and Gemini.
+- **AFK Without Stopping** - Step away from your desk? Keep approving AI requests from your phone. HAPI pushes permission requests to Telegram or your browser—approve or deny with one tap.
+- **See What AI Sees** - Browse project files and Git diffs directly in the web app. No SSH needed—just open the session and check what changed.
+- **Stay in the Loop** - Real-time todo progress shows you exactly where AI is in a multi-step task. No more guessing if it's stuck or making progress.
+- **Your AI, Your Choice** - Switch between Claude Code, Codex, and Gemini from the same interface. Different models for different tasks, one unified workflow.
+- **Terminal Anywhere** - Need to run a quick command? Access a real terminal session from your phone or browser, directly connected to the working machine.
 
 ## Getting Started
 
