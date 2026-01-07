@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { SessionSummary } from '@/types/api'
 import type { ApiClient } from '@/api/client'
 import { useLongPress } from '@/hooks/useLongPress'
+import { useSwipe } from '@/hooks/useSwipe'
 import { usePlatform } from '@/hooks/usePlatform'
 import { useSessionActions } from '@/hooks/mutations/useSessionActions'
 import { SessionActionMenu } from '@/components/SessionActionMenu'
@@ -120,6 +121,48 @@ function ChevronIcon(props: { className?: string; collapsed?: boolean }) {
     )
 }
 
+function TrashIcon(props: { className?: string }) {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="24"
+            height="24"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={props.className}
+        >
+            <path d="M3 6h18" />
+            <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" />
+            <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
+        </svg>
+    )
+}
+
+function InfoIcon(props: { className?: string }) {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="24"
+            height="24"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={props.className}
+        >
+            <circle cx="12" cy="12" r="10" />
+            <line x1="12" y1="16" x2="12" y2="12" />
+            <line x1="12" y1="8" x2="12.01" y2="8" />
+        </svg>
+    )
+}
+
 function getSessionTitle(session: SessionSummary): string {
     if (session.metadata?.name) {
         return session.metadata.name
@@ -183,14 +226,38 @@ function SessionItem(props: {
         s.metadata?.flavor ?? null
     )
 
+    // Swipe-to-delete only for inactive sessions
+    const canSwipeDelete = !s.active
+    const { handlers: swipeHandlers, offset, isRevealed, reset: resetSwipe } = useSwipe({
+        enabled: canSwipeDelete,
+        threshold: 80,
+        onSwipeLeft: () => {
+            haptic.impact('light')
+        }
+    })
+
     const longPressHandlers = useLongPress({
         onLongPress: () => {
+            // Don't trigger menu if mid-swipe
+            if (Math.abs(offset) > 10) return
             haptic.impact('medium')
             setMenuOpen(true)
         },
-        onClick: () => onSelect(s.id),
+        onClick: () => {
+            // Don't select if swiped open - reset instead
+            if (isRevealed) {
+                resetSwipe()
+                return
+            }
+            onSelect(s.id)
+        },
         threshold: 500
     })
+
+    const handleSwipeDelete = () => {
+        resetSwipe()
+        setDeleteOpen(true)
+    }
 
     const sessionName = getSessionTitle(s)
     const statusDotClass = s.active
@@ -199,62 +266,107 @@ function SessionItem(props: {
 
     return (
         <>
-            <button
-                type="button"
-                {...longPressHandlers}
-                className="session-list-item flex w-full flex-col gap-1.5 px-3 py-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] select-none"
-                style={{ WebkitTouchCallout: 'none' }}
-            >
-                <div className="flex items-center justify-between gap-3">
-                    <div className="flex items-center gap-2 min-w-0">
-                        <span className="flex h-4 w-4 items-center justify-center" aria-hidden="true">
-                            <span
-                                className={`h-2 w-2 rounded-full ${statusDotClass}`}
-                            />
-                        </span>
-                        <div className="truncate text-sm font-medium">
-                            {sessionName}
+            <div className="relative overflow-hidden">
+                {/* Delete action revealed on swipe */}
+                {canSwipeDelete && (
+                    <button
+                        type="button"
+                        onClick={handleSwipeDelete}
+                        className="absolute inset-y-0 right-0 flex items-center justify-center w-20 bg-[var(--app-badge-error-bg)] text-[var(--app-badge-error-text)] font-medium text-sm"
+                        style={{ opacity: Math.min(1, Math.abs(offset) / 40) }}
+                    >
+                        Delete
+                    </button>
+                )}
+
+                {/* Main session item - slides on swipe */}
+                <div
+                    role="button"
+                    tabIndex={0}
+                    {...longPressHandlers}
+                    {...(canSwipeDelete ? swipeHandlers : {})}
+                    onClick={(e) => {
+                        // Only navigate if the click wasn't on a nested button
+                        if ((e.target as HTMLElement).closest('button')) return
+                        onSelect(s.id)
+                    }}
+                    onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault()
+                            onSelect(s.id)
+                        }
+                    }}
+                    className="session-list-item relative flex w-full flex-col gap-1.5 px-3 py-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] select-none bg-[var(--app-bg)] cursor-pointer"
+                    style={{
+                        WebkitTouchCallout: 'none',
+                        transform: `translateX(${offset}px)`,
+                        transition: offset === 0 || Math.abs(offset) === 80 ? 'transform 0.2s ease-out' : 'none'
+                    }}
+                >
+                    <div className="flex items-center justify-between gap-3">
+                        <div className="flex items-center gap-2 min-w-0">
+                            <span className="flex h-4 w-4 items-center justify-center" aria-hidden="true">
+                                <span
+                                    className={`h-2 w-2 rounded-full ${statusDotClass}`}
+                                />
+                            </span>
+                            <div className="truncate text-sm font-medium">
+                                {sessionName}
+                            </div>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0 text-xs">
+                            {(() => {
+                                const progress = getTodoProgress(s)
+                                if (!progress) return null
+                                return (
+                                    <span className="flex items-center gap-1 text-[var(--app-hint)]">
+                                        <BulbIcon className="h-3 w-3" />
+                                        {progress.completed}/{progress.total}
+                                    </span>
+                                )
+                            })()}
+                            {s.pendingRequestsCount > 0 ? (
+                                <span className="text-[var(--app-badge-warning-text)]">
+                                    pending {s.pendingRequestsCount}
+                                </span>
+                            ) : null}
+                            <span className="text-[var(--app-hint)]">
+                                {formatRelativeTime(s.updatedAt)}
+                            </span>
+                            {/* Info icon - tap to open action menu */}
+                            <button
+                                type="button"
+                                onClick={(e) => {
+                                    e.stopPropagation()
+                                    e.preventDefault()
+                                    setMenuOpen(true)
+                                }}
+                                className="p-1 -m-1 text-[var(--app-hint)] opacity-60 hover:opacity-100 active:opacity-100 transition-opacity"
+                                title="Session options"
+                            >
+                                <InfoIcon className="h-4 w-4" />
+                            </button>
                         </div>
                     </div>
-                    <div className="flex items-center gap-2 shrink-0 text-xs">
-                        {(() => {
-                            const progress = getTodoProgress(s)
-                            if (!progress) return null
-                            return (
-                                <span className="flex items-center gap-1 text-[var(--app-hint)]">
-                                    <BulbIcon className="h-3 w-3" />
-                                    {progress.completed}/{progress.total}
-                                </span>
-                            )
-                        })()}
-                        {s.pendingRequestsCount > 0 ? (
-                            <span className="text-[var(--app-badge-warning-text)]">
-                                pending {s.pendingRequestsCount}
-                            </span>
-                        ) : null}
-                        <span className="text-[var(--app-hint)]">
-                            {formatRelativeTime(s.updatedAt)}
-                        </span>
-                    </div>
-                </div>
-                {showPath ? (
-                    <div className="truncate text-xs text-[var(--app-hint)]">
-                        {s.metadata?.path ?? s.id}
-                    </div>
-                ) : null}
-                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[var(--app-hint)]">
-                    <span className="inline-flex items-center gap-2">
-                        <span className="flex h-4 w-4 items-center justify-center" aria-hidden="true">
-                            ❖
-                        </span>
-                        {getAgentLabel(s)}
-                    </span>
-                    <span>model: {getModelLabel(s)}</span>
-                    {s.metadata?.worktree?.branch ? (
-                        <span>worktree: {s.metadata.worktree.branch}</span>
+                    {showPath ? (
+                        <div className="truncate text-xs text-[var(--app-hint)]">
+                            {s.metadata?.path ?? s.id}
+                        </div>
                     ) : null}
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[var(--app-hint)]">
+                        <span className="inline-flex items-center gap-2">
+                            <span className="flex h-4 w-4 items-center justify-center" aria-hidden="true">
+                                ❖
+                            </span>
+                            {getAgentLabel(s)}
+                        </span>
+                        <span>model: {getModelLabel(s)}</span>
+                        {s.metadata?.worktree?.branch ? (
+                            <span>worktree: {s.metadata.worktree.branch}</span>
+                        ) : null}
+                    </div>
                 </div>
-            </button>
+            </div>
 
             <SessionActionMenu
                 isOpen={menuOpen}
@@ -317,6 +429,14 @@ export function SessionList(props: {
     const [collapseOverrides, setCollapseOverrides] = useState<Map<string, boolean>>(
         () => new Map()
     )
+    const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false)
+    const [bulkDeletePending, setBulkDeletePending] = useState(false)
+
+    // Count inactive sessions for bulk delete
+    const inactiveSessions = useMemo(
+        () => props.sessions.filter(s => !s.active),
+        [props.sessions]
+    )
     const isGroupCollapsed = (group: SessionGroup): boolean => {
         const override = collapseOverrides.get(group.directory)
         if (override !== undefined) return override
@@ -347,6 +467,21 @@ export function SessionList(props: {
         })
     }, [groups])
 
+    const handleBulkDelete = async () => {
+        if (!api || inactiveSessions.length === 0) return
+        setBulkDeletePending(true)
+        try {
+            // Delete all inactive sessions sequentially
+            for (const session of inactiveSessions) {
+                await api.deleteSession(session.id)
+            }
+            props.onRefresh()
+        } finally {
+            setBulkDeletePending(false)
+            setBulkDeleteOpen(false)
+        }
+    }
+
     return (
         <div className="mx-auto w-full max-w-content flex flex-col">
             {renderHeader ? (
@@ -354,14 +489,26 @@ export function SessionList(props: {
                     <div className="text-xs text-[var(--app-hint)]">
                         {props.sessions.length} sessions in {groups.length} projects
                     </div>
-                    <button
-                        type="button"
-                        onClick={props.onNewSession}
-                        className="session-list-new-button p-1.5 rounded-full text-[var(--app-link)] transition-colors"
-                        title="New Session"
-                    >
-                        <PlusIcon className="h-5 w-5" />
-                    </button>
+                    <div className="flex items-center gap-1">
+                        {inactiveSessions.length > 0 && (
+                            <button
+                                type="button"
+                                onClick={() => setBulkDeleteOpen(true)}
+                                className="session-list-new-button p-1.5 rounded-full text-[var(--app-badge-error-text)] transition-colors"
+                                title={`Clear ${inactiveSessions.length} inactive session${inactiveSessions.length === 1 ? '' : 's'}`}
+                            >
+                                <TrashIcon className="h-5 w-5" />
+                            </button>
+                        )}
+                        <button
+                            type="button"
+                            onClick={props.onNewSession}
+                            className="session-list-new-button p-1.5 rounded-full text-[var(--app-link)] transition-colors"
+                            title="New Session"
+                        >
+                            <PlusIcon className="h-5 w-5" />
+                        </button>
+                    </div>
                 </div>
             ) : null}
 
@@ -373,17 +520,17 @@ export function SessionList(props: {
                             <button
                                 type="button"
                                 onClick={() => toggleGroup(group.directory, isCollapsed)}
-                                className="sticky top-0 z-10 flex w-full items-center gap-2 px-3 py-2 text-left bg-[var(--app-bg)] border-b border-[var(--app-divider)] transition-colors hover:bg-[var(--app-secondary-bg)]"
+                                className="sticky top-0 z-10 flex w-full items-center gap-2 px-3 py-2 text-left bg-[var(--color-primary-dark)] text-white border-b-2 border-[var(--color-accent)] transition-colors hover:brightness-110"
                             >
                                 <ChevronIcon
-                                    className="h-4 w-4 text-[var(--app-hint)]"
+                                    className="h-4 w-4 text-white/70"
                                     collapsed={isCollapsed}
                                 />
                                 <div className="flex items-center gap-2 min-w-0 flex-1">
-                                    <span className="font-medium text-sm break-words" title={group.directory}>
+                                    <span className="font-medium text-sm break-words text-white" title={group.directory}>
                                         {group.displayName}
                                     </span>
-                                    <span className="shrink-0 text-xs text-[var(--app-hint)]">
+                                    <span className="shrink-0 text-xs text-white/70">
                                         ({group.sessions.length})
                                     </span>
                                 </div>
@@ -405,6 +552,18 @@ export function SessionList(props: {
                     )
                 })}
             </div>
+
+            <ConfirmDialog
+                isOpen={bulkDeleteOpen}
+                onClose={() => setBulkDeleteOpen(false)}
+                title="Clear Inactive Sessions"
+                description={`Delete ${inactiveSessions.length} inactive session${inactiveSessions.length === 1 ? '' : 's'}? This action cannot be undone.`}
+                confirmLabel="Delete All"
+                confirmingLabel="Deleting..."
+                onConfirm={handleBulkDelete}
+                isPending={bulkDeletePending}
+                destructive
+            />
         </div>
     )
 }

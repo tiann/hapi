@@ -1,8 +1,14 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <!-- Mint green background -->
-  <rect width="512" height="512" fill="#5ae6ab"/>
+  <!-- Gradient background from mint green to grape purple -->
+  <defs>
+    <linearGradient id="bgGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#5ae6ab"/>
+      <stop offset="100%" style="stop-color:#6F2DA8"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" fill="url(#bgGradient)"/>
 
-  <!-- HAPI text - large, centered -->
+  <!-- HAPI text - large, centered with thicker purple outline -->
   <text
     x="256"
     y="215"
@@ -11,9 +17,12 @@
     font-weight="bold"
     font-size="145"
     fill="white"
+    stroke="#6F2DA8"
+    stroke-width="5"
+    paint-order="stroke fill"
     letter-spacing="8">HAPI</text>
 
-  <!-- matic text - sized to match HAPI width -->
+  <!-- matic text - sized to match HAPI width with thicker purple outline -->
   <text
     x="256"
     y="330"
@@ -22,5 +31,8 @@
     font-weight="400"
     font-size="116"
     fill="white"
+    stroke="#6F2DA8"
+    stroke-width="4"
+    paint-order="stroke fill"
     letter-spacing="6">matic</text>
 </svg>

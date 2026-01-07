@@ -2,6 +2,16 @@
 @config "../tailwind.config.ts";
 
 :root {
+    /* HAPImatic brand colors */
+    --color-primary: #5ae6ab;       /* mint green - primary brand color */
+    --color-primary-dark: #014d4e;  /* dark teal - depth and contrast */
+    --color-accent: #6F2DA8;        /* grape - accent for highlights */
+
+    /* Purple accent variants */
+    --color-accent-light: rgba(111, 45, 168, 0.2);
+    --color-accent-border: rgba(111, 45, 168, 0.4);
+    --color-accent-glow: rgba(111, 45, 168, 0.6);
+
     --app-bg: var(--tg-theme-bg-color, #ffffff);
     --app-fg: var(--tg-theme-text-color, #111827);
     --app-hint: var(--tg-theme-hint-color, #6b7280);

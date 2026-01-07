@@ -161,7 +161,35 @@ export function LoginPrompt(props: LoginPromptProps) {
             <div className="w-full max-w-sm space-y-6">
                 {/* Header */}
                 <div className="text-center space-y-2">
-                    <div className="text-2xl font-semibold">{title}</div>
+                    {isBindMode ? (
+                        <div className="text-2xl font-bold">
+                            {title}
+                        </div>
+                    ) : (
+                        <svg
+                            viewBox="0 0 200 40"
+                            className="h-8 mx-auto"
+                            aria-label="HAPImatic"
+                        >
+                            <text
+                                x="100"
+                                y="30"
+                                textAnchor="middle"
+                                fontFamily="'Varela Round', system-ui, sans-serif"
+                                fontWeight="normal"
+                                fontSize="28"
+                                letterSpacing="2"
+                                fill="var(--app-fg)"
+                                stroke="var(--color-accent)"
+                                strokeWidth="3"
+                                strokeLinejoin="round"
+                                strokeLinecap="round"
+                                paintOrder="stroke fill"
+                            >
+                                HAPImatic
+                            </text>
+                        </svg>
+                    )}
                     <div className="text-sm text-[var(--app-hint)]">
                         {subtitle}
                     </div>
@@ -177,7 +205,7 @@ export function LoginPrompt(props: LoginPromptProps) {
                             placeholder="Access token"
                             autoComplete="current-password"
                             disabled={isLoading}
-                            className="w-full px-3 py-2.5 rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] text-[var(--app-fg)] placeholder:text-[var(--app-hint)] focus:outline-none focus:ring-2 focus:ring-[var(--app-button)] focus:border-transparent disabled:opacity-50"
+                            className="w-full px-3 py-2.5 rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] text-[var(--app-fg)] placeholder:text-[var(--app-hint)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] focus:border-[var(--color-accent)]/50 disabled:opacity-50"
                         />
                     </div>
 
@@ -191,7 +219,7 @@ export function LoginPrompt(props: LoginPromptProps) {
                         type="submit"
                         disabled={isLoading || !accessToken.trim()}
                         aria-busy={isLoading}
-                        className="w-full py-2.5 rounded-lg bg-[var(--app-button)] text-[var(--app-button-text)] font-medium disabled:opacity-50 hover:opacity-90 transition-opacity inline-flex items-center justify-center gap-2"
+                        className="w-full py-2.5 rounded-lg bg-[var(--app-button)] text-[var(--app-button-text)] font-medium disabled:opacity-50 hover:bg-[var(--color-accent)] hover:text-white transition-all inline-flex items-center justify-center gap-2"
                     >
                         {isLoading ? (
                             <>
