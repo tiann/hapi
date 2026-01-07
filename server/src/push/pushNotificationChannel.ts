@@ -56,6 +56,48 @@ export class PushNotificationChannel implements NotificationChannel {
         await this.pushService.sendToNamespace(session.namespace, payload)
     }
 
+    async sendQuestion(session: Session, questionSummary: string): Promise<void> {
+        if (!session.active) {
+            return
+        }
+
+        const name = getSessionName(session)
+
+        const payload: PushPayload = {
+            title: 'Question',
+            body: questionSummary || `Claude has a question in ${name}`,
+            tag: `question-${session.id}`,
+            data: {
+                type: 'question',
+                sessionId: session.id,
+                url: this.buildSessionPath(session.id)
+            }
+        }
+
+        await this.pushService.sendToNamespace(session.namespace, payload)
+    }
+
+    async sendError(session: Session, errorMessage: string): Promise<void> {
+        if (!session.active) {
+            return
+        }
+
+        const name = getSessionName(session)
+
+        const payload: PushPayload = {
+            title: 'Error',
+            body: errorMessage || `Error in ${name}`,
+            tag: `error-${session.id}`,
+            data: {
+                type: 'error',
+                sessionId: session.id,
+                url: this.buildSessionPath(session.id)
+            }
+        }
+
+        await this.pushService.sendToNamespace(session.namespace, payload)
+    }
+
     private buildSessionPath(sessionId: string): string {
         return `/sessions/${sessionId}`
     }

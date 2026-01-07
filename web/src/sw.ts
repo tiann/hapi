@@ -21,6 +21,52 @@ type PushPayload = {
     }
 }
 
+type NotificationPreferences = {
+    permissions: boolean
+    questions: boolean
+    ready: boolean
+    errors: boolean
+}
+
+const PREFERENCES_CACHE_NAME = 'notification-preferences'
+const PREFERENCES_KEY = 'preferences.json'
+
+async function getNotificationPreferences(): Promise<NotificationPreferences> {
+    const defaultPrefs: NotificationPreferences = {
+        permissions: true,
+        questions: true,
+        ready: true,
+        errors: true
+    }
+
+    try {
+        const cache = await caches.open(PREFERENCES_CACHE_NAME)
+        const response = await cache.match(PREFERENCES_KEY)
+        if (!response) {
+            return defaultPrefs
+        }
+        const prefs = await response.json()
+        return { ...defaultPrefs, ...prefs }
+    } catch {
+        return defaultPrefs
+    }
+}
+
+function getPreferenceKeyForType(type: string | undefined): keyof NotificationPreferences | null {
+    switch (type) {
+        case 'permission-request':
+            return 'permissions'
+        case 'question':
+            return 'questions'
+        case 'ready':
+            return 'ready'
+        case 'error':
+            return 'errors'
+        default:
+            return null
+    }
+}
+
 precacheAndRoute(self.__WB_MANIFEST)
 
 registerRoute(
@@ -97,21 +143,35 @@ self.addEventListener('push', (event) => {
         return
     }
 
-    const title = payload.title || 'HAPImatic'
-    const body = payload.body ?? ''
-    const icon = payload.icon ?? '/pwa-192x192.png'
-    const badge = payload.badge ?? '/pwa-64x64.png'
-    const data = payload.data
-    const tag = payload.tag
-
     event.waitUntil(
-        self.registration.showNotification(title, {
-            body,
-            icon,
-            badge,
-            data,
-            tag
-        })
+        (async () => {
+            // Check if this notification type is enabled
+            const notificationType = payload.data?.type
+            const preferenceKey = getPreferenceKeyForType(notificationType)
+
+            if (preferenceKey) {
+                const prefs = await getNotificationPreferences()
+                if (!prefs[preferenceKey]) {
+                    // User has disabled this notification type
+                    return
+                }
+            }
+
+            const title = payload.title || 'HAPImatic'
+            const body = payload.body ?? ''
+            const icon = payload.icon ?? '/pwa-192x192.png'
+            const badge = payload.badge ?? '/pwa-64x64.png'
+            const data = payload.data
+            const tag = payload.tag
+
+            await self.registration.showNotification(title, {
+                body,
+                icon,
+                badge,
+                data,
+                tag
+            })
+        })()
     )
 })
 

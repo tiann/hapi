@@ -8,6 +8,7 @@ import { useSessionActions } from '@/hooks/mutations/useSessionActions'
 import { SessionActionMenu } from '@/components/SessionActionMenu'
 import { RenameSessionDialog } from '@/components/RenameSessionDialog'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
+import { NotificationSettings, NotificationSettingsButton } from '@/components/NotificationSettings'
 
 type SessionGroup = {
     directory: string
@@ -431,6 +432,7 @@ export function SessionList(props: {
     )
     const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false)
     const [bulkDeletePending, setBulkDeletePending] = useState(false)
+    const [notificationSettingsOpen, setNotificationSettingsOpen] = useState(false)
 
     // Count inactive sessions for bulk delete
     const inactiveSessions = useMemo(
@@ -490,6 +492,7 @@ export function SessionList(props: {
                         {props.sessions.length} sessions in {groups.length} projects
                     </div>
                     <div className="flex items-center gap-1">
+                        <NotificationSettingsButton onClick={() => setNotificationSettingsOpen(true)} />
                         {inactiveSessions.length > 0 && (
                             <button
                                 type="button"
@@ -563,6 +566,12 @@ export function SessionList(props: {
                 onConfirm={handleBulkDelete}
                 isPending={bulkDeletePending}
                 destructive
+            />
+
+            <NotificationSettings
+                isOpen={notificationSettingsOpen}
+                onClose={() => setNotificationSettingsOpen(false)}
+                api={api}
             />
         </div>
     )

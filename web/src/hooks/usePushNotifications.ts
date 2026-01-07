@@ -2,10 +2,24 @@ import { useCallback, useEffect, useState } from 'react'
 import type { ApiClient } from '@/api/client'
 
 function isPushSupported(): boolean {
-    return typeof window !== 'undefined'
-        && 'serviceWorker' in navigator
-        && 'PushManager' in window
-        && 'Notification' in window
+    if (typeof window === 'undefined') {
+        return false
+    }
+
+    const hasServiceWorker = 'serviceWorker' in navigator
+    const hasPushManager = 'PushManager' in window
+    const hasNotification = 'Notification' in window
+
+    // Debug logging for iOS troubleshooting
+    console.log('[PushNotifications] Support check:', {
+        hasServiceWorker,
+        hasPushManager,
+        hasNotification,
+        standalone: (window.navigator as Navigator & { standalone?: boolean }).standalone,
+        displayMode: window.matchMedia('(display-mode: standalone)').matches
+    })
+
+    return hasServiceWorker && hasPushManager && hasNotification
 }
 
 function base64UrlToUint8Array(base64Url: string): Uint8Array {

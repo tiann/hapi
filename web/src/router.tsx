@@ -1,4 +1,4 @@
-import { useCallback } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import {
     Navigate,
@@ -11,6 +11,8 @@ import {
 import { App } from '@/App'
 import { SessionChat } from '@/components/SessionChat'
 import { SessionList } from '@/components/SessionList'
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
+import { NotificationSettings, NotificationSettingsButton } from '@/components/NotificationSettings'
 import { NewSession } from '@/components/NewSession'
 import { LoadingState } from '@/components/LoadingState'
 import { useAppContext } from '@/lib/app-context'
@@ -66,16 +68,58 @@ function PlusIcon(props: { className?: string }) {
     )
 }
 
+function TrashIcon(props: { className?: string }) {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="24"
+            height="24"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={props.className}
+        >
+            <polyline points="3 6 5 6 21 6" />
+            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+        </svg>
+    )
+}
+
 function SessionsPage() {
     const { api } = useAppContext()
     const navigate = useNavigate()
     const { sessions, isLoading, error, refetch } = useSessions(api)
+    const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false)
+    const [bulkDeletePending, setBulkDeletePending] = useState(false)
+    const [notificationSettingsOpen, setNotificationSettingsOpen] = useState(false)
 
     const handleRefresh = useCallback(() => {
         void refetch()
     }, [refetch])
 
     const projectCount = new Set(sessions.map(s => s.metadata?.path ?? 'Other')).size
+
+    const inactiveSessions = useMemo(
+        () => sessions.filter(s => !s.active),
+        [sessions]
+    )
+
+    const handleBulkDelete = async () => {
+        if (!api || inactiveSessions.length === 0) return
+        setBulkDeletePending(true)
+        try {
+            for (const session of inactiveSessions) {
+                await api.deleteSession(session.id)
+            }
+            void refetch()
+        } finally {
+            setBulkDeletePending(false)
+            setBulkDeleteOpen(false)
+        }
+    }
 
     return (
         <div className="flex h-full flex-col">
@@ -84,14 +128,27 @@ function SessionsPage() {
                     <div className="text-xs text-[var(--app-hint)]">
                         {sessions.length} sessions in {projectCount} projects
                     </div>
-                    <button
-                        type="button"
-                        onClick={() => navigate({ to: '/sessions/new' })}
-                        className="session-list-new-button p-1.5 rounded-full text-[var(--app-link)] transition-colors"
-                        title="New Session"
-                    >
-                        <PlusIcon className="h-5 w-5" />
-                    </button>
+                    <div className="flex items-center gap-1">
+                        <NotificationSettingsButton onClick={() => setNotificationSettingsOpen(true)} />
+                        {inactiveSessions.length > 0 && (
+                            <button
+                                type="button"
+                                onClick={() => setBulkDeleteOpen(true)}
+                                className="session-list-new-button p-1.5 rounded-full text-[var(--app-badge-error-text)] transition-colors"
+                                title={`Clear ${inactiveSessions.length} inactive session${inactiveSessions.length === 1 ? '' : 's'}`}
+                            >
+                                <TrashIcon className="h-5 w-5" />
+                            </button>
+                        )}
+                        <button
+                            type="button"
+                            onClick={() => navigate({ to: '/sessions/new' })}
+                            className="session-list-new-button p-1.5 rounded-full text-[var(--app-link)] transition-colors"
+                            title="New Session"
+                        >
+                            <PlusIcon className="h-5 w-5" />
+                        </button>
+                    </div>
                 </div>
             </div>
             <div className="flex-1 overflow-y-auto">
@@ -113,6 +170,23 @@ function SessionsPage() {
                     api={api}
                 />
             </div>
+
+            <ConfirmDialog
+                isOpen={bulkDeleteOpen}
+                onClose={() => setBulkDeleteOpen(false)}
+                title="Clear Inactive Sessions"
+                description={`Delete ${inactiveSessions.length} inactive session${inactiveSessions.length === 1 ? '' : 's'}? This action cannot be undone.`}
+                confirmLabel="Delete All"
+                confirmingLabel="Deleting..."
+                onConfirm={handleBulkDelete}
+                isPending={bulkDeletePending}
+                destructive
+            />
+            <NotificationSettings
+                isOpen={notificationSettingsOpen}
+                onClose={() => setNotificationSettingsOpen(false)}
+                api={api}
+            />
         </div>
     )
 }
