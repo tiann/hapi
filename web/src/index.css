@@ -223,7 +223,7 @@ html[data-theme="dark"] .shiki span {
   animation: spin 1s linear infinite;
 }
 
-/* New messages indicator bounce animation */
+/* Jump to bottom button bounce animation (uses translateX for absolute centering) */
 @keyframes bounce-in {
   0% {
     transform: translateX(-50%) scale(0.8);
@@ -239,5 +239,5 @@ html[data-theme="dark"] .shiki span {
 }
 
 .animate-bounce-in {
-  animation: bounce-in 0.3s ease-out;
+  animation: bounce-in 0.3s ease-out forwards;
 }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { AssistantRuntimeProvider } from '@assistant-ui/react'
 import type { ApiClient } from '@/api/client'
@@ -9,7 +9,7 @@ import { normalizeDecryptedMessage } from '@/chat/normalize'
 import { reduceChatBlocks } from '@/chat/reducer'
 import { reconcileChatBlocks } from '@/chat/reconcile'
 import { HappyComposer } from '@/components/AssistantChat/HappyComposer'
-import { HappyThread } from '@/components/AssistantChat/HappyThread'
+import { HappyThread, type ScrollState } from '@/components/AssistantChat/HappyThread'
 import { useHappyRuntime } from '@/lib/assistant-runtime'
 import { SessionHeader } from '@/components/SessionHeader'
 import { usePlatform } from '@/hooks/usePlatform'
@@ -34,6 +34,7 @@ export function SessionChat(props: {
     const { haptic } = usePlatform()
     const navigate = useNavigate()
     const controlsDisabled = !props.session.active
+    const [scrollState, setScrollState] = useState<ScrollState | null>(null)
     const normalizedCacheRef = useRef<Map<string, { source: DecryptedMessage; normalized: NormalizedMessage | null }>>(new Map())
     const blocksByIdRef = useRef<Map<string, ChatBlock>>(new Map())
     const agentFlavor = props.session.metadata?.flavor ?? null
@@ -178,7 +179,23 @@ export function SessionChat(props: {
                         rawMessagesCount={props.messages.length}
                         normalizedMessagesCount={normalizedMessages.length}
                         renderedMessagesCount={reconciled.blocks.length}
+                        onScrollStateChange={setScrollState}
                     />
+
+                    {/* Jump to bottom button - floating above composer */}
+                    {scrollState?.showJumpButton || (scrollState?.newMessageCount ?? 0) > 0 ? (
+                        <button
+                            onClick={scrollState?.scrollToBottom}
+                            className="absolute bottom-[72px] left-1/2 bg-[var(--app-button)] text-[var(--app-button-text)] px-3 py-1.5 rounded-full text-sm font-medium shadow-lg animate-bounce-in z-10 min-w-[44px] min-h-[44px] flex items-center justify-center"
+                            aria-label={(scrollState?.newMessageCount ?? 0) > 0 ? `${scrollState?.newMessageCount} new messages, jump to bottom` : 'Jump to bottom'}
+                        >
+                            {(scrollState?.newMessageCount ?? 0) > 0 ? (
+                                <>{scrollState?.newMessageCount} new message{(scrollState?.newMessageCount ?? 0) > 1 ? 's' : ''} &#8595;</>
+                            ) : (
+                                <span className="text-lg">&#8595;</span>
+                            )}
+                        </button>
+                    ) : null}
 
                     <HappyComposer
                         disabled={props.isSending || controlsDisabled}

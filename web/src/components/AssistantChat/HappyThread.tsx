@@ -9,19 +9,11 @@ import { HappySystemMessage } from '@/components/AssistantChat/messages/SystemMe
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/Spinner'
 
-function NewMessagesIndicator(props: { count: number; onClick: () => void }) {
-    if (props.count === 0) {
-        return null
-    }
-
-    return (
-        <button
-            onClick={props.onClick}
-            className="absolute bottom-20 left-1/2 -translate-x-1/2 bg-[var(--app-button)] text-[var(--app-button-text)] px-3 py-1.5 rounded-full text-sm font-medium shadow-lg animate-bounce-in z-10"
-        >
-            {props.count} new message{props.count > 1 ? 's' : ''} &#8595;
-        </button>
-    )
+// Exported for use in SessionChat
+export interface ScrollState {
+    showJumpButton: boolean
+    newMessageCount: number
+    scrollToBottom: () => void
 }
 
 function MessageSkeleton() {
@@ -67,6 +59,7 @@ export function HappyThread(props: {
     rawMessagesCount: number
     normalizedMessagesCount: number
     renderedMessagesCount: number
+    onScrollStateChange?: (state: ScrollState) => void
 }) {
     const viewportRef = useRef<HTMLDivElement | null>(null)
     const topSentinelRef = useRef<HTMLDivElement | null>(null)
@@ -161,6 +154,15 @@ export function HappyThread(props: {
         setAutoScrollEnabled(true)
         setNewMessageCount(0)
     }, [])
+
+    // Notify parent of scroll state changes
+    useEffect(() => {
+        props.onScrollStateChange?.({
+            showJumpButton: !autoScrollEnabled,
+            newMessageCount,
+            scrollToBottom
+        })
+    }, [autoScrollEnabled, newMessageCount, scrollToBottom, props.onScrollStateChange])
 
     // Reset state when session changes
     useEffect(() => {
@@ -320,7 +322,6 @@ export function HappyThread(props: {
                         </div>
                     </div>
                 </ThreadPrimitive.Viewport>
-                <NewMessagesIndicator count={newMessageCount} onClick={scrollToBottom} />
             </ThreadPrimitive.Root>
         </HappyChatProvider>
     )
