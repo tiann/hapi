@@ -1,5 +1,6 @@
 import type { ApiClient } from '@/api/client'
 import type { DecryptedMessage, MessageStatus } from '@/types/api'
+import { normalizeDecryptedMessage } from '@/chat/normalize'
 import { mergeMessages } from '@/lib/messages'
 
 export type MessageWindowState = {
@@ -24,10 +25,66 @@ const PENDING_OVERFLOW_WARNING = 'New messages arrived while you were away. Scro
 
 type InternalState = MessageWindowState & {
     pendingOverflowCount: number
+    pendingVisibleCount: number
+    pendingOverflowVisibleCount: number
+}
+
+type PendingVisibilityCacheEntry = {
+    source: DecryptedMessage
+    visible: boolean
 }
 
 const states = new Map<string, InternalState>()
 const listeners = new Map<string, Set<() => void>>()
+const pendingVisibilityCacheBySession = new Map<string, Map<string, PendingVisibilityCacheEntry>>()
+
+function getPendingVisibilityCache(sessionId: string): Map<string, PendingVisibilityCacheEntry> {
+    const existing = pendingVisibilityCacheBySession.get(sessionId)
+    if (existing) {
+        return existing
+    }
+    const created = new Map<string, PendingVisibilityCacheEntry>()
+    pendingVisibilityCacheBySession.set(sessionId, created)
+    return created
+}
+
+function clearPendingVisibilityCache(sessionId: string): void {
+    pendingVisibilityCacheBySession.delete(sessionId)
+}
+
+function isVisiblePendingMessage(sessionId: string, message: DecryptedMessage): boolean {
+    const cache = getPendingVisibilityCache(sessionId)
+    const cached = cache.get(message.id)
+    if (cached && cached.source === message) {
+        return cached.visible
+    }
+    const visible = normalizeDecryptedMessage(message) !== null
+    cache.set(message.id, { source: message, visible })
+    return visible
+}
+
+function countVisiblePendingMessages(sessionId: string, messages: DecryptedMessage[]): number {
+    let count = 0
+    for (const message of messages) {
+        if (isVisiblePendingMessage(sessionId, message)) {
+            count += 1
+        }
+    }
+    return count
+}
+
+function syncPendingVisibilityCache(sessionId: string, pending: DecryptedMessage[]): void {
+    const cache = pendingVisibilityCacheBySession.get(sessionId)
+    if (!cache) {
+        return
+    }
+    const keep = new Set(pending.map((message) => message.id))
+    for (const id of cache.keys()) {
+        if (!keep.has(id)) {
+            cache.delete(id)
+        }
+    }
+}
 
 function createState(sessionId: string): InternalState {
     return {
@@ -35,6 +92,8 @@ function createState(sessionId: string): InternalState {
         messages: [],
         pending: [],
         pendingCount: 0,
+        pendingVisibleCount: 0,
+        pendingOverflowVisibleCount: 0,
         hasMore: false,
         oldestSeq: null,
         newestSeq: null,
@@ -101,6 +160,8 @@ function buildState(
         messages?: DecryptedMessage[]
         pending?: DecryptedMessage[]
         pendingOverflowCount?: number
+        pendingVisibleCount?: number
+        pendingOverflowVisibleCount?: number
         hasMore?: boolean
         isLoading?: boolean
         isLoadingMore?: boolean
@@ -111,7 +172,16 @@ function buildState(
     const messages = updates.messages ?? prev.messages
     const pending = updates.pending ?? prev.pending
     const pendingOverflowCount = updates.pendingOverflowCount ?? prev.pendingOverflowCount
-    const pendingCount = pending.length + pendingOverflowCount
+    const pendingOverflowVisibleCount = updates.pendingOverflowVisibleCount ?? prev.pendingOverflowVisibleCount
+    let pendingVisibleCount = updates.pendingVisibleCount ?? prev.pendingVisibleCount
+    const pendingChanged = pending !== prev.pending
+    if (pendingChanged && updates.pendingVisibleCount === undefined) {
+        pendingVisibleCount = countVisiblePendingMessages(prev.sessionId, pending)
+    }
+    if (pendingChanged) {
+        syncPendingVisibilityCache(prev.sessionId, pending)
+    }
+    const pendingCount = pendingVisibleCount + pendingOverflowVisibleCount
     const { oldestSeq, newestSeq } = deriveSeqBounds(messages)
     const messagesVersion = messages === prev.messages ? prev.messagesVersion : prev.messagesVersion + 1
 
@@ -120,6 +190,8 @@ function buildState(
         messages,
         pending,
         pendingOverflowCount,
+        pendingVisibleCount,
+        pendingOverflowVisibleCount,
         pendingCount,
         oldestSeq,
         newestSeq,
@@ -142,12 +214,18 @@ function trimVisible(messages: DecryptedMessage[], mode: 'append' | 'prepend'): 
     return messages.slice(messages.length - VISIBLE_WINDOW_SIZE)
 }
 
-function trimPending(messages: DecryptedMessage[]): { pending: DecryptedMessage[]; dropped: number } {
+function trimPending(
+    sessionId: string,
+    messages: DecryptedMessage[]
+): { pending: DecryptedMessage[]; dropped: number; droppedVisible: number } {
     if (messages.length <= PENDING_WINDOW_SIZE) {
-        return { pending: messages, dropped: 0 }
+        return { pending: messages, dropped: 0, droppedVisible: 0 }
     }
-    const dropped = messages.length - PENDING_WINDOW_SIZE
-    return { pending: messages.slice(messages.length - PENDING_WINDOW_SIZE), dropped }
+    const cutoff = messages.length - PENDING_WINDOW_SIZE
+    const droppedMessages = messages.slice(0, cutoff)
+    const pending = messages.slice(cutoff)
+    const droppedVisible = countVisiblePendingMessages(sessionId, droppedMessages)
+    return { pending, dropped: droppedMessages.length, droppedVisible }
 }
 
 function filterPendingAgainstVisible(pending: DecryptedMessage[], visible: DecryptedMessage[]): DecryptedMessage[] {
@@ -165,16 +243,30 @@ function isOptimisticMessage(message: DecryptedMessage): boolean {
 function mergeIntoPending(
     prev: InternalState,
     incoming: DecryptedMessage[]
-): { pending: DecryptedMessage[]; pendingOverflowCount: number; warning: string | null } {
+): {
+    pending: DecryptedMessage[]
+    pendingVisibleCount: number
+    pendingOverflowCount: number
+    pendingOverflowVisibleCount: number
+    warning: string | null
+} {
     if (incoming.length === 0) {
-        return { pending: prev.pending, pendingOverflowCount: prev.pendingOverflowCount, warning: prev.warning }
+        return {
+            pending: prev.pending,
+            pendingVisibleCount: prev.pendingVisibleCount,
+            pendingOverflowCount: prev.pendingOverflowCount,
+            pendingOverflowVisibleCount: prev.pendingOverflowVisibleCount,
+            warning: prev.warning
+        }
     }
     const mergedPending = mergeMessages(prev.pending, incoming)
     const filtered = filterPendingAgainstVisible(mergedPending, prev.messages)
-    const { pending, dropped } = trimPending(filtered)
+    const { pending, dropped, droppedVisible } = trimPending(prev.sessionId, filtered)
+    const pendingVisibleCount = countVisiblePendingMessages(prev.sessionId, pending)
     const pendingOverflowCount = prev.pendingOverflowCount + dropped
-    const warning = dropped > 0 && !prev.warning ? PENDING_OVERFLOW_WARNING : prev.warning
-    return { pending, pendingOverflowCount, warning }
+    const pendingOverflowVisibleCount = prev.pendingOverflowVisibleCount + droppedVisible
+    const warning = droppedVisible > 0 && !prev.warning ? PENDING_OVERFLOW_WARNING : prev.warning
+    return { pending, pendingVisibleCount, pendingOverflowCount, pendingOverflowVisibleCount, warning }
 }
 
 export function getMessageWindowState(sessionId: string): MessageWindowState {
@@ -192,11 +284,13 @@ export function subscribeMessageWindow(sessionId: string, listener: () => void):
         if (current.size === 0) {
             listeners.delete(sessionId)
             states.delete(sessionId)
+            clearPendingVisibilityCache(sessionId)
         }
     }
 }
 
 export function clearMessageWindow(sessionId: string): void {
+    clearPendingVisibilityCache(sessionId)
     if (!states.has(sessionId)) {
         return
     }
@@ -220,6 +314,8 @@ export async function fetchLatestMessages(api: ApiClient, sessionId: string): Pr
                     messages: trimmed,
                     pending: [],
                     pendingOverflowCount: 0,
+                    pendingVisibleCount: 0,
+                    pendingOverflowVisibleCount: 0,
                     hasMore: response.page.hasMore,
                     isLoading: false,
                     warning: null,
@@ -228,7 +324,9 @@ export async function fetchLatestMessages(api: ApiClient, sessionId: string): Pr
             const pendingResult = mergeIntoPending(prev, response.messages)
             return buildState(prev, {
                 pending: pendingResult.pending,
+                pendingVisibleCount: pendingResult.pendingVisibleCount,
                 pendingOverflowCount: pendingResult.pendingOverflowCount,
+                pendingOverflowVisibleCount: pendingResult.pendingOverflowVisibleCount,
                 isLoading: false,
                 warning: pendingResult.warning,
             })
@@ -280,7 +378,9 @@ export function ingestIncomingMessages(sessionId: string, incoming: DecryptedMes
         const pendingResult = mergeIntoPending(prev, incoming)
         return buildState(prev, {
             pending: pendingResult.pending,
+            pendingVisibleCount: pendingResult.pendingVisibleCount,
             pendingOverflowCount: pendingResult.pendingOverflowCount,
+            pendingOverflowVisibleCount: pendingResult.pendingOverflowVisibleCount,
             warning: pendingResult.warning,
         })
     })
@@ -288,10 +388,10 @@ export function ingestIncomingMessages(sessionId: string, incoming: DecryptedMes
 
 export function flushPendingMessages(sessionId: string): boolean {
     const current = getState(sessionId)
-    if (current.pending.length === 0 && current.pendingOverflowCount === 0) {
+    if (current.pending.length === 0 && current.pendingOverflowVisibleCount === 0) {
         return false
     }
-    const needsRefresh = current.pendingOverflowCount > 0
+    const needsRefresh = current.pendingOverflowVisibleCount > 0
     updateState(sessionId, (prev) => {
         const merged = mergeMessages(prev.messages, prev.pending)
         const trimmed = trimVisible(merged, 'append')
@@ -299,6 +399,8 @@ export function flushPendingMessages(sessionId: string): boolean {
             messages: trimmed,
             pending: [],
             pendingOverflowCount: 0,
+            pendingVisibleCount: 0,
+            pendingOverflowVisibleCount: 0,
             warning: needsRefresh ? (prev.warning ?? PENDING_OVERFLOW_WARNING) : prev.warning,
         })
     })
