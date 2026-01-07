@@ -175,7 +175,14 @@ export async function startDaemon(): Promise<void> {
     const spawnSession = async (options: SpawnSessionOptions): Promise<SpawnSessionResult> => {
       logger.debugLargeJson('[DAEMON RUN] Spawning session', options);
 
-      const { directory, sessionId, machineId, approvedNewDirectoryCreation = true } = options;
+      const { directory: rawDirectory, sessionId, machineId, approvedNewDirectoryCreation = true } = options;
+
+      // Expand tilde to home directory (e.g., ~/projects → /home/user/projects)
+      const directory = rawDirectory.startsWith('~/')
+        ? rawDirectory.replace(/^~\//, `${os.homedir()}/`)
+        : rawDirectory === '~'
+          ? os.homedir()
+          : rawDirectory;
       const agent = options.agent ?? 'claude';
       const yolo = options.yolo === true;
       const sessionType = options.sessionType ?? 'simple';

@@ -4,6 +4,7 @@
 
 import { io, type Socket } from 'socket.io-client'
 import { stat } from 'node:fs/promises'
+import os from 'node:os'
 import { logger } from '@/ui/logger'
 import { configuration } from '@/configuration'
 import type { DaemonState, Machine, MachineMetadata, Update, UpdateMachineBody } from './types'
@@ -83,11 +84,20 @@ export class ApiMachineClient {
             const uniquePaths = Array.from(new Set(rawPaths.filter((path): path is string => typeof path === 'string')))
             const exists: Record<string, boolean> = {}
 
+            // Helper to expand tilde to home directory
+            const expandTilde = (p: string): string => {
+                if (p.startsWith('~/')) return p.replace(/^~\//, `${os.homedir()}/`)
+                if (p === '~') return os.homedir()
+                return p
+            }
+
             await Promise.all(uniquePaths.map(async (path) => {
                 const trimmed = path.trim()
                 if (!trimmed) return
+                const expandedPath = expandTilde(trimmed)
                 try {
-                    const stats = await stat(trimmed)
+                    const stats = await stat(expandedPath)
+                    // Return result keyed by original path, not expanded path
                     exists[trimmed] = stats.isDirectory()
                 } catch {
                     exists[trimmed] = false
