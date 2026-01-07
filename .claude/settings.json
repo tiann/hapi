@@ -1,0 +1,26 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/matt/projects/hapimatic/.claude/hooks/check-approval-sentinel.sh",
+            "timeout": 5000
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__github__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/matt/projects/hapimatic/.claude/hooks/check-approval-sentinel.sh",
+            "timeout": 5000
+          }
+        ]
+      }
+    ]
+  }
+}

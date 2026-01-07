@@ -182,3 +182,89 @@ You MUST NOT:
 - Tell the user something is "ready" without completing the checklist above
 
 **Violation of this section means you lied to the user. This wastes their time and destroys trust.**
+
+---
+
+## 🔴 MANDATORY: Approval Gate Sentinel System
+
+**PR operations are BLOCKED by a hook when awaiting-approval sentinel files exist.**
+
+This system ensures that context compaction cannot cause Claude to skip user approval gates.
+
+### How It Works
+
+1. **During implementation**: When reaching an approval checkpoint (e.g., after deploying UI changes), create a sentinel file:
+   ```
+   claudedocs/issue-XX-awaiting-approval.md
+   ```
+
+2. **Hook enforcement**: The `.claude/hooks/check-approval-sentinel.sh` hook runs before any PR operation and blocks it if sentinel files exist.
+
+3. **User approval**: User manually tests the changes and explicitly approves.
+
+4. **Gate release**: After approval, delete the sentinel file to allow PR operations.
+
+### Sentinel File Format
+
+Create at: `claudedocs/issue-XX-awaiting-approval.md`
+
+```markdown
+# Issue #XX - Awaiting User Approval
+
+## Status: BLOCKING PR OPERATIONS
+
+**Created**: [timestamp]
+**Issue**: [issue title]
+
+## What Was Implemented
+
+[Brief description of changes]
+
+## What User Needs to Test
+
+- [ ] [Specific test item 1]
+- [ ] [Specific test item 2]
+
+## Files Changed
+
+- `path/to/file1.ts`
+- `path/to/file2.tsx`
+
+## Approval Instructions
+
+1. Test the changes on your device
+2. Confirm everything works as expected
+3. Tell Claude "approved" or "LGTM" to proceed
+4. Claude will delete this file and create the PR
+
+---
+
+**DO NOT delete this file manually. Claude will delete it after explicit user approval.**
+```
+
+### When to Create Sentinel Files
+
+Create a sentinel file when:
+- UI changes are deployed and need visual verification on device
+- Behavior changes need user testing before merge
+- Any implementation reaches a "user must confirm" checkpoint
+
+### Hook Behavior
+
+The hook at `.claude/hooks/check-approval-sentinel.sh` intercepts:
+- `gh pr create` commands
+- `gh pr merge` commands
+- Any GitHub MCP PR-related tools
+
+If sentinel files exist, the operation is **denied** with a clear message explaining:
+- Which sentinel files are blocking
+- What the user needs to do
+- That Claude cannot bypass this gate
+
+### Why This Exists
+
+Context compaction can lose workflow state. A summary might say "user testing pending" but Claude may not treat it as a hard gate. This physical file system:
+- **Survives compaction** - file exists regardless of context
+- **Enforces automatically** - hook blocks operations
+- **Requires explicit action** - file must be deleted to proceed
+- **Documents state** - file contains context about what's pending
