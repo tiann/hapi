@@ -21,11 +21,24 @@ function escapeTomlString(value: string): string {
 }
 
 /**
+ * Escape a string value for use in a TOML single-quoted literal string.
+ * Only single quotes need escaping (by doubling them).
+ */
+function escapeTomlLiteralString(value: string): string {
+    return value.replace(/'/g, "''");
+}
+
+function buildTomlLiteralArray(values: string[]): string {
+    const items = values.map((value) => `'${escapeTomlLiteralString(value)}'`);
+    return `[${items.join(',')}]`;
+}
+
+/**
  * Build -c arguments for MCP server configuration.
  *
  * Generates arguments like:
  *   -c 'mcp_servers.hapi.command="hapi"'
- *   -c 'mcp_servers.hapi.args=["mcp", "--url", "http://..."]'
+ *   -c 'mcp_servers.hapi.args=['mcp', '--url', 'http://...']'
  *
  * @param mcpServers - Map of server name to server config
  * @returns Array of CLI arguments to pass to codex
@@ -39,9 +52,9 @@ export function buildMcpServerConfigArgs(
         // -c 'mcp_servers.<name>.command="<command>"'
         configArgs.push('-c', `mcp_servers.${name}.command="${escapeTomlString(server.command)}"`);
 
-        // -c 'mcp_servers.<name>.args=["arg1", "arg2"]'
-        // JSON.stringify produces valid TOML array syntax for simple string arrays
-        const argsToml = JSON.stringify(server.args);
+        // -c 'mcp_servers.<name>.args=['arg1','arg2']'
+        // Use TOML literal strings to avoid shell-quote mangling on Windows.
+        const argsToml = buildTomlLiteralArray(server.args);
         configArgs.push('-c', `mcp_servers.${name}.args=${argsToml}`);
     }
 

@@ -15,7 +15,7 @@ describe('codexMcpConfig', () => {
 
             expect(args).toEqual([
                 '-c', 'mcp_servers.hapi.command="hapi"',
-                '-c', 'mcp_servers.hapi.args=["mcp","--url","http://localhost:3000"]'
+                '-c', "mcp_servers.hapi.args=['mcp','--url','http://localhost:3000']"
             ]);
         });
 
