@@ -6,6 +6,7 @@ import { useSessionActions } from '@/hooks/mutations/useSessionActions'
 import { SessionActionMenu } from '@/components/SessionActionMenu'
 import { RenameSessionDialog } from '@/components/RenameSessionDialog'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
+import { useTranslation } from '@/lib/use-translation'
 
 function getSessionTitle(session: Session): string {
     if (session.metadata?.name) {
@@ -65,6 +66,7 @@ export function SessionHeader(props: {
     api: ApiClient | null
     onSessionDeleted?: () => void
 }) {
+    const { t } = useTranslation()
     const { session, api, onSessionDeleted } = props
     const title = useMemo(() => getSessionTitle(session), [session])
     const worktreeBranch = session.metadata?.worktree?.branch
@@ -122,9 +124,17 @@ export function SessionHeader(props: {
                         <div className="truncate font-semibold">
                             {title}
                         </div>
-                        <div className="text-xs text-[var(--app-hint)] truncate">
-                            {session.metadata?.path ?? session.id}
-                            {worktreeBranch ? ` • worktree: ${worktreeBranch}` : ''}
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-[var(--app-hint)]">
+                            <span className="inline-flex items-center gap-1">
+                                <span aria-hidden="true">❖</span>
+                                {session.metadata?.flavor?.trim() || 'unknown'}
+                            </span>
+                            <span>
+                                {t('session.item.modelMode')}: {session.modelMode || 'default'}
+                            </span>
+                            {worktreeBranch ? (
+                                <span>{t('session.item.worktree')}: {worktreeBranch}</span>
+                            ) : null}
                         </div>
                     </div>
 
@@ -133,7 +143,7 @@ export function SessionHeader(props: {
                             type="button"
                             onClick={props.onViewFiles}
                             className="flex h-8 w-8 items-center justify-center rounded-full text-[var(--app-hint)] transition-colors hover:bg-[var(--app-secondary-bg)] hover:text-[var(--app-fg)]"
-                            title="Files"
+                            title={t('session.title')}
                         >
                             <FilesIcon />
                         </button>
@@ -147,7 +157,7 @@ export function SessionHeader(props: {
                         aria-expanded={menuOpen}
                         aria-controls={menuOpen ? menuId : undefined}
                         className="flex h-8 w-8 items-center justify-center rounded-full text-[var(--app-hint)] transition-colors hover:bg-[var(--app-secondary-bg)] hover:text-[var(--app-fg)]"
-                        title="More actions"
+                        title={t('session.more')}
                     >
                         <MoreVerticalIcon />
                     </button>
@@ -177,10 +187,10 @@ export function SessionHeader(props: {
             <ConfirmDialog
                 isOpen={archiveOpen}
                 onClose={() => setArchiveOpen(false)}
-                title="Archive Session"
-                description={`Are you sure you want to archive "${title}"? This will disconnect the active session.`}
-                confirmLabel="Archive"
-                confirmingLabel="Archiving..."
+                title={t('dialog.archive.title')}
+                description={t('dialog.archive.description', { name: title })}
+                confirmLabel={t('dialog.archive.confirm')}
+                confirmingLabel={t('dialog.archive.confirming')}
                 onConfirm={archiveSession}
                 isPending={isPending}
                 destructive
@@ -189,10 +199,10 @@ export function SessionHeader(props: {
             <ConfirmDialog
                 isOpen={deleteOpen}
                 onClose={() => setDeleteOpen(false)}
-                title="Delete Session"
-                description={`Are you sure you want to delete "${title}"? This action cannot be undone.`}
-                confirmLabel="Delete"
-                confirmingLabel="Deleting..."
+                title={t('dialog.delete.title')}
+                description={t('dialog.delete.description', { name: title })}
+                confirmLabel={t('dialog.delete.confirm')}
+                confirmingLabel={t('dialog.delete.confirming')}
                 onConfirm={handleDelete}
                 isPending={isPending}
                 destructive
