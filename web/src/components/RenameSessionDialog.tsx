@@ -6,6 +6,7 @@ import {
     DialogTitle
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
+import { useTranslation } from '@/lib/use-translation'
 
 type RenameSessionDialogProps = {
     isOpen: boolean
@@ -16,6 +17,7 @@ type RenameSessionDialogProps = {
 }
 
 export function RenameSessionDialog(props: RenameSessionDialogProps) {
+    const { t } = useTranslation()
     const { isOpen, onClose, currentName, onRename, isPending } = props
     const [name, setName] = useState(currentName)
     const [error, setError] = useState<string | null>(null)
@@ -44,8 +46,7 @@ export function RenameSessionDialog(props: RenameSessionDialogProps) {
             await onRename(trimmed)
             onClose()
         } catch (err) {
-            const message = err instanceof Error ? err.message : 'Failed to rename. Please try again.'
-            setError(message)
+            setError(t('dialog.rename.error'))
         }
     }
 
@@ -59,7 +60,7 @@ export function RenameSessionDialog(props: RenameSessionDialogProps) {
         <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
             <DialogContent className="max-w-sm">
                 <DialogHeader>
-                    <DialogTitle>Rename Session</DialogTitle>
+                    <DialogTitle>{t('dialog.rename.title')}</DialogTitle>
                 </DialogHeader>
                 <form onSubmit={handleSubmit} className="mt-4 flex flex-col gap-4">
                     <input
@@ -68,7 +69,7 @@ export function RenameSessionDialog(props: RenameSessionDialogProps) {
                         value={name}
                         onChange={(e) => setName(e.target.value)}
                         onKeyDown={handleKeyDown}
-                        placeholder="Session name"
+                        placeholder={t('dialog.rename.placeholder')}
                         className="w-full px-3 py-2.5 rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] text-[var(--app-fg)] placeholder:text-[var(--app-hint)] focus:outline-none focus:ring-2 focus:ring-[var(--app-button)] focus:border-transparent"
                         disabled={isPending}
                         maxLength={255}
@@ -87,13 +88,13 @@ export function RenameSessionDialog(props: RenameSessionDialogProps) {
                             onClick={onClose}
                             disabled={isPending}
                         >
-                            Cancel
+                            {t('button.cancel')}
                         </Button>
                         <Button
                             type="submit"
                             disabled={isPending || !name.trim()}
                         >
-                            {isPending ? 'Saving...' : 'Save'}
+                            {isPending ? t('dialog.rename.saving') : t('button.save')}
                         </Button>
                     </div>
                 </form>

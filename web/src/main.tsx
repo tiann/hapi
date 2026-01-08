@@ -8,6 +8,7 @@ import { registerSW } from 'virtual:pwa-register'
 import { getTelegramWebApp, isTelegramEnvironment, loadTelegramSdk } from './hooks/useTelegram'
 import { queryClient } from './lib/query-client'
 import { createAppRouter } from './router'
+import { I18nProvider } from './lib/i18n-context'
 
 function getStartParam(): string | null {
     const query = new URLSearchParams(window.location.search)
@@ -65,10 +66,12 @@ async function bootstrap() {
 
     ReactDOM.createRoot(document.getElementById('root')!).render(
         <React.StrictMode>
-            <QueryClientProvider client={queryClient}>
-                <RouterProvider router={router} />
-                {import.meta.env.DEV ? <ReactQueryDevtools initialIsOpen={false} /> : null}
-            </QueryClientProvider>
+            <I18nProvider>
+                <QueryClientProvider client={queryClient}>
+                    <RouterProvider router={router} />
+                    {import.meta.env.DEV ? <ReactQueryDevtools initialIsOpen={false} /> : null}
+                </QueryClientProvider>
+            </I18nProvider>
         </React.StrictMode>
     )
 }

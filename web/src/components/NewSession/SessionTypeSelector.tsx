@@ -1,5 +1,6 @@
 import type { RefObject } from 'react'
 import type { SessionType } from './types'
+import { useTranslation } from '@/lib/use-translation'
 
 export function SessionTypeSelector(props: {
     sessionType: SessionType
@@ -9,10 +10,12 @@ export function SessionTypeSelector(props: {
     onSessionTypeChange: (value: SessionType) => void
     onWorktreeNameChange: (value: string) => void
 }) {
+    const { t } = useTranslation()
+
     return (
         <div className="flex flex-col gap-1.5 px-3 py-3">
             <label className="text-xs font-medium text-[var(--app-hint)]">
-                Session type
+                {t('newSession.type')}
             </label>
             <div className="flex flex-col gap-1.5">
                 {(['simple', 'worktree'] as const).map((type) => (
@@ -35,7 +38,7 @@ export function SessionTypeSelector(props: {
                                             <input
                                                 ref={props.worktreeInputRef}
                                                 type="text"
-                                                placeholder="Branch name (optional)"
+                                                placeholder={t('newSession.type.worktree.placeholder')}
                                                 value={props.worktreeName}
                                                 onChange={(e) => props.onWorktreeNameChange(e.target.value)}
                                                 disabled={props.isDisabled}
@@ -47,10 +50,10 @@ export function SessionTypeSelector(props: {
                                                     htmlFor="session-type-worktree"
                                                     className="text-sm capitalize cursor-pointer"
                                                 >
-                                                    Worktree
+                                                    {t('newSession.type.worktree')}
                                                 </label>
                                                 <span className="ml-2 text-xs text-[var(--app-hint)]">
-                                                    Create a new git worktree next to the repo
+                                                    {t('newSession.type.worktree.desc')}
                                                 </span>
                                             </>
                                         )}
@@ -69,9 +72,9 @@ export function SessionTypeSelector(props: {
                                     disabled={props.isDisabled}
                                     className="accent-[var(--app-link)]"
                                 />
-                                <span className="text-sm capitalize">Simple</span>
+                                <span className="text-sm capitalize">{t('newSession.type.simple')}</span>
                                 <span className="text-xs text-[var(--app-hint)]">
-                                    Use the selected directory as-is
+                                    {t('newSession.type.simple.desc')}
                                 </span>
                             </label>
                         )}

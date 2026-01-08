@@ -2,6 +2,7 @@ import type { KeyboardEvent as ReactKeyboardEvent } from 'react'
 import type { Suggestion } from '@/hooks/useActiveSuggestions'
 import { Autocomplete } from '@/components/ChatInput/Autocomplete'
 import { FloatingOverlay } from '@/components/ChatInput/FloatingOverlay'
+import { useTranslation } from '@/lib/use-translation'
 
 export function DirectorySection(props: {
     directory: string
@@ -16,15 +17,17 @@ export function DirectorySection(props: {
     onSuggestionSelect: (index: number) => void
     onPathClick: (path: string) => void
 }) {
+    const { t } = useTranslation()
+
     return (
         <div className="flex flex-col gap-1.5 px-3 py-3">
             <label className="text-xs font-medium text-[var(--app-hint)]">
-                Directory
+                {t('newSession.directory')}
             </label>
             <div className="relative">
                 <input
                     type="text"
-                    placeholder="/path/to/project"
+                    placeholder={t('newSession.placeholder')}
                     value={props.directory}
                     onChange={(event) => props.onDirectoryChange(event.target.value)}
                     onKeyDown={props.onDirectoryKeyDown}
@@ -48,7 +51,7 @@ export function DirectorySection(props: {
 
             {props.recentPaths.length > 0 && (
                 <div className="flex flex-col gap-1 mt-1">
-                    <span className="text-xs text-[var(--app-hint)]">Recent:</span>
+                    <span className="text-xs text-[var(--app-hint)]">{t('newSession.recent')}:</span>
                     <div className="flex flex-wrap gap-1">
                         {props.recentPaths.map((path) => (
                             <button

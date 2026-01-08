@@ -15,6 +15,7 @@ import { getToolFullViewComponent, getToolViewComponent } from '@/components/Too
 import { getToolResultViewComponent } from '@/components/ToolCard/views/_results'
 import { usePointerFocusRing } from '@/hooks/usePointerFocusRing'
 import { cn } from '@/lib/utils'
+import { useTranslation } from '@/lib/use-translation'
 
 function isObject(value: unknown): value is Record<string, unknown> {
     return Boolean(value) && typeof value === 'object'
@@ -310,6 +311,7 @@ type ToolCardProps = {
 }
 
 function ToolCardInner(props: ToolCardProps) {
+    const { t } = useTranslation()
     const presentation = useMemo(() => getToolPresentation({
         toolName: props.block.tool.name,
         input: props.block.tool.input,
@@ -407,7 +409,7 @@ function ToolCardInner(props: ToolCardProps) {
                                 <div className="mt-3 flex max-h-[75vh] flex-col gap-4 overflow-auto">
                                     <div>
                                         <div className="mb-1 text-xs font-medium text-[var(--app-hint)]">
-                                            {isAskUserQuestionWithAnswers ? 'Questions & Answers' : 'Input'}
+                                            {isAskUserQuestionWithAnswers ? t('tool.questionsAnswers') : t('tool.input')}
                                         </div>
                                         {FullToolView ? (
                                             <FullToolView block={props.block} metadata={props.metadata} />
@@ -417,7 +419,7 @@ function ToolCardInner(props: ToolCardProps) {
                                     </div>
                                     {!isAskUserQuestionWithAnswers && (
                                         <div>
-                                            <div className="mb-1 text-xs font-medium text-[var(--app-hint)]">Result</div>
+                                            <div className="mb-1 text-xs font-medium text-[var(--app-hint)]">{t('tool.result')}</div>
                                             <ResultToolView block={props.block} metadata={props.metadata} />
                                         </div>
                                     )}
@@ -444,11 +446,11 @@ function ToolCardInner(props: ToolCardProps) {
                         ) : (
                             <div className="mt-3 flex flex-col gap-3">
                                 <div>
-                                    <div className="mb-1 text-xs font-medium text-[var(--app-hint)]">Input</div>
+                                    <div className="mb-1 text-xs font-medium text-[var(--app-hint)]">{t('tool.input')}</div>
                                     {renderToolInput(props.block)}
                                 </div>
                                 <div>
-                                    <div className="mb-1 text-xs font-medium text-[var(--app-hint)]">Result</div>
+                                    <div className="mb-1 text-xs font-medium text-[var(--app-hint)]">{t('tool.result')}</div>
                                     <ResultToolView block={props.block} metadata={props.metadata} />
                                 </div>
                             </div>

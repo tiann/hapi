@@ -14,6 +14,7 @@ import { queryKeys } from '@/lib/query-keys'
 import { AppContextProvider } from '@/lib/app-context'
 import { fetchLatestMessages } from '@/lib/message-window-store'
 import { useAppGoBack } from '@/hooks/useAppGoBack'
+import { useTranslation } from '@/lib/use-translation'
 import { LoginPrompt } from '@/components/LoginPrompt'
 import { InstallPrompt } from '@/components/InstallPrompt'
 import { OfflineBanner } from '@/components/OfflineBanner'
@@ -34,6 +35,7 @@ export function App() {
 }
 
 function AppInner() {
+    const { t } = useTranslation()
     const { serverUrl, baseUrl, setServerUrl, clearServerUrl } = useServerUrl()
     const { authSource, isLoading: isAuthSourceLoading, setAccessToken } = useAuthSource(baseUrl)
     const { token, api, isLoading: isAuthLoading, error: authError, needsBinding, bind } = useAuth(authSource, baseUrl)
@@ -223,7 +225,7 @@ function AppInner() {
     if (isAuthSourceLoading) {
         return (
             <div className="h-full flex items-center justify-center p-4">
-                <LoadingState label="Loading…" className="text-sm" />
+                <LoadingState label={t('loading')} className="text-sm" />
             </div>
         )
     }
@@ -259,7 +261,7 @@ function AppInner() {
     if (isAuthLoading || (authSource && !token && !authError)) {
         return (
             <div className="h-full flex items-center justify-center p-4">
-                <LoadingState label="Authorizing…" className="text-sm" />
+                <LoadingState label={t('authorizing')} className="text-sm" />
             </div>
         )
     }
@@ -275,7 +277,7 @@ function AppInner() {
                     serverUrl={serverUrl}
                     setServerUrl={setServerUrl}
                     clearServerUrl={clearServerUrl}
-                    error={authError ?? 'Authentication failed'}
+                    error={authError ?? t('login.error.authFailed')}
                 />
             )
         }
@@ -283,9 +285,9 @@ function AppInner() {
         // Telegram auth failed
         return (
             <div className="p-4 space-y-3">
-                <div className="text-base font-semibold">HAPI</div>
+                <div className="text-base font-semibold">{t('login.title')}</div>
                 <div className="text-sm text-red-600">
-                    {authError ?? 'Not authorized'}
+                    {authError ?? t('login.error.authFailed')}
                 </div>
                 <div className="text-xs text-[var(--app-hint)]">
                     Open this page from Telegram using the bot's "Open App" button (not "Open in browser").

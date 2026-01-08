@@ -2,8 +2,10 @@ import { useState } from 'react'
 import { usePWAInstall } from '@/hooks/usePWAInstall'
 import { usePlatform } from '@/hooks/usePlatform'
 import { CloseIcon, ShareIcon, PlusCircleIcon } from '@/components/icons'
+import { useTranslation } from '@/lib/use-translation'
 
 export function InstallPrompt() {
+    const { t } = useTranslation()
     const { canInstall, canInstallIOS, promptInstall, dismissInstall, isStandalone } = usePWAInstall()
     const { isTelegram, haptic } = usePlatform()
     const [showIOSGuide, setShowIOSGuide] = useState(false)
@@ -20,7 +22,7 @@ export function InstallPrompt() {
                     <div className="w-full max-w-lg bg-[var(--app-bg)] rounded-t-2xl p-5 pb-8 space-y-4 animate-slide-up">
                         <div className="flex items-center justify-between">
                             <h3 className="text-base font-semibold text-[var(--app-fg)]">
-                                Install HAPI
+                                {t('install.title')}
                             </h3>
                             <button
                                 onClick={() => setShowIOSGuide(false)}
@@ -73,7 +75,7 @@ export function InstallPrompt() {
                             }}
                             className="w-full py-3 text-sm text-[var(--app-hint)] active:opacity-60"
                         >
-                            Don't show again
+                            {t('button.dismiss')}
                         </button>
                     </div>
                 </div>
@@ -85,10 +87,10 @@ export function InstallPrompt() {
                 <div className="flex items-center justify-between gap-3">
                     <div className="flex-1 min-w-0">
                         <p className="text-sm font-medium text-[var(--app-fg)]">
-                            Install HAPI
+                            {t('install.title')}
                         </p>
                         <p className="text-xs text-[var(--app-hint)] mt-0.5">
-                            Add to home screen for the best experience
+                            {t('install.description')}
                         </p>
                     </div>
                     <button
@@ -98,7 +100,7 @@ export function InstallPrompt() {
                         }}
                         className="shrink-0 px-4 py-2 bg-[var(--app-fg)] text-[var(--app-bg)] rounded-lg text-sm font-medium active:opacity-80"
                     >
-                        Install
+                        {t('install.button')}
                     </button>
                     <button
                         onClick={() => {
@@ -133,17 +135,17 @@ export function InstallPrompt() {
             <div className="flex items-center justify-between gap-3">
                 <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium text-[var(--app-fg)]">
-                        Install HAPI
+                        {t('install.title')}
                     </p>
                     <p className="text-xs text-[var(--app-hint)] mt-0.5">
-                        Add to home screen for the best experience
+                        {t('install.description')}
                     </p>
                 </div>
                 <button
                     onClick={handleInstall}
                     className="shrink-0 px-4 py-2 bg-[var(--app-fg)] text-[var(--app-bg)] rounded-lg text-sm font-medium active:opacity-80"
                 >
-                    Install
+                    {t('install.button')}
                 </button>
                 <button
                     onClick={() => {

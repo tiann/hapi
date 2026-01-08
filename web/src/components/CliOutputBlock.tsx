@@ -2,6 +2,7 @@ import { useMemo } from 'react'
 import { stripAnsiAndControls } from '@/components/assistant-ui/markdown-utils'
 import { Card, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
+import { useTranslation } from '@/lib/use-translation'
 
 const CLI_TAG_PATTERN = '(?:local-command-[a-z-]+|command-(?:name|message|args))'
 const CLI_TAG_CHECK_REGEX = new RegExp(`<${CLI_TAG_PATTERN}>`, 'i')
@@ -9,11 +10,11 @@ const CLI_TAG_REGEX_SOURCE = `<(${CLI_TAG_PATTERN})>([\\s\\S]*?)<\\/\\1>`
 const BR_REGEX = /<br\s*\/?>/gi
 
 const LABELS: Record<string, string> = {
-    'command-name': 'Command',
-    'command-message': 'Command message',
-    'command-args': 'Command args',
-    'local-command-stdout': 'Stdout',
-    'local-command-stderr': 'Stderr',
+    'command-name': 'terminal.commandName',
+    'command-message': 'terminal.commandMessage',
+    'command-args': 'terminal.commandArgs',
+    'local-command-stdout': 'terminal.stdout',
+    'local-command-stderr': 'terminal.stderr',
 }
 const COMMAND_NAME_REGEX = /<command-name>([\s\S]*?)<\/command-name>/i
 
@@ -26,15 +27,15 @@ function normalizeCliText(text: string): string {
     return withoutAnsi.replace(BR_REGEX, '\n')
 }
 
-function formatLabel(tag: string): string {
+function formatLabel(tag: string, t?: (key: string) => string): string {
     const normalized = tag.toLowerCase()
     if (LABELS[normalized]) {
-        return LABELS[normalized]
+        return t ? t(LABELS[normalized]) : LABELS[normalized]
     }
     return normalized.replace(/-/g, ' ')
 }
 
-function buildCliOutput(text: string): string {
+function buildCliOutput(text: string, t?: (key: string) => string): string {
     const matches = Array.from(text.matchAll(new RegExp(CLI_TAG_REGEX_SOURCE, 'gi')))
     if (matches.length === 0) {
         return normalizeCliText(text)
@@ -54,7 +55,7 @@ function buildCliOutput(text: string): string {
 
         const tagName = match[1] ?? ''
         const content = normalizeCliText(match[2] ?? '')
-        const label = formatLabel(tagName)
+        const label = formatLabel(tagName, t)
 
         if (content.length > 0) {
             sections.push(`${label}:\n${content}`)
@@ -101,7 +102,8 @@ function CliIcon() {
 }
 
 export function CliOutputBlock(props: { text: string }) {
-    const content = useMemo(() => buildCliOutput(props.text), [props.text])
+    const { t } = useTranslation()
+    const content = useMemo(() => buildCliOutput(props.text, t), [props.text, t])
     const commandName = useMemo(() => extractCommandName(props.text), [props.text])
 
     return (
@@ -117,7 +119,7 @@ export function CliOutputBlock(props: { text: string }) {
                                             <CliIcon />
                                         </div>
                                         <CardTitle className="min-w-0 text-sm font-medium leading-tight break-words">
-                                            {commandName ?? 'CLI output'}
+                                            {commandName ?? t('terminal.commandName')}
                                         </CardTitle>
                                     </div>
                                     <span className="text-[var(--app-hint)]">
@@ -129,7 +131,7 @@ export function CliOutputBlock(props: { text: string }) {
                     </DialogTrigger>
                     <DialogContent className="max-w-2xl">
                         <DialogHeader>
-                            <DialogTitle>CLI output</DialogTitle>
+                            <DialogTitle>{t('terminal.commandName')}</DialogTitle>
                         </DialogHeader>
                         <div className="mt-3 max-h-[75vh] overflow-auto">
                             <div className="min-w-0 max-w-full overflow-x-auto overflow-y-hidden">

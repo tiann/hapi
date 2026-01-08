@@ -1,4 +1,5 @@
 import type { Machine } from '@/types/api'
+import { useTranslation } from '@/lib/use-translation'
 
 function getMachineTitle(machine: Machine): string {
     if (machine.metadata?.displayName) return machine.metadata.displayName
@@ -13,10 +14,12 @@ export function MachineSelector(props: {
     isDisabled: boolean
     onChange: (machineId: string) => void
 }) {
+    const { t } = useTranslation()
+
     return (
         <div className="flex flex-col gap-1.5 px-3 py-3">
             <label className="text-xs font-medium text-[var(--app-hint)]">
-                Machine
+                {t('newSession.machine')}
             </label>
             <select
                 value={props.machineId ?? ''}
@@ -25,10 +28,10 @@ export function MachineSelector(props: {
                 className="w-full rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] p-2 text-sm focus:outline-none focus:ring-2 focus:ring-[var(--app-link)] disabled:opacity-50"
             >
                 {props.isLoading && (
-                    <option value="">Loading machines...</option>
+                    <option value="">{t('misc.machine')}...</option>
                 )}
                 {!props.isLoading && props.machines.length === 0 && (
-                    <option value="">No machines available</option>
+                    <option value="">{t('misc.noMachines')}</option>
                 )}
                 {props.machines.map((m) => (
                     <option key={m.id} value={m.id}>

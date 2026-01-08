@@ -21,6 +21,7 @@ import { FloatingOverlay } from '@/components/ChatInput/FloatingOverlay'
 import { Autocomplete } from '@/components/ChatInput/Autocomplete'
 import { StatusBar } from '@/components/AssistantChat/StatusBar'
 import { ComposerButtons } from '@/components/AssistantChat/ComposerButtons'
+import { useTranslation } from '@/lib/use-translation'
 
 export interface TextInputState {
     text: string
@@ -46,6 +47,7 @@ export function HappyComposer(props: {
     autocompletePrefixes?: string[]
     autocompleteSuggestions?: (query: string) => Promise<Suggestion[]>
 }) {
+    const { t } = useTranslation()
     const {
         disabled = false,
         permissionMode: rawPermissionMode,
@@ -344,7 +346,7 @@ export function HappyComposer(props: {
                         {showPermissionSettings ? (
                             <div className="py-2">
                                 <div className="px-3 pb-1 text-xs font-semibold text-[var(--app-hint)]">
-                                    Permission Mode
+                                    {t('misc.permissionMode')}
                                 </div>
                                 {permissionModeOptions.map((option) => (
                                     <button
@@ -385,7 +387,7 @@ export function HappyComposer(props: {
                         {showModelSettings ? (
                             <div className="py-2">
                                 <div className="px-3 pb-1 text-xs font-semibold text-[var(--app-hint)]">
-                                    Model
+                                    {t('misc.model')}
                                 </div>
                                 {MODEL_MODES.map((mode) => (
                                     <button
@@ -474,7 +476,7 @@ export function HappyComposer(props: {
                             <ComposerPrimitive.Input
                                 ref={textareaRef}
                                 autoFocus={!controlsDisabled && !isTouch}
-                                placeholder={showContinueHint ? "Type 'continue' to resume..." : "Type a message..."}
+                                placeholder={showContinueHint ? t('misc.typeMessage') : t('misc.typeAMessage')}
                                 disabled={controlsDisabled}
                                 maxRows={5}
                                 submitOnEnter

@@ -3,6 +3,7 @@ import type { PermissionModeTone } from '@hapi/protocol'
 import { useMemo } from 'react'
 import type { AgentState, ModelMode, PermissionMode } from '@/types/api'
 import { getContextBudgetTokens } from '@/chat/modelConfig'
+import { useTranslation } from '@/lib/use-translation'
 
 // Vibing messages for thinking state
 const VIBING_MESSAGES = [
@@ -33,13 +34,14 @@ const PERMISSION_TONE_CLASSES: Record<PermissionModeTone, string> = {
 function getConnectionStatus(
     active: boolean,
     thinking: boolean,
-    agentState: AgentState | null | undefined
+    agentState: AgentState | null | undefined,
+    t: (key: string) => string
 ): { text: string; color: string; dotColor: string; isPulsing: boolean } {
     const hasPermissions = agentState?.requests && Object.keys(agentState.requests).length > 0
 
     if (!active) {
         return {
-            text: 'offline',
+            text: t('misc.offline'),
             color: 'text-[#999]',
             dotColor: 'bg-[#999]',
             isPulsing: false
@@ -48,7 +50,7 @@ function getConnectionStatus(
 
     if (hasPermissions) {
         return {
-            text: 'permission required',
+            text: t('misc.permissionRequired'),
             color: 'text-[#FF9500]',
             dotColor: 'bg-[#FF9500]',
             isPulsing: true
@@ -66,23 +68,24 @@ function getConnectionStatus(
     }
 
     return {
-        text: 'online',
+        text: t('misc.online'),
         color: 'text-[#34C759]',
         dotColor: 'bg-[#34C759]',
         isPulsing: false
     }
 }
 
-function getContextWarning(contextSize: number, maxContextSize: number): { text: string; color: string } | null {
+function getContextWarning(contextSize: number, maxContextSize: number, t: (key: string, params?: Record<string, string | number>) => string): { text: string; color: string } | null {
     const percentageUsed = (contextSize / maxContextSize) * 100
     const percentageRemaining = Math.max(0, 100 - percentageUsed)
 
+    const percent = Math.round(percentageRemaining)
     if (percentageRemaining <= 5) {
-        return { text: `${Math.round(percentageRemaining)}% left`, color: 'text-red-500' }
+        return { text: t('misc.percentLeft', { percent }), color: 'text-red-500' }
     } else if (percentageRemaining <= 10) {
-        return { text: `${Math.round(percentageRemaining)}% left`, color: 'text-amber-500' }
+        return { text: t('misc.percentLeft', { percent }), color: 'text-amber-500' }
     } else {
-        return { text: `${Math.round(percentageRemaining)}% left`, color: 'text-[var(--app-hint)]' }
+        return { text: t('misc.percentLeft', { percent }), color: 'text-[var(--app-hint)]' }
     }
 }
 
@@ -95,9 +98,10 @@ export function StatusBar(props: {
     permissionMode?: PermissionMode
     agentFlavor?: string | null
 }) {
+    const { t } = useTranslation()
     const connectionStatus = useMemo(
-        () => getConnectionStatus(props.active, props.thinking, props.agentState),
-        [props.active, props.thinking, props.agentState]
+        () => getConnectionStatus(props.active, props.thinking, props.agentState, t),
+        [props.active, props.thinking, props.agentState, t]
     )
 
     const contextWarning = useMemo(
@@ -105,9 +109,9 @@ export function StatusBar(props: {
             if (props.contextSize === undefined) return null
             const maxContextSize = getContextBudgetTokens(props.modelMode)
             if (!maxContextSize) return null
-            return getContextWarning(props.contextSize, maxContextSize)
+            return getContextWarning(props.contextSize, maxContextSize, t)
         },
-        [props.contextSize, props.modelMode]
+        [props.contextSize, props.modelMode, t]
     )
 
     const permissionMode = props.permissionMode

@@ -8,8 +8,10 @@ import { HappyUserMessage } from '@/components/AssistantChat/messages/UserMessag
 import { HappySystemMessage } from '@/components/AssistantChat/messages/SystemMessage'
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/Spinner'
+import { useTranslation } from '@/lib/use-translation'
 
 function NewMessagesIndicator(props: { count: number; onClick: () => void }) {
+    const { t } = useTranslation()
     if (props.count === 0) {
         return null
     }
@@ -19,12 +21,13 @@ function NewMessagesIndicator(props: { count: number; onClick: () => void }) {
             onClick={props.onClick}
             className="absolute bottom-20 left-1/2 -translate-x-1/2 bg-[var(--app-button)] text-[var(--app-button-text)] px-3 py-1.5 rounded-full text-sm font-medium shadow-lg animate-bounce-in z-10"
         >
-            {props.count} new message{props.count > 1 ? 's' : ''} &#8595;
+            {t('misc.newMessage', { n: props.count })} &#8595;
         </button>
     )
 }
 
 function MessageSkeleton() {
+    const { t } = useTranslation()
     const rows = [
         { align: 'end', width: 'w-2/3', height: 'h-10' },
         { align: 'start', width: 'w-3/4', height: 'h-12' },
@@ -34,7 +37,7 @@ function MessageSkeleton() {
 
     return (
         <div role="status" aria-live="polite">
-            <span className="sr-only">Loading messages…</span>
+            <span className="sr-only">{t('misc.loadingMessages')}</span>
             <div className="space-y-3 animate-pulse">
                 {rows.map((row, index) => (
                     <div key={`skeleton-${index}`} className={row.align === 'end' ? 'flex justify-end' : 'flex justify-start'}>
@@ -72,6 +75,7 @@ export function HappyThread(props: {
     messagesVersion: number
     forceScrollToken: number
 }) {
+    const { t } = useTranslation()
     const viewportRef = useRef<HTMLDivElement | null>(null)
     const topSentinelRef = useRef<HTMLDivElement | null>(null)
     const loadLockRef = useRef(false)
@@ -300,12 +304,12 @@ export function HappyThread(props: {
                                                     {props.isLoadingMoreMessages ? (
                                                         <>
                                                             <Spinner size="sm" label={null} className="text-current" />
-                                                            Loading…
+                                                            {t('misc.loading')}
                                                         </>
                                                     ) : (
                                                         <>
                                                             <span aria-hidden="true">↑</span>
-                                                            Load older
+                                                            {t('misc.loadOlder')}
                                                         </>
                                                     )}
                                                 </Button>

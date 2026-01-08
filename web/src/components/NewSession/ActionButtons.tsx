@@ -1,5 +1,6 @@
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/Spinner'
+import { useTranslation } from '@/lib/use-translation'
 
 export function ActionButtons(props: {
     isPending: boolean
@@ -8,6 +9,8 @@ export function ActionButtons(props: {
     onCancel: () => void
     onCreate: () => void
 }) {
+    const { t } = useTranslation()
+
     return (
         <div className="flex gap-2 px-3 py-3">
             <Button
@@ -15,7 +18,7 @@ export function ActionButtons(props: {
                 onClick={props.onCancel}
                 disabled={props.isDisabled}
             >
-                Cancel
+                {t('button.cancel')}
             </Button>
             <Button
                 onClick={props.onCreate}
@@ -26,10 +29,10 @@ export function ActionButtons(props: {
                 {props.isPending ? (
                     <>
                         <Spinner size="sm" label={null} className="text-[var(--app-button-text)]" />
-                        Creating...
+                        {t('newSession.creating')}
                     </>
                 ) : (
-                    'Create'
+                    t('newSession.create')
                 )}
             </Button>
         </div>

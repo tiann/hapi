@@ -8,6 +8,7 @@ import {
     type CSSProperties,
     type RefObject
 } from 'react'
+import { useTranslation } from '@/lib/use-translation'
 
 type SessionActionMenuProps = {
     isOpen: boolean
@@ -92,6 +93,7 @@ type MenuPosition = {
 }
 
 export function SessionActionMenu(props: SessionActionMenuProps) {
+    const { t } = useTranslation()
     const {
         isOpen,
         onClose,
@@ -236,7 +238,7 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
                 id={headingId}
                 className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--app-hint)]"
             >
-                Session actions
+                {t('session.more')}
             </div>
             <div
                 id={resolvedMenuId}
@@ -251,7 +253,7 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
                     onClick={handleRename}
                 >
                     <EditIcon className="text-[var(--app-hint)]" />
-                    Rename
+                    {t('session.action.rename')}
                 </button>
 
                 {sessionActive ? (
@@ -262,7 +264,7 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
                         onClick={handleArchive}
                     >
                         <ArchiveIcon className="text-red-500" />
-                        Archive
+                        {t('session.action.archive')}
                     </button>
                 ) : (
                     <button
@@ -272,7 +274,7 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
                         onClick={handleDelete}
                     >
                         <TrashIcon className="text-red-500" />
-                        Delete
+                        {t('session.action.delete')}
                     </button>
                 )}
             </div>

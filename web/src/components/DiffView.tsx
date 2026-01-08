@@ -3,6 +3,7 @@ import { useMemo } from 'react'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { usePointerFocusRing } from '@/hooks/usePointerFocusRing'
 import { cn } from '@/lib/utils'
+import { useTranslation } from '@/lib/use-translation'
 
 export function DiffView(props: {
     oldString: string
@@ -10,6 +11,7 @@ export function DiffView(props: {
     filePath?: string
     variant?: 'preview' | 'inline'
 }) {
+    const { t } = useTranslation()
     const variant = props.variant ?? 'preview'
     const { suppressFocusRing, onTriggerPointerDown, onTriggerKeyDown, onTriggerBlur } = usePointerFocusRing()
 
@@ -21,8 +23,8 @@ export function DiffView(props: {
         return { oldChars, newChars, label: `old: ${oldLabel} → new: ${newLabel}` }
     }, [props.oldString.length, props.newString.length])
 
-    const title = props.filePath ? props.filePath : 'Diff'
-    const subtitle = props.filePath ? stats.label : `Diff • ${stats.label}`
+    const title = props.filePath ? props.filePath : t('diff.title')
+    const subtitle = props.filePath ? stats.label : `${t('diff.title')} • ${stats.label}`
 
     const DiffInline = (
         <DiffInlineView
@@ -61,7 +63,7 @@ export function DiffView(props: {
                                     {props.filePath ? stats.label : subtitle}
                                 </div>
                                 <div className="shrink-0 text-xs text-[var(--app-link)]">
-                                    View
+                                    {t('diff.view')}
                                 </div>
                             </div>
                         </div>

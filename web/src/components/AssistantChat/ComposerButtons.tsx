@@ -1,4 +1,5 @@
 import { ComposerPrimitive } from '@assistant-ui/react'
+import { useTranslation } from '@/lib/use-translation'
 
 function SettingsIcon() {
     return (
@@ -126,14 +127,16 @@ export function ComposerButtons(props: {
     isSwitching: boolean
     onSwitch: () => void
 }) {
+    const { t } = useTranslation()
+
     return (
         <div className="flex items-center justify-between px-2 pb-2">
             <div className="flex items-center gap-1">
                 {props.showSettingsButton ? (
                     <button
                         type="button"
-                        aria-label="Settings"
-                        title="Settings"
+                        aria-label={t('composer.settings')}
+                        title={t('composer.settings')}
                         className="settings-button flex h-8 w-8 items-center justify-center rounded-full text-[var(--app-fg)]/60 transition-colors hover:bg-[var(--app-bg)] hover:text-[var(--app-fg)]"
                         onClick={props.onSettingsToggle}
                         disabled={props.controlsDisabled}
@@ -145,8 +148,8 @@ export function ComposerButtons(props: {
                 {props.showTerminalButton ? (
                     <button
                         type="button"
-                        aria-label="Terminal"
-                        title="Terminal"
+                        aria-label={t('composer.terminal')}
+                        title={t('composer.terminal')}
                         className="flex h-8 w-8 items-center justify-center rounded-full text-[var(--app-fg)]/60 transition-colors hover:bg-[var(--app-bg)] hover:text-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
                         onClick={props.onTerminal}
                         disabled={props.terminalDisabled}
@@ -158,8 +161,8 @@ export function ComposerButtons(props: {
                 {props.showAbortButton ? (
                     <button
                         type="button"
-                        aria-label="Abort"
-                        title="Abort"
+                        aria-label={t('composer.abort')}
+                        title={t('composer.abort')}
                         disabled={props.abortDisabled}
                         className="flex h-8 w-8 items-center justify-center rounded-full text-[var(--app-fg)]/60 transition-colors hover:bg-[var(--app-bg)] hover:text-red-500 disabled:cursor-not-allowed disabled:opacity-50"
                         onClick={props.onAbort}
@@ -171,8 +174,8 @@ export function ComposerButtons(props: {
                 {props.showSwitchButton ? (
                     <button
                         type="button"
-                        aria-label="Switch to remote"
-                        title="Switch to remote mode"
+                        aria-label={t('composer.switchRemote')}
+                        title={t('composer.switchRemote')}
                         disabled={props.switchDisabled}
                         className="flex h-8 w-8 items-center justify-center rounded-full text-[var(--app-fg)]/60 transition-colors hover:bg-[var(--app-bg)] hover:text-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
                         onClick={props.onSwitch}
@@ -184,8 +187,8 @@ export function ComposerButtons(props: {
 
             <ComposerPrimitive.Send
                 disabled={props.controlsDisabled || !props.canSend}
-                aria-label="Send"
-                title="Send"
+                aria-label={t('composer.send')}
+                title={t('composer.send')}
                 className={`flex h-8 w-8 items-center justify-center rounded-full transition-colors ${
                     props.canSend && !props.controlsDisabled
                         ? 'bg-black text-white'

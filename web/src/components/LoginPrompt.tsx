@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
 import { ApiClient } from '@/api/client'
+import { LanguageSwitcher } from '@/components/LanguageSwitcher'
 import { Spinner } from '@/components/Spinner'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
+import { useTranslation } from '@/lib/use-translation'
 import type { ServerUrlResult } from '@/hooks/useServerUrl'
 
 type LoginPromptProps = {
@@ -17,6 +19,7 @@ type LoginPromptProps = {
 }
 
 export function LoginPrompt(props: LoginPromptProps) {
+    const { t } = useTranslation()
     const isBindMode = props.mode === 'bind'
     const [accessToken, setAccessToken] = useState('')
     const [isLoading, setIsLoading] = useState(false)
@@ -30,7 +33,7 @@ export function LoginPrompt(props: LoginPromptProps) {
 
         const trimmedToken = accessToken.trim()
         if (!trimmedToken) {
-            setError('Please enter an access token')
+            setError(t('login.error.enterToken'))
             return
         }
 
@@ -40,28 +43,28 @@ export function LoginPrompt(props: LoginPromptProps) {
         try {
             if (isBindMode) {
                 if (!props.onBind) {
-                    setError('Binding is unavailable.')
+                    setError(t('login.error.bindingUnavailable'))
                     return
                 }
                 await props.onBind(trimmedToken)
             } else {
-                // Validate the token by attempting to authenticate
+                // Validate token by attempting to authenticate
                 const client = new ApiClient('', { baseUrl: props.baseUrl })
                 await client.authenticate({ accessToken: trimmedToken })
-                // If successful, pass the token to parent
+                // If successful, pass token to parent
                 if (!props.onLogin) {
-                    setError('Login is unavailable.')
+                    setError(t('login.error.loginUnavailable'))
                     return
                 }
                 props.onLogin(trimmedToken)
             }
         } catch (e) {
-            const fallbackMessage = isBindMode ? 'Binding failed' : 'Authentication failed'
+            const fallbackMessage = isBindMode ? t('login.error.bindFailed') : t('login.error.authFailed')
             setError(e instanceof Error ? e.message : fallbackMessage)
         } finally {
             setIsLoading(false)
         }
-    }, [accessToken, props])
+    }, [accessToken, props, t, isBindMode])
 
     useEffect(() => {
         if (!isServerDialogOpen) {
@@ -91,13 +94,18 @@ export function LoginPrompt(props: LoginPromptProps) {
     }, [props])
 
     const displayError = error || props.error
-    const serverSummary = props.serverUrl ?? `${props.baseUrl} (same origin)`
-    const title = isBindMode ? 'Bind Telegram' : 'HAPI'
-    const subtitle = 'Vibe Coding Anytime, Anywhere'
-    const submitLabel = isBindMode ? 'Bind' : 'Sign In'
+    const serverSummary = props.serverUrl ?? `${props.baseUrl} ${t('login.server.default')}`
+    const title = isBindMode ? t('login.bind.title') : t('login.title')
+    const subtitle = t('login.subtitle')
+    const submitLabel = isBindMode ? t('login.bind.submit') : t('login.submit')
 
     return (
         <div className="relative h-full flex items-center justify-center p-4">
+            {/* Language switcher */}
+            <div className="absolute top-4 right-4">
+                <LanguageSwitcher />
+            </div>
+
             <div className="w-full max-w-sm space-y-6">
                 {/* Header */}
                 <div className="text-center space-y-2">
@@ -114,7 +122,7 @@ export function LoginPrompt(props: LoginPromptProps) {
                             type="password"
                             value={accessToken}
                             onChange={(e) => setAccessToken(e.target.value)}
-                            placeholder="Access token"
+                            placeholder={t('login.placeholder')}
                             autoComplete="current-password"
                             disabled={isLoading}
                             className="w-full px-3 py-2.5 rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] text-[var(--app-fg)] placeholder:text-[var(--app-hint)] focus:outline-none focus:ring-2 focus:ring-[var(--app-button)] focus:border-transparent disabled:opacity-50"
@@ -136,7 +144,7 @@ export function LoginPrompt(props: LoginPromptProps) {
                         {isLoading ? (
                             <>
                                 <Spinner size="sm" label={null} className="text-[var(--app-button-text)]" />
-                                {isBindMode ? 'Binding...' : 'Signing in...'}
+                                {isBindMode ? t('login.bind.submitting') : t('login.submitting')}
                             </>
                         ) : (
                             submitLabel
@@ -148,27 +156,27 @@ export function LoginPrompt(props: LoginPromptProps) {
                 {!isBindMode && (
                     <div className="flex items-center justify-between text-xs text-[var(--app-hint)]">
                         <a href="https://hapi.run/docs" target="_blank" rel="noopener noreferrer" className="underline hover:text-[var(--app-fg)]">
-                            Needs help?
+                            {t('login.help')}
                         </a>
                         <Dialog open={isServerDialogOpen} onOpenChange={setIsServerDialogOpen}>
                             <DialogTrigger asChild>
                                 <button type="button" className="underline hover:text-[var(--app-fg)]">
-                                    Server {props.serverUrl ? '(Custom)' : '(Default)'}
+                                    Server {props.serverUrl ? `${t('login.server.custom')}` : `${t('login.server.default')}`}
                                 </button>
                             </DialogTrigger>
                             <DialogContent className="max-w-md">
                                 <DialogHeader>
-                                    <DialogTitle>Server URL</DialogTitle>
+                                    <DialogTitle>{t('login.server.title')}</DialogTitle>
                                     <DialogDescription>
-                                        Set the hapi server origin for API and live updates.
+                                        {t('login.server.description')}
                                     </DialogDescription>
                                 </DialogHeader>
                                 <form onSubmit={handleSaveServer} className="space-y-4">
                                     <div className="text-xs text-[var(--app-hint)]">
-                                        Current: {serverSummary}
+                                        {t('login.server.current')} {serverSummary}
                                     </div>
                                     <div className="space-y-2">
-                                        <label className="text-xs font-medium">Server origin</label>
+                                        <label className="text-xs font-medium">{t('login.server.origin')}</label>
                                         <input
                                             type="url"
                                             value={serverInput}
@@ -176,11 +184,11 @@ export function LoginPrompt(props: LoginPromptProps) {
                                                 setServerInput(e.target.value)
                                                 setServerError(null)
                                             }}
-                                            placeholder="https://hapi.example.com"
+                                            placeholder={t('login.server.placeholder')}
                                             className="w-full px-3 py-2.5 rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] text-[var(--app-fg)] placeholder:text-[var(--app-hint)] focus:outline-none focus:ring-2 focus:ring-[var(--app-button)] focus:border-transparent"
                                         />
                                         <div className="text-[11px] text-[var(--app-hint)]">
-                                            Use http(s) only. Any path is ignored.
+                                            {t('login.server.hint')}
                                         </div>
                                     </div>
 
@@ -193,11 +201,11 @@ export function LoginPrompt(props: LoginPromptProps) {
                                     <div className="flex items-center justify-end gap-2">
                                         {props.serverUrl && (
                                             <Button type="button" variant="outline" onClick={handleClearServer}>
-                                                Use same origin
+                                                {t('login.server.useSameOrigin')}
                                             </Button>
                                         )}
                                         <Button type="submit">
-                                            Save server
+                                            {t('login.server.save')}
                                         </Button>
                                     </div>
                                 </form>
@@ -209,8 +217,8 @@ export function LoginPrompt(props: LoginPromptProps) {
 
             {/* Footer */}
             <div className="absolute bottom-4 left-0 right-0 text-center text-xs text-[var(--app-hint)] space-y-1">
-                <div>Designed with <span className="text-red-500">♥</span> for Vibe Coding</div>
-                <div>© {new Date().getFullYear()} HAPI</div>
+                <div>{t('login.footer')} <span className="text-red-500">♥</span> {t('login.footer.for')}</div>
+                <div>{t('login.footer.copyright')} {new Date().getFullYear()} HAPI</div>
             </div>
         </div>
     )

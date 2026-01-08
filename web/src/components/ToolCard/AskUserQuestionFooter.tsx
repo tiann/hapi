@@ -7,6 +7,7 @@ import { isAskUserQuestionToolName, parseAskUserQuestionInput, type AskUserQuest
 import { cn } from '@/lib/utils'
 import { usePlatform } from '@/hooks/usePlatform'
 import { Spinner } from '@/components/Spinner'
+import { useTranslation } from '@/lib/use-translation'
 
 function SelectionMark(props: { checked: boolean; mode: 'single' | 'multi' }) {
     const mark = props.mode === 'multi'
@@ -80,6 +81,7 @@ export function AskUserQuestionFooter(props: {
     disabled: boolean
     onDone: () => void
 }) {
+    const { t } = useTranslation()
     const { haptic } = usePlatform()
     const permission = props.tool.permission
     const parsed = useMemo(() => parseAskUserQuestionInput(props.tool.input), [props.tool.input])
@@ -116,7 +118,7 @@ export function AskUserQuestionFooter(props: {
             props.onDone()
         } catch (e) {
             haptic.notification('error')
-            setError(e instanceof Error ? e.message : 'Request failed')
+            setError(e instanceof Error ? e.message : t('dialog.error.default'))
         }
     }
 
@@ -149,7 +151,7 @@ export function AskUserQuestionFooter(props: {
         if (questions.length === 0) {
             const a0 = validateQuestion(0)
             if (!a0) {
-                setError('Please type an answer.')
+                setError(t('tool.selectOption'))
                 return
             }
             answers['0'] = a0
@@ -157,7 +159,7 @@ export function AskUserQuestionFooter(props: {
             for (let i = 0; i < questions.length; i += 1) {
                 const a = validateQuestion(i)
                 if (!a) {
-                    setError(`Please answer question ${i + 1} before submitting.`)
+                    setError(t('tool.selectOption'))
                     setStep(i)
                     return
                 }
@@ -174,7 +176,7 @@ export function AskUserQuestionFooter(props: {
         if (questions.length === 0) return
         const a = validateQuestion(clampedStep)
         if (!a) {
-            setError('Please select at least one option or type an answer.')
+            setError(t('tool.selectOption'))
             return
         }
         setError(null)
@@ -261,7 +263,7 @@ export function AskUserQuestionFooter(props: {
                 <div className="min-w-0">
                     <div className="flex items-center gap-2">
                         <Badge variant="default">
-                            Question
+                            {t('tool.question')}
                         </Badge>
                         <span className="font-mono text-xs text-[var(--app-hint)]">
                             [{clampedStep + 1}/{total}]
@@ -279,13 +281,13 @@ export function AskUserQuestionFooter(props: {
             {questions.length === 0 ? (
                 <div className="mt-3">
                     <div className="text-sm text-[var(--app-hint)]">
-                        AskUserQuestion payload is not in the expected format. Type your answer:
+                        {t('tool.askUserQuestion.fallback')}
                     </div>
                     <textarea
                         value={fallbackText}
                         onChange={(e) => setFallbackText(e.target.value)}
                         disabled={props.disabled || loading}
-                        placeholder="Type your answer…"
+                        placeholder={t('tool.askUserQuestion.placeholder')}
                         className="mt-2 w-full min-h-[88px] resize-y rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-2 text-sm text-[var(--app-fg)] placeholder:text-[var(--app-hint)] focus:outline-none focus:ring-2 focus:ring-[var(--app-button)] focus:border-transparent disabled:opacity-50"
                     />
                 </div>
@@ -331,8 +333,8 @@ export function AskUserQuestionFooter(props: {
                             checked={otherSelectedByQuestion[clampedStep] ?? false}
                             mode={mode}
                             disabled={props.disabled || loading}
-                            title="Other"
-                            description="Type your own answer"
+                            title={t('tool.other')}
+                            description={t('tool.otherDescription')}
                             onClick={() => toggleOther(clampedStep)}
                         />
 
@@ -341,7 +343,7 @@ export function AskUserQuestionFooter(props: {
                                 value={otherTextByQuestion[clampedStep] ?? ''}
                                 onChange={(e) => updateOtherText(clampedStep, e.target.value)}
                                 disabled={props.disabled || loading}
-                                placeholder="Or type your own answer…"
+                                placeholder={t('tool.askUserQuestion.otherPlaceholder')}
                                 className="mt-2 w-full min-h-[88px] resize-y rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-2 text-sm text-[var(--app-fg)] placeholder:text-[var(--app-hint)] focus:outline-none focus:ring-2 focus:ring-[var(--app-button)] focus:border-transparent disabled:opacity-50"
                             />
                         ) : null}
@@ -359,7 +361,7 @@ export function AskUserQuestionFooter(props: {
                             disabled={props.disabled || loading || clampedStep === 0}
                             onClick={prev}
                         >
-                            ← Prev
+                            {t('tool.prev')}
                         </Button>
                     ) : null}
                 </div>
@@ -373,7 +375,7 @@ export function AskUserQuestionFooter(props: {
                             disabled={props.disabled || loading}
                             onClick={next}
                         >
-                            Next →
+                            {t('tool.next')}
                         </Button>
                     ) : (
                         <Button
@@ -388,10 +390,10 @@ export function AskUserQuestionFooter(props: {
                             {loading ? (
                                 <>
                                     <Spinner size="sm" label={null} className="text-[var(--app-button-text)]" />
-                                    Submitting…
+                                    {t('tool.submitting')}
                                 </>
                             ) : (
-                                'Submit'
+                                t('tool.submit')
                             )}
                         </Button>
                     )}
