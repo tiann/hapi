@@ -50,7 +50,11 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
             await onConfirm()
             onClose()
         } catch (err) {
-            setError(t('dialog.error', { message: err instanceof Error ? err.message : t('dialog.error.default') }))
+            const message =
+                err instanceof Error && err.message
+                    ? err.message
+                    : t('dialog.error.default')
+            setError(message)
         }
     }
 
