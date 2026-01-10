@@ -84,7 +84,7 @@ export class MessageService {
 
         const update = {
             id: msg.id,
-            seq: Date.now(),
+            seq: msg.seq,
             createdAt: msg.createdAt,
             body: {
                 t: 'new-message' as const,

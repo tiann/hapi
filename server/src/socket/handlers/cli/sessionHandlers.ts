@@ -98,7 +98,7 @@ export function registerSessionHandlers(socket: SocketWithData, deps: SessionHan
 
         const update = {
             id: randomUUID(),
-            seq: Date.now(),
+            seq: msg.seq,
             createdAt: Date.now(),
             body: {
                 t: 'new-message' as const,
