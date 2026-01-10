@@ -1,6 +1,7 @@
 export type CodexCliOverrides = {
     sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access';
     approvalPolicy?: 'untrusted' | 'on-failure' | 'on-request' | 'never';
+    resumeSessionId?: string;
 };
 
 const SANDBOX_VALUES = new Set<CodexCliOverrides['sandbox']>([
@@ -20,6 +21,11 @@ export function parseCodexCliOverrides(args?: string[]): CodexCliOverrides {
     const overrides: CodexCliOverrides = {};
     if (!args || args.length === 0) {
         return overrides;
+    }
+
+    // Check for resume subcommand: `codex resume <session-id>`
+    if (args[0] === 'resume' && args.length > 1 && !args[1].startsWith('-')) {
+        overrides.resumeSessionId = args[1];
     }
 
     for (let i = 0; i < args.length; i++) {

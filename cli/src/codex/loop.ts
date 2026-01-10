@@ -33,11 +33,12 @@ export async function loop(opts: LoopOptions): Promise<void> {
     const logPath = logger.getLogPath();
     const startedBy = opts.startedBy ?? 'terminal';
     const startingMode = opts.startingMode ?? 'local';
+    const resumeSessionId = opts.codexCliOverrides?.resumeSessionId ?? null;
     const session = new CodexSession({
         api: opts.api,
         client: opts.session,
         path: opts.path,
-        sessionId: null,
+        sessionId: resumeSessionId,
         logPath,
         messageQueue: opts.messageQueue,
         onModeChange: opts.onModeChange,
