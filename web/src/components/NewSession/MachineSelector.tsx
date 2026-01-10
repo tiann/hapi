@@ -28,7 +28,7 @@ export function MachineSelector(props: {
                 className="w-full rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] p-2 text-sm focus:outline-none focus:ring-2 focus:ring-[var(--app-link)] disabled:opacity-50"
             >
                 {props.isLoading && (
-                    <option value="">{t('misc.machine')}...</option>
+                    <option value="">{t('loading.machines')}</option>
                 )}
                 {!props.isLoading && props.machines.length === 0 && (
                     <option value="">{t('misc.noMachines')}</option>
