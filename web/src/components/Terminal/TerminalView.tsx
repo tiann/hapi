@@ -81,6 +81,9 @@ export function TerminalView(props: {
 
         return () => {
             observer.disconnect()
+            fitAddon.dispose()
+            webLinksAddon.dispose()
+            canvasAddon.dispose()
             terminal.dispose()
         }
     }, [fontProvider])
