@@ -86,7 +86,11 @@ function readWorktreeFromGit(): WorktreeInfo | null {
 
 function runGit(args: string[], cwd: string): string | null {
     try {
-        const output = execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+        const output = execFileSync('git', args, {
+            cwd,
+            encoding: 'utf8',
+            stdio: ['ignore', 'pipe', 'ignore']
+        }).trim();
         return output.length > 0 ? output : null;
     } catch {
         return null;
