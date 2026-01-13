@@ -6,7 +6,7 @@
     "type": "module",
     "scripts": {
         "dev": "vite",
-        "build": "vite build",
+        "build": "vite build && cp dist/index.html dist/404.html",
         "typecheck": "tsc --noEmit",
         "preview": "vite preview"
     },
