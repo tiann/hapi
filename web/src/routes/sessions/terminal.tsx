@@ -215,12 +215,6 @@ export default function TerminalPage() {
             }
             write(applyModifiers(sequence))
             terminalRef.current?.focus()
-            if (ctrlActive) {
-                setCtrlActive(false)
-            }
-            if (altActive) {
-                setAltActive(false)
-            }
         },
         [quickInputDisabled, write, applyModifiers, ctrlActive, altActive]
     )
