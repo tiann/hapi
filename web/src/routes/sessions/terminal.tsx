@@ -319,8 +319,10 @@ export default function TerminalPage() {
                                             onClick={onClick}
                                             disabled={quickInputDisabled}
                                             aria-pressed={input.modifier ? isActive : undefined}
-                                            className={`flex-1 border-l border-[var(--app-border)] px-3 py-1.5 text-sm font-medium text-[var(--app-fg)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-button)] focus-visible:ring-inset disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent first:border-l-0 ${
-                                                isActive ? 'bg-[var(--app-border)]' : 'hover:bg-[var(--app-subtle-bg)]'
+                                            className={`flex-1 border-l border-[var(--app-border)] px-2 py-1.5 text-xs font-medium text-[var(--app-fg)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-button)] focus-visible:ring-inset disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent first:border-l-0 active:bg-[var(--app-subtle-bg)] sm:px-3 sm:text-sm ${
+                                                isActive
+                                                    ? 'bg-[var(--app-link)] text-[var(--app-bg)]'
+                                                    : 'hover:bg-[var(--app-subtle-bg)]'
                                             }`}
                                             aria-label={input.description}
                                             title={input.description}
