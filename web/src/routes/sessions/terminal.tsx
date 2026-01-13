@@ -291,8 +291,10 @@ export default function TerminalPage() {
             }
             if (modifier === 'ctrl') {
                 setCtrlActive((value) => !value)
+                setAltActive(false)
             } else {
                 setAltActive((value) => !value)
+                setCtrlActive(false)
             }
             terminalRef.current?.focus()
         },
