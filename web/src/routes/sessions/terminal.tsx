@@ -136,7 +136,9 @@ function QuickKeyButton(props: {
     }, [modifier, onToggleModifier, onPress, input.sequence])
 
     const handlePointerDown = useCallback((event: PointerEvent<HTMLButtonElement>) => {
-        event.preventDefault()
+        if (event.pointerType === 'touch') {
+            event.preventDefault()
+        }
     }, [])
 
     const longPressHandlers = useLongPress({
