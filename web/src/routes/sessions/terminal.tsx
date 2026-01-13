@@ -5,6 +5,7 @@ import { useAppContext } from '@/lib/app-context'
 import { useAppGoBack } from '@/hooks/useAppGoBack'
 import { useSession } from '@/hooks/queries/useSession'
 import { useTerminalSocket } from '@/hooks/useTerminalSocket'
+import { useLongPress } from '@/hooks/useLongPress'
 import { TerminalView } from '@/components/Terminal/TerminalView'
 import { LoadingState } from '@/components/LoadingState'
 function BackIcon() {
@@ -47,13 +48,28 @@ type QuickInput = {
     sequence?: string
     description: string
     modifier?: 'ctrl' | 'alt'
+    popup?: {
+        label: string
+        sequence: string
+        description: string
+    }
 }
 
 const QUICK_INPUT_ROWS: QuickInput[][] = [
     [
         { label: 'Esc', sequence: '\u001b', description: 'Escape' },
-        { label: '/', sequence: '/', description: 'Forward slash' },
-        { label: '-', sequence: '-', description: 'Hyphen' },
+        {
+            label: '/',
+            sequence: '/',
+            description: 'Forward slash',
+            popup: { label: '?', sequence: '?', description: 'Question mark' },
+        },
+        {
+            label: '-',
+            sequence: '-',
+            description: 'Hyphen',
+            popup: { label: '|', sequence: '|', description: 'Pipe' },
+        },
         { label: 'Home', sequence: '\u001b[H', description: 'Home' },
         { label: '↑', sequence: '\u001b[A', description: 'Arrow up' },
         { label: 'End', sequence: '\u001b[F', description: 'End' },
@@ -69,6 +85,55 @@ const QUICK_INPUT_ROWS: QuickInput[][] = [
         { label: 'PgDn', sequence: '\u001b[6~', description: 'Page down' },
     ],
 ]
+
+function QuickKeyButton(props: {
+    input: QuickInput
+    disabled: boolean
+    isActive: boolean
+    onPress: (sequence: string) => void
+    onToggleModifier: (modifier: 'ctrl' | 'alt') => void
+}) {
+    const { input, disabled, isActive, onPress, onToggleModifier } = props
+    const modifier = input.modifier
+    const popupSequence = input.popup?.sequence
+    const popupDescription = input.popup?.description
+    const hasPopup = Boolean(popupSequence)
+    const longPressDisabled = disabled || Boolean(modifier) || !hasPopup
+
+    const handleClick = useCallback(() => {
+        if (modifier) {
+            onToggleModifier(modifier)
+            return
+        }
+        onPress(input.sequence ?? '')
+    }, [modifier, onToggleModifier, onPress, input.sequence])
+
+    const longPressHandlers = useLongPress({
+        onLongPress: () => {
+            if (popupSequence && !modifier) {
+                onPress(popupSequence)
+            }
+        },
+        onClick: handleClick,
+        disabled: longPressDisabled,
+    })
+
+    return (
+        <button
+            type="button"
+            {...longPressHandlers}
+            disabled={disabled}
+            aria-pressed={modifier ? isActive : undefined}
+            className={`flex-1 border-l border-[var(--app-border)] px-2 py-1.5 text-xs font-medium text-[var(--app-fg)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-button)] focus-visible:ring-inset disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent first:border-l-0 active:bg-[var(--app-subtle-bg)] sm:px-3 sm:text-sm ${
+                isActive ? 'bg-[var(--app-link)] text-[var(--app-bg)]' : 'hover:bg-[var(--app-subtle-bg)]'
+            }`}
+            aria-label={input.description}
+            title={popupDescription ? `${input.description} (long press: ${popupDescription})` : input.description}
+        >
+            {input.label}
+        </button>
+    )
+}
 
 export default function TerminalPage() {
     const { sessionId } = useParams({ from: '/sessions/$sessionId/terminal' })
@@ -309,26 +374,15 @@ export default function TerminalPage() {
                                     const isCtrl = modifier === 'ctrl'
                                     const isAlt = modifier === 'alt'
                                     const isActive = (isCtrl && ctrlActive) || (isAlt && altActive)
-                                    const onClick = modifier
-                                        ? () => handleModifierToggle(modifier)
-                                        : () => handleQuickInput(input.sequence ?? '')
                                     return (
-                                        <button
+                                        <QuickKeyButton
                                             key={input.label}
-                                            type="button"
-                                            onClick={onClick}
+                                            input={input}
                                             disabled={quickInputDisabled}
-                                            aria-pressed={input.modifier ? isActive : undefined}
-                                            className={`flex-1 border-l border-[var(--app-border)] px-2 py-1.5 text-xs font-medium text-[var(--app-fg)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-button)] focus-visible:ring-inset disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent first:border-l-0 active:bg-[var(--app-subtle-bg)] sm:px-3 sm:text-sm ${
-                                                isActive
-                                                    ? 'bg-[var(--app-link)] text-[var(--app-bg)]'
-                                                    : 'hover:bg-[var(--app-subtle-bg)]'
-                                            }`}
-                                            aria-label={input.description}
-                                            title={input.description}
-                                        >
-                                            {input.label}
-                                        </button>
+                                            isActive={isActive}
+                                            onPress={handleQuickInput}
+                                            onToggleModifier={handleModifierToggle}
+                                        />
                                     )
                                 })}
                             </div>
