@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { PointerEvent } from 'react'
 import { useParams } from '@tanstack/react-router'
 import type { Terminal } from '@xterm/xterm'
 import { useAppContext } from '@/lib/app-context'
@@ -55,6 +56,32 @@ type QuickInput = {
     }
 }
 
+type ModifierState = {
+    ctrl: boolean
+    alt: boolean
+}
+
+function applyModifierState(sequence: string, state: ModifierState): string {
+    let modified = sequence
+    if (state.alt) {
+        modified = `\u001b${modified}`
+    }
+    if (state.ctrl && modified.length === 1) {
+        const code = modified.toUpperCase().charCodeAt(0)
+        if (code >= 64 && code <= 95) {
+            modified = String.fromCharCode(code - 64)
+        }
+    }
+    return modified
+}
+
+function shouldResetModifiers(sequence: string, state: ModifierState): boolean {
+    if (!sequence) {
+        return false
+    }
+    return state.ctrl || state.alt
+}
+
 const QUICK_INPUT_ROWS: QuickInput[][] = [
     [
         { label: 'Esc', sequence: '\u001b', description: 'Escape' },
@@ -108,6 +135,10 @@ function QuickKeyButton(props: {
         onPress(input.sequence ?? '')
     }, [modifier, onToggleModifier, onPress, input.sequence])
 
+    const handlePointerDown = useCallback((event: PointerEvent<HTMLButtonElement>) => {
+        event.preventDefault()
+    }, [])
+
     const longPressHandlers = useLongPress({
         onLongPress: () => {
             if (popupSequence && !modifier) {
@@ -122,6 +153,7 @@ function QuickKeyButton(props: {
         <button
             type="button"
             {...longPressHandlers}
+            onPointerDown={handlePointerDown}
             disabled={disabled}
             aria-pressed={modifier ? isActive : undefined}
             className={`flex-1 border-l border-[var(--app-border)] px-2 py-1.5 text-xs font-medium text-[var(--app-fg)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-button)] focus-visible:ring-inset disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent first:border-l-0 active:bg-[var(--app-subtle-bg)] sm:px-3 sm:text-sm ${
@@ -150,6 +182,7 @@ export default function TerminalPage() {
     const inputDisposableRef = useRef<{ dispose: () => void } | null>(null)
     const connectOnceRef = useRef(false)
     const lastSizeRef = useRef<{ cols: number; rows: number } | null>(null)
+    const modifierStateRef = useRef<ModifierState>({ ctrl: false, alt: false })
     const [exitInfo, setExitInfo] = useState<{ code: number | null; signal: string | null } | null>(null)
     const [ctrlActive, setCtrlActive] = useState(false)
     const [altActive, setAltActive] = useState(false)
@@ -182,15 +215,28 @@ export default function TerminalPage() {
         })
     }, [onExit])
 
+    useEffect(() => {
+        modifierStateRef.current = { ctrl: ctrlActive, alt: altActive }
+    }, [ctrlActive, altActive])
+
+    const resetModifiers = useCallback(() => {
+        setCtrlActive(false)
+        setAltActive(false)
+    }, [])
+
     const handleTerminalMount = useCallback(
         (terminal: Terminal) => {
             terminalRef.current = terminal
             inputDisposableRef.current?.dispose()
             inputDisposableRef.current = terminal.onData((data) => {
-                write(data)
+                const state = modifierStateRef.current
+                write(applyModifierState(data, state))
+                if (shouldResetModifiers(data, state)) {
+                    resetModifiers()
+                }
             })
         },
-        [write]
+        [write, resetModifiers]
     )
 
     const handleResize = useCallback(
@@ -258,17 +304,7 @@ export default function TerminalPage() {
     const quickInputDisabled = !session?.active || terminalState.status !== 'connected'
     const applyModifiers = useCallback(
         (sequence: string): string => {
-            let modified = sequence
-            if (altActive) {
-                modified = `\u001b${modified}`
-            }
-            if (ctrlActive && modified.length === 1) {
-                const code = modified.toUpperCase().charCodeAt(0)
-                if (code >= 64 && code <= 95) {
-                    modified = String.fromCharCode(code - 64)
-                }
-            }
-            return modified
+            return applyModifierState(sequence, { ctrl: ctrlActive, alt: altActive })
         },
         [altActive, ctrlActive]
     )
