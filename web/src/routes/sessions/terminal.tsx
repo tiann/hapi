@@ -304,22 +304,19 @@ export default function TerminalPage() {
     }, [terminalState.status])
 
     const quickInputDisabled = !session?.active || terminalState.status !== 'connected'
-    const applyModifiers = useCallback(
-        (sequence: string): string => {
-            return applyModifierState(sequence, { ctrl: ctrlActive, alt: altActive })
-        },
-        [altActive, ctrlActive]
-    )
-
     const handleQuickInput = useCallback(
         (sequence: string) => {
             if (quickInputDisabled) {
                 return
             }
-            write(applyModifiers(sequence))
+            const state = { ctrl: ctrlActive, alt: altActive }
+            write(applyModifierState(sequence, state))
+            if (shouldResetModifiers(sequence, state)) {
+                resetModifiers()
+            }
             terminalRef.current?.focus()
         },
-        [quickInputDisabled, write, applyModifiers, ctrlActive, altActive]
+        [quickInputDisabled, write, ctrlActive, altActive, resetModifiers]
     )
 
     const handleModifierToggle = useCallback(
