@@ -226,19 +226,26 @@ export default function TerminalPage() {
         setAltActive(false)
     }, [])
 
+    const dispatchSequence = useCallback(
+        (sequence: string, modifierState: ModifierState) => {
+            write(applyModifierState(sequence, modifierState))
+            if (shouldResetModifiers(sequence, modifierState)) {
+                resetModifiers()
+            }
+        },
+        [write, resetModifiers]
+    )
+
     const handleTerminalMount = useCallback(
         (terminal: Terminal) => {
             terminalRef.current = terminal
             inputDisposableRef.current?.dispose()
             inputDisposableRef.current = terminal.onData((data) => {
-                const state = modifierStateRef.current
-                write(applyModifierState(data, state))
-                if (shouldResetModifiers(data, state)) {
-                    resetModifiers()
-                }
+                const modifierState = modifierStateRef.current
+                dispatchSequence(data, modifierState)
             })
         },
-        [write, resetModifiers]
+        [dispatchSequence]
     )
 
     const handleResize = useCallback(
@@ -309,14 +316,11 @@ export default function TerminalPage() {
             if (quickInputDisabled) {
                 return
             }
-            const state = { ctrl: ctrlActive, alt: altActive }
-            write(applyModifierState(sequence, state))
-            if (shouldResetModifiers(sequence, state)) {
-                resetModifiers()
-            }
+            const modifierState = { ctrl: ctrlActive, alt: altActive }
+            dispatchSequence(sequence, modifierState)
             terminalRef.current?.focus()
         },
-        [quickInputDisabled, write, ctrlActive, altActive, resetModifiers]
+        [quickInputDisabled, ctrlActive, altActive, dispatchSequence]
     )
 
     const handleModifierToggle = useCallback(
