@@ -274,8 +274,8 @@ export default function Home() {
                   <h3 className="font-bold">{t('installation.npm.step1')}</h3>
                 </div>
                 <div className="bg-slate-950 text-slate-50 p-4 rounded-xl font-mono text-sm flex justify-between items-center border-2 border-slate-800">
-                  <code>npx @twsxtd/hapi server</code>
-                  <Button variant="ghost" size="icon" className="text-slate-400 hover:text-white hover:bg-slate-800" onClick={() => copyToClipboard("npx @twsxtd/hapi server", "server")}>
+                  <code>npx @twsxtd/hapi server --relay</code>
+                  <Button variant="ghost" size="icon" className="text-slate-400 hover:text-white hover:bg-slate-800" onClick={() => copyToClipboard("npx @twsxtd/hapi server --relay", "server")}>
                     {copied === "server" ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
                   </Button>
                 </div>
@@ -297,15 +297,13 @@ export default function Home() {
                 <div className="flex justify-between items-center">
                   <h3 className="font-bold">{t('installation.npm.step3')}</h3>
                 </div>
-                <div className="bg-slate-950 text-slate-50 p-4 rounded-xl font-mono text-sm flex justify-between items-center border-2 border-slate-800">
-                  <code>http://&lt;your-ip&gt;:3006</code>
-                  <Button variant="ghost" size="icon" className="text-slate-400 hover:text-white hover:bg-slate-800" onClick={() => copyToClipboard("http://localhost:3006", "ui")}>
-                    {copied === "ui" ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
-                  </Button>
+                <div className="bg-slate-950 text-slate-50 p-4 rounded-xl font-mono text-sm border-2 border-slate-800">
+                  <code className="text-slate-400">{t('installation.npm.step3Hint')}</code>
                 </div>
               </div>
             </CardContent>
           </Card>
+          <p className="text-center mt-4 text-sm text-muted-foreground">{t('installation.e2ee')}</p>
         </div>
       </section>
 

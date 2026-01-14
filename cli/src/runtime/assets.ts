@@ -67,6 +67,24 @@ function areToolsUnpacked(unpackedPath: string): boolean {
     return expectedFiles.every((file) => existsSync(file));
 }
 
+function isTunwgReady(runtimeRoot: string): boolean {
+    const isWin = platform() === 'win32';
+    const tunwgBinary = isWin ? 'tunwg.exe' : 'tunwg';
+    const tunwgPath = join(runtimeRoot, 'tools', 'tunwg', tunwgBinary);
+    return existsSync(tunwgPath);
+}
+
+function ensureTunwgExecutable(runtimeRoot: string): void {
+    if (platform() === 'win32') {
+        return;
+    }
+
+    const tunwgPath = join(runtimeRoot, 'tools', 'tunwg', 'tunwg');
+    if (existsSync(tunwgPath)) {
+        chmodSync(tunwgPath, 0o755);
+    }
+}
+
 function unpackTools(runtimeRoot: string): void {
     const platformDir = getPlatformDir();
     const toolsDir = join(runtimeRoot, 'tools');
@@ -114,7 +132,7 @@ function unpackTools(runtimeRoot: string): void {
 }
 
 function runtimeAssetsReady(runtimeRoot: string): boolean {
-    return areToolsUnpacked(join(runtimeRoot, 'tools', 'unpacked'));
+    return areToolsUnpacked(join(runtimeRoot, 'tools', 'unpacked')) && isTunwgReady(runtimeRoot);
 }
 
 export async function ensureRuntimeAssets(): Promise<void> {
@@ -142,5 +160,20 @@ export async function ensureRuntimeAssets(): Promise<void> {
     }
 
     unpackTools(runtimeRoot);
+    ensureTunwgExecutable(runtimeRoot);
     writeFileSync(markerPath, packageJson.version, 'utf-8');
+}
+
+export function getTunwgPath(): string {
+    const isWin = platform() === 'win32';
+    const tunwgBinary = isWin ? 'tunwg.exe' : 'tunwg';
+
+    if (isBunCompiled()) {
+        return join(runtimePath(), 'tools', 'tunwg', tunwgBinary);
+    }
+
+    // Development mode: use downloaded binary from server/tools/tunwg
+    const platformDir = getPlatformDir();
+    const devBinaryName = isWin ? `tunwg-${platformDir}.exe` : `tunwg-${platformDir}`;
+    return join(__dirname, '..', '..', '..', 'server', 'tools', 'tunwg', devBinaryName);
 }

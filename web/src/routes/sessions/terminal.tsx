@@ -171,7 +171,7 @@ function QuickKeyButton(props: {
 
 export default function TerminalPage() {
     const { sessionId } = useParams({ from: '/sessions/$sessionId/terminal' })
-    const { api, token } = useAppContext()
+    const { api, token, baseUrl } = useAppContext()
     const goBack = useAppGoBack()
     const { session } = useSession(api, sessionId)
     const terminalId = useMemo(() => {
@@ -201,6 +201,7 @@ export default function TerminalPage() {
         token,
         sessionId,
         terminalId,
+        baseUrl
     })
 
     useEffect(() => {

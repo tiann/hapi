@@ -21,6 +21,12 @@ function getTelegramInitData(): string | null {
     return initData || null
 }
 
+function getTokenFromUrlParams(): string | null {
+    if (typeof window === 'undefined') return null
+    const query = new URLSearchParams(window.location.search)
+    return query.get('token')
+}
+
 function getAccessTokenKey(baseUrl: string): string {
     return `${ACCESS_TOKEN_PREFIX}${baseUrl}`
 }
@@ -75,6 +81,15 @@ export function useAuthSource(baseUrl: string): {
             // Telegram Mini App environment
             setAuthSource({ type: 'telegram', initData: telegramInitData })
             setIsTelegram(true)
+            setIsLoading(false)
+            return
+        }
+
+        // Check for URL token parameter (for direct access links)
+        const urlToken = getTokenFromUrlParams()
+        if (urlToken) {
+            storeAccessToken(accessTokenKey, urlToken) // Save to localStorage for refresh
+            setAuthSource({ type: 'accessToken', token: urlToken })
             setIsLoading(false)
             return
         }

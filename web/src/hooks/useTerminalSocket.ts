@@ -8,6 +8,7 @@ type TerminalConnectionState =
     | { status: 'error'; error: string }
 
 type UseTerminalSocketOptions = {
+    baseUrl: string
     token: string
     sessionId: string
     terminalId: string
@@ -49,12 +50,14 @@ export function useTerminalSocket(options: UseTerminalSocketOptions): {
     const sessionIdRef = useRef(options.sessionId)
     const terminalIdRef = useRef(options.terminalId)
     const tokenRef = useRef(options.token)
+    const baseUrlRef = useRef(options.baseUrl)
     const lastSizeRef = useRef<{ cols: number; rows: number } | null>(null)
 
     useEffect(() => {
         sessionIdRef.current = options.sessionId
         terminalIdRef.current = options.terminalId
-    }, [options.sessionId, options.terminalId])
+        baseUrlRef.current = options.baseUrl
+    }, [options.sessionId, options.terminalId, options.baseUrl])
 
     useEffect(() => {
         tokenRef.current = options.token
@@ -113,7 +116,7 @@ export function useTerminalSocket(options: UseTerminalSocketOptions): {
             return
         }
 
-        const socket = io('/terminal', {
+        const socket = io(`${baseUrlRef.current}/terminal`, {
             auth: { token },
             path: '/socket.io/',
             reconnection: true,

@@ -25,10 +25,14 @@ Other install options: [Installation](./installation.md)
 ## Start the server
 
 ```bash
-hapi server
+hapi server --relay
 ```
 
 On first run, HAPI prints an access token and saves it to `~/.hapi/settings.json`.
+
+The terminal will display a URL and QR code for remote access.
+
+> End-to-end encrypted with WireGuard + TLS.
 
 ## Start a coding session
 
@@ -40,11 +44,7 @@ This starts Claude Code wrapped with HAPI. The session appears in the web UI.
 
 ## Open the UI
 
-Open your browser:
-
-```
-http://<your-ip>:3006
-```
+Open the URL shown in the terminal, or scan the QR code with your phone.
 
 Enter your access token to log in.
 

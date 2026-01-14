@@ -60,10 +60,24 @@ The server can be deployed on:
 - **Local desktop** (default) - Run on your development machine
 - **Remote server** - Deploy on a VPS, cloud server, or any machine with network access
 
-Start the server:
+### Default: Public Relay (recommended)
+
+```bash
+hapi server --relay
+```
+
+The terminal displays a URL and QR code. Scan to access from anywhere.
+
+- **End-to-end encrypted** with WireGuard + TLS
+- No configuration needed
+- Works behind NAT, firewalls, and any network
+
+### Local Only
 
 ```bash
 hapi server
+# or
+hapi server --no-relay
 ```
 
 The server listens on `http://localhost:3006` by default.
@@ -130,19 +144,18 @@ Each machine gets a unique ID stored in `~/.hapi/settings.json`. This allows:
 
 ## Operations
 
-### Remote access
+### Self-hosted tunnels
 
-If the server is deployed on a machine with a **public IP**, you can access it directly via `http://your-server-ip:3006`. Use HTTPS (via reverse proxy like Nginx or Caddy) for production.
-
-If the server is behind NAT, use one of these options:
+If you prefer not to use the public relay (e.g., for lower latency or self-managed infrastructure), you can use these alternatives:
 
 <details>
-<summary>Cloudflare Tunnel (recommended for NAT)</summary>
+<summary>Cloudflare Tunnel</summary>
 
 https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/
 
 ```bash
 export WEBAPP_URL="https://your-tunnel.trycloudflare.com"
+hapi server
 ```
 </details>
 
@@ -153,6 +166,7 @@ https://tailscale.com/download
 
 ```bash
 sudo tailscale up
+hapi server
 ```
 
 Access via your Tailscale IP:
@@ -163,11 +177,11 @@ http://100.x.x.x:3006
 </details>
 
 <details>
-<summary>ngrok</summary>
+<summary>Public IP / Reverse Proxy</summary>
 
-```bash
-ngrok http 3006
-```
+If the server has a public IP, access directly via `http://your-server-ip:3006`.
+
+Use HTTPS (via Nginx, Caddy, etc.) for production.
 </details>
 
 ### Telegram setup

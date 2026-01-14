@@ -4,6 +4,7 @@ import type { ApiClient } from '@/api/client'
 type AppContextValue = {
     api: ApiClient
     token: string
+    baseUrl: string
 }
 
 const AppContext = createContext<AppContextValue | null>(null)

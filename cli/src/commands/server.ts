@@ -33,7 +33,6 @@ export const serverCommand: CommandDefinition = {
             if (port) {
                 process.env.WEBAPP_PORT = port
             }
-
             await import('../../../server/src/index')
         } catch (error) {
             console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')

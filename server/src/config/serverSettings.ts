@@ -5,7 +5,7 @@
  * Priority: environment variable > settings.json > default value
  *
  * When a value is loaded from environment variable and not present in settings.json,
- * it will be saved to settings.json for future use.
+ * it will be saved to settings.json for future use
  */
 
 import { getSettingsFile, readSettings, writeSettings } from './settings'
@@ -92,7 +92,6 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
         webappUrl: 'default',
         corsOrigins: 'default',
     }
-
     // telegramBotToken: env > file > null
     let telegramBotToken: string | null = null
     if (process.env.TELEGRAM_BOT_TOKEN) {

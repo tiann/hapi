@@ -3,7 +3,7 @@
  *
  * Configuration is loaded with priority: environment variable > settings.json > default
  * When values are read from environment variables and not present in settings.json,
- * they are automatically saved for future use.
+ * they are automatically saved for future use
  *
  * Optional environment variables:
  * - CLI_API_TOKEN: Shared secret for hapi CLI authentication (auto-generated if not set)
@@ -12,6 +12,9 @@
  * - WEBAPP_PORT: Port for Mini App HTTP server (default: 3006)
  * - WEBAPP_URL: Public URL for Telegram Mini App
  * - CORS_ORIGINS: Comma-separated CORS origins
+ * - HAPI_RELAY_API: Relay API domain for tunwg (default: relay.hapi.run)
+ * - HAPI_RELAY_AUTH: Relay auth key for tunwg (default: hapi)
+ * - HAPI_RELAY_FORCE_TCP: Force TCP relay mode when UDP is unavailable (true/1)
  * - VAPID_SUBJECT: Contact email or URL for Web Push (defaults to mailto:admin@hapi.run)
  * - HAPI_HOME: Data directory (default: ~/.hapi)
  * - DB_PATH: SQLite database path (default: {HAPI_HOME}/hapi.db)

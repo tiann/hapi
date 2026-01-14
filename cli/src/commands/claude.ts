@@ -68,6 +68,7 @@ ${chalk.bold('Usage:')}
   hapi connect           (not available in direct-connect mode)
   hapi notify            (not available in direct-connect mode)
   hapi server            Start the API + web server
+  hapi server --relay    Start with public relay
   hapi daemon            Manage background service that allows
                             to spawn new sessions away from your computer
   hapi doctor            System diagnostics & troubleshooting
