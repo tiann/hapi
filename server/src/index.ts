@@ -208,7 +208,9 @@ async function main() {
         store,
         vapidPublicKey: vapidKeys.publicKey,
         socketEngine: socketServer.engine,
-        corsOrigins
+        corsOrigins,
+        relayMode: relayFlag.enabled,
+        officialWebUrl
     })
 
     // Start the bot if configured

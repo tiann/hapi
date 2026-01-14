@@ -61,6 +61,8 @@ function createWebApp(options: {
     vapidPublicKey: string
     corsOrigins?: string[]
     embeddedAssetMap: Map<string, EmbeddedWebAsset> | null
+    relayMode?: boolean
+    officialWebUrl?: string
 }): Hono<WebAppEnv> {
     const app = new Hono<WebAppEnv>()
 
@@ -92,6 +94,31 @@ function createWebApp(options: {
     app.route('/api', createMachinesRoutes(options.getSyncEngine))
     app.route('/api', createGitRoutes(options.getSyncEngine))
     app.route('/api', createPushRoutes(options.store, options.vapidPublicKey))
+
+    // Skip static serving in relay mode, show helpful message on root
+    if (options.relayMode) {
+        const officialUrl = options.officialWebUrl || 'https://app.hapi.run'
+        app.get('/', (c) => {
+            return c.html(`<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>HAPI Server</title></head>
+<body style="font-family: system-ui; padding: 2rem; max-width: 600px;">
+<h1>HAPI Server</h1>
+<p>This server is running in relay mode. Please use the official web app:</p>
+<p><a href="${officialUrl}">${officialUrl}</a></p>
+<details>
+<summary>Why am I seeing this?</summary>
+<p style="margin-top: 0.5rem; color: #666;">
+When relay mode is enabled, all traffic flows through our relay infrastructure with end-to-end encryption.
+To reduce bandwidth and improve performance, the frontend is served separately
+from GitHub Pages instead of through the relay tunnel.
+</p>
+</details>
+</body>
+</html>`)
+        })
+        return app
+    }
 
     if (options.embeddedAssetMap) {
         const embeddedAssetMap = options.embeddedAssetMap
@@ -180,6 +207,8 @@ export async function startWebServer(options: {
     vapidPublicKey: string
     socketEngine: SocketEngine
     corsOrigins?: string[]
+    relayMode?: boolean
+    officialWebUrl?: string
 }): Promise<BunServer<WebSocketData>> {
     const isCompiled = isBunCompiled()
     const embeddedAssetMap = isCompiled ? await loadEmbeddedAssetMap() : null
@@ -191,7 +220,9 @@ export async function startWebServer(options: {
         store: options.store,
         vapidPublicKey: options.vapidPublicKey,
         corsOrigins: options.corsOrigins,
-        embeddedAssetMap
+        embeddedAssetMap,
+        relayMode: options.relayMode,
+        officialWebUrl: options.officialWebUrl
     })
 
     const socketHandler = options.socketEngine.handler()
