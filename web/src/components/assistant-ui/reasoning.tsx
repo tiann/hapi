@@ -1,4 +1,4 @@
-import { useState, useEffect, type FC, type PropsWithChildren } from 'react'
+import { useState, useEffect, useRef, type FC, type PropsWithChildren } from 'react'
 import { useMessage } from '@assistant-ui/react'
 import { MarkdownTextPrimitive } from '@assistant-ui/react-markdown'
 import { cn } from '@/lib/utils'
@@ -52,6 +52,7 @@ export const Reasoning: FC = () => {
  */
 export const ReasoningGroup: FC<PropsWithChildren> = ({ children }) => {
     const [isOpen, setIsOpen] = useState(false)
+    const didUserToggleRef = useRef(false)
 
     // Check if reasoning is still streaming
     const message = useMessage()
@@ -59,10 +60,23 @@ export const ReasoningGroup: FC<PropsWithChildren> = ({ children }) => {
         && message.content.length > 0
         && message.content[message.content.length - 1]?.type === 'reasoning'
 
-    // Auto-expand while streaming
+    const prevIsStreamingRef = useRef(isStreaming)
+
+    // Auto-expand while streaming; auto-collapse once finalized
     useEffect(() => {
+        const wasStreaming = prevIsStreamingRef.current
+        prevIsStreamingRef.current = isStreaming
+
         if (isStreaming) {
-            setIsOpen(true)
+            if (!didUserToggleRef.current) {
+                setIsOpen(true)
+            }
+            return
+        }
+
+        if (wasStreaming) {
+            setIsOpen(false)
+            didUserToggleRef.current = false
         }
     }, [isStreaming])
 
@@ -70,7 +84,10 @@ export const ReasoningGroup: FC<PropsWithChildren> = ({ children }) => {
         <div className="aui-reasoning-group my-2">
             <button
                 type="button"
-                onClick={() => setIsOpen(!isOpen)}
+                onClick={() => {
+                    didUserToggleRef.current = true
+                    setIsOpen((prev) => !prev)
+                }}
                 className={cn(
                     'flex items-center gap-1.5 text-xs font-medium',
                     'text-[var(--app-hint)] hover:text-[var(--app-fg)]',
