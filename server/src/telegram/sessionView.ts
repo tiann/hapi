@@ -38,7 +38,7 @@ export function formatSessionNotification(session: Session): string {
 /**
  * Create notification keyboard for quick actions
  */
-export function createNotificationKeyboard(session: Session, miniAppUrl: string): InlineKeyboard {
+export function createNotificationKeyboard(session: Session, miniAppUrl: string, cliApiToken?: string): InlineKeyboard {
     const keyboard = new InlineKeyboard()
     const requests = session.agentState?.requests ?? null
     const hasRequests = Boolean(requests && Object.keys(requests).length > 0)
@@ -55,14 +55,14 @@ export function createNotificationKeyboard(session: Session, miniAppUrl: string)
 
         keyboard.webApp(
             'Details',
-            buildMiniAppDeepLink(miniAppUrl, `session_${session.id}`)
+            buildMiniAppDeepLink(miniAppUrl, `session_${session.id}`, cliApiToken)
         )
         return keyboard
     }
 
     keyboard.webApp(
         'Open Session',
-        buildMiniAppDeepLink(miniAppUrl, `session_${session.id}`)
+        buildMiniAppDeepLink(miniAppUrl, `session_${session.id}`, cliApiToken)
     )
     return keyboard
 }
@@ -139,13 +139,20 @@ function formatToolArgumentsDetailed(tool: string, args: any): string {
     }
 }
 
-function buildMiniAppDeepLink(baseUrl: string, startParam: string): string {
+function buildMiniAppDeepLink(baseUrl: string, startParam: string, token?: string): string {
     try {
         const url = new URL(baseUrl)
         url.searchParams.set('startapp', startParam)
+        if (token) {
+            url.searchParams.set('token', token)
+        }
         return url.toString()
     } catch {
         const separator = baseUrl.includes('?') ? '&' : '?'
-        return `${baseUrl}${separator}startapp=${encodeURIComponent(startParam)}`
+        let result = `${baseUrl}${separator}startapp=${encodeURIComponent(startParam)}`
+        if (token) {
+            result += `&token=${encodeURIComponent(token)}`
+        }
+        return result
     }
 }

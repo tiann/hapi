@@ -22,6 +22,7 @@ export interface HappyBotConfig {
     botToken: string
     miniAppUrl: string
     store: Store
+    cliApiToken: string
 }
 
 /**
@@ -33,11 +34,13 @@ export class HappyBot implements NotificationChannel {
     private isRunning = false
     private readonly miniAppUrl: string
     private readonly store: Store
+    private readonly cliApiToken: string
 
     constructor(config: HappyBotConfig) {
         this.syncEngine = config.syncEngine
         this.miniAppUrl = config.miniAppUrl
         this.store = config.store
+        this.cliApiToken = config.cliApiToken
 
         this.bot = new Bot<BotContext>(config.botToken)
         this.setupMiddleware()
@@ -61,6 +64,22 @@ export class HappyBot implements NotificationChannel {
      */
     getBot(): Bot<BotContext> {
         return this.bot
+    }
+
+    /**
+     * Build Mini App URL with authentication token
+     */
+    private buildAuthenticatedUrl(path?: string): string {
+        try {
+            const url = new URL(this.miniAppUrl)
+            url.searchParams.set('token', this.cliApiToken)
+            if (path) {
+                url.searchParams.set('startapp', path)
+            }
+            return url.toString()
+        } catch {
+            return this.miniAppUrl
+        }
     }
 
     /**
@@ -108,13 +127,13 @@ export class HappyBot implements NotificationChannel {
     private setupCommands(): void {
         // /app - Open Telegram Mini App (primary entry point)
         this.bot.command('app', async (ctx) => {
-            const keyboard = new InlineKeyboard().webApp('Open App', this.miniAppUrl)
+            const keyboard = new InlineKeyboard().webApp('Open App', this.buildAuthenticatedUrl())
             await ctx.reply('Open HAPI Mini App:', { reply_markup: keyboard })
         })
 
         // /start - Simple welcome with Mini App link
         this.bot.command('start', async (ctx) => {
-            const keyboard = new InlineKeyboard().webApp('Open App', this.miniAppUrl)
+            const keyboard = new InlineKeyboard().webApp('Open App', this.buildAuthenticatedUrl())
             await ctx.reply(
                 'Welcome to HAPI Bot!\n\n' +
                 'Use the Mini App for full session management.',
@@ -190,7 +209,7 @@ export class HappyBot implements NotificationChannel {
         }
 
         const agentName = getAgentName(session)
-        const url = buildMiniAppDeepLink(this.miniAppUrl, `session_${session.id}`)
+        const url = this.buildAuthenticatedUrl(`session_${session.id}`)
         const keyboard = new InlineKeyboard()
             .webApp('Open Session', url)
 
@@ -221,7 +240,7 @@ export class HappyBot implements NotificationChannel {
         }
 
         const text = formatSessionNotification(session)
-        const keyboard = createNotificationKeyboard(session, this.miniAppUrl)
+        const keyboard = createNotificationKeyboard(session, this.miniAppUrl, this.cliApiToken)
 
         const chatIds = this.getBoundChatIds(session.namespace)
         if (chatIds.length === 0) {
@@ -237,16 +256,5 @@ export class HappyBot implements NotificationChannel {
                 console.error(`[HAPIBot] Failed to send notification to chat ${chatId}:`, error)
             }
         }
-    }
-}
-
-function buildMiniAppDeepLink(baseUrl: string, startParam: string): string {
-    try {
-        const url = new URL(baseUrl)
-        url.searchParams.set('startapp', startParam)
-        return url.toString()
-    } catch {
-        const separator = baseUrl.includes('?') ? '&' : '?'
-        return `${baseUrl}${separator}startapp=${encodeURIComponent(startParam)}`
     }
 }
