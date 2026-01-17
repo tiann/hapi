@@ -25,6 +25,7 @@ import {
 import { getDefaultClaudeCodePath, logDebug, streamToStdin } from './utils'
 import { withBunRuntimeEnv } from '@/utils/bunRuntime'
 import { killProcessByChildProcess } from '@/utils/process'
+import { stripNewlinesForWindowsShellArg } from '@/utils/shellEscape'
 import type { Writable } from 'node:stream'
 import { logger } from '@/ui/logger'
 import { appendMcpConfigArg } from '../utils/mcpConfig'
@@ -289,8 +290,8 @@ export function query(config: {
     const args = ['--output-format', 'stream-json', '--verbose']
     let cleanupMcpConfig: (() => void) | null = null
 
-    if (customSystemPrompt) args.push('--system-prompt', customSystemPrompt)
-    if (appendSystemPrompt) args.push('--append-system-prompt', appendSystemPrompt)
+    if (customSystemPrompt) args.push('--system-prompt', stripNewlinesForWindowsShellArg(customSystemPrompt))
+    if (appendSystemPrompt) args.push('--append-system-prompt', stripNewlinesForWindowsShellArg(appendSystemPrompt))
     if (maxTurns) args.push('--max-turns', maxTurns.toString())
     if (model) args.push('--model', model)
     if (canCallTool) {
@@ -317,7 +318,7 @@ export function query(config: {
 
     // Handle prompt input
     if (typeof prompt === 'string') {
-        args.push('--print', prompt.trim())
+        args.push('--print', stripNewlinesForWindowsShellArg(prompt.trim()))
     } else {
         args.push('--input-format', 'stream-json')
     }

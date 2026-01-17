@@ -8,6 +8,7 @@ import { systemPrompt } from "./utils/systemPrompt";
 import { withBunRuntimeEnv } from "@/utils/bunRuntime";
 import { spawnWithAbort } from "@/utils/spawnWithAbort";
 import { getHapiBlobsDir } from "@/constants/uploadPaths";
+import { stripNewlinesForWindowsShellArg } from "@/utils/shellEscape";
 
 export async function claudeLocal(opts: {
     abort: AbortSignal,
@@ -50,7 +51,7 @@ export async function claudeLocal(opts: {
         args.push('--resume', startFrom);
     }
 
-    args.push('--append-system-prompt', systemPrompt);
+    args.push('--append-system-prompt', stripNewlinesForWindowsShellArg(systemPrompt));
 
     const cleanupMcpConfig = appendMcpConfigArg(args, opts.mcpServers, {
         baseDir: projectDir
