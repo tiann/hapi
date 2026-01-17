@@ -242,6 +242,12 @@ async function main() {
     }
 
     if (tunnelUrl && tunnelManager) {
+        // Update bot's Mini App URL to use tunnel URL instead of localhost
+        if (happyBot) {
+            happyBot.setMiniAppUrl(tunnelUrl)
+            console.log(`[HAPIBot] Mini App URL updated to tunnel: ${tunnelUrl}`)
+        }
+
         const manager = tunnelManager
         const announceTunnelAccess = async () => {
             const tlsReady = await waitForTunnelTlsReady(tunnelUrl, manager)

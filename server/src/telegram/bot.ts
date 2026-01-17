@@ -31,7 +31,7 @@ export class HappyBot implements NotificationChannel {
     private bot: Bot<BotContext>
     private syncEngine: SyncEngine | null = null
     private isRunning = false
-    private readonly miniAppUrl: string
+    private miniAppUrl: string
     private readonly store: Store
 
     constructor(config: HappyBotConfig) {
@@ -54,6 +54,13 @@ export class HappyBot implements NotificationChannel {
      */
     setSyncEngine(engine: SyncEngine): void {
         this.syncEngine = engine
+    }
+
+    /**
+     * Update the Mini App URL (e.g., after tunnel is established)
+     */
+    setMiniAppUrl(url: string): void {
+        this.miniAppUrl = url
     }
 
     /**
