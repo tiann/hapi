@@ -19,6 +19,8 @@ interface Settings {
   cliApiToken?: string
   // Server URL for API connections (priority: env HAPI_SERVER_URL > this > default)
   serverUrl?: string
+  // Custom hostname to display in 'hapi auth status' (overrides os.hostname())
+  host?: string
 }
 
 const defaultSettings: Settings = {}

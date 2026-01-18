@@ -25,7 +25,7 @@ export async function handleAuthCommand(args: string[]): Promise<void> {
         console.log(chalk.gray(`  CLI_API_TOKEN: ${hasToken ? 'set' : 'missing'}`))
         console.log(chalk.gray(`  Token Source: ${tokenSource}`))
         console.log(chalk.gray(`  Machine ID: ${settings.machineId ?? 'not set'}`))
-        console.log(chalk.gray(`  Host: ${os.hostname()}`))
+        console.log(chalk.gray(`  Host: ${settings.host ?? os.hostname()}`))
 
         if (!hasToken) {
             console.log('')
