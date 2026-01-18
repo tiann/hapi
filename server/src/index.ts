@@ -242,9 +242,11 @@ async function main() {
     }
 
     if (tunnelUrl && tunnelManager) {
-        // Update bot's Mini App URL to use tunnel URL instead of localhost
+        // Update bot's Mini App URL to point to official web app with server parameter
+        // Telegram auth uses initData, so no token needed - just the server URL
         if (happyBot) {
-            happyBot.setMiniAppUrl(tunnelUrl)
+            const tunnelMiniAppUrl = `${officialWebUrl}/?server=${encodeURIComponent(tunnelUrl)}`
+            happyBot.setMiniAppUrl(tunnelMiniAppUrl)
             console.log(`[HAPIBot] Mini App URL updated to tunnel: ${tunnelUrl}`)
         }
 
