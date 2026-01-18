@@ -12,10 +12,7 @@ import { spawn, type Subprocess } from 'bun'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { platform, arch, homedir } from 'node:os'
-
-function isBunCompiled(): boolean {
-    return typeof process.execPath === 'string' && !process.execPath.includes('bun')
-}
+import { isBunCompiled } from '../utils/bunCompiled'
 
 function getHapiHome(): string {
     return process.env.HAPI_HOME
