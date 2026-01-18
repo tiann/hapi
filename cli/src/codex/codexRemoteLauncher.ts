@@ -533,6 +533,27 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         let pending: { message: string; mode: EnhancedMode; isolate: boolean; hash: string } | null = null;
         let nextExperimentalResume: string | null = null;
         let first = true;
+        const isNewSessionCommand = (value: string): boolean => value.trim() === '/new';
+        const handleNewSessionCommand = (value: string): boolean => {
+            if (!isNewSessionCommand(value)) {
+                return false;
+            }
+
+            logger.debug('[Codex] /new command detected - clearing session');
+            messageBuffer.addMessage(value, 'user');
+            messageBuffer.addMessage('Starting new Codex session...', 'status');
+            client.clearSession();
+            wasCreated = false;
+            currentModeHash = null;
+            nextExperimentalResume = null;
+            pending = null;
+            this.storedSessionIdForResume = null;
+            permissionHandler.reset();
+            reasoningProcessor.abort();
+            diffProcessor.reset();
+            session.onThinkingChange(false);
+            return true;
+        };
 
         while (!this.shouldExit) {
             logActiveHandles('loop-top');
@@ -554,6 +575,10 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
 
             if (!message) {
                 break;
+            }
+
+            if (handleNewSessionCommand(message.message)) {
+                continue;
             }
 
             if (wasCreated && currentModeHash && message.hash !== currentModeHash) {
