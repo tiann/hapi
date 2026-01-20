@@ -35,7 +35,7 @@ export const Autocomplete = memo(function Autocomplete(props: AutocompleteProps)
                     key={suggestion.key}
                     type="button"
                     data-suggestion-index={index}
-                    className={`flex w-full cursor-pointer items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
+                    className={`flex w-full cursor-pointer flex-col items-start gap-0.5 px-3 py-2 text-left text-sm transition-colors ${
                         index === selectedIndex
                             ? 'bg-[var(--app-button)] text-[var(--app-button-text)]'
                             : 'text-[var(--app-fg)] hover:bg-[var(--app-secondary-bg)]'
@@ -43,9 +43,9 @@ export const Autocomplete = memo(function Autocomplete(props: AutocompleteProps)
                     onClick={() => onSelect(index)}
                     onMouseDown={(e) => e.preventDefault()} // Prevent blur on textarea
                 >
-                    <span className="font-medium">{suggestion.label}</span>
+                    <span className="w-full font-medium">{suggestion.label}</span>
                     {suggestion.description && (
-                        <span className={`truncate text-xs ${
+                        <span className={`w-full min-h-[2.25rem] text-xs leading-snug line-clamp-2 ${
                             index === selectedIndex
                                 ? 'opacity-80'
                                 : 'text-[var(--app-hint)]'

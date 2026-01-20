@@ -316,4 +316,12 @@ export class SyncEngine {
     }> {
         return await this.rpcGateway.listSlashCommands(sessionId, agent)
     }
+
+    async listSkills(sessionId: string): Promise<{
+        success: boolean
+        skills?: Array<{ name: string; description?: string }>
+        error?: string
+    }> {
+        return await this.rpcGateway.listSkills(sessionId)
+    }
 }

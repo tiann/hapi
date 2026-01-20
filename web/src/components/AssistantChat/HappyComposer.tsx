@@ -19,6 +19,7 @@ import { useActiveSuggestions } from '@/hooks/useActiveSuggestions'
 import { applySuggestion } from '@/utils/applySuggestion'
 import { usePlatform } from '@/hooks/usePlatform'
 import { usePWAInstall } from '@/hooks/usePWAInstall'
+import { markSkillUsed } from '@/lib/recent-skills'
 import { FloatingOverlay } from '@/components/ChatInput/FloatingOverlay'
 import { Autocomplete } from '@/components/ChatInput/Autocomplete'
 import { StatusBar } from '@/components/AssistantChat/StatusBar'
@@ -70,7 +71,7 @@ export function HappyComposer(props: {
         onModelModeChange,
         onSwitchToRemote,
         onTerminal,
-        autocompletePrefixes = ['@', '/'],
+        autocompletePrefixes = ['@', '/', '$'],
         autocompleteSuggestions = defaultSuggestionHandler,
         voiceStatus = 'disconnected',
         voiceMicMuted = false,
@@ -161,6 +162,9 @@ export function HappyComposer(props: {
     const handleSuggestionSelect = useCallback((index: number) => {
         const suggestion = suggestions[index]
         if (!suggestion || !textareaRef.current) return
+        if (suggestion.text.startsWith('$')) {
+            markSkillUsed(suggestion.text.slice(1))
+        }
 
         // For Codex user prompts with content, expand the content instead of command name
         let textToInsert = suggestion.text

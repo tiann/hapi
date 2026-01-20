@@ -177,6 +177,18 @@ export class RpcGateway {
         }
     }
 
+    async listSkills(sessionId: string): Promise<{
+        success: boolean
+        skills?: Array<{ name: string; description?: string }>
+        error?: string
+    }> {
+        return await this.sessionRpc(sessionId, 'listSkills', {}) as {
+            success: boolean
+            skills?: Array<{ name: string; description?: string }>
+            error?: string
+        }
+    }
+
     private async sessionRpc(sessionId: string, method: string, params: unknown): Promise<unknown> {
         return await this.rpcCall(`${sessionId}:${method}`, params)
     }

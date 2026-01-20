@@ -13,4 +13,5 @@ export const queryKeys = {
         staged ? 'staged' : 'unstaged'
     ] as const,
     slashCommands: (sessionId: string) => ['slash-commands', sessionId] as const,
+    skills: (sessionId: string) => ['skills', sessionId] as const,
 }

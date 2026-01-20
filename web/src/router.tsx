@@ -21,6 +21,7 @@ import { useMachines } from '@/hooks/queries/useMachines'
 import { useSession } from '@/hooks/queries/useSession'
 import { useSessions } from '@/hooks/queries/useSessions'
 import { useSlashCommands } from '@/hooks/queries/useSlashCommands'
+import { useSkills } from '@/hooks/queries/useSkills'
 import { useSendMessage } from '@/hooks/mutations/useSendMessage'
 import { queryKeys } from '@/lib/query-keys'
 import { useTranslation } from '@/lib/use-translation'
@@ -182,6 +183,16 @@ function SessionPage() {
     const {
         getSuggestions: getSlashSuggestions,
     } = useSlashCommands(api, sessionId, agentType)
+    const {
+        getSuggestions: getSkillSuggestions,
+    } = useSkills(api, sessionId)
+
+    const getAutocompleteSuggestions = useCallback(async (query: string) => {
+        if (query.startsWith('$')) {
+            return await getSkillSuggestions(query)
+        }
+        return await getSlashSuggestions(query)
+    }, [getSkillSuggestions, getSlashSuggestions])
 
     const refreshSelectedSession = useCallback(() => {
         void refetchSession()
@@ -215,7 +226,7 @@ function SessionPage() {
             onFlushPending={flushPending}
             onAtBottomChange={setAtBottom}
             onRetryMessage={retryMessage}
-            autocompleteSuggestions={getSlashSuggestions}
+            autocompleteSuggestions={getAutocompleteSuggestions}
         />
     )
 }

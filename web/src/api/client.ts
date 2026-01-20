@@ -14,6 +14,7 @@ import type {
     PushUnsubscribePayload,
     PushVapidPublicKeyResponse,
     SlashCommandsResponse,
+    SkillsResponse,
     SpawnResponse,
     UploadFileResponse,
     VisibilityPayload,
@@ -364,6 +365,12 @@ export class ApiClient {
     async getSlashCommands(sessionId: string): Promise<SlashCommandsResponse> {
         return await this.request<SlashCommandsResponse>(
             `/api/sessions/${encodeURIComponent(sessionId)}/slash-commands`
+        )
+    }
+
+    async getSkills(sessionId: string): Promise<SkillsResponse> {
+        return await this.request<SkillsResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/skills`
         )
     }
 

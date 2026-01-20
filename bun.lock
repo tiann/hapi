@@ -858,6 +858,8 @@
 
     "@twsxtd/hapi-linux-x64": ["@twsxtd/hapi-linux-x64@0.11.0", "", { "os": "linux", "cpu": "x64", "bin": { "hapi": "bin/hapi" } }, "sha512-vI9ECr1baVxKT/71+QqzZHoPSJRMTWwoORRooD472y8VtdhGqLqLQ4tyWEL+P5zFgVNJfhWtfTg4TJ3FmXZd6g=="],
 
+    "@twsxtd/hapi-win32-x64": ["@twsxtd/hapi-win32-x64@0.11.0", "", { "os": "win32", "cpu": "x64", "bin": { "hapi": "bin/hapi.exe" } }, "sha512-kwPVKW81JM2npGjnczJOupFu58lTj/3UYHN2rLkxkWitrSogPR5aQeQE1f7txPXl5xc8H7LxqO8i7i/WBsHDHg=="],
+
     "@types/babel__core": ["@types/babel__core@7.20.5", "", { "dependencies": { "@babel/parser": "^7.20.7", "@babel/types": "^7.20.7", "@types/babel__generator": "*", "@types/babel__template": "*", "@types/babel__traverse": "*" } }, "sha512-qoQprZvz5wQFJwMDqeseRXWv3rqMvhgpbXFfVyWhbx9X47POIA6i/+dXefEmZKoAgOaTdaIgNSMqMIU61yRyzA=="],
 
     "@types/babel__generator": ["@types/babel__generator@7.27.0", "", { "dependencies": { "@babel/types": "^7.0.0" } }, "sha512-ufFd2Xi92OAVPYsy+P4n7/U7e68fex0+Ee8gSG9KX7eo084CWiQ4sdxktvdl0bOPupXtVJPY19zk6EwWqUQ8lg=="],
