@@ -26,6 +26,10 @@ Yes, HAPI is open source and free to use under the AGPL-3.0-only license.
 
 HAPI includes an embedded server. Just run `hapi server` on your machine - no external server required.
 
+### What's the difference between `hapi server` and `hapi daemon`?
+
+`hapi server` runs the web app and Telegram bot. `hapi daemon` only publishes machine status for remote session spawning and does not start the web server. Run `hapi server` for remote access, and add `hapi daemon` if you want to spawn sessions remotely.
+
 ### How do I access HAPI from my phone?
 
 For local network access:
@@ -36,6 +40,18 @@ http://<your-computer-ip>:3006
 For internet access:
 - If the server has a public IP, access it directly (use HTTPS via reverse proxy for production)
 - If behind NAT, set up a tunnel (Cloudflare Tunnel, Tailscale, or ngrok)
+
+### How do I set the public URL for Telegram or tunnels?
+
+Set `WEBAPP_URL` before starting the server, or persist it in `~/.hapi/settings.json`:
+
+```json
+{
+  "webappUrl": "https://your-tunnel.trycloudflare.com"
+}
+```
+
+`WEBAPP_URL` is saved to `settings.json` only when `webappUrl` is missing. Update the file directly if it already exists.
 
 ### What's the access token for?
 

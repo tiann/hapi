@@ -68,6 +68,8 @@ hapi server
 
 The server listens on `http://localhost:3006` by default.
 
+`hapi server` runs the web app and Telegram bot. `hapi daemon` is only for remote session spawning.
+
 On first run, HAPI:
 
 1. Creates `~/.hapi/`
@@ -94,7 +96,11 @@ On first run, HAPI:
 | `CLI_API_TOKEN` | Auto-generated | Shared secret for authentication |
 | `HAPI_SERVER_URL` | `http://localhost:3006` | Server URL for CLI |
 | `HAPI_HOSTNAME` | OS hostname | Override hostname reported to the server/UI |
+| `TELEGRAM_BOT_TOKEN` | - | Telegram Bot API token (enables bot + Mini App) |
+| `TELEGRAM_NOTIFICATION` | `true` | Enable/disable Telegram notifications |
+| `WEBAPP_HOST` | `127.0.0.1` | Host/IP to bind the Mini App HTTP server |
 | `WEBAPP_PORT` | `3006` | HTTP server port |
+| `WEBAPP_URL` | `http://localhost:3006` | Public URL for Telegram Mini App buttons |
 | `HAPI_HOME` | `~/.hapi` | Config directory path |
 | `DB_PATH` | `~/.hapi/hapi.db` | Database file path |
 | `CORS_ORIGINS` | - | Allowed CORS origins |
@@ -143,7 +149,24 @@ If the server is behind NAT, use one of these options:
 https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/
 
 ```bash
+cloudflared tunnel --url http://localhost:3006 --protocol http2
+```
+
+Set the public URL so Telegram buttons and Mini App links point to the tunnel:
+
+```bash
 export WEBAPP_URL="https://your-tunnel.trycloudflare.com"
+hapi server
+```
+
+`WEBAPP_URL` is saved to `settings.json` only when `webappUrl` is missing. Update the file directly if it already exists.
+
+If `webappUrl` already exists in `~/.hapi/settings.json`, update it there:
+
+```json
+{
+  "webappUrl": "https://your-tunnel.trycloudflare.com"
+}
 ```
 </details>
 
@@ -186,6 +209,15 @@ export WEBAPP_URL="https://your-public-url"
 hapi server
 ```
 
+Or persist them in `~/.hapi/settings.json`:
+
+```json
+{
+  "telegramBotToken": "your-bot-token",
+  "webappUrl": "https://your-public-url"
+}
+```
+
 Then message your bot with `/start`, open the app, and enter your `CLI_API_TOKEN`.
 
 ### Daemon setup
@@ -204,6 +236,8 @@ With the daemon running:
 - Your machine appears in the "Machines" list
 - You can spawn sessions remotely from the web app
 - Sessions persist even when the terminal is closed
+
+The daemon does not start the web server. Keep `hapi server` running for the web app and Telegram bot.
 
 ### Security notes
 
