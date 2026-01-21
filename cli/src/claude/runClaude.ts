@@ -140,8 +140,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
 
     // Forward messages to the queue
     let currentPermissionMode: PermissionMode = options.permissionMode ?? 'default';
-    let currentModel = options.model; // Track current model state
-    let currentModelMode: SessionModelMode = currentModel === 'sonnet' || currentModel === 'opus' ? currentModel : 'default';
+    let currentModelMode: SessionModelMode = options.model === 'sonnet' || options.model === 'opus' ? options.model : 'default';
     let currentFallbackModel: string | undefined = undefined; // Track current fallback model
     let currentCustomSystemPrompt: string | undefined = undefined; // Track current custom system prompt
     let currentAppendSystemPrompt: string | undefined = undefined; // Track current append system prompt
@@ -163,7 +162,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
             currentPermissionMode = sessionPermissionMode as PermissionMode;
         }
         const messagePermissionMode = currentPermissionMode;
-        const messageModel = currentModel;
+        const messageModel = currentModelMode === 'default' ? undefined : currentModelMode;
         logger.debug(`[loop] User message received with permission mode: ${currentPermissionMode}, model: ${currentModelMode}`);
 
         // Resolve custom system prompt - use message.meta.customSystemPrompt if provided, otherwise use current
@@ -301,7 +300,6 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         if (config.modelMode !== undefined) {
             const resolvedModelMode = resolveModelMode(config.modelMode);
             currentModelMode = resolvedModelMode;
-            currentModel = resolvedModelMode === 'default' ? undefined : resolvedModelMode;
         }
 
         syncSessionModes();
