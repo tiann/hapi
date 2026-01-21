@@ -8,7 +8,7 @@ Run Claude Code, Codex, or Gemini sessions from your terminal and control them r
 - Starts Codex mode for OpenAI-based sessions.
 - Starts Gemini mode via ACP (Anthropic Code Plugins).
 - Provides an MCP stdio bridge for external tools.
-- Manages a background daemon for long-running sessions.
+- Manages a background runner for long-running sessions.
 - Includes diagnostics and auth helpers.
 
 ## Typical flow
@@ -35,22 +35,22 @@ Run Claude Code, Codex, or Gemini sessions from your terminal and control them r
 
 See `src/commands/auth.ts`.
 
-### Daemon management
+### Runner management
 
-- `hapi daemon start` - Start daemon as detached process.
-- `hapi daemon stop` - Stop daemon gracefully.
-- `hapi daemon status` - Show daemon diagnostics.
-- `hapi daemon list` - List active sessions managed by daemon.
-- `hapi daemon stop-session <sessionId>` - Terminate specific session.
-- `hapi daemon logs` - Print path to latest daemon log file.
-- `hapi daemon install` - Install daemon as system service.
-- `hapi daemon uninstall` - Remove daemon system service.
+- `hapi runner start` - Start runner as detached process.
+- `hapi runner stop` - Stop runner gracefully.
+- `hapi runner status` - Show runner diagnostics.
+- `hapi runner list` - List active sessions managed by runner.
+- `hapi runner stop-session <sessionId>` - Terminate specific session.
+- `hapi runner logs` - Print path to latest runner log file.
+- `hapi runner install` - Install runner as system service.
+- `hapi runner uninstall` - Remove runner system service.
 
-See `src/daemon/run.ts`.
+See `src/runner/run.ts`.
 
 ### Diagnostics
 
-- `hapi doctor` - Show full diagnostics (version, daemon status, logs, processes).
+- `hapi doctor` - Show full diagnostics (version, runner status, logs, processes).
 - `hapi doctor clean` - Kill runaway HAPI processes.
 
 See `src/ui/doctor.ts`.
@@ -67,7 +67,7 @@ See `src/configuration.ts` for all options.
 ### Required
 
 - `CLI_API_TOKEN` - Shared secret; must match the server. Can be set via env or `~/.hapi/settings.json` (env wins).
-- `HAPI_SERVER_URL` - Server base URL (default: http://localhost:3006).
+- `HAPI_API_URL` - Server base URL (default: http://localhost:3006).
 
 ### Optional
 
@@ -77,17 +77,17 @@ See `src/configuration.ts` for all options.
 - `HAPI_CLAUDE_PATH` - Path to a specific `claude` executable.
 - `HAPI_HTTP_MCP_URL` - Default MCP target for `hapi mcp`.
 
-### Daemon
+### Runner
 
-- `HAPI_DAEMON_HEARTBEAT_INTERVAL` - Heartbeat interval in ms (default: 60000).
-- `HAPI_DAEMON_HTTP_TIMEOUT` - HTTP timeout for daemon control in ms (default: 10000).
+- `HAPI_RUNNER_HEARTBEAT_INTERVAL` - Heartbeat interval in ms (default: 60000).
+- `HAPI_RUNNER_HTTP_TIMEOUT` - HTTP timeout for runner control in ms (default: 10000).
 
 ## Storage
 
 Data is stored in `~/.hapi/` (or `$HAPI_HOME`):
 
 - `settings.json` - User settings (machineId, token, onboarding flag). See `src/persistence.ts`.
-- `daemon.state.json` - Daemon state (pid, port, version, heartbeat).
+- `runner.state.json` - Runner state (pid, port, version, heartbeat).
 - `logs/` - Log files.
 
 ## Requirements
@@ -117,7 +117,7 @@ bun run build:single-exe
 - `src/claude/` - Claude Code integration.
 - `src/codex/` - Codex mode integration.
 - `src/agent/` - Multi-agent support (Gemini via ACP).
-- `src/daemon/` - Background service.
+- `src/runner/` - Background service.
 - `src/commands/` - CLI command handlers.
 - `src/ui/` - User interface and diagnostics.
 - `src/modules/` - Tool implementations (ripgrep, difftastic, git).

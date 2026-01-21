@@ -131,26 +131,26 @@ User interface components.
 - Testing: Vitest 
 
 
-# Running the Daemon
+# Running the Runner
 
-## Starting the Daemon
+## Starting the Runner
 ```bash
 # From the hapi CLI directory:
-hapi daemon start
+hapi runner start
 
 # With custom bot URL (for local development):
-HAPI_SERVER_URL=http://localhost:3006 CLI_API_TOKEN=your_token hapi daemon start
+HAPI_API_URL=http://localhost:3006 CLI_API_TOKEN=your_token hapi runner start
 
-# Stop the daemon:
-hapi daemon stop
+# Stop the runner:
+hapi runner stop
 
-# Check daemon status:
-hapi daemon status
+# Check runner status:
+hapi runner status
 ```
 
-## Daemon Logs
-- Daemon logs are stored in `~/.hapi/logs/` (or `$HAPI_HOME/logs/`)
-- Named with format: `YYYY-MM-DD-HH-MM-SS-daemon.log`
+## Runner Logs
+- Runner logs are stored in `~/.hapi/logs/` (or `$HAPI_HOME/logs/`)
+- Named with format: `YYYY-MM-DD-HH-MM-SS-runner.log`
 
 # Session Forking `claude` and sdk behavior
 

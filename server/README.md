@@ -22,11 +22,12 @@ See `src/configuration.ts` for all options.
 ### Optional (Telegram)
 
 - `TELEGRAM_BOT_TOKEN` - Token from @BotFather.
-- `WEBAPP_URL` - Public HTTPS URL for Telegram Mini App access. Also used to derive default CORS origins for the web app.
+- `HAPI_PUBLIC_URL` - Public HTTPS URL for Telegram Mini App access. Also used to derive default CORS origins for the web app.
 
 ### Optional
 
-- `WEBAPP_PORT` - HTTP port (default: 3006).
+- `HAPI_LISTEN_HOST` - HTTP bind address (default: 127.0.0.1).
+- `HAPI_LISTEN_PORT` - HTTP port (default: 3006).
 - `CORS_ORIGINS` - Comma-separated origins, or `*`.
 - `HAPI_HOME` - Data directory (default: ~/.hapi).
 - `DB_PATH` - SQLite database path (default: HAPI_HOME/hapi.db).
@@ -38,13 +39,13 @@ Binary (single executable):
 ```bash
 export TELEGRAM_BOT_TOKEN="..."
 export CLI_API_TOKEN="shared-secret"
-export WEBAPP_URL="https://your-domain.example"
+export HAPI_PUBLIC_URL="https://your-domain.example"
 
 hapi server
 ```
 
 If you only need web + CLI, you can omit TELEGRAM_BOT_TOKEN.
-To enable Telegram, set TELEGRAM_BOT_TOKEN and WEBAPP_URL, start the server, open `/app`
+To enable Telegram, set TELEGRAM_BOT_TOKEN and HAPI_PUBLIC_URL, start the server, open `/app`
 in the bot chat, and bind the Mini App with `CLI_API_TOKEN:<namespace>` when prompted.
 
 From source:
@@ -165,7 +166,7 @@ See `src/store/index.ts` for SQLite persistence:
 
 - Sessions with metadata and agent state.
 - Messages with pagination support.
-- Machines with daemon state.
+- Machines with runner state.
 - Todo extraction from messages.
 - Users table for Telegram bindings (includes namespace).
 
@@ -199,15 +200,15 @@ The server build output is `server/dist/index.js`, and the web assets are in `we
 
 ## Networking notes
 
-- Telegram Mini Apps require HTTPS and a public URL. If the server has no public IP, use Cloudflare Tunnel or Tailscale and set `WEBAPP_URL` to the HTTPS endpoint.
-- If the web app is hosted on a different origin, set `CORS_ORIGINS` (or `WEBAPP_URL`) to include that static host origin.
+- Telegram Mini Apps require HTTPS and a public URL. If the server has no public IP, use Cloudflare Tunnel or Tailscale and set `HAPI_PUBLIC_URL` to the HTTPS endpoint.
+- If the web app is hosted on a different origin, set `CORS_ORIGINS` (or `HAPI_PUBLIC_URL`) to include that static host origin.
 
 ## Standalone web hosting
 
 The web UI can be hosted separately from the server (for example on GitHub Pages or Cloudflare Pages):
 
 1. Build and deploy `web/dist` from the repo root.
-2. Set `CORS_ORIGINS` (or `WEBAPP_URL`) to the static host origin.
+2. Set `CORS_ORIGINS` (or `HAPI_PUBLIC_URL`) to the static host origin.
 3. Open the static site, click the Server button on the login screen, and enter the hapi server origin.
 
 Leaving the server override empty preserves the default same-origin behavior when the server serves the web assets directly.

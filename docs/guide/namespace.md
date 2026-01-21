@@ -31,4 +31,4 @@ CLI_API_TOKEN="your-base-token:alice"
 - Namespaces are isolated: sessions, machines, and users are not visible across namespaces.
 - One machine ID cannot be reused across namespaces.
   - To run multiple namespaces on one machine, use a separate `HAPI_HOME` per namespace, or clear the machine ID with `hapi auth logout` before switching.
-- Remote spawn is namespace-scoped. If you need remote spawning for multiple namespaces on the same machine, run a separate daemon per namespace (use separate `HAPI_HOME`).
+- Remote spawn is namespace-scoped. If you need remote spawning for multiple namespaces on the same machine, run a separate runner per namespace (use separate `HAPI_HOME`).

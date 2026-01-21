@@ -59,7 +59,7 @@ The CLI is a wrapper around AI coding agents (Claude Code, Codex, Gemini). It:
 hapi              # Start Claude Code session
 hapi codex        # Start OpenAI Codex session
 hapi gemini       # Start Google Gemini session
-hapi daemon start # Run background service for remote session spawning
+hapi runner start # Run background service for remote session spawning
 ```
 
 ### HAPI Server
