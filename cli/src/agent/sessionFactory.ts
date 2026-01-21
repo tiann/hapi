@@ -35,7 +35,7 @@ export type SessionBootstrapResult = {
 
 export function buildMachineMetadata(): MachineMetadata {
     return {
-        host: os.hostname(),
+        host: process.env.HAPI_HOSTNAME || os.hostname(),
         platform: os.platform(),
         happyCliVersion: packageJson.version,
         homeDir: os.homedir(),

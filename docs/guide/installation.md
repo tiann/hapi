@@ -93,6 +93,7 @@ On first run, HAPI:
 |----------|---------|-------------|
 | `CLI_API_TOKEN` | Auto-generated | Shared secret for authentication |
 | `HAPI_SERVER_URL` | `http://localhost:3006` | Server URL for CLI |
+| `HAPI_HOSTNAME` | OS hostname | Override hostname reported to the server/UI |
 | `WEBAPP_PORT` | `3006` | HTTP server port |
 | `HAPI_HOME` | `~/.hapi` | Config directory path |
 | `DB_PATH` | `~/.hapi/hapi.db` | Database file path |
