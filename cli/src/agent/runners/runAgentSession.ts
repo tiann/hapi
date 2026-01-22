@@ -5,6 +5,7 @@ import { hashObject } from '@/utils/deterministicJson';
 import { AgentRegistry } from '@/agent/AgentRegistry';
 import { convertAgentMessage } from '@/agent/messageConverter';
 import { PermissionAdapter } from '@/agent/permissionAdapter';
+import { createRunnerLifecycle } from '@/agent/runnerLifecycle';
 import type { AgentBackend, PromptContent } from '@/agent/types';
 import { startHappyServer } from '@/claude/utils/startHappyServer';
 import { getHappyCliCommand } from '@/utils/spawnHappyCLI';
@@ -72,9 +73,42 @@ export async function runAgentSession(opts: {
     let thinking = false;
     let shouldExit = false;
     let waitAbortController: AbortController | null = null;
+    let keepAliveInterval: ReturnType<typeof setInterval> | null = null;
+
+    const stopSessionLoop = () => {
+        if (shouldExit) {
+            return;
+        }
+        shouldExit = true;
+        if (waitAbortController) {
+            waitAbortController.abort();
+        }
+    };
+
+    const lifecycle = createRunnerLifecycle({
+        session,
+        logTag: opts.agentType,
+        stopKeepAlive: () => {
+            if (keepAliveInterval) {
+                clearInterval(keepAliveInterval);
+                keepAliveInterval = null;
+            }
+        },
+        onBeforeClose: async () => {
+            stopSessionLoop();
+            await permissionAdapter.cancelAll('Session ending');
+        },
+        onAfterClose: async () => {
+            await backend.disconnect();
+            happyServer.stop();
+        }
+    });
+
+    lifecycle.registerProcessHandlers();
+    registerKillSessionHandler(session.rpcHandlerManager, lifecycle.cleanupAndExit);
 
     session.keepAlive(thinking, 'remote');
-    const keepAliveInterval = setInterval(() => {
+    keepAliveInterval = setInterval(() => {
         session.keepAlive(thinking, 'remote');
     }, 2000);
 
@@ -97,17 +131,6 @@ export async function runAgentSession(opts: {
     session.rpcHandlerManager.registerHandler('abort', async () => {
         await handleAbort();
     });
-
-    const handleKillSession = async () => {
-        if (shouldExit) return;
-        shouldExit = true;
-        await permissionAdapter.cancelAll('Session killed');
-        if (waitAbortController) {
-            waitAbortController.abort();
-        }
-    };
-
-    registerKillSessionHandler(session.rpcHandlerManager, handleKillSession);
 
     try {
         while (!shouldExit) {
@@ -155,12 +178,6 @@ export async function runAgentSession(opts: {
             }
         }
     } finally {
-        clearInterval(keepAliveInterval);
-        await permissionAdapter.cancelAll('Session ended');
-        session.sendSessionDeath();
-        await session.flush();
-        session.close();
-        await backend.disconnect();
-        happyServer.stop();
+        await lifecycle.cleanupAndExit();
     }
 }
