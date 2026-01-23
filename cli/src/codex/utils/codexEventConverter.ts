@@ -6,7 +6,7 @@ const CodexSessionEventSchema = z.object({
     timestamp: z.string().optional(),
     type: z.string(),
     payload: z.unknown().optional()
-}).passthrough();
+});
 
 export type CodexSessionEvent = z.infer<typeof CodexSessionEventSchema>;
 

@@ -15,7 +15,7 @@ export const WorktreeMetadataSchema = z.object({
     name: z.string(),
     worktreePath: z.string().optional(),
     createdAt: z.number().optional()
-}).passthrough()
+})
 
 export type WorktreeMetadata = z.infer<typeof WorktreeMetadataSchema>
 
@@ -45,7 +45,7 @@ export const MetadataSchema = z.object({
     archiveReason: z.string().optional(),
     flavor: z.string().nullish(),
     worktree: WorktreeMetadataSchema.optional()
-}).passthrough()
+})
 
 export type Metadata = z.infer<typeof MetadataSchema>
 
@@ -53,7 +53,7 @@ export const AgentStateRequestSchema = z.object({
     tool: z.string(),
     arguments: z.unknown(),
     createdAt: z.number().nullish()
-}).passthrough()
+})
 
 export type AgentStateRequest = z.infer<typeof AgentStateRequestSchema>
 
@@ -68,7 +68,7 @@ export const AgentStateCompletedRequestSchema = z.object({
     decision: z.enum(['approved', 'approved_for_session', 'denied', 'abort']).optional(),
     allowTools: z.array(z.string()).optional(),
     answers: z.record(z.string(), z.array(z.string())).optional()
-}).passthrough()
+})
 
 export type AgentStateCompletedRequest = z.infer<typeof AgentStateCompletedRequestSchema>
 
@@ -76,7 +76,7 @@ export const AgentStateSchema = z.object({
     controlledByUser: z.boolean().nullish(),
     requests: z.record(z.string(), AgentStateRequestSchema).nullish(),
     completedRequests: z.record(z.string(), AgentStateCompletedRequestSchema).nullish()
-}).passthrough()
+})
 
 export type AgentState = z.infer<typeof AgentStateSchema>
 
@@ -85,7 +85,7 @@ export const TodoItemSchema = z.object({
     status: z.enum(['pending', 'in_progress', 'completed']),
     priority: z.enum(['high', 'medium', 'low']),
     id: z.string()
-}).passthrough()
+})
 
 export type TodoItem = z.infer<typeof TodoItemSchema>
 
@@ -108,7 +108,7 @@ export const DecryptedMessageSchema = z.object({
     localId: z.string().nullable(),
     content: z.unknown(),
     createdAt: z.number()
-}).passthrough()
+})
 
 export type DecryptedMessage = z.infer<typeof DecryptedMessageSchema>
 
@@ -129,7 +129,7 @@ export const SessionSchema = z.object({
     todos: TodosSchema.optional(),
     permissionMode: PermissionModeSchema.optional(),
     modelMode: ModelModeSchema.optional()
-}).passthrough()
+})
 
 export type Session = z.infer<typeof SessionSchema>
 

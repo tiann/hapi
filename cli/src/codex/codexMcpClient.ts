@@ -182,7 +182,7 @@ export class CodexMcpClient {
             params: z.object({
                 msg: z.any()
             })
-        }).passthrough();
+        });
 
         const setNotificationHandler =
             this.client.setNotificationHandler.bind(this.client) as (

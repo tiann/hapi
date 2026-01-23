@@ -7,8 +7,11 @@ const machineMetadataSchema = z.object({
     host: z.string().optional(),
     platform: z.string().optional(),
     happyCliVersion: z.string().optional(),
-    displayName: z.string().optional()
-}).passthrough()
+    displayName: z.string().optional(),
+    homeDir: z.string().optional(),
+    happyHomeDir: z.string().optional(),
+    happyLibDir: z.string().optional()
+})
 
 export interface Machine {
     id: string
@@ -23,7 +26,9 @@ export interface Machine {
         platform: string
         happyCliVersion: string
         displayName?: string
-        [key: string]: unknown
+        homeDir?: string
+        happyHomeDir?: string
+        happyLibDir?: string
     } | null
     metadataVersion: number
     runnerState: unknown | null
@@ -88,12 +93,15 @@ export class MachineCache {
         const metadata = (() => {
             const parsed = machineMetadataSchema.safeParse(stored.metadata)
             if (!parsed.success) return null
-            const data = parsed.data as Record<string, unknown>
+            const data = parsed.data
             const host = typeof data.host === 'string' ? data.host : 'unknown'
             const platform = typeof data.platform === 'string' ? data.platform : 'unknown'
             const happyCliVersion = typeof data.happyCliVersion === 'string' ? data.happyCliVersion : 'unknown'
             const displayName = typeof data.displayName === 'string' ? data.displayName : undefined
-            return { host, platform, happyCliVersion, displayName, ...data }
+            const homeDir = typeof data.homeDir === 'string' ? data.homeDir : undefined
+            const happyHomeDir = typeof data.happyHomeDir === 'string' ? data.happyHomeDir : undefined
+            const happyLibDir = typeof data.happyLibDir === 'string' ? data.happyLibDir : undefined
+            return { host, platform, happyCliVersion, displayName, homeDir, happyHomeDir, happyLibDir }
         })()
 
         const storedActiveAt = stored.activeAt ?? stored.createdAt

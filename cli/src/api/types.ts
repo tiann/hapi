@@ -29,10 +29,11 @@ export const MachineMetadataSchema = z.object({
     host: z.string(),
     platform: z.string(),
     happyCliVersion: z.string(),
+    displayName: z.string().optional(),
     homeDir: z.string(),
     happyHomeDir: z.string(),
     happyLibDir: z.string()
-}).passthrough()
+})
 
 export type MachineMetadata = z.infer<typeof MachineMetadataSchema>
 
@@ -43,7 +44,7 @@ export const RunnerStateSchema = z.object({
     startedAt: z.number().optional(),
     shutdownRequestedAt: z.number().optional(),
     shutdownSource: z.union([z.enum(['mobile-app', 'cli', 'os-signal', 'unknown']), z.string()]).optional()
-}).passthrough()
+})
 
 export type RunnerState = z.infer<typeof RunnerStateSchema>
 
@@ -119,7 +120,7 @@ export const MessageMetaSchema = z.object({
     appendSystemPrompt: z.string().nullable().optional(),
     allowedTools: z.array(z.string()).nullable().optional(),
     disallowedTools: z.array(z.string()).nullable().optional()
-}).passthrough()
+})
 
 export type MessageMeta = z.infer<typeof MessageMetaSchema>
 
@@ -132,7 +133,7 @@ export const UserMessageSchema = z.object({
     }),
     localKey: z.string().optional(),
     meta: MessageMetaSchema.optional()
-}).passthrough()
+})
 
 export type UserMessage = z.infer<typeof UserMessageSchema>
 
@@ -143,7 +144,7 @@ export const AgentMessageSchema = z.object({
         data: z.unknown()
     }),
     meta: MessageMetaSchema.optional()
-}).passthrough()
+})
 
 export type AgentMessage = z.infer<typeof AgentMessageSchema>
 

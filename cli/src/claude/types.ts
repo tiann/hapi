@@ -1,6 +1,6 @@
 /**
- * Simplified schema that only validates fields actually used in the codebase
- * while preserving all other fields through passthrough()
+ * Schema validates fields used in the codebase and keeps explicit
+ * log fields required by the CLI and UI.
  */
 
 import { z } from "zod";
@@ -12,46 +12,69 @@ export const UsageSchema = z.object({
   cache_read_input_tokens: z.number().int().nonnegative().optional(),
   output_tokens: z.number().int().nonnegative(),
   service_tier: z.string().optional(),
-}).passthrough();
+});
 
-// Main schema with minimal validation for only the fields we use
-// NOTE: Schema is intentionally lenient to handle various Claude Code message formats
-// including synthetic error messages, API errors, and different SDK versions
+const RawMessageSchema = z.object({
+  role: z.string().optional(),
+  content: z.unknown(),
+  usage: UsageSchema.optional(),
+});
+
+const RawJSONLinesBaseSchema = z.object({
+  uuid: z.string().optional(),
+  parentUuid: z.string().nullable().optional(),
+  isSidechain: z.boolean().optional(),
+  isMeta: z.boolean().optional(),
+  isCompactSummary: z.boolean().optional(),
+  userType: z.string().optional(),
+  cwd: z.string().optional(),
+  sessionId: z.string().optional(),
+  version: z.string().optional(),
+  gitBranch: z.string().optional(),
+  timestamp: z.string().optional(),
+});
+
+// Main schema with validation for the fields used in the app
+// NOTE: Schema remains lenient on message content to handle SDK variations
 export const RawJSONLinesSchema = z.discriminatedUnion("type", [
   // User message - validates uuid and message.content
-  z.object({
+  RawJSONLinesBaseSchema.extend({
     type: z.literal("user"),
-    isSidechain: z.boolean().optional(),
-    isMeta: z.boolean().optional(),
-    uuid: z.string(), // Used in getMessageKey()
-    message: z.object({
-      content: z.union([z.string(), z.any()]) // Used in sessionScanner.ts
-    }).passthrough()
-  }).passthrough(),
+    uuid: z.string(),
+    message: RawMessageSchema,
+    mode: z.string().optional(),
+    toolUseResult: z.unknown().optional(),
+  }),
 
   // Assistant message - only validates uuid and type
-  // message object is optional to handle synthetic error messages (isApiErrorMessage: true)
-  // which may have different structure than normal assistant messages
-  z.object({
+  // message object is optional to handle synthetic error messages
+  RawJSONLinesBaseSchema.extend({
     uuid: z.string(),
     type: z.literal("assistant"),
-    message: z.object({
-      usage: UsageSchema.optional(), // Used in apiSession.ts
-    }).passthrough().optional()
-  }).passthrough(),
+    message: RawMessageSchema.optional(),
+    requestId: z.string().optional(),
+  }),
 
   // Summary message - validates summary and leafUuid
-  z.object({
+  RawJSONLinesBaseSchema.extend({
     type: z.literal("summary"),
-    summary: z.string(), // Used in apiSession.ts
-    leafUuid: z.string() // Used in getMessageKey()
-  }).passthrough(),
+    summary: z.string(),
+    leafUuid: z.string(),
+  }),
 
-  // System message - validates uuid
-  z.object({
+  // System message - validates uuid and subtype data used by the UI
+  RawJSONLinesBaseSchema.extend({
     type: z.literal("system"),
-    uuid: z.string() // Used in getMessageKey()
-  }).passthrough()
+    uuid: z.string(),
+    subtype: z.string().optional(),
+    model: z.string().optional(),
+    tools: z.array(z.string()).optional(),
+    session_id: z.string().optional(),
+    retryAttempt: z.number().optional(),
+    maxRetries: z.number().optional(),
+    error: z.unknown().optional(),
+    durationMs: z.number().optional(),
+  }),
 ]);
 
-export type RawJSONLines = z.infer<typeof RawJSONLinesSchema>
+export type RawJSONLines = z.infer<typeof RawJSONLinesSchema>;
