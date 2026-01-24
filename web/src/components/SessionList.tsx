@@ -242,18 +242,18 @@ function SessionItem(props: {
     const [archiveOpen, setArchiveOpen] = useState(false)
     const [deleteOpen, setDeleteOpen] = useState(false)
 
-    const { archiveSession, renameSession, deleteSession, restartSession, isPending } = useSessionActions(
+    const { archiveSession, renameSession, deleteSession, resumeSession, isPending } = useSessionActions(
         api,
         s.id,
         s.metadata?.flavor ?? null
     )
 
-    const handleRestart = async () => {
+    const handleResume = async () => {
         try {
-            await restartSession()
-            toast.success(t('dialog.restart.success'))
+            await resumeSession()
+            toast.success(t('dialog.resume.success'))
         } catch (error) {
-            const message = error instanceof Error ? error.message : t('dialog.restart.error')
+            const message = error instanceof Error ? error.message : t('dialog.resume.error')
             toast.error(message)
         }
     }
@@ -361,7 +361,7 @@ function SessionItem(props: {
                 onRename={() => setRenameOpen(true)}
                 onArchive={() => setArchiveOpen(true)}
                 onDelete={() => setDeleteOpen(true)}
-                onRestart={!s.active ? () => void handleRestart() : undefined}
+                onResume={!s.active ? () => void handleResume() : undefined}
                 anchorPoint={menuAnchorPoint}
             />
 

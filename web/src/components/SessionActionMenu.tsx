@@ -16,7 +16,7 @@ type SessionActionMenuProps = {
     onRename: () => void
     onArchive: () => void
     onDelete: () => void
-    onRestart?: () => void
+    onResume?: () => void
     anchorPoint: { x: number; y: number }
     menuId?: string
 }
@@ -85,7 +85,7 @@ function TrashIcon(props: { className?: string }) {
     )
 }
 
-function RestartIcon(props: { className?: string }) {
+function ResumeIcon(props: { className?: string }) {
     return (
         <svg
             xmlns="http://www.w3.org/2000/svg"
@@ -119,7 +119,7 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
         onRename,
         onArchive,
         onDelete,
-        onRestart,
+        onResume,
         anchorPoint,
         menuId
     } = props
@@ -144,9 +144,9 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
         onDelete()
     }
 
-    const handleRestart = () => {
+    const handleResume = () => {
         onClose()
-        if (onRestart) onRestart()
+        if (onResume) onResume()
     }
 
     const updatePosition = useCallback(() => {
@@ -277,15 +277,15 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
                     </button>
                 ) : (
                     <>
-                        {onRestart && (
+                        {onResume && (
                             <button
                                 type="button"
                                 role="menuitem"
                                 className={`${baseItemClassName} hover:bg-[var(--app-subtle-bg)]`}
-                                onClick={handleRestart}
+                                onClick={handleResume}
                             >
-                                <RestartIcon className="text-[var(--app-hint)]" />
-                                {t('session.action.restart')}
+                                <ResumeIcon className="text-[var(--app-hint)]" />
+                                {t('session.action.resume')}
                             </button>
                         )}
                         <button

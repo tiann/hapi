@@ -1,0 +1,7 @@
+packages:
+  - 'cli'
+  - 'shared'
+  - 'server'
+  - 'web'
+  - 'website'
+  - 'docs'

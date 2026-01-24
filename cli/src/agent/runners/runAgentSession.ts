@@ -9,7 +9,7 @@ import type { AgentBackend, PromptContent } from '@/agent/types';
 import { startHappyServer } from '@/claude/utils/startHappyServer';
 import { getHappyCliCommand } from '@/utils/spawnHappyCLI';
 import { registerKillSessionHandler } from '@/claude/registerKillSessionHandler';
-import { registerRestartSessionHandler } from '@/claude/registerRestartSessionHandler';
+import { registerResumeSessionHandler } from '@/claude/registerResumeSessionHandler';
 import { bootstrapSession } from '@/agent/sessionFactory';
 import { formatMessageWithAttachments } from '@/utils/attachmentFormatter';
 
@@ -111,7 +111,7 @@ export async function runAgentSession(opts: {
     };
 
     registerKillSessionHandler(session.rpcHandlerManager, handleKillSession);
-    registerRestartSessionHandler(session.rpcHandlerManager);
+    registerResumeSessionHandler(session.rpcHandlerManager);
 
     try {
         while (!shouldExit) {

@@ -234,7 +234,7 @@ export class SyncEngine {
         this.handleSessionEnd({ sid: sessionId, time: Date.now() })
     }
 
-    async restartSession(sessionId: string): Promise<void> {
+    async resumeSession(sessionId: string): Promise<void> {
         const session = this.sessionCache.getSession(sessionId)
         if (!session) {
             throw new Error('Session not found')
@@ -242,7 +242,7 @@ export class SyncEngine {
         if (session.active) {
             throw new Error('Session is already active')
         }
-        await this.rpcGateway.restartSession(sessionId)
+        await this.rpcGateway.resumeSession(sessionId)
     }
 
     async switchSession(sessionId: string, to: 'remote' | 'local'): Promise<void> {

@@ -61,7 +61,7 @@ export default {
   // Session actions
   'session.action.rename': '重命名',
   'session.action.archive': '归档',
-  'session.action.restart': '重启',
+  'session.action.resume': '恢复',
   'session.action.delete': '删除',
   'session.action.copy': '复制',
 
@@ -89,8 +89,8 @@ export default {
   'dialog.bulkArchive.error.partialFailed': '归档 {total} 个会话中的 {failed} 个失败。成功的操作已完成。',
   'dialog.bulkArchive.success': '成功归档 {count} 个会话',
   'dialog.bulkArchive.partialSuccess': '归档 {succeeded} 个会话（{failed} 个失败）',
-  'dialog.restart.success': '会话重启已启动',
-  'dialog.restart.error': '会话重启失败',
+  'dialog.resume.success': '会话已恢复',
+  'dialog.resume.error': '会话恢复失败',
   'dialog.error.default': '操作失败，请重试。',
 
   // Common buttons

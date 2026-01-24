@@ -11,7 +11,7 @@ import { startHappyServer } from '@/claude/utils/startHappyServer';
 import { startHookServer } from '@/claude/utils/startHookServer';
 import { generateHookSettingsFile, cleanupHookSettingsFile } from '@/modules/common/hooks/generateHookSettings';
 import { registerKillSessionHandler } from './registerKillSessionHandler';
-import { registerRestartSessionHandler } from './registerRestartSessionHandler';
+import { registerResumeSessionHandler } from './registerResumeSessionHandler';
 import type { Session } from './session';
 import { bootstrapSession } from '@/agent/sessionFactory';
 import { createModeChangeHandler, createRunnerLifecycle, setControlledByUser } from '@/agent/runnerLifecycle';
@@ -126,7 +126,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
 
     lifecycle.registerProcessHandlers();
     registerKillSessionHandler(session.rpcHandlerManager, lifecycle.cleanupAndExit);
-    registerRestartSessionHandler(session.rpcHandlerManager);
+    registerResumeSessionHandler(session.rpcHandlerManager);
 
     // Set initial agent state
     const startingMode = options.startingMode ?? (startedBy === 'runner' ? 'remote' : 'local');

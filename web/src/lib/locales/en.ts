@@ -61,7 +61,7 @@ export default {
   // Session actions
   'session.action.rename': 'Rename',
   'session.action.archive': 'Archive',
-  'session.action.restart': 'Restart',
+  'session.action.resume': 'Resume',
   'session.action.delete': 'Delete',
   'session.action.copy': 'Copy',
 
@@ -87,8 +87,8 @@ export default {
   'dialog.bulkArchive.error.partialFailed': 'Failed to archive {failed} of {total} sessions. The successful operations have been completed.',
   'dialog.bulkArchive.success': 'Successfully archived {count} sessions',
   'dialog.bulkArchive.partialSuccess': 'Archived {succeeded} sessions ({failed} failed)',
-  'dialog.restart.success': 'Session restart initiated',
-  'dialog.restart.error': 'Failed to restart session',
+  'dialog.resume.success': 'Session resumed',
+  'dialog.resume.error': 'Failed to resume session',
   'dialog.error.default': 'Operation failed. Please try again.',
 
   // Common buttons

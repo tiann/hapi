@@ -3,7 +3,7 @@ import { loop, type EnhancedMode, type PermissionMode } from './loop';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { hashObject } from '@/utils/deterministicJson';
 import { registerKillSessionHandler } from '@/claude/registerKillSessionHandler';
-import { registerRestartSessionHandler } from '@/claude/registerRestartSessionHandler';
+import { registerResumeSessionHandler } from '@/claude/registerResumeSessionHandler';
 import type { AgentState } from '@/api/types';
 import type { CodexSession } from './session';
 import { parseCodexCliOverrides } from './utils/codexCliOverrides';
@@ -60,7 +60,7 @@ export async function runCodex(opts: {
 
     lifecycle.registerProcessHandlers();
     registerKillSessionHandler(session.rpcHandlerManager, lifecycle.cleanupAndExit);
-    registerRestartSessionHandler(session.rpcHandlerManager);
+    registerResumeSessionHandler(session.rpcHandlerManager);
 
     const syncSessionMode = () => {
         const sessionInstance = sessionWrapperRef.current;

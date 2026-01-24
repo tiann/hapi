@@ -179,7 +179,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         return c.json({ ok: true })
     })
 
-    app.post('/sessions/:id/restart', async (c) => {
+    app.post('/sessions/:id/resume', async (c) => {
         const engine = requireSyncEngine(c, getSyncEngine)
         if (engine instanceof Response) {
             return engine
@@ -195,10 +195,10 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
 
         try {
-            await engine.restartSession(sessionResult.sessionId)
+            await engine.resumeSession(sessionResult.sessionId)
             return c.json({ ok: true })
         } catch (error) {
-            const message = error instanceof Error ? error.message : 'Failed to restart session'
+            const message = error instanceof Error ? error.message : 'Failed to resume session'
 
             // Map specific errors to appropriate HTTP status codes
             if (message === 'Session not found') {
@@ -207,17 +207,19 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             if (message === 'Session is already active') {
                 return c.json({ error: message }, 409)
             }
-            if (message.includes('Session restart is not yet implemented')) {
-                return c.json({ error: message }, 501) // Not Implemented
+            if (message.includes('No Claude session ID')) {
+                return c.json({
+                    error: 'Cannot resume: Session has no history. Please create a new session.'
+                }, 400)
             }
             if (message.includes('RPC handler not registered') || message.includes('RPC socket disconnected')) {
                 return c.json({
-                    error: 'Cannot restart session: Session is not currently running. Please start a new session.'
+                    error: 'Cannot resume session: Session is not currently running. Please start a new session.'
                 }, 409)
             }
             if (message.includes('Timeout')) {
                 return c.json({
-                    error: 'Cannot restart session: Connection to session lost. The session may have terminated.'
+                    error: 'Cannot resume session: Connection to session lost. The session may have terminated.'
                 }, 504)
             }
 
