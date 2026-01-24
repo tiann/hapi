@@ -19,6 +19,9 @@ type ConfirmDialogProps = {
     onConfirm: () => Promise<void>
     isPending: boolean
     destructive?: boolean
+    error?: string | null
+    onRetry?: () => void
+    retryLabel?: string
 }
 
 export function ConfirmDialog(props: ConfirmDialogProps) {
@@ -32,29 +35,37 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
         confirmingLabel,
         onConfirm,
         isPending,
-        destructive = false
+        destructive = false,
+        error: externalError,
+        onRetry,
+        retryLabel
     } = props
 
-    const [error, setError] = useState<string | null>(null)
+    const [internalError, setInternalError] = useState<string | null>(null)
 
-    // Clear error when dialog opens/closes
+    // Use external error if provided, otherwise use internal error
+    const error = externalError ?? internalError
+
+    // Clear internal error when dialog opens/closes
     useEffect(() => {
         if (isOpen) {
-            setError(null)
+            setInternalError(null)
         }
     }, [isOpen])
 
     const handleConfirm = async () => {
-        setError(null)
+        setInternalError(null)
         try {
             await onConfirm()
-            onClose()
+            if (!externalError) {
+                onClose()
+            }
         } catch (err) {
             const message =
                 err instanceof Error && err.message
                     ? err.message
                     : t('dialog.error.default')
-            setError(message)
+            setInternalError(message)
         }
     }
 
@@ -83,14 +94,25 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
                     >
                         {t('button.cancel')}
                     </Button>
-                    <Button
-                        type="button"
-                        variant={destructive ? 'destructive' : 'secondary'}
-                        onClick={handleConfirm}
-                        disabled={isPending}
-                    >
-                        {isPending ? confirmingLabel : confirmLabel}
-                    </Button>
+                    {error && onRetry ? (
+                        <Button
+                            type="button"
+                            variant={destructive ? 'destructive' : 'secondary'}
+                            onClick={onRetry}
+                            disabled={isPending}
+                        >
+                            {retryLabel || t('button.retry')}
+                        </Button>
+                    ) : (
+                        <Button
+                            type="button"
+                            variant={destructive ? 'destructive' : 'secondary'}
+                            onClick={handleConfirm}
+                            disabled={isPending}
+                        >
+                            {isPending ? confirmingLabel : confirmLabel}
+                        </Button>
+                    )}
                 </div>
             </DialogContent>
         </Dialog>

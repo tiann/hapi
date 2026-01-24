@@ -85,6 +85,8 @@ export default {
   'dialog.bulkArchive.description': '确定要归档 {count} 个选定的会话吗？活动会话将被断开连接。',
   'dialog.bulkArchive.confirm': '全部归档',
   'dialog.bulkArchive.confirming': '归档中…',
+  'dialog.bulkArchive.error.allFailed': '归档全部 {count} 个会话失败，请重试。',
+  'dialog.bulkArchive.error.partialFailed': '归档 {total} 个会话中的 {failed} 个失败。成功的操作已完成。',
   'dialog.error.default': '操作失败，请重试。',
 
   // Common buttons
@@ -94,6 +96,7 @@ export default {
   'button.close': '关闭',
   'button.dismiss': '忽略',
   'button.copy': '复制',
+  'button.retry': '重试',
 
   // New session form
   'newSession.machine': '机器',

@@ -410,6 +410,7 @@ export function SessionList(props: {
     const [selectedSessions, setSelectedSessions] = useState<Set<string>>(new Set())
     const [bulkArchiveOpen, setBulkArchiveOpen] = useState(false)
     const [isBulkArchiving, setIsBulkArchiving] = useState(false)
+    const [bulkArchiveError, setBulkArchiveError] = useState<string | null>(null)
 
     const isGroupCollapsed = (group: SessionGroup): boolean => {
         const override = collapseOverrides.get(group.directory)
@@ -460,6 +461,7 @@ export function SessionList(props: {
 
     const handleBulkArchiveClick = () => {
         if (selectedSessions.size === 0) return
+        setBulkArchiveError(null) // Reset error state
         setBulkArchiveOpen(true)
     }
 
@@ -468,6 +470,7 @@ export function SessionList(props: {
 
         const sessionIds = Array.from(selectedSessions)
         setIsBulkArchiving(true)
+        setBulkArchiveError(null)
         try {
             const results = await Promise.allSettled(
                 sessionIds.map(sessionId => api.archiveSession(sessionId))
@@ -479,21 +482,39 @@ export function SessionList(props: {
 
             if (failed.length > 0) {
                 console.error(`Failed to archive ${failed.length} of ${sessionIds.length} sessions:`, failed)
-                // TODO: Show user-visible error message (task 6)
+                if (succeeded.length === 0) {
+                    // All failed
+                    setBulkArchiveError(t('dialog.bulkArchive.error.allFailed', { count: failed.length }))
+                } else {
+                    // Partial failure
+                    setBulkArchiveError(t('dialog.bulkArchive.error.partialFailed', {
+                        failed: failed.length,
+                        total: sessionIds.length
+                    }))
+                }
             }
 
-            // Only clear selection and close dialog if at least some succeeded
-            if (succeeded.length > 0) {
+            // Only clear selection and close dialog if all succeeded
+            if (succeeded.length > 0 && failed.length === 0) {
                 setSelectedSessions(new Set())
                 setSelectionMode(false)
                 setBulkArchiveOpen(false)
                 props.onRefresh()
+            } else if (succeeded.length > 0) {
+                // Partial success - refresh to show updated state
+                props.onRefresh()
             }
         } catch (error) {
             console.error('Unexpected error during bulk archive:', error)
+            setBulkArchiveError(t('dialog.error.default'))
         } finally {
             setIsBulkArchiving(false)
         }
+    }
+
+    const handleBulkArchiveRetry = () => {
+        setBulkArchiveError(null)
+        void handleBulkArchiveConfirm()
     }
 
     return (
@@ -599,7 +620,10 @@ export function SessionList(props: {
 
             <ConfirmDialog
                 isOpen={bulkArchiveOpen}
-                onClose={() => setBulkArchiveOpen(false)}
+                onClose={() => {
+                    setBulkArchiveOpen(false)
+                    setBulkArchiveError(null)
+                }}
                 title={t('dialog.bulkArchive.title')}
                 description={t('dialog.bulkArchive.description', { count: selectedSessions.size })}
                 confirmLabel={t('dialog.bulkArchive.confirm')}
@@ -607,6 +631,9 @@ export function SessionList(props: {
                 onConfirm={handleBulkArchiveConfirm}
                 isPending={isBulkArchiving}
                 destructive
+                error={bulkArchiveError}
+                onRetry={handleBulkArchiveRetry}
+                retryLabel={t('button.retry')}
             />
         </div>
     )

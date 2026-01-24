@@ -83,6 +83,8 @@ export default {
   'dialog.bulkArchive.description': 'Are you sure you want to archive {count} selected sessions? Active sessions will be disconnected.',
   'dialog.bulkArchive.confirm': 'Archive All',
   'dialog.bulkArchive.confirming': 'Archiving…',
+  'dialog.bulkArchive.error.allFailed': 'Failed to archive all {count} sessions. Please try again.',
+  'dialog.bulkArchive.error.partialFailed': 'Failed to archive {failed} of {total} sessions. The successful operations have been completed.',
   'dialog.error.default': 'Operation failed. Please try again.',
 
   // Common buttons
@@ -92,6 +94,7 @@ export default {
   'button.close': 'Close',
   'button.dismiss': 'Dismiss',
   'button.copy': 'Copy',
+  'button.retry': 'Retry',
 
   // New session form
   'newSession.machine': 'Machine',
