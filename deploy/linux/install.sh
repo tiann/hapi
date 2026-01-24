@@ -123,8 +123,14 @@ check_dependencies() {
     local missing_deps=()
 
     if [ "$BUILD_FROM_SOURCE" = true ]; then
+        # Check for bun in PATH or common locations
         if ! command -v bun &> /dev/null; then
-            missing_deps+=("bun (https://bun.sh)")
+            if [ -f "$HOME/.bun/bin/bun" ]; then
+                export PATH="$HOME/.bun/bin:$PATH"
+                print_info "Found bun in $HOME/.bun/bin"
+            else
+                missing_deps+=("bun (https://bun.sh)")
+            fi
         fi
         if ! command -v pnpm &> /dev/null; then
             missing_deps+=("pnpm (npm install -g pnpm)")
@@ -179,7 +185,9 @@ install_binary() {
 
     # Find the built binary
     local binary_path=""
-    if [ -f "$PROJECT_ROOT/cli/dist/hapi" ]; then
+    if [ -f "$PROJECT_ROOT/cli/dist-exe/bun-linux-x64/hapi" ]; then
+        binary_path="$PROJECT_ROOT/cli/dist-exe/bun-linux-x64/hapi"
+    elif [ -f "$PROJECT_ROOT/cli/dist/hapi" ]; then
         binary_path="$PROJECT_ROOT/cli/dist/hapi"
     elif [ -f "$PROJECT_ROOT/cli/hapi" ]; then
         binary_path="$PROJECT_ROOT/cli/hapi"
@@ -228,7 +236,7 @@ Restart=on-failure
 RestartSec=5s
 StandardOutput=journal
 StandardError=journal
-Environment="PORT=$HAPI_PORT"
+Environment="HAPI_LISTEN_PORT=$HAPI_PORT"
 Environment="PATH=$INSTALL_PATH:$PATH"
 
 [Install]
