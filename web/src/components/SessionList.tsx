@@ -121,6 +121,67 @@ function ChevronIcon(props: { className?: string; collapsed?: boolean }) {
     )
 }
 
+function CheckSquareIcon(props: { className?: string }) {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="20"
+            height="20"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={props.className}
+        >
+            <polyline points="9 11 12 14 22 4" />
+            <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
+        </svg>
+    )
+}
+
+function XIcon(props: { className?: string }) {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="20"
+            height="20"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={props.className}
+        >
+            <line x1="18" y1="6" x2="6" y2="18" />
+            <line x1="6" y1="6" x2="18" y2="18" />
+        </svg>
+    )
+}
+
+function ArchiveIcon(props: { className?: string }) {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="20"
+            height="20"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={props.className}
+        >
+            <rect width="20" height="5" x="2" y="3" rx="1" />
+            <path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8" />
+            <path d="M10 12h4" />
+        </svg>
+    )
+}
+
 function getSessionTitle(session: SessionSummary): string {
     if (session.metadata?.name) {
         return session.metadata.name
@@ -166,9 +227,12 @@ function SessionItem(props: {
     onSelect: (sessionId: string) => void
     showPath?: boolean
     api: ApiClient | null
+    selectionMode?: boolean
+    isSelected?: boolean
+    onToggleSelection?: (sessionId: string) => void
 }) {
     const { t } = useTranslation()
-    const { session: s, onSelect, showPath = true, api } = props
+    const { session: s, onSelect, showPath = true, api, selectionMode = false, isSelected = false, onToggleSelection } = props
     const { haptic } = usePlatform()
     const [menuOpen, setMenuOpen] = useState(false)
     const [menuAnchorPoint, setMenuAnchorPoint] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
@@ -184,12 +248,16 @@ function SessionItem(props: {
 
     const longPressHandlers = useLongPress({
         onLongPress: (point) => {
-            haptic.impact('medium')
-            setMenuAnchorPoint(point)
-            setMenuOpen(true)
+            if (!selectionMode) {
+                haptic.impact('medium')
+                setMenuAnchorPoint(point)
+                setMenuOpen(true)
+            }
         },
         onClick: () => {
-            if (!menuOpen) {
+            if (selectionMode && onToggleSelection) {
+                onToggleSelection(s.id)
+            } else if (!menuOpen) {
                 onSelect(s.id)
             }
         },
@@ -205,16 +273,26 @@ function SessionItem(props: {
             <button
                 type="button"
                 {...longPressHandlers}
-                className="session-list-item flex w-full flex-col gap-1.5 px-3 py-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] select-none"
+                className={`session-list-item flex w-full flex-col gap-1.5 px-3 py-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] select-none ${isSelected ? 'bg-[var(--app-subtle-bg)]' : ''}`}
                 style={{ WebkitTouchCallout: 'none' }}
             >
                 <div className="flex items-center justify-between gap-3">
                     <div className="flex items-center gap-2 min-w-0">
-                        <span className="flex h-4 w-4 items-center justify-center" aria-hidden="true">
-                            <span
-                                className={`h-2 w-2 rounded-full ${statusDotClass}`}
+                        {selectionMode ? (
+                            <input
+                                type="checkbox"
+                                checked={isSelected}
+                                onChange={() => onToggleSelection?.(s.id)}
+                                className="h-4 w-4 rounded border-[var(--app-border)] text-[var(--app-link)] focus:ring-2 focus:ring-[var(--app-link)] focus:ring-offset-0"
+                                onClick={(e) => e.stopPropagation()}
                             />
-                        </span>
+                        ) : (
+                            <span className="flex h-4 w-4 items-center justify-center" aria-hidden="true">
+                                <span
+                                    className={`h-2 w-2 rounded-full ${statusDotClass}`}
+                                />
+                            </span>
+                        )}
                         <div className="truncate text-sm font-medium">
                             {sessionName}
                         </div>
@@ -327,6 +405,9 @@ export function SessionList(props: {
     const [collapseOverrides, setCollapseOverrides] = useState<Map<string, boolean>>(
         () => new Map()
     )
+    const [selectionMode, setSelectionMode] = useState(false)
+    const [selectedSessions, setSelectedSessions] = useState<Set<string>>(new Set())
+
     const isGroupCollapsed = (group: SessionGroup): boolean => {
         const override = collapseOverrides.get(group.directory)
         if (override !== undefined) return override
@@ -337,6 +418,23 @@ export function SessionList(props: {
         setCollapseOverrides(prev => {
             const next = new Map(prev)
             next.set(directory, !isCollapsed)
+            return next
+        })
+    }
+
+    const toggleSelectionMode = () => {
+        setSelectionMode(prev => !prev)
+        setSelectedSessions(new Set())
+    }
+
+    const toggleSessionSelection = (sessionId: string) => {
+        setSelectedSessions(prev => {
+            const next = new Set(prev)
+            if (next.has(sessionId)) {
+                next.delete(sessionId)
+            } else {
+                next.add(sessionId)
+            }
             return next
         })
     }
@@ -357,21 +455,76 @@ export function SessionList(props: {
         })
     }, [groups])
 
+    const handleBulkArchive = async () => {
+        if (!api || selectedSessions.size === 0) return
+
+        const sessionIds = Array.from(selectedSessions)
+        try {
+            await Promise.all(
+                sessionIds.map(sessionId => api.archiveSession(sessionId))
+            )
+            setSelectedSessions(new Set())
+            setSelectionMode(false)
+            props.onRefresh()
+        } catch (error) {
+            console.error('Failed to bulk archive sessions:', error)
+        }
+    }
+
     return (
         <div className="mx-auto w-full max-w-content flex flex-col">
             {renderHeader ? (
                 <div className="flex items-center justify-between px-3 py-1">
-                    <div className="text-xs text-[var(--app-hint)]">
-                        {t('sessions.count', { n: props.sessions.length, m: groups.length })}
-                    </div>
-                    <button
-                        type="button"
-                        onClick={props.onNewSession}
-                        className="session-list-new-button p-1.5 rounded-full text-[var(--app-link)] transition-colors"
-                        title={t('sessions.new')}
-                    >
-                        <PlusIcon className="h-5 w-5" />
-                    </button>
+                    {selectionMode ? (
+                        <>
+                            <div className="flex items-center gap-2">
+                                <button
+                                    type="button"
+                                    onClick={toggleSelectionMode}
+                                    className="p-1.5 rounded-full text-[var(--app-hint)] hover:text-[var(--app-text)] transition-colors"
+                                    title="Cancel selection"
+                                >
+                                    <XIcon className="h-5 w-5" />
+                                </button>
+                                <span className="text-sm text-[var(--app-text)]">
+                                    {selectedSessions.size} selected
+                                </span>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={handleBulkArchive}
+                                disabled={selectedSessions.size === 0}
+                                className="px-3 py-1.5 rounded-md bg-red-500 text-white text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
+                                title="Archive selected sessions"
+                            >
+                                Archive
+                            </button>
+                        </>
+                    ) : (
+                        <>
+                            <div className="text-xs text-[var(--app-hint)]">
+                                {t('sessions.count', { n: props.sessions.length, m: groups.length })}
+                            </div>
+                            <div className="flex items-center gap-2">
+                                <button
+                                    type="button"
+                                    onClick={toggleSelectionMode}
+                                    className="p-1.5 rounded-full text-[var(--app-link)] transition-colors"
+                                    title="Select sessions"
+                                >
+                                    <CheckSquareIcon className="h-5 w-5" />
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={props.onNewSession}
+                                    className="session-list-new-button p-1.5 rounded-full text-[var(--app-link)] transition-colors"
+                                    title={t('sessions.new')}
+                                >
+                                    <PlusIcon className="h-5 w-5" />
+                                </button>
+                            </div>
+                        </>
+                    )}
                 </div>
             ) : null}
 
@@ -407,6 +560,9 @@ export function SessionList(props: {
                                             onSelect={props.onSelect}
                                             showPath={false}
                                             api={api}
+                                            selectionMode={selectionMode}
+                                            isSelected={selectedSessions.has(s.id)}
+                                            onToggleSelection={toggleSessionSelection}
                                         />
                                     ))}
                                 </div>
