@@ -30,6 +30,7 @@ export class SyncEngine {
     private readonly messageService: MessageService
     private readonly rpcGateway: RpcGateway
     private inactivityTimer: NodeJS.Timeout | null = null
+    private readonly resumeLocks = new Map<string, Promise<void>>()
 
     constructor(
         store: Store,
@@ -234,7 +235,96 @@ export class SyncEngine {
         this.handleSessionEnd({ sid: sessionId, time: Date.now() })
     }
 
+    /**
+     * Resume a session by either reconnecting to an existing CLI process or spawning a new one.
+     *
+     * This method implements concurrency control to prevent duplicate resume operations:
+     * - If a resume is already in progress for this session, waits for it to complete
+     * - If no resume is in progress, starts one and tracks it
+     *
+     * Two-phase resume strategy:
+     * 1. Try RPC reconnection (if CLI process is still running)
+     * 2. Fall back to spawning new process with --resume flag (if CLI exited)
+     *
+     * @param sessionId - The hapi session ID to resume
+     * @throws {Error} If session not found, already active, or resume fails
+     */
     async resumeSession(sessionId: string): Promise<void> {
+        // Check if there's already a resume operation in progress for this session
+        const existingResume = this.resumeLocks.get(sessionId)
+        if (existingResume) {
+            // Wait for the existing resume to complete
+            return await existingResume
+        }
+
+        // Start a new resume operation
+        const resumePromise = this.performResume(sessionId)
+        this.resumeLocks.set(sessionId, resumePromise)
+
+        try {
+            return await resumePromise
+        } finally {
+            // Clean up the lock when done (success or failure)
+            this.resumeLocks.delete(sessionId)
+        }
+    }
+
+    /**
+     * Retry a function with exponential backoff.
+     *
+     * @param fn - The async function to retry
+     * @param options - Retry configuration
+     * @returns The result of the function
+     * @throws The last error if all retries fail
+     */
+    private async retryWithBackoff<T>(
+        fn: () => Promise<T>,
+        options: {
+            attempts: number
+            initialDelayMs: number
+            maxDelayMs: number
+            backoffMultiplier: number
+            shouldRetry?: (error: unknown) => boolean
+        }
+    ): Promise<T> {
+        const { attempts, initialDelayMs, maxDelayMs, backoffMultiplier, shouldRetry } = options
+        let lastError: unknown
+
+        for (let attempt = 1; attempt <= attempts; attempt++) {
+            try {
+                return await fn()
+            } catch (error) {
+                lastError = error
+
+                // Check if we should retry this error
+                if (shouldRetry && !shouldRetry(error)) {
+                    throw error
+                }
+
+                // Don't retry on the last attempt
+                if (attempt === attempts) {
+                    throw error
+                }
+
+                // Calculate delay with exponential backoff
+                const delay = Math.min(
+                    initialDelayMs * Math.pow(backoffMultiplier, attempt - 1),
+                    maxDelayMs
+                )
+
+                // Wait before retrying
+                await new Promise(resolve => setTimeout(resolve, delay))
+            }
+        }
+
+        throw lastError
+    }
+
+    /**
+     * Internal implementation of session resume logic.
+     * This is separated from resumeSession() to allow for proper lock management.
+     */
+    private async performResume(sessionId: string): Promise<void> {
         const session = this.sessionCache.getSession(sessionId)
         if (!session) {
             throw new Error('Session not found')
@@ -243,9 +333,26 @@ export class SyncEngine {
             throw new Error('Session is already active')
         }
 
-        // Try RPC resume first (if CLI still running)
+        // Capture the initial state for atomic transition check
+        const initialActiveState = session.active
+
+        // Try RPC resume first (if CLI still running) with retry logic
         try {
-            await this.rpcGateway.resumeSession(sessionId)
+            await this.retryWithBackoff(
+                () => this.rpcGateway.resumeSession(sessionId),
+                {
+                    attempts: 3,
+                    initialDelayMs: 1000,
+                    maxDelayMs: 5000,
+                    backoffMultiplier: 2,
+                    shouldRetry: (error) => {
+                        const message = error instanceof Error ? error.message : ''
+                        // Only retry on timeout errors, not on "not registered" or "disconnected"
+                        // Those errors mean the CLI is definitely gone
+                        return message.includes('Timeout') || message.includes('timeout')
+                    }
+                }
+            )
             // Success - CLI was still running, just reconnected
             return
         } catch (error) {
@@ -254,7 +361,17 @@ export class SyncEngine {
             // If RPC failed because CLI is gone, spawn with --resume
             if (message.includes('RPC handler not registered') ||
                 message.includes('RPC socket disconnected')) {
-                await this.spawnWithResume(session)
+                // Atomic state transition check: verify session hasn't become active
+                // while we were attempting RPC reconnection
+                const currentSession = this.sessionCache.getSession(sessionId)
+                if (!currentSession) {
+                    throw new Error('Session was deleted during resume attempt')
+                }
+                if (currentSession.active !== initialActiveState) {
+                    throw new Error('Session state changed during resume - session may have already reconnected')
+                }
+
+                await this.spawnWithResume(currentSession)
                 return
             }
 
@@ -263,6 +380,41 @@ export class SyncEngine {
         }
     }
 
+    /**
+     * Spawn a new CLI process with Claude's --resume flag to continue an existing session.
+     *
+     * **Session ID Duality Explained:**
+     *
+     * This system uses TWO different session IDs:
+     *
+     * 1. **Hapi Session ID** (`session.id`):
+     *    - UUID generated by hapi server when session is created
+     *    - Stored in database, shown in UI, used in URLs
+     *    - STAYS CONSTANT across resume operations
+     *    - This is what users see and interact with
+     *
+     * 2. **Claude Session ID** (`metadata.claudeSessionId`):
+     *    - UUID generated by Claude CLI for its internal session management
+     *    - Stored in `metadata.claudeSessionId` field
+     *    - MAY CHANGE when using Claude's --resume flag
+     *    - Used for accessing Claude's conversation history files
+     *
+     * **What Happens During Resume:**
+     *
+     * 1. User clicks "Resume" on hapi session `abc-123`
+     * 2. This method spawns: `claude --resume old-claude-uuid`
+     * 3. Claude creates a NEW session with ID `new-claude-uuid`
+     * 4. Claude copies full conversation history from old session to new session
+     * 5. New CLI process reports back via SessionStart hook with `new-claude-uuid`
+     * 6. Server updates `metadata.claudeSessionId` to `new-claude-uuid`
+     * 7. User continues in same hapi session `abc-123` (no redirect)
+     *
+     * **Important:** Multiple Claude sessions can map to one hapi session over time
+     * as the user resumes repeatedly. The hapi session ID is the stable identifier.
+     *
+     * @param session - The hapi session to resume (contains both hapi ID and Claude ID)
+     * @throws {Error} If session metadata is missing or invalid
+     */
     private async spawnWithResume(session: Session): Promise<void> {
         const metadata = session.metadata
         if (!metadata) {
@@ -284,10 +436,10 @@ export class SyncEngine {
         // The spawned process will report back with a (potentially new) Claude session ID
         // but will use the same hapi session ID
         await this.rpcGateway.spawnResumedSession(
-            session.id,           // Hapi session ID (reuse existing)
+            session.id,           // Hapi session ID (reuse existing - stays constant)
             machineId,
             metadata.path,
-            claudeSessionId,      // Claude session ID to resume from
+            claudeSessionId,      // Claude session ID to resume from (may change after resume)
             metadata.flavor || 'claude'
         )
     }
