@@ -19,7 +19,7 @@ export type SessionBootstrapOptions = {
     flavor: string
     startedBy?: SessionStartedBy
     workingDirectory?: string
-    tag?: string
+    sessionId?: string | null  // UUID for resume, null/undefined for new session
     agentState?: AgentState | null
     resumeClaudeSession?: string
 }
@@ -104,8 +104,16 @@ async function reportSessionStarted(sessionId: string, metadata: Metadata): Prom
 export async function bootstrapSession(options: SessionBootstrapOptions): Promise<SessionBootstrapResult> {
     const workingDirectory = options.workingDirectory ?? process.cwd()
     const startedBy = options.startedBy ?? 'terminal'
-    const sessionTag = options.tag ?? randomUUID()
+    // CRITICAL CHANGE: Pass sessionId (or null for new session)
+    // Do NOT generate UUID here - let server handle it
+    const sessionId = options.sessionId ?? null
     const agentState = options.agentState === undefined ? {} : options.agentState
+
+    console.log('[SessionFactory.bootstrapSession] Bootstrapping session:', {
+        sessionId,
+        isNewSession: sessionId === null,
+        hasResumeSession: !!options.resumeClaudeSession
+    })
 
     const api = await ApiClient.create()
 
@@ -122,23 +130,36 @@ export async function bootstrapSession(options: SessionBootstrapOptions): Promis
         machineId
     })
 
-    const sessionInfo = await api.getOrCreateSession({
-        tag: sessionTag,
-        metadata,
-        state: agentState
-    })
+    try {
+        const sessionInfo = await api.getOrCreateSession({
+            id: sessionId,  // ← Changed from 'tag' to 'id', pass null for new
+            metadata,
+            state: agentState
+        })
 
-    const session = api.sessionSyncClient(sessionInfo)
+        console.log('[SessionFactory.bootstrapSession] Session created/retrieved:', {
+            sessionId: sessionInfo.id,
+            namespace: sessionInfo.namespace
+        })
 
-    await reportSessionStarted(sessionInfo.id, metadata)
+        const session = api.sessionSyncClient(sessionInfo)
 
-    return {
-        api,
-        session,
-        sessionInfo,
-        metadata,
-        machineId,
-        startedBy,
-        workingDirectory
+        await reportSessionStarted(sessionInfo.id, metadata)
+
+        return {
+            api,
+            session,
+            sessionInfo,
+            metadata,
+            machineId,
+            startedBy,
+            workingDirectory
+        }
+    } catch (error) {
+        if (error instanceof Error && error.message.includes('Session not found:')) {
+            // Session was requested but doesn't exist
+            throw new Error(`Session not found: ${sessionId}. Please create a new session instead.`)
+        }
+        throw error
     }
 }

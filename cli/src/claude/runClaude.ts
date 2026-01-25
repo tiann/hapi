@@ -53,7 +53,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         startedBy,
         workingDirectory,
         agentState: initialState,
-        tag: options.hapiSessionId,
+        sessionId: options.hapiSessionId,  // Changed from 'tag' to 'sessionId'
         resumeClaudeSession: options.resumeClaudeSession
     });
     logger.debug(`Session created: ${sessionInfo.id}`);

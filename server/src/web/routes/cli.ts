@@ -8,7 +8,7 @@ import type { Machine, Session, SyncEngine } from '../../sync/syncEngine'
 const bearerSchema = z.string().regex(/^Bearer\s+(.+)$/i)
 
 const createOrLoadSessionSchema = z.object({
-    tag: z.string().min(1),
+    id: z.string().uuid().nullable(),
     metadata: z.unknown(),
     agentState: z.unknown().nullable().optional()
 })
@@ -96,8 +96,21 @@ export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<Cl
         }
 
         const namespace = c.get('namespace')
-        const session = engine.getOrCreateSession(parsed.data.tag, parsed.data.metadata, parsed.data.agentState ?? null, namespace)
-        return c.json({ session })
+
+        try {
+            const session = engine.getOrCreateSession(parsed.data.id, parsed.data.metadata, parsed.data.agentState ?? null, namespace)
+            return c.json({ session })
+        } catch (error) {
+            // Handle session not found error
+            if (error instanceof Error && error.message.startsWith('Session not found:')) {
+                return c.json({ error: `SESSION_NOT_FOUND: ${parsed.data.id}` }, 404)
+            }
+            // Handle invalid UUID format error
+            if (error instanceof Error && error.message.includes('Invalid session ID format:')) {
+                return c.json({ error: error.message }, 400)
+            }
+            throw error
+        }
     })
 
     app.get('/sessions/:id', (c) => {

@@ -180,8 +180,8 @@ export class SyncEngine {
         this.machineCache.reloadAll()
     }
 
-    getOrCreateSession(tag: string, metadata: unknown, agentState: unknown, namespace: string): Session {
-        return this.sessionCache.getOrCreateSession(tag, metadata, agentState, namespace)
+    getOrCreateSession(id: string | null, metadata: unknown, agentState: unknown, namespace: string): Session {
+        return this.sessionCache.getOrCreateSession(id, metadata, agentState, namespace)
     }
 
     getOrCreateMachine(id: string, metadata: unknown, runnerState: unknown, namespace: string): Machine {

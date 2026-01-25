@@ -40,8 +40,8 @@ export class SessionCache {
         return this.getSessions().filter((session) => session.active)
     }
 
-    getOrCreateSession(tag: string, metadata: unknown, agentState: unknown, namespace: string): Session {
-        const stored = this.store.sessions.getOrCreateSession(tag, metadata, agentState, namespace)
+    getOrCreateSession(id: string | null, metadata: unknown, agentState: unknown, namespace: string): Session {
+        const stored = this.store.sessions.getOrCreateSession(id, metadata, agentState, namespace)
         return this.refreshSession(stored.id) ?? (() => { throw new Error('Failed to load session') })()
     }
 

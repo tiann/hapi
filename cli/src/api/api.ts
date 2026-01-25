@@ -14,14 +14,14 @@ export class ApiClient {
     private constructor(private readonly token: string) { }
 
     async getOrCreateSession(opts: {
-        tag: string
+        id: string | null
         metadata: Metadata
         state: AgentState | null
     }): Promise<Session> {
         const response = await axios.post<CreateSessionResponse>(
             `${configuration.apiUrl}/cli/sessions`,
             {
-                tag: opts.tag,
+                id: opts.id,
                 metadata: opts.metadata,
                 agentState: opts.state
             },

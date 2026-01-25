@@ -1,9 +1,12 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useNavigate } from '@tanstack/react-router'
 import { isPermissionModeAllowedForFlavor } from '@hapi/protocol'
 import type { ApiClient } from '@/api/client'
 import type { ModelMode, PermissionMode } from '@/types/api'
 import { queryKeys } from '@/lib/query-keys'
 import { clearMessageWindow } from '@/lib/message-window-store'
+import { useSimpleToast } from '@/lib/simple-toast'
+import { useTranslation } from '@/lib/use-translation'
 
 export function useSessionActions(
     api: ApiClient | null,
@@ -21,6 +24,9 @@ export function useSessionActions(
     isPending: boolean
 } {
     const queryClient = useQueryClient()
+    const navigate = useNavigate()
+    const toast = useSimpleToast()
+    const { t } = useTranslation()
 
     const invalidateSession = async () => {
         if (!sessionId) return
@@ -48,15 +54,50 @@ export function useSessionActions(
         onSuccess: () => void invalidateSession(),
     })
 
-    const resumeMutation = useMutation({
-        mutationFn: async () => {
-            if (!api || !sessionId) {
-                throw new Error('Session unavailable')
-            }
+    const handleResume = async () => {
+        if (!api || !sessionId) {
+            throw new Error('Session unavailable')
+        }
+
+        try {
+            // Invalidate queries BEFORE navigation to ensure fresh data on session page
+            await invalidateSession()
+
+            // Trigger resume on server (spawns CLI process with --resume)
             await api.resumeSession(sessionId)
-        },
-        onSuccess: () => void invalidateSession(),
-    })
+
+            // Navigate to session - let the session view handle its own message loading
+            // The useMessages hook will fetch messages on mount, and SSE will provide real-time updates
+            navigate({ to: '/sessions/$sessionId', params: { sessionId } })
+
+            // Note: No success toast - navigation IS the success feedback
+        } catch (error) {
+            // Handle "already active" as success - just navigate to it
+            // Use exact match to avoid misclassifying other 409 errors
+            if (error instanceof Error && error.message === 'Session is already active') {
+                navigate({ to: '/sessions/$sessionId', params: { sessionId } })
+                return
+            }
+
+            // Handle session not found error with helpful guidance
+            if (error instanceof Error && error.message.includes('SESSION_NOT_FOUND')) {
+                toast.error(
+                    t('dialog.resume.sessionNotFound', 'This session no longer exists. Please create a new session instead.'),
+                    {
+                        duration: 6000,  // Longer duration for important error
+                    }
+                )
+                // Navigate to home to create new session
+                navigate({ to: '/' })
+                return
+            }
+
+            // Show error feedback for actual failures
+            const message = error instanceof Error ? error.message : t('dialog.resume.error')
+            toast.error(message)
+            throw error // Re-throw so caller knows it failed
+        }
+    }
 
     const switchMutation = useMutation({
         mutationFn: async () => {
@@ -120,7 +161,7 @@ export function useSessionActions(
     return {
         abortSession: abortMutation.mutateAsync,
         archiveSession: archiveMutation.mutateAsync,
-        resumeSession: resumeMutation.mutateAsync,
+        resumeSession: handleResume,
         switchSession: switchMutation.mutateAsync,
         setPermissionMode: permissionMutation.mutateAsync,
         setModelMode: modelMutation.mutateAsync,
@@ -128,7 +169,6 @@ export function useSessionActions(
         deleteSession: deleteMutation.mutateAsync,
         isPending: abortMutation.isPending
             || archiveMutation.isPending
-            || resumeMutation.isPending
             || switchMutation.isPending
             || permissionMutation.isPending
             || modelMutation.isPending

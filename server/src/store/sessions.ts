@@ -45,22 +45,48 @@ function toStoredSession(row: DbSessionRow): StoredSession {
 
 export function getOrCreateSession(
     db: Database,
-    tag: string,
+    id: string | null,
     metadata: unknown,
     agentState: unknown,
     namespace: string
 ): StoredSession {
+    console.log('[SessionStore.getOrCreateSession] Called with:', { id, namespace })
+
+    // Validate UUID format if id is provided
+    if (id !== null && !isValidUUID(id)) {
+        console.error('[SessionStore.getOrCreateSession] Invalid UUID format:', { id })
+        throw new Error(`Invalid session ID format: ${id}`)
+    }
+
+    // Generate UUID if not provided (new session)
+    const sessionId = id ?? randomUUID()
+
+    // CRITICAL CHANGE: Look up by id (PRIMARY KEY) instead of tag
     const existing = db.prepare(
-        'SELECT * FROM sessions WHERE tag = ? AND namespace = ? ORDER BY created_at DESC LIMIT 1'
-    ).get(tag, namespace) as DbSessionRow | undefined
+        'SELECT * FROM sessions WHERE id = ? AND namespace = ? ORDER BY created_at DESC LIMIT 1'
+    ).get(sessionId, namespace) as DbSessionRow | undefined
 
     if (existing) {
+        console.log('[SessionStore.getOrCreateSession] Found existing session:', {
+            id: existing.id,
+            namespace: existing.namespace
+        })
         return toStoredSession(existing)
     }
 
-    const now = Date.now()
-    const id = randomUUID()
+    // CRITICAL ERROR HANDLING: If id was provided but not found, session doesn't exist
+    if (id !== null) {
+        console.error('[SessionStore.getOrCreateSession] Session not found:', { id, namespace })
+        throw new Error(`Session not found: ${id}`)
+    }
 
+    // Create new session with generated UUID
+    console.log('[SessionStore.getOrCreateSession] Creating NEW session:', {
+        id: sessionId,
+        namespace
+    })
+
+    const now = Date.now()
     const metadataJson = JSON.stringify(metadata)
     const agentStateJson = agentState === null || agentState === undefined ? null : JSON.stringify(agentState)
 
@@ -79,8 +105,8 @@ export function getOrCreateSession(
             0, NULL, 0
         )
     `).run({
-        id,
-        tag,
+        id: sessionId,
+        tag: sessionId,  // Keep tag = id for now (no schema migration)
         namespace,
         created_at: now,
         updated_at: now,
@@ -88,11 +114,19 @@ export function getOrCreateSession(
         agent_state: agentStateJson
     })
 
-    const row = getSession(db, id)
+    console.log('[SessionStore.getOrCreateSession] New session created successfully:', { id: sessionId })
+
+    const row = getSession(db, sessionId)
     if (!row) {
         throw new Error('Failed to create session')
     }
     return row
+}
+
+// UUID validation helper
+function isValidUUID(str: string): boolean {
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+    return uuidRegex.test(str)
 }
 
 export function updateSessionMetadata(
