@@ -69,6 +69,24 @@ export async function startRunner(): Promise<void> {
     });
   }
 
+  // Optional: SIGUSR1 handler for immediate version check and reload
+  // This allows install.sh to trigger instant reload via: kill -USR1 <pid>
+  if (!isWindows()) {
+    process.on('SIGUSR1', () => {
+      logger.debug('[RUNNER RUN] Received SIGUSR1 - triggering immediate version check');
+      const installedCliMtimeMs = getInstalledCliMtimeMs();
+      if (typeof installedCliMtimeMs === 'number' &&
+          typeof startedWithCliMtimeMs === 'number' &&
+          installedCliMtimeMs !== startedWithCliMtimeMs) {
+        logger.debug('[RUNNER RUN] Version mismatch detected via SIGUSR1, triggering reload');
+        console.log('[RUNNER] Binary update detected via signal - initiating immediate reload');
+        requestShutdown('os-signal', 'Binary updated - hot reload triggered via SIGUSR1');
+      } else {
+        logger.debug('[RUNNER RUN] SIGUSR1 received but binary is up to date');
+      }
+    });
+  }
+
   process.on('uncaughtException', (error) => {
     logger.debug('[RUNNER RUN] FATAL: Uncaught exception', error);
     logger.debug(`[RUNNER RUN] Stack trace: ${error.stack}`);
@@ -598,7 +616,11 @@ export async function startRunner(): Promise<void> {
       if (typeof installedCliMtimeMs === 'number' &&
           typeof startedWithCliMtimeMs === 'number' &&
           installedCliMtimeMs !== startedWithCliMtimeMs) {
-        logger.debug('[RUNNER RUN] Runner is outdated, triggering self-restart with latest version, clearing heartbeat interval');
+        logger.debug('[RUNNER RUN] Binary update detected - initiating hot reload');
+        logger.debug(`[RUNNER RUN] Current binary mtime: ${installedCliMtimeMs}, started with: ${startedWithCliMtimeMs}`);
+
+        // Log to stdout so it appears in journalctl for systemd visibility
+        console.log('[RUNNER] Binary updated - initiating hot reload');
 
         clearInterval(restartOnStaleVersionAndHeartbeat);
 
@@ -614,13 +636,17 @@ export async function startRunner(): Promise<void> {
             detached: true,
             stdio: 'ignore'
           });
+          logger.debug('[RUNNER RUN] New runner spawned successfully');
         } catch (error) {
           logger.debug('[RUNNER RUN] Failed to spawn new runner, this is quite likely to happen during integration tests as we are cleaning out dist/ directory', error);
         }
 
-        // So we can just hang forever
-        logger.debug('[RUNNER RUN] Hanging for a bit - waiting for CLI to kill us because we are running outdated version of the code');
-        await new Promise(resolve => setTimeout(resolve, 10_000));
+        // Wait briefly to ensure new runner starts and acquires lock
+        logger.debug('[RUNNER RUN] Waiting 2 seconds for new runner to acquire lock before exit');
+        await new Promise(resolve => setTimeout(resolve, 2_000));
+
+        logger.debug('[RUNNER RUN] Exiting to complete hot reload - systemd will restart service with new binary');
+        console.log('[RUNNER] Hot reload complete - exiting');
         process.exit(0);
       }
 

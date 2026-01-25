@@ -171,7 +171,14 @@ build_from_source() {
     pnpm install
 
     print_info "Building single executable..."
-    bun run build:single-exe
+    # Ignore tput error that occurs at end of build (build still succeeds)
+    bun run build:single-exe || true
+
+    # Verify build actually succeeded by checking for binary
+    if [ ! -f "$PROJECT_ROOT/cli/dist-exe/bun-linux-x64/hapi" ]; then
+        print_error "Build failed - binary not found at cli/dist-exe/bun-linux-x64/hapi"
+        exit 1
+    fi
 
     print_success "Build completed"
 }
@@ -196,9 +203,48 @@ install_binary() {
         exit 1
     fi
 
-    # Copy binary (always named 'hapi')
-    cp "$binary_path" "$INSTALL_PATH/hapi"
-    chmod +x "$INSTALL_PATH/hapi"
+    local target_binary="$INSTALL_PATH/hapi"
+    local temp_binary="$INSTALL_PATH/hapi.new"
+    local backup_binary="$INSTALL_PATH/hapi.prev"
+
+    # Copy to temporary location first
+    cp "$binary_path" "$temp_binary"
+    chmod +x "$temp_binary"
+
+    # Verify the new binary works before replacing
+    if ! "$temp_binary" --version >/dev/null 2>&1; then
+        print_error "New binary failed verification test!"
+        rm -f "$temp_binary"
+        exit 1
+    fi
+
+    # Check if services are running (for informational messages)
+    local services_running=false
+    if [ "$SETUP_SYSTEMD" = true ] && command -v systemctl &> /dev/null; then
+        if systemctl --user is-active --quiet "${SERVICE_NAME}-runner.service" 2>/dev/null; then
+            services_running=true
+        fi
+    fi
+
+    # Back up existing binary if it exists
+    if [ -f "$target_binary" ]; then
+        print_info "Backing up existing binary to $backup_binary"
+        cp "$target_binary" "$backup_binary"
+    fi
+
+    # Atomic move - replaces inode, avoids "text file busy" error
+    mv -f "$temp_binary" "$target_binary"
+
+    # Touch to update mtime (triggers runner auto-reload detection)
+    touch "$target_binary"
+
+    print_success "Binary installed to $target_binary"
+
+    # Inform user about hot reload if services are running
+    if [ "$services_running" = true ]; then
+        print_info "Runner service is active - will detect update and reload within 60 seconds"
+        print_info "Monitor reload with: journalctl --user -u ${SERVICE_NAME}-runner.service -f"
+    fi
 
     # Check if install path is in PATH
     if [[ ":$PATH:" != *":$INSTALL_PATH:"* ]]; then
@@ -206,8 +252,25 @@ install_binary() {
         print_info "Add the following line to your ~/.bashrc or ~/.zshrc:"
         echo "    export PATH=\"$INSTALL_PATH:\$PATH\""
     fi
+}
 
-    print_success "Binary installed to $INSTALL_PATH/hapi"
+# Rollback to previous binary version
+rollback_binary() {
+    local target_binary="$INSTALL_PATH/hapi"
+    local backup_binary="$INSTALL_PATH/hapi.prev"
+
+    if [ ! -f "$backup_binary" ]; then
+        print_error "No backup binary found at $backup_binary"
+        return 1
+    fi
+
+    print_info "Rolling back to previous version..."
+    cp "$backup_binary" "$target_binary"
+    touch "$target_binary"  # Update mtime to trigger runner reload
+
+    print_success "Rollback complete"
+    print_info "Runner will detect the change and reload within 60 seconds"
+    print_info "Monitor with: journalctl --user -u ${SERVICE_NAME}-runner.service -f"
 }
 
 # Setup systemd services
