@@ -421,9 +421,28 @@ export class SyncEngine {
             throw new Error('Session has no metadata')
         }
 
-        const claudeSessionId = metadata.claudeSessionId
-        if (!claudeSessionId) {
-            throw new Error('No Claude session ID - cannot resume')
+        const flavor = metadata.flavor || 'claude'
+        let sessionIdToResume: string | undefined
+
+        switch (flavor) {
+            case 'claude':
+                sessionIdToResume = metadata.claudeSessionId
+                break
+            case 'codex':
+                sessionIdToResume = metadata.codexSessionId
+                break
+            case 'gemini':
+                sessionIdToResume = metadata.geminiSessionId
+                break
+            default:
+                throw new Error(`Unknown agent flavor: ${flavor}`)
+        }
+
+        if (!sessionIdToResume) {
+            throw new Error(
+                `No ${flavor} session ID found - cannot resume. ` +
+                `Session may not have been fully initialized.`
+            )
         }
 
         const machineId = session.machineId || metadata.machineId
@@ -432,15 +451,15 @@ export class SyncEngine {
         }
 
         // Spawn new process with --resume
-        // This will create a new CLI process that resumes the Claude session
-        // The spawned process will report back with a (potentially new) Claude session ID
+        // This will create a new CLI process that resumes the agent session
+        // The spawned process will report back with a (potentially new) session ID
         // but will use the same hapi session ID
         await this.rpcGateway.spawnResumedSession(
             session.id,           // Hapi session ID (reuse existing - stays constant)
             machineId,
             metadata.path,
-            claudeSessionId,      // Claude session ID to resume from (may change after resume)
-            metadata.flavor || 'claude'
+            sessionIdToResume,    // Agent session ID to resume from (may change after resume)
+            flavor
         )
     }
 

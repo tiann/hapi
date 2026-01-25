@@ -299,17 +299,40 @@ export function clearMessageWindow(sessionId: string): void {
 
 export async function fetchLatestMessages(api: ApiClient, sessionId: string): Promise<void> {
     const initial = getState(sessionId)
+    console.log('[fetchLatestMessages] Starting fetch for session:', sessionId, {
+        isLoading: initial.isLoading,
+        atBottom: initial.atBottom,
+        currentMessageCount: initial.messages.length,
+        pendingCount: initial.pending.length
+    })
+
     if (initial.isLoading) {
+        console.log('[fetchLatestMessages] Already loading, skipping')
         return
     }
     updateState(sessionId, (prev) => buildState(prev, { isLoading: true, warning: null }))
 
     try {
+        console.log('[fetchLatestMessages] Calling API getMessages...')
         const response = await api.getMessages(sessionId, { limit: PAGE_SIZE, beforeSeq: null })
+        console.log('[fetchLatestMessages] API response:', {
+            messageCount: response.messages.length,
+            hasMore: response.page.hasMore,
+            firstMessageSeq: response.messages[0]?.seq,
+            lastMessageSeq: response.messages[response.messages.length - 1]?.seq
+        })
+
         updateState(sessionId, (prev) => {
+            console.log('[fetchLatestMessages] Updating state, atBottom:', prev.atBottom)
+
             if (prev.atBottom) {
                 const merged = mergeMessages(prev.messages, [...prev.pending, ...response.messages])
                 const trimmed = trimVisible(merged, 'append')
+                console.log('[fetchLatestMessages] atBottom=true path:', {
+                    mergedCount: merged.length,
+                    trimmedCount: trimmed.length,
+                    hasMore: response.page.hasMore
+                })
                 return buildState(prev, {
                     messages: trimmed,
                     pending: [],
@@ -321,6 +344,7 @@ export async function fetchLatestMessages(api: ApiClient, sessionId: string): Pr
                     warning: null,
                 })
             }
+            console.log('[fetchLatestMessages] atBottom=false path, adding to pending')
             const pendingResult = mergeIntoPending(prev, response.messages)
             return buildState(prev, {
                 pending: pendingResult.pending,
@@ -331,7 +355,9 @@ export async function fetchLatestMessages(api: ApiClient, sessionId: string): Pr
                 warning: pendingResult.warning,
             })
         })
+        console.log('[fetchLatestMessages] State updated successfully')
     } catch (error) {
+        console.error('[fetchLatestMessages] Error fetching messages:', error)
         const message = error instanceof Error ? error.message : 'Failed to load messages'
         updateState(sessionId, (prev) => buildState(prev, { isLoading: false, warning: message }))
     }

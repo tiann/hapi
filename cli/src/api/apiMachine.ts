@@ -197,7 +197,7 @@ export class ApiMachineClient {
         })
 
         this.rpcHandlerManager.registerHandler('spawn-resumed-session', async (params: any) => {
-            const { hapiSessionId, directory, agent, claudeSessionIdToResume } = params || {}
+            const { hapiSessionId, directory, agent, sessionIdToResume } = params || {}
 
             if (!hapiSessionId) {
                 throw new Error('Hapi session ID is required')
@@ -205,17 +205,17 @@ export class ApiMachineClient {
             if (!directory) {
                 throw new Error('Directory is required')
             }
-            if (!claudeSessionIdToResume) {
-                throw new Error('Claude session ID to resume is required')
+            if (!sessionIdToResume) {
+                throw new Error('Session ID to resume is required')
             }
 
             // Spawn with the existing hapi session ID
-            // The resumeClaudeSessionId will be passed to the spawned process via args
+            // The resumeSessionId will be passed to the spawned process via args
             const result = await spawnSession({
                 directory,
                 sessionId: hapiSessionId,
                 agent,
-                resumeClaudeSessionId: claudeSessionIdToResume
+                resumeSessionId: sessionIdToResume
             })
 
             switch (result.type) {

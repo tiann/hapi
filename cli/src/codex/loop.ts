@@ -47,7 +47,8 @@ export async function loop(opts: LoopOptions): Promise<void> {
         startingMode,
         codexArgs: opts.codexArgs,
         codexCliOverrides: opts.codexCliOverrides,
-        permissionMode: opts.permissionMode ?? 'default'
+        permissionMode: opts.permissionMode ?? 'default',
+        resumeSessionId: opts.resumeSessionId
     });
 
     await runLocalRemoteSession({

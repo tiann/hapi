@@ -4,6 +4,9 @@ interface PWAUpdateContextValue {
     version: {
         sha: string
         shortSha: string
+        buildTime: string
+        isDirty: boolean
+        gitDescribe: string
     }
     checkForUpdate: () => Promise<void>
     forceReload: () => void
@@ -17,18 +20,30 @@ interface PWAUpdateProviderProps {
 }
 
 export function PWAUpdateProvider({ children }: PWAUpdateProviderProps) {
-    const [version, setVersion] = useState({ sha: 'unknown', shortSha: 'unknown' })
+    const [version, setVersion] = useState({
+        sha: 'unknown',
+        shortSha: 'unknown',
+        buildTime: 'unknown',
+        isDirty: false,
+        gitDescribe: 'unknown'
+    })
     const [isChecking, setIsChecking] = useState(false)
 
     useEffect(() => {
         // Get version from HTML meta tags
         const versionMeta = document.querySelector('meta[name="app-version"]')
         const shortVersionMeta = document.querySelector('meta[name="app-version-short"]')
+        const buildTimeMeta = document.querySelector('meta[name="app-build-time"]')
+        const dirtyMeta = document.querySelector('meta[name="app-version-dirty"]')
+        const describeMeta = document.querySelector('meta[name="app-version-describe"]')
 
-        if (versionMeta && shortVersionMeta) {
+        if (versionMeta && shortVersionMeta && buildTimeMeta) {
             setVersion({
                 sha: versionMeta.getAttribute('content') || 'unknown',
-                shortSha: shortVersionMeta.getAttribute('content') || 'unknown'
+                shortSha: shortVersionMeta.getAttribute('content') || 'unknown',
+                buildTime: buildTimeMeta.getAttribute('content') || 'unknown',
+                isDirty: dirtyMeta?.getAttribute('content') === 'true',
+                gitDescribe: describeMeta?.getAttribute('content') || 'unknown'
             })
         }
     }, [])

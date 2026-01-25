@@ -21,6 +21,7 @@ export async function runGemini(opts: {
     startingMode?: 'local' | 'remote';
     permissionMode?: PermissionMode;
     model?: string;
+    resumeSessionId?: string;
 } = {}): Promise<void> {
     const workingDirectory = process.cwd();
     const startedBy = opts.startedBy ?? 'terminal';
@@ -32,6 +33,17 @@ export async function runGemini(opts: {
         opts.startingMode = 'remote';
     }
 
+    // Fail fast for remote mode resume (ACP protocol limitation)
+    const finalStartingMode = opts.startingMode ?? (startedBy === 'runner' ? 'remote' : 'local');
+    if (opts.resumeSessionId && finalStartingMode === 'remote') {
+        console.error(
+            'Resume is not supported for Gemini in remote mode due to ACP protocol limitations.\n' +
+            'The ACP session/new RPC does not support resuming sessions.\n' +
+            'To resume this session, please use local mode.'
+        );
+        process.exit(1);
+    }
+
     const initialState: AgentState = {
         controlledByUser: false
     };
@@ -40,7 +52,8 @@ export async function runGemini(opts: {
         flavor: 'gemini',
         startedBy,
         workingDirectory,
-        agentState: initialState
+        agentState: initialState,
+        resumeSessionId: opts.resumeSessionId
     });
 
     const startingMode: 'local' | 'remote' = opts.startingMode
@@ -148,7 +161,8 @@ export async function runGemini(opts: {
             onSessionReady: (instance) => {
                 sessionWrapperRef.current = instance;
                 syncSessionMode();
-            }
+            },
+            resumeSessionId: opts.resumeSessionId
         });
     } catch (error) {
         lifecycle.markCrash(error);

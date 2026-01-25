@@ -15,6 +15,7 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
     readonly codexCliOverrides?: CodexCliOverrides;
     readonly startedBy: 'runner' | 'terminal';
     readonly startingMode: 'local' | 'remote';
+    readonly resumeSessionId?: string;
     localLaunchFailure: LocalLaunchFailure | null = null;
 
     constructor(opts: {
@@ -31,6 +32,7 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
         codexArgs?: string[];
         codexCliOverrides?: CodexCliOverrides;
         permissionMode?: PermissionMode;
+        resumeSessionId?: string;
     }) {
         super({
             api: opts.api,
@@ -55,6 +57,7 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
         this.startedBy = opts.startedBy;
         this.startingMode = opts.startingMode;
         this.permissionMode = opts.permissionMode;
+        this.resumeSessionId = opts.resumeSessionId;
     }
 
     setPermissionMode = (mode: PermissionMode): void => {

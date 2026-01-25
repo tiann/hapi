@@ -20,7 +20,19 @@ export class MessageService {
             hasMore: boolean
         }
     } {
+        console.log('[MessageService.getMessagesPage] Fetching messages:', {
+            sessionId,
+            limit: options.limit,
+            beforeSeq: options.beforeSeq
+        })
+
         const stored = this.store.messages.getMessages(sessionId, options.limit, options.beforeSeq ?? undefined)
+
+        console.log('[MessageService.getMessagesPage] Database returned:', {
+            sessionId,
+            storedCount: stored.length
+        })
+
         const messages: DecryptedMessage[] = stored.map((message) => ({
             id: message.id,
             seq: message.seq,
@@ -40,6 +52,13 @@ export class MessageService {
         const nextBeforeSeq = oldestSeq
         const hasMore = nextBeforeSeq !== null
             && this.store.messages.getMessages(sessionId, 1, nextBeforeSeq).length > 0
+
+        console.log('[MessageService.getMessagesPage] Returning:', {
+            sessionId,
+            messageCount: messages.length,
+            hasMore,
+            nextBeforeSeq
+        })
 
         return {
             messages,

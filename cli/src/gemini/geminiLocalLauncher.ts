@@ -115,6 +115,7 @@ export async function geminiLocalLauncher(
                 await geminiLocal({
                     path: session.path,
                     sessionId: session.sessionId,
+                    resumeSessionId: session.resumeSessionId,
                     abort: processAbortController.signal,
                     model: opts.model,
                     approvalMode: mapApprovalMode(session.getPermissionMode() as PermissionMode | undefined),

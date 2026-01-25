@@ -52,8 +52,8 @@ export const claudeCommand: CommandDefinition = {
                 options.startedBy = args[++i] as 'runner' | 'terminal'
             } else if (arg === '--hapi-session-id') {
                 options.hapiSessionId = args[++i]
-            } else if (arg === '--resume-claude-session') {
-                options.resumeClaudeSession = args[++i]
+            } else if (arg === '--resume-session') {
+                options.resumeSessionId = args[++i]
             } else {
                 unknownArgs.push(arg)
                 if (i + 1 < args.length && !args[i + 1].startsWith('-')) {

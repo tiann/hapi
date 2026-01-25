@@ -21,7 +21,7 @@ export type SessionBootstrapOptions = {
     workingDirectory?: string
     sessionId?: string | null  // UUID for resume, null/undefined for new session
     agentState?: AgentState | null
-    resumeClaudeSession?: string
+    resumeSessionId?: string
 }
 
 export type SessionBootstrapResult = {
@@ -112,7 +112,7 @@ export async function bootstrapSession(options: SessionBootstrapOptions): Promis
     console.log('[SessionFactory.bootstrapSession] Bootstrapping session:', {
         sessionId,
         isNewSession: sessionId === null,
-        hasResumeSession: !!options.resumeClaudeSession
+        hasResumeSession: !!options.resumeSessionId
     })
 
     const api = await ApiClient.create()

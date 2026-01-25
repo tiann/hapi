@@ -15,12 +15,15 @@ export const geminiCommand: CommandDefinition = {
                 startingMode?: 'local' | 'remote'
                 permissionMode?: GeminiPermissionMode
                 model?: string
+                resumeSessionId?: string
             } = {}
 
             for (let i = 0; i < commandArgs.length; i++) {
                 const arg = commandArgs[i]
                 if (arg === '--started-by') {
                     options.startedBy = commandArgs[++i] as 'runner' | 'terminal'
+                } else if (arg === '--resume-session') {
+                    options.resumeSessionId = commandArgs[++i]
                 } else if (arg === '--hapi-starting-mode') {
                     const value = commandArgs[++i]
                     if (value === 'local' || value === 'remote') {

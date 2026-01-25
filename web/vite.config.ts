@@ -12,9 +12,24 @@ function getVersionInfo() {
     try {
         const sha = execSync('git rev-parse HEAD').toString().trim()
         const shortSha = sha.substring(0, 7)
-        return { sha, shortSha }
+        const buildTime = new Date().toISOString()
+
+        // Check if working directory is dirty
+        const status = execSync('git status --porcelain').toString().trim()
+        const isDirty = status.length > 0
+
+        // Get git describe output (includes tags and dirty state)
+        let gitDescribe = shortSha
+        try {
+            gitDescribe = execSync('git describe --tags --always --dirty').toString().trim()
+        } catch {
+            // If git describe fails (no tags), fall back to shortSha
+            gitDescribe = shortSha
+        }
+
+        return { sha, shortSha, buildTime, isDirty, gitDescribe }
     } catch {
-        return { sha: 'unknown', shortSha: 'unknown' }
+        return { sha: 'unknown', shortSha: 'unknown', buildTime: new Date().toISOString(), isDirty: false, gitDescribe: 'unknown' }
     }
 }
 
@@ -26,7 +41,7 @@ function injectVersionPlugin(): Plugin {
         transformIndexHtml(html) {
             return html.replace(
                 '</head>',
-                `    <meta name="app-version" content="${version.sha}" />\n    <meta name="app-version-short" content="${version.shortSha}" />\n  </head>`
+                `    <meta name="app-version" content="${version.sha}" />\n    <meta name="app-version-short" content="${version.shortSha}" />\n    <meta name="app-build-time" content="${version.buildTime}" />\n    <meta name="app-version-dirty" content="${version.isDirty}" />\n    <meta name="app-version-describe" content="${version.gitDescribe}" />\n  </head>`
             )
         },
     }

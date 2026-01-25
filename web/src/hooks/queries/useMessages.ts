@@ -57,9 +57,12 @@ export function useMessages(api: ApiClient | null, sessionId: string | null): {
     )
 
     useEffect(() => {
+        console.log('[useMessages] Effect triggered:', { api: !!api, sessionId })
         if (!api || !sessionId) {
+            console.log('[useMessages] Skipping fetch - missing api or sessionId')
             return
         }
+        console.log('[useMessages] Triggering fetchLatestMessages')
         void fetchLatestMessages(api, sessionId)
     }, [api, sessionId])
 

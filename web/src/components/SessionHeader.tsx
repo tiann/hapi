@@ -79,7 +79,7 @@ export function SessionHeader(props: {
     const [archiveOpen, setArchiveOpen] = useState(false)
     const [deleteOpen, setDeleteOpen] = useState(false)
 
-    const { archiveSession, renameSession, deleteSession, isPending } = useSessionActions(
+    const { archiveSession, renameSession, deleteSession, resumeSession, isPending } = useSessionActions(
         api,
         session.id,
         session.metadata?.flavor ?? null
@@ -88,6 +88,16 @@ export function SessionHeader(props: {
     const handleDelete = async () => {
         await deleteSession()
         onSessionDeleted?.()
+    }
+
+    const handleResume = async () => {
+        try {
+            await resumeSession()
+            // On success, user will be navigated to the session
+        } catch (error) {
+            // Error already toasted by useSessionActions
+            // Keep menu open so user can retry
+        }
     }
 
     const handleMenuToggle = () => {
@@ -181,6 +191,7 @@ export function SessionHeader(props: {
                 onRename={() => setRenameOpen(true)}
                 onArchive={() => setArchiveOpen(true)}
                 onDelete={() => setDeleteOpen(true)}
+                onResume={session.active ? undefined : handleResume}
                 anchorPoint={menuAnchorPoint}
                 menuId={menuId}
             />

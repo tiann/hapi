@@ -30,6 +30,7 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
 
     const scanner = await createCodexSessionScanner({
         sessionId: resumeSessionId,
+        resumeFromSessionId: session.resumeSessionId,
         cwd: session.path,
         startupTimestampMs: Date.now(),
         onSessionMatchFailed: handleSessionMatchFailed,

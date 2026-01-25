@@ -20,6 +20,7 @@ interface GeminiLoopOptions {
     hookSettingsPath?: string;
     allowedTools?: string[];
     onSessionReady?: (session: GeminiSession) => void;
+    resumeSessionId?: string;
 }
 
 export async function geminiLoop(opts: GeminiLoopOptions): Promise<void> {
@@ -38,7 +39,8 @@ export async function geminiLoop(opts: GeminiLoopOptions): Promise<void> {
         mode: startingMode,
         startedBy,
         startingMode,
-        permissionMode: opts.permissionMode ?? 'default'
+        permissionMode: opts.permissionMode ?? 'default',
+        resumeSessionId: opts.resumeSessionId
     });
 
     await runLocalRemoteSession({

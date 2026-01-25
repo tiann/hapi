@@ -195,7 +195,7 @@ export async function startRunner(): Promise<void> {
     const spawnSession = async (options: SpawnSessionOptions): Promise<SpawnSessionResult> => {
       logger.debugLargeJson('[RUNNER RUN] Spawning session', options);
 
-      const { directory, sessionId, machineId, approvedNewDirectoryCreation = true, resumeClaudeSessionId } = options;
+      const { directory, sessionId, machineId, approvedNewDirectoryCreation = true, resumeSessionId } = options;
       const agent = options.agent ?? 'claude';
       const yolo = options.yolo === true;
       const sessionType = options.sessionType ?? 'simple';
@@ -357,9 +357,9 @@ export async function startRunner(): Promise<void> {
           args.push('--hapi-session-id', sessionId);
         }
 
-        // Pass Claude session ID to resume if provided
-        if (resumeClaudeSessionId) {
-          args.push('--resume-claude-session', resumeClaudeSessionId);
+        // Pass session ID to resume if provided (unified flag for all agents)
+        if (resumeSessionId) {
+          args.push('--resume-session', resumeSessionId);
         }
 
         if (options.model) {

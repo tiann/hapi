@@ -212,7 +212,12 @@ function AppInner() {
             })
     }, [api, queryClient, selectedSessionId, startSync, endSync])
 
-    const handleSseEvent = useCallback(() => {}, [])
+    const handleSseEvent = useCallback((event: SyncEvent) => {
+        // When a session becomes active after resume, fetch its message history
+        if (event.type === 'session-updated' && 'sessionId' in event && event.sessionId === selectedSessionId && api) {
+            void fetchLatestMessages(api, event.sessionId)
+        }
+    }, [selectedSessionId, api])
     const handleToast = useCallback((event: ToastEvent) => {
         addToast({
             title: event.data.title,

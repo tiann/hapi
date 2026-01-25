@@ -212,7 +212,13 @@ export class ApiClient {
 
         const qs = params.toString()
         const url = `/api/sessions/${encodeURIComponent(sessionId)}/messages${qs ? `?${qs}` : ''}`
-        return await this.request<MessagesResponse>(url)
+        console.log('[ApiClient.getMessages] Fetching messages:', { sessionId, url, options })
+        const response = await this.request<MessagesResponse>(url)
+        console.log('[ApiClient.getMessages] Response received:', {
+            messageCount: response.messages.length,
+            hasMore: response.page.hasMore
+        })
+        return response
     }
 
     async getGitStatus(sessionId: string): Promise<GitCommandResponse> {

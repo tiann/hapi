@@ -13,6 +13,7 @@ export class GeminiSession extends AgentSessionBase<GeminiMode> {
     transcriptPath: string | null = null;
     readonly startedBy: 'runner' | 'terminal';
     readonly startingMode: 'local' | 'remote';
+    readonly resumeSessionId?: string;
     localLaunchFailure: LocalLaunchFailure | null = null;
 
     private transcriptPathCallbacks: Array<(path: string) => void> = [];
@@ -29,6 +30,7 @@ export class GeminiSession extends AgentSessionBase<GeminiMode> {
         startedBy: 'runner' | 'terminal';
         startingMode: 'local' | 'remote';
         permissionMode?: PermissionMode;
+        resumeSessionId?: string;
     }) {
         super({
             api: opts.api,
@@ -51,6 +53,7 @@ export class GeminiSession extends AgentSessionBase<GeminiMode> {
         this.startedBy = opts.startedBy;
         this.startingMode = opts.startingMode;
         this.permissionMode = opts.permissionMode;
+        this.resumeSessionId = opts.resumeSessionId;
     }
 
     onTranscriptPathFound(path: string): void {

@@ -251,10 +251,10 @@ function SessionItem(props: {
     const handleResume = async () => {
         try {
             await resumeSession()
-            toast.success(t('dialog.resume.success'))
+            // On success, user will be navigated to the session
         } catch (error) {
-            const message = error instanceof Error ? error.message : t('dialog.resume.error')
-            toast.error(message)
+            // Error already toasted by useSessionActions
+            // Keep menu open so user can retry
         }
     }
 

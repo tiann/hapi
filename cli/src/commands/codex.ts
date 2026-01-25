@@ -34,6 +34,8 @@ export const codexCommand: CommandDefinition = {
                 }
                 if (arg === '--started-by') {
                     options.startedBy = commandArgs[++i] as 'runner' | 'terminal'
+                } else if (arg === '--resume-session') {
+                    options.resumeSessionId = commandArgs[++i]
                 } else if (arg === '--yolo' || arg === '--dangerously-bypass-approvals-and-sandbox') {
                     options.permissionMode = 'yolo'
                     unknownArgs.push(arg)

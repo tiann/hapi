@@ -2,11 +2,13 @@ import { BaseSessionScanner, SessionFileScanEntry, SessionFileScanResult, Sessio
 import { logger } from "@/ui/logger";
 import { join, relative, resolve, sep } from "node:path";
 import { homedir } from "node:os";
-import { readFile, readdir, stat } from "node:fs/promises";
+import { readFile, readdir, stat, access } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import type { CodexSessionEvent } from "./codexEventConverter";
 
 interface CodexSessionScannerOptions {
     sessionId: string | null;
+    resumeFromSessionId?: string | null;
     onEvent: (event: CodexSessionEvent) => void;
     onSessionFound?: (sessionId: string) => void;
     onSessionMatchFailed?: (message: string) => void;
@@ -34,6 +36,11 @@ const DEFAULT_SESSION_START_WINDOW_MS = 2 * 60 * 1000;
 
 export async function createCodexSessionScanner(opts: CodexSessionScannerOptions): Promise<CodexSessionScanner> {
     const targetCwd = opts.cwd && opts.cwd.trim().length > 0 ? normalizePath(opts.cwd) : null;
+
+    // Load history from previous session if resuming
+    if (opts.resumeFromSessionId) {
+        await loadPreviousSessionHistory(opts.resumeFromSessionId, targetCwd, opts.onEvent);
+    }
 
     if (!targetCwd && !opts.sessionId) {
         const message = 'No cwd provided for Codex session matching; refusing to fallback.';
@@ -512,4 +519,122 @@ function shouldIncludeSessionPath(
     }
 
     return false;
+}
+
+/**
+ * Load and replay history from previous Codex session
+ */
+async function loadPreviousSessionHistory(
+    sessionId: string,
+    cwd: string | null,
+    onEvent: (event: CodexSessionEvent) => void
+): Promise<void> {
+    try {
+        const sessionFile = await findCodexSessionFile(sessionId, cwd);
+
+        if (!sessionFile) {
+            logger.warn(`[CODEX_SESSION_SCANNER] Previous session file not found: ${sessionId}`);
+            return;
+        }
+
+        logger.info(`[CODEX_SESSION_SCANNER] Loading history from session: ${sessionId}`);
+        const events = await readCodexSessionLog(sessionFile);
+
+        // Replay events
+        for (const event of events) {
+            onEvent(event);
+        }
+
+        logger.info(`[CODEX_SESSION_SCANNER] Replayed ${events.length} events from previous session`);
+    } catch (error) {
+        logger.error('[CODEX_SESSION_SCANNER] Failed to load previous session history:', error);
+        // Continue - partial history better than crash
+    }
+}
+
+/**
+ * Find Codex session JSONL file
+ */
+async function findCodexSessionFile(
+    sessionId: string,
+    cwd: string | null
+): Promise<string | null> {
+    try {
+        const codexHomeDir = process.env.CODEX_HOME || join(homedir(), '.codex');
+        const sessionsDir = join(codexHomeDir, 'sessions');
+
+        // Codex stores sessions at: ~/.codex/sessions/<cwd-hash>/<sessionId>.jsonl
+        if (cwd) {
+            // Generate hash of working directory (Codex convention)
+            const cwdHash = createHash('sha256').update(normalizePath(cwd)).digest('hex').slice(0, 16);
+            const sessionFile = join(sessionsDir, cwdHash, `${sessionId}.jsonl`);
+
+            try {
+                await access(sessionFile);
+                return sessionFile;
+            } catch {
+                // Fall through to search all directories
+            }
+        }
+
+        // If hash approach failed or no cwd, search all session directories
+        const entries = await readdir(sessionsDir, { withFileTypes: true });
+        for (const entry of entries) {
+            if (entry.isDirectory()) {
+                const sessionFile = join(sessionsDir, entry.name, `${sessionId}.jsonl`);
+                try {
+                    await access(sessionFile);
+                    return sessionFile;
+                } catch {
+                    // Continue searching
+                }
+            }
+        }
+
+        return null;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Read and parse Codex session log file
+ */
+async function readCodexSessionLog(filePath: string): Promise<CodexSessionEvent[]> {
+    const events: CodexSessionEvent[] = [];
+    const MAX_EVENTS = 40;
+    const MAX_CHARS = 16000;
+
+    const content = await readFile(filePath, 'utf-8');
+    const lines = content.trim().split('\n');
+
+    let totalChars = 0;
+
+    for (const line of lines) {
+        if (!line.trim()) continue;
+
+        try {
+            const event = JSON.parse(line) as CodexSessionEvent;
+
+            // Apply limits
+            if (events.length >= MAX_EVENTS) {
+                logger.warn(`[CODEX_SESSION_SCANNER] Reached max events (${MAX_EVENTS}), truncating history`);
+                break;
+            }
+
+            const eventSize = JSON.stringify(event).length;
+            if (totalChars + eventSize > MAX_CHARS) {
+                logger.warn(`[CODEX_SESSION_SCANNER] Reached max size (${MAX_CHARS} chars), truncating history`);
+                break;
+            }
+
+            events.push(event);
+            totalChars += eventSize;
+        } catch (parseError) {
+            logger.warn('[CODEX_SESSION_SCANNER] Failed to parse event line, skipping:', parseError);
+            // Continue - partial history better than none
+        }
+    }
+
+    return events;
 }

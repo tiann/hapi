@@ -28,7 +28,7 @@ export interface StartOptions {
     claudeArgs?: string[]
     startedBy?: 'runner' | 'terminal'
     hapiSessionId?: string
-    resumeClaudeSession?: string
+    resumeSessionId?: string
 }
 
 export async function runClaude(options: StartOptions = {}): Promise<void> {
@@ -54,7 +54,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         workingDirectory,
         agentState: initialState,
         sessionId: options.hapiSessionId,  // Changed from 'tag' to 'sessionId'
-        resumeClaudeSession: options.resumeClaudeSession
+        resumeSessionId: options.resumeSessionId
     });
     logger.debug(`Session created: ${sessionInfo.id}`);
 
@@ -318,8 +318,8 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
     let loopError: unknown = null;
     // Prepare Claude args - add --resume if needed
     const claudeArgs = [...(options.claudeArgs || [])];
-    if (options.resumeClaudeSession) {
-        claudeArgs.push('--resume', options.resumeClaudeSession);
+    if (options.resumeSessionId) {
+        claudeArgs.push('--resume', options.resumeSessionId);
     }
 
     let loopFailed = false;

@@ -208,12 +208,20 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return sessionResult
         }
 
+        console.log('[POST /sessions/:id/resume] Resume request:', {
+            sessionId: sessionResult.sessionId,
+            isActive: sessionResult.session.active
+        })
+
         if (sessionResult.session.active) {
             return c.json({ error: 'Session is already active' }, 409)
         }
 
         try {
             await engine.resumeSession(sessionResult.sessionId)
+            console.log('[POST /sessions/:id/resume] Resume successful:', {
+                sessionId: sessionResult.sessionId
+            })
             return c.json({ ok: true })
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Failed to resume session'

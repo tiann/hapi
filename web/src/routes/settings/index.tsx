@@ -327,10 +327,36 @@ export default function SettingsPage() {
                             App Version
                         </div>
 
-                        {/* Version display */}
+                        {/* Git describe display (primary version string) */}
                         <div className="px-3 py-3 flex items-center justify-between">
                             <span className="text-[var(--app-fg)]">Version</span>
+                            <div className="flex items-center gap-2">
+                                <span className="text-[var(--app-hint)] font-mono text-sm">{version.gitDescribe}</span>
+                                {version.isDirty && (
+                                    <span
+                                        className="px-1.5 py-0.5 text-xs font-semibold rounded bg-amber-500/20 text-amber-600 dark:text-amber-400"
+                                        title="Build contains uncommitted changes"
+                                    >
+                                        DIRTY
+                                    </span>
+                                )}
+                            </div>
+                        </div>
+
+                        {/* SHA display (for reference) */}
+                        <div className="px-3 py-3 flex items-center justify-between border-t border-[var(--app-divider)]">
+                            <span className="text-[var(--app-fg)]">Commit</span>
                             <span className="text-[var(--app-hint)] font-mono text-sm">{version.shortSha}</span>
+                        </div>
+
+                        {/* Build time display */}
+                        <div className="px-3 py-3 flex items-center justify-between border-t border-[var(--app-divider)]">
+                            <span className="text-[var(--app-fg)]">Built</span>
+                            <span className="text-[var(--app-hint)] font-mono text-sm">
+                                {version.buildTime !== 'unknown'
+                                    ? new Date(version.buildTime).toLocaleString()
+                                    : 'unknown'}
+                            </span>
                         </div>
 
                         {/* Check for updates button */}
