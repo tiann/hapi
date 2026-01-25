@@ -80,8 +80,8 @@ export async function codexLocal(opts: {
             spawnName: 'codex',
             installHint: 'Codex CLI',
             includeCause: true,
-            logExit: true,
-            shell: process.platform === 'win32'
+            logExit: true
+            // Note: shell option omitted to let spawnWithAbort handle platform-specific logic
         });
     } finally {
         process.stdin.resume();

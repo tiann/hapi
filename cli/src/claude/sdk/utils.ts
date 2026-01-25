@@ -19,22 +19,48 @@ function findGlobalClaudePath(): string | null {
     
     // PRIMARY: Check if 'claude' command works directly from home dir
     try {
-        execSync('claude --version', { 
-            encoding: 'utf8', 
+        const execOptions: import('node:child_process').ExecSyncOptionsWithStringEncoding = {
+            encoding: 'utf8',
             stdio: ['pipe', 'pipe', 'pipe'],
             cwd: homeDir
-        })
+        }
+        if (process.platform === 'win32') {
+            (execOptions as any).shell = true  // Required on Windows for .cmd resolution
+        }
+        execSync('claude --version', execOptions as any)
         logger.debug('[Claude SDK] Global claude command available')
         return 'claude'
     } catch {
         // claude command not available globally
     }
 
-    // FALLBACK for Unix: try which to get actual path
-    if (process.platform !== 'win32') {
+    // FALLBACK: use where/which to verify claude exists
+    if (process.platform === 'win32') {
+        // Windows: use 'where' command to verify claude.cmd exists
         try {
-            const result = execSync('which claude', { 
-                encoding: 'utf8', 
+            const result = execSync('where claude 2>nul', {
+                encoding: 'utf8' as BufferEncoding,
+                stdio: ['pipe', 'pipe', 'pipe'],
+                cwd: homeDir,
+                shell: true as any
+            }).trim()
+            if (result) {
+                // Found claude.cmd, but return 'claude' as command name
+                // so query.ts can use shell: true properly
+                const firstMatch = result.split('\n')[0].trim()
+                if (firstMatch && existsSync(firstMatch)) {
+                    logger.debug(`[Claude SDK] Found global claude via where: ${firstMatch}`)
+                    return 'claude'  // Return command name, not full path
+                }
+            }
+        } catch {
+            // where didn't find it or failed
+        }
+    } else {
+        // Unix: use 'which' command to get actual path
+        try {
+            const result = execSync('which claude', {
+                encoding: 'utf8',
                 stdio: ['pipe', 'pipe', 'pipe'],
                 cwd: homeDir
             }).trim()

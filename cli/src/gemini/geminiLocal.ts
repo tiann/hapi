@@ -44,12 +44,12 @@ export async function geminiLocal(opts: {
             cwd: opts.path,
             env,
             signal: opts.abort,
-            shell: process.platform === 'win32',
             logLabel: 'GeminiLocal',
             spawnName: 'gemini',
             installHint: 'Gemini CLI',
             includeCause: true,
             logExit: true
+            // Note: shell option omitted to let spawnWithAbort handle platform-specific logic
         });
     } finally {
         process.stdin.resume();

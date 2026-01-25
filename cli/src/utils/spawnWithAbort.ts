@@ -42,16 +42,36 @@ export async function spawnWithAbort(options: SpawnWithAbortOptions): Promise<vo
         logger.debug(`${logPrefix}${message}`, ...args);
     };
 
+    // On Windows, use shell=false with .cmd extension to avoid cmd.exe argument parsing issues
+    // When shell=true, cmd.exe can misinterpret special characters in arguments
+    let command = options.command;
+    let useShell = options.shell;
+    if (process.platform === 'win32') {
+        // For Windows, prefer direct spawn without shell
+        if (useShell === undefined || useShell === true) {
+            // Check if command is a simple name (no path separators) without extension
+            if (!command.includes('.') && !command.includes('\\') && !command.includes('/')) {
+                // Add .cmd extension for batch files (commonly used for npm CLI tools)
+                command = `${command}.cmd`;
+            }
+            // Use shell=false for direct execution
+            useShell = false;
+        }
+    }
+
+    // Debug: Log spawn parameters
+    logDebug(`Spawning: command=${command}, args.length=${options.args.length}, shell=${useShell}, platform=${process.platform}`);
+
     await new Promise<void>((resolve, reject) => {
         // Note: We intentionally do NOT pass signal to spawn() because Node.js's
         // built-in abort handling only kills the direct child, not grandchildren.
         // Instead, we handle abort ourselves using killProcessByChildProcess which
         // kills the entire process tree to prevent orphan processes.
-        const child = spawn(options.command, options.args, {
+        const child = spawn(command, options.args, {
             stdio,
             cwd: options.cwd,
             env: options.env,
-            shell: options.shell
+            shell: useShell
         });
 
         let abortKillTimeout: NodeJS.Timeout | null = null;

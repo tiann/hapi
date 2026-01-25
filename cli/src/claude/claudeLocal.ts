@@ -97,8 +97,9 @@ export async function claudeLocal(opts: {
             spawnName: 'claude',
             installHint: 'Claude CLI',
             includeCause: true,
-            logExit: true,
-            shell: process.platform === 'win32'
+            logExit: true
+            // Note: shell option is omitted to let spawnWithAbort handle platform-specific logic
+            // On Windows, it will use shell=false with .cmd extension to avoid cmd.exe parsing issues
         });
     } finally {
         cleanupMcpConfig?.();
