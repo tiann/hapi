@@ -42,7 +42,7 @@ function Pre(props: ComponentPropsWithoutRef<'pre'>) {
             <pre
                 {...rest}
                 className={cn(
-                    'aui-md-pre m-0 w-max min-w-full rounded-b-md rounded-t-none bg-[var(--app-code-bg)] p-2 text-xs',
+                    'aui-md-pre m-0 w-max min-w-full rounded-b-md rounded-t-none bg-[var(--app-code-bg)] p-2 text-sm',
                     className
                 )}
             />
@@ -160,23 +160,23 @@ function H1(props: ComponentPropsWithoutRef<'h1'>) {
 }
 
 function H2(props: ComponentPropsWithoutRef<'h2'>) {
-    return <h2 {...props} className={cn('aui-md-h2 mt-3 text-sm font-semibold', props.className)} />
+    return <h2 {...props} className={cn('aui-md-h2 mt-3 text-base font-semibold', props.className)} />
 }
 
 function H3(props: ComponentPropsWithoutRef<'h3'>) {
-    return <h3 {...props} className={cn('aui-md-h3 mt-2 text-sm font-semibold', props.className)} />
+    return <h3 {...props} className={cn('aui-md-h3 mt-2 text-base font-semibold', props.className)} />
 }
 
 function H4(props: ComponentPropsWithoutRef<'h4'>) {
-    return <h4 {...props} className={cn('aui-md-h4 mt-2 text-sm font-semibold', props.className)} />
+    return <h4 {...props} className={cn('aui-md-h4 mt-2 text-base font-semibold', props.className)} />
 }
 
 function H5(props: ComponentPropsWithoutRef<'h5'>) {
-    return <h5 {...props} className={cn('aui-md-h5 mt-2 text-sm font-semibold', props.className)} />
+    return <h5 {...props} className={cn('aui-md-h5 mt-2 text-base font-semibold', props.className)} />
 }
 
 function H6(props: ComponentPropsWithoutRef<'h6'>) {
-    return <h6 {...props} className={cn('aui-md-h6 mt-2 text-sm font-semibold', props.className)} />
+    return <h6 {...props} className={cn('aui-md-h6 mt-2 text-base font-semibold', props.className)} />
 }
 
 function Strong(props: ComponentPropsWithoutRef<'strong'>) {
@@ -225,7 +225,7 @@ export function MarkdownText() {
         <MarkdownTextPrimitive
             remarkPlugins={MARKDOWN_PLUGINS}
             components={defaultComponents}
-            className={cn('aui-md min-w-0 max-w-full break-words text-sm')}
+            className={cn('aui-md min-w-0 max-w-full break-words text-base')}
         />
     )
 }

@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import { useTranslation, type Locale } from '@/lib/use-translation'
 import { useAppGoBack } from '@/hooks/useAppGoBack'
 import { getElevenLabsSupportedLanguages, getLanguageDisplayName, type Language } from '@/lib/languages'
+import { fontScaleOptions, useFontScale, type FontScale } from '@/hooks/useFontScale'
 
 const locales: { value: Locale; nativeLabel: string }[] = [
     { value: 'en', nativeLabel: 'English' },
@@ -71,9 +72,12 @@ export default function SettingsPage() {
     const { t, locale, setLocale } = useTranslation()
     const goBack = useAppGoBack()
     const [isOpen, setIsOpen] = useState(false)
+    const [isFontOpen, setIsFontOpen] = useState(false)
     const [isVoiceOpen, setIsVoiceOpen] = useState(false)
     const containerRef = useRef<HTMLDivElement>(null)
+    const fontContainerRef = useRef<HTMLDivElement>(null)
     const voiceContainerRef = useRef<HTMLDivElement>(null)
+    const { fontScale, setFontScale } = useFontScale()
 
     // Voice language state - read from localStorage
     const [voiceLanguage, setVoiceLanguage] = useState<string | null>(() => {
@@ -81,11 +85,17 @@ export default function SettingsPage() {
     })
 
     const currentLocale = locales.find((loc) => loc.value === locale)
+    const currentFontScaleLabel = fontScaleOptions.find((opt) => opt.value === fontScale)?.label ?? '100%'
     const currentVoiceLanguage = voiceLanguages.find((lang) => lang.code === voiceLanguage)
 
     const handleLocaleChange = (newLocale: Locale) => {
         setLocale(newLocale)
         setIsOpen(false)
+    }
+
+    const handleFontScaleChange = (newScale: FontScale) => {
+        setFontScale(newScale)
+        setIsFontOpen(false)
     }
 
     const handleVoiceLanguageChange = (language: Language) => {
@@ -100,11 +110,14 @@ export default function SettingsPage() {
 
     // Close dropdown when clicking outside
     useEffect(() => {
-        if (!isOpen && !isVoiceOpen) return
+        if (!isOpen && !isFontOpen && !isVoiceOpen) return
 
         const handleClickOutside = (event: MouseEvent) => {
             if (isOpen && containerRef.current && !containerRef.current.contains(event.target as Node)) {
                 setIsOpen(false)
+            }
+            if (isFontOpen && fontContainerRef.current && !fontContainerRef.current.contains(event.target as Node)) {
+                setIsFontOpen(false)
             }
             if (isVoiceOpen && voiceContainerRef.current && !voiceContainerRef.current.contains(event.target as Node)) {
                 setIsVoiceOpen(false)
@@ -113,22 +126,23 @@ export default function SettingsPage() {
 
         document.addEventListener('mousedown', handleClickOutside)
         return () => document.removeEventListener('mousedown', handleClickOutside)
-    }, [isOpen, isVoiceOpen])
+    }, [isOpen, isFontOpen, isVoiceOpen])
 
     // Close on escape key
     useEffect(() => {
-        if (!isOpen && !isVoiceOpen) return
+        if (!isOpen && !isFontOpen && !isVoiceOpen) return
 
         const handleEscape = (event: KeyboardEvent) => {
             if (event.key === 'Escape') {
                 setIsOpen(false)
+                setIsFontOpen(false)
                 setIsVoiceOpen(false)
             }
         }
 
         document.addEventListener('keydown', handleEscape)
         return () => document.removeEventListener('keydown', handleEscape)
-    }, [isOpen, isVoiceOpen])
+    }, [isOpen, isFontOpen, isVoiceOpen])
 
     return (
         <div className="flex h-full flex-col">
@@ -182,13 +196,68 @@ export default function SettingsPage() {
                                                 role="option"
                                                 aria-selected={isSelected}
                                                 onClick={() => handleLocaleChange(loc.value)}
-                                                className={`flex items-center justify-between w-full px-3 py-2 text-sm text-left transition-colors ${
+                                                className={`flex items-center justify-between w-full px-3 py-2 text-base text-left transition-colors ${
                                                     isSelected
                                                         ? 'text-[var(--app-link)] bg-[var(--app-subtle-bg)]'
                                                         : 'text-[var(--app-fg)] hover:bg-[var(--app-subtle-bg)]'
                                                 }`}
                                             >
                                                 <span>{loc.nativeLabel}</span>
+                                                {isSelected && (
+                                                    <span className="ml-2 text-[var(--app-link)]">
+                                                        <CheckIcon />
+                                                    </span>
+                                                )}
+                                            </button>
+                                        )
+                                    })}
+                                </div>
+                            )}
+                        </div>
+                    </div>
+
+                    {/* Display section */}
+                    <div className="border-b border-[var(--app-divider)]">
+                        <div className="px-3 py-2 text-xs font-semibold text-[var(--app-hint)] uppercase tracking-wide">
+                            {t('settings.display.title')}
+                        </div>
+                        <div ref={fontContainerRef} className="relative">
+                            <button
+                                type="button"
+                                onClick={() => setIsFontOpen(!isFontOpen)}
+                                className="flex w-full items-center justify-between px-3 py-3 text-left transition-colors hover:bg-[var(--app-subtle-bg)]"
+                                aria-expanded={isFontOpen}
+                                aria-haspopup="listbox"
+                            >
+                                <span className="text-[var(--app-fg)]">{t('settings.display.fontSize')}</span>
+                                <span className="flex items-center gap-1 text-[var(--app-hint)]">
+                                    <span>{currentFontScaleLabel}</span>
+                                    <ChevronDownIcon className={`transition-transform ${isFontOpen ? 'rotate-180' : ''}`} />
+                                </span>
+                            </button>
+
+                            {isFontOpen && (
+                                <div
+                                    className="absolute right-3 top-full mt-1 min-w-[140px] rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] shadow-lg overflow-hidden z-50"
+                                    role="listbox"
+                                    aria-label={t('settings.display.fontSize')}
+                                >
+                                    {fontScaleOptions.map((opt) => {
+                                        const isSelected = fontScale === opt.value
+                                        return (
+                                            <button
+                                                key={opt.value}
+                                                type="button"
+                                                role="option"
+                                                aria-selected={isSelected}
+                                                onClick={() => handleFontScaleChange(opt.value)}
+                                                className={`flex items-center justify-between w-full px-3 py-2 text-base text-left transition-colors ${
+                                                    isSelected
+                                                        ? 'text-[var(--app-link)] bg-[var(--app-subtle-bg)]'
+                                                        : 'text-[var(--app-fg)] hover:bg-[var(--app-subtle-bg)]'
+                                                }`}
+                                            >
+                                                <span>{opt.label}</span>
                                                 {isSelected && (
                                                     <span className="ml-2 text-[var(--app-link)]">
                                                         <CheckIcon />
@@ -246,7 +315,7 @@ export default function SettingsPage() {
                                                 role="option"
                                                 aria-selected={isSelected}
                                                 onClick={() => handleVoiceLanguageChange(lang)}
-                                                className={`flex items-center justify-between w-full px-3 py-2 text-sm text-left transition-colors ${
+                                                className={`flex items-center justify-between w-full px-3 py-2 text-base text-left transition-colors ${
                                                     isSelected
                                                         ? 'text-[var(--app-link)] bg-[var(--app-subtle-bg)]'
                                                         : 'text-[var(--app-fg)] hover:bg-[var(--app-subtle-bg)]'

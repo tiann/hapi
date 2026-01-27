@@ -42,6 +42,8 @@
     --app-badge-error-bg: rgba(239, 68, 68, 0.18);
     --app-badge-error-text: #b91c1c;
     --app-badge-error-border: rgba(239, 68, 68, 0.3);
+
+    --app-font-scale: 1;
 }
 
 [data-theme="dark"] {
@@ -89,6 +91,7 @@
 
 html,
 body {
+    font-size: calc(100% * var(--app-font-scale));
     height: 100vh;
     height: 100dvh;
     height: var(--tg-viewport-stable-height, 100dvh);
@@ -126,7 +129,7 @@ body {
     margin: 0;
     padding: 0.5rem;
     background-color: transparent !important;
-    font-size: 0.75rem;
+    font-size: 0.875rem;
 }
 
 .aui-md-codeblock pre.shiki code {
