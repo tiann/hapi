@@ -2,12 +2,31 @@
  * Error handling utilities for API requests
  */
 
+import type { AxiosResponse } from 'axios'
+
 export type ErrorInfo = {
     message: string
     messageLower: string
     axiosCode?: string
     httpStatus?: number
     responseErrorText: string
+    serverProtocolVersion?: number
+}
+
+/**
+ * Create an Error for a successful HTTP response whose body fails schema validation.
+ * Attaches the protocol version header so callers can detect version mismatch.
+ */
+export function apiValidationError(message: string, response: AxiosResponse): Error {
+    const err = new Error(message)
+    const raw = response.headers?.['x-hapi-protocol-version']
+    if (raw != null) {
+        const pv = Number(raw)
+        if (Number.isFinite(pv)) {
+            ;(err as unknown as Record<string, unknown>).serverProtocolVersion = pv
+        }
+    }
+    return err
 }
 
 /**
@@ -33,12 +52,29 @@ export function extractErrorInfo(error: unknown): ErrorInfo {
         : undefined
     const responseErrorText = typeof responseError === 'string' ? responseError : ''
 
+    // Protocol version: prefer direct property (set by apiValidationError),
+    // fall back to axios response header (set by server on error responses)
+    let serverProtocolVersion: number | undefined
+    if (typeof record.serverProtocolVersion === 'number' && Number.isFinite(record.serverProtocolVersion)) {
+        serverProtocolVersion = record.serverProtocolVersion
+    } else {
+        const headers = typeof response?.headers === 'object' && response.headers !== null
+            ? (response.headers as Record<string, unknown>)
+            : undefined
+        const protocolHeader = headers?.['x-hapi-protocol-version']
+        if (typeof protocolHeader === 'string' && protocolHeader !== '') {
+            const pv = Number(protocolHeader)
+            if (Number.isFinite(pv)) serverProtocolVersion = pv
+        }
+    }
+
     return {
         message,
         messageLower,
         axiosCode,
         httpStatus,
-        responseErrorText
+        responseErrorText,
+        serverProtocolVersion
     }
 }
 

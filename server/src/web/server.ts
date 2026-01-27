@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { existsSync } from 'node:fs'
 import { serveStatic } from 'hono/bun'
 import { configuration } from '../configuration'
+import { PROTOCOL_VERSION } from '@hapi/protocol'
 import type { SyncEngine } from '../sync/syncEngine'
 import { createAuthMiddleware, type WebAppEnv } from './middleware/auth'
 import { createAuthRoutes } from './routes/auth'
@@ -70,7 +71,7 @@ function createWebApp(options: {
     app.use('*', logger())
 
     // Health check endpoint (no auth required)
-    app.get('/health', (c) => c.json({ status: 'ok' }))
+    app.get('/health', (c) => c.json({ status: 'ok', protocolVersion: PROTOCOL_VERSION }))
 
     const corsOrigins = options.corsOrigins ?? configuration.corsOrigins
     const corsOriginOption = corsOrigins.includes('*') ? '*' : corsOrigins

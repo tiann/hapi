@@ -5,6 +5,7 @@ import axios from 'axios'
 import type { ZodType } from 'zod'
 import { logger } from '@/ui/logger'
 import { backoff } from '@/utils/time'
+import { apiValidationError } from '@/utils/errorUtils'
 import { AsyncLock } from '@/utils/lock'
 import type { RawJSONLines } from '@/claude/types'
 import { configuration } from '@/configuration'
@@ -281,7 +282,7 @@ export class ApiSessionClient extends EventEmitter {
 
                 const parsed = CliMessagesResponseSchema.safeParse(response.data)
                 if (!parsed.success) {
-                    throw new Error('Invalid /cli/sessions/:id/messages response')
+                    throw apiValidationError('Invalid /cli/sessions/:id/messages response', response)
                 }
 
                 const messages = parsed.data.messages

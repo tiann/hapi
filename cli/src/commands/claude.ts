@@ -1,6 +1,7 @@
 import chalk from 'chalk'
 import { execFileSync } from 'node:child_process'
 import { z } from 'zod'
+import { PROTOCOL_VERSION } from '@hapi/protocol'
 import type { StartOptions } from '@/claude/runClaude'
 import { configuration } from '@/configuration'
 import { isRunnerRunningCurrentlyInstalledHappyVersion } from '@/runner/controlClient'
@@ -134,7 +135,7 @@ ${chalk.bold.cyan('Claude Code Options (from `claude --help`):')}
             const { runClaude } = await import('@/claude/runClaude')
             await runClaude(options)
         } catch (error) {
-            const { message, messageLower, axiosCode, httpStatus, responseErrorText } = extractErrorInfo(error)
+            const { message, messageLower, axiosCode, httpStatus, responseErrorText, serverProtocolVersion } = extractErrorInfo(error)
 
             if (
                 axiosCode === 'ECONNREFUSED' ||
@@ -166,6 +167,14 @@ ${chalk.bold.cyan('Claude Code Options (from `claude --help`):')}
                 console.error(chalk.gray('  Run: hapi auth login'))
             } else {
                 console.error(chalk.red('Error:'), message)
+            }
+
+            if (serverProtocolVersion !== undefined && serverProtocolVersion !== PROTOCOL_VERSION) {
+                if (serverProtocolVersion < PROTOCOL_VERSION) {
+                    console.error(chalk.yellow(`  Hint: server protocol version (${serverProtocolVersion}) is behind CLI (${PROTOCOL_VERSION}). Please update the server.`))
+                } else {
+                    console.error(chalk.yellow(`  Hint: CLI protocol version (${PROTOCOL_VERSION}) is behind server (${serverProtocolVersion}). Please update the CLI.`))
+                }
             }
 
             if (process.env.DEBUG) {

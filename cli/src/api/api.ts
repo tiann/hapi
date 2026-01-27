@@ -3,6 +3,7 @@ import type { AgentState, CreateMachineResponse, CreateSessionResponse, RunnerSt
 import { AgentStateSchema, CreateMachineResponseSchema, CreateSessionResponseSchema, RunnerStateSchema, MachineMetadataSchema, MetadataSchema } from '@/api/types'
 import { configuration } from '@/configuration'
 import { getAuthToken } from '@/api/auth'
+import { apiValidationError } from '@/utils/errorUtils'
 import { ApiMachineClient } from './apiMachine'
 import { ApiSessionClient } from './apiSession'
 
@@ -36,7 +37,7 @@ export class ApiClient {
 
         const parsed = CreateSessionResponseSchema.safeParse(response.data)
         if (!parsed.success) {
-            throw new Error('Invalid /cli/sessions response')
+            throw apiValidationError('Invalid /cli/sessions response', response)
         }
 
         const raw = parsed.data.session
@@ -96,7 +97,7 @@ export class ApiClient {
 
         const parsed = CreateMachineResponseSchema.safeParse(response.data)
         if (!parsed.success) {
-            throw new Error('Invalid /cli/machines response')
+            throw apiValidationError('Invalid /cli/machines response', response)
         }
 
         const raw = parsed.data.machine
