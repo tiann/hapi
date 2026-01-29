@@ -72,6 +72,9 @@ export class NotificationHub {
         }
         this.lastKnownRequests.delete(sessionId)
         this.lastReadyNotificationAt.delete(sessionId)
+        for (const channel of this.channels) {
+            channel.clearSession?.(sessionId)
+        }
     }
 
     private getNotifiableSession(sessionId: string): Session | null {

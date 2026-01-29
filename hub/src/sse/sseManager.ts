@@ -104,6 +104,15 @@ export class SSEManager {
         return successCount
     }
 
+    hasAnyConnection(namespace: string): boolean {
+        for (const connection of this.connections.values()) {
+            if (connection.namespace === namespace) {
+                return true
+            }
+        }
+        return false
+    }
+
     broadcast(event: SyncEvent): void {
         for (const connection of this.connections.values()) {
             if (!this.shouldSend(connection, event)) {
@@ -131,6 +140,9 @@ export class SSEManager {
 
         this.heartbeatTimer = setInterval(() => {
             for (const connection of this.connections.values()) {
+                if (this.visibilityTracker.isVisibleConnection(connection.id)) {
+                    this.visibilityTracker.markVisible(connection.namespace)
+                }
                 void Promise.resolve(connection.sendHeartbeat()).catch(() => {
                     this.unsubscribe(connection.id)
                 })

@@ -194,7 +194,9 @@ async function main() {
             syncEngine,
             botToken: config.telegramBotToken,
             publicUrl: config.publicUrl,
-            store
+            store,
+            sseManager,
+            visibilityTracker
         })
         // Only add to notification channels if notifications are enabled
         if (config.telegramNotification) {

@@ -11,7 +11,9 @@ import { handleCallback, CallbackContext } from './callbacks'
 import { formatSessionNotification, createNotificationKeyboard } from './sessionView'
 import { getAgentName } from '../notifications/sessionInfo'
 import type { NotificationChannel } from '../notifications/notificationTypes'
+import type { SSEManager } from '../sse/sseManager'
 import type { Store } from '../store'
+import type { VisibilityTracker } from '../visibility/visibilityTracker'
 
 export interface BotContext extends Context {
     // Extended context for future use
@@ -22,6 +24,11 @@ export interface HappyBotConfig {
     botToken: string
     publicUrl: string
     store: Store
+    sseManager?: SSEManager
+    visibilityTracker?: VisibilityTracker
+    recentVisibleWindowMs?: number
+    retryBaseDelayMs?: number
+    retryMaxAttempts?: number
 }
 
 /**
@@ -33,11 +40,22 @@ export class HappyBot implements NotificationChannel {
     private isRunning = false
     private readonly publicUrl: string
     private readonly store: Store
+    private readonly sseManager?: SSEManager
+    private readonly visibilityTracker?: VisibilityTracker
+    private readonly recentVisibleWindowMs: number
+    private readonly retryBaseDelayMs: number
+    private readonly retryMaxAttempts: number
+    private readonly retryStates = new Map<string, { timer: NodeJS.Timeout | null; attempt: number }>()
 
     constructor(config: HappyBotConfig) {
         this.syncEngine = config.syncEngine
         this.publicUrl = config.publicUrl
         this.store = config.store
+        this.sseManager = config.sseManager
+        this.visibilityTracker = config.visibilityTracker
+        this.recentVisibleWindowMs = config.recentVisibleWindowMs ?? 60_000
+        this.retryBaseDelayMs = config.retryBaseDelayMs ?? 60_000
+        this.retryMaxAttempts = config.retryMaxAttempts ?? 3
 
         this.bot = new Bot<BotContext>(config.botToken)
         this.setupMiddleware()
@@ -89,6 +107,7 @@ export class HappyBot implements NotificationChannel {
         console.log('[HAPIBot] Stopping Telegram bot...')
 
         await this.bot.stop()
+        this.clearAllRetries()
         this.isRunning = false
     }
 
@@ -181,11 +200,45 @@ export class HappyBot implements NotificationChannel {
         return stored?.namespace ?? null
     }
 
+    private hasVisibleSseClient(namespace: string): boolean {
+        if (!this.visibilityTracker) {
+            return false
+        }
+        return this.visibilityTracker.hasRecentVisibleConnection(
+            namespace,
+            this.recentVisibleWindowMs
+        )
+    }
+
+    private hasAnySseClient(namespace: string): boolean {
+        return this.sseManager?.hasAnyConnection(namespace) ?? false
+    }
+
+    private shouldRetry(namespace: string): boolean {
+        const hasAny = this.hasAnySseClient(namespace)
+        if (!hasAny) {
+            return true
+        }
+        if (!this.visibilityTracker) {
+            return false
+        }
+        const hasVisible = this.visibilityTracker.hasVisibleConnection(namespace)
+        const hasRecentVisible = this.visibilityTracker.hasRecentVisibleActivity(
+            namespace,
+            this.recentVisibleWindowMs
+        )
+        return !hasVisible && !hasRecentVisible
+    }
+
     /**
      * Send a notification when agent is ready for input.
      */
     async sendReady(session: Session): Promise<void> {
         if (!session.active) {
+            return
+        }
+
+        if (this.hasVisibleSseClient(session.namespace)) {
             return
         }
 
@@ -199,17 +252,13 @@ export class HappyBot implements NotificationChannel {
             return
         }
 
-        for (const chatId of chatIds) {
-            try {
-                await this.bot.api.sendMessage(
-                    chatId,
-                    `It's ready!\n\n${agentName} is waiting for your command`,
-                    { reply_markup: keyboard }
-                )
-            } catch (error) {
-                console.error(`[HAPIBot] Failed to send ready notification to chat ${chatId}:`, error)
-            }
-        }
+        await this.sendWithRetry(
+            'ready',
+            session,
+            chatIds,
+            `It's ready!\n\n${agentName} is waiting for your command`,
+            keyboard
+        )
     }
 
     /**
@@ -217,6 +266,10 @@ export class HappyBot implements NotificationChannel {
      */
     async sendPermissionRequest(session: Session): Promise<void> {
         if (!session.active) {
+            return
+        }
+
+        if (this.hasVisibleSseClient(session.namespace)) {
             return
         }
 
@@ -228,6 +281,73 @@ export class HappyBot implements NotificationChannel {
             return
         }
 
+        await this.sendWithRetry('permission', session, chatIds, text, keyboard)
+    }
+
+    clearSession(sessionId: string): void {
+        this.clearRetry(`ready:${sessionId}`)
+        this.clearRetry(`permission:${sessionId}`)
+    }
+
+    private async sendWithRetry(
+        type: 'permission' | 'ready',
+        session: Session,
+        chatIds: number[],
+        text: string,
+        keyboard?: InlineKeyboard
+    ): Promise<void> {
+        const key = `${type}:${session.id}`
+        this.clearRetry(key)
+
+        await this.sendToChats(chatIds, text, keyboard)
+
+        if (!this.sseManager) {
+            return
+        }
+
+        this.retryStates.set(key, { timer: null, attempt: 0 })
+        this.scheduleRetry(key, type, session, chatIds, text, keyboard)
+    }
+
+    private scheduleRetry(
+        key: string,
+        type: 'permission' | 'ready',
+        session: Session,
+        chatIds: number[],
+        text: string,
+        keyboard?: InlineKeyboard
+    ): void {
+        const state = this.retryStates.get(key)
+        if (!state) {
+            return
+        }
+
+        if (state.attempt >= this.retryMaxAttempts) {
+            this.clearRetry(key)
+            return
+        }
+
+        const delay = this.retryBaseDelayMs * Math.pow(2, state.attempt)
+        state.timer = setTimeout(async () => {
+            if (!this.shouldRetry(session.namespace)) {
+                this.clearRetry(key)
+                return
+            }
+
+            const nextAttempt = state.attempt + 1
+            await this.sendToChats(chatIds, text, keyboard)
+
+            const next = this.retryStates.get(key)
+            if (!next) {
+                return
+            }
+
+            next.attempt = nextAttempt
+            this.scheduleRetry(key, type, session, chatIds, text, keyboard)
+        }, delay)
+    }
+
+    private async sendToChats(chatIds: number[], text: string, keyboard?: InlineKeyboard): Promise<void> {
         for (const chatId of chatIds) {
             try {
                 await this.bot.api.sendMessage(chatId, text, {
@@ -236,6 +356,23 @@ export class HappyBot implements NotificationChannel {
             } catch (error) {
                 console.error(`[HAPIBot] Failed to send notification to chat ${chatId}:`, error)
             }
+        }
+    }
+
+    private clearRetry(key: string): void {
+        const existing = this.retryStates.get(key)
+        if (!existing) {
+            return
+        }
+        if (existing.timer) {
+            clearTimeout(existing.timer)
+        }
+        this.retryStates.delete(key)
+    }
+
+    private clearAllRetries(): void {
+        for (const key of this.retryStates.keys()) {
+            this.clearRetry(key)
         }
     }
 }
