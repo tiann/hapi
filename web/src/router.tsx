@@ -142,7 +142,7 @@ function SessionsPage() {
                     </div>
                 </div>
 
-                <div className="flex-1 min-h-0 overflow-y-auto">
+                <div className="flex-1 min-h-0 overflow-y-auto desktop-scrollbar-left">
                     {error ? (
                         <div className="mx-auto w-full max-w-content px-3 py-2">
                             <div className="text-sm text-red-600">{error}</div>

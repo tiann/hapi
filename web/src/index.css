@@ -114,6 +114,17 @@ body {
     }
 }
 
+/* Desktop-only: move the sidebar scrollbar to the left without flipping content. */
+@media (min-width: 1024px) {
+    .desktop-scrollbar-left {
+        direction: rtl;
+    }
+
+    .desktop-scrollbar-left > * {
+        direction: ltr;
+    }
+}
+
 /* Markdown styles */
 .markdown-content a { color: var(--app-link); text-decoration: underline; }
 .markdown-content code { background: var(--app-inline-code-bg); padding: 0.1em 0.3em; border-radius: 4px; font-size: 0.9em; }
