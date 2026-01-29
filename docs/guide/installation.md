@@ -86,6 +86,8 @@ On first run, HAPI:
 ```
 </details>
 
+Settings keys: see [settings.json reference](./settings.md).
+
 <details>
 <summary>Environment variables</summary>
 
