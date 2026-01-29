@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
-import { I18nContext, type I18nContextValue } from '@/lib/i18n-context'
+import { I18nContext, I18nProvider } from '@/lib/i18n-context'
+import { en } from '@/lib/locales'
 import { PROTOCOL_VERSION } from '@hapi/protocol'
 import SettingsPage from './index'
 
@@ -30,35 +31,23 @@ vi.mock('@/lib/languages', () => ({
     getLanguageDisplayName: (lang: { code: string | null; name: string }) => lang.name,
 }))
 
-const mockT: I18nContextValue['t'] = (key: string) => {
-    const translations: Record<string, string> = {
-        'settings.title': 'Settings',
-        'settings.language.title': 'Language',
-        'settings.language.label': 'Language',
-        'settings.display.title': 'Display',
-        'settings.display.fontSize': 'Font Size',
-        'settings.voice.title': 'Voice Assistant',
-        'settings.voice.language': 'Voice Language',
-        'settings.voice.autoDetect': 'Auto-detect',
-        'settings.about.title': 'About',
-        'settings.about.appVersion': 'App Version',
-        'settings.about.protocolVersion': 'Protocol Version',
-    }
-    return translations[key] ?? key
-}
-
-const mockI18nContext: I18nContextValue = {
-    t: mockT,
-    locale: 'en',
-    setLocale: vi.fn(),
-}
-
 function renderWithProviders(ui: React.ReactElement) {
     return render(
-        <I18nContext.Provider value={mockI18nContext}>
+        <I18nProvider>
+            {ui}
+        </I18nProvider>
+    )
+}
+
+function renderWithSpyT(ui: React.ReactElement) {
+    const translations = en as Record<string, string>
+    const spyT = vi.fn((key: string) => translations[key] ?? key)
+    render(
+        <I18nContext.Provider value={{ t: spyT, locale: 'en', setLocale: vi.fn() }}>
             {ui}
         </I18nContext.Provider>
     )
+    return spyT
 }
 
 describe('SettingsPage', () => {
@@ -66,7 +55,7 @@ describe('SettingsPage', () => {
         vi.clearAllMocks()
         // Mock localStorage
         const localStorageMock = {
-            getItem: vi.fn(() => null),
+            getItem: vi.fn(() => 'en'),
             setItem: vi.fn(),
             removeItem: vi.fn(),
         }
@@ -88,5 +77,25 @@ describe('SettingsPage', () => {
         renderWithProviders(<SettingsPage />)
         expect(screen.getAllByText('Protocol Version').length).toBeGreaterThanOrEqual(1)
         expect(screen.getAllByText(String(PROTOCOL_VERSION)).length).toBeGreaterThanOrEqual(1)
+    })
+
+    it('displays the website link with correct URL and security attributes', () => {
+        renderWithProviders(<SettingsPage />)
+        expect(screen.getAllByText('Website').length).toBeGreaterThanOrEqual(1)
+        const links = screen.getAllByRole('link', { name: 'hapi.run' })
+        expect(links.length).toBeGreaterThanOrEqual(1)
+        const link = links[0]
+        expect(link).toHaveAttribute('href', 'https://hapi.run')
+        expect(link).toHaveAttribute('target', '_blank')
+        expect(link).toHaveAttribute('rel', 'noopener noreferrer')
+    })
+
+    it('uses correct i18n keys for About section', () => {
+        const spyT = renderWithSpyT(<SettingsPage />)
+        const calledKeys = spyT.mock.calls.map((call) => call[0])
+        expect(calledKeys).toContain('settings.about.title')
+        expect(calledKeys).toContain('settings.about.website')
+        expect(calledKeys).toContain('settings.about.appVersion')
+        expect(calledKeys).toContain('settings.about.protocolVersion')
     })
 })
