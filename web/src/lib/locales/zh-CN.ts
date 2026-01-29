@@ -241,6 +241,10 @@ export default {
   'settings.voice.title': '语音助手',
   'settings.voice.language': '语音语言',
   'settings.voice.autoDetect': '自动检测',
+  'settings.about.title': '关于',
+  'settings.about.website': '官方网站',
+  'settings.about.appVersion': '应用版本',
+  'settings.about.protocolVersion': '协议版本',
 
   // Misc
   'misc.noMachines': '无可用机器',

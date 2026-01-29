@@ -18,9 +18,10 @@
         "typecheck:cli": "cd cli && bun run typecheck",
         "typecheck:hub": "cd hub && bun run typecheck",
         "typecheck:web": "cd web && bun run typecheck",
-        "test": "bun run test:cli && bun run test:hub",
+        "test": "bun run test:cli && bun run test:hub && bun run test:web",
         "test:cli": "cd cli && bun run test",
         "test:hub": "cd hub && bun run test",
+        "test:web": "cd web && bun run test",
         "clean-session": "bun run hub/scripts/cleanup-sessions.ts",
         "release-all": "cd cli && bun run release-all"
     },

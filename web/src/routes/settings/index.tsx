@@ -3,6 +3,7 @@ import { useTranslation, type Locale } from '@/lib/use-translation'
 import { useAppGoBack } from '@/hooks/useAppGoBack'
 import { getElevenLabsSupportedLanguages, getLanguageDisplayName, type Language } from '@/lib/languages'
 import { getFontScaleOptions, useFontScale, type FontScale } from '@/hooks/useFontScale'
+import { PROTOCOL_VERSION } from '@hapi/protocol'
 
 const locales: { value: Locale; nativeLabel: string }[] = [
     { value: 'en', nativeLabel: 'English' },
@@ -333,6 +334,32 @@ export default function SettingsPage() {
                                     })}
                                 </div>
                             )}
+                        </div>
+                    </div>
+
+                    {/* About section */}
+                    <div className="border-b border-[var(--app-divider)]">
+                        <div className="px-3 py-2 text-xs font-semibold text-[var(--app-hint)] uppercase tracking-wide">
+                            {t('settings.about.title')}
+                        </div>
+                        <div className="flex w-full items-center justify-between px-3 py-3">
+                            <span className="text-[var(--app-fg)]">{t('settings.about.website')}</span>
+                            <a
+                                href="https://hapi.run"
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-[var(--app-link)] hover:underline"
+                            >
+                                hapi.run
+                            </a>
+                        </div>
+                        <div className="flex w-full items-center justify-between px-3 py-3">
+                            <span className="text-[var(--app-fg)]">{t('settings.about.appVersion')}</span>
+                            <span className="text-[var(--app-hint)]">{__APP_VERSION__}</span>
+                        </div>
+                        <div className="flex w-full items-center justify-between px-3 py-3">
+                            <span className="text-[var(--app-fg)]">{t('settings.about.protocolVersion')}</span>
+                            <span className="text-[var(--app-hint)]">{PROTOCOL_VERSION}</span>
                         </div>
                     </div>
                 </div>
