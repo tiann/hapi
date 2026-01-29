@@ -19,7 +19,7 @@ function MarkdownContent(props: MarkdownRendererProps) {
             <MarkdownTextPrimitive
                 remarkPlugins={MARKDOWN_PLUGINS}
                 components={mergedComponents}
-                className={cn('aui-md min-w-0 max-w-full break-words text-sm')}
+                className={cn('aui-md min-w-0 max-w-full break-words text-base')}
             />
         </TextMessagePartProvider>
     )

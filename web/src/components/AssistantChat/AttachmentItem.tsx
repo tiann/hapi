@@ -36,7 +36,7 @@ export function AttachmentItem() {
     const isError = status.type === 'incomplete'
 
     return (
-        <AttachmentPrimitive.Root className="flex items-center gap-2 rounded-lg bg-[var(--app-subtle-bg)] px-3 py-2 text-sm text-[var(--app-fg)]">
+        <AttachmentPrimitive.Root className="flex items-center gap-2 rounded-lg bg-[var(--app-subtle-bg)] px-3 py-2 text-base text-[var(--app-fg)]">
             {isUploading ? <Spinner size="sm" label={null} className="text-[var(--app-hint)]" /> : null}
             {isError ? (
                 <span className="text-red-500">

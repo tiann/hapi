@@ -215,7 +215,7 @@ function SessionItem(props: {
                                 className={`h-2 w-2 rounded-full ${statusDotClass}`}
                             />
                         </span>
-                        <div className="truncate text-sm font-medium">
+                        <div className="truncate text-base font-medium">
                             {sessionName}
                         </div>
                     </div>
@@ -390,7 +390,7 @@ export function SessionList(props: {
                                     collapsed={isCollapsed}
                                 />
                                 <div className="flex items-center gap-2 min-w-0 flex-1">
-                                    <span className="font-medium text-sm break-words" title={group.directory}>
+                                    <span className="font-medium text-base break-words" title={group.directory}>
                                         {group.displayName}
                                     </span>
                                     <span className="shrink-0 text-xs text-[var(--app-hint)]">

@@ -236,6 +236,8 @@ export default {
   'settings.title': '设置',
   'settings.language.title': '语言',
   'settings.language.label': '语言',
+  'settings.display.title': '显示',
+  'settings.display.fontSize': '字体大小',
   'settings.voice.title': '语音助手',
   'settings.voice.language': '语音语言',
   'settings.voice.autoDetect': '自动检测',
