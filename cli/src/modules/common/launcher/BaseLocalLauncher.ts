@@ -124,7 +124,7 @@ export class BaseLocalLauncher {
                     const failureMessage = `${failureLabel}: ${message}`
                     
                     // Only send failure message if we are NOT switching
-                    if (this.exitReason !== 'switch') {
+                    if ((this.exitReason as string) !== 'switch') {
                         sendFailureMessage(failureMessage)
                     }
 

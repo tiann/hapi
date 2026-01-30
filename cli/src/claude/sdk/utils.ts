@@ -10,6 +10,37 @@ import { logger } from '@/ui/logger'
 import type { Writable } from 'node:stream'
 
 /**
+ * Try to find globally installed Claude CLI
+ * Returns 'claude' if the command works globally (preferred method for reliability)
+ */
+function findGlobalClaudePath(): string | null {
+    // PRIMARY: Check if 'claude' command works directly from home dir
+    try {
+        execSync('claude --version', {
+            stdio: 'ignore',
+            timeout: 1000
+        })
+        return 'claude'
+    } catch (e) {
+        // Ignore
+    }
+
+    // claude command not available globally
+    // Try to find it via which/where
+    try {
+        const command = process.platform === 'win32' ? 'where claude' : 'which claude'
+        const result = execSync(command, { encoding: 'utf-8' }).trim().split('\r\n')[0].split('\n')[0];
+        if (result && existsSync(result.trim())) {
+            return result.trim()
+        }
+    } catch (e) {
+        // Ignore
+    }
+
+    return null
+}
+
+/**
  * Try to find Claude Code JS entrypoint in global npm modules
  */
 function findNpmGlobalClaudeJs(): string | null {
@@ -21,7 +52,7 @@ function findNpmGlobalClaudeJs(): string | null {
 
     // 2. Try npm root -g
     try {
-        const npmRoot = execSync('npm root -g', { encoding: 'utf-8', shell: true }).trim().replace(/[\r\n]/g, '');
+        const npmRoot = execSync('npm root -g', { encoding: 'utf-8' }).trim().replace(/[\r\n]/g, '');
         if (npmRoot) {
             const jsPath = join(npmRoot, '@anthropic-ai', 'claude-code', 'cli.js');
             if (existsSync(jsPath)) return jsPath;
