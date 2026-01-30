@@ -3,7 +3,7 @@
  * Provides helper functions for path resolution and logging
  */
 
-import { spawn, execSync, type ChildProcess } from 'node:child_process'
+import { spawn, execSync, type ChildProcess, type ExecSyncOptionsWithStringEncoding } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { logger } from '@/ui/logger'
@@ -18,8 +18,9 @@ function findGlobalClaudePath(): string | null {
     try {
         execSync('claude --version', {
             stdio: 'ignore',
-            timeout: 1000
-        })
+            timeout: 1000,
+            encoding: 'utf-8'
+        } as any)
         return 'claude'
     } catch (e) {
         // Ignore
@@ -29,7 +30,7 @@ function findGlobalClaudePath(): string | null {
     // Try to find it via which/where
     try {
         const command = process.platform === 'win32' ? 'where claude' : 'which claude'
-        const result = execSync(command, { encoding: 'utf-8' }).trim().split('\r\n')[0].split('\n')[0];
+        const result = execSync(command, { encoding: 'utf-8' } as any).trim().split('\r\n')[0].split('\n')[0];
         if (result && existsSync(result.trim())) {
             return result.trim()
         }
@@ -52,7 +53,7 @@ function findNpmGlobalClaudeJs(): string | null {
 
     // 2. Try npm root -g
     try {
-        const npmRoot = execSync('npm root -g', { encoding: 'utf-8' }).trim().replace(/[\r\n]/g, '');
+        const npmRoot = execSync('npm root -g', { encoding: 'utf-8' } as any).trim().replace(/[\r\n]/g, '');
         if (npmRoot) {
             const jsPath = join(npmRoot, '@anthropic-ai', 'claude-code', 'cli.js');
             if (existsSync(jsPath)) return jsPath;
@@ -73,8 +74,8 @@ function resolveToJs(inputPath: string): string {
     // If it's just 'claude', find where it is
     if (target === 'claude') {
         try {
-            const where = execSync('where claude', { encoding: 'utf-8' }).trim().split(/[\r\n]+/)[0];
-            if (where && existsSync(where)) target = where;
+            const where = execSync('where claude', { encoding: 'utf-8' } as any).trim().split(/[\r\n]+/)[0];
+            if (where) target = where;
         } catch (e) {}
     }
 
