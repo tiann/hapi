@@ -333,8 +333,26 @@ export function query(config: {
         throw new ReferenceError(`Claude Code executable not found at ${pathToClaudeCodeExecutable}. Is options.pathToClaudeCodeExecutable set?`)
     }
 
-    const spawnCommand = pathToClaudeCodeExecutable
+    let spawnCommand = pathToClaudeCodeExecutable
     const spawnArgs = args
+
+    // Auto-detect execution mode based on file extension
+    let useShell = process.platform === 'win32';
+    
+    if (spawnCommand.endsWith('.js')) {
+        // For JS files (NPM install), run directly with node
+        spawnArgs.unshift(spawnCommand);
+        spawnCommand = 'node';
+        useShell = false; 
+    } else if (process.platform === 'win32') {
+        // Native .exe -> No shell needed
+        if (spawnCommand.toLowerCase().endsWith('.exe')) {
+            useShell = false;
+        } else {
+            // .cmd or others -> Shell needed
+            useShell = true;
+        }
+    }
 
     cleanupMcpConfig = appendMcpConfigArg(spawnArgs, mcpServers)
 
@@ -348,7 +366,7 @@ export function query(config: {
         signal: config.options?.abort,
         env: spawnEnv,
         // Use shell on Windows for command resolution
-        shell: process.platform === 'win32'
+        shell: useShell
     }) as ChildProcessWithoutNullStreams
 
     // Handle stdin

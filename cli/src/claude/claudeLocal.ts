@@ -9,6 +9,7 @@ import { withBunRuntimeEnv } from "@/utils/bunRuntime";
 import { spawnWithAbort } from "@/utils/spawnWithAbort";
 import { getHapiBlobsDir } from "@/constants/uploadPaths";
 import { stripNewlinesForWindowsShellArg } from "@/utils/shellEscape";
+import { getDefaultClaudeCodePath } from "./sdk/utils";
 
 export async function claudeLocal(opts: {
     abort: AbortSignal,
@@ -82,14 +83,35 @@ export async function claudeLocal(opts: {
         ...opts.claudeEnvVars
     }
 
+    let spawnCmd = getDefaultClaudeCodePath();
+    const spawnArgs = [...args];
+    let useShell = process.platform === 'win32';
+
+    // Auto-detect execution mode
+    if (spawnCmd.endsWith('.js')) {
+        spawnArgs.unshift(spawnCmd);
+        spawnCmd = 'node';
+        useShell = false;
+    } else if (process.platform === 'win32') {
+        // Native (.exe) -> No shell needed usually
+        if (spawnCmd.toLowerCase().endsWith('.exe')) {
+            useShell = false;
+        } else {
+            // .cmd or others -> Shell needed
+            useShell = true;
+        }
+    }
+
+    console.log(`[HAPI SPAWN LOG]: Executing "${spawnCmd}" with args: ${JSON.stringify(spawnArgs)} (shell: ${useShell})`);
+
     logger.debug(`[ClaudeLocal] Spawning claude with args: ${JSON.stringify(args)}`);
 
     // Spawn the process
     try {
         process.stdin.pause();
         await spawnWithAbort({
-            command: 'claude',
-            args,
+            command: spawnCmd,
+            args: spawnArgs,
             cwd: opts.path,
             env: withBunRuntimeEnv(env, { allowBunBeBun: false }),
             signal: opts.abort,
@@ -98,7 +120,8 @@ export async function claudeLocal(opts: {
             installHint: 'Claude CLI',
             includeCause: true,
             logExit: true,
-            shell: process.platform === 'win32'
+            shell: useShell,
+            stdio: 'inherit'
         });
     } finally {
         cleanupMcpConfig?.();
