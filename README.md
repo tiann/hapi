@@ -40,6 +40,16 @@ For self-hosted options (Cloudflare Tunnel, Tailscale), see [Installation](docs/
 - [Why HAPI](docs/guide/why-hapi.md)
 - [FAQ](docs/guide/faq.md)
 
+## Performance
+
+### Gemini CLI Optimization (Optional)
+
+If you're using `hapi gemini`, you can optionally speed up startup time by 2x using the Bun runtime. See [Gemini CLI Bun Optimization Guide](docs/tools/bun-gemini-optimization/) for details.
+
+**Performance improvement:**
+- Gemini CLI startup: ~11s → ~5-6s
+- HAPI total startup: ~15-20s → ~10-12s
+
 ## Build from source
 
 ```bash

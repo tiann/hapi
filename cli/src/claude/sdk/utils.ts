@@ -3,72 +3,109 @@
  * Provides helper functions for path resolution and logging
  */
 
+import { spawn, execSync, type ChildProcess, type ExecSyncOptionsWithStringEncoding } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { execSync } from 'node:child_process'
-import { homedir } from 'node:os'
+import { join, dirname } from 'node:path'
 import { logger } from '@/ui/logger'
+import type { Writable } from 'node:stream'
 
 /**
  * Try to find globally installed Claude CLI
  * Returns 'claude' if the command works globally (preferred method for reliability)
- * Falls back to which/where to get actual path on Unix systems
- * Runs from home directory to avoid local cwd side effects
  */
 function findGlobalClaudePath(): string | null {
-    const homeDir = homedir()
-    
     // PRIMARY: Check if 'claude' command works directly from home dir
     try {
-        execSync('claude --version', { 
-            encoding: 'utf8', 
-            stdio: ['pipe', 'pipe', 'pipe'],
-            cwd: homeDir
-        })
-        logger.debug('[Claude SDK] Global claude command available')
+        execSync('claude --version', {
+            stdio: 'ignore',
+            timeout: 1000,
+            encoding: 'utf-8'
+        } as any)
         return 'claude'
-    } catch {
-        // claude command not available globally
+    } catch (e) {
+        // Ignore
     }
 
-    // FALLBACK for Unix: try which to get actual path
-    if (process.platform !== 'win32') {
-        try {
-            const result = execSync('which claude', { 
-                encoding: 'utf8', 
-                stdio: ['pipe', 'pipe', 'pipe'],
-                cwd: homeDir
-            }).trim()
-            if (result && existsSync(result)) {
-                logger.debug(`[Claude SDK] Found global claude path via which: ${result}`)
-                return result
-            }
-        } catch {
-            // which didn't find it
+    // claude command not available globally
+    // Try to find it via which/where
+    try {
+        const command = process.platform === 'win32' ? 'where claude' : 'which claude'
+        const result = execSync(command, { encoding: 'utf-8' } as any).trim().split('\r\n')[0].split('\n')[0];
+        if (result && existsSync(result.trim())) {
+            return result.trim()
         }
+    } catch (e) {
+        // Ignore
     }
-    
+
     return null
 }
 
 /**
- * Get default path to Claude Code executable.
- *
- * Environment variables:
- * - HAPI_CLAUDE_PATH: Force a specific path to claude executable
+ * Try to find Claude Code JS entrypoint in global npm modules
  */
-export function getDefaultClaudeCodePath(): string {
-    // Allow explicit override via env var
-    if (process.env.HAPI_CLAUDE_PATH) {
-        logger.debug(`[Claude SDK] Using HAPI_CLAUDE_PATH: ${process.env.HAPI_CLAUDE_PATH}`)
-        return process.env.HAPI_CLAUDE_PATH
+function findNpmGlobalClaudeJs(): string | null {
+    // 1. Direct check in common Windows global npm path
+    if (process.platform === 'win32' && process.env.APPDATA) {
+        const commonPath = join(process.env.APPDATA, 'npm', 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js');
+        if (existsSync(commonPath)) return commonPath;
     }
 
-    // Find global claude
-    const globalPath = findGlobalClaudePath()
-    if (!globalPath) {
-        throw new Error('Claude Code CLI not found on PATH. Install Claude Code or set HAPI_CLAUDE_PATH.')
+    // 2. Try npm root -g
+    try {
+        const npmRoot = execSync('npm root -g', { encoding: 'utf-8' } as any).trim().replace(/[\r\n]/g, '');
+        if (npmRoot) {
+            const jsPath = join(npmRoot, '@anthropic-ai', 'claude-code', 'cli.js');
+            if (existsSync(jsPath)) return jsPath;
+        }
+    } catch (e) {}
+
+    return null;
+}
+
+/**
+ * Resolve any claude command/path to the actual JS file if possible
+ */
+function resolveToJs(inputPath: string): string {
+    if (process.platform !== 'win32') return inputPath;
+
+    let target = inputPath;
+
+    // If it's just 'claude', find where it is
+    if (target === 'claude') {
+        try {
+            const where = execSync('where claude', { encoding: 'utf-8' } as any).trim().split(/[\r\n]+/)[0];
+            if (where) target = where;
+        } catch (e) {}
     }
-    return globalPath
+
+    // Try to find neighbor JS (for NPM wrapper .cmd)
+    if (target.toLowerCase().endsWith('.cmd')) {
+        try {
+            const potentialJs = join(dirname(target), 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js');
+            if (existsSync(potentialJs)) return potentialJs;
+        } catch (e) {}
+    }
+
+    // If no JS found, return the original (likely the native .exe or wrapper)
+    return target;
+}
+
+/**
+ * Get default path to Claude Code executable.
+ */
+export function getDefaultClaudeCodePath(): string {
+    // 1. User override
+    if (process.env.HAPI_CLAUDE_PATH) {
+        return resolveToJs(process.env.HAPI_CLAUDE_PATH);
+    }
+
+    // 2. Try NPM JS first (most stable for HAPI if installed)
+    const npmJs = findNpmGlobalClaudeJs();
+    if (npmJs) return npmJs;
+
+    // 3. Fallback to global command (Native exe/cmd)
+    return resolveToJs('claude');
 }
 
 /**
