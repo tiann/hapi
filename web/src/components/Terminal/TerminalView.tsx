@@ -1,10 +1,10 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { CanvasAddon } from '@xterm/addon-canvas'
 import '@xterm/xterm/css/xterm.css'
-import { createFontProvider, type ITerminalFontProvider } from '@/lib/terminalFont'
+import { getFontProvider } from '@/lib/terminalFont'
 
 function resolveThemeColors(): { background: string; foreground: string; selectionBackground: string } {
     const styles = getComputedStyle(document.documentElement)
@@ -22,12 +22,6 @@ export function TerminalView(props: {
     const containerRef = useRef<HTMLDivElement | null>(null)
     const onMountRef = useRef(props.onMount)
     const onResizeRef = useRef(props.onResize)
-    const [fontProvider, setFontProvider] = useState<ITerminalFontProvider | null>(null)
-
-    // Initialize font provider
-    useEffect(() => {
-        createFontProvider('default').then(setFontProvider)
-    }, [])
 
     useEffect(() => {
         onMountRef.current = props.onMount
@@ -39,54 +33,63 @@ export function TerminalView(props: {
 
     useEffect(() => {
         const container = containerRef.current
-        if (!container || !fontProvider) {
-            return
-        }
+        if (!container) return
 
-        const { background, foreground, selectionBackground } = resolveThemeColors()
-        const terminal = new Terminal({
-            cursorBlink: true,
-            fontFamily: fontProvider.getFontFamily(),
-            fontSize: 13,
-            theme: {
-                background,
-                foreground,
-                cursor: foreground,
-                selectionBackground
-            },
-            convertEol: true,
-            customGlyphs: true
-        })
+        const abortController = new AbortController()
 
-        const fitAddon = new FitAddon()
-        const webLinksAddon = new WebLinksAddon()
-        const canvasAddon = new CanvasAddon()
-        terminal.loadAddon(fitAddon)
-        terminal.loadAddon(webLinksAddon)
-        terminal.loadAddon(canvasAddon)
-        terminal.open(container)
+        ;(async () => {
+            const fontProvider = await getFontProvider()
+            if (abortController.signal.aborted) return
 
-        const resizeTerminal = () => {
-            fitAddon.fit()
-            onResizeRef.current?.(terminal.cols, terminal.rows)
-        }
+            const { background, foreground, selectionBackground } = resolveThemeColors()
+            const terminal = new Terminal({
+                cursorBlink: true,
+                fontFamily: fontProvider.getFontFamily(),
+                fontSize: 13,
+                theme: {
+                    background,
+                    foreground,
+                    cursor: foreground,
+                    selectionBackground
+                },
+                convertEol: true,
+                customGlyphs: true
+            })
 
-        const observer = new ResizeObserver(() => {
-            requestAnimationFrame(resizeTerminal)
-        })
-        observer.observe(container)
+            const fitAddon = new FitAddon()
+            const webLinksAddon = new WebLinksAddon()
+            const canvasAddon = new CanvasAddon()
+            terminal.loadAddon(fitAddon)
+            terminal.loadAddon(webLinksAddon)
+            terminal.loadAddon(canvasAddon)
+            terminal.open(container)
 
-        requestAnimationFrame(resizeTerminal)
-        onMountRef.current?.(terminal)
+            const observer = new ResizeObserver(() => {
+                requestAnimationFrame(() => {
+                    fitAddon.fit()
+                    onResizeRef.current?.(terminal.cols, terminal.rows)
+                })
+            })
+            observer.observe(container)
 
-        return () => {
-            observer.disconnect()
-            fitAddon.dispose()
-            webLinksAddon.dispose()
-            canvasAddon.dispose()
-            terminal.dispose()
-        }
-    }, [fontProvider])
+            // Cleanup on abort
+            abortController.signal.addEventListener('abort', () => {
+                observer.disconnect()
+                fitAddon.dispose()
+                webLinksAddon.dispose()
+                canvasAddon.dispose()
+                terminal.dispose()
+            })
+
+            requestAnimationFrame(() => {
+                fitAddon.fit()
+                onResizeRef.current?.(terminal.cols, terminal.rows)
+            })
+            onMountRef.current?.(terminal)
+        })()
+
+        return () => abortController.abort()
+    }, [])
 
     return (
         <div
