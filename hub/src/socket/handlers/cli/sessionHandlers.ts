@@ -1,4 +1,5 @@
-import type { ClientToServerEvents } from '@hapi/protocol'
+import type { ClientToServerEvents, MessageUsage } from '@hapi/protocol'
+import { extractUsageFromMessage } from '@hapi/protocol'
 import { z } from 'zod'
 import { randomUUID } from 'node:crypto'
 import type { ModelMode, PermissionMode } from '@hapi/protocol/types'
@@ -87,6 +88,9 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
 
         const msg = store.messages.addMessage(sid, content, localId)
 
+        // Extract usage information from the message
+        const usage = extractUsageFromMessage(content)
+
         const todos = extractTodoWriteTodosFromMessageContent(content)
         if (todos) {
             const updated = store.sessions.setSessionTodos(sid, todos, msg.createdAt, session.namespace)
@@ -107,7 +111,8 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
                     seq: msg.seq,
                     createdAt: msg.createdAt,
                     localId: msg.localId,
-                    content: msg.content
+                    content: msg.content,
+                    usage
                 }
             }
         }
@@ -121,7 +126,8 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
                 seq: msg.seq,
                 localId: msg.localId,
                 content: msg.content,
-                createdAt: msg.createdAt
+                createdAt: msg.createdAt,
+                usage
             }
         })
     })

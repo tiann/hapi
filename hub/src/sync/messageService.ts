@@ -1,7 +1,10 @@
-import type { AttachmentMetadata, DecryptedMessage } from '@hapi/protocol/types'
+import type { AttachmentMetadata, DecryptedMessage, MessageUsage } from '@hapi/protocol/types'
 import type { Server } from 'socket.io'
 import type { Store } from '../store'
 import { EventPublisher } from './eventPublisher'
+import { extractUsageFromMessage } from '@hapi/protocol'
+
+const extractUsageFromContent = extractUsageFromMessage
 
 export class MessageService {
     constructor(
@@ -26,7 +29,8 @@ export class MessageService {
             seq: message.seq,
             localId: message.localId,
             content: message.content,
-            createdAt: message.createdAt
+            createdAt: message.createdAt,
+            usage: extractUsageFromContent(message.content)
         }))
 
         let oldestSeq: number | null = null
@@ -59,7 +63,8 @@ export class MessageService {
             seq: message.seq,
             localId: message.localId,
             content: message.content,
-            createdAt: message.createdAt
+            createdAt: message.createdAt,
+            usage: extractUsageFromContent(message.content)
         }))
     }
 
