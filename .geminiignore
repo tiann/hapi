@@ -65,7 +65,7 @@ desktop.ini
 docs/
 assets/
 images/
-*.md
+# *.md
 !README.md
 
 # 性能优化：排除大型目录
