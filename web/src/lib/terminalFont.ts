@@ -86,7 +86,7 @@ class FontProvider implements ITerminalFontProvider {
  * Factory function to create font provider
  * Always loads builtin font, placed first to ensure Nerd Font icons work
  */
-export async function createFontProvider(): Promise<ITerminalFontProvider> {
+async function createFontProvider(): Promise<ITerminalFontProvider> {
     const localFontFamily = LOCAL_NERD_FONTS.map(f => `"${f}"`).join(', ')
     const systemFallbacks = SYSTEM_FALLBACKS.map(f => `"${f}"`).join(', ')
 
@@ -99,4 +99,17 @@ export async function createFontProvider(): Promise<ITerminalFontProvider> {
 
     // Builtin font first to ensure icons work, then local fonts, then system fallbacks
     return new FontProvider(`"${BUILTIN_FONT_NAME}", ${localFontFamily}, ${systemFallbacks}`)
+}
+
+// 单例：确保字体只加载一次
+let fontProviderPromise: Promise<ITerminalFontProvider> | null = null
+
+/**
+ * 获取字体 Provider（懒加载，只加载一次）
+ */
+export function getFontProvider(): Promise<ITerminalFontProvider> {
+    if (!fontProviderPromise) {
+        fontProviderPromise = createFontProvider()
+    }
+    return fontProviderPromise
 }

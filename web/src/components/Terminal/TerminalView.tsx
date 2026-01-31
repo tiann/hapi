@@ -4,7 +4,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { CanvasAddon } from '@xterm/addon-canvas'
 import '@xterm/xterm/css/xterm.css'
-import { createFontProvider } from '@/lib/terminalFont'
+import { getFontProvider } from '@/lib/terminalFont'
 
 function resolveThemeColors(): { background: string; foreground: string; selectionBackground: string } {
     const styles = getComputedStyle(document.documentElement)
@@ -33,22 +33,16 @@ export function TerminalView(props: {
 
     useEffect(() => {
         const container = containerRef.current
-        if (!container) {
-            return
-        }
+        if (!container) return
 
-        let terminal: Terminal | null = null
-        let fitAddon: FitAddon | null = null
-        let webLinksAddon: WebLinksAddon | null = null
-        let canvasAddon: CanvasAddon | null = null
-        let observer: ResizeObserver | null = null
+        const abortController = new AbortController()
 
-        // Load font and create terminal in the same effect
-        createFontProvider().then(fontProvider => {
-            if (!container.isConnected) return // Component unmounted
+        ;(async () => {
+            const fontProvider = await getFontProvider()
+            if (abortController.signal.aborted) return
 
             const { background, foreground, selectionBackground } = resolveThemeColors()
-            terminal = new Terminal({
+            const terminal = new Terminal({
                 cursorBlink: true,
                 fontFamily: fontProvider.getFontFamily(),
                 fontSize: 13,
@@ -62,37 +56,39 @@ export function TerminalView(props: {
                 customGlyphs: true
             })
 
-            fitAddon = new FitAddon()
-            webLinksAddon = new WebLinksAddon()
-            canvasAddon = new CanvasAddon()
+            const fitAddon = new FitAddon()
+            const webLinksAddon = new WebLinksAddon()
+            const canvasAddon = new CanvasAddon()
             terminal.loadAddon(fitAddon)
             terminal.loadAddon(webLinksAddon)
             terminal.loadAddon(canvasAddon)
             terminal.open(container)
 
-            const resizeTerminal = () => {
-                fitAddon?.fit()
-                if (terminal) {
+            const observer = new ResizeObserver(() => {
+                requestAnimationFrame(() => {
+                    fitAddon.fit()
                     onResizeRef.current?.(terminal.cols, terminal.rows)
-                }
-            }
-
-            observer = new ResizeObserver(() => {
-                requestAnimationFrame(resizeTerminal)
+                })
             })
             observer.observe(container)
 
-            requestAnimationFrame(resizeTerminal)
-            onMountRef.current?.(terminal)
-        })
+            // Cleanup on abort
+            abortController.signal.addEventListener('abort', () => {
+                observer.disconnect()
+                fitAddon.dispose()
+                webLinksAddon.dispose()
+                canvasAddon.dispose()
+                terminal.dispose()
+            })
 
-        return () => {
-            observer?.disconnect()
-            fitAddon?.dispose()
-            webLinksAddon?.dispose()
-            canvasAddon?.dispose()
-            terminal?.dispose()
-        }
+            requestAnimationFrame(() => {
+                fitAddon.fit()
+                onResizeRef.current?.(terminal.cols, terminal.rows)
+            })
+            onMountRef.current?.(terminal)
+        })()
+
+        return () => abortController.abort()
     }, [])
 
     return (
