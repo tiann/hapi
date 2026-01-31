@@ -30,8 +30,13 @@ function shellQuote(value: string): string {
         return '""';
     }
 
-    if (/^[A-Za-z0-9_\/:=-]+$/.test(value)) {
+    if (/^[A-Za-z0-9_\/:=\-\\.?]+$/.test(value)) {
         return value;
+    }
+
+    if (process.platform === 'win32') {
+        // Windows: Only escape double quotes
+        return '"' + value.replace(/"/g, '\\"') + '"';
     }
 
     return '"' + value.replace(/(["\\$`])/g, '\\$1') + '"';
@@ -56,9 +61,9 @@ function buildHookSettings(command: string, hooksEnabled?: boolean): HookSetting
         ]
     };
 
-    if (hooksEnabled !== undefined) {
-        hooks.enabled = hooksEnabled;
-    }
+    // if (hooksEnabled !== undefined) {
+    //    hooks.enabled = hooksEnabled;
+    // }
 
     return { hooks };
 }
