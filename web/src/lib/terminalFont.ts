@@ -2,10 +2,11 @@
  * Terminal Font Provider
  *
  * Provides font configuration for terminal rendering with Nerd Font support.
- * Always loads builtin Nerd Font to ensure icons display correctly on all devices.
+ * Loads Nerd Font from CDN to ensure icons display correctly on all devices.
  */
 
-const BUILTIN_FONT_NAME = 'BuiltinNerdFont'
+const BUILTIN_FONT_NAME = 'MesloLGLDZ Nerd Font Mono'
+const CDN_FONT_URL = 'https://cdn.jsdelivr.net/gh/mshaugh/nerdfont-webfonts@v3.3.0/build/fonts/MesloLGLDZNerdFontMono-Regular.woff2'
 
 /**
  * Terminal font provider interface
@@ -53,13 +54,12 @@ const SYSTEM_FALLBACKS = [
 ]
 
 /**
- * Load the builtin Nerd Font
+ * Load Nerd Font from CDN
  */
 async function loadBuiltinFont(): Promise<void> {
-    const fontUrl = `${import.meta.env.BASE_URL}fonts/MesloLGLDZNerdFontMono-Regular.woff2`
     const font = new FontFace(
         BUILTIN_FONT_NAME,
-        `url(${fontUrl}) format("woff2")`,
+        `url(${CDN_FONT_URL}) format("woff2")`,
         { style: 'normal', weight: '400', display: 'swap' }
     )
     await font.load()
@@ -92,9 +92,9 @@ export async function createFontProvider(): Promise<ITerminalFontProvider> {
 
     try {
         await loadBuiltinFont()
-        console.log('[TerminalFont] Builtin font loaded')
+        console.log('[TerminalFont] CDN font loaded')
     } catch (err) {
-        console.error('[TerminalFont] Failed to load builtin font:', err)
+        console.error('[TerminalFont] Failed to load CDN font:', err)
     }
 
     // Builtin font first to ensure icons work, then local fonts, then system fallbacks
