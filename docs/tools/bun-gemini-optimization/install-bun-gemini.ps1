@@ -17,8 +17,11 @@ if ($null -ne $bunCmd) {
 }
 
 $geminiCmd = Get-Command gemini -ErrorAction SilentlyContinue
+$originalGemini = if ($geminiCmd) { $geminiCmd.Source } else { $null }
+
 if ($null -ne $geminiCmd) {
     Write-Host "  Gemini CLI 已安装" -ForegroundColor Green
+    Write-Host "  原始路径: $originalGemini" -ForegroundColor Gray
     try {
         Write-Host "  测试当前启动时间..." -ForegroundColor Cyan
         $currentTime = Measure-Command { & gemini --experimental-acp --help 2>$null | Out-Null }
@@ -112,23 +115,24 @@ $profileContent = $profileContent -replace "# Bun-Gemini-Optimization.*?# End-Bu
 $profileContent = $profileContent -replace "# Bun-Gemini-Optimization.*?# End-Bun-Gemini-Optimization`n", ""
 
 # 创建新函数
-$functionCode = @'
+$functionCode = @"
+# Bun-Gemini-Optimization
 
 function gemini {
-    $cli = "$env:USERPROFILE\.bun\install\global\node_modules\@google\gemini-cli\dist\index.js"
-    if (Test-Path $cli) {
-        & bun run $cli $args
+    `$cli = `"$env:USERPROFILE\.bun\install\global\node_modules\@google\gemini-cli\dist\index.js`"
+    if (Test-Path `$cli) {
+        & bun run `$cli `$args
     } else {
-        Write-Host "错误: 找不到 Bun 版本的 Gemini CLI" -ForegroundColor Red
+        Write-Host `"错误: 找不到 Bun 版本的 Gemini CLI`" -ForegroundColor Red
     }
 }
 
 function gemini-original {
-    $orig = "$env:USERPROFILE\.bun\bin\gemini.exe"
-    if (Test-Path $orig) {
-        & $orig $args
+    `$orig = `"$originalGemini`"
+    if (`$orig -and (Test-Path `$orig)) {
+        & `$orig `$args
     } else {
-        Write-Host "错误: 找不到原始 Gemini CLI" -ForegroundColor Red
+        Write-Host `"错误: 找不到原始 Gemini CLI`" -ForegroundColor Red
     }
 }
 
@@ -138,23 +142,23 @@ function gemini-benchmark {
 
     Write-Host ""
     Write-Host "[1/2] 测试 Bun 版本..." -ForegroundColor Yellow
-    $bunTime = Measure-Command { & gemini --experimental-acp --help 2>$null | Out-Null }
-    Write-Host "Bun: $($bunTime.TotalSeconds.ToString('F2')) 秒" -ForegroundColor Green
+    `$bunTime = Measure-Command { & gemini --experimental-acp --help 2>`$null | Out-Null }
+    Write-Host "Bun: `$(`$bunTime.TotalSeconds.ToString('F2')) 秒" -ForegroundColor Green
 
-    $origPath = "$env:USERPROFILE\.bun\bin\gemini.exe"
-    if (Test-Path $origPath) {
+    `$origPath = "$originalGemini"
+    if (`$origPath -and (Test-Path `$origPath)) {
         Write-Host ""
         Write-Host "[2/2] 测试 Node.js 版本..." -ForegroundColor Yellow
-        $nodeTime = Measure-Command { & gemini-original --experimental-acp --help 2>$null | Out-Null }
-        Write-Host "Node.js: $($nodeTime.TotalSeconds.ToString('F2')) 秒" -ForegroundColor Yellow
+        `$nodeTime = Measure-Command { & gemini-original --experimental-acp --help 2>`$null | Out-Null }
+        Write-Host "Node.js: `$(`$nodeTime.TotalSeconds.ToString('F2')) 秒" -ForegroundColor Yellow
 
-        $speedup = $nodeTime.TotalSeconds / $bunTime.TotalSeconds
-        $improvement = [math]::Round(($nodeTime.TotalSeconds - $bunTime.TotalSeconds) / $nodeTime.TotalSeconds * 100, 1)
+        `$speedup = `$nodeTime.TotalSeconds / `$bunTime.TotalSeconds
+        `$improvement = [math]::Round((`$nodeTime.TotalSeconds - `$bunTime.TotalSeconds) / `$nodeTime.TotalSeconds * 100, 1)
 
         Write-Host ""
-        Write-Host "性能提升: ${speedup}x faster ($improvement%)" -ForegroundColor Cyan
+        Write-Host "性能提升: `${speedup}x faster (`$improvement%)" -ForegroundColor Cyan
 
-        if ($speedup -gt 1.5) {
+        if (`$speedup -gt 1.5) {
             Write-Host "优化成功！" -ForegroundColor Green
         } else {
             Write-Host "提升不明显" -ForegroundColor Yellow
@@ -165,7 +169,7 @@ function gemini-benchmark {
     }
 }
 # End-Bun-Gemini-Optimization
-'@
+"@
 
 # 合并配置
 $newContent = $profileContent + $functionCode
