@@ -108,12 +108,23 @@ export const AttachmentMetadataSchema = z.object({
 
 export type AttachmentMetadata = z.infer<typeof AttachmentMetadataSchema>
 
+export const MessageUsageSchema = z.object({
+    input_tokens: z.number().int().nonnegative(),
+    output_tokens: z.number().int().nonnegative(),
+    cache_creation_input_tokens: z.number().int().nonnegative().optional(),
+    cache_read_input_tokens: z.number().int().nonnegative().optional(),
+    service_tier: z.string().optional()
+})
+
+export type MessageUsage = z.infer<typeof MessageUsageSchema>
+
 export const DecryptedMessageSchema = z.object({
     id: z.string(),
     seq: z.number().nullable(),
     localId: z.string().nullable(),
     content: z.unknown(),
-    createdAt: z.number()
+    createdAt: z.number(),
+    usage: MessageUsageSchema.optional()
 })
 
 export type DecryptedMessage = z.infer<typeof DecryptedMessageSchema>
