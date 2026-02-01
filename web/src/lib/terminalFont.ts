@@ -81,34 +81,47 @@ class FontProvider implements ITerminalFontProvider {
     }
 }
 
-/**
- * Factory function to create font provider
- * Always loads builtin font, placed first to ensure Nerd Font icons work
- */
-async function createFontProvider(): Promise<ITerminalFontProvider> {
-    const localFontFamily = LOCAL_NERD_FONTS.map(f => `"${f}"`).join(', ')
+const LOCAL_FONT_FAMILY = LOCAL_NERD_FONTS.map(f => `"${f}"`).join(', ')
+const FONT_FAMILY_PARTS = [LOCAL_FONT_FAMILY, `"${BUILTIN_FONT_NAME}"`, ...SYSTEM_FALLBACKS, ...GENERIC_FAMILIES]
+const FONT_FAMILY = FONT_FAMILY_PARTS.join(', ')
 
-    try {
-        await loadBuiltinFont()
-        console.log('[TerminalFont] CDN font loaded')
-    } catch (err) {
-        console.error('[TerminalFont] Failed to load CDN font:', err)
-    }
+const fontProvider = new FontProvider(FONT_FAMILY)
 
-    // Local fonts first (better rendering if available), then builtin font as fallback, then system fonts
-    const parts = [localFontFamily, `"${BUILTIN_FONT_NAME}"`, ...SYSTEM_FALLBACKS, ...GENERIC_FAMILIES]
-    return new FontProvider(parts.join(', '))
+let fontLoadPromise: Promise<boolean> | null = null
+
+function isFontAvailable(fontName: string): boolean {
+    if (typeof document === 'undefined') return false
+    if (!document.fonts?.check) return false
+    return document.fonts.check(`12px "${fontName}"`)
 }
 
-// 单例：确保字体只加载一次
-let fontProviderPromise: Promise<ITerminalFontProvider> | null = null
+function hasLocalNerdFont(): boolean {
+    return [BUILTIN_FONT_NAME, ...LOCAL_NERD_FONTS].some(isFontAvailable)
+}
 
 /**
  * 获取字体 Provider（懒加载，只加载一次）
  */
-export function getFontProvider(): Promise<ITerminalFontProvider> {
-    if (!fontProviderPromise) {
-        fontProviderPromise = createFontProvider()
+export function getFontProvider(): ITerminalFontProvider {
+    return fontProvider
+}
+
+export function ensureBuiltinFontLoaded(): Promise<boolean> {
+    if (!fontLoadPromise) {
+        if (hasLocalNerdFont()) {
+            console.log('[TerminalFont] Local Nerd Font detected; skip CDN load')
+            fontLoadPromise = Promise.resolve(false)
+        } else {
+            fontLoadPromise = loadBuiltinFont()
+                .then(() => {
+                    console.log('[TerminalFont] CDN font loaded')
+                    return true
+                })
+                .catch(err => {
+                    console.error('[TerminalFont] Failed to load CDN font:', err)
+                    return false
+                })
+        }
     }
-    return fontProviderPromise
+    return fontLoadPromise
 }
