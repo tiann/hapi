@@ -97,8 +97,8 @@ async function createFontProvider(): Promise<ITerminalFontProvider> {
         console.error('[TerminalFont] Failed to load CDN font:', err)
     }
 
-    // Builtin font first to ensure icons work, then local fonts, then system fallbacks
-    return new FontProvider(`"${BUILTIN_FONT_NAME}", ${localFontFamily}, ${systemFallbacks}`)
+    // Local fonts first (better rendering if available), then builtin font as fallback, then system fonts
+    return new FontProvider(`${localFontFamily}, "${BUILTIN_FONT_NAME}", ${systemFallbacks}`)
 }
 
 // 单例：确保字体只加载一次
