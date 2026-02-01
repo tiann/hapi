@@ -40,17 +40,17 @@ const LOCAL_NERD_FONTS = [
 ]
 
 /**
- * System monospace fallbacks
+ * Generic CSS font families must be unquoted; quoted names are specific font families
  */
+const GENERIC_FAMILIES = ['ui-monospace', 'monospace']
+
 const SYSTEM_FALLBACKS = [
-    'ui-monospace',
-    'SFMono-Regular',
-    'Menlo',
-    'Monaco',
-    'Consolas',
-    'Liberation Mono',
-    'Courier New',
-    'monospace'
+    '"SFMono-Regular"',
+    '"Menlo"',
+    '"Monaco"',
+    '"Consolas"',
+    '"Liberation Mono"',
+    '"Courier New"'
 ]
 
 /**
@@ -64,7 +64,6 @@ async function loadBuiltinFont(): Promise<void> {
     )
     await font.load()
     document.fonts.add(font)
-    await document.fonts.ready
 }
 
 /**
@@ -88,7 +87,6 @@ class FontProvider implements ITerminalFontProvider {
  */
 async function createFontProvider(): Promise<ITerminalFontProvider> {
     const localFontFamily = LOCAL_NERD_FONTS.map(f => `"${f}"`).join(', ')
-    const systemFallbacks = SYSTEM_FALLBACKS.map(f => `"${f}"`).join(', ')
 
     try {
         await loadBuiltinFont()
@@ -98,7 +96,8 @@ async function createFontProvider(): Promise<ITerminalFontProvider> {
     }
 
     // Local fonts first (better rendering if available), then builtin font as fallback, then system fonts
-    return new FontProvider(`${localFontFamily}, "${BUILTIN_FONT_NAME}", ${systemFallbacks}`)
+    const parts = [localFontFamily, `"${BUILTIN_FONT_NAME}"`, ...SYSTEM_FALLBACKS, ...GENERIC_FAMILIES]
+    return new FontProvider(parts.join(', '))
 }
 
 // 单例：确保字体只加载一次
