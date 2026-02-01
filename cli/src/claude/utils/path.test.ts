@@ -96,31 +96,27 @@ describe('getProjectPath', () => {
     // Windows-specific tests
     if (process.platform === 'win32') {
         describe('Windows compatibility', () => {
-            it('should preserve drive letter and remove colon from Windows paths', () => {
+            it('should remove drive letter from Windows absolute paths', () => {
                 const workingDir = 'D:\\MyTools\\hapi';
                 const result = getProjectPath(workingDir);
                 const projectId = result.split('\\').pop();
-                // D:\MyTools\hapi → D\MyTools\hapi → D-MyTools-hapi
-                expect(projectId).toBe('D-MyTools-hapi');
+                // D:\MyTools\hapi → \MyTools\hapi → -MyTools-hapi
+                expect(projectId).toBe('-MyTools-hapi');
             });
 
-            it('should distinguish between different drives', () => {
-                const pathD = getProjectPath('D:\\MyTools\\hapi');
-                const pathC = getProjectPath('C:\\MyTools\\hapi');
-                const projectIdD = pathD.split('\\').pop();
-                const projectIdC = pathC.split('\\').pop();
-
-                // Different drives should produce different project IDs
-                expect(projectIdD).toBe('D-MyTools-hapi');
-                expect(projectIdC).toBe('C-MyTools-hapi');
-                expect(projectIdD).not.toBe(projectIdC);
-            });
-
-            it('should handle Windows paths with drive letter correctly', () => {
+            it('should handle Windows paths correctly', () => {
                 const workingDir = 'C:\\Users\\steve\\projects\\my-app';
                 const result = getProjectPath(workingDir);
                 const projectId = result.split('\\').pop();
-                expect(projectId).toBe('C-Users-steve-projects-my-app');
+                expect(projectId).toBe('-Users-steve-projects-my-app');
+            });
+
+            it('should handle Unix-style paths on Windows without pollution', () => {
+                const workingDir = '/Users/steve/projects/my-app';
+                const result = getProjectPath(workingDir);
+                const projectId = result.split('\\').pop();
+                // Should not include drive letter from resolve()
+                expect(projectId).toBe('-Users-steve-projects-my-app');
             });
         });
     }

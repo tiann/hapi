@@ -4,12 +4,15 @@ import { join, resolve, win32, posix } from "node:path";
 export function getProjectPath(workingDirectory: string) {
     let resolvedPath = resolve(workingDirectory);
 
-    // On Windows, preserve the drive letter but remove the colon to avoid it becoming
-    // part of the project ID in an invalid way, while still distinguishing between
-    // different drives (e.g., "D:\MyTools\hapi" vs "C:\MyTools\hapi")
+    // On Windows, remove the drive letter (e.g., "C:" or "D:") from resolved paths.
+    // This ensures that:
+    // 1. Unix-style paths like "/Users/..." don't get polluted with drive letters
+    // 2. Windows absolute paths like "D:\MyTools\..." are handled consistently
+    // Note: This means paths on different drives with the same structure will have
+    // the same project ID, but this is acceptable since project paths are typically
+    // consistent within a development environment.
     if (process.platform === 'win32' && /^[a-zA-Z]:/.test(resolvedPath)) {
-        const driveLetter = resolvedPath.charAt(0); // Extract 'D' or 'C' etc.
-        resolvedPath = driveLetter + resolvedPath.substring(2); // D:\MyTools\hapi → D\MyTools\hapi
+        resolvedPath = resolvedPath.substring(2); // Remove "C:" or "D:" etc.
     }
 
     const projectId = resolvedPath.replace(/[^a-zA-Z0-9]/g, '-');
