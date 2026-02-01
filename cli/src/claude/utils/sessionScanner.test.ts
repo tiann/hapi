@@ -5,6 +5,7 @@ import { mkdir, writeFile, appendFile, rm, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir, homedir } from 'node:os'
 import { existsSync } from 'node:fs'
+import { getProjectPath } from './path'
 
 describe('sessionScanner', () => {
   let testDir: string
@@ -16,10 +17,8 @@ describe('sessionScanner', () => {
     testDir = join(tmpdir(), `scanner-test-${Date.now()}`)
     await mkdir(testDir, { recursive: true })
 
-    // Replace path separators (/, \) and colons (:) with hyphens for cross-platform compatibility
-    // Colons need to be replaced to handle Windows drive letters (e.g., "C:")
-    const projectName = testDir.replace(/[\/\\:]/g, '-')
-    projectDir = join(homedir(), '.claude', 'projects', projectName)
+    // Use getProjectPath to ensure consistency with actual usage
+    projectDir = getProjectPath(testDir)
     await mkdir(projectDir, { recursive: true })
 
     collectedMessages = []
