@@ -18,9 +18,12 @@ type SendMessageInput = {
     attachments?: AttachmentMetadata[]
 }
 
+type BlockedReason = 'no-api' | 'no-session' | 'pending'
+
 type UseSendMessageOptions = {
     resolveSessionId?: (sessionId: string) => Promise<string>
     onSessionResolved?: (sessionId: string) => void
+    onBlocked?: (reason: BlockedReason) => void
 }
 
 function findMessageByLocalId(
@@ -88,8 +91,20 @@ export function useSendMessage(
     })
 
     const sendMessage = (text: string, attachments?: AttachmentMetadata[]) => {
-        if (!api || !sessionId) return
-        if (mutation.isPending || resolveGuardRef.current) return
+        if (!api) {
+            options?.onBlocked?.('no-api')
+            haptic.notification('error')
+            return
+        }
+        if (!sessionId) {
+            options?.onBlocked?.('no-session')
+            haptic.notification('error')
+            return
+        }
+        if (mutation.isPending || resolveGuardRef.current) {
+            options?.onBlocked?.('pending')
+            return
+        }
         const localId = makeClientSideId('local')
         const createdAt = Date.now()
         void (async () => {
@@ -123,8 +138,20 @@ export function useSendMessage(
     }
 
     const retryMessage = (localId: string) => {
-        if (!api || !sessionId) return
-        if (mutation.isPending || resolveGuardRef.current) return
+        if (!api) {
+            options?.onBlocked?.('no-api')
+            haptic.notification('error')
+            return
+        }
+        if (!sessionId) {
+            options?.onBlocked?.('no-session')
+            haptic.notification('error')
+            return
+        }
+        if (mutation.isPending || resolveGuardRef.current) {
+            options?.onBlocked?.('pending')
+            return
+        }
 
         const message = findMessageByLocalId(sessionId, localId)
         if (!message?.originalText) return

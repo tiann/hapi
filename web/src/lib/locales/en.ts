@@ -219,6 +219,11 @@ export default {
   'offline.message': 'You are currently offline. Some features may be limited.',
   'syncing.title': 'Syncing…',
   'syncing.message': 'Your data is being synchronized.',
+  'reconnecting.message': 'Reconnecting...',
+
+  // Send blocked
+  'send.blocked.title': 'Cannot send message',
+  'send.blocked.noConnection': 'Not connected to server',
 
   // Install prompt
   'install.title': 'Install HAPI',

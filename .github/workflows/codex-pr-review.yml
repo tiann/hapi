@@ -91,28 +91,3 @@ jobs:
           prompt-file: .github/prompts/codex-pr-review.md
           allow-bots: true
           allow-users: "*"
-
-  post-review:
-    runs-on: ubuntu-latest
-    needs: pr-review
-    if: needs.pr-review.outputs.review_result != ''
-    permissions:
-      pull-requests: write
-    steps:
-      - name: Post Review Comment
-        uses: actions/github-script@v7
-        env:
-          REVIEW_RESULT: ${{ needs.pr-review.outputs.review_result }}
-        with:
-          github-token: ${{ github.token }}
-          script: |
-            const body = process.env.REVIEW_RESULT;
-            if (body && body.trim()) {
-              await github.rest.pulls.createReview({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                pull_number: context.payload.pull_request.number,
-                body,
-                event: "COMMENT"
-              });
-            }

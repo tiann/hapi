@@ -221,6 +221,11 @@ export default {
   'offline.message': '您当前处于离线状态。某些功能可能受限。',
   'syncing.title': '同步中…',
   'syncing.message': '正在同步您的数据。',
+  'reconnecting.message': '正在重新连接...',
+
+  // Send blocked
+  'send.blocked.title': '无法发送消息',
+  'send.blocked.noConnection': '未连接到服务器',
 
   // Install prompt
   'install.title': '安装 HAPI',

@@ -2,9 +2,12 @@ import { useCallback } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import {
     Navigate,
+    Outlet,
     createRootRoute,
     createRoute,
     createRouter,
+    useLocation,
+    useMatchRoute,
     useNavigate,
     useParams,
 } from '@tanstack/react-router'
@@ -94,6 +97,8 @@ function SettingsIcon(props: { className?: string }) {
 function SessionsPage() {
     const { api } = useAppContext()
     const navigate = useNavigate()
+    const pathname = useLocation({ select: location => location.pathname })
+    const matchRoute = useMatchRoute()
     const { t } = useTranslation()
     const { sessions, isLoading, error, refetch } = useSessions(api)
 
@@ -102,59 +107,79 @@ function SessionsPage() {
     }, [refetch])
 
     const projectCount = new Set(sessions.map(s => s.metadata?.worktree?.basePath ?? s.metadata?.path ?? 'Other')).size
+    const sessionMatch = matchRoute({ to: '/sessions/$sessionId', fuzzy: true })
+    const selectedSessionId = sessionMatch ? sessionMatch.sessionId : null
+    const isSessionsIndex = pathname === '/sessions' || pathname === '/sessions/'
 
     return (
-        <div className="flex h-full flex-col">
-            <div className="bg-[var(--app-bg)] pt-[env(safe-area-inset-top)]">
-                <div className="mx-auto w-full max-w-content flex items-center justify-between px-3 py-2">
-                    <div className="text-xs text-[var(--app-hint)]">
-                        {t('sessions.count', { n: sessions.length, m: projectCount })}
-                    </div>
-                    <div className="flex items-center gap-2">
-                        <button
-                            type="button"
-                            onClick={() => navigate({ to: '/settings' })}
-                            className="p-1.5 rounded-full text-[var(--app-hint)] hover:text-[var(--app-fg)] hover:bg-[var(--app-subtle-bg)] transition-colors"
-                            title={t('settings.title')}
-                        >
-                            <SettingsIcon className="h-5 w-5" />
-                        </button>
-                        <button
-                            type="button"
-                            onClick={() => navigate({ to: '/sessions/new' })}
-                            className="session-list-new-button p-1.5 rounded-full text-[var(--app-link)] transition-colors"
-                            title={t('sessions.new')}
-                        >
-                            <PlusIcon className="h-5 w-5" />
-                        </button>
+        <div className="flex h-full min-h-0">
+            <div
+                className={`${isSessionsIndex ? 'flex' : 'hidden lg:flex'} w-full lg:w-[420px] xl:w-[480px] shrink-0 flex-col bg-[var(--app-bg)] lg:border-r lg:border-[var(--app-divider)]`}
+            >
+                <div className="bg-[var(--app-bg)] pt-[env(safe-area-inset-top)]">
+                    <div className="mx-auto w-full max-w-content flex items-center justify-between px-3 py-2">
+                        <div className="text-xs text-[var(--app-hint)]">
+                            {t('sessions.count', { n: sessions.length, m: projectCount })}
+                        </div>
+                        <div className="flex items-center gap-2">
+                            <button
+                                type="button"
+                                onClick={() => navigate({ to: '/settings' })}
+                                className="p-1.5 rounded-full text-[var(--app-hint)] hover:text-[var(--app-fg)] hover:bg-[var(--app-subtle-bg)] transition-colors"
+                                title={t('settings.title')}
+                            >
+                                <SettingsIcon className="h-5 w-5" />
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => navigate({ to: '/sessions/new' })}
+                                className="session-list-new-button p-1.5 rounded-full text-[var(--app-link)] transition-colors"
+                                title={t('sessions.new')}
+                            >
+                                <PlusIcon className="h-5 w-5" />
+                            </button>
+                        </div>
                     </div>
                 </div>
+
+                <div className="flex-1 min-h-0 overflow-y-auto desktop-scrollbar-left">
+                    {error ? (
+                        <div className="mx-auto w-full max-w-content px-3 py-2">
+                            <div className="text-sm text-red-600">{error}</div>
+                        </div>
+                    ) : null}
+                    <SessionList
+                        sessions={sessions}
+                        selectedSessionId={selectedSessionId}
+                        onSelect={(sessionId) => navigate({
+                            to: '/sessions/$sessionId',
+                            params: { sessionId },
+                        })}
+                        onNewSession={() => navigate({ to: '/sessions/new' })}
+                        onRefresh={handleRefresh}
+                        isLoading={isLoading}
+                        renderHeader={false}
+                        api={api}
+                    />
+                </div>
             </div>
-            <div className="flex-1 overflow-y-auto">
-                {error ? (
-                    <div className="mx-auto w-full max-w-content px-3 py-2">
-                        <div className="text-sm text-red-600">{error}</div>
-                    </div>
-                ) : null}
-                <SessionList
-                    sessions={sessions}
-                    onSelect={(sessionId) => navigate({
-                        to: '/sessions/$sessionId',
-                        params: { sessionId },
-                    })}
-                    onNewSession={() => navigate({ to: '/sessions/new' })}
-                    onRefresh={handleRefresh}
-                    isLoading={isLoading}
-                    renderHeader={false}
-                    api={api}
-                />
+
+            <div className={`${isSessionsIndex ? 'hidden lg:flex' : 'flex'} min-w-0 flex-1 flex-col bg-[var(--app-bg)]`}>
+                <div className="flex-1 min-h-0">
+                    <Outlet />
+                </div>
             </div>
         </div>
     )
 }
 
+function SessionsIndexPage() {
+    return null
+}
+
 function SessionPage() {
     const { api } = useAppContext()
+    const { t } = useTranslation()
     const goBack = useAppGoBack()
     const navigate = useNavigate()
     const queryClient = useQueryClient()
@@ -225,6 +250,17 @@ function SessionPage() {
                     replace: true
                 })
             })()
+        },
+        onBlocked: (reason) => {
+            if (reason === 'no-api') {
+                addToast({
+                    title: t('send.blocked.title'),
+                    body: t('send.blocked.noConnection'),
+                    sessionId: sessionId ?? '',
+                    url: ''
+                })
+            }
+            // 'no-session' and 'pending' don't need toast - either invalid state or expected behavior
         }
     })
 
@@ -279,6 +315,15 @@ function SessionPage() {
             autocompleteSuggestions={getAutocompleteSuggestions}
         />
     )
+}
+
+function SessionDetailRoute() {
+    const pathname = useLocation({ select: location => location.pathname })
+    const { sessionId } = useParams({ from: '/sessions/$sessionId' })
+    const basePath = `/sessions/${sessionId}`
+    const isChat = pathname === basePath || pathname === `${basePath}/`
+
+    return isChat ? <SessionPage /> : <Outlet />
 }
 
 function NewSessionPage() {
@@ -353,21 +398,27 @@ const sessionsRoute = createRoute({
     component: SessionsPage,
 })
 
-const sessionRoute = createRoute({
-    getParentRoute: () => rootRoute,
-    path: '/sessions/$sessionId',
-    component: SessionPage,
+const sessionsIndexRoute = createRoute({
+    getParentRoute: () => sessionsRoute,
+    path: '/',
+    component: SessionsIndexPage,
+})
+
+const sessionDetailRoute = createRoute({
+    getParentRoute: () => sessionsRoute,
+    path: '$sessionId',
+    component: SessionDetailRoute,
 })
 
 const sessionFilesRoute = createRoute({
-    getParentRoute: () => rootRoute,
-    path: '/sessions/$sessionId/files',
+    getParentRoute: () => sessionDetailRoute,
+    path: 'files',
     component: FilesPage,
 })
 
 const sessionTerminalRoute = createRoute({
-    getParentRoute: () => rootRoute,
-    path: '/sessions/$sessionId/terminal',
+    getParentRoute: () => sessionDetailRoute,
+    path: 'terminal',
     component: TerminalPage,
 })
 
@@ -377,8 +428,8 @@ type SessionFileSearch = {
 }
 
 const sessionFileRoute = createRoute({
-    getParentRoute: () => rootRoute,
-    path: '/sessions/$sessionId/file',
+    getParentRoute: () => sessionDetailRoute,
+    path: 'file',
     validateSearch: (search: Record<string, unknown>): SessionFileSearch => {
         const path = typeof search.path === 'string' ? search.path : ''
         const staged = search.staged === true || search.staged === 'true'
@@ -393,8 +444,8 @@ const sessionFileRoute = createRoute({
 })
 
 const newSessionRoute = createRoute({
-    getParentRoute: () => rootRoute,
-    path: '/sessions/new',
+    getParentRoute: () => sessionsRoute,
+    path: 'new',
     component: NewSessionPage,
 })
 
@@ -406,12 +457,15 @@ const settingsRoute = createRoute({
 
 export const routeTree = rootRoute.addChildren([
     indexRoute,
-    sessionsRoute,
-    sessionRoute,
-    sessionTerminalRoute,
-    sessionFilesRoute,
-    sessionFileRoute,
-    newSessionRoute,
+    sessionsRoute.addChildren([
+        sessionsIndexRoute,
+        newSessionRoute,
+        sessionDetailRoute.addChildren([
+            sessionTerminalRoute,
+            sessionFilesRoute,
+            sessionFileRoute,
+        ]),
+    ]),
     settingsRoute,
 ])
 

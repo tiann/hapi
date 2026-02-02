@@ -1,0 +1,78 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://hapi.run/schemas/settings.schema.json",
+  "title": "HAPI Settings",
+  "description": "Configuration file for HAPI (~/.hapi/settings.json)",
+  "type": "object",
+  "properties": {
+    "cliApiToken": {
+      "type": "string",
+      "description": "Shared secret for CLI authentication. Auto-generated if not set. ENV: CLI_API_TOKEN"
+    },
+    "apiUrl": {
+      "type": "string",
+      "format": "uri",
+      "default": "http://localhost:3006",
+      "description": "Hub URL for CLI connections. ENV: HAPI_API_URL"
+    },
+    "listenHost": {
+      "type": "string",
+      "default": "127.0.0.1",
+      "description": "Hub HTTP bind address. ENV: HAPI_LISTEN_HOST"
+    },
+    "listenPort": {
+      "type": "integer",
+      "default": 3006,
+      "minimum": 1,
+      "maximum": 65535,
+      "description": "Hub HTTP port. ENV: HAPI_LISTEN_PORT"
+    },
+    "publicUrl": {
+      "type": "string",
+      "format": "uri",
+      "description": "Public URL for external access (e.g., Telegram Mini App). ENV: HAPI_PUBLIC_URL"
+    },
+    "corsOrigins": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Allowed CORS origins. ENV: CORS_ORIGINS (comma-separated)"
+    },
+    "telegramBotToken": {
+      "type": "string",
+      "description": "Telegram Bot API token from @BotFather. ENV: TELEGRAM_BOT_TOKEN"
+    },
+    "telegramNotification": {
+      "type": "boolean",
+      "default": true,
+      "description": "Enable Telegram notifications. ENV: TELEGRAM_NOTIFICATION"
+    },
+    "vapidKeys": {
+      "type": "object",
+      "description": "Auto-generated Web Push VAPID keys. Do not edit manually.",
+      "properties": {
+        "publicKey": {
+          "type": "string"
+        },
+        "privateKey": {
+          "type": "string"
+        }
+      },
+      "required": ["publicKey", "privateKey"]
+    },
+    "machineId": {
+      "type": "string",
+      "description": "Auto-generated unique machine identifier. Do not edit manually."
+    },
+    "machineIdConfirmedByServer": {
+      "type": "boolean",
+      "description": "Internal flag. Do not edit manually."
+    },
+    "runnerAutoStartWhenRunningHappy": {
+      "type": "boolean",
+      "description": "Auto-start runner when running hapi command."
+    }
+  },
+  "additionalProperties": false
+}
