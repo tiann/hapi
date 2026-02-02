@@ -16,10 +16,8 @@ import type { SSEManager } from '../sse/sseManager'
 import { EventPublisher, type SyncEventListener } from './eventPublisher'
 import { MachineCache, type Machine } from './machineCache'
 import { MessageService } from './messageService'
-import { MessageQueueService } from './messageQueueService'
 import { RpcGateway, type RpcCommandResponse, type RpcPathExistsResponse, type RpcReadFileResponse, type RpcUploadFileResponse, type RpcDeleteUploadResponse } from './rpcGateway'
 import { SessionCache } from './sessionCache'
-import * as messageQueue from '../store/messageQueue'
 
 export type { Session, SyncEvent } from '@hapi/protocol/types'
 export type { Machine } from './machineCache'
@@ -31,12 +29,10 @@ export class SyncEngine {
     private readonly sessionCache: SessionCache
     private readonly machineCache: MachineCache
     private readonly messageService: MessageService
-    private readonly messageQueueService: MessageQueueService
     private readonly rpcGateway: RpcGateway
     private readonly store: Store
     private inactivityTimer: NodeJS.Timeout | null = null
     private readonly resumeLocks = new Map<string, Promise<void>>()
-    private readonly prevThinkingState: Map<string, boolean> = new Map()
 
     constructor(
         store: Store,
@@ -49,12 +45,6 @@ export class SyncEngine {
         this.sessionCache = new SessionCache(store, this.eventPublisher)
         this.machineCache = new MachineCache(store, this.eventPublisher)
         this.messageService = new MessageService(store, io, this.eventPublisher)
-        this.messageQueueService = new MessageQueueService(
-            store,
-            io,
-            this.eventPublisher,
-            this.sessionCache
-        )
         this.rpcGateway = new RpcGateway(io, rpcRegistry)
         this.reloadAll()
         this.inactivityTimer = setInterval(() => this.expireInactive(), 5_000)
@@ -172,22 +162,7 @@ export class SyncEngine {
         permissionMode?: PermissionMode
         modelMode?: ModelMode
     }): void {
-        const wasThinking = this.prevThinkingState.get(payload.sid) ?? false
-
-        // Update session cache
         this.sessionCache.handleSessionAlive(payload)
-
-        const isThinking = Boolean(payload.thinking)
-
-        // Detect thinking → ready transition
-        if (wasThinking && !isThinking) {
-            // Trigger queue processing (fire-and-forget)
-            this.messageQueueService.onSessionReady(payload.sid).catch(err => {
-                console.error('[SyncEngine] Error processing queue:', err)
-            })
-        }
-
-        this.prevThinkingState.set(payload.sid, isThinking)
     }
 
     handleSessionEnd(payload: { sid: string; time: number }): void {
@@ -233,45 +208,6 @@ export class SyncEngine {
         }
     ): Promise<void> {
         await this.messageService.sendMessage(sessionId, payload)
-    }
-
-    async queueMessage(
-        sessionId: string,
-        payload: {
-            text: string
-            localId?: string | null
-            attachments?: any[]
-            sentFrom?: 'telegram-bot' | 'webapp' | 'tui'
-        }
-    ): Promise<{ queued: boolean; queuePosition?: number; error?: string }> {
-        return await this.messageQueueService.submitMessage(sessionId, payload)
-    }
-
-    async getMessageQueue(sessionId: string): Promise<any[]> {
-        const messages = messageQueue.getQueuedMessages(this.store.db, sessionId)
-        return messages.map(m => ({
-            id: m.id,
-            localId: m.localId,
-            status: m.status,
-            createdAt: m.createdAt,
-            text: this.extractQueuedMessageText(m.content),
-            errorMessage: m.errorMessage,
-            errorType: m.errorType,
-            retryCount: m.retryCount
-        }))
-    }
-
-    async retryQueuedMessage(sessionId: string, queueId: string): Promise<void> {
-        await this.messageQueueService.retryFailedMessage(sessionId, queueId)
-    }
-
-    async cancelQueuedMessage(sessionId: string, queueId: string): Promise<void> {
-        await this.messageQueueService.cancelQueuedMessage(sessionId, queueId)
-    }
-
-    private extractQueuedMessageText(content: unknown): string {
-        const c = content as any
-        return c?.content?.text ?? ''
     }
 
     async approvePermission(
@@ -649,12 +585,6 @@ export class SyncEngine {
 
         // Check thinking state
         if (session.thinking) {
-            return true
-        }
-
-        // Check message queue
-        const queueCount = this.messageQueueService.getQueueCount(sessionId)
-        if (queueCount > 0) {
             return true
         }
 
