@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { ApiClient } from '@/api/client'
 import { LanguageSwitcher } from '@/components/LanguageSwitcher'
+import { QrLogin } from '@/components/QrLogin'
 import { Spinner } from '@/components/Spinner'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
@@ -24,6 +25,7 @@ export function LoginPrompt(props: LoginPromptProps) {
     const [accessToken, setAccessToken] = useState('')
     const [isLoading, setIsLoading] = useState(false)
     const [error, setError] = useState<string | null>(null)
+    const [showQr, setShowQr] = useState(false)
     const [isServerDialogOpen, setIsServerDialogOpen] = useState(false)
     const [serverInput, setServerInput] = useState(props.serverUrl ?? '')
     const [serverError, setServerError] = useState<string | null>(null)
@@ -115,42 +117,64 @@ export function LoginPrompt(props: LoginPromptProps) {
                     </div>
                 </div>
 
-                {/* Form */}
-                <form onSubmit={handleSubmit} className="space-y-4">
-                    <div>
-                        <input
-                            type="password"
-                            value={accessToken}
-                            onChange={(e) => setAccessToken(e.target.value)}
-                            placeholder={t('login.placeholder')}
-                            autoComplete="current-password"
-                            disabled={isLoading}
-                            className="w-full px-3 py-2.5 rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] text-[var(--app-fg)] placeholder:text-[var(--app-hint)] focus:outline-none focus:ring-2 focus:ring-[var(--app-button)] focus:border-transparent disabled:opacity-50"
-                        />
-                    </div>
+                {/* QR Login or Token Form */}
+                {showQr && !isBindMode && props.onLogin ? (
+                    <QrLogin
+                        baseUrl={props.baseUrl}
+                        onLogin={props.onLogin}
+                        onCancel={() => setShowQr(false)}
+                    />
+                ) : (
+                    <>
+                        <form onSubmit={handleSubmit} className="space-y-4">
+                            <div>
+                                <input
+                                    type="password"
+                                    value={accessToken}
+                                    onChange={(e) => setAccessToken(e.target.value)}
+                                    placeholder={t('login.placeholder')}
+                                    autoComplete="current-password"
+                                    disabled={isLoading}
+                                    className="w-full px-3 py-2.5 rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] text-[var(--app-fg)] placeholder:text-[var(--app-hint)] focus:outline-none focus:ring-2 focus:ring-[var(--app-button)] focus:border-transparent disabled:opacity-50"
+                                />
+                            </div>
 
-                    {displayError && (
-                        <div className="text-sm text-red-500 text-center">
-                            {displayError}
-                        </div>
-                    )}
+                            {displayError && (
+                                <div className="text-sm text-red-500 text-center">
+                                    {displayError}
+                                </div>
+                            )}
 
-                    <button
-                        type="submit"
-                        disabled={isLoading || !accessToken.trim()}
-                        aria-busy={isLoading}
-                        className="w-full py-2.5 rounded-lg bg-[var(--app-button)] text-[var(--app-button-text)] font-medium disabled:opacity-50 hover:opacity-90 transition-opacity inline-flex items-center justify-center gap-2"
-                    >
-                        {isLoading ? (
-                            <>
-                                <Spinner size="sm" label={null} className="text-[var(--app-button-text)]" />
-                                {isBindMode ? t('login.bind.submitting') : t('login.submitting')}
-                            </>
-                        ) : (
-                            submitLabel
+                            <button
+                                type="submit"
+                                disabled={isLoading || !accessToken.trim()}
+                                aria-busy={isLoading}
+                                className="w-full py-2.5 rounded-lg bg-[var(--app-button)] text-[var(--app-button-text)] font-medium disabled:opacity-50 hover:opacity-90 transition-opacity inline-flex items-center justify-center gap-2"
+                            >
+                                {isLoading ? (
+                                    <>
+                                        <Spinner size="sm" label={null} className="text-[var(--app-button-text)]" />
+                                        {isBindMode ? t('login.bind.submitting') : t('login.submitting')}
+                                    </>
+                                ) : (
+                                    submitLabel
+                                )}
+                            </button>
+                        </form>
+
+                        {!isBindMode && (
+                            <div className="text-center">
+                                <button
+                                    type="button"
+                                    onClick={() => setShowQr(true)}
+                                    className="text-sm text-[var(--app-link)] hover:opacity-80 transition-opacity"
+                                >
+                                    {t('qr.loginWithQr')}
+                                </button>
+                            </div>
                         )}
-                    </button>
-                </form>
+                    </>
+                )}
 
                 {/* Help links */}
                 {!isBindMode && (

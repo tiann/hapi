@@ -37,6 +37,26 @@ export default {
   'login.footer.for': 'for Vibe Coding',
   'login.footer.copyright': '©',
 
+  // QR Login
+  'qr.loginWithQr': 'Scan QR code to sign in',
+  'qr.scanPrompt': 'Scan this QR code with a device that is already signed in',
+  'qr.expiresIn': 'Expires in {m}:{s}',
+  'qr.waiting': 'Waiting for confirmation…',
+  'qr.backToToken': 'Back to token login',
+  'qr.retry': 'Try again',
+  'qr.error.createFailed': 'Failed to create QR session',
+  'qr.error.expired': 'QR code expired',
+  'qr.error.authFailed': 'Authentication failed',
+  'qr.confirm.title': 'Authorize new device',
+  'qr.confirm.description': 'A new device is requesting to sign in to your account.',
+  'qr.confirm.allow': 'Allow',
+  'qr.confirm.deny': 'Deny',
+  'qr.confirm.confirming': 'Authorizing…',
+  'qr.confirm.success': 'Authorized',
+  'qr.confirm.successHint': 'The new device is now signed in. You can close this page.',
+  'qr.confirm.error': 'Authorization failed',
+  'qr.confirm.invalidLink': 'Invalid QR link',
+
   // Sessions page
   'sessions.count': '{n} sessions in {m} projects',
   'sessions.new': 'New Session',

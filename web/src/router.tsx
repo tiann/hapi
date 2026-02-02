@@ -34,6 +34,7 @@ import FilesPage from '@/routes/sessions/files'
 import FilePage from '@/routes/sessions/file'
 import TerminalPage from '@/routes/sessions/terminal'
 import SettingsPage from '@/routes/settings'
+import QrConfirmPage from '@/routes/qr-confirm'
 
 function BackIcon(props: { className?: string }) {
     return (
@@ -455,6 +456,19 @@ const settingsRoute = createRoute({
     component: SettingsPage,
 })
 
+type QrConfirmSearch = {
+    s?: string
+}
+
+const qrConfirmRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: '/qr/$qrId',
+    validateSearch: (search: Record<string, unknown>): QrConfirmSearch => ({
+        s: typeof search.s === 'string' ? search.s : undefined,
+    }),
+    component: QrConfirmPage,
+})
+
 export const routeTree = rootRoute.addChildren([
     indexRoute,
     sessionsRoute.addChildren([
@@ -467,6 +481,7 @@ export const routeTree = rootRoute.addChildren([
         ]),
     ]),
     settingsRoute,
+    qrConfirmRoute,
 ])
 
 type RouterHistory = Parameters<typeof createRouter>[0]['history']

@@ -37,6 +37,26 @@ export default {
   'login.footer.for': '设计，Vibe Coding',
   'login.footer.copyright': '©',
 
+  // QR Login
+  'qr.loginWithQr': '扫码登录',
+  'qr.scanPrompt': '使用已登录的设备扫描此二维码',
+  'qr.expiresIn': '{m}:{s} 后过期',
+  'qr.waiting': '等待确认…',
+  'qr.backToToken': '返回令牌登录',
+  'qr.retry': '重试',
+  'qr.error.createFailed': '创建二维码会话失败',
+  'qr.error.expired': '二维码已过期',
+  'qr.error.authFailed': '认证失败',
+  'qr.confirm.title': '授权新设备',
+  'qr.confirm.description': '一个新设备请求登录您的账户。',
+  'qr.confirm.allow': '允许',
+  'qr.confirm.deny': '拒绝',
+  'qr.confirm.confirming': '授权中…',
+  'qr.confirm.success': '已授权',
+  'qr.confirm.successHint': '新设备已登录，您可以关闭此页面。',
+  'qr.confirm.error': '授权失败',
+  'qr.confirm.invalidLink': '无效的二维码链接',
+
   // Sessions page
   'sessions.count': '{n} 个会话，{m} 个项目',
   'sessions.new': '新建会话',
