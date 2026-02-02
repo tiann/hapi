@@ -254,6 +254,103 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
     })
 
+    /**
+     * Fork a session (Claude only).
+     *
+     * Creates a new inactive session from an existing one, copying conversation history.
+     * Only supported for Claude sessions - returns 501 for codex/gemini.
+     */
+    app.post('/sessions/:id/fork', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        // Check if fork is supported for this flavor
+        if (sessionResult.session.metadata?.flavor !== 'claude') {
+            return c.json({
+                error: 'Fork is only supported for Claude sessions',
+                flavor: sessionResult.session.metadata?.flavor
+            }, 501)
+        }
+
+        try {
+            // Create new session with forked metadata
+            const newSessionId = await engine.forkSession(sessionResult.sessionId)
+
+            return c.json({
+                id: newSessionId,
+                message: 'Session forked. Resume to activate.'
+            })
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Failed to fork session'
+
+            if (message === 'Source session not found') {
+                return c.json({ error: message }, 404)
+            }
+            if (message.includes('Cannot fork: No Claude session ID')) {
+                return c.json({ error: message }, 400)
+            }
+
+            return c.json({ error: message }, 500)
+        }
+    })
+
+    /**
+     * Reload a session.
+     *
+     * Gracefully terminates and immediately resumes the session.
+     * Useful for reloading configuration or updating CLI version.
+     */
+    app.post('/sessions/:id/reload', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const force = c.req.query('force') === 'true'
+
+        // Check if busy (unless force is true)
+        if (!force) {
+            const isBusy = engine.isSessionBusy(sessionResult.sessionId)
+            if (isBusy) {
+                return c.json({
+                    error: 'Session is busy',
+                    busy: true,
+                    canForce: true
+                }, 409)
+            }
+        }
+
+        try {
+            // Terminate and resume
+            await engine.reloadSession(sessionResult.sessionId, force)
+
+            return c.json({ ok: true })
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Failed to reload session'
+
+            if (message === 'Session not found') {
+                return c.json({ error: message }, 404)
+            }
+            if (message === 'Session is not active') {
+                return c.json({ error: message }, 409)
+            }
+
+            return c.json({ error: message }, 500)
+        }
+    })
+
     app.post('/sessions/:id/switch', async (c) => {
         const engine = requireSyncEngine(c, getSyncEngine)
         if (engine instanceof Response) {

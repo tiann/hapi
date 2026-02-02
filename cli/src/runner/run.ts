@@ -195,7 +195,7 @@ export async function startRunner(): Promise<void> {
     const spawnSession = async (options: SpawnSessionOptions): Promise<SpawnSessionResult> => {
       logger.debugLargeJson('[RUNNER RUN] Spawning session', options);
 
-      const { directory, sessionId, machineId, approvedNewDirectoryCreation = true, resumeSessionId } = options;
+      const { directory, sessionId, machineId, approvedNewDirectoryCreation = true, resumeSessionId, forkSession } = options;
       const agent = options.agent ?? 'claude';
       const yolo = options.yolo === true;
       const sessionType = options.sessionType ?? 'simple';
@@ -362,6 +362,11 @@ export async function startRunner(): Promise<void> {
           args.push('--resume-session', resumeSessionId);
         }
 
+        // Pass fork flag if specified (Claude only)
+        if (forkSession && agent === 'claude') {
+          args.push('--fork-session');
+        }
+
         if (options.model) {
           args.push('--model', options.model);
         }
@@ -477,6 +482,17 @@ export async function startRunner(): Promise<void> {
       }
     };
 
+    // Get process by session ID
+    const getProcessBySessionId = (sessionId: string): any | null => {
+      // Try to find by sessionId first
+      for (const [pid, session] of pidToTrackedSession.entries()) {
+        if (session.happySessionId === sessionId) {
+          return session.childProcess || null;
+        }
+      }
+      return null;
+    };
+
     // Stop a session by sessionId or PID fallback
     const stopSession = (sessionId: string): boolean => {
       logger.debug(`[RUNNER RUN] Attempting to stop session ${sessionId}`);
@@ -580,7 +596,8 @@ export async function startRunner(): Promise<void> {
     apiMachine.setRPCHandlers({
       spawnSession,
       stopSession,
-      requestShutdown: () => requestShutdown('hapi-app')
+      requestShutdown: () => requestShutdown('hapi-app'),
+      getProcessBySessionId
     });
 
     // Connect to server

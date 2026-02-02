@@ -10,6 +10,7 @@ export interface SpawnSessionOptions {
     sessionType?: 'simple' | 'worktree'
     worktreeName?: string
     resumeSessionId?: string
+    forkSession?: boolean
 }
 
 export type SpawnSessionResult =

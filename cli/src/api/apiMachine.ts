@@ -56,6 +56,7 @@ type MachineRpcHandlers = {
     spawnSession: (options: SpawnSessionOptions) => Promise<SpawnSessionResult>
     stopSession: (sessionId: string) => boolean
     requestShutdown: () => void
+    getProcessBySessionId: (sessionId: string) => any | null
 }
 
 interface PathExistsRequest {
@@ -151,7 +152,7 @@ export class ApiMachineClient {
         })
     }
 
-    setRPCHandlers({ spawnSession, stopSession, requestShutdown }: MachineRpcHandlers): void {
+    setRPCHandlers({ spawnSession, stopSession, requestShutdown, getProcessBySessionId }: MachineRpcHandlers): void {
         this.rpcHandlerManager.registerHandler('spawn-happy-session', async (params: any) => {
             const { directory, sessionId, machineId, approvedNewDirectoryCreation, agent, model, yolo, token, sessionType, worktreeName } = params || {}
 
@@ -197,7 +198,7 @@ export class ApiMachineClient {
         })
 
         this.rpcHandlerManager.registerHandler('spawn-resumed-session', async (params: any) => {
-            const { hapiSessionId, directory, agent, sessionIdToResume } = params || {}
+            const { hapiSessionId, directory, agent, sessionIdToResume, fork } = params || {}
 
             if (!hapiSessionId) {
                 throw new Error('Hapi session ID is required')
@@ -215,7 +216,8 @@ export class ApiMachineClient {
                 directory,
                 sessionId: hapiSessionId,
                 agent,
-                resumeSessionId: sessionIdToResume
+                resumeSessionId: sessionIdToResume,
+                forkSession: fork === true
             })
 
             switch (result.type) {
@@ -226,6 +228,42 @@ export class ApiMachineClient {
                 case 'error':
                     throw new Error(result.errorMessage)
             }
+        })
+
+        this.rpcHandlerManager.registerHandler('terminate-session', async (params: any) => {
+            const { sessionId, force } = params || {}
+
+            if (!sessionId) {
+                throw new Error('Session ID is required')
+            }
+
+            // Find process by session ID
+            const childProcess = getProcessBySessionId(sessionId)
+            if (!childProcess) {
+                return { ok: true, message: 'Process already terminated' }
+            }
+
+            if (force) {
+                childProcess.kill('SIGKILL')
+            } else {
+                childProcess.kill('SIGTERM')
+                // Wait up to 5s for graceful exit
+                await new Promise((resolve) => {
+                    const timeout = setTimeout(() => {
+                        if (!childProcess.killed) {
+                            childProcess.kill('SIGKILL')
+                        }
+                        resolve(undefined)
+                    }, 5000)
+
+                    childProcess.on('exit', () => {
+                        clearTimeout(timeout)
+                        resolve(undefined)
+                    })
+                })
+            }
+
+            return { ok: true }
         })
 
         this.rpcHandlerManager.registerHandler('stop-runner', () => {

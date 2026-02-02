@@ -129,6 +129,56 @@ function isValidUUID(str: string): boolean {
     return uuidRegex.test(str)
 }
 
+export function createSession(
+    db: Database,
+    id: string,
+    namespace: string,
+    metadata: unknown,
+    agentState: unknown,
+    active: boolean = false,
+    thinking: boolean = false
+): StoredSession {
+    if (!isValidUUID(id)) {
+        throw new Error(`Invalid session ID format: ${id}`)
+    }
+
+    const now = Date.now()
+    const metadataJson = JSON.stringify(metadata)
+    const agentStateJson = agentState === null || agentState === undefined ? null : JSON.stringify(agentState)
+
+    db.prepare(`
+        INSERT INTO sessions (
+            id, tag, namespace, machine_id, created_at, updated_at,
+            metadata, metadata_version,
+            agent_state, agent_state_version,
+            todos, todos_updated_at,
+            active, active_at, seq
+        ) VALUES (
+            @id, @tag, @namespace, NULL, @created_at, @updated_at,
+            @metadata, 1,
+            @agent_state, 1,
+            NULL, NULL,
+            @active, @active_at, 0
+        )
+    `).run({
+        id,
+        tag: id,
+        namespace,
+        created_at: now,
+        updated_at: now,
+        metadata: metadataJson,
+        agent_state: agentStateJson,
+        active: active ? 1 : 0,
+        active_at: active ? now : null
+    })
+
+    const row = getSession(db, id)
+    if (!row) {
+        throw new Error('Failed to create session')
+    }
+    return row
+}
+
 export function updateSessionMetadata(
     db: Database,
     id: string,

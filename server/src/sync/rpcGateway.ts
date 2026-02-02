@@ -159,14 +159,16 @@ export class RpcGateway {
         machineId: string,
         directory: string,
         sessionIdToResume: string,
-        agent: 'claude' | 'codex' | 'gemini' = 'claude'
+        agent: 'claude' | 'codex' | 'gemini' = 'claude',
+        fork: boolean = false
     ): Promise<void> {
         console.log('[RpcGateway.spawnResumedSession] Calling machineRpc:', {
             hapiSessionId,
             machineId,
             directory,
             sessionIdToResume,
-            agent
+            agent,
+            fork
         })
 
         const result = await this.machineRpc(
@@ -176,7 +178,8 @@ export class RpcGateway {
                 hapiSessionId,
                 directory,
                 agent,
-                sessionIdToResume
+                sessionIdToResume,
+                fork
             }
         )
 
@@ -208,6 +211,22 @@ export class RpcGateway {
         }
 
         console.log('[RpcGateway.spawnResumedSession] Completed successfully:', { hapiSessionId })
+    }
+
+    async terminateSessionProcess(sessionId: string, machineId: string, force: boolean = false): Promise<void> {
+        try {
+            await this.machineRpc(
+                machineId,
+                'terminate-session',
+                { sessionId, force }
+            )
+        } catch (error) {
+            // Process might already be dead, log but don't throw
+            console.log('[RpcGateway.terminateSessionProcess] Failed to terminate:', {
+                sessionId,
+                error: error instanceof Error ? error.message : String(error)
+            })
+        }
     }
 
     async spawnSession(

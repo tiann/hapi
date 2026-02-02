@@ -44,7 +44,8 @@ export const MetadataSchema = z.object({
     archivedBy: z.string().optional(),
     archiveReason: z.string().optional(),
     flavor: z.string().nullish(),
-    worktree: WorktreeMetadataSchema.optional()
+    worktree: WorktreeMetadataSchema.optional(),
+    shouldFork: z.boolean().optional()
 })
 
 export type Metadata = z.infer<typeof MetadataSchema>
@@ -186,6 +187,27 @@ export const SyncEventSchema = z.discriminatedUnion('type', [
             status: z.string(),
             subscriptionId: z.string().optional()
         }).optional()
+    }),
+    SessionChangedSchema.extend({
+        type: z.literal('message-queued'),
+        queueId: z.string()
+    }),
+    SessionChangedSchema.extend({
+        type: z.literal('message-processing'),
+        queueId: z.string()
+    }),
+    SessionChangedSchema.extend({
+        type: z.literal('message-queue-completed'),
+        queueId: z.string()
+    }),
+    SessionChangedSchema.extend({
+        type: z.literal('message-queue-failed'),
+        queueId: z.string(),
+        error: z.string()
+    }),
+    SessionChangedSchema.extend({
+        type: z.literal('message-queue-cancelled'),
+        queueId: z.string()
     })
 ])
 

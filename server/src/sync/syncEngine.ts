@@ -9,14 +9,17 @@
 
 import type { DecryptedMessage, ModelMode, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
 import type { Server } from 'socket.io'
+import { randomUUID } from 'node:crypto'
 import type { Store } from '../store'
 import type { RpcRegistry } from '../socket/rpcRegistry'
 import type { SSEManager } from '../sse/sseManager'
 import { EventPublisher, type SyncEventListener } from './eventPublisher'
 import { MachineCache, type Machine } from './machineCache'
 import { MessageService } from './messageService'
+import { MessageQueueService } from './messageQueueService'
 import { RpcGateway, type RpcCommandResponse, type RpcPathExistsResponse, type RpcReadFileResponse, type RpcUploadFileResponse, type RpcDeleteUploadResponse } from './rpcGateway'
 import { SessionCache } from './sessionCache'
+import * as messageQueue from '../store/messageQueue'
 
 export type { Session, SyncEvent } from '@hapi/protocol/types'
 export type { Machine } from './machineCache'
@@ -28,9 +31,12 @@ export class SyncEngine {
     private readonly sessionCache: SessionCache
     private readonly machineCache: MachineCache
     private readonly messageService: MessageService
+    private readonly messageQueueService: MessageQueueService
     private readonly rpcGateway: RpcGateway
+    private readonly store: Store
     private inactivityTimer: NodeJS.Timeout | null = null
     private readonly resumeLocks = new Map<string, Promise<void>>()
+    private readonly prevThinkingState: Map<string, boolean> = new Map()
 
     constructor(
         store: Store,
@@ -38,10 +44,17 @@ export class SyncEngine {
         rpcRegistry: RpcRegistry,
         sseManager: SSEManager
     ) {
+        this.store = store
         this.eventPublisher = new EventPublisher(sseManager, (event) => this.resolveNamespace(event))
         this.sessionCache = new SessionCache(store, this.eventPublisher)
         this.machineCache = new MachineCache(store, this.eventPublisher)
         this.messageService = new MessageService(store, io, this.eventPublisher)
+        this.messageQueueService = new MessageQueueService(
+            store,
+            io,
+            this.eventPublisher,
+            this.sessionCache
+        )
         this.rpcGateway = new RpcGateway(io, rpcRegistry)
         this.reloadAll()
         this.inactivityTimer = setInterval(() => this.expireInactive(), 5_000)
@@ -159,7 +172,22 @@ export class SyncEngine {
         permissionMode?: PermissionMode
         modelMode?: ModelMode
     }): void {
+        const wasThinking = this.prevThinkingState.get(payload.sid) ?? false
+
+        // Update session cache
         this.sessionCache.handleSessionAlive(payload)
+
+        const isThinking = Boolean(payload.thinking)
+
+        // Detect thinking → ready transition
+        if (wasThinking && !isThinking) {
+            // Trigger queue processing (fire-and-forget)
+            this.messageQueueService.onSessionReady(payload.sid).catch(err => {
+                console.error('[SyncEngine] Error processing queue:', err)
+            })
+        }
+
+        this.prevThinkingState.set(payload.sid, isThinking)
     }
 
     handleSessionEnd(payload: { sid: string; time: number }): void {
@@ -205,6 +233,45 @@ export class SyncEngine {
         }
     ): Promise<void> {
         await this.messageService.sendMessage(sessionId, payload)
+    }
+
+    async queueMessage(
+        sessionId: string,
+        payload: {
+            text: string
+            localId?: string | null
+            attachments?: any[]
+            sentFrom?: 'telegram-bot' | 'webapp' | 'tui'
+        }
+    ): Promise<{ queued: boolean; queuePosition?: number; error?: string }> {
+        return await this.messageQueueService.submitMessage(sessionId, payload)
+    }
+
+    async getMessageQueue(sessionId: string): Promise<any[]> {
+        const messages = messageQueue.getQueuedMessages(this.store.db, sessionId)
+        return messages.map(m => ({
+            id: m.id,
+            localId: m.localId,
+            status: m.status,
+            createdAt: m.createdAt,
+            text: this.extractQueuedMessageText(m.content),
+            errorMessage: m.errorMessage,
+            errorType: m.errorType,
+            retryCount: m.retryCount
+        }))
+    }
+
+    async retryQueuedMessage(sessionId: string, queueId: string): Promise<void> {
+        await this.messageQueueService.retryFailedMessage(sessionId, queueId)
+    }
+
+    async cancelQueuedMessage(sessionId: string, queueId: string): Promise<void> {
+        await this.messageQueueService.cancelQueuedMessage(sessionId, queueId)
+    }
+
+    private extractQueuedMessageText(content: unknown): string {
+        const c = content as any
+        return c?.content?.text ?? ''
     }
 
     async approvePermission(
@@ -473,21 +540,25 @@ export class SyncEngine {
             )
         }
 
-        const machineId = session.machineId || metadata.machineId
+        const machineId = metadata.machineId
         if (!machineId) {
             console.log('[SyncEngine.spawnWithResume] No machine ID:', { sessionId: session.id })
             throw new Error('No machine ID found')
         }
+
+        // Check if this is a fork operation
+        const shouldFork = metadata.shouldFork === true
 
         console.log('[SyncEngine.spawnWithResume] Calling spawnResumedSession:', {
             hapiSessionId: session.id,
             machineId,
             path: metadata.path,
             sessionIdToResume,
-            flavor
+            flavor,
+            shouldFork
         })
 
-        // Spawn new process with --resume
+        // Spawn new process with --resume (and optionally --fork-session)
         // This will create a new CLI process that resumes the agent session
         // The spawned process will report back with a (potentially new) session ID
         // but will use the same hapi session ID
@@ -496,8 +567,21 @@ export class SyncEngine {
             machineId,
             metadata.path,
             sessionIdToResume,    // Agent session ID to resume from (may change after resume)
-            flavor
+            flavor,
+            shouldFork            // Pass fork flag
         )
+
+        // Clear fork flag after spawning (one-time use)
+        if (shouldFork) {
+            const updatedMetadata = { ...session.metadata, shouldFork: false }
+            this.store.sessions.updateSessionMetadata(
+                session.id,
+                updatedMetadata,
+                session.metadataVersion,
+                session.namespace,
+                { touchUpdatedAt: false }
+            )
+        }
 
         console.log('[SyncEngine.spawnWithResume] spawnResumedSession completed:', { sessionId: session.id })
     }
@@ -512,6 +596,96 @@ export class SyncEngine {
 
     async deleteSession(sessionId: string): Promise<void> {
         await this.sessionCache.deleteSession(sessionId)
+    }
+
+    async forkSession(sourceSessionId: string): Promise<string> {
+        const sourceSession = this.getSession(sourceSessionId)
+        if (!sourceSession) {
+            throw new Error('Source session not found')
+        }
+
+        // Validate this is a Claude session
+        if (sourceSession.metadata?.flavor !== 'claude') {
+            throw new Error('Fork is only supported for Claude sessions')
+        }
+
+        // Validate has Claude session ID (needed for --resume --fork-session)
+        if (!sourceSession.metadata?.claudeSessionId) {
+            throw new Error('Cannot fork: No Claude session ID found')
+        }
+
+        // Create new session ID
+        const newSessionId = randomUUID()
+
+        // Copy metadata with modifications
+        const forkedMetadata = {
+            ...sourceSession.metadata,
+            name: `Fork ${sourceSession.metadata.name || 'Untitled'}`,
+            // Store fork flag for spawn
+            shouldFork: true
+        }
+
+        // Create new session in store
+        const newSession = this.store.sessions.createSession(
+            newSessionId,
+            sourceSession.namespace,
+            forkedMetadata,
+            sourceSession.agentState,
+            false, // inactive
+            false  // not thinking
+        )
+
+        // Load into cache
+        this.sessionCache.refreshSession(newSessionId)
+
+        return newSessionId
+    }
+
+    isSessionBusy(sessionId: string): boolean {
+        const session = this.getSession(sessionId)
+        if (!session) {
+            throw new Error('Session not found')
+        }
+
+        // Check thinking state
+        if (session.thinking) {
+            return true
+        }
+
+        // Check message queue
+        const queueCount = this.messageQueueService.getQueueCount(sessionId)
+        if (queueCount > 0) {
+            return true
+        }
+
+        return false
+    }
+
+    async reloadSession(sessionId: string, force: boolean = false): Promise<void> {
+        const session = this.getSession(sessionId)
+        if (!session) {
+            throw new Error('Session not found')
+        }
+
+        if (!session.active) {
+            throw new Error('Session is not active')
+        }
+
+        // Get machine ID
+        const machineId = session.metadata?.machineId
+        if (!machineId) {
+            throw new Error('No machine ID found for session')
+        }
+
+        // Terminate CLI process
+        await this.rpcGateway.terminateSessionProcess(sessionId, machineId, force)
+
+        // Mark inactive (session object is mutable in cache)
+        session.active = false
+        session.thinking = false
+
+        // Resume using existing logic
+        await this.resumeSession(sessionId)
     }
 
     async applySessionConfig(
