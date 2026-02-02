@@ -17,6 +17,7 @@ import type { Suggestion } from '@/hooks/useActiveSuggestions'
 import type { ConversationStatus } from '@/realtime/types'
 import { useActiveWord } from '@/hooks/useActiveWord'
 import { useActiveSuggestions } from '@/hooks/useActiveSuggestions'
+import { useVerticalDrag } from '@/hooks/useVerticalDrag'
 import { applySuggestion } from '@/utils/applySuggestion'
 import { usePlatform } from '@/hooks/usePlatform'
 import { usePWAInstall } from '@/hooks/usePWAInstall'
@@ -27,6 +28,8 @@ import { StatusBar } from '@/components/AssistantChat/StatusBar'
 import { ComposerButtons } from '@/components/AssistantChat/ComposerButtons'
 import { AttachmentItem } from '@/components/AssistantChat/AttachmentItem'
 import { useTranslation } from '@/lib/use-translation'
+
+type ComposerMode = 'quick' | 'expanded'
 
 export interface TextInputState {
     text: string
@@ -114,6 +117,9 @@ export function HappyComposer(props: {
     const [isAborting, setIsAborting] = useState(false)
     const [isSwitching, setIsSwitching] = useState(false)
     const [showContinueHint, setShowContinueHint] = useState(false)
+    const [composerMode, setComposerMode] = useState<ComposerMode>('quick')
+    const [expandedHeight, setExpandedHeight] = useState<number | null>(null)
+    const [isDragging, setIsDragging] = useState(false)
 
     const textareaRef = useRef<HTMLTextAreaElement>(null)
     const prevControlledByUser = useRef(controlledByUser)
@@ -159,6 +165,94 @@ export function HappyComposer(props: {
             platformHaptic.notification('error')
         }
     }, [platformHaptic])
+
+    // Voice active check - disable mode switching during voice input
+    const voiceActive = voiceStatus === 'connected'
+
+    // Constants for drag behavior
+    const MIN_EXPANDED_HEIGHT = 150
+    const COLLAPSE_HEIGHT_THRESHOLD = 100 // collapse if height drops below this
+    const VELOCITY_THRESHOLD = 0.5 // px/ms
+    const DEFAULT_EXPANDED_HEIGHT = Math.round(window.innerHeight / 3)
+
+    // Track the base height when drag starts (for calculating new height during drag)
+    const dragStartHeightRef = useRef<number>(0)
+    const dragStartModeRef = useRef<ComposerMode>('quick')
+
+    const dragHandlers = useVerticalDrag({
+        disabled: voiceActive,
+        threshold: 10,
+        onDragStart: () => {
+            setIsDragging(true)
+            dragStartModeRef.current = composerMode
+            // Store the starting height
+            if (composerMode === 'expanded' && expandedHeight !== null) {
+                dragStartHeightRef.current = expandedHeight
+            } else {
+                // Starting from quick mode - use default expanded height as base
+                dragStartHeightRef.current = Math.round(window.innerHeight / 3)
+            }
+        },
+        onDrag: (deltaY: number) => {
+            // Calculate new height based on drag (negative deltaY = drag up = increase height)
+            const newHeight = Math.max(
+                0,
+                Math.min(window.innerHeight - 50, dragStartHeightRef.current - deltaY)
+            )
+
+            if (dragStartModeRef.current === 'quick') {
+                // From quick mode: expand once we have meaningful height
+                if (newHeight >= MIN_EXPANDED_HEIGHT) {
+                    if (composerMode !== 'expanded') {
+                        setComposerMode('expanded')
+                    }
+                    setExpandedHeight(newHeight)
+                }
+            } else {
+                // From expanded mode: adjust height, potentially collapse
+                setExpandedHeight(Math.max(MIN_EXPANDED_HEIGHT, newHeight))
+            }
+        },
+        onDragEnd: (totalDeltaY: number, velocity: number) => {
+            setIsDragging(false)
+
+            // Only consider collapse if we started from expanded mode
+            if (dragStartModeRef.current === 'expanded') {
+                const currentHeight = expandedHeight ?? 0
+
+                // Collapse conditions:
+                // 1. Height dropped below threshold (dragged down significantly)
+                // 2. Fast downward velocity (quick flick down)
+                // 3. Dragged down past 50% of starting height
+                const shouldCollapse =
+                    currentHeight < COLLAPSE_HEIGHT_THRESHOLD ||
+                    velocity > VELOCITY_THRESHOLD ||
+                    (totalDeltaY > 0 && currentHeight < dragStartHeightRef.current * 0.5)
+
+                if (shouldCollapse) {
+                    setComposerMode('quick')
+                    setExpandedHeight(null)
+                    haptic('light')
+                }
+            } else if (composerMode === 'expanded') {
+                // Started from quick mode and expanded - give haptic feedback
+                haptic('light')
+            }
+
+            // Keep focus on textarea
+            setTimeout(() => textareaRef.current?.focus(), 0)
+        }
+    })
+
+    // Double-click/tap handler to collapse expanded mode
+    const handleDragHandleDoubleClick = useCallback(() => {
+        if (composerMode === 'expanded') {
+            setComposerMode('quick')
+            setExpandedHeight(null)
+            haptic('light')
+            setTimeout(() => textareaRef.current?.focus(), 0)
+        }
+    }, [composerMode, haptic])
 
     const handleSuggestionSelect = useCallback((index: number) => {
         const suggestion = suggestions[index]
@@ -293,6 +387,22 @@ export function HappyComposer(props: {
             onPermissionModeChange(nextMode)
             haptic('light')
         }
+
+        // Cmd/Ctrl+Shift+Enter toggles expanded mode
+        if (key === 'Enter' && (e.metaKey || e.ctrlKey) && e.shiftKey && !voiceActive) {
+            e.preventDefault()
+            setComposerMode(prev => {
+                const newMode = prev === 'quick' ? 'expanded' : 'quick'
+                if (newMode === 'expanded') {
+                    setExpandedHeight(DEFAULT_EXPANDED_HEIGHT)
+                } else {
+                    setExpandedHeight(null)
+                }
+                return newMode
+            })
+            haptic('light')
+            return
+        }
     }, [
         suggestions,
         selectedIndex,
@@ -305,7 +415,9 @@ export function HappyComposer(props: {
         onPermissionModeChange,
         permissionMode,
         permissionModes,
-        haptic
+        haptic,
+        voiceActive,
+        DEFAULT_EXPANDED_HEIGHT
     ])
 
     useEffect(() => {
@@ -510,73 +622,101 @@ export function HappyComposer(props: {
         handleSuggestionSelect
     ])
 
+    const isExpanded = composerMode === 'expanded'
+
     return (
-        <div className={`px-3 ${bottomPaddingClass} pt-2 bg-[var(--app-bg)]`}>
-            <div className="mx-auto w-full max-w-content">
-                <ComposerPrimitive.Root className="relative" onSubmit={handleSubmit}>
-                    {overlays}
+        <>
+            <div
+                className={
+                    isExpanded
+                        ? `fixed inset-x-0 bottom-0 z-50 px-3 ${bottomPaddingClass} pt-2 bg-[var(--app-bg)] composer-expanding`
+                        : `px-3 ${bottomPaddingClass} pt-2 bg-[var(--app-bg)]`
+                }
+                style={isExpanded && expandedHeight ? { height: expandedHeight } : undefined}
+            >
+                <div className={`mx-auto w-full max-w-content ${isExpanded ? 'h-full flex flex-col' : ''}`}>
+                    <ComposerPrimitive.Root className={`relative ${isExpanded ? 'flex-1 flex flex-col min-h-0' : ''}`} onSubmit={handleSubmit}>
+                        {overlays}
 
-                    <StatusBar
-                        active={active}
-                        thinking={thinking}
-                        agentState={agentState}
-                        contextSize={contextSize}
-                        modelMode={modelMode}
-                        permissionMode={permissionMode}
-                        agentFlavor={agentFlavor}
-                        voiceStatus={voiceStatus}
-                    />
+                        {!isExpanded && (
+                            <StatusBar
+                                active={active}
+                                thinking={thinking}
+                                agentState={agentState}
+                                contextSize={contextSize}
+                                modelMode={modelMode}
+                                permissionMode={permissionMode}
+                                agentFlavor={agentFlavor}
+                                voiceStatus={voiceStatus}
+                            />
+                        )}
 
-                    <div className="overflow-hidden rounded-[20px] bg-[var(--app-secondary-bg)]">
-                        {attachments.length > 0 ? (
-                            <div className="flex flex-wrap gap-2 px-4 pt-3">
-                                <ComposerPrimitive.Attachments components={{ Attachment: AttachmentItem }} />
+                        <div className={`overflow-hidden rounded-[20px] bg-[var(--app-secondary-bg)] ${isExpanded ? 'flex-1 flex flex-col min-h-0' : ''}`}>
+                            {/* Drag handle */}
+                            <div
+                                className={`flex justify-center py-2 touch-none select-none ${isDragging ? 'cursor-grabbing' : 'cursor-grab'}`}
+                                onDoubleClick={handleDragHandleDoubleClick}
+                                {...dragHandlers}
+                            >
+                                <div
+                                    className={`w-10 h-1 rounded-full transition-colors ${
+                                        isExpanded
+                                            ? 'bg-[var(--app-link)]'
+                                            : 'bg-[var(--app-hint)]/40'
+                                    }`}
+                                />
                             </div>
-                        ) : null}
 
-                        <div className="flex items-center px-4 py-3">
-                            <ComposerPrimitive.Input
-                                ref={textareaRef}
-                                autoFocus={!controlsDisabled && !isTouch}
-                                placeholder={showContinueHint ? t('misc.typeMessage') : t('misc.typeAMessage')}
-                                disabled={controlsDisabled}
-                                maxRows={5}
-                                submitOnEnter
-                                cancelOnEscape={false}
-                                onChange={handleChange}
-                                onSelect={handleSelect}
-                                onKeyDown={handleKeyDown}
-                                onPaste={handlePaste}
-                                className="flex-1 resize-none bg-transparent text-sm leading-snug text-[var(--app-fg)] placeholder-[var(--app-hint)] focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+                            {attachments.length > 0 ? (
+                                <div className="flex flex-wrap gap-2 px-4 pb-2">
+                                    <ComposerPrimitive.Attachments components={{ Attachment: AttachmentItem }} />
+                                </div>
+                            ) : null}
+
+                            <div className={`flex px-4 ${isExpanded ? 'flex-1 min-h-0 pb-2' : 'items-center py-3'}`}>
+                                <ComposerPrimitive.Input
+                                    ref={textareaRef}
+                                    autoFocus={!controlsDisabled && !isTouch}
+                                    placeholder={showContinueHint ? t('misc.typeMessage') : t('misc.typeAMessage')}
+                                    disabled={controlsDisabled}
+                                    maxRows={isExpanded ? undefined : 5}
+                                    submitOnEnter={!isExpanded}
+                                    cancelOnEscape={false}
+                                    onChange={handleChange}
+                                    onSelect={handleSelect}
+                                    onKeyDown={handleKeyDown}
+                                    onPaste={handlePaste}
+                                    className={`flex-1 resize-none bg-transparent text-sm leading-snug text-[var(--app-fg)] placeholder-[var(--app-hint)] focus:outline-none disabled:cursor-not-allowed disabled:opacity-50 ${isExpanded ? 'h-full' : ''}`}
+                                />
+                            </div>
+
+                            <ComposerButtons
+                                canSend={canSend}
+                                controlsDisabled={controlsDisabled}
+                                showSettingsButton={showSettingsButton}
+                                onSettingsToggle={handleSettingsToggle}
+                                showTerminalButton={showTerminalButton}
+                                terminalDisabled={controlsDisabled}
+                                onTerminal={onTerminal ?? (() => {})}
+                                showAbortButton={showAbortButton}
+                                abortDisabled={abortDisabled}
+                                isAborting={isAborting}
+                                onAbort={handleAbort}
+                                showSwitchButton={showSwitchButton}
+                                switchDisabled={switchDisabled}
+                                isSwitching={isSwitching}
+                                onSwitch={handleSwitch}
+                                voiceEnabled={voiceEnabled}
+                                voiceStatus={voiceStatus}
+                                voiceMicMuted={voiceMicMuted}
+                                onVoiceToggle={onVoiceToggle ?? (() => {})}
+                                onVoiceMicToggle={onVoiceMicToggle}
+                                onSend={handleSend}
                             />
                         </div>
-
-                        <ComposerButtons
-                            canSend={canSend}
-                            controlsDisabled={controlsDisabled}
-                            showSettingsButton={showSettingsButton}
-                            onSettingsToggle={handleSettingsToggle}
-                            showTerminalButton={showTerminalButton}
-                            terminalDisabled={controlsDisabled}
-                            onTerminal={onTerminal ?? (() => {})}
-                            showAbortButton={showAbortButton}
-                            abortDisabled={abortDisabled}
-                            isAborting={isAborting}
-                            onAbort={handleAbort}
-                            showSwitchButton={showSwitchButton}
-                            switchDisabled={switchDisabled}
-                            isSwitching={isSwitching}
-                            onSwitch={handleSwitch}
-                            voiceEnabled={voiceEnabled}
-                            voiceStatus={voiceStatus}
-                            voiceMicMuted={voiceMicMuted}
-                            onVoiceToggle={onVoiceToggle ?? (() => {})}
-                            onVoiceMicToggle={onVoiceMicToggle}
-                            onSend={handleSend}
-                        />
-                    </div>
-                </ComposerPrimitive.Root>
+                    </ComposerPrimitive.Root>
+                </div>
             </div>
-        </div>
+        </>
     )
 }
