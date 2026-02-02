@@ -9,6 +9,7 @@ import { withBunRuntimeEnv } from "@/utils/bunRuntime";
 import { spawnWithAbort } from "@/utils/spawnWithAbort";
 import { getHapiBlobsDir } from "@/constants/uploadPaths";
 import { stripNewlinesForWindowsShellArg } from "@/utils/shellEscape";
+import { getDefaultClaudeCodePath } from "./sdk/utils";
 
 export async function claudeLocal(opts: {
     abort: AbortSignal,
@@ -84,11 +85,15 @@ export async function claudeLocal(opts: {
 
     logger.debug(`[ClaudeLocal] Spawning claude with args: ${JSON.stringify(args)}`);
 
+    // Get Claude executable path (absolute path on Windows for shell: false)
+    const claudeCommand = getDefaultClaudeCodePath();
+    logger.debug(`[ClaudeLocal] Using claude executable: ${claudeCommand}`);
+
     // Spawn the process
     try {
         process.stdin.pause();
         await spawnWithAbort({
-            command: 'claude',
+            command: claudeCommand,
             args,
             cwd: opts.path,
             env: withBunRuntimeEnv(env, { allowBunBeBun: false }),
@@ -98,7 +103,7 @@ export async function claudeLocal(opts: {
             installHint: 'Claude CLI',
             includeCause: true,
             logExit: true,
-            shell: process.platform === 'win32'
+            shell: false  // Use absolute path, no shell needed
         });
     } finally {
         cleanupMcpConfig?.();
