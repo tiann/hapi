@@ -6,7 +6,10 @@
  */
 
 const BUILTIN_FONT_NAME = 'MesloLGLDZ Nerd Font Mono'
-const CDN_FONT_URL = 'https://cdn.jsdelivr.net/gh/mshaugh/nerdfont-webfonts@v3.3.0/build/fonts/MesloLGLDZNerdFontMono-Regular.woff2'
+const CDN_FONT_URLS = [
+    'https://cdn.jsdmirror.com/gh/mshaugh/nerdfont-webfonts@v3.3.0/build/fonts/MesloLGLDZNerdFontMono-Regular.woff2',
+    'https://cdn.jsdelivr.net/gh/mshaugh/nerdfont-webfonts@v3.3.0/build/fonts/MesloLGLDZNerdFontMono-Regular.woff2'
+]
 
 /**
  * Terminal font provider interface
@@ -54,16 +57,26 @@ const SYSTEM_FALLBACKS = [
 ]
 
 /**
- * Load Nerd Font from CDN
+ * Load Nerd Font from CDN with fallback
  */
 async function loadBuiltinFont(): Promise<void> {
-    const font = new FontFace(
-        BUILTIN_FONT_NAME,
-        `url(${CDN_FONT_URL}) format("woff2")`,
-        { style: 'normal', weight: '400', display: 'swap' }
-    )
-    await font.load()
-    document.fonts.add(font)
+    let lastError: Error | null = null
+    for (const url of CDN_FONT_URLS) {
+        try {
+            const font = new FontFace(
+                BUILTIN_FONT_NAME,
+                `url(${url}) format("woff2")`,
+                { style: 'normal', weight: '400', display: 'swap' }
+            )
+            await font.load()
+            document.fonts.add(font)
+            return
+        } catch (err) {
+            lastError = err as Error
+            console.warn(`[TerminalFont] Failed to load from ${url}, trying next...`)
+        }
+    }
+    throw lastError ?? new Error('All CDN URLs failed')
 }
 
 /**
@@ -91,8 +104,20 @@ let fontLoadPromise: Promise<boolean> | null = null
 
 function isFontAvailable(fontName: string): boolean {
     if (typeof document === 'undefined') return false
-    if (!document.fonts?.check) return false
-    return document.fonts.check(`12px "${fontName}"`)
+
+    // Use canvas width comparison for reliable font detection
+    // document.fonts.check() is unreliable on some mobile browsers
+    const canvas = document.createElement('canvas')
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return false
+
+    const testString = 'mmmmmmmmmmlli'
+    ctx.font = '72px "__nonexistent_font_test__", monospace'
+    const baseWidth = ctx.measureText(testString).width
+    ctx.font = `72px "${fontName}", monospace`
+    const testWidth = ctx.measureText(testString).width
+
+    return testWidth !== baseWidth
 }
 
 function hasLocalNerdFont(): boolean {
