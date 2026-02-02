@@ -54,11 +54,11 @@ export function QrLogin({ baseUrl, onLogin, onCancel }: QrLoginProps) {
             }
             const data = await res.json() as QrSession
 
-            // Build the QR URL: the confirm page URL
-            const origin = new URL(baseUrl).origin
-            const qrUrl = `${origin}/qr/${data.id}?s=${data.secret}`
+            // Build the QR URL: use web app origin (not hub baseUrl) since /qr/:id is a frontend route
+            const qrUrl = new URL(`/qr/${data.id}`, window.location.origin)
+            qrUrl.searchParams.set('s', data.secret)
 
-            const dataUrl = await QRCode.toDataURL(qrUrl, {
+            const dataUrl = await QRCode.toDataURL(qrUrl.toString(), {
                 width: 256,
                 margin: 2,
                 color: { dark: '#000000', light: '#ffffff' },

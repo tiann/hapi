@@ -6,7 +6,7 @@ import { Spinner } from '@/components/Spinner'
 
 export default function QrConfirmPage() {
     const { t } = useTranslation()
-    const { api, token } = useAppContext()
+    const { api, token, baseUrl } = useAppContext()
     const { qrId } = useParams({ from: '/qr/$qrId' })
     const search = useSearch({ from: '/qr/$qrId' })
     const secret = (search as { s?: string }).s
@@ -20,7 +20,7 @@ export default function QrConfirmPage() {
 
         try {
             const res = await fetch(
-                api ? new URL(`/api/qr/${qrId}/confirm`, window.location.origin).toString() : `/api/qr/${qrId}/confirm`,
+                new URL(`/api/qr/${qrId}/confirm`, baseUrl).toString(),
                 {
                     method: 'POST',
                     headers: {
