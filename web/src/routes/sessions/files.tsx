@@ -250,6 +250,22 @@ type TreeState = {
     browseAll: boolean
 }
 
+// Module-level cache for tree state per session
+const treeStateCache = new Map<string, TreeState>()
+
+function getOrCreateTreeState(sessionId: string): TreeState {
+    let state = treeStateCache.get(sessionId)
+    if (!state) {
+        state = {
+            childrenCache: new Map(),
+            expandedPaths: new Set(),
+            browseAll: false
+        }
+        treeStateCache.set(sessionId, state)
+    }
+    return state
+}
+
 function TreeNode(props: {
     entry: TreeEntry
     depth: number
@@ -403,12 +419,8 @@ export default function FilesPage() {
     const { api } = useAppContext()
     const navigate = useNavigate()
     const goBack = useAppGoBack()
-    const treeStateRef = useRef<TreeState>({
-        childrenCache: new Map(),
-        expandedPaths: new Set(),
-        browseAll: false
-    })
     const { sessionId } = useParams({ from: '/sessions/$sessionId/files' })
+    const treeStateRef = useRef<TreeState>(getOrCreateTreeState(sessionId))
     const { session } = useSession(api, sessionId)
     const [searchQuery, setSearchQuery] = useState('')
     const [browseAll, _setBrowseAll] = useState(treeStateRef.current.browseAll)
