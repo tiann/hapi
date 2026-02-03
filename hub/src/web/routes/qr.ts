@@ -54,6 +54,8 @@ export function createQrRoutes(jwtSecret: Uint8Array, cliApiToken: string): Hono
 
     // Poll QR login status (no auth required, needs secret)
     app.get('/qr/:id', async (c) => {
+        cleanupExpired()
+
         const { id } = c.req.param()
         const secret = c.req.query('s')
 
@@ -74,18 +76,23 @@ export function createQrRoutes(jwtSecret: Uint8Array, cliApiToken: string): Hono
         if (session.status === 'confirmed' && session.accessToken) {
             // One-time: delete after delivering
             qrSessions.delete(id)
+            c.header('Cache-Control', 'no-store')
             return c.json({
                 status: 'confirmed',
                 accessToken: session.accessToken,
             })
         }
 
+        c.header('Cache-Control', 'no-store')
         return c.json({ status: 'pending' })
     })
 
     // Confirm QR login (requires auth - verified manually)
     app.post('/qr/:id/confirm', async (c) => {
+        cleanupExpired()
+
         const { id } = c.req.param()
+        const secret = c.req.query('s')
 
         // Manually verify JWT since this route is before auth middleware
         const authorization = c.req.header('authorization')
@@ -114,6 +121,10 @@ export function createQrRoutes(jwtSecret: Uint8Array, cliApiToken: string): Hono
         if (Date.now() - session.createdAt > QR_SESSION_TTL_MS) {
             qrSessions.delete(id)
             return c.json({ error: 'Session expired' }, 410)
+        }
+
+        if (!secret || secret !== session.secret) {
+            return c.json({ error: 'Invalid secret' }, 403)
         }
 
         if (session.status !== 'pending') {

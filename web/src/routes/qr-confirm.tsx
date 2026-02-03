@@ -19,8 +19,12 @@ export default function QrConfirmPage() {
         setError(null)
 
         try {
+            const confirmUrl = new URL(`/api/qr/${qrId}/confirm`, baseUrl)
+            if (secret) {
+                confirmUrl.searchParams.set('s', secret)
+            }
             const res = await fetch(
-                new URL(`/api/qr/${qrId}/confirm`, baseUrl).toString(),
+                confirmUrl.toString(),
                 {
                     method: 'POST',
                     headers: {
@@ -42,7 +46,7 @@ export default function QrConfirmPage() {
             setError(t('qr.confirm.error'))
             setStatus('error')
         }
-    }, [api, token, qrId, t])
+    }, [baseUrl, token, qrId, secret, t])
 
     return (
         <div className="h-full flex items-center justify-center p-4">
