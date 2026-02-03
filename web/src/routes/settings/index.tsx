@@ -119,7 +119,6 @@ export default function SettingsPage() {
         const stored = localStorage.getItem('hapi-web-notifications')
         return stored === null ? true : stored === 'true'
     })
-
     // Load Telegram config
     const loadTelegramConfig = useCallback(async () => {
         try {
@@ -443,6 +442,7 @@ export default function SettingsPage() {
                         </div>
                     </div>
 
+<<<<<<< HEAD
                     {/* Notifications section */}
                     <div className="border-b border-[var(--app-divider)]">
                         <div className="px-3 py-2 text-xs font-semibold text-[var(--app-hint)] uppercase tracking-wide">
@@ -462,6 +462,8 @@ export default function SettingsPage() {
                         </div>
                     </div>
 
+=======
+>>>>>>> cd2ae32 (feat(telegram): add telegram bot integration and settings UI)
                     {/* Telegram section */}
                     <div className="border-b border-[var(--app-divider)]">
                         <div className="px-3 py-2 text-xs font-semibold text-[var(--app-hint)] uppercase tracking-wide">
