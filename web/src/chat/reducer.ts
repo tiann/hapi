@@ -48,11 +48,24 @@ export function reduceChatBlocks(
     let hasReadyEvent = rootResult.hasReadyEvent
 
     // Only create permission-only tool cards when there is no tool call/result in the transcript.
+    // Also skip if the permission is older than the oldest message in the current view,
+    // to avoid mixing old tool cards with newer messages when paginating.
+    const oldestMessageTime = normalized.length > 0
+        ? Math.min(...normalized.map(m => m.createdAt))
+        : null
+
     for (const [id, entry] of permissionsById) {
         if (toolIdsInMessages.has(id)) continue
         if (rootResult.toolBlocksById.has(id)) continue
 
         const createdAt = entry.permission.createdAt ?? Date.now()
+
+        // Skip permissions that are older than the oldest message in the current view.
+        // These will be shown when the user loads older messages.
+        if (oldestMessageTime !== null && createdAt < oldestMessageTime) {
+            continue
+        }
+
         const block = ensureToolBlock(rootResult.blocks, rootResult.toolBlocksById, id, {
             createdAt,
             localId: null,
