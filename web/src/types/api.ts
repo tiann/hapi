@@ -138,8 +138,9 @@ export type GitStatusFiles = {
 export type SlashCommand = {
     name: string
     description?: string
-    source: 'builtin' | 'user'
+    source: 'builtin' | 'user' | 'plugin'
     content?: string  // Expanded content for Codex user prompts
+    pluginName?: string
 }
 
 export type SlashCommandsResponse = {
