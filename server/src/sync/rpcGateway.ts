@@ -160,7 +160,8 @@ export class RpcGateway {
         directory: string,
         sessionIdToResume: string,
         agent: 'claude' | 'codex' | 'gemini' = 'claude',
-        fork: boolean = false
+        fork: boolean = false,
+        yolo: boolean = false
     ): Promise<void> {
         console.log('[RpcGateway.spawnResumedSession] Calling machineRpc:', {
             hapiSessionId,
@@ -168,7 +169,8 @@ export class RpcGateway {
             directory,
             sessionIdToResume,
             agent,
-            fork
+            fork,
+            yolo
         })
 
         const result = await this.machineRpc(
@@ -179,7 +181,8 @@ export class RpcGateway {
                 directory,
                 agent,
                 sessionIdToResume,
-                fork
+                fork,
+                yolo
             }
         )
 

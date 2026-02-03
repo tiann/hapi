@@ -279,9 +279,11 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             }, 501)
         }
 
+        const enableYolo = c.req.query('yolo') === 'true'
+
         try {
             // Create new session with forked metadata
-            const newSessionId = await engine.forkSession(sessionResult.sessionId)
+            const newSessionId = await engine.forkSession(sessionResult.sessionId, enableYolo)
 
             return c.json({
                 id: newSessionId,
@@ -319,6 +321,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
 
         const force = c.req.query('force') === 'true'
+        const enableYolo = c.req.query('yolo') === 'true'
 
         // Check if busy (unless force is true)
         if (!force) {
@@ -334,7 +337,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
 
         try {
             // Terminate and resume
-            await engine.reloadSession(sessionResult.sessionId, force)
+            await engine.reloadSession(sessionResult.sessionId, force, enableYolo)
 
             return c.json({ ok: true })
         } catch (error) {

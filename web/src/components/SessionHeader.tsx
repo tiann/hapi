@@ -6,6 +6,8 @@ import { useSessionActions } from '@/hooks/mutations/useSessionActions'
 import { SessionActionMenu } from '@/components/SessionActionMenu'
 import { RenameSessionDialog } from '@/components/RenameSessionDialog'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
+import { ReloadDialog } from '@/components/ReloadDialog'
+import { ForkDialog } from '@/components/ForkDialog'
 import { useTranslation } from '@/lib/use-translation'
 
 function getSessionTitle(session: Session): string {
@@ -78,6 +80,8 @@ export function SessionHeader(props: {
     const [renameOpen, setRenameOpen] = useState(false)
     const [archiveOpen, setArchiveOpen] = useState(false)
     const [deleteOpen, setDeleteOpen] = useState(false)
+    const [reloadDialogOpen, setReloadDialogOpen] = useState(false)
+    const [forkDialogOpen, setForkDialogOpen] = useState(false)
 
     const { archiveSession, renameSession, deleteSession, resumeSession, forkSession, reloadSession, isPending } = useSessionActions(
         api,
@@ -100,18 +104,28 @@ export function SessionHeader(props: {
         }
     }
 
-    const handleFork = async () => {
+    const handleForkClick = () => {
+        setForkDialogOpen(true)
+        setMenuOpen(false)
+    }
+
+    const handleForkConfirm = async (enableYolo: boolean) => {
         try {
-            await forkSession()
+            await forkSession(enableYolo)
             // On success, user will be navigated to the forked session
         } catch (error) {
             // Error already toasted by useSessionActions
         }
     }
 
-    const handleReload = async () => {
+    const handleReloadClick = () => {
+        setReloadDialogOpen(true)
+        setMenuOpen(false)
+    }
+
+    const handleReloadConfirm = async (force: boolean, enableYolo: boolean) => {
         try {
-            await reloadSession()
+            await reloadSession(force, enableYolo)
         } catch (error) {
             // Error already toasted by useSessionActions
         }
@@ -210,8 +224,8 @@ export function SessionHeader(props: {
                 onArchive={() => setArchiveOpen(true)}
                 onDelete={() => setDeleteOpen(true)}
                 onResume={session.active ? undefined : handleResume}
-                onFork={handleFork}
-                onReload={session.active ? handleReload : undefined}
+                onFork={handleForkClick}
+                onReload={session.active ? handleReloadClick : undefined}
                 anchorPoint={menuAnchorPoint}
                 menuId={menuId}
             />
@@ -246,6 +260,21 @@ export function SessionHeader(props: {
                 onConfirm={handleDelete}
                 isPending={isPending}
                 destructive
+            />
+
+            <ReloadDialog
+                open={reloadDialogOpen}
+                onOpenChange={setReloadDialogOpen}
+                onConfirm={handleReloadConfirm}
+                currentYoloState={session.metadata?.yolo || false}
+                isBusy={session.thinking}
+            />
+
+            <ForkDialog
+                open={forkDialogOpen}
+                onOpenChange={setForkDialogOpen}
+                onConfirm={handleForkConfirm}
+                currentYoloState={session.metadata?.yolo || false}
             />
         </>
     )

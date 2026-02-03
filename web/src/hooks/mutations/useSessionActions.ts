@@ -160,14 +160,14 @@ export function useSessionActions(
         },
     })
 
-    const handleFork = async () => {
+    const handleFork = async (enableYolo: boolean = false) => {
         if (!api || !sessionId) {
             throw new Error('Session unavailable')
         }
 
         try {
             // Fork the session on the server
-            const result = await api.forkSession(sessionId)
+            const result = await api.forkSession(sessionId, enableYolo)
 
             // Invalidate sessions list to show the new forked session
             await queryClient.invalidateQueries({ queryKey: queryKeys.sessions })
@@ -184,28 +184,20 @@ export function useSessionActions(
         }
     }
 
-    const handleReload = async (force: boolean = false) => {
+    const handleReload = async (force: boolean = false, enableYolo: boolean = false) => {
         if (!api || !sessionId) {
             throw new Error('Session unavailable')
         }
 
         try {
-            await api.reloadSession(sessionId, force)
+            await api.reloadSession(sessionId, force, enableYolo)
             await invalidateSession()
             toast.success(t('dialog.reload.success', 'Session reloaded successfully'))
         } catch (error) {
-            // Handle busy error - ask user if they want to force
+            // Handle busy error
             if (error instanceof Error && error.message.includes('Session is busy')) {
-                if (!force) {
-                    // This is the first attempt - user needs to confirm force
-                    const confirmed = window.confirm(
-                        t('dialog.reload.busyConfirm', 'Session is busy. Force reload anyway? This will interrupt the current operation.')
-                    )
-                    if (confirmed) {
-                        return handleReload(true) // Retry with force
-                    }
-                    return // User cancelled
-                }
+                // Let the dialog handle force confirmation
+                // Don't use window.confirm here as the dialog provides a better UX
             }
 
             const message = error instanceof Error ? error.message : t('dialog.reload.error', 'Failed to reload session')

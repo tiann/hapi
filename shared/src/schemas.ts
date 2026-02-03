@@ -45,7 +45,9 @@ export const MetadataSchema = z.object({
     archiveReason: z.string().optional(),
     flavor: z.string().nullish(),
     worktree: WorktreeMetadataSchema.optional(),
-    shouldFork: z.boolean().optional()
+    shouldFork: z.boolean().optional(),
+    yolo: z.boolean().optional(),
+    shouldEnableYolo: z.boolean().optional()
 })
 
 export type Metadata = z.infer<typeof MetadataSchema>

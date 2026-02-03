@@ -304,16 +304,24 @@ export class ApiClient {
         })
     }
 
-    async forkSession(sessionId: string): Promise<{ id: string; message: string }> {
-        const response = await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/fork`, {
+    async forkSession(sessionId: string, enableYolo: boolean = false): Promise<{ id: string; message: string }> {
+        const params = new URLSearchParams()
+        if (enableYolo) params.append('yolo', 'true')
+
+        const url = `/api/sessions/${encodeURIComponent(sessionId)}/fork${params.toString() ? '?' + params.toString() : ''}`
+        const response = await this.request(url, {
             method: 'POST',
             body: JSON.stringify({})
         })
         return response as { id: string; message: string }
     }
 
-    async reloadSession(sessionId: string, force: boolean = false): Promise<void> {
-        const url = `/api/sessions/${encodeURIComponent(sessionId)}/reload${force ? '?force=true' : ''}`
+    async reloadSession(sessionId: string, force: boolean = false, enableYolo: boolean = false): Promise<void> {
+        const params = new URLSearchParams()
+        if (force) params.append('force', 'true')
+        if (enableYolo) params.append('yolo', 'true')
+
+        const url = `/api/sessions/${encodeURIComponent(sessionId)}/reload${params.toString() ? '?' + params.toString() : ''}`
         await this.request(url, {
             method: 'POST',
             body: JSON.stringify({})

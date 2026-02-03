@@ -484,6 +484,7 @@ export class SyncEngine {
 
         // Check if this is a fork operation
         const shouldFork = metadata.shouldFork === true
+        const shouldEnableYolo = metadata.shouldEnableYolo === true
 
         console.log('[SyncEngine.spawnWithResume] Calling spawnResumedSession:', {
             hapiSessionId: session.id,
@@ -491,10 +492,11 @@ export class SyncEngine {
             path: metadata.path,
             sessionIdToResume,
             flavor,
-            shouldFork
+            shouldFork,
+            shouldEnableYolo
         })
 
-        // Spawn new process with --resume (and optionally --fork-session)
+        // Spawn new process with --resume (and optionally --fork-session and --yolo)
         // This will create a new CLI process that resumes the agent session
         // The spawned process will report back with a (potentially new) session ID
         // but will use the same hapi session ID
@@ -504,12 +506,18 @@ export class SyncEngine {
             metadata.path,
             sessionIdToResume,    // Agent session ID to resume from (may change after resume)
             flavor,
-            shouldFork            // Pass fork flag
+            shouldFork,           // Pass fork flag
+            shouldEnableYolo      // Pass yolo flag
         )
 
-        // Clear fork flag after spawning (one-time use)
-        if (shouldFork) {
-            const updatedMetadata = { ...session.metadata, shouldFork: false }
+        // Clear flags and update YOLO state after spawning
+        if (shouldFork || shouldEnableYolo) {
+            const updatedMetadata = {
+                ...session.metadata,
+                shouldFork: false,
+                shouldEnableYolo: false,
+                yolo: shouldEnableYolo ? true : session.metadata?.yolo
+            }
             this.store.sessions.updateSessionMetadata(
                 session.id,
                 updatedMetadata,
@@ -534,7 +542,7 @@ export class SyncEngine {
         await this.sessionCache.deleteSession(sessionId)
     }
 
-    async forkSession(sourceSessionId: string): Promise<string> {
+    async forkSession(sourceSessionId: string, enableYolo: boolean = false): Promise<string> {
         const sourceSession = this.getSession(sourceSessionId)
         if (!sourceSession) {
             throw new Error('Source session not found')
@@ -558,7 +566,9 @@ export class SyncEngine {
             ...sourceSession.metadata,
             name: `Fork ${sourceSession.metadata.name || 'Untitled'}`,
             // Store fork flag for spawn
-            shouldFork: true
+            shouldFork: true,
+            // Set YOLO flag if requested, or inherit from source
+            shouldEnableYolo: enableYolo || (sourceSession.metadata?.yolo ?? false)
         }
 
         // Create new session in store
@@ -591,7 +601,7 @@ export class SyncEngine {
         return false
     }
 
-    async reloadSession(sessionId: string, force: boolean = false): Promise<void> {
+    async reloadSession(sessionId: string, force: boolean = false, enableYolo: boolean = false): Promise<void> {
         const session = this.getSession(sessionId)
         if (!session) {
             throw new Error('Session not found')
@@ -605,6 +615,11 @@ export class SyncEngine {
         const machineId = session.metadata?.machineId
         if (!machineId) {
             throw new Error('No machine ID found for session')
+        }
+
+        // Set YOLO flag if requested
+        if (enableYolo && session.metadata) {
+            session.metadata.shouldEnableYolo = true
         }
 
         // Terminate CLI process
