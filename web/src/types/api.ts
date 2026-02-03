@@ -99,6 +99,18 @@ export type FileSearchResponse = {
     error?: string
 }
 
+export type TreeEntry = {
+    name: string
+    path: string
+    type: 'file' | 'directory'
+}
+
+export type TreeBrowseResponse = {
+    success: boolean
+    entries?: TreeEntry[]
+    error?: string
+}
+
 export type FileReadResponse = {
     success: boolean
     content?: string

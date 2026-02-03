@@ -9,6 +9,10 @@ const fileSearchSchema = z.object({
     limit: z.coerce.number().int().min(1).max(500).optional()
 })
 
+const treeBrowseSchema = z.object({
+    path: z.string().optional()
+})
+
 const filePathSchema = z.object({
     path: z.string().min(1)
 })
@@ -178,6 +182,76 @@ export function createGitRoutes(getSyncEngine: () => SyncEngine | null): Hono<We
             })
 
         return c.json({ success: true, files })
+    })
+
+    app.get('/sessions/:id/tree', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const sessionPath = sessionResult.session.metadata?.path
+        if (!sessionPath) {
+            return c.json({ success: false, error: 'Session path not available' })
+        }
+
+        const parsed = treeBrowseSchema.safeParse(c.req.query())
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid query' }, 400)
+        }
+
+        const subPath = parsed.data.path?.trim() ?? ''
+        const cwd = subPath ? `${sessionPath}/${subPath}` : sessionPath
+
+        const result = await runRpc(() => engine.runRipgrep(sessionResult.sessionId, ['--files', '--max-depth', '2'], cwd))
+        if (!result.success) {
+            return c.json({ success: false, error: result.error ?? 'Failed to list directory' })
+        }
+
+        const stdout = result.stdout ?? ''
+        const seen = new Set<string>()
+        const entries: Array<{ name: string; path: string; type: 'file' | 'directory' }> = []
+
+        for (const line of stdout.split('\n')) {
+            const trimmed = line.trim()
+            if (!trimmed) continue
+            const parts = trimmed.split('/')
+            if (parts.length > 1) {
+                // It's a file inside a subdirectory → the first part is a directory
+                const dirName = parts[0]
+                if (!seen.has(dirName)) {
+                    seen.add(dirName)
+                    entries.push({
+                        name: dirName,
+                        path: subPath ? `${subPath}/${dirName}` : dirName,
+                        type: 'directory'
+                    })
+                }
+            } else {
+                const fileName = parts[0]
+                if (!seen.has(fileName)) {
+                    seen.add(fileName)
+                    entries.push({
+                        name: fileName,
+                        path: subPath ? `${subPath}/${fileName}` : fileName,
+                        type: 'file'
+                    })
+                }
+            }
+        }
+
+        // Sort: directories first, then files, alphabetical within each group
+        entries.sort((a, b) => {
+            if (a.type !== b.type) return a.type === 'directory' ? -1 : 1
+            return a.name.localeCompare(b.name)
+        })
+
+        return c.json({ success: true, entries })
     })
 
     return app

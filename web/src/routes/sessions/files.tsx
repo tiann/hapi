@@ -1,6 +1,7 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from '@tanstack/react-router'
-import type { FileSearchItem, GitFileStatus } from '@/types/api'
+import type { FileSearchItem, GitFileStatus, TreeEntry } from '@/types/api'
+import type { ApiClient } from '@/api/client'
 import { FileIcon } from '@/components/FileIcon'
 import { useAppContext } from '@/lib/app-context'
 import { useAppGoBack } from '@/hooks/useAppGoBack'
@@ -86,6 +87,25 @@ function GitBranchIcon(props: { className?: string }) {
             <circle cx="6" cy="18" r="3" />
             <circle cx="18" cy="6" r="3" />
             <path d="M18 9a9 9 0 0 1-9 9" />
+        </svg>
+    )
+}
+
+function ChevronIcon(props: { className?: string; expanded: boolean }) {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={`${props.className ?? ''} transition-transform ${props.expanded ? 'rotate-90' : ''}`}
+        >
+            <polyline points="9 18 15 12 9 6" />
         </svg>
     )
 }
@@ -224,13 +244,178 @@ function FileListSkeleton(props: { label: string; rows?: number }) {
     )
 }
 
+type TreeState = {
+    childrenCache: Map<string, TreeEntry[]>
+    expandedPaths: Set<string>
+    browseAll: boolean
+}
+
+function TreeNode(props: {
+    entry: TreeEntry
+    depth: number
+    api: ApiClient
+    sessionId: string
+    treeState: TreeState
+    onOpenFile: (path: string) => void
+    onToggle: () => void
+}) {
+    const [loading, setLoading] = useState(false)
+    const expanded = props.treeState.expandedPaths.has(props.entry.path)
+    const children = props.treeState.childrenCache.get(props.entry.path) ?? null
+
+    const toggle = useCallback(async () => {
+        if (props.entry.type === 'file') {
+            props.onOpenFile(props.entry.path)
+            return
+        }
+        if (expanded) {
+            props.treeState.expandedPaths.delete(props.entry.path)
+            props.onToggle()
+            return
+        }
+        if (children === null) {
+            setLoading(true)
+            try {
+                const res = await props.api.browseSessionTree(props.sessionId, props.entry.path)
+                props.treeState.childrenCache.set(props.entry.path, res.entries ?? [])
+            } catch {
+                props.treeState.childrenCache.set(props.entry.path, [])
+            } finally {
+                setLoading(false)
+            }
+        }
+        props.treeState.expandedPaths.add(props.entry.path)
+        props.onToggle()
+    }, [expanded, children, props])
+
+    const isDir = props.entry.type === 'directory'
+    const paddingLeft = 12 + props.depth * 20
+
+    return (
+        <div>
+            <button
+                type="button"
+                onClick={toggle}
+                className="flex w-full items-center gap-1.5 py-1.5 pr-3 text-left hover:bg-[var(--app-subtle-bg)] transition-colors text-sm"
+                style={{ paddingLeft }}
+            >
+                {isDir ? (
+                    <>
+                        <ChevronIcon expanded={expanded} className="text-[var(--app-hint)] shrink-0" />
+                        <FolderIcon className={expanded ? 'text-[var(--app-link)] shrink-0' : 'text-[var(--app-hint)] shrink-0'} />
+                    </>
+                ) : (
+                    <>
+                        <span className="w-4 shrink-0" />
+                        <FileIcon fileName={props.entry.name} size={22} />
+                    </>
+                )}
+                <span className="truncate">{props.entry.name}</span>
+                {loading ? <span className="ml-auto text-xs text-[var(--app-hint)]">...</span> : null}
+            </button>
+            {expanded && children ? (
+                <div>
+                    {children.map((child) => (
+                        <TreeNode
+                            key={child.path}
+                            entry={child}
+                            depth={props.depth + 1}
+                            api={props.api}
+                            sessionId={props.sessionId}
+                            treeState={props.treeState}
+                            onOpenFile={props.onOpenFile}
+                            onToggle={props.onToggle}
+                        />
+                    ))}
+                    {children.length === 0 ? (
+                        <div className="text-xs text-[var(--app-hint)] py-1" style={{ paddingLeft: paddingLeft + 20 }}>
+                            Empty directory
+                        </div>
+                    ) : null}
+                </div>
+            ) : null}
+        </div>
+    )
+}
+
+function FileTree(props: {
+    api: ApiClient
+    sessionId: string
+    treeState: TreeState
+    onOpenFile: (path: string) => void
+}) {
+    const [, forceUpdate] = useState(0)
+    const rootEntries = props.treeState.childrenCache.get('') ?? null
+    const [loading, setLoading] = useState(rootEntries === null)
+    const [error, setError] = useState<string | null>(null)
+
+    useEffect(() => {
+        if (rootEntries !== null) return
+        let cancelled = false
+        setLoading(true)
+        props.api.browseSessionTree(props.sessionId).then((res) => {
+            if (cancelled) return
+            if (res.success) {
+                props.treeState.childrenCache.set('', res.entries ?? [])
+            } else {
+                setError(res.error ?? 'Failed to load files')
+            }
+        }).catch(() => {
+            if (!cancelled) setError('Failed to load files')
+        }).finally(() => {
+            if (!cancelled) {
+                setLoading(false)
+                forceUpdate((n) => n + 1)
+            }
+        })
+        return () => { cancelled = true }
+    }, [props.api, props.sessionId, rootEntries, props.treeState])
+
+    const triggerRerender = useCallback(() => {
+        forceUpdate((n) => n + 1)
+    }, [])
+
+    if (loading) return <FileListSkeleton label="Loading file tree..." />
+    if (error) return <div className="p-6 text-sm text-[var(--app-hint)]">{error}</div>
+
+    const entries = props.treeState.childrenCache.get('') ?? []
+    if (entries.length === 0) return <div className="p-6 text-sm text-[var(--app-hint)]">No files found.</div>
+
+    return (
+        <div className="py-1">
+            {entries.map((entry) => (
+                <TreeNode
+                    key={entry.path}
+                    entry={entry}
+                    depth={0}
+                    api={props.api}
+                    sessionId={props.sessionId}
+                    treeState={props.treeState}
+                    onOpenFile={props.onOpenFile}
+                    onToggle={triggerRerender}
+                />
+            ))}
+        </div>
+    )
+}
+
 export default function FilesPage() {
     const { api } = useAppContext()
     const navigate = useNavigate()
     const goBack = useAppGoBack()
+    const treeStateRef = useRef<TreeState>({
+        childrenCache: new Map(),
+        expandedPaths: new Set(),
+        browseAll: false
+    })
     const { sessionId } = useParams({ from: '/sessions/$sessionId/files' })
     const { session } = useSession(api, sessionId)
     const [searchQuery, setSearchQuery] = useState('')
+    const [browseAll, _setBrowseAll] = useState(treeStateRef.current.browseAll)
+    const setBrowseAll = useCallback((v: boolean) => {
+        treeStateRef.current.browseAll = v
+        _setBrowseAll(v)
+    }, [])
 
     const {
         status: gitStatus,
@@ -239,8 +424,9 @@ export default function FilesPage() {
         refetch: refetchGit
     } = useGitStatusFiles(api, sessionId)
 
+    const hasGitChanges = gitStatus ? (gitStatus.totalStaged > 0 || gitStatus.totalUnstaged > 0) : false
+    const showTree = (browseAll || !hasGitChanges) && !searchQuery
     const shouldSearch = Boolean(searchQuery)
-        || (gitStatus ? (gitStatus.totalStaged === 0 && gitStatus.totalUnstaged === 0) : Boolean(gitError))
 
     const searchResults = useSessionFileSearch(api, sessionId, searchQuery, {
         enabled: shouldSearch && !gitLoading
@@ -314,6 +500,24 @@ export default function FilesPage() {
                             {gitStatus.totalStaged} staged, {gitStatus.totalUnstaged} unstaged
                         </div>
                     </div>
+                    <div className="mx-auto w-full max-w-content flex border-b border-[var(--app-divider)]">
+                        {hasGitChanges ? (
+                            <button
+                                type="button"
+                                onClick={() => setBrowseAll(false)}
+                                className={`flex-1 py-2 text-xs font-semibold text-center transition-colors ${!browseAll ? 'text-[var(--app-fg)] border-b-2 border-[var(--app-link)]' : 'text-[var(--app-hint)] hover:text-[var(--app-fg)]'}`}
+                            >
+                                Changes
+                            </button>
+                        ) : null}
+                        <button
+                            type="button"
+                            onClick={() => setBrowseAll(true)}
+                            className={`flex-1 py-2 text-xs font-semibold text-center transition-colors ${browseAll || !hasGitChanges ? 'text-[var(--app-fg)] border-b-2 border-[var(--app-link)]' : 'text-[var(--app-hint)] hover:text-[var(--app-fg)]'}`}
+                        >
+                            All Files
+                        </button>
+                    </div>
                 </div>
             ) : null}
 
@@ -326,6 +530,13 @@ export default function FilesPage() {
                     ) : null}
                     {gitLoading ? (
                         <FileListSkeleton label="Loading Git status…" />
+                    ) : (showTree || (!hasGitChanges && !searchQuery)) && api ? (
+                        <FileTree
+                            api={api}
+                            sessionId={sessionId}
+                            treeState={treeStateRef.current}
+                            onOpenFile={(path) => handleOpenFile(path)}
+                        />
                     ) : shouldSearch ? (
                         searchResults.isLoading ? (
                             <FileListSkeleton label="Loading files…" />

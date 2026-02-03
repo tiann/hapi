@@ -4,6 +4,7 @@ import type {
     DeleteUploadResponse,
     FileReadResponse,
     FileSearchResponse,
+    TreeBrowseResponse,
     GitCommandResponse,
     MachinePathsExistsResponse,
     MachinesResponse,
@@ -231,6 +232,15 @@ export class ApiClient {
         }
         const qs = params.toString()
         return await this.request<FileSearchResponse>(`/api/sessions/${encodeURIComponent(sessionId)}/files${qs ? `?${qs}` : ''}`)
+    }
+
+    async browseSessionTree(sessionId: string, path?: string): Promise<TreeBrowseResponse> {
+        const params = new URLSearchParams()
+        if (path) {
+            params.set('path', path)
+        }
+        const qs = params.toString()
+        return await this.request<TreeBrowseResponse>(`/api/sessions/${encodeURIComponent(sessionId)}/tree${qs ? `?${qs}` : ''}`)
     }
 
     async readSessionFile(sessionId: string, path: string): Promise<FileReadResponse> {
