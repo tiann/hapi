@@ -503,15 +503,6 @@ export default function FilesPage() {
 
             {!gitLoading && gitStatus ? (
                 <div className="bg-[var(--app-bg)]">
-                    <div className="mx-auto w-full max-w-content px-3 py-2 border-b border-[var(--app-divider)]">
-                        <div className="flex items-center gap-2 text-sm">
-                            <GitBranchIcon className="text-[var(--app-hint)]" />
-                            <span className="font-semibold">{branchLabel}</span>
-                        </div>
-                        <div className="text-xs text-[var(--app-hint)]">
-                            {gitStatus.totalStaged} staged, {gitStatus.totalUnstaged} unstaged
-                        </div>
-                    </div>
                     <div className="mx-auto w-full max-w-content flex border-b border-[var(--app-divider)]">
                         {hasGitChanges ? (
                             <button
@@ -572,6 +563,17 @@ export default function FilesPage() {
                         )
                     ) : (
                         <div>
+                            {gitStatus ? (
+                                <div className="px-3 py-2 border-b border-[var(--app-divider)]">
+                                    <div className="flex items-center gap-2 text-sm">
+                                        <GitBranchIcon className="text-[var(--app-hint)]" />
+                                        <span className="font-semibold">{branchLabel}</span>
+                                    </div>
+                                    <div className="text-xs text-[var(--app-hint)]">
+                                        {gitStatus.totalStaged} staged, {gitStatus.totalUnstaged} unstaged
+                                    </div>
+                                </div>
+                            ) : null}
                             {gitStatus?.stagedFiles.length ? (
                                 <div>
                                     <div className="border-b border-[var(--app-divider)] bg-[var(--app-bg)] px-3 py-2 text-xs font-semibold text-[var(--app-git-staged-color)]">
