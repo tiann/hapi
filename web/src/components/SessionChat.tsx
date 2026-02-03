@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { AssistantRuntimeProvider } from '@assistant-ui/react'
 import type { ApiClient } from '@/api/client'
-import type { AttachmentMetadata, DecryptedMessage, ModelMode, PermissionMode, Session } from '@/types/api'
+import type { AttachmentMetadata, DecryptedMessage, FilteredPermissions, ModelMode, PermissionMode, Session } from '@/types/api'
 import type { ChatBlock, NormalizedMessage } from '@/chat/types'
 import type { Suggestion } from '@/hooks/useActiveSuggestions'
 import { normalizeDecryptedMessage } from '@/chat/normalize'
@@ -22,6 +22,7 @@ export function SessionChat(props: {
     api: ApiClient
     session: Session
     messages: DecryptedMessage[]
+    permissions: FilteredPermissions
     messagesWarning: string | null
     hasMoreMessages: boolean
     isLoadingMessages: boolean
@@ -179,9 +180,19 @@ export function SessionChat(props: {
         return normalized
     }, [props.messages])
 
+    // Build filtered agentState using permissions from message window
+    const filteredAgentState = useMemo(() => {
+        if (!props.session.agentState) return null
+        return {
+            ...props.session.agentState,
+            requests: props.permissions.requests,
+            completedRequests: props.permissions.completedRequests
+        }
+    }, [props.session.agentState, props.permissions])
+
     const reduced = useMemo(
-        () => reduceChatBlocks(normalizedMessages, props.session.agentState),
-        [normalizedMessages, props.session.agentState]
+        () => reduceChatBlocks(normalizedMessages, filteredAgentState),
+        [normalizedMessages, filteredAgentState]
     )
     const reconciled = useMemo(
         () => reconcileChatBlocks(reduced.blocks, blocksByIdRef.current),

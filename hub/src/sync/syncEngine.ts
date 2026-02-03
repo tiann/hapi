@@ -7,7 +7,7 @@
  * - No E2E encryption; data is stored as JSON in SQLite
  */
 
-import type { DecryptedMessage, ModelMode, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
+import type { AgentState, DecryptedMessage, ModelMode, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
 import type { Server } from 'socket.io'
 import type { Store } from '../store'
 import type { RpcRegistry } from '../socket/rpcRegistry'
@@ -130,7 +130,7 @@ export class SyncEngine {
         return this.machineCache.getOnlineMachinesByNamespace(namespace)
     }
 
-    getMessagesPage(sessionId: string, options: { limit: number; beforeSeq: number | null }): {
+    getMessagesPage(sessionId: string, options: { limit: number; beforeSeq: number | null }, agentState?: AgentState | null): {
         messages: DecryptedMessage[]
         page: {
             limit: number
@@ -138,8 +138,12 @@ export class SyncEngine {
             nextBeforeSeq: number | null
             hasMore: boolean
         }
+        permissions: {
+            requests: Record<string, unknown>
+            completedRequests: Record<string, unknown>
+        }
     } {
-        return this.messageService.getMessagesPage(sessionId, options)
+        return this.messageService.getMessagesPage(sessionId, options, agentState)
     }
 
     getMessagesAfter(sessionId: string, options: { afterSeq: number; limit: number }): DecryptedMessage[] {

@@ -1,7 +1,48 @@
-import type { AttachmentMetadata, DecryptedMessage } from '@hapi/protocol/types'
+import type { AgentState, AgentStateCompletedRequest, AgentStateRequest, AttachmentMetadata, DecryptedMessage } from '@hapi/protocol/types'
 import type { Server } from 'socket.io'
 import type { Store } from '../store'
 import { EventPublisher } from './eventPublisher'
+
+export type FilteredPermissions = {
+    requests: Record<string, AgentStateRequest>
+    completedRequests: Record<string, AgentStateCompletedRequest>
+}
+
+/**
+ * Filter permissions by time range based on messages.
+ * Only returns permissions that were created within or after the oldest message's time.
+ */
+export function filterPermissionsByTimeRange(
+    agentState: AgentState | null | undefined,
+    messages: DecryptedMessage[]
+): FilteredPermissions {
+    if (!agentState || messages.length === 0) {
+        return { requests: {}, completedRequests: {} }
+    }
+
+    const oldestTime = Math.min(...messages.map(m => m.createdAt))
+
+    const requests: Record<string, AgentStateRequest> = {}
+    const completedRequests: Record<string, AgentStateCompletedRequest> = {}
+
+    // Filter pending requests
+    for (const [id, req] of Object.entries(agentState.requests ?? {})) {
+        const createdAt = req.createdAt ?? Date.now()
+        if (createdAt >= oldestTime) {
+            requests[id] = req
+        }
+    }
+
+    // Filter completed requests
+    for (const [id, req] of Object.entries(agentState.completedRequests ?? {})) {
+        const createdAt = req.createdAt ?? 0
+        if (createdAt >= oldestTime) {
+            completedRequests[id] = req
+        }
+    }
+
+    return { requests, completedRequests }
+}
 
 export class MessageService {
     constructor(
@@ -11,7 +52,7 @@ export class MessageService {
     ) {
     }
 
-    getMessagesPage(sessionId: string, options: { limit: number; beforeSeq: number | null }): {
+    getMessagesPage(sessionId: string, options: { limit: number; beforeSeq: number | null }, agentState?: AgentState | null): {
         messages: DecryptedMessage[]
         page: {
             limit: number
@@ -19,6 +60,7 @@ export class MessageService {
             nextBeforeSeq: number | null
             hasMore: boolean
         }
+        permissions: FilteredPermissions
     } {
         const stored = this.store.messages.getMessages(sessionId, options.limit, options.beforeSeq ?? undefined)
         const messages: DecryptedMessage[] = stored.map((message) => ({
@@ -41,6 +83,9 @@ export class MessageService {
         const hasMore = nextBeforeSeq !== null
             && this.store.messages.getMessages(sessionId, 1, nextBeforeSeq).length > 0
 
+        // Filter permissions by time range
+        const permissions = filterPermissionsByTimeRange(agentState, messages)
+
         return {
             messages,
             page: {
@@ -48,7 +93,8 @@ export class MessageService {
                 beforeSeq: options.beforeSeq,
                 nextBeforeSeq,
                 hasMore
-            }
+            },
+            permissions
         }
     }
 
