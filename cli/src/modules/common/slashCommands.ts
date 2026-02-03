@@ -192,11 +192,19 @@ async function scanPluginCommands(agent: string): Promise<SlashCommand[]> {
 
         // Process each installed plugin
         for (const [pluginKey, installations] of Object.entries(installedPlugins.plugins)) {
-            // Plugin key format: "pluginName@marketplace"
-            const pluginName = pluginKey.split('@')[0];
-            
-            // Use the first (or only) installation
-            const installation = installations[0];
+            // Plugin key format: "pluginName@marketplace" or "@scope/pluginName@marketplace"
+            // Use the last '@' as the separator between plugin name and marketplace
+            const lastAtIndex = pluginKey.lastIndexOf('@');
+            const pluginName = lastAtIndex > 0 ? pluginKey.substring(0, lastAtIndex) : pluginKey;
+
+            if (installations.length === 0) continue;
+
+            // Sort installations by lastUpdated descending to get the newest one
+            const sortedInstallations = [...installations].sort((a, b) => {
+                return new Date(b.lastUpdated).getTime() - new Date(a.lastUpdated).getTime();
+            });
+
+            const installation = sortedInstallations[0];
             if (!installation?.installPath) continue;
 
             const commandsDir = join(installation.installPath, 'commands');
@@ -217,7 +225,7 @@ async function scanPluginCommands(agent: string): Promise<SlashCommand[]> {
  */
 export async function listSlashCommands(agent: string): Promise<SlashCommand[]> {
     const builtin = BUILTIN_COMMANDS[agent] ?? [];
-    
+
     // Scan user commands and plugin commands in parallel
     const [user, plugin] = await Promise.all([
         scanUserCommands(agent),
