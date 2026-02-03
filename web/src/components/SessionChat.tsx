@@ -181,11 +181,13 @@ export function SessionChat(props: {
     }, [props.messages])
 
     // Build filtered agentState using permissions from message window
+    // For pending requests, always use real-time data from agentState (SSE updates)
+    // For completed requests, use filtered data from API to avoid showing old tool cards
     const filteredAgentState = useMemo(() => {
         if (!props.session.agentState) return null
         return {
             ...props.session.agentState,
-            requests: props.permissions.requests,
+            requests: props.session.agentState.requests ?? {},
             completedRequests: props.permissions.completedRequests
         }
     }, [props.session.agentState, props.permissions])
