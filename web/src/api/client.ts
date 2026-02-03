@@ -17,6 +17,9 @@ import type {
     SlashCommandsResponse,
     SkillsResponse,
     SpawnResponse,
+    TelegramConfigPayload,
+    TelegramConfigResponse,
+    TelegramConfigSaveResponse,
     UploadFileResponse,
     VisibilityPayload,
     SessionResponse,
@@ -418,6 +421,23 @@ export class ApiClient {
         return await this.request('/api/voice/token', {
             method: 'POST',
             body: JSON.stringify(options || {})
+        })
+    }
+
+    async getTelegramConfig(): Promise<TelegramConfigResponse> {
+        return await this.request<TelegramConfigResponse>('/api/telegram/config')
+    }
+
+    async saveTelegramConfig(payload: TelegramConfigPayload): Promise<TelegramConfigSaveResponse> {
+        return await this.request<TelegramConfigSaveResponse>('/api/telegram/config', {
+            method: 'POST',
+            body: JSON.stringify(payload)
+        })
+    }
+
+    async deleteTelegramToken(): Promise<TelegramConfigSaveResponse> {
+        return await this.request<TelegramConfigSaveResponse>('/api/telegram/config/token', {
+            method: 'DELETE'
         })
     }
 }
