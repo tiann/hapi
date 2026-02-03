@@ -304,6 +304,22 @@ export class ApiClient {
         })
     }
 
+    async forkSession(sessionId: string): Promise<{ id: string; message: string }> {
+        const response = await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/fork`, {
+            method: 'POST',
+            body: JSON.stringify({})
+        })
+        return response as { id: string; message: string }
+    }
+
+    async reloadSession(sessionId: string, force: boolean = false): Promise<void> {
+        const url = `/api/sessions/${encodeURIComponent(sessionId)}/reload${force ? '?force=true' : ''}`
+        await this.request(url, {
+            method: 'POST',
+            body: JSON.stringify({})
+        })
+    }
+
     async switchSession(sessionId: string): Promise<void> {
         await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/switch`, {
             method: 'POST',

@@ -16,6 +16,8 @@ export function useSessionActions(
     abortSession: () => Promise<void>
     archiveSession: () => Promise<void>
     resumeSession: () => Promise<void>
+    forkSession: () => Promise<void>
+    reloadSession: (force?: boolean) => Promise<void>
     switchSession: () => Promise<void>
     setPermissionMode: (mode: PermissionMode) => Promise<void>
     setModelMode: (mode: ModelMode) => Promise<void>
@@ -158,10 +160,66 @@ export function useSessionActions(
         },
     })
 
+    const handleFork = async () => {
+        if (!api || !sessionId) {
+            throw new Error('Session unavailable')
+        }
+
+        try {
+            // Fork the session on the server
+            const result = await api.forkSession(sessionId)
+
+            // Invalidate sessions list to show the new forked session
+            await queryClient.invalidateQueries({ queryKey: queryKeys.sessions })
+
+            // Show success message
+            toast.success(t('dialog.fork.success', 'Session forked successfully'))
+
+            // Navigate to the new forked session
+            navigate({ to: '/sessions/$sessionId', params: { sessionId: result.id } })
+        } catch (error) {
+            const message = error instanceof Error ? error.message : t('dialog.fork.error', 'Failed to fork session')
+            toast.error(message)
+            throw error
+        }
+    }
+
+    const handleReload = async (force: boolean = false) => {
+        if (!api || !sessionId) {
+            throw new Error('Session unavailable')
+        }
+
+        try {
+            await api.reloadSession(sessionId, force)
+            await invalidateSession()
+            toast.success(t('dialog.reload.success', 'Session reloaded successfully'))
+        } catch (error) {
+            // Handle busy error - ask user if they want to force
+            if (error instanceof Error && error.message.includes('Session is busy')) {
+                if (!force) {
+                    // This is the first attempt - user needs to confirm force
+                    const confirmed = window.confirm(
+                        t('dialog.reload.busyConfirm', 'Session is busy. Force reload anyway? This will interrupt the current operation.')
+                    )
+                    if (confirmed) {
+                        return handleReload(true) // Retry with force
+                    }
+                    return // User cancelled
+                }
+            }
+
+            const message = error instanceof Error ? error.message : t('dialog.reload.error', 'Failed to reload session')
+            toast.error(message)
+            throw error
+        }
+    }
+
     return {
         abortSession: abortMutation.mutateAsync,
         archiveSession: archiveMutation.mutateAsync,
         resumeSession: handleResume,
+        forkSession: handleFork,
+        reloadSession: handleReload,
         switchSession: switchMutation.mutateAsync,
         setPermissionMode: permissionMutation.mutateAsync,
         setModelMode: modelMutation.mutateAsync,

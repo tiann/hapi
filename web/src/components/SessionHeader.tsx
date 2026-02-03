@@ -79,7 +79,7 @@ export function SessionHeader(props: {
     const [archiveOpen, setArchiveOpen] = useState(false)
     const [deleteOpen, setDeleteOpen] = useState(false)
 
-    const { archiveSession, renameSession, deleteSession, resumeSession, isPending } = useSessionActions(
+    const { archiveSession, renameSession, deleteSession, resumeSession, forkSession, reloadSession, isPending } = useSessionActions(
         api,
         session.id,
         session.metadata?.flavor ?? null
@@ -97,6 +97,23 @@ export function SessionHeader(props: {
         } catch (error) {
             // Error already toasted by useSessionActions
             // Keep menu open so user can retry
+        }
+    }
+
+    const handleFork = async () => {
+        try {
+            await forkSession()
+            // On success, user will be navigated to the forked session
+        } catch (error) {
+            // Error already toasted by useSessionActions
+        }
+    }
+
+    const handleReload = async () => {
+        try {
+            await reloadSession()
+        } catch (error) {
+            // Error already toasted by useSessionActions
         }
     }
 
@@ -188,10 +205,13 @@ export function SessionHeader(props: {
                 isOpen={menuOpen}
                 onClose={() => setMenuOpen(false)}
                 sessionActive={session.active}
+                sessionFlavor={session.metadata?.flavor ?? undefined}
                 onRename={() => setRenameOpen(true)}
                 onArchive={() => setArchiveOpen(true)}
                 onDelete={() => setDeleteOpen(true)}
                 onResume={session.active ? undefined : handleResume}
+                onFork={handleFork}
+                onReload={session.active ? handleReload : undefined}
                 anchorPoint={menuAnchorPoint}
                 menuId={menuId}
             />
