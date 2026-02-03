@@ -141,12 +141,22 @@ export function SessionChat(props: {
         voice.toggleMic()
     }, [voice])
 
+    // Track session id to clear caches when it changes
+    const prevSessionIdRef = useRef<string | null>(null)
+
     useEffect(() => {
         normalizedCacheRef.current.clear()
         blocksByIdRef.current.clear()
     }, [props.session.id])
 
     const normalizedMessages: NormalizedMessage[] = useMemo(() => {
+        // Clear caches immediately when session changes (before useEffect runs)
+        if (prevSessionIdRef.current !== null && prevSessionIdRef.current !== props.session.id) {
+            normalizedCacheRef.current.clear()
+            blocksByIdRef.current.clear()
+        }
+        prevSessionIdRef.current = props.session.id
+
         const cache = normalizedCacheRef.current
         const normalized: NormalizedMessage[] = []
         const seen = new Set<string>()
