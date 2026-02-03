@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams } from '@tanstack/react-router'
 import type { FileSearchItem, GitFileStatus, TreeEntry } from '@/types/api'
 import type { ApiClient } from '@/api/client'
@@ -420,14 +420,19 @@ export default function FilesPage() {
     const navigate = useNavigate()
     const goBack = useAppGoBack()
     const { sessionId } = useParams({ from: '/sessions/$sessionId/files' })
-    const treeStateRef = useRef<TreeState>(getOrCreateTreeState(sessionId))
+    const treeState = useMemo(() => getOrCreateTreeState(sessionId), [sessionId])
     const { session } = useSession(api, sessionId)
     const [searchQuery, setSearchQuery] = useState('')
-    const [browseAll, _setBrowseAll] = useState(treeStateRef.current.browseAll)
+    const [browseAll, _setBrowseAll] = useState(treeState.browseAll)
+
+    useEffect(() => {
+        _setBrowseAll(treeState.browseAll)
+    }, [treeState])
+
     const setBrowseAll = useCallback((v: boolean) => {
-        treeStateRef.current.browseAll = v
+        treeState.browseAll = v
         _setBrowseAll(v)
-    }, [])
+    }, [treeState])
 
     const {
         status: gitStatus,
@@ -537,7 +542,7 @@ export default function FilesPage() {
                         <FileTree
                             api={api}
                             sessionId={sessionId}
-                            treeState={treeStateRef.current}
+                            treeState={treeState}
                             onOpenFile={(path) => handleOpenFile(path)}
                         />
                     ) : shouldSearch ? (

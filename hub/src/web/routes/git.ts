@@ -206,9 +206,15 @@ export function createGitRoutes(getSyncEngine: () => SyncEngine | null): Hono<We
         }
 
         const subPath = parsed.data.path?.trim() ?? ''
+
+        // Validate path to prevent directory traversal
+        if (subPath && (subPath.includes('..') || subPath.startsWith('/') || subPath.includes('\0'))) {
+            return c.json({ error: 'Invalid path' }, 400)
+        }
+
         const cwd = subPath ? `${sessionPath}/${subPath}` : sessionPath
 
-        const result = await runRpc(() => engine.runRipgrep(sessionResult.sessionId, ['--files', '--max-depth', '2'], cwd))
+        const result = await runRpc(() => engine.runRipgrep(sessionResult.sessionId, ['--files'], cwd))
         if (!result.success) {
             return c.json({ success: false, error: result.error ?? 'Failed to list directory' })
         }
