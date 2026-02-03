@@ -30,11 +30,12 @@ export function createMessagesRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return sessionResult
         }
         const sessionId = sessionResult.sessionId
+        const agentState = sessionResult.session.agentState
 
         const parsed = querySchema.safeParse(c.req.query())
         const limit = parsed.success ? (parsed.data.limit ?? 50) : 50
         const beforeSeq = parsed.success ? (parsed.data.beforeSeq ?? null) : null
-        return c.json(engine.getMessagesPage(sessionId, { limit, beforeSeq }))
+        return c.json(engine.getMessagesPage(sessionId, { limit, beforeSeq }, agentState))
     })
 
     app.post('/sessions/:id/messages', async (c) => {

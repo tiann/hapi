@@ -191,6 +191,7 @@ function SessionPage() {
     } = useSession(api, sessionId)
     const {
         messages,
+        permissions: messagesPermissions,
         warning: messagesWarning,
         isLoading: messagesLoading,
         isLoadingMore: messagesLoadingMore,
@@ -298,6 +299,7 @@ function SessionPage() {
             api={api}
             session={session}
             messages={messages}
+            permissions={messagesPermissions}
             messagesWarning={messagesWarning}
             hasMoreMessages={messagesHasMore}
             isLoadingMessages={messagesLoading}

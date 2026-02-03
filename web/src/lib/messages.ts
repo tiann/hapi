@@ -97,6 +97,7 @@ export function upsertMessagesInCache(
     incoming: DecryptedMessage[],
 ): InfiniteData<MessagesResponse> {
     const mergedIncoming = mergeMessages([], incoming)
+    const emptyPermissions = { requests: {}, completedRequests: {} }
 
     if (!data || data.pages.length === 0) {
         return {
@@ -109,6 +110,7 @@ export function upsertMessagesInCache(
                         nextBeforeSeq: null,
                         hasMore: false,
                     },
+                    permissions: emptyPermissions,
                 },
             ],
             pageParams: [null],

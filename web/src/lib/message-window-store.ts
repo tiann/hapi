@@ -1,11 +1,14 @@
 import type { ApiClient } from '@/api/client'
-import type { DecryptedMessage, MessageStatus } from '@/types/api'
+import type { DecryptedMessage, FilteredPermissions, MessageStatus } from '@/types/api'
 import { normalizeDecryptedMessage } from '@/chat/normalize'
 import { mergeMessages } from '@/lib/messages'
+
+const emptyPermissions: FilteredPermissions = { requests: {}, completedRequests: {} }
 
 export type MessageWindowState = {
     sessionId: string
     messages: DecryptedMessage[]
+    permissions: FilteredPermissions
     pending: DecryptedMessage[]
     pendingCount: number
     hasMore: boolean
@@ -90,6 +93,7 @@ function createState(sessionId: string): InternalState {
     return {
         sessionId,
         messages: [],
+        permissions: emptyPermissions,
         pending: [],
         pendingCount: 0,
         pendingVisibleCount: 0,
@@ -158,6 +162,7 @@ function buildState(
     prev: InternalState,
     updates: {
         messages?: DecryptedMessage[]
+        permissions?: FilteredPermissions
         pending?: DecryptedMessage[]
         pendingOverflowCount?: number
         pendingVisibleCount?: number
@@ -170,6 +175,7 @@ function buildState(
     }
 ): InternalState {
     const messages = updates.messages ?? prev.messages
+    const permissions = updates.permissions ?? prev.permissions
     const pending = updates.pending ?? prev.pending
     const pendingOverflowCount = updates.pendingOverflowCount ?? prev.pendingOverflowCount
     const pendingOverflowVisibleCount = updates.pendingOverflowVisibleCount ?? prev.pendingOverflowVisibleCount
@@ -188,6 +194,7 @@ function buildState(
     return {
         ...prev,
         messages,
+        permissions,
         pending,
         pendingOverflowCount,
         pendingVisibleCount,
@@ -332,6 +339,7 @@ export async function fetchLatestMessages(api: ApiClient, sessionId: string): Pr
                 const trimmed = trimVisible(merged, 'append')
                 return buildState(prev, {
                     messages: trimmed,
+                    permissions: response.permissions,
                     pending: [],
                     pendingOverflowCount: 0,
                     pendingVisibleCount: 0,
@@ -343,6 +351,7 @@ export async function fetchLatestMessages(api: ApiClient, sessionId: string): Pr
             }
             const pendingResult = mergeIntoPending(prev, response.messages)
             return buildState(prev, {
+                permissions: response.permissions,
                 pending: pendingResult.pending,
                 pendingVisibleCount: pendingResult.pendingVisibleCount,
                 pendingOverflowCount: pendingResult.pendingOverflowCount,
@@ -372,8 +381,14 @@ export async function fetchOlderMessages(api: ApiClient, sessionId: string): Pro
         updateState(sessionId, (prev) => {
             const merged = mergeMessages(response.messages, prev.messages)
             const trimmed = trimVisible(merged, 'prepend')
+            // Merge permissions: combine old and new permissions
+            const mergedPermissions: FilteredPermissions = {
+                requests: { ...prev.permissions.requests, ...response.permissions.requests },
+                completedRequests: { ...prev.permissions.completedRequests, ...response.permissions.completedRequests }
+            }
             return buildState(prev, {
                 messages: trimmed,
+                permissions: mergedPermissions,
                 hasMore: response.page.hasMore,
                 isLoadingMore: false,
             })
