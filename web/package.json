@@ -46,6 +46,7 @@
         "workbox-window": "^7.4.0"
     },
     "devDependencies": {
+        "@testing-library/react": "^16.1.0",
         "@types/react": "^19.2.7",
         "@types/react-dom": "^19.2.3",
         "@tailwindcss/postcss": "^4.1.18",

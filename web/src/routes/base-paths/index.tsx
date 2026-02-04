@@ -67,7 +67,7 @@ function PlusIcon(props: { className?: string }) {
 export default function BasePathsPage() {
     const goBack = useAppGoBack()
     const { api } = useAppContext()
-    const { machines } = useMachines(api)
+    const { machines } = useMachines(api, true)
     const { getBasePaths, addBasePath, removeBasePath } = useBasePaths()
     const [selectedMachineId, setSelectedMachineId] = useState<string | null>(null)
     const [newPath, setNewPath] = useState('')

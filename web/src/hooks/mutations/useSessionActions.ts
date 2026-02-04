@@ -16,8 +16,8 @@ export function useSessionActions(
     abortSession: () => Promise<void>
     archiveSession: () => Promise<void>
     resumeSession: () => Promise<void>
-    forkSession: () => Promise<void>
-    reloadSession: (force?: boolean) => Promise<void>
+    forkSession: (enableYolo?: boolean) => Promise<void>
+    reloadSession: (force?: boolean, enableYolo?: boolean) => Promise<void>
     switchSession: () => Promise<void>
     setPermissionMode: (mode: PermissionMode) => Promise<void>
     setModelMode: (mode: ModelMode) => Promise<void>
@@ -83,12 +83,7 @@ export function useSessionActions(
 
             // Handle session not found error with helpful guidance
             if (error instanceof Error && error.message.includes('SESSION_NOT_FOUND')) {
-                toast.error(
-                    t('dialog.resume.sessionNotFound', 'This session no longer exists. Please create a new session instead.'),
-                    {
-                        duration: 6000,  // Longer duration for important error
-                    }
-                )
+                toast.error(t('dialog.resume.sessionNotFound'))
                 // Navigate to home to create new session
                 navigate({ to: '/' })
                 return
@@ -173,12 +168,12 @@ export function useSessionActions(
             await queryClient.invalidateQueries({ queryKey: queryKeys.sessions })
 
             // Show success message
-            toast.success(t('dialog.fork.success', 'Session forked successfully'))
+            toast.success(t('dialog.fork.success'))
 
             // Navigate to the new forked session
             navigate({ to: '/sessions/$sessionId', params: { sessionId: result.id } })
         } catch (error) {
-            const message = error instanceof Error ? error.message : t('dialog.fork.error', 'Failed to fork session')
+            const message = error instanceof Error ? error.message : t('dialog.fork.error')
             toast.error(message)
             throw error
         }
@@ -192,7 +187,7 @@ export function useSessionActions(
         try {
             await api.reloadSession(sessionId, force, enableYolo)
             await invalidateSession()
-            toast.success(t('dialog.reload.success', 'Session reloaded successfully'))
+            toast.success(t('dialog.reload.success'))
         } catch (error) {
             // Handle busy error
             if (error instanceof Error && error.message.includes('Session is busy')) {
@@ -200,7 +195,7 @@ export function useSessionActions(
                 // Don't use window.confirm here as the dialog provides a better UX
             }
 
-            const message = error instanceof Error ? error.message : t('dialog.reload.error', 'Failed to reload session')
+            const message = error instanceof Error ? error.message : t('dialog.reload.error')
             toast.error(message)
             throw error
         }
