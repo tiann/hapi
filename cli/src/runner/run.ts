@@ -69,6 +69,9 @@ export async function startRunner(): Promise<void> {
     });
   }
 
+  // Capture CLI mtime at startup for hot reload detection
+  const startedWithCliMtimeMs = getInstalledCliMtimeMs();
+
   // Optional: SIGUSR1 handler for immediate version check and reload
   // This allows install.sh to trigger instant reload via: kill -USR1 <pid>
   if (!isWindows()) {
@@ -543,8 +546,6 @@ export async function startRunner(): Promise<void> {
       requestShutdown: () => requestShutdown('hapi-cli'),
       onHappySessionWebhook
     });
-
-    const startedWithCliMtimeMs = getInstalledCliMtimeMs();
 
     // Write initial runner state (no lock needed for state file)
     const fileState: RunnerLocallyPersistedState = {

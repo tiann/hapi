@@ -1,7 +1,5 @@
 import { Hono } from 'hono'
 import type { WebAppEnv } from '../middleware/auth'
-// @ts-ignore - version.json is generated at build time
-import versionFile from '../../../dist/version.json' assert { type: 'file' }
 
 interface VersionInfo {
     sha: string
@@ -20,8 +18,8 @@ async function loadVersion(): Promise<VersionInfo> {
     }
 
     try {
-        // Load version.json using Bun's file import
-        const file = Bun.file(versionFile)
+        // Load version.json using Bun's file API
+        const file = Bun.file('../../../dist/version.json')
         const content = await file.text()
         cachedVersion = JSON.parse(content)
         return cachedVersion!

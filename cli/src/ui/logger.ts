@@ -142,7 +142,12 @@ class Logger {
     this.logToConsole('warn', '', message, ...args)
     this.debug(`[WARN] ${message}`, ...args)
   }
-  
+
+  error(message: string, ...args: unknown[]): void {
+    this.logToConsole('error', '', message, ...args)
+    this.debug(`[ERROR] ${message}`, ...args)
+  }
+
   getLogPath(): string {
     return this.logFilePath
   }
