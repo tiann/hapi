@@ -7,6 +7,7 @@
 **/dist-exe/
 **/*.tsbuildinfo
 server/src/web/embeddedAssets.generated.ts
+**/version.generated.ts
 
 # Downloaded tools (fetched at build time)
 server/tools/tunwg/tunwg-*

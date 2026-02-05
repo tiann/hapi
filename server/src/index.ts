@@ -27,6 +27,7 @@ import { waitForTunnelTlsReady } from './tunnel/tlsGate'
 import QRCode from 'qrcode'
 import type { Server as BunServer } from 'bun'
 import type { WebSocketData } from '@socket.io/bun-engine'
+import { startAutoReload, type AutoReloadHandle } from '@hapi/protocol/autoReload'
 
 /** Format config source for logging */
 function formatSource(source: ConfigSource | 'generated'): string {
@@ -104,6 +105,7 @@ let sseManager: SSEManager | null = null
 let visibilityTracker: VisibilityTracker | null = null
 let notificationHub: NotificationHub | null = null
 let tunnelManager: TunnelManager | null = null
+let autoReloadHandle: AutoReloadHandle | null = null
 
 async function main() {
     console.log('HAPI Server starting...')
@@ -288,6 +290,7 @@ async function main() {
     // Handle shutdown
     const shutdown = async () => {
         console.log('\nShutting down...')
+        autoReloadHandle?.stop()
         await tunnelManager?.stop()
         await happyBot?.stop()
         notificationHub?.stop()
@@ -299,6 +302,15 @@ async function main() {
 
     process.on('SIGINT', shutdown)
     process.on('SIGTERM', shutdown)
+
+    // Start auto-reload monitoring
+    autoReloadHandle = startAutoReload({
+        onReloadDetected: async () => {
+            console.log('[Server] Binary update detected - initiating graceful restart')
+            await shutdown()
+        },
+        checkIntervalMs: 60_000,
+    })
 
     // Keep process running
     await new Promise(() => {})

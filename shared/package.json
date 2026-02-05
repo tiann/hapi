@@ -7,6 +7,7 @@
     "types": "./src/index.ts",
     "exports": {
         ".": "./src/index.ts",
+        "./autoReload": "./src/autoReload.ts",
         "./messages": "./src/messages.ts",
         "./modes": "./src/modes.ts",
         "./schemas": "./src/schemas.ts",
