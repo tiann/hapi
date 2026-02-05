@@ -1,4 +1,5 @@
 import packageJson from '../../package.json'
+import version from '../version.generated'
 import { ensureRuntimeAssets } from '@/runtime/assets'
 import { isBunCompiled } from '@/projectPath'
 import { logger } from '@/ui/logger'
@@ -10,6 +11,9 @@ export async function runCli(): Promise<void> {
 
     if (args.includes('-v') || args.includes('--version')) {
         console.log(`hapi version: ${packageJson.version}`)
+        console.log(`git: ${version.gitDescribe}${version.isDirty ? ' (dirty)' : ''}`)
+        console.log(`commit: ${version.shortSha} (${new Date(version.commitTime).toLocaleString()})`)
+        console.log(`built: ${new Date(version.buildTime).toLocaleString()}`)
         process.exit(0)
     }
 

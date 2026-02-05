@@ -3,33 +3,25 @@ import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 import { resolve } from 'node:path'
 import type { Plugin } from 'vite'
-import { execSync } from 'node:child_process'
 
 const base = process.env.VITE_BASE_URL || '/'
 
-// Get version info at build time
+// Import version info from generated file (created by prebuild script)
+// This ensures all components (server, CLI, web) use the same version source
 function getVersionInfo() {
     try {
-        const sha = execSync('git rev-parse HEAD').toString().trim()
-        const shortSha = sha.substring(0, 7)
-        const buildTime = new Date().toISOString()
-
-        // Check if working directory is dirty
-        const status = execSync('git status --porcelain').toString().trim()
-        const isDirty = status.length > 0
-
-        // Get git describe output (includes tags and dirty state)
-        let gitDescribe = shortSha
-        try {
-            gitDescribe = execSync('git describe --tags --always --dirty').toString().trim()
-        } catch {
-            // If git describe fails (no tags), fall back to shortSha
-            gitDescribe = shortSha
+        // Import is synchronous here because this runs at build time
+        const versionModule = require('./src/version.generated.ts')
+        return versionModule.default
+    } catch (error) {
+        console.warn('Failed to load version.generated.ts, using fallback:', error)
+        return {
+            sha: 'unknown',
+            shortSha: 'unknown',
+            buildTime: new Date().toISOString(),
+            isDirty: false,
+            gitDescribe: 'unknown'
         }
-
-        return { sha, shortSha, buildTime, isDirty, gitDescribe }
-    } catch {
-        return { sha: 'unknown', shortSha: 'unknown', buildTime: new Date().toISOString(), isDirty: false, gitDescribe: 'unknown' }
     }
 }
 
