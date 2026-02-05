@@ -1,49 +1,21 @@
 import { Hono } from 'hono'
-import { join } from 'node:path'
 import type { WebAppEnv } from '../middleware/auth'
+import version from '../../version.generated'
 
 interface VersionInfo {
     sha: string
     shortSha: string
     branch: string
     isDirty: boolean
+    gitDescribe: string
     commitTime: string
     buildTime: string
-}
-
-let cachedVersion: VersionInfo | null = null
-
-async function loadVersion(): Promise<VersionInfo> {
-    if (cachedVersion) {
-        return cachedVersion
-    }
-
-    try {
-        // Load version.json using Bun's file API (relative to this source file)
-        const file = Bun.file(join(import.meta.dir, '../../../dist/version.json'))
-        const content = await file.text()
-        cachedVersion = JSON.parse(content)
-        return cachedVersion!
-    } catch (error) {
-        console.error('Failed to load version.json:', error)
-        // Fallback version
-        cachedVersion = {
-            sha: 'unknown',
-            shortSha: 'unknown',
-            branch: 'unknown',
-            isDirty: false,
-            commitTime: new Date().toISOString(),
-            buildTime: new Date().toISOString(),
-        }
-        return cachedVersion
-    }
 }
 
 export function createVersionRoutes(): Hono<WebAppEnv> {
     const app = new Hono<WebAppEnv>()
 
-    app.get('/version', async (c) => {
-        const version = await loadVersion()
+    app.get('/version', (c) => {
         return c.json(version)
     })
 
