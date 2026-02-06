@@ -184,17 +184,14 @@ export function HappyThread(props: {
         if (!viewport) {
             return
         }
-        const scrollState = {
+        pendingScrollRef.current = {
             scrollTop: viewport.scrollTop,
             scrollHeight: viewport.scrollHeight
         }
-        console.log('[HappyThread] Saving scroll position before load:', scrollState)
-        pendingScrollRef.current = scrollState
         loadLockRef.current = true
         loadStartedRef.current = false
         // Disable autoScroll while loading older messages to prevent assistant-ui
         // from scrolling to bottom when content size changes
-        console.log('[HappyThread] Disabling autoScroll')
         setAutoScrollEnabled(false)
         let loadPromise: Promise<unknown>
         try {
@@ -264,28 +261,15 @@ export function HappyThread(props: {
 
             // If delta is 0, content hasn't been rendered yet, wait a bit
             if (delta === 0 && viewport.scrollHeight === pending.scrollHeight) {
-                console.log('[HappyThread] Content not rendered yet, waiting...')
                 requestAnimationFrame(checkAndRestore)
                 return
             }
 
-            const newScrollTop = pending.scrollTop + delta
-            console.log('[HappyThread] Restoring scroll position:', {
-                oldScrollTop: pending.scrollTop,
-                oldScrollHeight: pending.scrollHeight,
-                newScrollHeight: viewport.scrollHeight,
-                delta,
-                newScrollTop
-            })
-            viewport.scrollTop = newScrollTop
+            viewport.scrollTop = pending.scrollTop + delta
             pendingScrollRef.current = null
             loadLockRef.current = false
             // Re-enable autoScroll after scroll position is restored
-            // Delay slightly to ensure the scroll position is applied before re-enabling
-            setTimeout(() => {
-                console.log('[HappyThread] Re-enabling autoScroll, current scrollTop:', viewport.scrollTop)
-                setAutoScrollEnabled(true)
-            }, 50)
+            setTimeout(() => setAutoScrollEnabled(true), 50)
         }
 
         requestAnimationFrame(checkAndRestore)
