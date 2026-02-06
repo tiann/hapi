@@ -184,14 +184,17 @@ export function HappyThread(props: {
         if (!viewport) {
             return
         }
-        pendingScrollRef.current = {
+        const scrollState = {
             scrollTop: viewport.scrollTop,
             scrollHeight: viewport.scrollHeight
         }
+        console.log('[HappyThread] Saving scroll position before load:', scrollState)
+        pendingScrollRef.current = scrollState
         loadLockRef.current = true
         loadStartedRef.current = false
         // Disable autoScroll while loading older messages to prevent assistant-ui
         // from scrolling to bottom when content size changes
+        console.log('[HappyThread] Disabling autoScroll')
         setAutoScrollEnabled(false)
         let loadPromise: Promise<unknown>
         try {
@@ -255,12 +258,23 @@ export function HappyThread(props: {
             return
         }
         const delta = viewport.scrollHeight - pending.scrollHeight
-        viewport.scrollTop = pending.scrollTop + delta
+        const newScrollTop = pending.scrollTop + delta
+        console.log('[HappyThread] Restoring scroll position:', {
+            oldScrollTop: pending.scrollTop,
+            oldScrollHeight: pending.scrollHeight,
+            newScrollHeight: viewport.scrollHeight,
+            delta,
+            newScrollTop
+        })
+        viewport.scrollTop = newScrollTop
         pendingScrollRef.current = null
         loadLockRef.current = false
         // Re-enable autoScroll after scroll position is restored
-        // Use setTimeout to ensure the scroll position is applied before re-enabling
-        setTimeout(() => setAutoScrollEnabled(true), 0)
+        // Delay slightly to ensure the scroll position is applied before re-enabling
+        setTimeout(() => {
+            console.log('[HappyThread] Re-enabling autoScroll, current scrollTop:', viewport.scrollTop)
+            setAutoScrollEnabled(true)
+        }, 50)
     }, [props.messagesVersion])
 
     useEffect(() => {
