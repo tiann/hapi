@@ -190,22 +190,28 @@ export function HappyThread(props: {
         }
         loadLockRef.current = true
         loadStartedRef.current = false
+        // Disable autoScroll while loading older messages to prevent assistant-ui
+        // from scrolling to bottom when content size changes
+        setAutoScrollEnabled(false)
         let loadPromise: Promise<unknown>
         try {
             loadPromise = onLoadMoreRef.current()
         } catch (error) {
             pendingScrollRef.current = null
             loadLockRef.current = false
+            setAutoScrollEnabled(true)
             throw error
         }
         void loadPromise.catch((error) => {
             pendingScrollRef.current = null
             loadLockRef.current = false
+            setAutoScrollEnabled(true)
             console.error('Failed to load older messages:', error)
         }).finally(() => {
             if (!loadStartedRef.current && !isLoadingMoreRef.current && pendingScrollRef.current) {
                 pendingScrollRef.current = null
                 loadLockRef.current = false
+                setAutoScrollEnabled(true)
             }
         })
     }, [])
@@ -252,6 +258,9 @@ export function HappyThread(props: {
         viewport.scrollTop = pending.scrollTop + delta
         pendingScrollRef.current = null
         loadLockRef.current = false
+        // Re-enable autoScroll after scroll position is restored
+        // Use setTimeout to ensure the scroll position is applied before re-enabling
+        setTimeout(() => setAutoScrollEnabled(true), 0)
     }, [props.messagesVersion])
 
     useEffect(() => {
@@ -262,6 +271,8 @@ export function HappyThread(props: {
         if (prevLoadingMoreRef.current && !props.isLoadingMoreMessages && pendingScrollRef.current) {
             pendingScrollRef.current = null
             loadLockRef.current = false
+            // Re-enable autoScroll if loading finished but useLayoutEffect didn't run
+            setAutoScrollEnabled(true)
         }
         prevLoadingMoreRef.current = props.isLoadingMoreMessages
     }, [props.isLoadingMoreMessages])
