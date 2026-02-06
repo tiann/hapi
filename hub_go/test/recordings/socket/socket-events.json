@@ -1,0 +1,56 @@
+[
+    {
+        "namespace": "/cli",
+        "direction": "server->client",
+        "event": "connect",
+        "payload": {
+            "id": "wnT1BruC0FUM_80bAAAJ"
+        }
+    },
+    {
+        "namespace": "/cli",
+        "direction": "client->server",
+        "event": "session-alive",
+        "payload": {
+            "sid": "f741aba2-fbfa-4abb-8118-28bea58b4cd7",
+            "time": 1770342968495,
+            "thinking": false
+        }
+    },
+    {
+        "namespace": "/cli",
+        "direction": "client->server",
+        "event": "message",
+        "payload": {
+            "sid": "f741aba2-fbfa-4abb-8118-28bea58b4cd7",
+            "message": {
+                "role": "user",
+                "content": "recording"
+            }
+        }
+    },
+    {
+        "namespace": "/cli",
+        "direction": "server->client",
+        "event": "update",
+        "payload": {
+            "id": "f3283021-ddb9-468b-9e05-b84ced7dee0e",
+            "seq": 1,
+            "createdAt": 1770342968498,
+            "body": {
+                "t": "new-message",
+                "sid": "f741aba2-fbfa-4abb-8118-28bea58b4cd7",
+                "message": {
+                    "id": "ff83e26c-ab2b-470f-ae9b-0955f396e82a",
+                    "seq": 1,
+                    "createdAt": 1770342968497,
+                    "localId": null,
+                    "content": {
+                        "role": "user",
+                        "content": "recording"
+                    }
+                }
+            }
+        }
+    }
+]

@@ -1,0 +1,1 @@
+import '../contract-runner'

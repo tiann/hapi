@@ -1,0 +1,274 @@
+[
+    {
+        "method": "GET",
+        "path": "/health",
+        "request": {
+            "headers": {
+                "content-type": "application/json"
+            }
+        },
+        "response": {
+            "status": 0,
+            "headers": {},
+            "body": {
+                "error": "spawnSync curl EPERM"
+            }
+        }
+    },
+    {
+        "method": "POST",
+        "path": "/api/auth",
+        "request": {
+            "headers": {
+                "content-type": "application/json"
+            },
+            "body": {
+                "initData": "string"
+            }
+        },
+        "response": {
+            "status": 0,
+            "headers": {},
+            "body": {
+                "error": "spawnSync curl EPERM"
+            }
+        }
+    },
+    {
+        "method": "POST",
+        "path": "/api/auth",
+        "request": {
+            "headers": {
+                "content-type": "application/json"
+            },
+            "body": {
+                "accessToken": "string"
+            }
+        },
+        "response": {
+            "status": 0,
+            "headers": {},
+            "body": {
+                "error": "spawnSync curl EPERM"
+            }
+        }
+    },
+    {
+        "method": "POST",
+        "path": "/api/bind",
+        "request": {
+            "headers": {
+                "content-type": "application/json"
+            },
+            "body": {
+                "initData": "string",
+                "accessToken": "string"
+            }
+        },
+        "response": {
+            "status": 0,
+            "headers": {},
+            "body": {
+                "error": "spawnSync curl EPERM"
+            }
+        }
+    },
+    {
+        "method": "GET",
+        "path": "/api/sessions",
+        "request": {
+            "headers": {
+                "content-type": "application/json",
+                "authorization": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1aWQiOjEsIm5zIjoiZGVmYXVsdCIsImlhdCI6MTc3MDM0Mzc5MiwiZXhwIjoxNzcwMzQ0NjkyfQ.kyjamggr2B_C9gzuvb32-r1Sdsv_TcMj1IekmN9SJn4"
+            }
+        },
+        "response": {
+            "status": 0,
+            "headers": {},
+            "body": {
+                "error": "spawnSync curl EPERM"
+            }
+        }
+    },
+    {
+        "method": "GET",
+        "path": "/api/machines",
+        "request": {
+            "headers": {
+                "content-type": "application/json",
+                "authorization": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1aWQiOjEsIm5zIjoiZGVmYXVsdCIsImlhdCI6MTc3MDM0Mzc5MiwiZXhwIjoxNzcwMzQ0NjkyfQ.kyjamggr2B_C9gzuvb32-r1Sdsv_TcMj1IekmN9SJn4"
+            }
+        },
+        "response": {
+            "status": 0,
+            "headers": {},
+            "body": {
+                "error": "spawnSync curl EPERM"
+            }
+        }
+    },
+    {
+        "method": "GET",
+        "path": "/api/push/vapid-public-key",
+        "request": {
+            "headers": {
+                "content-type": "application/json",
+                "authorization": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1aWQiOjEsIm5zIjoiZGVmYXVsdCIsImlhdCI6MTc3MDM0Mzc5MiwiZXhwIjoxNzcwMzQ0NjkyfQ.kyjamggr2B_C9gzuvb32-r1Sdsv_TcMj1IekmN9SJn4"
+            }
+        },
+        "response": {
+            "status": 0,
+            "headers": {},
+            "body": {
+                "error": "spawnSync curl EPERM"
+            }
+        }
+    },
+    {
+        "method": "POST",
+        "path": "/api/push/subscribe",
+        "request": {
+            "headers": {
+                "content-type": "application/json",
+                "authorization": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1aWQiOjEsIm5zIjoiZGVmYXVsdCIsImlhdCI6MTc3MDM0Mzc5MiwiZXhwIjoxNzcwMzQ0NjkyfQ.kyjamggr2B_C9gzuvb32-r1Sdsv_TcMj1IekmN9SJn4"
+            },
+            "body": {
+                "endpoint": "string",
+                "keys": {
+                    "p256dh": "string",
+                    "auth": "string"
+                }
+            }
+        },
+        "response": {
+            "status": 0,
+            "headers": {},
+            "body": {
+                "error": "spawnSync curl EPERM"
+            }
+        }
+    },
+    {
+        "method": "DELETE",
+        "path": "/api/push/subscribe",
+        "request": {
+            "headers": {
+                "content-type": "application/json",
+                "authorization": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1aWQiOjEsIm5zIjoiZGVmYXVsdCIsImlhdCI6MTc3MDM0Mzc5MiwiZXhwIjoxNzcwMzQ0NjkyfQ.kyjamggr2B_C9gzuvb32-r1Sdsv_TcMj1IekmN9SJn4"
+            },
+            "body": {
+                "endpoint": "string"
+            }
+        },
+        "response": {
+            "status": 0,
+            "headers": {},
+            "body": {
+                "error": "spawnSync curl EPERM"
+            }
+        }
+    },
+    {
+        "method": "POST",
+        "path": "/api/voice/token",
+        "request": {
+            "headers": {
+                "content-type": "application/json",
+                "authorization": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1aWQiOjEsIm5zIjoiZGVmYXVsdCIsImlhdCI6MTc3MDM0Mzc5MiwiZXhwIjoxNzcwMzQ0NjkyfQ.kyjamggr2B_C9gzuvb32-r1Sdsv_TcMj1IekmN9SJn4"
+            },
+            "body": {
+                "customAgentId": "string",
+                "customApiKey": "string"
+            }
+        },
+        "response": {
+            "status": 0,
+            "headers": {},
+            "body": {
+                "error": "spawnSync curl EPERM"
+            }
+        }
+    },
+    {
+        "method": "GET",
+        "path": "/api/events?all=true&sessionId=string&machineId=machine-contract-1770343792120&visibility=visible&token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1aWQiOjEsIm5zIjoiZGVmYXVsdCIsImlhdCI6MTc3MDM0Mzc5MiwiZXhwIjoxNzcwMzQ0NjkyfQ.kyjamggr2B_C9gzuvb32-r1Sdsv_TcMj1IekmN9SJn4",
+        "request": {
+            "headers": {
+                "content-type": "application/json",
+                "authorization": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1aWQiOjEsIm5zIjoiZGVmYXVsdCIsImlhdCI6MTc3MDM0Mzc5MiwiZXhwIjoxNzcwMzQ0NjkyfQ.kyjamggr2B_C9gzuvb32-r1Sdsv_TcMj1IekmN9SJn4"
+            }
+        },
+        "response": {
+            "status": 0,
+            "headers": {},
+            "body": {
+                "error": "spawnSync curl EPERM"
+            }
+        }
+    },
+    {
+        "method": "POST",
+        "path": "/api/visibility",
+        "request": {
+            "headers": {
+                "content-type": "application/json",
+                "authorization": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1aWQiOjEsIm5zIjoiZGVmYXVsdCIsImlhdCI6MTc3MDM0Mzc5MiwiZXhwIjoxNzcwMzQ0NjkyfQ.kyjamggr2B_C9gzuvb32-r1Sdsv_TcMj1IekmN9SJn4"
+            },
+            "body": {
+                "subscriptionId": "string",
+                "visibility": "visible"
+            }
+        },
+        "response": {
+            "status": 0,
+            "headers": {},
+            "body": {
+                "error": "spawnSync curl EPERM"
+            }
+        }
+    },
+    {
+        "method": "POST",
+        "path": "/cli/sessions",
+        "request": {
+            "headers": {
+                "content-type": "application/json",
+                "authorization": "Bearer T840-mOvSjeDgHevd9WOh_dWKjrzOY1JIZIdJmolswQ"
+            },
+            "body": {
+                "tag": "string",
+                "metadata": {},
+                "agentState": null
+            }
+        },
+        "response": {
+            "status": 0,
+            "headers": {},
+            "body": {
+                "error": "spawnSync curl EPERM"
+            }
+        }
+    },
+    {
+        "method": "POST",
+        "path": "/cli/machines",
+        "request": {
+            "headers": {
+                "content-type": "application/json",
+                "authorization": "Bearer T840-mOvSjeDgHevd9WOh_dWKjrzOY1JIZIdJmolswQ"
+            },
+            "body": {
+                "id": "string",
+                "metadata": {},
+                "runnerState": null
+            }
+        },
+        "response": {
+            "status": 0,
+            "headers": {},
+            "body": {
+                "error": "spawnSync curl EPERM"
+            }
+        }
+    }
+]
