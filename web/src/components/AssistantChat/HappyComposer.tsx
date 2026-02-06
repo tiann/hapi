@@ -774,7 +774,7 @@ export function HappyComposer(props: {
 
                         <div className={`overflow-hidden rounded-[20px] bg-[var(--app-secondary-bg)] ${isExpanded ? 'flex-1 flex flex-col min-h-0' : ''}`}>
                             {/* Drag handle with close button */}
-                            <div className="relative">
+                            <div className="relative flex-shrink-0">
                                 <div
                                     ref={dragHandleRef}
                                     className={`flex justify-center py-4 -my-2 touch-none select-none ${isDragging ? 'cursor-grabbing' : 'cursor-grab'}`}
@@ -803,12 +803,12 @@ export function HappyComposer(props: {
                             </div>
 
                             {attachments.length > 0 ? (
-                                <div className="flex flex-wrap gap-2 px-4 pb-2">
+                                <div className="flex flex-wrap gap-2 px-4 pb-2 flex-shrink-0">
                                     <ComposerPrimitive.Attachments components={{ Attachment: AttachmentItem }} />
                                 </div>
                             ) : null}
 
-                            <div className={`flex px-4 ${isExpanded ? 'flex-1 min-h-0 pb-2' : 'items-center py-3'}`}>
+                            <div className={`flex px-4 ${isExpanded ? 'flex-1 min-h-0 overflow-y-auto pb-2' : 'items-center py-3'}`}>
                                 <ComposerPrimitive.Input
                                     ref={textareaRef}
                                     autoFocus={!controlsDisabled && !isTouch}
@@ -821,11 +821,12 @@ export function HappyComposer(props: {
                                     onSelect={handleSelect}
                                     onKeyDown={handleKeyDown}
                                     onPaste={handlePaste}
-                                    className={`flex-1 resize-none bg-transparent text-sm leading-snug text-[var(--app-fg)] placeholder-[var(--app-hint)] focus:outline-none disabled:cursor-not-allowed disabled:opacity-50 ${isExpanded ? 'h-full' : ''}`}
+                                    className={`flex-1 resize-none bg-transparent text-sm leading-snug text-[var(--app-fg)] placeholder-[var(--app-hint)] focus:outline-none disabled:cursor-not-allowed disabled:opacity-50 ${isExpanded ? '' : ''}`}
                                 />
                             </div>
 
-                            <ComposerButtons
+                            <div className="flex-shrink-0">
+                                <ComposerButtons
                                 canSend={canSend}
                                 controlsDisabled={controlsDisabled}
                                 showSettingsButton={showSettingsButton}
@@ -847,7 +848,8 @@ export function HappyComposer(props: {
                                 onVoiceToggle={onVoiceToggle ?? (() => {})}
                                 onVoiceMicToggle={onVoiceMicToggle}
                                 onSend={handleSend}
-                            />
+                                />
+                            </div>
                         </div>
                     </ComposerPrimitive.Root>
                 </div>
