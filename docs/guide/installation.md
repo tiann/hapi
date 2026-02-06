@@ -135,6 +135,8 @@ The terminal displays a URL and QR code. Scan to access from anywhere.
 - No configuration needed
 - Works behind NAT, firewalls, and any network
 
+> **Tip:** The relay uses UDP by default. If you experience connectivity issues, set `HAPI_RELAY_FORCE_TCP=true` to force TCP mode.
+
 ### Local Only
 
 ```bash
@@ -243,23 +245,13 @@ If you prefer not to use the public relay (e.g., for lower latency or self-manag
 
 https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/
 
-**Quick tunnel** (temporary URL, changes on restart):
+> **Note:** Cloudflare Quick Tunnels (TryCloudflare) are not supported because they [do not support SSE](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/trycloudflare/), which HAPI uses for real-time updates. Use a Named Tunnel instead.
+
+**Named tunnel setup:**
 
 ```bash
 # Install cloudflared: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/
-cloudflared tunnel --protocol http2 --url http://localhost:3006
-```
 
-Copy the generated URL and set it:
-
-```bash
-export HAPI_PUBLIC_URL="https://your-tunnel.trycloudflare.com"
-hapi hub
-```
-
-**Named tunnel** (persistent URL):
-
-```bash
 # Create and configure a named tunnel
 cloudflared tunnel create hapi
 cloudflared tunnel route dns hapi hapi.yourdomain.com
@@ -268,7 +260,7 @@ cloudflared tunnel route dns hapi hapi.yourdomain.com
 cloudflared tunnel --protocol http2 run hapi
 ```
 
-> **Note:** Use `--protocol http2` instead of QUIC (the default) to avoid potential timeout issues with long-lived connections.
+> **Tip:** Use `--protocol http2` instead of QUIC (the default) to avoid potential timeout issues with long-lived connections.
 
 </details>
 

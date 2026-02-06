@@ -53,7 +53,6 @@ export function reduceChatBlocks(
         if (rootResult.toolBlocksById.has(id)) continue
 
         const createdAt = entry.permission.createdAt ?? Date.now()
-
         const block = ensureToolBlock(rootResult.blocks, rootResult.toolBlocksById, id, {
             createdAt,
             localId: null,

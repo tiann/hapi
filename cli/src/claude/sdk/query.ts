@@ -347,8 +347,9 @@ export function query(config: {
         stdio: ['pipe', 'pipe', 'pipe'],
         signal: config.options?.abort,
         env: spawnEnv,
-        // Use shell on Windows for command resolution
-        shell: process.platform === 'win32'
+        // Use shell: false with absolute path from getDefaultClaudeCodePath()
+        // This avoids cmd.exe resolution issues on Windows
+        shell: false
     }) as ChildProcessWithoutNullStreams
 
     // Handle stdin

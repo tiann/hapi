@@ -31,12 +31,7 @@ const BUILTIN_COMMANDS: Record<string, SlashCommand[]> = {
         { name: 'cost', description: 'Show session cost', source: 'builtin' },
         { name: 'plan', description: 'Toggle plan mode', source: 'builtin' },
     ],
-    codex: [
-        { name: 'review', description: 'Review code', source: 'builtin' },
-        { name: 'new', description: 'Start new conversation', source: 'builtin' },
-        { name: 'compat', description: 'Check compatibility', source: 'builtin' },
-        { name: 'undo', description: 'Undo last action', source: 'builtin' },
-    ],
+    codex: [],
     gemini: [
         { name: 'about', description: 'About Gemini', source: 'builtin' },
         { name: 'clear', description: 'Clear conversation', source: 'builtin' },
