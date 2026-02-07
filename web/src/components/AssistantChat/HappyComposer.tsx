@@ -29,6 +29,9 @@ import { ComposerButtons } from '@/components/AssistantChat/ComposerButtons'
 import { AttachmentItem } from '@/components/AssistantChat/AttachmentItem'
 import { useTranslation } from '@/lib/use-translation'
 import { CloseIcon } from '@/components/icons'
+import { useHappyChatContext } from './context'
+import { getDraft, saveDraft, clearDraft } from '@/lib/draft-store'
+import { debounce } from '@/lib/utils'
 
 type ComposerMode = 'quick' | 'expanded'
 type SnapIndex = 0 | 1 | 2
@@ -93,6 +96,7 @@ export function HappyComposer(props: {
     const modelMode = rawModelMode ?? 'default'
 
     const api = useAssistantApi()
+    const { sessionId } = useHappyChatContext()
     const composerText = useAssistantState(({ composer }) => composer.text)
     const attachments = useAssistantState(({ composer }) => composer.attachments)
     const threadIsRunning = useAssistantState(({ thread }) => thread.isRunning)
@@ -126,6 +130,7 @@ export function HappyComposer(props: {
     const [snapIndex, setSnapIndex] = useState<SnapIndex>(0)
     const [isDragging, setIsDragging] = useState(false)
     const [dragPreviewHeight, setDragPreviewHeight] = useState<number | null>(null)
+    const [draftRestored, setDraftRestored] = useState(false)
 
     const textareaRef = useRef<HTMLTextAreaElement>(null)
     const prevControlledByUser = useRef(controlledByUser)
@@ -150,6 +155,40 @@ export function HappyComposer(props: {
         }
         prevControlledByUser.current = controlledByUser
     }, [controlledByUser])
+
+    // Draft persistence: Restore draft on session open
+    useEffect(() => {
+        if (!sessionId || draftRestored) return
+
+        const draft = getDraft(sessionId)
+        if (draft) {
+            api.composer().setText(draft)
+        }
+        setDraftRestored(true)
+    }, [sessionId, api, draftRestored])
+
+    // Draft persistence: Reset flag on session switch
+    useEffect(() => {
+        setDraftRestored(false)
+    }, [sessionId])
+
+    // Draft persistence: Debounced save on text change
+    const debouncedSave = useMemo(() =>
+        debounce((sid: string, text: string) => {
+            if (text.trim()) {
+                saveDraft(sid, text)
+            } else {
+                clearDraft(sid)
+            }
+        }, 500), // 500ms debounce
+    [])
+
+    useEffect(() => {
+        if (!sessionId) return
+        debouncedSave(sessionId, composerText)
+
+        return () => debouncedSave.cancel() // Cleanup on unmount
+    }, [composerText, sessionId, debouncedSave])
 
     const { haptic: platformHaptic, isTouch } = usePlatform()
     const { isStandalone, isIOS } = usePWAInstall()
@@ -596,7 +635,8 @@ export function HappyComposer(props: {
 
     const handleSend = useCallback(() => {
         api.composer().send()
-    }, [api])
+        clearDraft(sessionId)
+    }, [api, sessionId])
 
     const overlays = useMemo(() => {
         if (showSettings && (showPermissionSettings || showModelSettings)) {
