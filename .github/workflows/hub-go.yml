@@ -1,0 +1,29 @@
+name: Hub Go
+
+on:
+    push:
+        paths:
+            - "hub_go/**"
+    pull_request:
+        paths:
+            - "hub_go/**"
+
+defaults:
+    run:
+        working-directory: hub_go
+
+jobs:
+    test:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+            - uses: actions/setup-go@v5
+              with:
+                  go-version: "1.22"
+                  cache-dependency-path: hub_go/go.sum
+            - name: Vet
+              run: go vet -mod=vendor ./...
+            - name: Test
+              run: go test -mod=vendor -race ./internal/... -count=1
+            - name: Build
+              run: go build -mod=vendor ./...

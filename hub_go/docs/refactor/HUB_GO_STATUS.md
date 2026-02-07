@@ -89,9 +89,9 @@
 - room 行为细节对齐
 
 ### CI/CD 🟡
-- 无 GitHub Actions 流水线
-- 无 Makefile 或构建/测试脚本
-- 无自动化兼容性测试
+- GitHub Actions 流水线已创建（`.github/workflows/hub-go.yml`：vet + test + build）
+- Makefile 已创建（`hub_go/Makefile`：build、test、vet、lint、check 目标）
+- 待补充：自动化兼容性测试（契约验证集成到 CI）
 
 ### 文档 ✅
 - `hub_go/README.md` 已更新至当前实现状态
