@@ -529,6 +529,7 @@ func RegisterRoutes(router *Router, deps AuthDependencies) {
 			"directory":       path,
 			"agent":           flavor,
 			"resumeSessionId": resumeToken,
+			"sessionId":       session.Tag,
 		})
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{

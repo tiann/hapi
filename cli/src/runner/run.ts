@@ -311,6 +311,11 @@ export async function startRunner(): Promise<void> {
           }
         }
 
+        // Pass session tag so resumed sessions reuse the same HAPI session
+        if (sessionId) {
+          extraEnv = { ...extraEnv, HAPI_SESSION_TAG: sessionId };
+        }
+
         if (worktreeInfo) {
           extraEnv = {
             ...extraEnv,
