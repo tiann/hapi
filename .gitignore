@@ -43,3 +43,5 @@ cli/npm/main/
 
 # Agent scratch
 .serena/
+hub_go/internal/assets/web/
+services/
