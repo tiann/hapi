@@ -27,10 +27,8 @@ func HandleEvents(w http.ResponseWriter, req *http.Request, bus *Bus, tracker *V
 	writeEvent(w, flusher, Event{
 		Type: "connection-changed",
 		Data: map[string]any{
-			"data": map[string]any{
-				"status":         "connected",
-				"subscriptionId": subscriptionID,
-			},
+			"status":         "connected",
+			"subscriptionId": subscriptionID,
 		},
 	})
 
@@ -70,7 +68,6 @@ func writeEvent(w http.ResponseWriter, flusher http.Flusher, event Event) {
 	if err != nil {
 		return
 	}
-	fmt.Fprintf(w, "event: %s\n", event.Type)
 	fmt.Fprintf(w, "data: %s\n\n", payload)
 	flusher.Flush()
 }
