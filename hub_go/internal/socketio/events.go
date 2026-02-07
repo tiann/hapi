@@ -2,6 +2,7 @@ package socketio
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"hub_go/internal/sse"
@@ -29,9 +30,9 @@ func (s *Server) handleEvent(namespace string, event string, payload json.RawMes
 
 	switch namespace {
 	case "/cli":
-		return s.handleCliEvent(event, payload)
+		return s.handleCliEvent("", nil, event, payload)
 	case "/terminal":
-		return s.handleTerminalEvent(event, payload)
+		return s.handleTerminalEvent("", nil, event, payload)
 	default:
 		return nil, false
 	}
@@ -50,22 +51,50 @@ func (s *Server) handleEventWS(conn *wsConn, namespace string, event string, pay
 			}
 		}
 	}
-	return s.handleEvent(namespace, event, payload)
+	engineID := ""
+	if conn != nil {
+		engineID = conn.engineID
+	}
+	return s.handleEventWithEngine(engineID, conn, namespace, event, payload)
 }
 
-func (s *Server) handleCliEvent(event string, payload json.RawMessage) (any, bool) {
+func (s *Server) handleEventWithEngine(engineID string, conn *wsConn, namespace string, event string, payload json.RawMessage) (any, bool) {
+	if s.deps.Store == nil {
+		return nil, false
+	}
+
+	if namespace == "" {
+		namespace = "/"
+	}
+
+	switch namespace {
+	case "/cli":
+		return s.handleCliEvent(engineID, conn, event, payload)
+	case "/terminal":
+		return s.handleTerminalEvent(engineID, conn, event, payload)
+	default:
+		return nil, false
+	}
+}
+
+func (s *Server) handleCliEvent(engineID string, conn *wsConn, event string, payload json.RawMessage) (any, bool) {
 	var data map[string]any
 	if err := json.Unmarshal(payload, &data); err != nil {
 		return nil, false
 	}
 
 	namespace := "default"
+	if conn != nil && conn.hapiNS != "" {
+		namespace = conn.hapiNS
+	}
 
 	sid, _ := data["sid"].(string)
 	sessionID := sid
 	if sessionID == "" {
 		sessionID, _ = data["sessionId"].(string)
 	}
+
+	terminalID, _ := data["terminalId"].(string)
 
 	switch event {
 	case "message":
@@ -125,7 +154,7 @@ func (s *Server) handleCliEvent(event string, payload json.RawMessage) (any, boo
 		created := false
 		session, _ := s.deps.Store.GetSession(namespace, sessionID)
 		if session == nil {
-			session, _ = s.deps.Store.CreateSessionWithID(namespace, sessionID, nil, nil)
+			_, _ = s.deps.Store.CreateSessionWithID(namespace, sessionID, nil, nil)
 			created = true
 		}
 		metadata, _ := data["metadata"].(map[string]any)
@@ -177,7 +206,7 @@ func (s *Server) handleCliEvent(event string, payload json.RawMessage) (any, boo
 		created := false
 		session, _ := s.deps.Store.GetSession(namespace, sessionID)
 		if session == nil {
-			session, _ = s.deps.Store.CreateSessionWithID(namespace, sessionID, nil, nil)
+			_, _ = s.deps.Store.CreateSessionWithID(namespace, sessionID, nil, nil)
 			created = true
 		}
 		expected := parseInt64(data["expectedVersion"])
@@ -398,41 +427,205 @@ func (s *Server) handleCliEvent(event string, payload json.RawMessage) (any, boo
 	case "rpc-register", "rpc-unregister", "usage-report":
 		return nil, false
 	case "terminal:ready", "terminal:output", "terminal:exit", "terminal:error":
-		sessionID, _ := data["sessionId"].(string)
-		if sessionID == "" {
+		if sessionID == "" || terminalID == "" {
 			return nil, false
 		}
-		s.sendTerminalEvent(sessionID, event, data)
+		s.forwardTerminalFromCli(conn, namespace, sessionID, terminalID, event, data)
 		return nil, false
 	default:
 		return nil, false
 	}
-
-	return nil, false
 }
 
-func (s *Server) handleTerminalEvent(event string, payload json.RawMessage) (any, bool) {
+func (s *Server) handleTerminalEvent(engineID string, conn *wsConn, event string, payload json.RawMessage) (any, bool) {
 	var data map[string]any
 	if err := json.Unmarshal(payload, &data); err != nil {
 		return nil, false
 	}
+
 	sessionID, _ := data["sessionId"].(string)
-	if sessionID == "" {
+	terminalID, _ := data["terminalId"].(string)
+	if sessionID == "" || terminalID == "" {
 		return nil, false
 	}
+
+	connNamespace := "default"
+	if conn != nil && conn.hapiNS != "" {
+		connNamespace = conn.hapiNS
+	}
+
 	switch event {
 	case "terminal:create":
-		s.Send("/cli", "terminal:open", data)
+		cliConn := s.pickCliConn(connNamespace, sessionID)
+		if cliConn == nil {
+			s.SendToConn("/terminal", "terminal:error", map[string]any{
+				"terminalId": terminalID,
+				"message":    "CLI is not connected for this session.",
+			}, engineID)
+			return nil, false
+		}
+
+		if s.terminal != nil {
+			if s.terminal.CountForSocket(engineID) >= s.terminal.maxPerSocket {
+				s.SendToConn("/terminal", "terminal:error", map[string]any{
+					"terminalId": terminalID,
+					"message":    fmt.Sprintf("Too many terminals open (max %d).", s.terminal.maxPerSocket),
+				}, engineID)
+				return nil, false
+			}
+			if s.terminal.CountForSession(sessionID) >= s.terminal.maxPerSession {
+				s.SendToConn("/terminal", "terminal:error", map[string]any{
+					"terminalId": terminalID,
+					"message":    fmt.Sprintf("Too many terminals open for this session (max %d).", s.terminal.maxPerSession),
+				}, engineID)
+				return nil, false
+			}
+
+			if entry, reason := s.terminal.Register(terminalID, sessionID, engineID, cliConn); entry == nil {
+				message := "Terminal ID is already in use."
+				switch reason {
+				case "too_many_socket":
+					message = fmt.Sprintf("Too many terminals open (max %d).", s.terminal.maxPerSocket)
+				case "too_many_session":
+					message = fmt.Sprintf("Too many terminals open for this session (max %d).", s.terminal.maxPerSession)
+				case "invalid":
+					message = "Invalid terminal request."
+				}
+				s.SendToConn("/terminal", "terminal:error", map[string]any{
+					"terminalId": terminalID,
+					"message":    message,
+				}, engineID)
+				return nil, false
+			}
+			s.terminal.MarkActivity(terminalID)
+		}
+
+		s.sendToWsConn(cliConn, "/cli", "terminal:open", data)
 	case "terminal:write":
-		s.Send("/cli", "terminal:write", data)
+		entry := s.resolveTerminalEntry(engineID, terminalID)
+		if entry == nil {
+			return nil, false
+		}
+		s.sendToWsConn(entry.CliConn, "/cli", "terminal:write", map[string]any{
+			"sessionId": entry.SessionID,
+			"terminalId": terminalID,
+			"data":      data["data"],
+		})
+		if s.terminal != nil {
+			s.terminal.MarkActivity(terminalID)
+		}
 	case "terminal:resize":
-		s.Send("/cli", "terminal:resize", data)
+		entry := s.resolveTerminalEntry(engineID, terminalID)
+		if entry == nil {
+			return nil, false
+		}
+		s.sendToWsConn(entry.CliConn, "/cli", "terminal:resize", map[string]any{
+			"sessionId": entry.SessionID,
+			"terminalId": terminalID,
+			"cols":      data["cols"],
+			"rows":      data["rows"],
+		})
+		if s.terminal != nil {
+			s.terminal.MarkActivity(terminalID)
+		}
 	case "terminal:close":
-		s.Send("/cli", "terminal:close", data)
+		entry := s.resolveTerminalEntry(engineID, terminalID)
+		if entry == nil {
+			return nil, false
+		}
+		if s.terminal != nil {
+			s.terminal.Remove(terminalID)
+		}
+		s.sendToWsConn(entry.CliConn, "/cli", "terminal:close", map[string]any{
+			"sessionId": entry.SessionID,
+			"terminalId": terminalID,
+		})
 	default:
 		return nil, false
 	}
 	return nil, false
+}
+
+func (s *Server) resolveTerminalEntry(engineID string, terminalID string) *terminalEntry {
+	if s == nil || s.terminal == nil {
+		return nil
+	}
+	entry := s.terminal.Get(terminalID)
+	if entry == nil {
+		return nil
+	}
+	if entry.SocketID != engineID {
+		return nil
+	}
+	return entry
+}
+
+func (s *Server) pickCliConn(namespace string, sessionID string) *wsConn {
+	if s == nil || sessionID == "" {
+		return nil
+	}
+	s.mu.RLock()
+	conns := s.wsConns["/cli"]
+	for conn := range conns {
+		if conn == nil {
+			continue
+		}
+		if conn.sessionID != sessionID {
+			continue
+		}
+		if namespace != "" && conn.hapiNS != "" && conn.hapiNS != namespace {
+			continue
+		}
+		s.mu.RUnlock()
+		return conn
+	}
+	s.mu.RUnlock()
+	return nil
+}
+
+func (s *Server) forwardTerminalFromCli(conn *wsConn, namespace string, sessionID string, terminalID string, event string, payload map[string]any) {
+	if s == nil || s.terminal == nil {
+		return
+	}
+
+	entry := s.terminal.Get(terminalID)
+	if entry == nil {
+		return
+	}
+	if entry.CliConn != conn {
+		return
+	}
+	if entry.SessionID != sessionID {
+		return
+	}
+
+	if s.terminal != nil {
+		s.terminal.MarkActivity(terminalID)
+	}
+
+	webPayload := payload
+	if event == "terminal:error" {
+		webPayload = map[string]any{
+			"terminalId": terminalID,
+			"message":    payload["message"],
+		}
+	}
+
+	if event == "terminal:exit" {
+		if s.terminal != nil {
+			s.terminal.Remove(terminalID)
+		}
+	}
+
+	s.SendToConn("/terminal", event, webPayload, entry.SocketID)
+}
+
+func (s *Server) sendToWsConn(conn *wsConn, namespace string, event string, payload any) {
+	if s == nil || conn == nil {
+		return
+	}
+	packet := encodeSocketEvent(namespace, event, payload)
+	_ = conn.writeText(string(EngineMessage) + packet)
 }
 
 func (s *Server) publishSessionUpdated(namespace string, sessionID string) {

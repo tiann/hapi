@@ -31,6 +31,28 @@ func (s *Store) GetUser(platform string, platformUserID string) (*User, error) {
 	return &user, nil
 }
 
+func (s *Store) GetUsersByPlatformAndNamespace(platform string, namespace string) []User {
+	rows, err := s.DB.Query(
+		"SELECT id, platform, platform_user_id, namespace, created_at FROM users WHERE platform = ? AND namespace = ?",
+		platform,
+		namespace,
+	)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	var users []User
+	for rows.Next() {
+		var user User
+		if err := rows.Scan(&user.ID, &user.Platform, &user.PlatformUserID, &user.Namespace, &user.CreatedAt); err != nil {
+			continue
+		}
+		users = append(users, user)
+	}
+	return users
+}
+
 func (s *Store) AddUser(platform string, platformUserID string, namespace string) (*User, error) {
 	now := time.Now().UnixMilli()
 	_, err := s.DB.Exec(

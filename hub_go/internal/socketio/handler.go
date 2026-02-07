@@ -27,6 +27,7 @@ type Session struct {
 	CreatedAt  time.Time
 	SessionID  string
 	MachineID  string
+	HapiNS     string
 	Namespaces map[string]struct{}
 	LastSeen   time.Time
 	LastPong   time.Time
@@ -36,6 +37,7 @@ type Server struct {
 	sessions map[string]*Session
 	deps     Dependencies
 	outbox   *Outbox
+	terminal *TerminalRegistry
 	mu       sync.RWMutex
 	wsConns  map[string]map[*wsConn]struct{}
 	ackMu    sync.Mutex
@@ -56,6 +58,7 @@ func NewServer(deps Dependencies) *Server {
 		sessions: make(map[string]*Session),
 		deps:     deps,
 		outbox:   NewOutbox(),
+		terminal: NewTerminalRegistry(4, 4, 15*time.Minute, nil),
 		wsConns:  make(map[string]map[*wsConn]struct{}),
 		acks:     make(map[string]chan json.RawMessage),
 		rpcMap:   make(map[string]*wsConn),
@@ -116,6 +119,7 @@ func (s *Server) Handle(w http.ResponseWriter, req *http.Request) {
 		if sid != "" && req.Method == http.MethodGet {
 			targetSession := ""
 			targetMachine := ""
+			targetNamespace := ""
 			var namespaces []string
 			if sess, ok := s.sessions[sid]; ok {
 				if s.isExpired(sess) {
@@ -127,6 +131,7 @@ func (s *Server) Handle(w http.ResponseWriter, req *http.Request) {
 				}
 				targetSession = sess.SessionID
 				targetMachine = sess.MachineID
+				targetNamespace = sess.HapiNS
 				if len(sess.Namespaces) > 0 {
 					for ns := range sess.Namespaces {
 						namespaces = append(namespaces, ns)
@@ -143,10 +148,16 @@ func (s *Server) Handle(w http.ResponseWriter, req *http.Request) {
 			var queued []string
 			for _, namespace := range namespaces {
 				if namespace == "/terminal" {
-					queued = append(queued, s.outbox.Dequeue(namespace, targetSession, "")...)
+					queued = append(queued, s.outbox.Dequeue(namespace, targetSession, "", sid)...)
 					continue
 				}
-				queued = append(queued, s.outbox.Dequeue(namespace, targetSession, targetMachine)...)
+				sessionFilter := targetSession
+				machineFilter := targetMachine
+				if namespace == "/cli" && targetNamespace != "" {
+					sessionFilter = ""
+					machineFilter = ""
+				}
+				queued = append(queued, s.outbox.Dequeue(namespace, sessionFilter, machineFilter, "")...)
 			}
 			if len(queued) > 0 {
 				payload := ""
@@ -216,13 +227,16 @@ func (s *Server) handlePollingPayload(sid string, payload string) string {
 				continue
 			}
 			if msg.Type == SocketConnect {
-				sessionID, machineID, err := s.validateConnect(msg.Namespace, msg.Data)
+				sessionID, machineID, hapiNamespace, err := s.validateConnect(msg.Namespace, msg.Data)
 				if err != nil {
 					return string(EngineMessage) + encodeSocketError(msg.Namespace, err.Error())
 				}
 				if sid != "" {
 					s.trackSessionTargets(sid, sessionID, machineID)
 					s.trackNamespace(sid, msg.Namespace)
+					if sess, ok := s.sessions[sid]; ok {
+						sess.HapiNS = hapiNamespace
+					}
 					s.touchSession(sid)
 				}
 				return string(EngineMessage) + encodeSocketConnect(msg.Namespace)
@@ -231,7 +245,7 @@ func (s *Server) handlePollingPayload(sid string, payload string) string {
 				s.touchSession(sid)
 				ackID, trimmed := parseSocketAckID(msg.Data)
 				if eventName, eventPayload, ok := parseSocketEventPayload(trimmed); ok {
-					ackPayload, hasAck := s.handleEvent(msg.Namespace, eventName, eventPayload)
+					ackPayload, hasAck := s.handleEventWithEngine(sid, nil, msg.Namespace, eventName, eventPayload)
 					if ackID != "" {
 						if hasAck {
 							return string(EngineMessage) + encodeSocketAckWithIDPayload(msg.Namespace, ackID, ackPayload)
@@ -255,6 +269,15 @@ func (s *Server) handlePollingPayload(sid string, payload string) string {
 			}
 			if msg.Type == SocketDisconnect {
 				if sid != "" {
+					if msg.Namespace == "/terminal" && s.terminal != nil {
+						removed := s.terminal.RemoveBySocket(sid)
+						for _, entry := range removed {
+							s.sendToWsConn(entry.CliConn, "/cli", "terminal:close", map[string]any{
+								"sessionId":  entry.SessionID,
+								"terminalId": entry.TerminalID,
+							})
+						}
+					}
 					s.untrackNamespace(sid, msg.Namespace)
 				}
 				s.touchSession(sid)
@@ -275,7 +298,16 @@ func (s *Server) Send(namespace string, event string, payload any) {
 		return
 	}
 	packet := encodeSocketEvent(namespace, event, payload)
-	s.outbox.Enqueue(namespace, packet, "", "")
+	s.outbox.Enqueue(namespace, packet, "", "", "")
+	s.broadcastWS(namespace, string(EngineMessage)+packet, "", "")
+}
+
+func (s *Server) SendToConn(namespace string, event string, payload any, engineID string) {
+	if s == nil || engineID == "" {
+		return
+	}
+	packet := encodeSocketEvent(namespace, event, payload)
+	s.outbox.Enqueue(namespace, packet, "", "", engineID)
 	s.broadcastWS(namespace, string(EngineMessage)+packet, "", "")
 }
 
@@ -286,7 +318,7 @@ func (s *Server) SendWithAck(namespace string, event string, payload any) (strin
 	ackID := s.nextAckID()
 	packet := encodeSocketEventWithID(namespace, ackID, event, payload)
 	ch := s.registerAck(ackID)
-	s.outbox.Enqueue(namespace, packet, "", "")
+	s.outbox.Enqueue(namespace, packet, "", "", "")
 	s.broadcastWS(namespace, string(EngineMessage)+packet, "", "")
 	return ackID, ch
 }
@@ -296,7 +328,7 @@ func (s *Server) SendToSession(namespace string, event string, payload any, sess
 		return
 	}
 	packet := encodeSocketEvent(namespace, event, payload)
-	s.outbox.Enqueue(namespace, packet, sessionID, "")
+	s.outbox.Enqueue(namespace, packet, sessionID, "", "")
 	s.broadcastWS(namespace, string(EngineMessage)+packet, sessionID, "")
 }
 
@@ -305,17 +337,17 @@ func (s *Server) SendToMachine(namespace string, event string, payload any, mach
 		return
 	}
 	packet := encodeSocketEvent(namespace, event, payload)
-	s.outbox.Enqueue(namespace, packet, "", machineID)
+	s.outbox.Enqueue(namespace, packet, "", machineID, "")
 	s.broadcastWS(namespace, string(EngineMessage)+packet, "", machineID)
 }
 
 func (s *Server) SendRpc(method string, payload any) (string, <-chan json.RawMessage, error) {
 	if s == nil {
-		return "", nil, errors.New("Not connected")
+		return "", nil, errors.New("not connected")
 	}
 	conn := s.getRpcConn(method)
 	if conn == nil {
-		return "", nil, errors.New("RPC handler not registered")
+		return "", nil, errors.New("rpc handler not registered")
 	}
 	ackID := s.nextAckID()
 	packet := encodeSocketEventWithID("/cli", ackID, "rpc-request", payload)
@@ -326,7 +358,7 @@ func (s *Server) SendRpc(method string, payload any) (string, <-chan json.RawMes
 	return ackID, ch, nil
 }
 
-func (s *Server) validateConnect(namespace string, raw string) (string, string, error) {
+func (s *Server) validateConnect(namespace string, raw string) (string, string, string, error) {
 	if namespace == "" {
 		namespace = "/"
 	}
@@ -335,25 +367,33 @@ func (s *Server) validateConnect(namespace string, raw string) (string, string, 
 	case "/cli":
 		parsed := auth.ParseAccessToken(authToken)
 		if parsed == nil || !auth.ConstantTimeEquals(parsed.BaseToken, s.deps.CliApiToken) {
-			return "", "", errors.New("Invalid token")
+			return "", "", "", errors.New("invalid token")
 		}
-		return sessionID, machineID, nil
+		return sessionID, machineID, parsed.Namespace, nil
 	case "/terminal":
 		if authToken == "" {
-			return "", "", errors.New("Missing token")
+			return "", "", "", errors.New("missing token")
 		}
-		parsed, err := jwt.Parse(authToken, func(token *jwt.Token) (any, error) {
+		claims := struct {
+			UID float64 `json:"uid"`
+			NS  string  `json:"ns"`
+			jwt.RegisteredClaims
+		}{}
+		parsed, err := jwt.ParseWithClaims(authToken, &claims, func(token *jwt.Token) (any, error) {
 			if token.Method != jwt.SigningMethodHS256 {
-				return nil, errors.New("Invalid token")
+				return nil, errors.New("invalid token")
 			}
 			return s.deps.JWTSecret, nil
 		})
 		if err != nil || !parsed.Valid {
-			return "", "", errors.New("Invalid token")
+			return "", "", "", errors.New("invalid token")
 		}
-		return sessionID, machineID, nil
+		if claims.NS == "" {
+			return "", "", "", errors.New("invalid token")
+		}
+		return sessionID, machineID, claims.NS, nil
 	default:
-		return sessionID, machineID, nil
+		return sessionID, machineID, "", nil
 	}
 }
 

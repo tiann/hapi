@@ -34,3 +34,24 @@ func (s *Store) DeletePushSubscription(namespace string, endpoint string) error 
 	)
 	return err
 }
+
+func (s *Store) GetPushSubscriptionsByNamespace(namespace string) []PushSubscription {
+	rows, err := s.DB.Query(
+		`SELECT id, namespace, endpoint, p256dh, auth, created_at FROM push_subscriptions WHERE namespace = ?`,
+		namespace,
+	)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	var subscriptions []PushSubscription
+	for rows.Next() {
+		var sub PushSubscription
+		if err := rows.Scan(&sub.ID, &sub.Namespace, &sub.Endpoint, &sub.P256dh, &sub.Auth, &sub.CreatedAt); err != nil {
+			continue
+		}
+		subscriptions = append(subscriptions, sub)
+	}
+	return subscriptions
+}

@@ -2,10 +2,27 @@ package store
 
 import (
 	"database/sql"
+	"fmt"
 	"time"
 
 	_ "modernc.org/sqlite"
 )
+
+type ensureColumnKey struct {
+	table  string
+	column string
+}
+
+var ensureColumnPragmaByTable = map[string]string{
+	"sessions": "PRAGMA table_info(sessions)",
+}
+
+var ensureColumnAlterByTableColumn = map[ensureColumnKey]string{
+	{table: "sessions", column: "todos"}:            "ALTER TABLE sessions ADD COLUMN todos TEXT",
+	{table: "sessions", column: "todos_updated_at"}: "ALTER TABLE sessions ADD COLUMN todos_updated_at INTEGER",
+	{table: "sessions", column: "permission_mode"}:  "ALTER TABLE sessions ADD COLUMN permission_mode TEXT",
+	{table: "sessions", column: "model_mode"}:       "ALTER TABLE sessions ADD COLUMN model_mode TEXT",
+}
 
 type Store struct {
 	DB *sql.DB
@@ -114,24 +131,33 @@ func ensureSchema(db *sql.DB) error {
 		return err
 	}
 
-	if err := ensureColumn(db, "sessions", "todos", "TEXT"); err != nil {
+	if err := ensureColumn(db, "sessions", "todos"); err != nil {
 		return err
 	}
-	if err := ensureColumn(db, "sessions", "todos_updated_at", "INTEGER"); err != nil {
+	if err := ensureColumn(db, "sessions", "todos_updated_at"); err != nil {
 		return err
 	}
-	if err := ensureColumn(db, "sessions", "permission_mode", "TEXT"); err != nil {
+	if err := ensureColumn(db, "sessions", "permission_mode"); err != nil {
 		return err
 	}
-	if err := ensureColumn(db, "sessions", "model_mode", "TEXT"); err != nil {
+	if err := ensureColumn(db, "sessions", "model_mode"); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-func ensureColumn(db *sql.DB, table string, column string, definition string) error {
-	rows, err := db.Query("PRAGMA table_info(" + table + ")")
+func ensureColumn(db *sql.DB, table string, column string) error {
+	pragmaSQL, ok := ensureColumnPragmaByTable[table]
+	if !ok {
+		return fmt.Errorf("unexpected table name: %q", table)
+	}
+	alterSQL, ok := ensureColumnAlterByTableColumn[ensureColumnKey{table: table, column: column}]
+	if !ok {
+		return fmt.Errorf("unexpected column name: %q for table %q", column, table)
+	}
+
+	rows, err := db.Query(pragmaSQL)
 	if err != nil {
 		return err
 	}
@@ -151,7 +177,10 @@ func ensureColumn(db *sql.DB, table string, column string, definition string) er
 			return nil
 		}
 	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
 
-	_, err = db.Exec("ALTER TABLE " + table + " ADD COLUMN " + column + " " + definition)
+	_, err = db.Exec(alterSQL)
 	return err
 }

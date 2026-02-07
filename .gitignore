@@ -40,3 +40,6 @@ execplan/
 
 # Generated npm bundle output (local)
 cli/npm/main/
+
+# Agent scratch
+.serena/

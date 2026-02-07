@@ -11,13 +11,14 @@ type outboxEntry struct {
 	packet    string
 	sessionID string
 	machineID string
+	engineID  string
 }
 
 func NewOutbox() *Outbox {
 	return &Outbox{queues: make(map[string][]outboxEntry)}
 }
 
-func (o *Outbox) Enqueue(namespace string, packet string, sessionID string, machineID string) {
+func (o *Outbox) Enqueue(namespace string, packet string, sessionID string, machineID string, engineID string) {
 	if packet == "" {
 		return
 	}
@@ -26,11 +27,12 @@ func (o *Outbox) Enqueue(namespace string, packet string, sessionID string, mach
 		packet:    packet,
 		sessionID: sessionID,
 		machineID: machineID,
+		engineID:  engineID,
 	})
 	o.mu.Unlock()
 }
 
-func (o *Outbox) Dequeue(namespace string, sessionID string, machineID string) []string {
+func (o *Outbox) Dequeue(namespace string, sessionID string, machineID string, engineID string) []string {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
@@ -41,6 +43,10 @@ func (o *Outbox) Dequeue(namespace string, sessionID string, machineID string) [
 	var matched []string
 	var remaining []outboxEntry
 	for _, entry := range entries {
+		if entry.engineID != "" && entry.engineID != engineID {
+			remaining = append(remaining, entry)
+			continue
+		}
 		if entry.sessionID != "" && entry.sessionID != sessionID {
 			remaining = append(remaining, entry)
 			continue

@@ -30,8 +30,10 @@ func HandleEvents(w http.ResponseWriter, req *http.Request, bus *Bus, tracker *V
 	writeEvent(w, flusher, Event{
 		Type: "connection-changed",
 		Data: map[string]any{
-			"status":         "connected",
-			"subscriptionId": subscriptionID,
+			"data": map[string]any{
+				"status":         "connected",
+				"subscriptionId": subscriptionID,
+			},
 		},
 	})
 
@@ -61,11 +63,15 @@ func HandleEvents(w http.ResponseWriter, req *http.Request, bus *Bus, tracker *V
 }
 
 func writeEvent(w http.ResponseWriter, flusher http.Flusher, event Event) {
-	payload, err := json.Marshal(event.Data)
+	obj := map[string]any{"type": event.Type}
+	for key, value := range event.Data {
+		obj[key] = value
+	}
+
+	payload, err := json.Marshal(obj)
 	if err != nil {
 		return
 	}
-	fmt.Fprintf(w, "event: %s\n", event.Type)
 	fmt.Fprintf(w, "data: %s\n\n", payload)
 	flusher.Flush()
 }

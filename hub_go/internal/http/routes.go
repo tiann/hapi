@@ -1442,21 +1442,6 @@ func namespaceFromRequest(req *http.Request) string {
 	return "default"
 }
 
-func parseIntQuery(req *http.Request, key string, fallback int64) int64 {
-	if req == nil {
-		return fallback
-	}
-	raw := req.URL.Query().Get(key)
-	if raw == "" {
-		return fallback
-	}
-	parsed, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil {
-		return fallback
-	}
-	return parsed
-}
-
 func parseOptionalIntQueryMin(req *http.Request, key string, min int64) (int64, bool) {
 	if req == nil {
 		return 0, false
@@ -1545,11 +1530,6 @@ func requireSession(w http.ResponseWriter, storeInstance *store.Store, engine *s
 	return nil, false
 }
 
-func requireSessionExists(w http.ResponseWriter, storeInstance *store.Store, engine *syncengine.Engine, namespace string, id string) bool {
-	_, ok := requireSession(w, storeInstance, engine, namespace, id)
-	return ok
-}
-
 func requireMachine(w http.ResponseWriter, storeInstance *store.Store, engine *syncengine.Engine, namespace string, id string) (*store.Machine, bool) {
 	var machine *store.Machine
 	var err error
@@ -1571,11 +1551,6 @@ func requireMachine(w http.ResponseWriter, storeInstance *store.Store, engine *s
 	}
 	writeJSON(w, http.StatusNotFound, map[string]string{"error": "Machine not found"})
 	return nil, false
-}
-
-func requireMachineExists(w http.ResponseWriter, storeInstance *store.Store, engine *syncengine.Engine, namespace string, id string) bool {
-	_, ok := requireMachine(w, storeInstance, engine, namespace, id)
-	return ok
 }
 
 func sessionToPayload(session *store.Session) map[string]any {
@@ -1711,10 +1686,10 @@ func allowToolsOrNil(values []string) any {
 
 func rpcCallJSON(socket *socketio.Server, id string, method string, params map[string]any) (any, error) {
 	if socket == nil {
-		return nil, errors.New("Not connected")
+		return nil, errors.New("not connected")
 	}
 	if id == "" {
-		return nil, errors.New("Missing id")
+		return nil, errors.New("missing id")
 	}
 	if params == nil {
 		params = map[string]any{}
@@ -1735,7 +1710,7 @@ func rpcCallJSON(socket *socketio.Server, id string, method string, params map[s
 	case raw := <-ch:
 		return decodeRPCPayload(raw)
 	case <-time.After(30 * time.Second):
-		return nil, errors.New("RPC timeout")
+		return nil, errors.New("rpc timeout")
 	}
 }
 
@@ -1748,10 +1723,10 @@ func rpcCallUnified(engine *syncengine.Engine, socket *socketio.Server, id strin
 
 func rpcCallEngineJSON(engine *syncengine.Engine, id string, method string, params map[string]any) (any, error) {
 	if engine == nil || engine.RpcGateway() == nil {
-		return nil, errors.New("Not connected")
+		return nil, errors.New("not connected")
 	}
 	if id == "" {
-		return nil, errors.New("Missing id")
+		return nil, errors.New("missing id")
 	}
 	if params == nil {
 		params = map[string]any{}
@@ -1773,7 +1748,7 @@ func rpcCallEngineJSON(engine *syncengine.Engine, id string, method string, para
 
 func decodeRPCPayload(raw json.RawMessage) (any, error) {
 	if len(raw) == 0 || string(raw) == "null" {
-		return nil, errors.New("Empty response")
+		return nil, errors.New("empty response")
 	}
 	var str string
 	if err := json.Unmarshal(raw, &str); err == nil {
@@ -1790,7 +1765,7 @@ func decodeRPCPayload(raw json.RawMessage) (any, error) {
 	if err := json.Unmarshal(raw, &decoded); err == nil {
 		return decoded, nil
 	}
-	return nil, errors.New("Invalid response")
+	return nil, errors.New("invalid response")
 }
 
 func mapRipgrepFiles(result any, limit int) map[string]any {

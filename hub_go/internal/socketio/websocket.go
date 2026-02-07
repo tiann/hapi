@@ -21,6 +21,7 @@ const websocketGUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 type wsConn struct {
 	conn      net.Conn
 	namespace string
+	hapiNS    string
 	sessionID string
 	machineID string
 	engineID  string
@@ -171,7 +172,7 @@ func (s *Server) handleSocketPacketWS(ws *wsConn, raw string) {
 
 	switch msg.Type {
 	case SocketConnect:
-		sessionID, machineID, err := s.validateConnect(msg.Namespace, msg.Data)
+		sessionID, machineID, hapiNamespace, err := s.validateConnect(msg.Namespace, msg.Data)
 		if err != nil {
 			_ = ws.writeText(string(EngineMessage) + encodeSocketError(msg.Namespace, err.Error()))
 			return
@@ -179,6 +180,7 @@ func (s *Server) handleSocketPacketWS(ws *wsConn, raw string) {
 		ws.namespace = msg.Namespace
 		ws.sessionID = sessionID
 		ws.machineID = machineID
+		ws.hapiNS = hapiNamespace
 		s.registerWSConn(msg.Namespace, ws)
 		s.trackNamespace(ws.engineID, msg.Namespace)
 		_ = ws.writeText(string(EngineMessage) + encodeSocketConnect(msg.Namespace))
@@ -186,6 +188,7 @@ func (s *Server) handleSocketPacketWS(ws *wsConn, raw string) {
 		s.unregisterRpcConn(ws)
 		s.unregisterWSConn(msg.Namespace, ws)
 		s.untrackNamespace(ws.engineID, msg.Namespace)
+		s.cleanupTerminalForConn(ws)
 	case SocketEvent:
 		ackID, trimmed := parseSocketAckID(msg.Data)
 		if eventName, eventPayload, ok := parseSocketEventPayload(trimmed); ok {
@@ -205,6 +208,28 @@ func (s *Server) handleSocketPacketWS(ws *wsConn, raw string) {
 		if ackID != "" {
 			s.resolveAck(ackID, trimmed)
 		}
+	}
+}
+
+func (s *Server) cleanupTerminalForConn(conn *wsConn) {
+	if s == nil || s.terminal == nil || conn == nil {
+		return
+	}
+
+	removedWeb := s.terminal.RemoveBySocket(conn.engineID)
+	for _, entry := range removedWeb {
+		s.sendToWsConn(entry.CliConn, "/cli", "terminal:close", map[string]any{
+			"sessionId":  entry.SessionID,
+			"terminalId": entry.TerminalID,
+		})
+	}
+
+	removedCli := s.terminal.RemoveByCliConn(conn)
+	for _, entry := range removedCli {
+		s.SendToConn("/terminal", "terminal:error", map[string]any{
+			"terminalId": entry.TerminalID,
+			"message":    "CLI disconnected.",
+		}, entry.SocketID)
 	}
 }
 

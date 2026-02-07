@@ -114,7 +114,7 @@ func LoadServerSettings(settingsFile string) (*ServerSettings, error) {
 		needsSave = true
 	}
 
-	corsOrigins := []string{}
+	var corsOrigins []string
 	if env := os.Getenv("CORS_ORIGINS"); env != "" {
 		corsOrigins = parseCorsOrigins(env)
 		if rawSettings.CorsOrigins == nil {

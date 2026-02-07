@@ -21,7 +21,7 @@ func NewRpcGateway(sender RpcSender) *RpcGateway {
 
 func (g *RpcGateway) Call(method string, payload any, timeout time.Duration) (json.RawMessage, error) {
 	if g == nil || g.send == nil {
-		return nil, errors.New("Not connected")
+		return nil, errors.New("not connected")
 	}
 	ch, err := g.send(method, payload)
 	if err != nil {
@@ -34,6 +34,6 @@ func (g *RpcGateway) Call(method string, payload any, timeout time.Duration) (js
 	case resp := <-ch:
 		return resp, nil
 	case <-time.After(timeout):
-		return nil, errors.New("RPC timeout")
+		return nil, errors.New("rpc timeout")
 	}
 }

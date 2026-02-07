@@ -85,7 +85,7 @@ func FetchConversationToken(apiKey string, agentID string) (string, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", errors.New("ElevenLabs API error: " + resp.Status)
+		return "", errors.New("elevenlabs API error: " + resp.Status)
 	}
 
 	var payload tokenResponse
@@ -93,7 +93,7 @@ func FetchConversationToken(apiKey string, agentID string) (string, error) {
 		return "", err
 	}
 	if payload.Token == "" {
-		return "", errors.New("No token in ElevenLabs response")
+		return "", errors.New("no token in ElevenLabs response")
 	}
 	return payload.Token, nil
 }
@@ -113,7 +113,7 @@ func findAgentID(apiKey string) (string, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", errors.New("ElevenLabs API error: " + resp.Status)
+		return "", errors.New("elevenlabs API error: " + resp.Status)
 	}
 	var payload agentListResponse
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
@@ -148,14 +148,14 @@ func createAgentID(apiKey string) (string, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", errors.New("ElevenLabs API error: " + resp.Status)
+		return "", errors.New("elevenlabs API error: " + resp.Status)
 	}
 	var payload createAgentResponse
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		return "", err
 	}
 	if payload.AgentID == "" {
-		return "", errors.New("No agent_id in ElevenLabs response")
+		return "", errors.New("no agent_id in ElevenLabs response")
 	}
 	return payload.AgentID, nil
 }

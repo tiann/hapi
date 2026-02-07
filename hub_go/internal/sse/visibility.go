@@ -50,3 +50,18 @@ func (t *VisibilityTracker) SetVisibility(id string, namespace string, visibilit
 	entry.Visibility = visibility
 	return true
 }
+
+// HasVisibleConnection checks if there's at least one visible SSE connection for a namespace
+func (t *VisibilityTracker) HasVisibleConnection(namespace string) bool {
+	if t == nil {
+		return false
+	}
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	for _, entry := range t.byID {
+		if entry.Namespace == namespace && entry.Visibility == "visible" {
+			return true
+		}
+	}
+	return false
+}
