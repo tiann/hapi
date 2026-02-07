@@ -447,7 +447,7 @@ func readBody(req *http.Request) (string, error) {
 		return "", nil
 	}
 	defer req.Body.Close()
-	raw, err := io.ReadAll(req.Body)
+	raw, err := io.ReadAll(io.LimitReader(req.Body, 1<<20)) // 1 MB max
 	if err != nil {
 		return "", err
 	}
