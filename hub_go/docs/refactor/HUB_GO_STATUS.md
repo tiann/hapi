@@ -74,8 +74,8 @@
 ## 未完成
 
 ### 测试覆盖 🟡
-- Go 单元测试：`auth/`、`store/`、`socketio/`、`telegram/`、`notifications/`、`sse/`、`push/`、`http/`、`sync/`、`config/`、`tunnel/` 共 11 个包已有测试（140+ 用例），仅 `assets/`、`server/`、`voice/` 无测试（均为薄封装层）
-- Go 集成测试：HTTP 端到端测试 20 用例（health、auth、session CRUD、machine、messages、VAPID）
+- Go 单元测试：`auth/`、`store/`、`socketio/`、`telegram/`、`notifications/`、`sse/`、`push/`、`http/`、`sync/`、`config/`、`tunnel/` 共 11 个包已有测试（195 用例通过），仅 `assets/`、`server/`、`voice/` 无测试（均为薄封装层）
+- Go 集成测试：HTTP 端到端测试 32 用例（health、auth、session CRUD/PATCH、machine、messages、push subscribe、visibility、VAPID）
 - 负载/基准测试：重构计划要求的 k6/wrk 性能测试未实施
 
 ### 录制与契约验证 🟡
