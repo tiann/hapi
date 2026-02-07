@@ -8,7 +8,7 @@ import (
 )
 
 type SyncEngine interface {
-	Subscribe(listener func(event syncengine.SyncEvent)) func()
+	Subscribe(listener syncengine.SyncEventListener) func()
 	GetSession(sessionID string) *syncengine.Session
 }
 

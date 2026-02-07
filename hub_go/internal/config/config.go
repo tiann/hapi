@@ -26,6 +26,10 @@ type Config struct {
 	CliApiToken          string
 	CliApiTokenSource    string
 	CliApiTokenIsNew     bool
+	RelayEnabled         bool
+	RelayAPIDomain       string
+	RelayAuthKey         string
+	RelayUseRelay        bool
 }
 
 func Load() (*Config, error) {
@@ -57,6 +61,11 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
+	relayEnabled, _ := resolveRelayFlag(os.Args)
+	relayAPIDomain := getenvDefault("TUNWG_API", "relay.hapi.run")
+	relayAuthKey := os.Getenv("HAPI_RELAY_AUTH")
+	relayUseRelay := os.Getenv("HAPI_RELAY_FORCE_TCP") == "true" || os.Getenv("HAPI_RELAY_FORCE_TCP") == "1"
+
 	return &Config{
 		DataDir:              dataDir,
 		DBPath:               dbPath,
@@ -70,6 +79,10 @@ func Load() (*Config, error) {
 		CliApiToken:          cliApiToken.Token,
 		CliApiTokenSource:    cliApiToken.Source,
 		CliApiTokenIsNew:     cliApiToken.IsNew,
+		RelayEnabled:         relayEnabled,
+		RelayAPIDomain:       relayAPIDomain,
+		RelayAuthKey:         relayAuthKey,
+		RelayUseRelay:        relayUseRelay,
 	}, nil
 }
 
@@ -107,4 +120,19 @@ func getenvDefault(key string, fallback string) string {
 		return raw
 	}
 	return fallback
+}
+
+func resolveRelayFlag(args []string) (enabled bool, source string) {
+	source = "default"
+	for _, arg := range args {
+		switch arg {
+		case "--relay":
+			enabled = true
+			source = "--relay"
+		case "--no-relay":
+			enabled = false
+			source = "--no-relay"
+		}
+	}
+	return
 }
