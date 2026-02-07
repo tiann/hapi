@@ -2,6 +2,7 @@ import { Database } from 'bun:sqlite'
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync } from 'node:fs'
 import { dirname } from 'node:path'
 
+import { DraftStore } from './draftStore'
 import { MachineStore } from './machineStore'
 import { MessageStore } from './messageStore'
 import { PushStore } from './pushStore'
@@ -16,23 +17,26 @@ export type {
     StoredUser,
     VersionedUpdateResult
 } from './types'
+export type { DraftData } from './drafts'
+export { DraftStore } from './draftStore'
 export { MachineStore } from './machineStore'
 export { MessageStore } from './messageStore'
 export { PushStore } from './pushStore'
 export { SessionStore } from './sessionStore'
 export { UserStore } from './userStore'
 
-const SCHEMA_VERSION = 2
+const SCHEMA_VERSION = 3
 const REQUIRED_TABLES = [
     'sessions',
     'machines',
     'messages',
     'users',
-    'push_subscriptions'
+    'push_subscriptions',
+    'session_drafts'
 ] as const
 
 export class Store {
-    private db: Database
+    readonly db: Database
     private readonly dbPath: string
 
     readonly sessions: SessionStore
@@ -40,6 +44,7 @@ export class Store {
     readonly messages: MessageStore
     readonly users: UserStore
     readonly push: PushStore
+    readonly drafts: DraftStore
 
     constructor(dbPath: string) {
         this.dbPath = dbPath
@@ -81,6 +86,7 @@ export class Store {
         this.messages = new MessageStore(this.db)
         this.users = new UserStore(this.db)
         this.push = new PushStore(this.db)
+        this.drafts = new DraftStore(this.db)
     }
 
     private initSchema(): void {
@@ -97,15 +103,24 @@ export class Store {
             return
         }
 
-        if (currentVersion === 1 && SCHEMA_VERSION === 2) {
+        // Handle migrations in sequence
+        let version = currentVersion
+
+        if (version === 1) {
             this.migrateFromV1ToV2()
-            this.setUserVersion(SCHEMA_VERSION)
-            return
+            version = 2
         }
 
-        if (currentVersion !== SCHEMA_VERSION) {
-            throw this.buildSchemaMismatchError(currentVersion)
+        if (version === 2 && SCHEMA_VERSION >= 3) {
+            this.migrateFromV2ToV3()
+            version = 3
         }
+
+        if (version !== SCHEMA_VERSION) {
+            throw this.buildSchemaMismatchError(version)
+        }
+
+        this.setUserVersion(SCHEMA_VERSION)
 
         this.assertRequiredTablesPresent()
     }
@@ -180,6 +195,15 @@ export class Store {
                 UNIQUE(namespace, endpoint)
             );
             CREATE INDEX IF NOT EXISTS idx_push_subscriptions_namespace ON push_subscriptions(namespace);
+
+            CREATE TABLE IF NOT EXISTS session_drafts (
+                session_id TEXT PRIMARY KEY,
+                namespace TEXT NOT NULL,
+                draft_text TEXT NOT NULL,
+                draft_timestamp INTEGER NOT NULL,
+                FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_drafts_namespace ON session_drafts(namespace);
         `)
     }
 
@@ -266,6 +290,27 @@ export class Store {
             this.db.exec('ROLLBACK')
             const message = error instanceof Error ? error.message : String(error)
             throw new Error(`SQLite schema migration v1->v2 failed: ${message}`)
+        }
+    }
+
+    private migrateFromV2ToV3(): void {
+        try {
+            this.db.exec('BEGIN')
+            this.db.exec(`
+                CREATE TABLE IF NOT EXISTS session_drafts (
+                    session_id TEXT PRIMARY KEY,
+                    namespace TEXT NOT NULL,
+                    draft_text TEXT NOT NULL,
+                    draft_timestamp INTEGER NOT NULL,
+                    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+                );
+            `)
+            this.db.exec('CREATE INDEX IF NOT EXISTS idx_drafts_namespace ON session_drafts(namespace)')
+            this.db.exec('COMMIT')
+        } catch (error) {
+            this.db.exec('ROLLBACK')
+            const message = error instanceof Error ? error.message : String(error)
+            throw new Error(`SQLite schema migration v2->v3 failed: ${message}`)
         }
     }
 
