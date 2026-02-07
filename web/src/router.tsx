@@ -108,7 +108,7 @@ function SessionsPage() {
 
     const projectCount = new Set(sessions.map(s => s.metadata?.worktree?.basePath ?? s.metadata?.path ?? 'Other')).size
     const sessionMatch = matchRoute({ to: '/sessions/$sessionId', fuzzy: true })
-    const selectedSessionId = sessionMatch ? sessionMatch.sessionId : null
+    const selectedSessionId = sessionMatch && sessionMatch.sessionId !== 'new' ? sessionMatch.sessionId : null
     const isSessionsIndex = pathname === '/sessions' || pathname === '/sessions/'
 
     return (
