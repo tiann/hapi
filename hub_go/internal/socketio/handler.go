@@ -60,12 +60,22 @@ func NewServer(deps Dependencies) *Server {
 		sessions: make(map[string]*Session),
 		deps:     deps,
 		outbox:   NewOutbox(),
-		terminal: NewTerminalRegistry(4, 4, 15*time.Minute, nil),
 		wsConns:  make(map[string]map[*wsConn]struct{}),
 		acks:     make(map[string]chan json.RawMessage),
 		rpcMap:   make(map[string]*wsConn),
 		stopCh:   make(chan struct{}),
 	}
+	srv.terminal = NewTerminalRegistry(4, 4, 15*time.Minute, func(entry terminalEntry) {
+		srv.SendToConn("/terminal", "terminal:error", map[string]any{
+			"terminalId": entry.TerminalID,
+			"message":    "Terminal closed due to inactivity.",
+		}, entry.SocketID)
+		srv.sendToWsConn(entry.CliConn, "/cli", "terminal:close", map[string]any{
+			"sessionId":  entry.SessionID,
+			"terminalId": entry.TerminalID,
+		})
+	})
+	srv.terminal.StartIdleLoop(60 * time.Second)
 	go srv.sessionCleanupLoop()
 	return srv
 }
@@ -640,6 +650,9 @@ func (s *Server) cleanupExpiredSessions() {
 }
 
 func (s *Server) Stop() {
+	if s.terminal != nil {
+		s.terminal.StopIdleLoop()
+	}
 	select {
 	case <-s.stopCh:
 	default:

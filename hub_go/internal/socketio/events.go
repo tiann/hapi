@@ -514,6 +514,10 @@ func (s *Server) handleTerminalEvent(engineID string, conn *wsConn, event string
 	case "terminal:write":
 		entry := s.resolveTerminalEntry(engineID, terminalID)
 		if entry == nil {
+			s.SendToConn("/terminal", "terminal:error", map[string]any{
+				"terminalId": terminalID,
+				"message":    "Terminal not found.",
+			}, engineID)
 			return nil, false
 		}
 		s.sendToWsConn(entry.CliConn, "/cli", "terminal:write", map[string]any{
@@ -527,6 +531,10 @@ func (s *Server) handleTerminalEvent(engineID string, conn *wsConn, event string
 	case "terminal:resize":
 		entry := s.resolveTerminalEntry(engineID, terminalID)
 		if entry == nil {
+			s.SendToConn("/terminal", "terminal:error", map[string]any{
+				"terminalId": terminalID,
+				"message":    "Terminal not found.",
+			}, engineID)
 			return nil, false
 		}
 		s.sendToWsConn(entry.CliConn, "/cli", "terminal:resize", map[string]any{
@@ -541,6 +549,10 @@ func (s *Server) handleTerminalEvent(engineID string, conn *wsConn, event string
 	case "terminal:close":
 		entry := s.resolveTerminalEntry(engineID, terminalID)
 		if entry == nil {
+			s.SendToConn("/terminal", "terminal:error", map[string]any{
+				"terminalId": terminalID,
+				"message":    "Terminal not found.",
+			}, engineID)
 			return nil, false
 		}
 		if s.terminal != nil {
