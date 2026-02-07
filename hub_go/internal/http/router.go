@@ -21,7 +21,8 @@ type route struct {
 }
 
 type Router struct {
-    routes []route
+    routes   []route
+    fallback http.Handler
 }
 
 func NewRouter() *Router {
@@ -36,6 +37,10 @@ func (r *Router) Handle(method string, pattern string, handler HandlerFunc) {
     })
 }
 
+func (r *Router) SetFallback(h http.Handler) {
+    r.fallback = h
+}
+
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
     for _, rt := range r.routes {
         if rt.method != req.Method {
@@ -47,6 +52,11 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
         }
         ctx := context.WithValue(req.Context(), paramsKey, params)
         rt.handler(w, req.WithContext(ctx), params)
+        return
+    }
+
+    if r.fallback != nil {
+        r.fallback.ServeHTTP(w, req)
         return
     }
 

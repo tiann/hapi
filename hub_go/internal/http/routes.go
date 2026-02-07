@@ -13,6 +13,8 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 
+	"log"
+
 	"hub_go/internal/auth"
 	"hub_go/internal/config"
 	"hub_go/internal/socketio"
@@ -231,7 +233,7 @@ func RegisterRoutes(router *Router, deps AuthDependencies) {
 	router.Handle(http.MethodGet, "/api/events", withMiddleware(func(w http.ResponseWriter, req *http.Request, params Params) {
 		namespace := namespaceFromRequest(req)
 		query := req.URL.Query()
-		if sessionID := query.Get("sessionId"); sessionID != "" {
+		if sessionID := query.Get("sessionId"); sessionID != "" && sessionID != "new" {
 			if _, ok := requireSession(w, deps.Store, deps.Engine, namespace, sessionID); !ok {
 				return
 			}
@@ -405,13 +407,16 @@ func RegisterRoutes(router *Router, deps AuthDependencies) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Message requires text or attachments"})
 			return
 		}
+		contentInner := map[string]any{
+			"type": "text",
+			"text": text,
+		}
+		if !attachmentsEmpty(attachments) {
+			contentInner["attachments"] = attachments
+		}
 		content := map[string]any{
-			"role": "user",
-			"content": map[string]any{
-				"type":        "text",
-				"text":        text,
-				"attachments": attachments,
-			},
+			"role":    "user",
+			"content": contentInner,
 			"meta": map[string]any{
 				"sentFrom": "webapp",
 			},
@@ -1100,9 +1105,11 @@ func RegisterRoutes(router *Router, deps AuthDependencies) {
 			"worktreeName": emptyToNil(worktreeName),
 		})
 		if err != nil {
+			log.Printf("[Spawn] RPC error: %v", err)
 			writeJSON(w, http.StatusOK, map[string]any{"type": "error", "message": err.Error()})
 			return
 		}
+		log.Printf("[Spawn] RPC result: %T %v", result, result)
 		writeJSON(w, http.StatusOK, normalizeSpawnResponse(result))
 	}, cors, authMiddleware))
 
@@ -1577,7 +1584,7 @@ func sessionToPayload(session *store.Session) map[string]any {
 	if session == nil {
 		return map[string]any{}
 	}
-	return map[string]any{
+	p := map[string]any{
 		"id":                session.ID,
 		"namespace":         session.Namespace,
 		"seq":               session.Seq,
@@ -1591,10 +1598,20 @@ func sessionToPayload(session *store.Session) map[string]any {
 		"agentStateVersion": session.AgentStateVersion,
 		"thinking":          session.Thinking,
 		"thinkingAt":        session.ThinkingAt,
-		"todos":             session.Todos,
-		"permissionMode":    nullableStringToValue(session.PermissionMode),
-		"modelMode":         nullableStringToValue(session.ModelMode),
 	}
+	// Only include optional fields when non-nil/non-empty so that the JSON
+	// output omits them entirely (→ undefined in JS) instead of serialising
+	// null, which Zod's .optional() rejects.
+	if session.Todos != nil {
+		p["todos"] = session.Todos
+	}
+	if session.PermissionMode != "" {
+		p["permissionMode"] = session.PermissionMode
+	}
+	if session.ModelMode != "" {
+		p["modelMode"] = session.ModelMode
+	}
+	return p
 }
 
 func machineToPayload(machine *store.Machine) map[string]any {
@@ -1833,15 +1850,27 @@ func normalizeSpawnResponse(result any) map[string]any {
 	if !ok {
 		return map[string]any{"type": "error", "message": "Unexpected spawn result"}
 	}
-	if typ, _ := obj["type"].(string); typ == "success" {
-		if sessionID, _ := obj["sessionId"].(string); sessionID != "" {
+	typ, _ := obj["type"].(string)
+	switch typ {
+	case "success":
+		sessionID, _ := obj["sessionId"].(string)
+		if sessionID != "" {
 			return map[string]any{"type": "success", "sessionId": sessionID}
 		}
-	}
-	if typ, _ := obj["type"].(string); typ == "error" {
+		return map[string]any{"type": "success"}
+	case "requestToApproveDirectoryCreation":
+		return obj
+	case "error":
 		if message, _ := obj["errorMessage"].(string); message != "" {
 			return map[string]any{"type": "error", "message": message}
 		}
+		if message, _ := obj["message"].(string); message != "" {
+			return map[string]any{"type": "error", "message": message}
+		}
+	}
+	// Handle RPC error format: {"error": "message"} (no "type" field)
+	if errMsg, _ := obj["error"].(string); errMsg != "" {
+		return map[string]any{"type": "error", "message": errMsg}
 	}
 	return map[string]any{"type": "error", "message": "Unexpected spawn result"}
 }

@@ -245,12 +245,29 @@ func (s *Server) startPingLoop(ws *wsConn) {
 		case <-ws.done:
 			return
 		case <-ticker.C:
-			lastPong := time.Unix(0, ws.lastPong.Load())
-			if time.Since(lastPong) > time.Duration(enginePingTimeoutMs)*time.Millisecond {
-				_ = ws.writeText(string(EngineClose))
+			if err := ws.writeText(string(EnginePing)); err != nil {
 				return
 			}
-			_ = ws.writeText(string(EnginePing))
+			// Wait for pong within the timeout window.
+			lastPongBefore := ws.lastPong.Load()
+			deadline := time.After(time.Duration(enginePingTimeoutMs) * time.Millisecond)
+			for {
+				select {
+				case <-ws.done:
+					return
+				case <-deadline:
+					if ws.lastPong.Load() == lastPongBefore {
+						_ = ws.writeText(string(EngineClose))
+						return
+					}
+					goto nextPing
+				case <-time.After(500 * time.Millisecond):
+					if ws.lastPong.Load() != lastPongBefore {
+						goto nextPing
+					}
+				}
+			}
+		nextPing:
 		}
 	}
 }
@@ -422,3 +439,4 @@ func mustJSON(v any) string {
 	raw, _ := json.Marshal(v)
 	return string(raw)
 }
+

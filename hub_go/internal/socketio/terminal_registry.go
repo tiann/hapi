@@ -58,12 +58,13 @@ func (r *TerminalRegistry) StartIdleLoop(interval time.Duration) {
 		interval = 5 * time.Second
 	}
 
+	stopCh := r.stopIdleLoop
 	go func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
 			select {
-			case <-r.stopIdleLoop:
+			case <-stopCh:
 				return
 			case <-ticker.C:
 				r.expireIdle()
