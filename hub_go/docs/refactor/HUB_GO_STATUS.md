@@ -74,8 +74,8 @@
 ## 未完成
 
 ### 测试覆盖 🟡
-- Go 单元测试：`auth/`、`store/`、`socketio/`、`telegram/`、`notifications/`、`sse/`、`push/`、`http/`、`sync/`、`config/`、`tunnel/` 共 11 个包已有测试（100+ 用例），仅 `assets/`、`server/`、`voice/` 无测试（均为薄封装层）
-- Go 集成测试：端到端流程测试（会话生命周期、消息收发、权限审批等）完全缺失
+- Go 单元测试：`auth/`、`store/`、`socketio/`、`telegram/`、`notifications/`、`sse/`、`push/`、`http/`、`sync/`、`config/`、`tunnel/` 共 11 个包已有测试（140+ 用例），仅 `assets/`、`server/`、`voice/` 无测试（均为薄封装层）
+- Go 集成测试：HTTP 端到端测试 20 用例（health、auth、session CRUD、machine、messages、VAPID）
 - 负载/基准测试：重构计划要求的 k6/wrk 性能测试未实施
 
 ### 录制与契约验证 🟡
@@ -83,10 +83,13 @@
 - SSE 全字段录制：message-received / session-updated / machine-updated 全字段对照录制待补齐
 - Socket.IO 录制补全：server->client 事件录制仍不完整
 
-### Socket.IO 细节优化 🟡
-- polling server->client ping 与 sid 过期策略细分可优化
-- 重连语义、/terminal 更完整事件覆盖
-- room 行为细节对齐
+### Socket.IO 细节优化 ✅
+- 后台 session cleanup loop：每 60s 清理过期 session（idle > 70s），防止内存泄漏
+- Outbox 容量限制：每 namespace 最多 1000 条，超出丢弃最旧条目
+- Terminal idle loop：60s 周期检测过期 terminal，自动通知 web 和 CLI 端
+- Terminal 操作错误反馈：write/resize/close 失败时返回 terminal:error
+- Server.Stop() graceful shutdown：停止 cleanup loop 和 terminal idle loop
+- room 行为细节对齐（待观察是否有差异）
 
 ### CI/CD 🟡
 - GitHub Actions 流水线已创建（`.github/workflows/hub-go.yml`：vet + test + build）
