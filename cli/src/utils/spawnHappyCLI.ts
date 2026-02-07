@@ -92,7 +92,7 @@ export function spawnHappyCLI(args: string[], options: SpawnOptions = {}): Child
   // details and flags we use to achieve the same result.
   const fullCommand = `hapi ${args.join(' ')}`;
   logger.debug(`[SPAWN HAPI CLI] Spawning: ${fullCommand} in ${directory}`);
-  
+
   const { command: spawnCommand, args: spawnArgs } = getHappyCliCommand(args);
 
   // Sanity check that the entrypoint path exists
@@ -104,6 +104,24 @@ export function spawnHappyCLI(args: string[], options: SpawnOptions = {}): Child
       throw new Error(errorMessage);
     }
   }
-  
+
+  // In dev mode, Bun resolves tsconfig.json (and @/ path aliases) from cwd.
+  // When spawning agents, cwd is set to the user's project directory, which
+  // doesn't have the CLI's tsconfig.json. Fix: start bun from the CLI project
+  // root, and pass the actual working directory via HAPI_AGENT_CWD env var
+  // so the agent can chdir early in startup.
+  if (!isBunCompiled() && directory) {
+    const cliRoot = projectPath();
+    const env = (options.env ?? process.env) as Record<string, string | undefined>;
+    options = {
+      ...options,
+      cwd: cliRoot,
+      env: {
+        ...env,
+        HAPI_AGENT_CWD: String(directory)
+      }
+    };
+  }
+
   return spawn(spawnCommand, spawnArgs, options);
 }

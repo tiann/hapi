@@ -135,6 +135,15 @@ ${chalk.bold.cyan('Claude Code Options (from `claude --help`):')}
 
         try {
             const { runClaude } = await import('@/claude/runClaude')
+
+            // In dev mode, HAPI_AGENT_CWD holds the real working directory.
+            // We deferred chdir until after all dynamic @/ imports resolved
+            // (Bun resolves tsconfig path aliases relative to cwd).
+            if (process.env.HAPI_AGENT_CWD) {
+                process.chdir(process.env.HAPI_AGENT_CWD)
+                delete process.env.HAPI_AGENT_CWD
+            }
+
             await runClaude(options)
         } catch (error) {
             const { message, messageLower, axiosCode, httpStatus, responseErrorText, serverProtocolVersion } = extractErrorInfo(error)
