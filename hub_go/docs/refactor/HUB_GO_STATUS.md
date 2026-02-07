@@ -73,8 +73,8 @@
 
 ## 未完成
 
-### 测试覆盖 🔴
-- Go 单元测试：仅 `auth/` 有测试，其余 15 个包（sync/notifications/push/telegram/tunnel/socketio/sse/store/http/config/server/voice 等）均无测试
+### 测试覆盖 🟡
+- Go 单元测试：`auth/`、`store/`、`socketio/`、`telegram/`、`notifications/`、`sse/`、`push/`、`http/`、`sync/`、`config/`、`tunnel/` 共 11 个包已有测试（100+ 用例），仅 `assets/`、`server/`、`voice/` 无测试（均为薄封装层）
 - Go 集成测试：端到端流程测试（会话生命周期、消息收发、权限审批等）完全缺失
 - 负载/基准测试：重构计划要求的 k6/wrk 性能测试未实施
 
@@ -93,5 +93,5 @@
 - 无 Makefile 或构建/测试脚本
 - 无自动化兼容性测试
 
-### 文档 🟢
-- `hub_go/README.md` 与当前实现状态不同步
+### 文档 ✅
+- `hub_go/README.md` 已更新至当前实现状态
