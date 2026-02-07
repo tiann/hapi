@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"hub_go/internal/notifications"
@@ -32,8 +33,9 @@ type Bot struct {
 	stopCh      chan struct{}
 	mu          sync.Mutex
 	updatesCh   chan Update
-	lastUpdate  int64
+	lastUpdate  atomic.Int64
 	unsubscribe func()
+	wg          sync.WaitGroup
 }
 
 // BotConfig contains the configuration for the bot
@@ -134,10 +136,17 @@ func (b *Bot) Start(ctx context.Context) error {
 	log.Println("[TelegramBot] Starting bot...")
 
 	// Start the update handler
-	go b.handleUpdates()
+	b.wg.Add(2)
+	go func() {
+		defer b.wg.Done()
+		b.handleUpdates()
+	}()
 
 	// Start polling
-	go b.pollUpdates(ctx)
+	go func() {
+		defer b.wg.Done()
+		b.pollUpdates(ctx)
+	}()
 
 	<-ctx.Done()
 	return b.Stop()
@@ -162,6 +171,8 @@ func (b *Bot) Stop() error {
 	}
 	b.mu.Unlock()
 
+	b.wg.Wait()
+
 	log.Println("[TelegramBot] Bot stopped")
 	return nil
 }
@@ -174,7 +185,7 @@ func (b *Bot) pollUpdates(ctx context.Context) {
 		case <-b.stopCh:
 			return
 		default:
-			updates, err := b.getUpdates(b.lastUpdate+1, 30)
+			updates, err := b.getUpdates(ctx, b.lastUpdate.Load()+1, 30)
 			if err != nil {
 				log.Printf("[TelegramBot] Error getting updates: %v", err)
 				time.Sleep(5 * time.Second)
@@ -182,8 +193,8 @@ func (b *Bot) pollUpdates(ctx context.Context) {
 			}
 
 			for _, update := range updates {
-				if update.UpdateID > b.lastUpdate {
-					b.lastUpdate = update.UpdateID
+				if update.UpdateID > b.lastUpdate.Load() {
+					b.lastUpdate.Store(update.UpdateID)
 				}
 				select {
 				case b.updatesCh <- update:
@@ -244,7 +255,10 @@ func (b *Bot) handleCommand(msg *Message) {
 }
 
 func (b *Bot) handleCallbackQuery(query *CallbackQuery) {
-	if b.engine == nil {
+	b.mu.Lock()
+	engine := b.engine
+	b.mu.Unlock()
+	if engine == nil {
 		b.answerCallbackQuery(query.ID, "Not connected")
 		return
 	}
@@ -256,7 +270,7 @@ func (b *Bot) handleCallbackQuery(query *CallbackQuery) {
 	}
 
 	parsed := parseCallbackData(query.Data)
-	sessions := b.engine.GetSessionsByNamespace(namespace)
+	sessions := engine.GetSessionsByNamespace(namespace)
 
 	switch parsed.Action {
 	case ActionApprove:
@@ -413,13 +427,18 @@ func (b *Bot) apiURL(method string) string {
 	return fmt.Sprintf("https://api.telegram.org/bot%s/%s", b.token, method)
 }
 
-func (b *Bot) getUpdates(offset int64, timeout int) ([]Update, error) {
+func (b *Bot) getUpdates(ctx context.Context, offset int64, timeout int) ([]Update, error) {
 	params := url.Values{}
 	params.Set("offset", strconv.FormatInt(offset, 10))
 	params.Set("timeout", strconv.Itoa(timeout))
 	params.Set("allowed_updates", `["message","callback_query"]`)
 
-	resp, err := b.httpClient.Get(b.apiURL("getUpdates") + "?" + params.Encode())
+	reqURL := b.apiURL("getUpdates") + "?" + params.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := b.httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -507,16 +526,38 @@ func (b *Bot) apiCall(method string, payload map[string]any) error {
 	}
 	defer resp.Body.Close()
 
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("telegram API error: %s", string(body))
+		return fmt.Errorf("telegram API %s error: %s", method, string(body))
+	}
+
+	var result struct {
+		OK          bool   `json:"ok"`
+		ErrorCode   int    `json:"error_code"`
+		Description string `json:"description"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return fmt.Errorf("telegram API %s invalid JSON response: %w", method, err)
+	}
+	if !result.OK {
+		return fmt.Errorf("telegram API %s not ok (%d): %s", method, result.ErrorCode, result.Description)
 	}
 
 	return nil
 }
 
 func (b *Bot) approvePermission(namespace, sessionID, requestID string) error {
-	if b == nil || b.engine == nil || b.engine.RpcGateway() == nil {
+	if b == nil {
+		return errors.New("not connected")
+	}
+	b.mu.Lock()
+	engine := b.engine
+	b.mu.Unlock()
+	if engine == nil || engine.RpcGateway() == nil {
 		return errors.New("not connected")
 	}
 	if sessionID == "" {
@@ -533,7 +574,13 @@ func (b *Bot) approvePermission(namespace, sessionID, requestID string) error {
 }
 
 func (b *Bot) denyPermission(namespace, sessionID, requestID string) error {
-	if b == nil || b.engine == nil || b.engine.RpcGateway() == nil {
+	if b == nil {
+		return errors.New("not connected")
+	}
+	b.mu.Lock()
+	engine := b.engine
+	b.mu.Unlock()
+	if engine == nil || engine.RpcGateway() == nil {
 		return errors.New("not connected")
 	}
 	if sessionID == "" {
@@ -550,7 +597,13 @@ func (b *Bot) denyPermission(namespace, sessionID, requestID string) error {
 }
 
 func (b *Bot) callSessionRPC(sessionID string, method string, params map[string]any) (any, error) {
-	if b == nil || b.engine == nil || b.engine.RpcGateway() == nil {
+	if b == nil {
+		return nil, errors.New("not connected")
+	}
+	b.mu.Lock()
+	engine := b.engine
+	b.mu.Unlock()
+	if engine == nil || engine.RpcGateway() == nil {
 		return nil, errors.New("not connected")
 	}
 	methodName := sessionID + ":" + method
@@ -561,7 +614,7 @@ func (b *Bot) callSessionRPC(sessionID string, method string, params map[string]
 	if err != nil {
 		return nil, err
 	}
-	raw, err := b.engine.RpcGateway().Call(methodName, map[string]any{
+	raw, err := engine.RpcGateway().Call(methodName, map[string]any{
 		"method": methodName,
 		"params": string(paramsRaw),
 	}, 30*time.Second)
@@ -808,10 +861,11 @@ func getStringArg(args map[string]any, keys ...string) string {
 }
 
 func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
+	runes := []rune(s)
+	if len(runes) <= maxLen {
 		return s
 	}
-	return s[:maxLen-3] + "..."
+	return string(runes[:maxLen-3]) + "..."
 }
 
 func createNotificationKeyboard(session *store.Session, publicURL string) *InlineKeyboardMarkup {

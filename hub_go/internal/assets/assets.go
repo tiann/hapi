@@ -47,9 +47,18 @@ func (h *staticHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if !strings.Contains(urlPath, ".") {
 			if indexFile, err := h.fs.Open("index.html"); err == nil {
 				defer indexFile.Close()
-				stat, _ := indexFile.Stat()
+				rs, ok := indexFile.(readSeeker)
+				if !ok {
+					http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+					return
+				}
+				stat, err := indexFile.Stat()
+				if err != nil {
+					http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+					return
+				}
 				w.Header().Set("Content-Type", "text/html; charset=utf-8")
-				http.ServeContent(w, r, "index.html", stat.ModTime(), indexFile.(readSeeker))
+				http.ServeContent(w, r, "index.html", stat.ModTime(), rs)
 				return
 			}
 		}
@@ -69,9 +78,18 @@ func (h *staticHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		indexPath := path.Join(urlPath, "index.html")
 		if indexFile, err := h.fs.Open(indexPath); err == nil {
 			defer indexFile.Close()
-			stat, _ := indexFile.Stat()
+			rs, ok := indexFile.(readSeeker)
+			if !ok {
+				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+				return
+			}
+			stat, err := indexFile.Stat()
+			if err != nil {
+				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+				return
+			}
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			http.ServeContent(w, r, "index.html", stat.ModTime(), indexFile.(readSeeker))
+			http.ServeContent(w, r, "index.html", stat.ModTime(), rs)
 			return
 		}
 		http.NotFound(w, r)
@@ -91,7 +109,12 @@ func (h *staticHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 	}
 
-	http.ServeContent(w, r, stat.Name(), stat.ModTime(), file.(readSeeker))
+	rs, ok := file.(readSeeker)
+	if !ok {
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+	http.ServeContent(w, r, stat.Name(), stat.ModTime(), rs)
 }
 
 type readSeeker interface {

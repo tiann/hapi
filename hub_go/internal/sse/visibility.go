@@ -16,12 +16,16 @@ func NewVisibilityTracker() *VisibilityTracker {
 	return &VisibilityTracker{byID: make(map[string]*visibilityEntry)}
 }
 
-func (t *VisibilityTracker) Register(id string, namespace string) {
+func (t *VisibilityTracker) Register(id string, namespace string, initialVisibility ...string) {
 	if id == "" {
 		return
 	}
+	visibility := "visible"
+	if len(initialVisibility) > 0 && initialVisibility[0] == "hidden" {
+		visibility = "hidden"
+	}
 	t.mu.Lock()
-	t.byID[id] = &visibilityEntry{Namespace: namespace, Visibility: "visible"}
+	t.byID[id] = &visibilityEntry{Namespace: namespace, Visibility: visibility}
 	t.mu.Unlock()
 }
 

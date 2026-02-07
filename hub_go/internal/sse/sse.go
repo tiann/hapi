@@ -21,10 +21,7 @@ func HandleEvents(w http.ResponseWriter, req *http.Request, bus *Bus, tracker *V
 
 	subscriptionID := NewSubscriptionID()
 	if tracker != nil {
-		tracker.Register(subscriptionID, namespace)
-		if visibility != "" {
-			tracker.SetVisibility(subscriptionID, namespace, visibility)
-		}
+		tracker.Register(subscriptionID, namespace, visibility)
 		defer tracker.Unregister(subscriptionID)
 	}
 	writeEvent(w, flusher, Event{
@@ -63,15 +60,17 @@ func HandleEvents(w http.ResponseWriter, req *http.Request, bus *Bus, tracker *V
 }
 
 func writeEvent(w http.ResponseWriter, flusher http.Flusher, event Event) {
-	obj := map[string]any{"type": event.Type}
+	obj := make(map[string]any, len(event.Data)+1)
 	for key, value := range event.Data {
 		obj[key] = value
 	}
+	obj["type"] = event.Type
 
 	payload, err := json.Marshal(obj)
 	if err != nil {
 		return
 	}
+	fmt.Fprintf(w, "event: %s\n", event.Type)
 	fmt.Fprintf(w, "data: %s\n\n", payload)
 	flusher.Flush()
 }

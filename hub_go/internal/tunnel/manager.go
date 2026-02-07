@@ -66,6 +66,12 @@ func (m *Manager) Start() (string, error) {
 	}
 
 	m.mu.Lock()
+	// If already running, stop the old process first
+	if m.process != nil {
+		m.mu.Unlock()
+		m.Stop()
+		m.mu.Lock()
+	}
 	m.stopped = false
 	m.stopCh = make(chan struct{})
 	m.mu.Unlock()
@@ -153,6 +159,7 @@ func (m *Manager) spawnTunwg() (string, error) {
 
 	go func() {
 		scanner := bufio.NewScanner(stdout)
+		readyReceived := false
 		for scanner.Scan() {
 			line := strings.TrimSpace(scanner.Text())
 			if line == "" {
@@ -165,12 +172,16 @@ func (m *Manager) spawnTunwg() (string, error) {
 				continue
 			}
 
-			if event.Event == "ready" && event.URL != "" {
+			if !readyReceived && event.Event == "ready" && event.URL != "" {
 				urlCh <- event.URL
-				return
+				readyReceived = true
+				continue
 			}
 
 			log.Printf("[Tunnel] %s", line)
+		}
+		if !readyReceived {
+			errCh <- fmt.Errorf("tunwg exited without sending ready event")
 		}
 		if err := scanner.Err(); err != nil {
 			errCh <- err
@@ -203,9 +214,41 @@ func (m *Manager) spawnTunwg() (string, error) {
 			if retryCount < m.maxRetries {
 				m.mu.Lock()
 				m.retryCount++
-				delay := m.retryDelay * time.Duration(1<<(m.retryCount-1))
+				shift := m.retryCount - 1
+				if shift > 10 {
+					shift = 10
+				}
+				delay := m.retryDelay * time.Duration(1<<shift)
 				m.mu.Unlock()
 
+				log.Printf("[Tunnel] Restarting in %v (attempt %d/%d)", delay, retryCount+1, m.maxRetries)
+
+				select {
+				case <-m.stopCh:
+					return
+				case <-time.After(delay):
+					if _, err := m.spawnTunwg(); err != nil {
+						log.Printf("[Tunnel] Restart failed: %v", err)
+					}
+				}
+			} else {
+				log.Printf("[Tunnel] Max retries reached. Tunnel disabled.")
+			}
+		} else {
+			// Process exited with code 0 - also restart
+			log.Printf("[Tunnel] tunwg exited normally, restarting...")
+
+			m.mu.Lock()
+			retryCount := m.retryCount
+			m.retryCount++
+			shift := m.retryCount - 1
+			if shift > 10 {
+				shift = 10
+			}
+			delay := m.retryDelay * time.Duration(1<<shift)
+			m.mu.Unlock()
+
+			if retryCount < m.maxRetries {
 				log.Printf("[Tunnel] Restarting in %v (attempt %d/%d)", delay, retryCount+1, m.maxRetries)
 
 				select {
@@ -414,20 +457,21 @@ func WaitForTLSReady(tunnelURL string, manager *Manager) bool {
 
 func parseHostPort(rawURL string) (string, string) {
 	// Remove scheme
-	url := strings.TrimPrefix(rawURL, "https://")
-	url = strings.TrimPrefix(url, "http://")
+	u := strings.TrimPrefix(rawURL, "https://")
+	u = strings.TrimPrefix(u, "http://")
 
 	// Remove path
-	if idx := strings.Index(url, "/"); idx != -1 {
-		url = url[:idx]
+	if idx := strings.Index(u, "/"); idx != -1 {
+		u = u[:idx]
 	}
 
-	// Split host:port
-	if idx := strings.LastIndex(url, ":"); idx != -1 {
-		return url[:idx], url[idx+1:]
+	// Use net.SplitHostPort for correct IPv6 handling
+	host, port, err := net.SplitHostPort(u)
+	if err != nil {
+		// No port specified, return default
+		return u, "443"
 	}
-
-	return url, "443"
+	return host, port
 }
 
 func checkTunnelCertificate(host, port string, timeout time.Duration) bool {

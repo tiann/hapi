@@ -1,6 +1,9 @@
 package store
 
-import "time"
+import (
+	"log"
+	"time"
+)
 
 type PushSubscription struct {
 	ID        int64
@@ -52,6 +55,10 @@ func (s *Store) GetPushSubscriptionsByNamespace(namespace string) []PushSubscrip
 			continue
 		}
 		subscriptions = append(subscriptions, sub)
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("[Store] Error iterating push subscriptions for namespace %s: %v", namespace, err)
+		return subscriptions
 	}
 	return subscriptions
 }

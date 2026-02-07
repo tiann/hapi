@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"log"
 	"time"
 )
 
@@ -49,6 +50,10 @@ func (s *Store) GetUsersByPlatformAndNamespace(platform string, namespace string
 			continue
 		}
 		users = append(users, user)
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("[Store] Error iterating users for platform %s namespace %s: %v", platform, namespace, err)
+		return users
 	}
 	return users
 }

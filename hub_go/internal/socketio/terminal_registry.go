@@ -83,6 +83,7 @@ func (r *TerminalRegistry) StopIdleLoop() {
 	}
 	r.idleLoopStarted = false
 	close(r.stopIdleLoop)
+	r.stopIdleLoop = make(chan struct{})
 	r.mu.Unlock()
 }
 

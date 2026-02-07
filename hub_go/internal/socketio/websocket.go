@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -26,7 +27,7 @@ type wsConn struct {
 	machineID string
 	engineID  string
 	mu        sync.Mutex
-	lastPong  time.Time
+	lastPong  atomic.Int64
 	done      chan struct{}
 }
 
@@ -92,9 +93,9 @@ func (s *Server) handleWebsocket(w http.ResponseWriter, req *http.Request) {
 		sessionID: "",
 		machineID: "",
 		engineID:  engineID,
-		lastPong:  time.Now(),
 		done:      make(chan struct{}),
 	}
+	ws.lastPong.Store(time.Now().UnixNano())
 	go s.startPingLoop(ws)
 
 	reader := bufio.NewReader(conn)
@@ -121,7 +122,7 @@ func (s *Server) handleWebsocket(w http.ResponseWriter, req *http.Request) {
 			_ = writeWebsocketPong(conn, payload)
 			continue
 		case 0xA:
-			ws.lastPong = time.Now()
+			ws.lastPong.Store(time.Now().UnixNano())
 			continue
 		case 0x1:
 			s.handleWebsocketPacket(ws, string(payload))
@@ -145,13 +146,13 @@ func (s *Server) handleWebsocketPacket(ws *wsConn, packet string) {
 		case byte(EnginePing):
 			if part == "2probe" {
 				_ = ws.writeText("3probe")
-				ws.lastPong = time.Now()
+				ws.lastPong.Store(time.Now().UnixNano())
 				continue
 			}
 			_ = ws.writeText(string(EnginePong))
-			ws.lastPong = time.Now()
+			ws.lastPong.Store(time.Now().UnixNano())
 		case byte(EnginePong):
-			ws.lastPong = time.Now()
+			ws.lastPong.Store(time.Now().UnixNano())
 		case byte(EngineUpgrade):
 			continue
 		case byte(EngineMessage):
@@ -244,7 +245,8 @@ func (s *Server) startPingLoop(ws *wsConn) {
 		case <-ws.done:
 			return
 		case <-ticker.C:
-			if time.Since(ws.lastPong) > time.Duration(enginePingTimeoutMs)*time.Millisecond {
+			lastPong := time.Unix(0, ws.lastPong.Load())
+			if time.Since(lastPong) > time.Duration(enginePingTimeoutMs)*time.Millisecond {
 				_ = ws.writeText(string(EngineClose))
 				return
 			}

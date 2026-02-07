@@ -34,17 +34,18 @@ type Session struct {
 }
 
 type Server struct {
-	sessions map[string]*Session
-	deps     Dependencies
-	outbox   *Outbox
-	terminal *TerminalRegistry
-	mu       sync.RWMutex
-	wsConns  map[string]map[*wsConn]struct{}
-	ackMu    sync.Mutex
-	ackSeq   uint64
-	acks     map[string]chan json.RawMessage
-	rpcMu    sync.RWMutex
-	rpcMap   map[string]*wsConn
+	sessions  map[string]*Session
+	deps      Dependencies
+	outbox    *Outbox
+	terminal  *TerminalRegistry
+	mu        sync.RWMutex
+	wsConns   map[string]map[*wsConn]struct{}
+	sessMu    sync.RWMutex
+	ackMu     sync.Mutex
+	ackSeq    uint64
+	acks      map[string]chan json.RawMessage
+	rpcMu     sync.RWMutex
+	rpcMap    map[string]*wsConn
 }
 
 const (
@@ -79,20 +80,24 @@ func (s *Server) touchSession(sid string) {
 	if sid == "" {
 		return
 	}
+	s.sessMu.Lock()
 	if sess, ok := s.sessions[sid]; ok {
 		sess.LastSeen = time.Now()
 	}
+	s.sessMu.Unlock()
 }
 
 func (s *Server) markPong(sid string) {
 	if sid == "" {
 		return
 	}
+	s.sessMu.Lock()
 	if sess, ok := s.sessions[sid]; ok {
 		now := time.Now()
 		sess.LastSeen = now
 		sess.LastPong = now
 	}
+	s.sessMu.Unlock()
 }
 
 func (s *Server) Handle(w http.ResponseWriter, req *http.Request) {
@@ -121,9 +126,11 @@ func (s *Server) Handle(w http.ResponseWriter, req *http.Request) {
 			targetMachine := ""
 			targetNamespace := ""
 			var namespaces []string
+			s.sessMu.Lock()
 			if sess, ok := s.sessions[sid]; ok {
 				if s.isExpired(sess) {
 					delete(s.sessions, sid)
+					s.sessMu.Unlock()
 					w.Header().Set("Content-Type", "text/plain; charset=UTF-8")
 					w.WriteHeader(http.StatusBadRequest)
 					_, _ = w.Write([]byte("session expired"))
@@ -137,8 +144,9 @@ func (s *Server) Handle(w http.ResponseWriter, req *http.Request) {
 						namespaces = append(namespaces, ns)
 					}
 				}
-				s.touchSession(sid)
+				sess.LastSeen = time.Now()
 			}
+			s.sessMu.Unlock()
 			if len(namespaces) == 0 {
 				w.Header().Set("Content-Type", "text/plain; charset=UTF-8")
 				w.WriteHeader(http.StatusOK)
@@ -234,10 +242,12 @@ func (s *Server) handlePollingPayload(sid string, payload string) string {
 				if sid != "" {
 					s.trackSessionTargets(sid, sessionID, machineID)
 					s.trackNamespace(sid, msg.Namespace)
+					s.sessMu.Lock()
 					if sess, ok := s.sessions[sid]; ok {
 						sess.HapiNS = hapiNamespace
+						sess.LastSeen = time.Now()
 					}
-					s.touchSession(sid)
+					s.sessMu.Unlock()
 				}
 				return string(EngineMessage) + encodeSocketConnect(msg.Namespace)
 			}
@@ -436,6 +446,7 @@ func readBody(req *http.Request) (string, error) {
 func (s *Server) newSID() string {
 	sid := newSID()
 	now := time.Now()
+	s.sessMu.Lock()
 	s.sessions[sid] = &Session{
 		SID:        sid,
 		CreatedAt:  now,
@@ -443,6 +454,7 @@ func (s *Server) newSID() string {
 		LastSeen:   now,
 		LastPong:   now,
 	}
+	s.sessMu.Unlock()
 	return sid
 }
 
@@ -458,6 +470,8 @@ func (s *Server) trackSessionTargets(sid string, sessionID string, machineID str
 	if sid == "" {
 		return
 	}
+	s.sessMu.Lock()
+	defer s.sessMu.Unlock()
 	if sess, ok := s.sessions[sid]; ok {
 		if sessionID != "" {
 			sess.SessionID = sessionID
@@ -484,6 +498,8 @@ func (s *Server) trackNamespace(sid string, namespace string) {
 	if sid == "" || namespace == "" {
 		return
 	}
+	s.sessMu.Lock()
+	defer s.sessMu.Unlock()
 	if sess, ok := s.sessions[sid]; ok {
 		if sess.Namespaces == nil {
 			sess.Namespaces = map[string]struct{}{}
@@ -506,9 +522,11 @@ func (s *Server) untrackNamespace(sid string, namespace string) {
 	if sid == "" || namespace == "" {
 		return
 	}
+	s.sessMu.Lock()
 	if sess, ok := s.sessions[sid]; ok && sess.Namespaces != nil {
 		delete(sess.Namespaces, namespace)
 	}
+	s.sessMu.Unlock()
 }
 
 func (s *Server) registerAck(id string) chan json.RawMessage {

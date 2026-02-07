@@ -3,6 +3,7 @@ package sse
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"log"
 	"sync"
 )
 
@@ -46,6 +47,25 @@ func (b *Bus) Publish(event Event) {
 		}
 	}
 	b.mu.RUnlock()
+}
+
+func (b *Bus) PublishCount(event Event) int {
+	delivered := 0
+	dropped := 0
+	b.mu.RLock()
+	for ch := range b.subs {
+		select {
+		case ch <- event:
+			delivered++
+		default:
+			dropped++
+		}
+	}
+	b.mu.RUnlock()
+	if dropped > 0 {
+		log.Printf("[SSE] Event %s: delivered=%d dropped=%d", event.Type, delivered, dropped)
+	}
+	return delivered
 }
 
 func NewSubscriptionID() string {

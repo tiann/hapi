@@ -19,6 +19,7 @@ import (
 	"log"
 	"math/big"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -110,6 +111,12 @@ func (s *Service) SendToNamespace(namespace string, payload PushPayload) error {
 }
 
 func (s *Service) sendToSubscription(namespace string, sub store.PushSubscription, body []byte) error {
+	// Validate endpoint URL scheme
+	parsed, err := url.Parse(sub.Endpoint)
+	if err != nil || parsed.Scheme != "https" {
+		return fmt.Errorf("invalid push endpoint: must be HTTPS")
+	}
+
 	// Encrypt the payload
 	encryptedPayload, err := s.encryptPayload(sub, body)
 	if err != nil {
@@ -145,9 +152,12 @@ func (s *Service) sendToSubscription(namespace string, sub store.PushSubscriptio
 	}
 
 	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return fmt.Errorf("push failed with status %d: %s", resp.StatusCode, string(body))
 	}
+
+	// Drain body for connection reuse
+	_, _ = io.Copy(io.Discard, resp.Body)
 
 	return nil
 }

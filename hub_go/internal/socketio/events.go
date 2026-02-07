@@ -3,6 +3,7 @@ package socketio
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"time"
 
 	"hub_go/internal/sse"
@@ -103,8 +104,11 @@ func (s *Server) handleCliEvent(engineID string, conn *wsConn, event string, pay
 		}
 		created := false
 		if existing, _ := s.deps.Store.GetSession(namespace, sessionID); existing == nil {
-			_, _ = s.deps.Store.CreateSessionWithID(namespace, sessionID, nil, nil)
-			created = true
+			if _, err := s.deps.Store.CreateSessionWithID(namespace, sessionID, nil, nil); err != nil {
+				log.Printf("[SocketIO] Failed to create session %s: %v", sessionID, err)
+			} else {
+				created = true
+			}
 		}
 		content := parseMessageContent(data["message"])
 		localID, _ := data["localId"].(string)
@@ -154,8 +158,11 @@ func (s *Server) handleCliEvent(engineID string, conn *wsConn, event string, pay
 		created := false
 		session, _ := s.deps.Store.GetSession(namespace, sessionID)
 		if session == nil {
-			_, _ = s.deps.Store.CreateSessionWithID(namespace, sessionID, nil, nil)
-			created = true
+			if _, err := s.deps.Store.CreateSessionWithID(namespace, sessionID, nil, nil); err != nil {
+				log.Printf("[SocketIO] Failed to create session %s: %v", sessionID, err)
+			} else {
+				created = true
+			}
 		}
 		metadata, _ := data["metadata"].(map[string]any)
 		expected := parseInt64(data["expectedVersion"])
@@ -206,8 +213,11 @@ func (s *Server) handleCliEvent(engineID string, conn *wsConn, event string, pay
 		created := false
 		session, _ := s.deps.Store.GetSession(namespace, sessionID)
 		if session == nil {
-			_, _ = s.deps.Store.CreateSessionWithID(namespace, sessionID, nil, nil)
-			created = true
+			if _, err := s.deps.Store.CreateSessionWithID(namespace, sessionID, nil, nil); err != nil {
+				log.Printf("[SocketIO] Failed to create session %s: %v", sessionID, err)
+			} else {
+				created = true
+			}
 		}
 		expected := parseInt64(data["expectedVersion"])
 		result, _ := s.deps.Store.UpdateSessionAgentState(namespace, sessionID, data["agentState"], expected)

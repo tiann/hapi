@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"encoding/json"
+	"log"
 	"time"
 )
 
@@ -99,6 +100,10 @@ func (s *Store) ListSessions(namespace string) []Session {
 		}
 		sessions = append(sessions, session)
 	}
+	if err := rows.Err(); err != nil {
+		log.Printf("[Store] Error iterating sessions for namespace %s: %v", namespace, err)
+		return sessions
+	}
 	return sessions
 }
 
@@ -186,7 +191,7 @@ func (s *Store) CreateSessionWithID(namespace string, id string, metadata map[st
 	metadataRaw, _ := json.Marshal(metadata)
 	agentStateRaw, _ := json.Marshal(agentState)
 	_, err := s.DB.Exec(
-		`INSERT OR REPLACE INTO sessions (
+		`INSERT OR IGNORE INTO sessions (
             id, namespace, seq, created_at, updated_at, active, active_at, metadata, metadata_version, agent_state, agent_state_version, todos, todos_updated_at, permission_mode, model_mode, thinking, thinking_at, tag
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id,
@@ -311,6 +316,72 @@ func (s *Store) SetSessionTodos(namespace string, id string, todos any, todosUpd
 		return false
 	}
 	return true
+}
+
+func (s *Store) GetSessionByTag(namespace string, tag string) (*Session, error) {
+	if tag == "" {
+		return nil, nil
+	}
+	row := s.DB.QueryRow(
+		`SELECT id, namespace, seq, created_at, updated_at, active, active_at, metadata, metadata_version, agent_state, agent_state_version, todos, todos_updated_at, permission_mode, model_mode, thinking, thinking_at, tag
+         FROM sessions WHERE namespace = ? AND tag = ? LIMIT 1`,
+		namespace,
+		tag,
+	)
+
+	var session Session
+	var activeInt int
+	var thinkingInt int
+	var metadataRaw sql.NullString
+	var agentStateRaw sql.NullString
+	var todosRaw sql.NullString
+	var todosUpdatedAt sql.NullInt64
+	var permissionMode sql.NullString
+	var modelMode sql.NullString
+	var tagRaw sql.NullString
+	if err := row.Scan(
+		&session.ID,
+		&session.Namespace,
+		&session.Seq,
+		&session.CreatedAt,
+		&session.UpdatedAt,
+		&activeInt,
+		&session.ActiveAt,
+		&metadataRaw,
+		&session.MetadataVersion,
+		&agentStateRaw,
+		&session.AgentStateVersion,
+		&todosRaw,
+		&todosUpdatedAt,
+		&permissionMode,
+		&modelMode,
+		&thinkingInt,
+		&session.ThinkingAt,
+		&tagRaw,
+	); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	session.Active = activeInt == 1
+	session.Thinking = thinkingInt == 1
+	session.Metadata = decodeJSONMap(metadataRaw)
+	session.AgentState = decodeJSONValue(agentStateRaw)
+	session.Todos = decodeJSONValue(todosRaw)
+	if todosUpdatedAt.Valid {
+		session.TodosUpdatedAt = todosUpdatedAt.Int64
+	}
+	if permissionMode.Valid {
+		session.PermissionMode = permissionMode.String
+	}
+	if modelMode.Valid {
+		session.ModelMode = modelMode.String
+	}
+	if tagRaw.Valid {
+		session.Tag = tagRaw.String
+	}
+	return &session, nil
 }
 
 func (s *Store) DeleteSession(namespace string, id string) bool {

@@ -3,6 +3,7 @@ package push
 import (
 	"fmt"
 	"log"
+	"sort"
 
 	"hub_go/internal/notifications"
 	"hub_go/internal/sse"
@@ -117,8 +118,10 @@ func (c *NotificationChannel) sendToast(namespace string, payload PushPayload) i
 	}
 
 	url := ""
+	sessionID := ""
 	if payload.Data != nil {
 		url = payload.Data.URL
+		sessionID = payload.Data.SessionID
 	}
 
 	event := sse.Event{
@@ -126,14 +129,13 @@ func (c *NotificationChannel) sendToast(namespace string, payload PushPayload) i
 		Data: map[string]any{
 			"title":     payload.Title,
 			"body":      payload.Body,
-			"sessionId": payload.Data.SessionID,
+			"sessionId": sessionID,
 			"url":       url,
 			"namespace": namespace,
 		},
 	}
 
-	c.sseBus.Publish(event)
-	return 1 // Assume at least one delivery for now
+	return c.sseBus.PublishCount(event)
 }
 
 func buildSessionPath(sessionID string) string {
@@ -151,13 +153,17 @@ func getToolName(session *store.Session) string {
 		return ""
 	}
 
-	for _, req := range requests {
-		if reqMap, ok := req.(map[string]any); ok {
-			if tool, ok := reqMap["tool"].(string); ok {
-				return tool
-			}
+	// Sort keys for deterministic order
+	ids := make([]string, 0, len(requests))
+	for id := range requests {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+
+	if reqMap, ok := requests[ids[0]].(map[string]any); ok {
+		if tool, ok := reqMap["tool"].(string); ok {
+			return tool
 		}
-		break
 	}
 
 	return ""

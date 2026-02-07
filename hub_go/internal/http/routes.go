@@ -696,9 +696,13 @@ func RegisterRoutes(router *Router, deps AuthDependencies) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid body"})
 			return
 		}
-		_, _ = rpcCallUnified(deps.Engine, deps.SocketIO, session.ID, "set-session-config", map[string]any{
+		_, err = rpcCallUnified(deps.Engine, deps.SocketIO, session.ID, "set-session-config", map[string]any{
 			"permissionMode": mode,
 		})
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "RPC call failed"})
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	}, cors, authMiddleware))
 
@@ -722,9 +726,13 @@ func RegisterRoutes(router *Router, deps AuthDependencies) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid body"})
 			return
 		}
-		_, _ = rpcCallUnified(deps.Engine, deps.SocketIO, session.ID, "set-session-config", map[string]any{
+		_, err = rpcCallUnified(deps.Engine, deps.SocketIO, session.ID, "set-session-config", map[string]any{
 			"modelMode": model,
 		})
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "RPC call failed"})
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	}, cors, authMiddleware))
 
@@ -1259,6 +1267,18 @@ func RegisterRoutes(router *Router, deps AuthDependencies) {
 		namespace := namespaceFromRequest(req)
 		metadata, _ := body["metadata"].(map[string]any)
 		agentState := body["agentState"]
+
+		// Dedup: check if a session with the same tag+namespace already exists
+		existing, err := deps.Store.GetSessionByTag(namespace, tag)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to check existing session"})
+			return
+		}
+		if existing != nil {
+			writeJSON(w, http.StatusOK, map[string]any{"session": sessionToPayload(existing)})
+			return
+		}
+
 		session, err := deps.Store.CreateSession(namespace, metadata, agentState)
 		if session != nil {
 			session.Tag = tag
