@@ -46,6 +46,7 @@ type Server struct {
 	acks      map[string]chan json.RawMessage
 	rpcMu     sync.RWMutex
 	rpcMap    map[string]*wsConn
+	stopCh    chan struct{}
 }
 
 const (
@@ -55,7 +56,7 @@ const (
 )
 
 func NewServer(deps Dependencies) *Server {
-	return &Server{
+	srv := &Server{
 		sessions: make(map[string]*Session),
 		deps:     deps,
 		outbox:   NewOutbox(),
@@ -63,7 +64,10 @@ func NewServer(deps Dependencies) *Server {
 		wsConns:  make(map[string]map[*wsConn]struct{}),
 		acks:     make(map[string]chan json.RawMessage),
 		rpcMap:   make(map[string]*wsConn),
+		stopCh:   make(chan struct{}),
 	}
+	go srv.sessionCleanupLoop()
+	return srv
 }
 
 func (s *Server) isExpired(sess *Session) bool {
@@ -590,4 +594,55 @@ func (s *Server) getRpcConn(method string) *wsConn {
 	conn := s.rpcMap[method]
 	s.rpcMu.RUnlock()
 	return conn
+}
+
+func (s *Server) sessionCleanupLoop() {
+	ticker := time.NewTicker(60 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.stopCh:
+			return
+		case <-ticker.C:
+			s.cleanupExpiredSessions()
+		}
+	}
+}
+
+func (s *Server) cleanupExpiredSessions() {
+	now := time.Now()
+	threshold := time.Duration(engineIdleTimeoutMs) * time.Millisecond
+
+	s.sessMu.Lock()
+	var expired []string
+	for sid, sess := range s.sessions {
+		if !sess.LastSeen.IsZero() && now.Sub(sess.LastSeen) > threshold {
+			expired = append(expired, sid)
+		}
+	}
+	for _, sid := range expired {
+		delete(s.sessions, sid)
+	}
+	s.sessMu.Unlock()
+
+	for _, sid := range expired {
+		if s.terminal != nil {
+			removed := s.terminal.RemoveBySocket(sid)
+			for _, entry := range removed {
+				s.sendToWsConn(entry.CliConn, "/cli", "terminal:close", map[string]any{
+					"sessionId":  entry.SessionID,
+					"terminalId": entry.TerminalID,
+				})
+			}
+		}
+		s.outbox.RemoveByEngine(sid)
+	}
+}
+
+func (s *Server) Stop() {
+	select {
+	case <-s.stopCh:
+	default:
+		close(s.stopCh)
+	}
 }

@@ -91,6 +91,9 @@ func (s *Server) Start() error {
 }
 
 func (s *Server) Shutdown(ctx context.Context) error {
+	if s.socketIO != nil {
+		s.socketIO.Stop()
+	}
 	if s.store != nil {
 		_ = s.store.Close()
 	}

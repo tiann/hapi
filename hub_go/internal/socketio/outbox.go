@@ -2,6 +2,8 @@ package socketio
 
 import "sync"
 
+const maxOutboxPerNamespace = 1000
+
 type Outbox struct {
 	mu     sync.Mutex
 	queues map[string][]outboxEntry
@@ -23,12 +25,17 @@ func (o *Outbox) Enqueue(namespace string, packet string, sessionID string, mach
 		return
 	}
 	o.mu.Lock()
-	o.queues[namespace] = append(o.queues[namespace], outboxEntry{
+	q := o.queues[namespace]
+	q = append(q, outboxEntry{
 		packet:    packet,
 		sessionID: sessionID,
 		machineID: machineID,
 		engineID:  engineID,
 	})
+	if len(q) > maxOutboxPerNamespace {
+		q = q[len(q)-maxOutboxPerNamespace:]
+	}
+	o.queues[namespace] = q
 	o.mu.Unlock()
 }
 
@@ -59,4 +66,25 @@ func (o *Outbox) Dequeue(namespace string, sessionID string, machineID string, e
 	}
 	o.queues[namespace] = remaining
 	return matched
+}
+
+func (o *Outbox) RemoveByEngine(engineID string) {
+	if engineID == "" {
+		return
+	}
+	o.mu.Lock()
+	for ns, entries := range o.queues {
+		var remaining []outboxEntry
+		for _, entry := range entries {
+			if entry.engineID != engineID {
+				remaining = append(remaining, entry)
+			}
+		}
+		if len(remaining) == 0 {
+			delete(o.queues, ns)
+		} else {
+			o.queues[ns] = remaining
+		}
+	}
+	o.mu.Unlock()
 }
