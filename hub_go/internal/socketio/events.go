@@ -299,7 +299,6 @@ func (s *Server) handleCliEvent(engineID string, conn *wsConn, event string, pay
 			if model, ok := data["modelMode"].(string); ok {
 				session.ModelMode = model
 			}
-			session.UpdatedAt = time.Now().UnixMilli()
 			_ = s.deps.Store.UpdateSession(namespace, session)
 			if created {
 				s.publishSessionAdded(namespace, sessionID)

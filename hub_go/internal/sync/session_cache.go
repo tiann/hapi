@@ -114,7 +114,6 @@ func (c *SessionCache) HandleSessionAlive(payload SessionAlivePayload) {
 	if payload.ModelMode != "" {
 		session.ModelMode = payload.ModelMode
 	}
-	session.UpdatedAt = time.Now().UnixMilli()
 	_ = c.store.UpdateSession(payload.Namespace, session)
 
 	if created && c.publisher != nil {

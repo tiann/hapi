@@ -199,8 +199,8 @@ function SessionItem(props: {
 
     const sessionName = getSessionTitle(s)
     const statusDotClass = s.active
-        ? (s.thinking ? 'bg-[#007AFF]' : 'bg-[var(--app-badge-success-text)]')
-        : 'bg-[var(--app-hint)]'
+        ? (s.thinking ? 'bg-[#007AFF] h-2.5 w-2.5 shadow-[0_0_6px_rgba(0,122,255,0.6)] animate-pulse' : 'bg-[#22c55e] h-2.5 w-2.5 shadow-[0_0_6px_rgba(34,197,94,0.5)] animate-[pulse_3s_ease-in-out_infinite]')
+        : 'bg-[var(--app-hint)] h-1.5 w-1.5'
     return (
         <>
             <button
@@ -214,7 +214,7 @@ function SessionItem(props: {
                     <div className="flex items-center gap-2 min-w-0">
                         <span className="flex h-4 w-4 items-center justify-center" aria-hidden="true">
                             <span
-                                className={`h-2 w-2 rounded-full ${statusDotClass}`}
+                                className={`rounded-full transition-all ${statusDotClass}`}
                             />
                         </span>
                         <div className="truncate text-base font-medium">
