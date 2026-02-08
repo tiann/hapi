@@ -45,3 +45,6 @@ cli/npm/main/
 .serena/
 hub_go/internal/assets/web/
 services/
+hub_go/hub_go
+hub_go/hub_go.bin
+hub_go/hub_go_backup
