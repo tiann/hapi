@@ -182,15 +182,34 @@ export function SessionChat(props: {
 
     // Build filtered agentState using permissions from message window
     // For pending requests, always use real-time data from agentState (SSE updates)
-    // For completed requests, use filtered data from API to avoid showing old tool cards
+    // For completed requests, merge filtered API data with real-time SSE updates
+    // This ensures old tool cards are filtered out while new completions appear immediately
     const filteredAgentState = useMemo(() => {
         if (!props.session.agentState) return null
+
+        // Calculate oldest message time for filtering
+        const oldestMessageTime = normalizedMessages.length > 0
+            ? Math.min(...normalizedMessages.map(m => m.createdAt))
+            : null
+
+        // Get live completed requests from SSE
+        const liveCompleted = props.session.agentState.completedRequests ?? {}
+
+        // Filter live completed requests by message time range
+        const filteredLiveCompleted = oldestMessageTime === null
+            ? liveCompleted
+            : Object.fromEntries(
+                Object.entries(liveCompleted).filter(([, req]) => (req.createdAt ?? 0) >= oldestMessageTime)
+            )
+
         return {
             ...props.session.agentState,
             requests: props.session.agentState.requests ?? {},
-            completedRequests: props.permissions.completedRequests
+            // Merge API-filtered permissions with filtered live completions
+            // Live completions take precedence to show real-time updates
+            completedRequests: { ...props.permissions.completedRequests, ...filteredLiveCompleted }
         }
-    }, [props.session.agentState, props.permissions])
+    }, [props.session.agentState, props.permissions, normalizedMessages])
 
     const reduced = useMemo(
         () => reduceChatBlocks(normalizedMessages, filteredAgentState),
