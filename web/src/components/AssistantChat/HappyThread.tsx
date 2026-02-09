@@ -274,15 +274,17 @@ export function HappyThread(props: {
                 // Max attempts reached, give up and restore autoScroll state
                 pendingScrollRef.current = null
                 loadLockRef.current = false
-                setAutoScrollEnabled(prevAutoScrollEnabledRef.current)
+                // Use setTimeout to defer state update until after DOM operations complete
+                setTimeout(() => setAutoScrollEnabled(prevAutoScrollEnabledRef.current), 0)
                 return
             }
 
             viewport.scrollTop = pending.scrollTop + delta
             pendingScrollRef.current = null
             loadLockRef.current = false
-            // Restore previous autoScroll state instead of forcing it to true
-            setTimeout(() => setAutoScrollEnabled(prevAutoScrollEnabledRef.current), 50)
+            // Restore previous autoScroll state after DOM has settled
+            // Use longer delay to ensure all DOM operations are complete
+            setTimeout(() => setAutoScrollEnabled(prevAutoScrollEnabledRef.current), 100)
         }
 
         requestAnimationFrame(checkAndRestore)
