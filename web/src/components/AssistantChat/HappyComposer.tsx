@@ -489,7 +489,6 @@ export function HappyComposer(props: {
                                 placeholder={showContinueHint ? t('misc.typeMessage') : t('misc.typeAMessage')}
                                 disabled={controlsDisabled}
                                 maxRows={5}
-                                submitOnEnter
                                 cancelOnEscape={false}
                                 onChange={handleChange}
                                 onSelect={handleSelect}
