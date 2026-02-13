@@ -226,6 +226,14 @@ export function HappyComposer(props: {
             return
         }
 
+        if (key === 'Enter' && e.shiftKey) {
+            e.preventDefault()
+            if (!canSend) return
+            api.composer().send()
+            setShowContinueHint(false)
+            return
+        }
+
         if (suggestions.length > 0) {
             if (key === 'ArrowUp') {
                 e.preventDefault()
@@ -276,6 +284,8 @@ export function HappyComposer(props: {
         onPermissionModeChange,
         permissionMode,
         permissionModes,
+        canSend,
+        api,
         haptic
     ])
 
@@ -485,6 +495,7 @@ export function HappyComposer(props: {
                                 onSelect={handleSelect}
                                 onKeyDown={handleKeyDown}
                                 onSubmit={handleSubmit}
+                                submitOnEnter={false}
                                 className="flex-1 resize-none bg-transparent text-sm leading-snug text-[var(--app-fg)] placeholder-[var(--app-hint)] focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
                             />
                         </div>
