@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { AssistantRuntimeProvider } from '@assistant-ui/react'
 import type { ApiClient } from '@/api/client'
-import type { AttachmentMetadata, DecryptedMessage, ModelMode, PermissionMode, Session } from '@/types/api'
+import type { AttachmentMetadata, DecryptedMessage, FilteredPermissions, ModelMode, PermissionMode, Session } from '@/types/api'
 import type { ChatBlock, NormalizedMessage } from '@/chat/types'
 import type { Suggestion } from '@/hooks/useActiveSuggestions'
 import { normalizeDecryptedMessage } from '@/chat/normalize'
@@ -22,6 +22,7 @@ export function SessionChat(props: {
     api: ApiClient
     session: Session
     messages: DecryptedMessage[]
+    permissions: FilteredPermissions
     messagesWarning: string | null
     hasMoreMessages: boolean
     isLoadingMessages: boolean
@@ -179,9 +180,40 @@ export function SessionChat(props: {
         return normalized
     }, [props.messages])
 
+    // Build filtered agentState using permissions from message window
+    // For pending requests, always use real-time data from agentState (SSE updates)
+    // For completed requests, merge filtered API data with real-time SSE updates
+    // This ensures old tool cards are filtered out while new completions appear immediately
+    const filteredAgentState = useMemo(() => {
+        if (!props.session.agentState) return null
+
+        // Calculate oldest message time for filtering
+        const oldestMessageTime = normalizedMessages.length > 0
+            ? Math.min(...normalizedMessages.map(m => m.createdAt))
+            : null
+
+        // Get live completed requests from SSE
+        const liveCompleted = props.session.agentState.completedRequests ?? {}
+
+        // Filter live completed requests by message time range
+        const filteredLiveCompleted = oldestMessageTime === null
+            ? liveCompleted
+            : Object.fromEntries(
+                Object.entries(liveCompleted).filter(([, req]) => (req.createdAt ?? 0) >= oldestMessageTime)
+            )
+
+        return {
+            ...props.session.agentState,
+            requests: props.session.agentState.requests ?? {},
+            // Merge API-filtered permissions with filtered live completions
+            // Live completions take precedence to show real-time updates
+            completedRequests: { ...props.permissions.completedRequests, ...filteredLiveCompleted }
+        }
+    }, [props.session.agentState, props.permissions, normalizedMessages])
+
     const reduced = useMemo(
-        () => reduceChatBlocks(normalizedMessages, props.session.agentState),
-        [normalizedMessages, props.session.agentState]
+        () => reduceChatBlocks(normalizedMessages, filteredAgentState),
+        [normalizedMessages, filteredAgentState]
     )
     const reconciled = useMemo(
         () => reconcileChatBlocks(reduced.blocks, blocksByIdRef.current),

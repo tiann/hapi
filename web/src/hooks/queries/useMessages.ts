@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useSyncExternalStore } from 'react'
 import type { ApiClient } from '@/api/client'
-import type { DecryptedMessage } from '@/types/api'
+import type { DecryptedMessage, FilteredPermissions } from '@/types/api'
 import {
     clearMessageWindow,
     fetchLatestMessages,
@@ -12,9 +12,12 @@ import {
     type MessageWindowState,
 } from '@/lib/message-window-store'
 
+const emptyPermissions: FilteredPermissions = { requests: {}, completedRequests: {} }
+
 const EMPTY_STATE: MessageWindowState = {
     sessionId: 'unknown',
     messages: [],
+    permissions: emptyPermissions,
     pending: [],
     pendingCount: 0,
     hasMore: false,
@@ -29,6 +32,7 @@ const EMPTY_STATE: MessageWindowState = {
 
 export function useMessages(api: ApiClient | null, sessionId: string | null): {
     messages: DecryptedMessage[]
+    permissions: FilteredPermissions
     warning: string | null
     isLoading: boolean
     isLoadingMore: boolean
@@ -98,6 +102,7 @@ export function useMessages(api: ApiClient | null, sessionId: string | null): {
 
     return {
         messages: state.messages,
+        permissions: state.permissions,
         warning: state.warning,
         isLoading: state.isLoading,
         isLoadingMore: state.isLoadingMore,
