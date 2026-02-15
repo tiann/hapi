@@ -359,12 +359,8 @@ export class SyncEngine {
                 const hostMatch = onlineMachines.find((machine) => machine.metadata?.host === metadata.host)
                 if (hostMatch) return hostMatch
             }
-            return null
+            return onlineMachines[0]
         })()
-
-        if (!targetMachine) {
-            return { type: 'error', message: 'No machine online', code: 'no_machine_online' }
-        }
 
         const spawnResult = await this.rpcGateway.spawnSession(
             targetMachine.id,
