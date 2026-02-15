@@ -307,7 +307,9 @@ export function query(config: {
     if (disallowedTools.length > 0) args.push('--disallowedTools', disallowedTools.join(','))
     if (additionalDirectories.length > 0) args.push('--add-dir', ...additionalDirectories)
     if (strictMcpConfig) args.push('--strict-mcp-config')
-    if (permissionMode) args.push('--permission-mode', permissionMode)
+    if (permissionMode && !(canCallTool && permissionMode === 'bypassPermissions')) {
+        args.push('--permission-mode', permissionMode)
+    }
 
     if (fallbackModel) {
         if (model && fallbackModel === model) {
@@ -361,12 +363,10 @@ export function query(config: {
         childStdin = child.stdin
     }
 
-    // Handle stderr in debug mode
-    if (process.env.DEBUG) {
-        child.stderr.on('data', (data) => {
-            console.error('Claude Code stderr:', data.toString())
-        })
-    }
+    // Handle stderr - always capture for diagnostics
+    child.stderr.on('data', (data) => {
+        logDebug('Claude Code stderr: ' + data.toString())
+    })
 
     // Setup cleanup
     const cleanup = () => {
@@ -383,8 +383,7 @@ export function query(config: {
         child.on('close', (code) => {
             if (config.options?.abort?.aborted) {
                 query.setError(new AbortError('Claude Code process aborted by user'))
-            }
-            if (code !== 0) {
+            } else if (code !== 0) {
                 query.setError(new Error(`Claude Code process exited with code ${code}`))
             } else {
                 resolve()
