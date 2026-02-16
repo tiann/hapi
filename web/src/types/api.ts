@@ -27,6 +27,7 @@ export type SessionMetadataSummary = {
     summary?: { text: string; updatedAt: number }
     machineId?: string
     tools?: string[]
+    slashCommands?: string[]
     flavor?: string | null
     worktree?: WorktreeMetadata
 }
@@ -73,6 +74,7 @@ export type MessagesResponse = {
 
 export type MachinesResponse = { machines: Machine[] }
 export type MachinePathsExistsResponse = { exists: Record<string, boolean> }
+export type MachineGitBranchesResponse = { branches: string[] }
 
 export type SpawnResponse =
     | { type: 'success'; sessionId: string }
@@ -194,6 +196,19 @@ export type PushVapidPublicKeyResponse = {
 export type VisibilityPayload = {
     subscriptionId: string
     visibility: 'visible' | 'hidden'
+}
+
+export type PreferencesResponse = {
+    readyAnnouncements: boolean
+}
+
+export type UpdatePreferencesPayload = {
+    readyAnnouncements?: boolean
+}
+
+export type UpdatePreferencesResponse = {
+    ok: boolean
+    preferences: PreferencesResponse
 }
 
 export type SyncEvent = ProtocolSyncEvent

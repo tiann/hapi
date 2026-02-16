@@ -3,6 +3,7 @@ import { restoreTerminalState } from '@/ui/terminalState';
 import { spawnWithAbort } from '@/utils/spawnWithAbort';
 import { buildMcpServerConfigArgs, buildDeveloperInstructionsArg } from './utils/codexMcpConfig';
 import { codexSystemPrompt } from './utils/systemPrompt';
+import { getDefaultCodexPath } from './utils/executable';
 
 /**
  * Filter out 'resume' subcommand which is managed internally by hapi.
@@ -71,7 +72,7 @@ export async function codexLocal(opts: {
     process.stdin.pause();
     try {
         await spawnWithAbort({
-            command: 'codex',
+            command: getDefaultCodexPath(),
             args,
             cwd: opts.path,
             env: process.env,

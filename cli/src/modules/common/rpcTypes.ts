@@ -10,6 +10,9 @@ export interface SpawnSessionOptions {
     token?: string
     sessionType?: 'simple' | 'worktree'
     worktreeName?: string
+    worktreeBranch?: string
+    codexConfigOverrides?: string[]
+    codexHomeDir?: string
 }
 
 export type SpawnSessionResult =

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { PointerEvent } from 'react'
-import { useParams } from '@tanstack/react-router'
+import { useNavigate, useParams } from '@tanstack/react-router'
 import type { Terminal } from '@xterm/xterm'
 import { useAppContext } from '@/lib/app-context'
 import { useAppGoBack } from '@/hooks/useAppGoBack'
@@ -27,10 +27,36 @@ function BackIcon() {
     )
 }
 
-function ConnectionIndicator(props: { status: 'idle' | 'connecting' | 'connected' | 'error' }) {
+function CloseIcon(props: { className?: string }) {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={props.className}
+        >
+            <line x1="18" y1="6" x2="6" y2="18" />
+            <line x1="6" y1="6" x2="18" y2="18" />
+        </svg>
+    )
+}
+
+function ConnectionIndicator(props: { status: 'idle' | 'connecting' | 'reconnecting' | 'connected' | 'error' }) {
     const isConnected = props.status === 'connected'
-    const isConnecting = props.status === 'connecting'
-    const label = isConnected ? 'Connected' : isConnecting ? 'Connecting' : 'Offline'
+    const isConnecting = props.status === 'connecting' || props.status === 'reconnecting'
+    const label = isConnected
+        ? 'Connected'
+        : props.status === 'reconnecting'
+          ? 'Reconnecting'
+          : isConnecting
+            ? 'Connecting'
+            : 'Offline'
     const colorClass = isConnected
         ? 'bg-emerald-500'
         : isConnecting
@@ -80,6 +106,87 @@ function shouldResetModifiers(sequence: string, state: ModifierState): boolean {
         return false
     }
     return state.ctrl || state.alt
+}
+
+function isBackspaceInput(sequence: string): boolean {
+    return sequence === '\u0008' || sequence === '\u007f'
+}
+
+const OUTPUT_QUEUE_MAX_BYTES = 2 * 1024 * 1024
+const OUTPUT_DRAIN_BYTES_PER_FRAME = 64 * 1024
+const OUTPUT_OVERFLOW_NOTICE = '\r\n[terminal output truncated due to high volume]\r\n'
+const DEFAULT_BACKSPACE_SEQUENCE = '\u007f'
+const TERMINAL_DEBUG_STORAGE_KEY = 'hapi:debug:terminal'
+const TERMINAL_BACKSPACE_MODE_STORAGE_KEY = 'hapi:terminal:backspace'
+
+function isTerminalDebugEnabled(): boolean {
+    if (typeof window === 'undefined') {
+        return false
+    }
+    if (import.meta.env.DEV) {
+        return true
+    }
+    try {
+        return window.localStorage.getItem(TERMINAL_DEBUG_STORAGE_KEY) === '1'
+    } catch {
+        return false
+    }
+}
+
+function describeSequence(sequence: string): string {
+    if (!sequence) {
+        return '(empty)'
+    }
+    return sequence
+        .split('')
+        .map((char) => {
+            const code = char.charCodeAt(0)
+            if (char === '\u0008') {
+                return 'BS(0x08)'
+            }
+            if (char === '\u007f') {
+                return 'DEL(0x7f)'
+            }
+            if (char === '\r') {
+                return 'CR(0x0d)'
+            }
+            if (char === '\n') {
+                return 'LF(0x0a)'
+            }
+            if (char === '\t') {
+                return 'TAB(0x09)'
+            }
+            if (code < 32 || code === 127) {
+                return `CTRL(0x${code.toString(16).padStart(2, '0')})`
+            }
+            return `${char}(0x${code.toString(16).padStart(2, '0')})`
+        })
+        .join(' ')
+}
+
+function debugTerminal(label: string, data: Record<string, unknown>): void {
+    if (!isTerminalDebugEnabled()) {
+        return
+    }
+    console.debug(`[TerminalDebug] ${label}`, data)
+}
+
+function getBackspaceOverride(): string | null {
+    if (typeof window === 'undefined') {
+        return null
+    }
+    try {
+        const value = window.localStorage.getItem(TERMINAL_BACKSPACE_MODE_STORAGE_KEY)
+        if (value === 'bs') {
+            return '\u0008'
+        }
+        if (value === 'del') {
+            return '\u007f'
+        }
+        return null
+    } catch {
+        return null
+    }
 }
 
 const QUICK_INPUT_ROWS: QuickInput[][] = [
@@ -171,6 +278,7 @@ function QuickKeyButton(props: {
 
 export default function TerminalPage() {
     const { sessionId } = useParams({ from: '/sessions/$sessionId/terminal' })
+    const navigate = useNavigate()
     const { api, token, baseUrl } = useAppContext()
     const goBack = useAppGoBack()
     const { session } = useSession(api, sessionId)
@@ -182,6 +290,14 @@ export default function TerminalPage() {
     }, [sessionId])
     const terminalRef = useRef<Terminal | null>(null)
     const inputDisposableRef = useRef<{ dispose: () => void } | null>(null)
+    const inputHandlerRef = useRef<{ dispose: () => void } | null>(null)
+    const outputQueueRef = useRef<string[]>([])
+    const outputQueuedBytesRef = useRef(0)
+    const outputDrainRafRef = useRef<number | null>(null)
+    const outputOverflowNotifiedRef = useRef(false)
+    const skipBackspaceDataCountRef = useRef(0)
+    const lastManualBackspaceAtRef = useRef(0)
+    const preferredBackspaceRef = useRef(DEFAULT_BACKSPACE_SEQUENCE)
     const connectOnceRef = useRef(false)
     const lastSizeRef = useRef<{ cols: number; rows: number } | null>(null)
     const modifierStateRef = useRef<ModifierState>({ ctrl: false, alt: false })
@@ -204,19 +320,90 @@ export default function TerminalPage() {
         baseUrl
     })
 
+    const clearOutputQueue = useCallback(() => {
+        outputQueueRef.current = []
+        outputQueuedBytesRef.current = 0
+        outputOverflowNotifiedRef.current = false
+        if (outputDrainRafRef.current !== null) {
+            cancelAnimationFrame(outputDrainRafRef.current)
+            outputDrainRafRef.current = null
+        }
+    }, [])
+
+    const scheduleOutputDrain = useCallback(() => {
+        if (outputDrainRafRef.current !== null) {
+            return
+        }
+
+        const drain = () => {
+            outputDrainRafRef.current = null
+            const terminal = terminalRef.current
+            if (!terminal) {
+                return
+            }
+
+            let written = 0
+            while (outputQueueRef.current.length > 0 && written < OUTPUT_DRAIN_BYTES_PER_FRAME) {
+                const chunk = outputQueueRef.current.shift()
+                if (!chunk) {
+                    continue
+                }
+                terminal.write(chunk)
+                written += chunk.length
+                outputQueuedBytesRef.current = Math.max(0, outputQueuedBytesRef.current - chunk.length)
+            }
+
+            if (outputQueueRef.current.length > 0) {
+                outputDrainRafRef.current = requestAnimationFrame(drain)
+                return
+            }
+
+            outputOverflowNotifiedRef.current = false
+        }
+
+        outputDrainRafRef.current = requestAnimationFrame(drain)
+    }, [])
+
+    const enqueueOutput = useCallback((data: string) => {
+        if (!data) {
+            return
+        }
+
+        outputQueueRef.current.push(data)
+        outputQueuedBytesRef.current += data.length
+
+        let droppedAny = false
+        while (outputQueuedBytesRef.current > OUTPUT_QUEUE_MAX_BYTES && outputQueueRef.current.length > 0) {
+            const dropped = outputQueueRef.current.shift()
+            if (!dropped) {
+                break
+            }
+            droppedAny = true
+            outputQueuedBytesRef.current = Math.max(0, outputQueuedBytesRef.current - dropped.length)
+        }
+
+        if (droppedAny && !outputOverflowNotifiedRef.current) {
+            outputOverflowNotifiedRef.current = true
+            outputQueueRef.current.unshift(OUTPUT_OVERFLOW_NOTICE)
+            outputQueuedBytesRef.current += OUTPUT_OVERFLOW_NOTICE.length
+        }
+
+        scheduleOutputDrain()
+    }, [scheduleOutputDrain])
+
     useEffect(() => {
         onOutput((data) => {
-            terminalRef.current?.write(data)
+            enqueueOutput(data)
         })
-    }, [onOutput])
+    }, [onOutput, enqueueOutput])
 
     useEffect(() => {
         onExit((code, signal) => {
             setExitInfo({ code, signal })
-            terminalRef.current?.write(`\r\n[process exited${code !== null ? ` with code ${code}` : ''}]`)
+            enqueueOutput(`\r\n[process exited${code !== null ? ` with code ${code}` : ''}]`)
             connectOnceRef.current = false
         })
-    }, [onExit])
+    }, [onExit, enqueueOutput])
 
     useEffect(() => {
         modifierStateRef.current = { ctrl: ctrlActive, alt: altActive }
@@ -227,26 +414,120 @@ export default function TerminalPage() {
         setAltActive(false)
     }, [])
 
-    const dispatchSequence = useCallback(
-        (sequence: string, modifierState: ModifierState) => {
-            write(applyModifierState(sequence, modifierState))
-            if (shouldResetModifiers(sequence, modifierState)) {
-                resetModifiers()
-            }
-        },
-        [write, resetModifiers]
-    )
+    const sendInput = useCallback((sequence: string, source: 'xterm' | 'mobile-backspace' | 'keyboard-backspace' | 'mobile-paste' | 'quick-key') => {
+        const modifierState = modifierStateRef.current
+        const outbound = applyModifierState(sequence, modifierState)
+        debugTerminal('sendInput', {
+            source,
+            raw: describeSequence(sequence),
+            outbound: describeSequence(outbound),
+            ctrl: modifierState.ctrl,
+            alt: modifierState.alt
+        })
+        write(outbound)
+        if (shouldResetModifiers(sequence, modifierState)) {
+            resetModifiers()
+        }
+    }, [write, resetModifiers])
+
+    const sendNormalizedBackspace = useCallback((source: 'mobile-backspace' | 'keyboard-backspace') => {
+        const now = Date.now()
+        // Some input stacks trigger both beforeinput and key handlers for one press.
+        if (now - lastManualBackspaceAtRef.current < 40) {
+            return
+        }
+        lastManualBackspaceAtRef.current = now
+        skipBackspaceDataCountRef.current += 1
+        const override = getBackspaceOverride()
+        const backspaceToSend = override ?? preferredBackspaceRef.current
+        debugTerminal('mobileBackspace', {
+            skipBackspaceDataCount: skipBackspaceDataCountRef.current,
+            preferredBackspace: describeSequence(preferredBackspaceRef.current),
+            overrideBackspace: describeSequence(override ?? ''),
+            outboundBackspace: describeSequence(backspaceToSend)
+        })
+        sendInput(backspaceToSend, source)
+    }, [sendInput])
 
     const handleTerminalMount = useCallback(
         (terminal: Terminal) => {
             terminalRef.current = terminal
             inputDisposableRef.current?.dispose()
+            inputHandlerRef.current?.dispose()
+            const textarea = terminal.textarea
+            if (textarea) {
+                const handleBeforeInput = (event: InputEvent) => {
+                    if (event.inputType === 'deleteContentBackward') {
+                        debugTerminal('beforeinput', {
+                            inputType: event.inputType,
+                            data: event.data ?? null
+                        })
+                        event.preventDefault()
+                        sendNormalizedBackspace('mobile-backspace')
+                    }
+                }
+                const handleKeyDown = (event: KeyboardEvent) => {
+                    if (event.key !== 'Backspace') {
+                        return
+                    }
+                    debugTerminal('keydown backspace', {
+                        key: event.key,
+                        code: event.code
+                    })
+                    event.preventDefault()
+                    sendNormalizedBackspace('keyboard-backspace')
+                }
+                const handlePaste = (event: ClipboardEvent) => {
+                    const value = event.clipboardData?.getData('text')
+                    if (!value) {
+                        return
+                    }
+                    event.preventDefault()
+                    sendInput(value, 'mobile-paste')
+                }
+                textarea.addEventListener('beforeinput', handleBeforeInput as EventListener)
+                textarea.addEventListener('keydown', handleKeyDown as EventListener)
+                textarea.addEventListener('paste', handlePaste as EventListener)
+                inputHandlerRef.current = {
+                    dispose: () => {
+                        textarea.removeEventListener('beforeinput', handleBeforeInput as EventListener)
+                        textarea.removeEventListener('keydown', handleKeyDown as EventListener)
+                        textarea.removeEventListener('paste', handlePaste as EventListener)
+                    }
+                }
+            }
             inputDisposableRef.current = terminal.onData((data) => {
-                const modifierState = modifierStateRef.current
-                dispatchSequence(data, modifierState)
+                debugTerminal('xterm.onData', {
+                    data: describeSequence(data),
+                    skipBackspaceDataCount: skipBackspaceDataCountRef.current
+                })
+                if (isBackspaceInput(data)) {
+                    preferredBackspaceRef.current = data
+                    const override = getBackspaceOverride()
+                    const outboundBackspace = override ?? data
+                    debugTerminal('preferred backspace updated', {
+                        preferredBackspace: describeSequence(preferredBackspaceRef.current),
+                        overrideBackspace: describeSequence(override ?? ''),
+                        outboundBackspace: describeSequence(outboundBackspace)
+                    })
+                }
+                if (isBackspaceInput(data) && skipBackspaceDataCountRef.current > 0) {
+                    skipBackspaceDataCountRef.current -= 1
+                    debugTerminal('xterm.onData skipped duplicated backspace', {
+                        data: describeSequence(data),
+                        skipBackspaceDataCount: skipBackspaceDataCountRef.current
+                    })
+                    return
+                }
+                if (isBackspaceInput(data)) {
+                    const override = getBackspaceOverride()
+                    sendInput(override ?? data, 'xterm')
+                    return
+                }
+                sendInput(data, 'xterm')
             })
         },
-        [dispatchSequence]
+        [sendInput, sendNormalizedBackspace]
     )
 
     const handleResize = useCallback(
@@ -283,30 +564,38 @@ export default function TerminalPage() {
     useEffect(() => {
         connectOnceRef.current = false
         setExitInfo(null)
+        clearOutputQueue()
         disconnect()
-    }, [sessionId, disconnect])
+    }, [sessionId, clearOutputQueue, disconnect])
 
     useEffect(() => {
         return () => {
             inputDisposableRef.current?.dispose()
+            inputHandlerRef.current?.dispose()
+            clearOutputQueue()
             connectOnceRef.current = false
             disconnect()
         }
-    }, [disconnect])
+    }, [clearOutputQueue, disconnect])
 
     useEffect(() => {
         if (session?.active === false) {
+            clearOutputQueue()
             disconnect()
             connectOnceRef.current = false
         }
-    }, [session?.active, disconnect])
+    }, [session?.active, clearOutputQueue, disconnect])
 
     useEffect(() => {
         if (terminalState.status === 'error') {
             connectOnceRef.current = false
             return
         }
-        if (terminalState.status === 'connecting' || terminalState.status === 'connected') {
+        if (
+            terminalState.status === 'connecting'
+            || terminalState.status === 'reconnecting'
+            || terminalState.status === 'connected'
+        ) {
             setExitInfo(null)
         }
     }, [terminalState.status])
@@ -317,11 +606,10 @@ export default function TerminalPage() {
             if (quickInputDisabled) {
                 return
             }
-            const modifierState = { ctrl: ctrlActive, alt: altActive }
-            dispatchSequence(sequence, modifierState)
+            sendInput(sequence, 'quick-key')
             terminalRef.current?.focus()
         },
-        [quickInputDisabled, ctrlActive, altActive, dispatchSequence]
+        [quickInputDisabled, sendInput]
     )
 
     const handleModifierToggle = useCallback(
@@ -368,7 +656,22 @@ export default function TerminalPage() {
                         <div className="truncate font-semibold">Terminal</div>
                         <div className="truncate text-xs text-[var(--app-hint)]">{subtitle}</div>
                     </div>
-                    <ConnectionIndicator status={status} />
+                    <div className="flex items-center gap-2">
+                        <button
+                            type="button"
+                            onClick={() => navigate({
+                                to: '/sessions/$sessionId',
+                                params: { sessionId }
+                            })}
+                            className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium text-[var(--app-hint)] transition-colors hover:bg-[var(--app-secondary-bg)] hover:text-[var(--app-fg)]"
+                            aria-label="Close preview"
+                            title="Close"
+                        >
+                            <CloseIcon className="h-3.5 w-3.5" />
+                            <span>Close</span>
+                        </button>
+                        <ConnectionIndicator status={status} />
+                    </div>
                 </div>
             </div>
 

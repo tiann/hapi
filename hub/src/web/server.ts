@@ -19,6 +19,7 @@ import { createGitRoutes } from './routes/git'
 import { createCliRoutes } from './routes/cli'
 import { createPushRoutes } from './routes/push'
 import { createVoiceRoutes } from './routes/voice'
+import { createPreferencesRoutes } from './routes/preferences'
 import type { SSEManager } from '../sse/sseManager'
 import type { VisibilityTracker } from '../visibility/visibilityTracker'
 import type { Server as BunServer } from 'bun'
@@ -27,6 +28,9 @@ import type { WebSocketData } from '@socket.io/bun-engine'
 import { loadEmbeddedAssetMap, type EmbeddedWebAsset } from './embeddedAssets'
 import { isBunCompiled } from '../utils/bunCompiled'
 import type { Store } from '../store'
+import { handleVoiceUpgrade, createVoiceWsHandlers, type VoiceWebSocketData } from './voiceWebSocket'
+
+type MuxWebSocketData = WebSocketData | VoiceWebSocketData
 
 function findWebappDistDir(): { distDir: string; indexHtmlPath: string } {
     const candidates = [
@@ -96,6 +100,7 @@ function createWebApp(options: {
     app.route('/api', createMachinesRoutes(options.getSyncEngine))
     app.route('/api', createGitRoutes(options.getSyncEngine))
     app.route('/api', createPushRoutes(options.store, options.vapidPublicKey))
+    app.route('/api', createPreferencesRoutes(options.store))
     app.route('/api', createVoiceRoutes())
 
     // Skip static serving in relay mode, show helpful message on root
@@ -212,7 +217,7 @@ export async function startWebServer(options: {
     corsOrigins?: string[]
     relayMode?: boolean
     officialWebUrl?: string
-}): Promise<BunServer<WebSocketData>> {
+}): Promise<BunServer<MuxWebSocketData>> {
     const isCompiled = isBunCompiled()
     const embeddedAssetMap = isCompiled ? await loadEmbeddedAssetMap() : null
     const app = createWebApp({
@@ -229,15 +234,45 @@ export async function startWebServer(options: {
     })
 
     const socketHandler = options.socketEngine.handler()
+    const voiceWsHandlers = createVoiceWsHandlers()
 
-    const server = Bun.serve({
+    function isVoiceWs(data: MuxWebSocketData): data is VoiceWebSocketData {
+        return data != null && typeof data === 'object' && 'type' in data && data.type === 'voice'
+    }
+
+    const server = Bun.serve<MuxWebSocketData>({
         hostname: configuration.listenHost,
         port: configuration.listenPort,
         idleTimeout: Math.max(30, socketHandler.idleTimeout),
         maxRequestBodySize: socketHandler.maxRequestBodySize,
-        websocket: socketHandler.websocket,
-        fetch: (req, server) => {
+        websocket: {
+            open(ws) {
+                if (isVoiceWs(ws.data)) {
+                    voiceWsHandlers.open(ws as import('bun').ServerWebSocket<VoiceWebSocketData>)
+                } else {
+                    socketHandler.websocket.open(ws as import('bun').ServerWebSocket<WebSocketData>)
+                }
+            },
+            message(ws, message) {
+                if (isVoiceWs(ws.data)) {
+                    voiceWsHandlers.message(ws as import('bun').ServerWebSocket<VoiceWebSocketData>, message)
+                } else {
+                    socketHandler.websocket.message(ws as import('bun').ServerWebSocket<WebSocketData>, message)
+                }
+            },
+            close(ws, code, reason) {
+                if (isVoiceWs(ws.data)) {
+                    voiceWsHandlers.close(ws as import('bun').ServerWebSocket<VoiceWebSocketData>, code, reason)
+                } else {
+                    socketHandler.websocket.close(ws as import('bun').ServerWebSocket<WebSocketData>, code, reason)
+                }
+            }
+        },
+        fetch: async (req, server) => {
             const url = new URL(req.url)
+            if (url.pathname === '/api/voice/ws') {
+                return await handleVoiceUpgrade(req, server, options.jwtSecret)
+            }
             if (url.pathname.startsWith('/socket.io/')) {
                 return socketHandler.fetch(req, server)
             }

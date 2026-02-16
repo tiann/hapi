@@ -95,6 +95,24 @@ export function spawnHappyCLI(args: string[], options: SpawnOptions = {}): Child
   
   const { command: spawnCommand, args: spawnArgs } = getHappyCliCommand(args);
 
+  let spawnOptions = options;
+  if (!isBunCompiled()) {
+    const isBunRuntime = Boolean((process.versions as Record<string, string | undefined>).bun);
+    const requestedCwd = typeof options.cwd === 'string' ? options.cwd : undefined;
+    if (isBunRuntime && requestedCwd) {
+      // Run from CLI project root so Bun resolves @/* aliases from cli/tsconfig.json.
+      // Preserve intended working directory for agent runtime behavior.
+      spawnOptions = {
+        ...options,
+        cwd: projectPath(),
+        env: {
+          ...(options.env ?? process.env),
+          HAPI_TARGET_CWD: requestedCwd
+        }
+      };
+    }
+  }
+
   // Sanity check that the entrypoint path exists
   if (!isBunCompiled()) {
     const entrypoint = spawnArgs.find((arg) => arg.endsWith('index.ts'));
@@ -104,6 +122,6 @@ export function spawnHappyCLI(args: string[], options: SpawnOptions = {}): Child
       throw new Error(errorMessage);
     }
   }
-  
-  return spawn(spawnCommand, spawnArgs, options);
+
+  return spawn(spawnCommand, spawnArgs, spawnOptions);
 }

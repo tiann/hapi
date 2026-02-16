@@ -24,6 +24,17 @@ function asNumber(value: unknown): number | null {
     return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
+function decodeBase64Chunk(value: unknown): string | null {
+    const raw = asString(value);
+    if (!raw) return null;
+
+    try {
+        return Buffer.from(raw, 'base64').toString('utf8');
+    } catch {
+        return null;
+    }
+}
+
 function extractItemId(params: Record<string, unknown>): string | null {
     const direct = asString(params.itemId ?? params.item_id ?? params.id);
     if (direct) return direct;
@@ -87,6 +98,162 @@ export class AppServerEventConverter {
         const events: ConvertedEvent[] = [];
         const paramsRecord = asRecord(params) ?? {};
 
+        if (method === 'account/rateLimits/updated') {
+            return events;
+        }
+
+        if (method === 'item/reasoning/summaryTextDelta') {
+            return events;
+        }
+
+        if (method.startsWith('codex/event/')) {
+            const msg = asRecord(paramsRecord.msg) ?? {};
+            const msgType = asString(msg.type) ?? method.slice('codex/event/'.length);
+
+            if (!msgType) {
+                return events;
+            }
+
+            if (msgType === 'agent_message_delta' || msgType === 'agent_reasoning_delta') {
+                return events;
+            }
+
+            if (msgType === 'agent_message_content_delta') {
+                const itemId = asString(msg.item_id ?? msg.itemId);
+                const delta = asString(msg.delta);
+                if (itemId && delta) {
+                    return this.handleNotification('item/agentMessage/delta', { itemId, delta });
+                }
+                return events;
+            }
+
+            if (msgType === 'reasoning_content_delta') {
+                const itemId = asString(msg.item_id ?? msg.itemId);
+                const delta = asString(msg.delta);
+                if (delta) {
+                    return this.handleNotification('item/reasoning/textDelta', { itemId, delta });
+                }
+                return events;
+            }
+
+            if (msgType === 'agent_reasoning_section_break') {
+                return this.handleNotification('item/reasoning/summaryPartAdded', {});
+            }
+
+            if (msgType === 'item_started' || msgType === 'item_completed') {
+                return this.handleNotification(
+                    msgType === 'item_started' ? 'item/started' : 'item/completed',
+                    msg
+                );
+            }
+
+            if (msgType === 'task_started' || msgType === 'task_complete') {
+                const turnId = asString(msg.turn_id ?? msg.turnId ?? paramsRecord.id);
+                return this.handleNotification(
+                    msgType === 'task_started' ? 'turn/started' : 'turn/completed',
+                    {
+                        turn: turnId ? { id: turnId } : {},
+                        ...(msgType === 'task_complete' ? { status: 'completed' } : {})
+                    }
+                );
+            }
+
+            if (msgType === 'turn_diff') {
+                return this.handleNotification('turn/diff/updated', {
+                    diff: msg.unified_diff ?? msg.unifiedDiff
+                });
+            }
+
+            if (msgType === 'plan_update') {
+                return this.handleNotification('turn/plan/updated', {
+                    plan: msg.plan
+                });
+            }
+
+            if (msgType === 'exec_command_output_delta') {
+                const itemId = asString(msg.call_id ?? msg.callId);
+                const delta = decodeBase64Chunk(msg.chunk) ?? asString(msg.chunk);
+                if (itemId && delta) {
+                    return this.handleNotification('item/commandExecution/outputDelta', { itemId, delta });
+                }
+                return events;
+            }
+
+            if (msgType === 'exec_command_begin') {
+                const callId = asString(msg.call_id ?? msg.callId);
+                if (!callId) return events;
+
+                const command = extractCommand(msg.command);
+                const cwd = asString(msg.cwd);
+                const event: ConvertedEvent = {
+                    type: 'exec_command_begin',
+                    call_id: callId
+                };
+                if (command) event.command = command;
+                if (cwd) event.cwd = cwd;
+                if (msg.source !== undefined) event.source = msg.source;
+                if (msg.parsed_cmd !== undefined) event.parsed_cmd = msg.parsed_cmd;
+                if (msg.process_id !== undefined) event.process_id = msg.process_id;
+                if (msg.turn_id !== undefined) event.turn_id = msg.turn_id;
+                return [event];
+            }
+
+            if (msgType === 'exec_command_end') {
+                const callId = asString(msg.call_id ?? msg.callId);
+                if (!callId) return events;
+
+                const command = extractCommand(msg.command);
+                const cwd = asString(msg.cwd);
+                const output =
+                    asString(msg.formatted_output)
+                    ?? asString(msg.aggregated_output)
+                    ?? asString(msg.stdout)
+                    ?? asString(msg.output)
+                    ?? this.commandOutputBuffers.get(callId);
+                const stderr = asString(msg.stderr);
+                const error = asString(msg.error);
+                const exitCode = asNumber(msg.exit_code ?? msg.exitCode);
+
+                const event: ConvertedEvent = {
+                    type: 'exec_command_end',
+                    call_id: callId
+                };
+                if (command) event.command = command;
+                if (cwd) event.cwd = cwd;
+                if (output) event.output = output;
+                if (stderr) event.stderr = stderr;
+                if (error) event.error = error;
+                if (exitCode !== null) event.exit_code = exitCode;
+                if (msg.source !== undefined) event.source = msg.source;
+                if (msg.parsed_cmd !== undefined) event.parsed_cmd = msg.parsed_cmd;
+                if (msg.process_id !== undefined) event.process_id = msg.process_id;
+                if (msg.turn_id !== undefined) event.turn_id = msg.turn_id;
+                this.commandOutputBuffers.delete(callId);
+                return [event];
+            }
+
+            if (msgType === 'token_count') {
+                events.push({
+                    type: 'token_count',
+                    info: asRecord(msg.info) ?? null,
+                    ...(msg.rate_limits !== undefined ? { rate_limits: msg.rate_limits } : {})
+                });
+                return events;
+            }
+
+            if (msgType === 'patch_apply_begin' || msgType === 'patch_apply_end'
+                || msgType === 'mcp_startup_update' || msgType === 'mcp_startup_complete'
+                || msgType === 'mcp_tool_call_begin' || msgType === 'mcp_tool_call_end'
+                || msgType === 'web_search_begin' || msgType === 'web_search_end'
+                || msgType === 'context_compacted') {
+                events.push({
+                    type: msgType,
+                    ...msg
+                });
+                return events;
+            }
+        }
+
         if (method === 'thread/started' || method === 'thread/resumed') {
             const thread = asRecord(paramsRecord.thread) ?? paramsRecord;
             const threadId = asString(thread.threadId ?? thread.thread_id ?? thread.id);
@@ -129,6 +296,15 @@ export class AppServerEventConverter {
             if (diff) {
                 events.push({ type: 'turn_diff', unified_diff: diff });
             }
+            return events;
+        }
+
+        if (method === 'turn/plan/updated') {
+            const plan = Array.isArray(paramsRecord.plan) ? paramsRecord.plan : [];
+            events.push({
+                type: 'turn_plan_updated',
+                entries: plan
+            });
             return events;
         }
 
@@ -184,6 +360,28 @@ export class AppServerEventConverter {
             return events;
         }
 
+        if (method === 'item/fileChange/outputDelta') {
+            const itemId = extractItemId(paramsRecord);
+            const delta = asString(paramsRecord.delta ?? paramsRecord.text ?? paramsRecord.output ?? paramsRecord.stdout);
+            if (itemId && delta) {
+                const meta = this.fileChangeMeta.get(itemId) ?? {};
+                const previousOutput = asString(meta.stdout) ?? '';
+                this.fileChangeMeta.set(itemId, {
+                    ...meta,
+                    stdout: `${previousOutput}${delta}`
+                });
+            }
+            return events;
+        }
+
+        if (method === 'item/plan/delta') {
+            const delta = asString(paramsRecord.delta ?? paramsRecord.text);
+            if (delta) {
+                events.push({ type: 'plan_delta', delta });
+            }
+            return events;
+        }
+
         if (method === 'item/started' || method === 'item/completed') {
             const item = extractItem(paramsRecord);
             if (!item) return events;
@@ -192,6 +390,10 @@ export class AppServerEventConverter {
             const itemId = extractItemId(paramsRecord) ?? asString(item.id ?? item.itemId ?? item.item_id);
 
             if (!itemType || !itemId) {
+                return events;
+            }
+
+            if (itemType === 'usermessage' || itemType === 'mcptoolcall' || itemType === 'websearch') {
                 return events;
             }
 

@@ -1,8 +1,10 @@
 import { useState, useRef, useEffect } from 'react'
 import { useTranslation, type Locale } from '@/lib/use-translation'
 import { useAppGoBack } from '@/hooks/useAppGoBack'
+import { useAppContext } from '@/lib/app-context'
 import { getElevenLabsSupportedLanguages, getLanguageDisplayName, type Language } from '@/lib/languages'
 import { getFontScaleOptions, useFontScale, type FontScale } from '@/hooks/useFontScale'
+import { isReadyAnnouncementsEnabled, setReadyAnnouncementsEnabled } from '@/lib/settings'
 import { PROTOCOL_VERSION } from '@hapi/protocol'
 
 const locales: { value: Locale; nativeLabel: string }[] = [
@@ -70,6 +72,7 @@ function ChevronDownIcon(props: { className?: string }) {
 }
 
 export default function SettingsPage() {
+    const { api } = useAppContext()
     const { t, locale, setLocale } = useTranslation()
     const goBack = useAppGoBack()
     const [isOpen, setIsOpen] = useState(false)
@@ -84,6 +87,7 @@ export default function SettingsPage() {
     const [voiceLanguage, setVoiceLanguage] = useState<string | null>(() => {
         return localStorage.getItem('hapi-voice-lang')
     })
+    const [readyAnnouncementsEnabled, setReadyAnnouncementsEnabledState] = useState<boolean>(() => isReadyAnnouncementsEnabled())
 
     const fontScaleOptions = getFontScaleOptions()
     const currentLocale = locales.find((loc) => loc.value === locale)
@@ -109,6 +113,33 @@ export default function SettingsPage() {
         }
         setIsVoiceOpen(false)
     }
+
+    const handleReadyAnnouncementsToggle = () => {
+        const next = !readyAnnouncementsEnabled
+        setReadyAnnouncementsEnabledState(next)
+        setReadyAnnouncementsEnabled(next)
+        void api.updatePreferences({ readyAnnouncements: next }).catch(() => {
+            // Keep local preference even if sync fails
+        })
+    }
+
+    useEffect(() => {
+        let cancelled = false
+
+        void api.getPreferences()
+            .then((preferences) => {
+                if (cancelled) return
+                setReadyAnnouncementsEnabledState(preferences.readyAnnouncements)
+                setReadyAnnouncementsEnabled(preferences.readyAnnouncements)
+            })
+            .catch(() => {
+                // Keep local fallback
+            })
+
+        return () => {
+            cancelled = true
+        }
+    }, [api])
 
     // Close dropdown when clicking outside
     useEffect(() => {
@@ -216,6 +247,18 @@ export default function SettingsPage() {
                                 </div>
                             )}
                         </div>
+                        <button
+                            type="button"
+                            onClick={handleReadyAnnouncementsToggle}
+                            className="flex w-full items-center justify-between px-3 py-3 text-left transition-colors hover:bg-[var(--app-subtle-bg)]"
+                            role="switch"
+                            aria-checked={readyAnnouncementsEnabled}
+                        >
+                            <span className="text-[var(--app-fg)]">{t('settings.voice.readyAnnouncements')}</span>
+                            <span className={`inline-flex h-5 w-9 items-center rounded-full transition-colors ${readyAnnouncementsEnabled ? 'bg-[var(--app-link)]' : 'bg-[var(--app-border)]'}`}>
+                                <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${readyAnnouncementsEnabled ? 'translate-x-4' : 'translate-x-0.5'}`} />
+                            </span>
+                        </button>
                     </div>
 
                     {/* Display section */}

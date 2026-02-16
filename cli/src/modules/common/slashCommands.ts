@@ -30,15 +30,28 @@ const BUILTIN_COMMANDS: Record<string, SlashCommand[]> = {
         { name: 'compact', description: 'Compact conversation context', source: 'builtin' },
         { name: 'context', description: 'Show context information', source: 'builtin' },
         { name: 'cost', description: 'Show session cost', source: 'builtin' },
+        { name: 'model', description: 'Set or show active model', source: 'builtin' },
+        { name: 'new', description: 'Start a new conversation', source: 'builtin' },
         { name: 'plan', description: 'Toggle plan mode', source: 'builtin' },
     ],
-    codex: [],
+    codex: [
+        { name: 'new', description: 'Start a new conversation', source: 'builtin' },
+        { name: 'review', description: 'Review current changes and find issues', source: 'builtin' },
+        { name: 'compat', description: 'Summarize conversation to prevent hitting the context limit', source: 'builtin' },
+        { name: 'undo', description: 'Ask Codex to undo a turn', source: 'builtin' },
+        { name: 'diff', description: 'Show git diff including untracked files', source: 'builtin' },
+        { name: 'status', description: 'Show current session configuration and token usage', source: 'builtin' },
+    ],
     gemini: [
         { name: 'about', description: 'About Gemini', source: 'builtin' },
         { name: 'clear', description: 'Clear conversation', source: 'builtin' },
         { name: 'compress', description: 'Compress context', source: 'builtin' },
+        { name: 'model', description: 'Set or show active model', source: 'builtin' },
+        { name: 'new', description: 'Start a new conversation', source: 'builtin' },
     ],
-    opencode: [],
+    opencode: [
+        { name: 'new', description: 'Start a new conversation', source: 'builtin' },
+    ],
 };
 
 /**

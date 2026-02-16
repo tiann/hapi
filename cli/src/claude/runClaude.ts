@@ -29,7 +29,7 @@ export interface StartOptions {
 }
 
 export async function runClaude(options: StartOptions = {}): Promise<void> {
-    const workingDirectory = process.cwd();
+    const workingDirectory = process.env.HAPI_TARGET_CWD || process.cwd();
     const startedBy = options.startedBy ?? 'terminal';
 
     // Log environment info at startup
@@ -257,6 +257,22 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
             const commandText = specialCommand.originalMessage || message.content.text;
             messageQueue.pushIsolateAndClear(commandText, enhancedMode);
             logger.debugLargeJson('[start] /clear command pushed to queue:', message);
+            return;
+        }
+
+        if (specialCommand.type === 'new') {
+            logger.debug('[start] Detected /new command');
+            const enhancedMode: EnhancedMode = {
+                permissionMode: messagePermissionMode ?? 'default',
+                model: messageModel,
+                fallbackModel: messageFallbackModel,
+                customSystemPrompt: messageCustomSystemPrompt,
+                appendSystemPrompt: messageAppendSystemPrompt,
+                allowedTools: messageAllowedTools,
+                disallowedTools: messageDisallowedTools
+            };
+            messageQueue.pushIsolateAndClear('/new', enhancedMode);
+            logger.debugLargeJson('[start] /new command pushed to queue:', message);
             return;
         }
 

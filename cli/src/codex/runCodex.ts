@@ -11,6 +11,7 @@ import { createModeChangeHandler, createRunnerLifecycle, setControlledByUser } f
 import { isPermissionModeAllowedForFlavor } from '@hapi/protocol';
 import { PermissionModeSchema } from '@hapi/protocol/schemas';
 import { formatMessageWithAttachments } from '@/utils/attachmentFormatter';
+import { parseSpecialCommand } from '@/parsers/specialCommands';
 
 export { emitReadyIfIdle } from './utils/emitReadyIfIdle';
 
@@ -21,7 +22,7 @@ export async function runCodex(opts: {
     resumeSessionId?: string;
     model?: string;
 }): Promise<void> {
-    const workingDirectory = process.cwd();
+    const workingDirectory = process.env.HAPI_TARGET_CWD || process.cwd();
     const startedBy = opts.startedBy ?? 'terminal';
 
     logger.debug(`[codex] Starting with options: startedBy=${startedBy}`);
@@ -50,7 +51,7 @@ export async function runCodex(opts: {
     const sessionWrapperRef: { current: CodexSession | null } = { current: null };
 
     let currentPermissionMode: PermissionMode = opts.permissionMode ?? 'default';
-    const currentModel = opts.model;
+    let currentModel = opts.model;
     let currentCollaborationMode: EnhancedMode['collaborationMode'];
 
     const lifecycle = createRunnerLifecycle({
@@ -80,7 +81,42 @@ export async function runCodex(opts: {
             model: currentModel,
             collaborationMode: currentCollaborationMode
         };
-        const formattedText = formatMessageWithAttachments(message.content.text, message.content.attachments);
+
+        // Check for special commands before processing
+        const specialCommand = parseSpecialCommand(message.content.text);
+
+        if (specialCommand.type === 'new') {
+            logger.debug('[Codex] Detected /new command');
+            messageQueue.pushIsolateAndClear('/new', enhancedMode);
+            return;
+        }
+
+        if (specialCommand.type === 'model') {
+            logger.debug('[Codex] Detected /model command');
+            // Extract model name from "/model <name>" and update currentModel
+            const modelArg = message.content.text.trim().slice('/model'.length).trim();
+            if (modelArg) {
+                currentModel = modelArg;
+                logger.debug(`[Codex] Model changed to: ${currentModel}`);
+            }
+            // Push isolate to trigger session reset with new model config
+            const updatedMode: EnhancedMode = {
+                permissionMode: messagePermissionMode ?? 'default',
+                model: currentModel,
+                collaborationMode: currentCollaborationMode
+            };
+            messageQueue.pushIsolateAndClear('/model', updatedMode);
+            return;
+        }
+
+        const formattedText = formatMessageWithAttachments(
+            message.content.text,
+            message.content.attachments,
+            {
+                agent: 'codex',
+                cwd: workingDirectory
+            }
+        );
         messageQueue.push(formattedText, enhancedMode);
     });
 
@@ -108,7 +144,7 @@ export async function runCodex(opts: {
             throw new Error('Invalid collaboration mode');
         }
         const trimmed = value.trim();
-        if (!trimmed) {
+        if (trimmed !== 'plan' && trimmed !== 'default') {
             throw new Error('Invalid collaboration mode');
         }
         return trimmed as EnhancedMode['collaborationMode'];
@@ -118,7 +154,11 @@ export async function runCodex(opts: {
         if (!payload || typeof payload !== 'object') {
             throw new Error('Invalid session config payload');
         }
-        const config = payload as { permissionMode?: unknown; collaborationMode?: unknown };
+        const config = payload as {
+            permissionMode?: unknown;
+            collaborationMode?: unknown;
+            model?: unknown;
+        };
 
         if (config.permissionMode !== undefined) {
             currentPermissionMode = resolvePermissionMode(config.permissionMode);
@@ -128,8 +168,21 @@ export async function runCodex(opts: {
             currentCollaborationMode = resolveCollaborationMode(config.collaborationMode);
         }
 
+        if (config.model !== undefined) {
+            if (typeof config.model !== 'string' || config.model.trim().length === 0) {
+                throw new Error('Invalid model');
+            }
+            currentModel = config.model.trim();
+        }
+
         syncSessionMode();
-        return { applied: { permissionMode: currentPermissionMode, collaborationMode: currentCollaborationMode } };
+        return {
+            applied: {
+                permissionMode: currentPermissionMode,
+                collaborationMode: currentCollaborationMode,
+                model: currentModel
+            }
+        };
     });
 
     try {

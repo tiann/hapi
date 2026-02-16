@@ -100,6 +100,7 @@ export default {
   'newSession.type.worktree': 'Worktree',
   'newSession.type.worktree.desc': 'Create a new worktree next to repo',
   'newSession.type.worktree.placeholder': 'feature-x (default 1228-xxxx)',
+  'newSession.type.worktree.branchPlaceholder': 'Search local branch or type a new branch',
   'newSession.agent': 'Agent',
   'newSession.model': 'Model',
   'newSession.model.optional': 'optional',
@@ -201,6 +202,7 @@ export default {
 
   // Voice assistant
   'voice.connecting': 'Connecting...',
+  'voice.processing': 'Processing...',
   'voice.active': 'Active',
   'voice.muted': 'Muted',
   'voice.error': 'Error',
@@ -245,6 +247,8 @@ export default {
   'settings.voice.title': 'Voice Assistant',
   'settings.voice.language': 'Voice Language',
   'settings.voice.autoDetect': 'Auto-detect',
+  'settings.voice.readyAnnouncements': 'Ready Announcements',
+  'settings.runtime.effort': 'Reasoning Effort',
   'settings.about.title': 'About',
   'settings.about.website': 'Website',
   'settings.about.appVersion': 'App Version',
@@ -255,6 +259,7 @@ export default {
   'misc.machine': 'Machine',
   'misc.permissionMode': 'Permission Mode',
   'misc.model': 'Model',
+  'misc.refresh': 'Refresh',
   'misc.loading': 'Loading…',
   'misc.loadOlder': 'Load older',
   'misc.newMessage': '{n} new message{s}',

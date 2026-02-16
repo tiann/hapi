@@ -65,6 +65,54 @@ describe('SSEManager namespace filtering', () => {
         expect(received.map((entry) => entry.id).sort()).toEqual(['alpha', 'beta'])
     })
 
+    it('delivers message-received to connections with all subscription', () => {
+        const manager = new SSEManager(0, new VisibilityTracker())
+        const receivedAll: SyncEvent[] = []
+        const receivedSession: SyncEvent[] = []
+        const receivedOther: SyncEvent[] = []
+
+        manager.subscribe({
+            id: 'all-sub',
+            namespace: 'alpha',
+            all: true,
+            send: (event) => {
+                receivedAll.push(event)
+            },
+            sendHeartbeat: () => {}
+        })
+
+        manager.subscribe({
+            id: 'session-sub',
+            namespace: 'alpha',
+            sessionId: 's1',
+            send: (event) => {
+                receivedSession.push(event)
+            },
+            sendHeartbeat: () => {}
+        })
+
+        manager.subscribe({
+            id: 'other-session-sub',
+            namespace: 'alpha',
+            sessionId: 's2',
+            send: (event) => {
+                receivedOther.push(event)
+            },
+            sendHeartbeat: () => {}
+        })
+
+        manager.broadcast({
+            type: 'message-received',
+            sessionId: 's1',
+            namespace: 'alpha',
+            message: { id: 'm1', seq: 1, localId: null, content: {}, createdAt: Date.now(), status: 'sent' }
+        } as SyncEvent)
+
+        expect(receivedAll).toHaveLength(1)
+        expect(receivedSession).toHaveLength(1)
+        expect(receivedOther).toHaveLength(0)
+    })
+
     it('sends toast only to visible connections in a namespace', async () => {
         const manager = new SSEManager(0, new VisibilityTracker())
         const received: Array<{ id: string; event: SyncEvent }> = []

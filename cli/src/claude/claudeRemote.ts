@@ -10,6 +10,7 @@ import { awaitFileExist } from "@/modules/watcher/awaitFileExist";
 import { systemPrompt } from "./utils/systemPrompt";
 import { PermissionResult } from "./sdk/types";
 import { getHapiBlobsDir } from "@/constants/uploadPaths";
+import { getDefaultClaudeCodePath } from "./sdk/utils";
 
 export async function claudeRemote(opts: {
 
@@ -97,6 +98,17 @@ export async function claudeRemote(opts: {
         return;
     }
 
+    // Handle /new command
+    if (specialCommand.type === 'new') {
+        if (opts.onCompletionEvent) {
+            opts.onCompletionEvent('Started a new conversation');
+        }
+        if (opts.onSessionReset) {
+            opts.onSessionReset();
+        }
+        return;
+    }
+
     // Handle /compact command
     let isCompactCommand = false;
     if (specialCommand.type === 'compact') {
@@ -122,7 +134,7 @@ export async function claudeRemote(opts: {
         disallowedTools: initial.mode.disallowedTools,
         canCallTool: (toolName: string, input: unknown, options: { signal: AbortSignal }) => opts.canCallTool(toolName, input, mode, options),
         abort: opts.signal,
-        pathToClaudeCodeExecutable: 'claude',
+        pathToClaudeCodeExecutable: getDefaultClaudeCodePath(),
         settingsPath: opts.hookSettingsPath,
         additionalDirectories: [getHapiBlobsDir()],
     }

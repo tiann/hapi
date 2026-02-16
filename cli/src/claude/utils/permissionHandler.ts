@@ -28,11 +28,44 @@ interface PermissionResponse {
     reason?: string;
     mode?: PermissionMode;
     allowTools?: string[];
+    clearContext?: boolean;
+    clear_context?: boolean;
+    autoApproveEdits?: boolean;
+    auto_approve_edits?: boolean;
     answers?: Record<string, string[]> | Record<string, { answers: string[] }>;
     receivedAt?: number;
 }
 
 const PLAN_EXIT_MODES: PermissionMode[] = ['default', 'acceptEdits', 'bypassPermissions'];
+
+function normalizeBoolean(value: unknown): boolean | undefined {
+    if (value === true || value === false) {
+        return value;
+    }
+    if (typeof value === 'string') {
+        const lowered = value.trim().toLowerCase();
+        if (lowered === 'true') return true;
+        if (lowered === 'false') return false;
+    }
+    if (typeof value === 'number') {
+        if (value === 1) return true;
+        if (value === 0) return false;
+    }
+    return undefined;
+}
+
+function resolvePlanExitMode(
+    requestedMode: PermissionMode | undefined,
+    autoApproveEdits: boolean | undefined
+): PermissionMode {
+    if (requestedMode && PLAN_EXIT_MODES.includes(requestedMode)) {
+        return requestedMode;
+    }
+    if (autoApproveEdits) {
+        return 'acceptEdits';
+    }
+    return 'default';
+}
 
 function isAskUserQuestionToolName(toolName: string): boolean {
     return toolName === 'AskUserQuestion' || toolName === 'ask_user_question';
@@ -192,6 +225,25 @@ export class PermissionHandler extends BasePermissionHandler<PermissionResponse,
             });
         }
 
+        const normalizedClearContext = normalizeBoolean(response.clearContext ?? response.clear_context);
+        if (normalizedClearContext !== undefined) {
+            response.clearContext = normalizedClearContext;
+        }
+
+        const normalizedAutoApproveEdits = normalizeBoolean(response.autoApproveEdits ?? response.auto_approve_edits);
+        if (normalizedAutoApproveEdits !== undefined) {
+            response.autoApproveEdits = normalizedAutoApproveEdits;
+        }
+
+        const previousResponse = this.responses.get(response.id);
+        if (previousResponse) {
+            this.responses.set(response.id, {
+                ...previousResponse,
+                ...response,
+                receivedAt: previousResponse.receivedAt
+            });
+        }
+
         // Update permission mode
         if (response.mode) {
             this.permissionMode = response.mode;
@@ -236,10 +288,27 @@ export class PermissionHandler extends BasePermissionHandler<PermissionResponse,
             if (response.approved) {
                 logger.debug('Plan approved - injecting PLAN_FAKE_RESTART');
                 // Inject the approval message at the beginning of the queue
-                if (response.mode && PLAN_EXIT_MODES.includes(response.mode)) {
-                    this.session.queue.unshift(PLAN_FAKE_RESTART, { permissionMode: response.mode });
-                } else {
-                    this.session.queue.unshift(PLAN_FAKE_RESTART, { permissionMode: 'default' });
+                const exitMode = resolvePlanExitMode(response.mode, response.autoApproveEdits);
+                if (response.mode !== exitMode) {
+                    response.mode = exitMode;
+                    completion.mode = exitMode;
+                }
+
+                this.permissionMode = exitMode;
+                this.session.setPermissionMode(exitMode);
+
+                const storedResponse = this.responses.get(response.id);
+                if (storedResponse) {
+                    this.responses.set(response.id, {
+                        ...storedResponse,
+                        ...response,
+                        receivedAt: storedResponse.receivedAt
+                    });
+                }
+
+                this.session.queue.unshift(PLAN_FAKE_RESTART, { permissionMode: exitMode });
+                if (response.clearContext) {
+                    this.session.queue.unshiftIsolate('/clear', { permissionMode: exitMode });
                 }
                 pending.resolve({ behavior: 'deny', message: PLAN_FAKE_REJECT });
             } else {

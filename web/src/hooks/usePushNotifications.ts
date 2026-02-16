@@ -21,6 +21,40 @@ function base64UrlToUint8Array(base64Url: string): Uint8Array {
     return output
 }
 
+async function getReadyRegistration(): Promise<ServiceWorkerRegistration | null> {
+    let reg = await navigator.serviceWorker.getRegistration()
+    if (!reg) {
+        try {
+            reg = await navigator.serviceWorker.register('/sw.js', { scope: '/' })
+        } catch {
+            return null
+        }
+    }
+
+    const sw = reg.active ?? reg.waiting ?? reg.installing
+
+    if (reg.waiting) {
+        reg.waiting.postMessage({ type: 'SKIP_WAITING' })
+    }
+
+    if (reg.active) {
+        return reg
+    }
+
+    if (sw && sw.state !== 'activated') {
+        await Promise.race([
+            new Promise<void>((resolve) => {
+                sw.addEventListener('statechange', () => {
+                    if (sw.state === 'activated') resolve()
+                })
+            }),
+            new Promise<void>((_, reject) => setTimeout(() => reject(new Error('SW activation timeout')), 5000))
+        ])
+    }
+
+    return reg.active ? reg : null
+}
+
 export function usePushNotifications(api: ApiClient | null) {
     const [isSupported, setIsSupported] = useState(false)
     const [permission, setPermission] = useState<NotificationPermission>('default')
@@ -41,7 +75,11 @@ export function usePushNotifications(api: ApiClient | null) {
             return
         }
 
-        const registration = await navigator.serviceWorker.ready
+        const registration = await getReadyRegistration()
+        if (!registration) {
+            setIsSubscribed(false)
+            return
+        }
         const subscription = await registration.pushManager.getSubscription()
         setIsSubscribed(Boolean(subscription))
     }, [])
@@ -74,7 +112,10 @@ export function usePushNotifications(api: ApiClient | null) {
         }
 
         try {
-            const registration = await navigator.serviceWorker.ready
+            const registration = await getReadyRegistration()
+            if (!registration) {
+                return false
+            }
             const existing = await registration.pushManager.getSubscription()
             const { publicKey } = await api.getPushVapidPublicKey()
             const applicationServerKey = base64UrlToUint8Array(publicKey).buffer as ArrayBuffer
@@ -110,7 +151,10 @@ export function usePushNotifications(api: ApiClient | null) {
         }
 
         try {
-            const registration = await navigator.serviceWorker.ready
+            const registration = await getReadyRegistration()
+            if (!registration) {
+                return false
+            }
             const subscription = await registration.pushManager.getSubscription()
             if (!subscription) {
                 setIsSubscribed(false)

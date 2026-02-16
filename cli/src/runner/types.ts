@@ -17,4 +17,5 @@ export interface TrackedSession {
   error?: string;
   directoryCreated?: boolean;
   message?: string;
+  codexHomeDir?: string;
 }

@@ -15,7 +15,7 @@ function resolveApprovalPolicy(mode: EnhancedMode): ApprovalPolicy {
         case 'default': return 'untrusted';
         case 'read-only': return 'never';
         case 'safe-yolo': return 'on-failure';
-        case 'yolo': return 'on-failure';
+        case 'yolo': return 'never';
         default: {
             throw new Error(`Unknown permission mode: ${mode.permissionMode}`);
         }
@@ -139,10 +139,15 @@ export function buildTurnStartParams(args: {
     const collaborationMode = args.mode?.collaborationMode;
     const model = args.overrides?.model ?? args.mode?.model;
     if (collaborationMode) {
-        const settings = model ? { model } : undefined;
-        params.collaborationMode = settings
-            ? { mode: collaborationMode, settings }
-            : { mode: collaborationMode };
+        const normalizedMode = collaborationMode === 'plan' ? 'plan' : 'default';
+        params.collaborationMode = {
+            mode: normalizedMode,
+            settings: {
+                model: model ?? 'gpt-5',
+                reasoning_effort: null,
+                developer_instructions: null
+            }
+        };
     } else if (model) {
         params.model = model;
     }

@@ -10,6 +10,7 @@ import {
 } from './contextFormatters'
 import { VOICE_CONFIG } from '../voiceConfig'
 import type { DecryptedMessage, Session } from '@/types/api'
+import { isReadyAnnouncementsEnabled } from '@/lib/settings'
 
 interface SessionMetadata {
     summary?: { text?: string }
@@ -20,6 +21,8 @@ interface SessionMetadata {
 // Track which sessions have been reported
 const shownSessions = new Set<string>()
 let lastFocusSession: string | null = null
+const lastReadyAt = new Map<string, number>()
+const READY_DEBOUNCE_MS = 20_000
 
 // Session and message store references
 let sessionGetter: ((sessionId: string) => Session | null) | null = null
@@ -145,6 +148,13 @@ export const voiceHooks = {
      */
     onReady(sessionId: string) {
         if (VOICE_CONFIG.DISABLE_READY_EVENTS) return
+        if (!isReadyAnnouncementsEnabled()) return
+        const now = Date.now()
+        const previous = lastReadyAt.get(sessionId)
+        if (previous && now - previous < READY_DEBOUNCE_MS) {
+            return
+        }
+        lastReadyAt.set(sessionId, now)
 
         reportSession(sessionId)
         reportTextUpdate(formatReadyEvent(sessionId))
@@ -158,6 +168,7 @@ export const voiceHooks = {
             console.log('[Voice] Voice session stopped')
         }
         shownSessions.clear()
+        lastReadyAt.clear()
         lastFocusSession = null
     }
 }

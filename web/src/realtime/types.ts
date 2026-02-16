@@ -1,9 +1,7 @@
-import type { ElevenLabsLanguage } from '@/lib/languages'
-
 export interface VoiceSessionConfig {
     sessionId: string
     initialContext?: string
-    language?: ElevenLabsLanguage
+    language?: string
 }
 
 export interface VoiceSession {
@@ -13,7 +11,7 @@ export interface VoiceSession {
     sendContextualUpdate(update: string): void
 }
 
-export type ConversationStatus = 'disconnected' | 'connecting' | 'connected' | 'error'
+export type ConversationStatus = 'disconnected' | 'connecting' | 'connected' | 'processing' | 'error'
 export type ConversationMode = 'speaking' | 'listening'
 
 export type StatusCallback = (status: ConversationStatus, errorMessage?: string) => void

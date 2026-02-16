@@ -1,194 +1,76 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
 import type { WebAppEnv } from '../middleware/auth'
-import {
-    ELEVENLABS_API_BASE,
-    VOICE_AGENT_NAME,
-    buildVoiceAgentConfig
-} from '@hapi/protocol/voice'
-
-const tokenRequestSchema = z.object({
-    customAgentId: z.string().optional(),
-    customApiKey: z.string().optional()
+const transcriptionSchema = z.object({
+    language: z.string().trim().min(1).max(32).optional()
 })
-
-// Cache for auto-created agent IDs (keyed by API key hash)
-const agentIdCache = new Map<string, string>()
-
-interface ElevenLabsAgent {
-    agent_id: string
-    name: string
-}
-
-/**
- * Find an existing "Hapi Voice Assistant" agent
- */
-async function findHapiAgent(apiKey: string): Promise<string | null> {
-    try {
-        const response = await fetch(`${ELEVENLABS_API_BASE}/convai/agents`, {
-            method: 'GET',
-            headers: {
-                'xi-api-key': apiKey,
-                'Accept': 'application/json'
-            }
-        })
-
-        if (!response.ok) {
-            return null
-        }
-
-        const data = await response.json() as { agents?: ElevenLabsAgent[] }
-        const agents: ElevenLabsAgent[] = data.agents || []
-        const hapiAgent = agents.find(agent => agent.name === VOICE_AGENT_NAME)
-
-        return hapiAgent?.agent_id || null
-    } catch {
-        return null
-    }
-}
-
-/**
- * Create a new "Hapi Voice Assistant" agent
- */
-async function createHapiAgent(apiKey: string): Promise<string | null> {
-    try {
-        const response = await fetch(`${ELEVENLABS_API_BASE}/convai/agents/create`, {
-            method: 'POST',
-            headers: {
-                'xi-api-key': apiKey,
-                'Content-Type': 'application/json',
-                'Accept': 'application/json'
-            },
-            body: JSON.stringify(buildVoiceAgentConfig())
-        })
-
-        if (!response.ok) {
-            const errorData = await response.json().catch(() => ({})) as { detail?: { message?: string } | string }
-            const errorMessage = typeof errorData.detail === 'string'
-                ? errorData.detail
-                : (errorData.detail as { message?: string })?.message || `API error: ${response.status}`
-            console.error('[Voice] Failed to create agent:', errorMessage)
-            return null
-        }
-
-        const data = await response.json() as { agent_id?: string }
-        return data.agent_id || null
-    } catch (error) {
-        console.error('[Voice] Error creating agent:', error)
-        return null
-    }
-}
-
-/**
- * Get or create agent ID - finds existing or creates new "Hapi Voice Assistant" agent
- */
-async function getOrCreateAgentId(apiKey: string): Promise<string | null> {
-    // Check cache first (simple hash of first/last chars of API key)
-    const cacheKey = `${apiKey.slice(0, 4)}...${apiKey.slice(-4)}`
-    const cached = agentIdCache.get(cacheKey)
-    if (cached) {
-        return cached
-    }
-
-    // Try to find existing agent
-    console.log('[Voice] No agent ID configured, searching for existing agent...')
-    let agentId = await findHapiAgent(apiKey)
-
-    if (agentId) {
-        console.log('[Voice] Found existing agent:', agentId)
-    } else {
-        // Create new agent
-        console.log('[Voice] No existing agent found, creating new one...')
-        agentId = await createHapiAgent(apiKey)
-        if (agentId) {
-            console.log('[Voice] Created new agent:', agentId)
-        }
-    }
-
-    // Cache the result
-    if (agentId) {
-        agentIdCache.set(cacheKey, agentId)
-    }
-
-    return agentId
-}
 
 export function createVoiceRoutes(): Hono<WebAppEnv> {
     const app = new Hono<WebAppEnv>()
 
-    // Get ElevenLabs ConvAI conversation token
-    app.post('/voice/token', async (c) => {
-        const json = await c.req.json().catch(() => null)
-        const parsed = tokenRequestSchema.safeParse(json ?? {})
-        if (!parsed.success) {
-            return c.json({ allowed: false, error: 'Invalid request body' }, 400)
-        }
-
-        const { customAgentId, customApiKey } = parsed.data
-
-        // Use custom credentials if provided, otherwise fall back to env vars
-        const apiKey = customApiKey || process.env.ELEVENLABS_API_KEY
-        let agentId = customAgentId || process.env.ELEVENLABS_AGENT_ID
-
-        if (!apiKey) {
-            return c.json({
-                allowed: false,
-                error: 'ElevenLabs API key not configured'
-            }, 400)
-        }
-
-        // Auto-create agent if not configured
-        if (!agentId) {
-            agentId = await getOrCreateAgentId(apiKey) ?? undefined
-            if (!agentId) {
-                return c.json({
-                    allowed: false,
-                    error: 'Failed to create ElevenLabs agent automatically'
-                }, 500)
-            }
-        }
+    app.post('/voice/transcribe', async (c) => {
+        const whisperBaseUrl = process.env.LOCAL_WHISPER_URL?.trim() || 'http://127.0.0.1:8000'
+        const whisperModel = process.env.LOCAL_WHISPER_MODEL?.trim() || 'Systran/faster-distil-whisper-small.en'
+        const whisperApiKey = process.env.LOCAL_WHISPER_API_KEY?.trim()
 
         try {
-            // Fetch conversation token from ElevenLabs
+            const form = await c.req.formData()
+            const audio = form.get('audio')
+            const language = form.get('language')
+
+            if (!(audio instanceof File)) {
+                return c.json({ ok: false, error: 'Missing audio file' }, 400)
+            }
+
+            const parsed = transcriptionSchema.safeParse({
+                language: typeof language === 'string' ? language : undefined
+            })
+            if (!parsed.success) {
+                return c.json({ ok: false, error: 'Invalid language parameter' }, 400)
+            }
+
+            const upstreamForm = new FormData()
+            upstreamForm.set('model', whisperModel)
+            upstreamForm.set('file', audio, audio.name || 'audio.webm')
+            if (parsed.data.language) {
+                upstreamForm.set('language', parsed.data.language)
+            }
+
+            const headers = new Headers()
+            if (whisperApiKey) {
+                headers.set('authorization', `Bearer ${whisperApiKey}`)
+            }
+
             const response = await fetch(
-                `https://api.elevenlabs.io/v1/convai/conversation/token?agent_id=${encodeURIComponent(agentId)}`,
+                `${whisperBaseUrl.replace(/\/+$/, '')}/v1/audio/transcriptions`,
                 {
-                    method: 'GET',
-                    headers: {
-                        'xi-api-key': apiKey,
-                        'Accept': 'application/json'
-                    }
+                    method: 'POST',
+                    headers,
+                    body: upstreamForm
                 }
             )
 
             if (!response.ok) {
-                const errorData = await response.json().catch(() => ({})) as { detail?: { message?: string }; error?: string }
-                const errorMessage = errorData.detail?.message || errorData.error || `ElevenLabs API error: ${response.status}`
-                console.error('[Voice] Failed to get token from ElevenLabs:', errorMessage)
+                const errorBody = await response.text().catch(() => '')
+                console.error('[Voice] Local Whisper upstream error:', {
+                    url: `${whisperBaseUrl.replace(/\/+$/, '')}/v1/audio/transcriptions`,
+                    status: response.status,
+                    body: errorBody
+                })
                 return c.json({
-                    allowed: false,
-                    error: errorMessage
-                }, 500)
+                    ok: false,
+                    error: errorBody || `Local Whisper error: ${response.status}`
+                }, 502)
             }
 
-            const data = await response.json() as { token?: string }
-            if (!data.token) {
-                return c.json({
-                    allowed: false,
-                    error: 'No token in ElevenLabs response'
-                }, 500)
-            }
-
-            return c.json({
-                allowed: true,
-                token: data.token,
-                agentId
-            })
+            const data = await response.json().catch(() => null) as { text?: string } | null
+            const text = typeof data?.text === 'string' ? data.text.trim() : ''
+            return c.json({ ok: true, text })
         } catch (error) {
-            console.error('[Voice] Error fetching token:', error)
+            console.error('[Voice] Transcription failed:', error)
             return c.json({
-                allowed: false,
-                error: error instanceof Error ? error.message : 'Network error'
+                ok: false,
+                error: error instanceof Error ? error.message : 'Failed to transcribe audio'
             }, 500)
         }
     })

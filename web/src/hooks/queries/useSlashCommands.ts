@@ -32,6 +32,7 @@ const BUILTIN_COMMANDS: Record<string, SlashCommand[]> = {
         { name: 'context', description: 'Visualize current context usage as a colored grid', source: 'builtin' },
         { name: 'cost', description: 'Show the total cost and duration of the current session', source: 'builtin' },
         { name: 'doctor', description: 'Diagnose and verify your Claude Code installation and settings', source: 'builtin' },
+        { name: 'new', description: 'Start a new chat during a conversation', source: 'builtin' },
         { name: 'plan', description: 'View or open the current session plan', source: 'builtin' },
         { name: 'stats', description: 'Show your Claude Code usage statistics and activity', source: 'builtin' },
         { name: 'status', description: 'Show Claude Code status including version, model, account, and API connectivity', source: 'builtin' },
@@ -48,20 +49,43 @@ const BUILTIN_COMMANDS: Record<string, SlashCommand[]> = {
         { name: 'about', description: 'Show version info', source: 'builtin' },
         { name: 'clear', description: 'Clear the screen and conversation history', source: 'builtin' },
         { name: 'compress', description: 'Compress the context by replacing it with a summary', source: 'builtin' },
+        { name: 'new', description: 'Start a new chat during a conversation', source: 'builtin' },
         { name: 'stats', description: 'Check session stats', source: 'builtin' },
     ],
-    opencode: [],
+    opencode: [
+        { name: 'new', description: 'Start a new chat during a conversation', source: 'builtin' },
+    ],
+}
+
+/**
+ * Descriptions for known Claude Code SDK slash commands.
+ * These are merged from session.metadata.slashCommands when available.
+ */
+const SDK_COMMAND_DESCRIPTIONS: Record<string, string> = {
+    'bug': 'Report bugs, issues, or feedback about Claude Code',
+    'commit': 'Generate a git commit message and commit changes',
+    'help': 'Get help with Claude Code commands and usage',
+    'init': 'Initialize a CLAUDE.md project configuration file',
+    'login': 'Log in to your Anthropic account',
+    'logout': 'Log out of your Anthropic account',
+    'mcp': 'Show MCP server status and available tools',
+    'pr-review': 'Review a GitHub pull request',
+    'review': 'Review current changes and find issues',
+    'vim': 'Toggle vim keybinding mode',
 }
 
 export function useSlashCommands(
     api: ApiClient | null,
     sessionId: string | null,
-    agentType: string = 'claude'
+    agentType: string = 'claude',
+    sdkSlashCommands?: string[]
 ): {
     commands: SlashCommand[]
     isLoading: boolean
+    isRefreshing: boolean
     error: string | null
     getSuggestions: (query: string) => Promise<Suggestion[]>
+    refresh: () => Promise<void>
 } {
     const resolvedSessionId = sessionId ?? 'unknown'
 
@@ -80,21 +104,38 @@ export function useSlashCommands(
         retry: false, // Don't retry RPC failures
     })
 
-    // Merge built-in commands with user-defined and plugin commands from API
+    // Merge built-in commands with user-defined, plugin, and SDK commands
     const commands = useMemo(() => {
         const builtin = BUILTIN_COMMANDS[agentType] ?? BUILTIN_COMMANDS['claude'] ?? []
+        const allCommands = [...builtin]
 
         // If API succeeded, add user-defined and plugin commands
         if (query.data?.success && query.data.commands) {
             const extraCommands = query.data.commands.filter(
                 cmd => cmd.source === 'user' || cmd.source === 'plugin'
             )
-            return [...builtin, ...extraCommands]
+            allCommands.push(...extraCommands)
         }
 
-        // Fallback to built-in commands only
-        return builtin
-    }, [agentType, query.data])
+        // Merge SDK slash commands that aren't already in the list
+        if (sdkSlashCommands && sdkSlashCommands.length > 0) {
+            const existingNames = new Set(allCommands.map(cmd => cmd.name))
+            for (const name of sdkSlashCommands) {
+                // SDK reports names with leading slash sometimes — normalize
+                const cleanName = name.startsWith('/') ? name.slice(1) : name
+                if (!existingNames.has(cleanName)) {
+                    allCommands.push({
+                        name: cleanName,
+                        description: SDK_COMMAND_DESCRIPTIONS[cleanName],
+                        source: 'builtin'
+                    })
+                    existingNames.add(cleanName)
+                }
+            }
+        }
+
+        return allCommands
+    }, [agentType, query.data, sdkSlashCommands])
 
     const getSuggestions = useCallback(async (queryText: string): Promise<Suggestion[]> => {
         const searchTerm = queryText.startsWith('/')
@@ -141,7 +182,11 @@ export function useSlashCommands(
     return {
         commands,
         isLoading: query.isLoading,
+        isRefreshing: query.isFetching,
         error: query.error instanceof Error ? query.error.message : query.error ? 'Failed to load commands' : null,
         getSuggestions,
+        refresh: async () => {
+            await query.refetch()
+        },
     }
 }

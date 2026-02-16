@@ -26,7 +26,6 @@ import { TunnelManager } from './tunnel'
 import { waitForTunnelTlsReady } from './tunnel/tlsGate'
 import QRCode from 'qrcode'
 import type { Server as BunServer } from 'bun'
-import type { WebSocketData } from '@socket.io/bun-engine'
 
 /** Format config source for logging */
 function formatSource(source: ConfigSource | 'generated'): string {
@@ -99,7 +98,7 @@ function mergeCorsOrigins(base: string[], extra: string[]): string[] {
 
 let syncEngine: SyncEngine | null = null
 let happyBot: HappyBot | null = null
-let webServer: BunServer<WebSocketData> | null = null
+let webServer: BunServer<unknown> | null = null
 let sseManager: SSEManager | null = null
 let visibilityTracker: VisibilityTracker | null = null
 let notificationHub: NotificationHub | null = null
