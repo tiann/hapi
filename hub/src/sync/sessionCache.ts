@@ -1,6 +1,6 @@
 import { AgentStateSchema, MetadataSchema } from '@hapi/protocol/schemas'
 import type { ModelMode, PermissionMode, Session } from '@hapi/protocol/types'
-import type { Store } from '../store'
+import type { Store, StoredSession } from '../store'
 import { clampAliveTime } from './aliveTime'
 import { EventPublisher } from './eventPublisher'
 import { extractTodoWriteTodosFromMessageContent, TodosSchema } from './todos'
@@ -57,11 +57,11 @@ export class SessionCache {
 
     getOrCreateSession(tag: string, metadata: unknown, agentState: unknown, namespace: string): Session {
         const stored = this.store.sessions.getOrCreateSession(tag, metadata, agentState, namespace)
-        return this.refreshSession(stored.id) ?? (() => { throw new Error('Failed to load session') })()
+        return this.refreshSession(stored.id, stored) ?? (() => { throw new Error('Failed to load session') })()
     }
 
-    refreshSession(sessionId: string): Session | null {
-        let stored = this.store.sessions.getSession(sessionId)
+    refreshSession(sessionId: string, existingStored?: StoredSession): Session | null {
+        let stored = existingStored ?? this.store.sessions.getSession(sessionId)
         if (!stored) {
             const existed = this.sessions.delete(sessionId)
             if (existed) {
@@ -131,7 +131,7 @@ export class SessionCache {
     reloadAll(): void {
         const sessions = this.store.sessions.getSessions()
         for (const session of sessions) {
-            this.refreshSession(session.id)
+            this.refreshSession(session.id, session)
         }
     }
 
