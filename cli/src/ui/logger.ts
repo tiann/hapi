@@ -44,7 +44,7 @@ function getSessionLogPath(): string {
   return join(configuration.logsDir, filename)
 }
 
-class Logger {
+export class Logger {
   private dangerouslyUnencryptedServerLoggingUrl: string | undefined
 
   constructor(
@@ -66,10 +66,6 @@ class Logger {
 
   debug(message: string, ...args: unknown[]): void {
     this.logToFile(`[${this.localTimezoneTimestamp()}]`, message, ...args)
-
-    // NOTE: @kirill does not think its a good ideas,
-    // as it will break us using claude in interactive mode.
-    // Instead simply open the debug file in a new editor window.
   }
 
   debugLargeJson(
