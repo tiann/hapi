@@ -56,11 +56,6 @@ export function createAttachmentAdapter(api: ApiClient, sessionId: string): Atta
                     return
                 }
 
-                const content = await fileToBase64(file)
-                if (cancelledAttachmentIds.has(id)) {
-                    return
-                }
-
                 yield {
                     id,
                     type: 'file',
@@ -70,7 +65,19 @@ export function createAttachmentAdapter(api: ApiClient, sessionId: string): Atta
                     status: { type: 'running', reason: 'uploading', progress: 50 }
                 }
 
-                const result = await api.uploadFile(sessionId, file.name, content, contentType)
+                let result
+                try {
+                    result = await api.uploadFileMultipart(sessionId, file)
+                } catch {
+                    result = { success: false as const }
+                }
+                if (!result.success) {
+                    const content = await fileToBase64(file)
+                    if (cancelledAttachmentIds.has(id)) {
+                        return
+                    }
+                    result = await api.uploadFile(sessionId, file.name, content, contentType)
+                }
                 if (cancelledAttachmentIds.has(id)) {
                     if (result.success && result.path) {
                         await deleteUpload(result.path)

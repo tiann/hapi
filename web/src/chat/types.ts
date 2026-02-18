@@ -13,6 +13,15 @@ export type AgentEvent =
     | { type: 'message'; message: string }
     | { type: 'title-changed'; title: string }
     | { type: 'limit-reached'; endsAt: number }
+    | {
+        type: 'rate-limit'
+        status?: string
+        utilization?: number
+        rateLimitType?: string
+        resetsAt?: number
+        isUsingOverage?: boolean
+        surpassedThreshold?: number
+    }
     | { type: 'ready' }
     | { type: 'api-error'; retryAttempt: number; maxRetries: number; error: unknown }
     | { type: 'turn-duration'; durationMs: number }

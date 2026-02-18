@@ -285,6 +285,18 @@ export class ApiClient {
         })
     }
 
+    async uploadFileMultipart(sessionId: string, file: File): Promise<UploadFileResponse> {
+        const formData = new FormData()
+        formData.set('file', file, file.name)
+        formData.set('filename', file.name)
+        formData.set('mimeType', file.type || 'application/octet-stream')
+
+        return await this.request<UploadFileResponse>(`/api/sessions/${encodeURIComponent(sessionId)}/upload/multipart`, {
+            method: 'POST',
+            body: formData
+        })
+    }
+
     async deleteUploadFile(sessionId: string, path: string): Promise<DeleteUploadResponse> {
         return await this.request<DeleteUploadResponse>(`/api/sessions/${encodeURIComponent(sessionId)}/upload/delete`, {
             method: 'POST',

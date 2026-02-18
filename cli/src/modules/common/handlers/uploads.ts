@@ -29,11 +29,56 @@ interface DeleteUploadResponse {
     error?: string
 }
 
+interface MultipartUploadStartRequest {
+    sessionId?: string
+    filename: string
+    mimeType: string
+}
+
+interface MultipartUploadStartResponse {
+    success: boolean
+    uploadId?: string
+    error?: string
+}
+
+interface MultipartUploadChunkRequest {
+    sessionId?: string
+    uploadId: string
+    chunk: string // base64 encoded
+}
+
+interface MultipartUploadChunkResponse {
+    success: boolean
+    error?: string
+}
+
+interface MultipartUploadCompleteRequest {
+    sessionId?: string
+    uploadId: string
+}
+
+interface MultipartUploadCompleteResponse {
+    success: boolean
+    path?: string
+    error?: string
+}
+
+interface MultipartUploadAbortRequest {
+    sessionId?: string
+    uploadId: string
+}
+
+interface MultipartUploadAbortResponse {
+    success: boolean
+    error?: string
+}
+
 const uploadDirs = new Map<string, string>()
 const uploadDirPromises = new Map<string, Promise<string>>()
 const uploadDirCleanupRequested = new Set<string>()
 let cleanupRegistered = false
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+const multipartUploads = new Map<string, { sessionKey: string; filePath: string; bytesWritten: number }>()
 
 function sanitizeFilename(filename: string): string {
     // Remove path separators and limit length
@@ -100,6 +145,17 @@ export async function cleanupUploadDir(sessionId?: string): Promise<void> {
     uploadDirCleanupRequested.add(sessionKey)
 
     try {
+        const staleUploads = Array.from(multipartUploads.entries())
+            .filter(([, value]) => value.sessionKey === sessionKey)
+        for (const [uploadId, value] of staleUploads) {
+            multipartUploads.delete(uploadId)
+            try {
+                await rm(value.filePath, { force: true })
+            } catch (error) {
+                logger.debug('Failed to cleanup multipart upload file:', error)
+            }
+        }
+
         const inflight = uploadDirPromises.get(sessionKey)
         if (inflight) {
             try {
@@ -132,6 +188,7 @@ function cleanupUploadDirsSync(): void {
     uploadDirs.clear()
     uploadDirPromises.clear()
     uploadDirCleanupRequested.clear()
+    multipartUploads.clear()
 
     for (const dir of dirs) {
         try {
@@ -219,6 +276,114 @@ export function registerUploadHandlers(rpcHandlerManager: RpcHandlerManager): vo
         } catch (error) {
             logger.debug('Failed to delete upload file:', error)
             return rpcError(getErrorMessage(error, 'Failed to delete upload file'))
+        }
+    })
+
+    rpcHandlerManager.registerHandler<MultipartUploadStartRequest, MultipartUploadStartResponse>('uploadMultipartStart', async (data) => {
+        if (!data.filename) {
+            return rpcError('Filename is required')
+        }
+
+        const sessionKey = getSessionKey(data.sessionId)
+        const uploadId = crypto.randomUUID()
+
+        try {
+            const dir = await getOrCreateUploadDir(data.sessionId)
+            const sanitizedFilename = sanitizeFilename(data.filename)
+            const timestamp = Date.now()
+            const uniqueFilename = `${timestamp}-${sanitizedFilename}`
+            const filePath = join(dir, uniqueFilename)
+
+            await writeFile(filePath, new Uint8Array(0))
+            multipartUploads.set(uploadId, { sessionKey, filePath, bytesWritten: 0 })
+            return { success: true, uploadId }
+        } catch (error) {
+            logger.debug('Failed to initialize multipart upload:', error)
+            return rpcError(getErrorMessage(error, 'Failed to initialize multipart upload'))
+        }
+    })
+
+    rpcHandlerManager.registerHandler<MultipartUploadChunkRequest, MultipartUploadChunkResponse>('uploadMultipartChunk', async (data) => {
+        const uploadId = data?.uploadId?.trim()
+        if (!uploadId) {
+            return rpcError('Upload id is required')
+        }
+
+        const entry = multipartUploads.get(uploadId)
+        if (!entry) {
+            return rpcError('Upload not found')
+        }
+
+        const requestSessionKey = getSessionKey(data.sessionId)
+        if (entry.sessionKey !== requestSessionKey) {
+            return rpcError('Upload session mismatch')
+        }
+
+        if (!isPathWithinUploadDir(entry.filePath, data.sessionId)) {
+            multipartUploads.delete(uploadId)
+            return rpcError('Invalid upload path')
+        }
+
+        if (!data.chunk) {
+            return rpcError('Chunk is required')
+        }
+
+        try {
+            const buffer = Buffer.from(data.chunk, 'base64')
+            const nextSize = entry.bytesWritten + buffer.length
+            if (nextSize > MAX_UPLOAD_BYTES) {
+                await rm(entry.filePath, { force: true })
+                multipartUploads.delete(uploadId)
+                return rpcError('File too large (max 50MB)')
+            }
+
+            await writeFile(entry.filePath, buffer, { flag: 'a' })
+            entry.bytesWritten = nextSize
+            return { success: true }
+        } catch (error) {
+            logger.debug('Failed to append multipart upload chunk:', error)
+            return rpcError(getErrorMessage(error, 'Failed to append multipart upload chunk'))
+        }
+    })
+
+    rpcHandlerManager.registerHandler<MultipartUploadCompleteRequest, MultipartUploadCompleteResponse>('uploadMultipartComplete', async (data) => {
+        const uploadId = data?.uploadId?.trim()
+        if (!uploadId) {
+            return rpcError('Upload id is required')
+        }
+
+        const entry = multipartUploads.get(uploadId)
+        if (!entry) {
+            return rpcError('Upload not found')
+        }
+
+        const requestSessionKey = getSessionKey(data.sessionId)
+        if (entry.sessionKey !== requestSessionKey) {
+            return rpcError('Upload session mismatch')
+        }
+
+        multipartUploads.delete(uploadId)
+        return { success: true, path: entry.filePath }
+    })
+
+    rpcHandlerManager.registerHandler<MultipartUploadAbortRequest, MultipartUploadAbortResponse>('uploadMultipartAbort', async (data) => {
+        const uploadId = data?.uploadId?.trim()
+        if (!uploadId) {
+            return rpcError('Upload id is required')
+        }
+
+        const entry = multipartUploads.get(uploadId)
+        if (!entry) {
+            return { success: true }
+        }
+
+        multipartUploads.delete(uploadId)
+        try {
+            await rm(entry.filePath, { force: true })
+            return { success: true }
+        } catch (error) {
+            logger.debug('Failed to abort multipart upload:', error)
+            return rpcError(getErrorMessage(error, 'Failed to abort multipart upload'))
         }
     })
 }
