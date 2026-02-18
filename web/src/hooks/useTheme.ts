@@ -1,28 +1,72 @@
-import { useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useState } from 'react'
 import { getTelegramWebApp } from './useTelegram'
 
-type ColorScheme = 'light' | 'dark'
+export type ThemePreference = 'system' | 'light' | 'dark' | 'catpuccin'
+type ResolvedTheme = 'light' | 'dark' | 'catpuccin'
 
-function getColorScheme(): ColorScheme {
+const STORAGE_KEY = 'hapi-theme'
+
+function isBrowser(): boolean {
+    return typeof window !== 'undefined' && typeof document !== 'undefined'
+}
+
+const useIsomorphicLayoutEffect = isBrowser() ? useLayoutEffect : useEffect
+
+function safeGetItem(key: string): string | null {
+    if (!isBrowser()) return null
+    try {
+        return localStorage.getItem(key)
+    } catch {
+        return null
+    }
+}
+
+function safeSetItem(key: string, value: string): void {
+    if (!isBrowser()) return
+    try {
+        localStorage.setItem(key, value)
+    } catch {
+        // Ignore storage errors
+    }
+}
+
+function safeRemoveItem(key: string): void {
+    if (!isBrowser()) return
+    try {
+        localStorage.removeItem(key)
+    } catch {
+        // Ignore storage errors
+    }
+}
+
+function parseThemePreference(raw: string | null): ThemePreference {
+    if (raw === 'light' || raw === 'dark' || raw === 'catpuccin') return raw
+    return 'system'
+}
+
+function getSystemColorScheme(): 'light' | 'dark' {
     const tg = getTelegramWebApp()
     if (tg?.colorScheme) {
         return tg.colorScheme === 'dark' ? 'dark' : 'light'
     }
-
-    // Fallback to system preference for browser environment
-    if (typeof window !== 'undefined' && window.matchMedia) {
+    if (isBrowser() && window.matchMedia) {
         return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
     }
-
     return 'light'
+}
+
+function resolveTheme(pref: ThemePreference): ResolvedTheme {
+    if (pref === 'system') return getSystemColorScheme()
+    return pref
+}
+
+function applyTheme(theme: ResolvedTheme): void {
+    if (!isBrowser()) return
+    document.documentElement.setAttribute('data-theme', theme)
 }
 
 function isIOS(): boolean {
     return /iPad|iPhone|iPod/.test(navigator.userAgent)
-}
-
-function applyTheme(scheme: ColorScheme): void {
-    document.documentElement.setAttribute('data-theme', scheme)
 }
 
 function applyPlatform(): void {
@@ -31,59 +75,84 @@ function applyPlatform(): void {
     }
 }
 
-// External store for theme state
-let currentScheme: ColorScheme = getColorScheme()
-const listeners = new Set<() => void>()
-
-// Apply theme immediately at module load (before React renders)
-applyTheme(currentScheme)
-
-function subscribe(callback: () => void): () => void {
-    listeners.add(callback)
-    return () => listeners.delete(callback)
+function getInitialPreference(): ThemePreference {
+    return parseThemePreference(safeGetItem(STORAGE_KEY))
 }
 
-function getSnapshot(): ColorScheme {
-    return currentScheme
-}
-
-function updateScheme(): void {
-    const newScheme = getColorScheme()
-    if (newScheme !== currentScheme) {
-        currentScheme = newScheme
-        applyTheme(newScheme)
-        listeners.forEach((cb) => cb())
-    }
-}
-
-// Track if theme listeners have been set up
-let listenersInitialized = false
-
-export function useTheme(): { colorScheme: ColorScheme; isDark: boolean } {
-    const colorScheme = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
-
-    return {
-        colorScheme,
-        isDark: colorScheme === 'dark',
-    }
-}
-
-// Call this once at app startup to ensure theme is applied and listeners attached
 export function initializeTheme(): void {
-    currentScheme = getColorScheme()
-    applyTheme(currentScheme)
+    applyPlatform()
+    applyTheme(resolveTheme(getInitialPreference()))
+}
 
-    // Set up listeners only once (after SDK may have loaded)
-    if (!listenersInitialized) {
-        listenersInitialized = true
+export function getThemeOptions(): ReadonlyArray<{ value: ThemePreference; label: string }> {
+    return [
+        { value: 'system', label: 'system' },
+        { value: 'light', label: 'light' },
+        { value: 'dark', label: 'dark' },
+        { value: 'catpuccin', label: 'catpuccin' },
+    ]
+}
+
+export function useTheme(): {
+    themePreference: ThemePreference
+    setThemePreference: (pref: ThemePreference) => void
+    isDark: boolean
+} {
+    const [themePreference, setThemePreferenceState] = useState<ThemePreference>(getInitialPreference)
+
+    const resolved = resolveTheme(themePreference)
+
+    useIsomorphicLayoutEffect(() => {
+        applyTheme(resolved)
+    }, [resolved])
+
+    // Listen for system color scheme changes (only matters when pref is 'system')
+    useEffect(() => {
+        if (themePreference !== 'system') return undefined
+
         const tg = getTelegramWebApp()
         if (tg?.onEvent) {
-            // Telegram theme changes
-            tg.onEvent('themeChanged', updateScheme)
-        } else if (typeof window !== 'undefined' && window.matchMedia) {
-            // Browser system preference changes
-            const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)')
-            mediaQuery.addEventListener('change', updateScheme)
+            const handler = () => applyTheme(resolveTheme('system'))
+            tg.onEvent('themeChanged', handler)
+            return () => tg.offEvent?.('themeChanged', handler)
         }
+
+        if (isBrowser() && window.matchMedia) {
+            const mq = window.matchMedia('(prefers-color-scheme: dark)')
+            const handler = () => applyTheme(resolveTheme('system'))
+            mq.addEventListener('change', handler)
+            return () => mq.removeEventListener('change', handler)
+        }
+
+        return undefined
+    }, [themePreference])
+
+    // Cross-tab sync
+    useEffect(() => {
+        if (!isBrowser()) return
+
+        const onStorage = (event: StorageEvent) => {
+            if (event.key !== STORAGE_KEY) return
+            const next = parseThemePreference(event.newValue)
+            setThemePreferenceState(next)
+        }
+
+        window.addEventListener('storage', onStorage)
+        return () => window.removeEventListener('storage', onStorage)
+    }, [])
+
+    const setThemePreference = useCallback((pref: ThemePreference) => {
+        setThemePreferenceState(pref)
+        if (pref === 'system') {
+            safeRemoveItem(STORAGE_KEY)
+        } else {
+            safeSetItem(STORAGE_KEY, pref)
+        }
+    }, [])
+
+    return {
+        themePreference,
+        setThemePreference,
+        isDark: resolved !== 'light',
     }
 }
