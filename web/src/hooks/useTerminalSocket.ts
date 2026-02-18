@@ -4,6 +4,7 @@ import { io, type Socket } from 'socket.io-client'
 type TerminalConnectionState =
     | { status: 'idle' }
     | { status: 'connecting' }
+    | { status: 'reconnecting' }
     | { status: 'connected' }
     | { status: 'error'; error: string }
 
@@ -34,6 +35,51 @@ type TerminalErrorPayload = {
     message: string
 }
 
+const MAX_CONNECT_ERRORS_BEFORE_FAILURE = 5
+const TERMINAL_DEBUG_STORAGE_KEY = 'hapi:debug:terminal'
+
+function isTerminalDebugEnabled(): boolean {
+    if (typeof window === 'undefined') {
+        return false
+    }
+    if (import.meta.env.DEV) {
+        return true
+    }
+    try {
+        return window.localStorage.getItem(TERMINAL_DEBUG_STORAGE_KEY) === '1'
+    } catch {
+        return false
+    }
+}
+
+function describeSequence(sequence: string): string {
+    if (!sequence) {
+        return '(empty)'
+    }
+    return sequence
+        .split('')
+        .map((char) => {
+            const code = char.charCodeAt(0)
+            if (char === '\u0008') return 'BS(0x08)'
+            if (char === '\u007f') return 'DEL(0x7f)'
+            if (char === '\r') return 'CR(0x0d)'
+            if (char === '\n') return 'LF(0x0a)'
+            if (char === '\t') return 'TAB(0x09)'
+            if (code < 32 || code === 127) {
+                return `CTRL(0x${code.toString(16).padStart(2, '0')})`
+            }
+            return `${char}(0x${code.toString(16).padStart(2, '0')})`
+        })
+        .join(' ')
+}
+
+function debugTerminal(label: string, data: Record<string, unknown>): void {
+    if (!isTerminalDebugEnabled()) {
+        return
+    }
+    console.debug(`[TerminalDebug] ${label}`, data)
+}
+
 export function useTerminalSocket(options: UseTerminalSocketOptions): {
     state: TerminalConnectionState
     connect: (cols: number, rows: number) => void
@@ -52,6 +98,7 @@ export function useTerminalSocket(options: UseTerminalSocketOptions): {
     const tokenRef = useRef(options.token)
     const baseUrlRef = useRef(options.baseUrl)
     const lastSizeRef = useRef<{ cols: number; rows: number } | null>(null)
+    const connectErrorCountRef = useRef(0)
 
     useEffect(() => {
         sessionIdRef.current = options.sessionId
@@ -93,6 +140,15 @@ export function useTerminalSocket(options: UseTerminalSocketOptions): {
         setState({ status: 'error', error: message })
     }, [])
 
+    const setReconnectingState = useCallback(() => {
+        setState((current) => {
+            if (current.status === 'idle') {
+                return current
+            }
+            return { status: 'reconnecting' }
+        })
+    }, [])
+
     const connect = useCallback((cols: number, rows: number) => {
         lastSizeRef.current = { cols, rows }
         const token = tokenRef.current
@@ -108,6 +164,7 @@ export function useTerminalSocket(options: UseTerminalSocketOptions): {
             const socket = socketRef.current
             socket.auth = { token }
             if (socket.connected) {
+                connectErrorCountRef.current = 0
                 emitCreate(socket, { cols, rows })
             } else {
                 socket.connect()
@@ -132,6 +189,7 @@ export function useTerminalSocket(options: UseTerminalSocketOptions): {
 
         socket.on('connect', () => {
             const size = lastSizeRef.current ?? { cols, rows }
+            connectErrorCountRef.current = 0
             setState({ status: 'connecting' })
             emitCreate(socket, size)
         })
@@ -140,6 +198,7 @@ export function useTerminalSocket(options: UseTerminalSocketOptions): {
             if (!isCurrentTerminal(payload.terminalId)) {
                 return
             }
+            connectErrorCountRef.current = 0
             setState({ status: 'connected' })
         })
 
@@ -155,7 +214,7 @@ export function useTerminalSocket(options: UseTerminalSocketOptions): {
                 return
             }
             exitHandlerRef.current(payload.code, payload.signal)
-            setErrorState('Terminal exited.')
+            setState({ status: 'idle' })
         })
 
         socket.on('terminal:error', (payload: TerminalErrorPayload) => {
@@ -167,7 +226,12 @@ export function useTerminalSocket(options: UseTerminalSocketOptions): {
 
         socket.on('connect_error', (error) => {
             const message = error instanceof Error ? error.message : 'Connection error'
-            setErrorState(message)
+            connectErrorCountRef.current += 1
+            if (connectErrorCountRef.current >= MAX_CONNECT_ERRORS_BEFORE_FAILURE) {
+                setErrorState(message)
+                return
+            }
+            setReconnectingState()
         })
 
         socket.on('disconnect', (reason) => {
@@ -175,17 +239,28 @@ export function useTerminalSocket(options: UseTerminalSocketOptions): {
                 setState({ status: 'idle' })
                 return
             }
-            setErrorState(`Disconnected: ${reason}`)
+            setReconnectingState()
+            if (reason === 'io server disconnect') {
+                socket.connect()
+            }
         })
 
         socket.connect()
-    }, [emitCreate, setErrorState, isCurrentTerminal])
+    }, [emitCreate, setErrorState, setReconnectingState, isCurrentTerminal])
 
     const write = useCallback((data: string) => {
         const socket = socketRef.current
         if (!socket || !socket.connected) {
+            debugTerminal('socket.write skipped (not connected)', {
+                data: describeSequence(data),
+                terminalId: terminalIdRef.current
+            })
             return
         }
+        debugTerminal('socket.write', {
+            terminalId: terminalIdRef.current,
+            data: describeSequence(data)
+        })
         socket.emit('terminal:write', { terminalId: terminalIdRef.current, data })
     }, [])
 
@@ -206,6 +281,7 @@ export function useTerminalSocket(options: UseTerminalSocketOptions): {
         socket.removeAllListeners()
         socket.disconnect()
         socketRef.current = null
+        connectErrorCountRef.current = 0
         setState({ status: 'idle' })
     }, [])
 

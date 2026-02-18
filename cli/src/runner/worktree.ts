@@ -75,6 +75,14 @@ function normalizeNameHint(nameHint?: string): string | null {
   return slug ? slug : null;
 }
 
+function normalizeBranchHint(branchHint?: string): string | null {
+  if (!branchHint) {
+    return null;
+  }
+  const trimmed = branchHint.trim();
+  return trimmed ? trimmed : null;
+}
+
 function makeDefaultBaseName(): string {
   const suffix = randomBytes(2).toString('hex');
   return `${formatDatePrefix()}-${suffix}`;
@@ -101,8 +109,9 @@ async function branchExists(repoRoot: string, branch: string): Promise<boolean> 
 export async function createWorktree(options: {
   basePath: string;
   nameHint?: string;
+  branch?: string;
 }): Promise<WorktreeResult> {
-  const { basePath, nameHint } = options;
+  const { basePath, nameHint, branch: branchHint } = options;
   let repoRoot: string;
 
   try {
@@ -120,23 +129,30 @@ export async function createWorktree(options: {
   const repoWorktreesRoot = join(repoParent, `${repoName}-worktrees`);
   await mkdir(repoWorktreesRoot, { recursive: true });
 
-  const baseName = normalizeNameHint(nameHint) ?? makeDefaultBaseName();
+  const requestedBranch = normalizeBranchHint(branchHint);
+  const baseName = normalizeNameHint(nameHint)
+    ?? (requestedBranch ? toSlug(requestedBranch) : null)
+    ?? makeDefaultBaseName();
 
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
     const name = attempt === 0 ? baseName : `${baseName}-${randomBytes(2).toString('hex')}`;
-    const branch = `hapi-${name}`;
+    const branch = requestedBranch ?? `hapi-${name}`;
     const worktreePath = join(repoWorktreesRoot, name);
 
     if (await pathExists(worktreePath)) {
       continue;
     }
 
-    if (await branchExists(repoRoot, branch)) {
+    const existingBranch = await branchExists(repoRoot, branch);
+    if (!requestedBranch && existingBranch) {
       continue;
     }
 
     try {
-      await runGit(['worktree', 'add', '-b', branch, worktreePath], repoRoot);
+      const args = existingBranch
+        ? ['worktree', 'add', worktreePath, branch]
+        : ['worktree', 'add', '-b', branch, worktreePath];
+      await runGit(args, repoRoot);
       return {
         ok: true,
         info: {

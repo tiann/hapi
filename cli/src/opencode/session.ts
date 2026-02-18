@@ -3,6 +3,7 @@ import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { AgentSessionBase } from '@/agent/sessionBase';
 import type { OpencodeHookEvent, OpencodeMode, PermissionMode } from './types';
 import type { LocalLaunchExitReason } from '@/agent/localLaunchPolicy';
+import type { MessageMeta } from '@/api/types';
 
 type LocalLaunchFailure = {
     message: string;
@@ -81,8 +82,8 @@ export class OpencodeSession extends AgentSessionBase<OpencodeMode> {
         this.client.sendCodexMessage(message);
     };
 
-    sendUserMessage = (text: string): void => {
-        this.client.sendUserMessage(text);
+    sendUserMessage = (text: string, meta?: MessageMeta): void => {
+        this.client.sendUserMessage(text, meta);
     };
 
     sendSessionEvent = (event: Parameters<ApiSessionClient['sendSessionEvent']>[0]): void => {

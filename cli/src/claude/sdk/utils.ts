@@ -6,6 +6,7 @@
 import { existsSync } from 'node:fs'
 import { execSync } from 'node:child_process'
 import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { logger } from '@/ui/logger'
 
 /**
@@ -60,6 +61,20 @@ function findGlobalClaudePath(): string | null {
     // Windows: Always return absolute path for shell: false compatibility
     if (process.platform === 'win32') {
         return findWindowsClaudePath()
+    }
+
+    // Unix fallback locations when PATH is restricted (e.g. launchd agents).
+    const unixCandidates = [
+        '/opt/homebrew/bin/claude',
+        '/usr/local/bin/claude',
+        '/usr/bin/claude',
+        join(homeDir, '.local', 'bin', 'claude')
+    ]
+    for (const candidate of unixCandidates) {
+        if (existsSync(candidate)) {
+            logger.debug(`[Claude SDK] Found unix claude candidate: ${candidate}`)
+            return candidate
+        }
     }
 
     // Unix: Check if 'claude' command works directly from home dir

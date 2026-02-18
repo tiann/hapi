@@ -4,6 +4,7 @@ import { AgentSessionBase } from '@/agent/sessionBase';
 import type { EnhancedMode, PermissionMode } from './loop';
 import type { CodexCliOverrides } from './utils/codexCliOverrides';
 import type { LocalLaunchExitReason } from '@/agent/localLaunchPolicy';
+import type { MessageMeta } from '@/api/types';
 
 type LocalLaunchFailure = {
     message: string;
@@ -69,8 +70,8 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
         this.client.sendCodexMessage(message);
     };
 
-    sendUserMessage = (text: string): void => {
-        this.client.sendUserMessage(text);
+    sendUserMessage = (text: string, meta?: MessageMeta): void => {
+        this.client.sendUserMessage(text, meta);
     };
 
     sendSessionEvent = (event: Parameters<ApiSessionClient['sendSessionEvent']>[0]): void => {

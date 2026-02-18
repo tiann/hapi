@@ -67,7 +67,7 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
                 scanner?.onNewSession(converted.sessionId);
             }
             if (converted?.userMessage) {
-                session.sendUserMessage(converted.userMessage);
+                session.sendUserMessage(converted.userMessage, { sentFrom: 'scanner' });
             }
             if (converted?.message) {
                 session.sendCodexMessage(converted.message);

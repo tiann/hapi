@@ -33,9 +33,9 @@ function shouldUseAppServer(): boolean {
 
 class CodexRemoteLauncher extends RemoteLauncherBase {
     private readonly session: CodexSession;
-    private readonly useAppServer: boolean;
-    private readonly mcpClient: CodexMcpClient | null;
-    private readonly appServerClient: CodexAppServerClient | null;
+    private useAppServer: boolean;
+    private mcpClient: CodexMcpClient | null;
+    private appServerClient: CodexAppServerClient | null;
     private permissionHandler: CodexPermissionHandler | null = null;
     private reasoningProcessor: ReasoningProcessor | null = null;
     private diffProcessor: DiffProcessor | null = null;
@@ -127,9 +127,9 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
     protected async runMainLoop(): Promise<void> {
         const session = this.session;
         const messageBuffer = this.messageBuffer;
-        const useAppServer = this.useAppServer;
-        const mcpClient = this.mcpClient;
-        const appServerClient = this.appServerClient;
+        let useAppServer = this.useAppServer;
+        let mcpClient = this.mcpClient;
+        let appServerClient = this.appServerClient;
         const appServerEventConverter = useAppServer ? new AppServerEventConverter() : null;
 
         const normalizeCommand = (value: unknown): string | undefined => {
@@ -166,8 +166,27 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             }
         };
 
+        const clearResumeThreadReference = (): void => {
+            session.sessionId = null;
+            session.client.updateMetadata((metadata) => ({
+                ...metadata,
+                codexSessionId: undefined
+            }));
+        };
+
         const permissionHandler = new CodexPermissionHandler(session.client, {
             onRequest: ({ id, toolName, input }) => {
+                if (toolName === 'request_user_input' || toolName === 'AskUserQuestion' || toolName === 'ask_user_question') {
+                    session.sendCodexMessage({
+                        type: 'tool-call',
+                        name: toolName,
+                        callId: id,
+                        input,
+                        id: randomUUID()
+                    });
+                    return;
+                }
+
                 const inputRecord = input && typeof input === 'object' ? input as Record<string, unknown> : {};
                 const message = typeof inputRecord.message === 'string' ? inputRecord.message : undefined;
                 const rawCommand = inputRecord.command;
@@ -192,13 +211,15 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     id: randomUUID()
                 });
             },
-            onComplete: ({ id, decision, reason, approved }) => {
+            onComplete: ({ id, decision, reason, approved, answers }) => {
                 session.sendCodexMessage({
                     type: 'tool-call-result',
                     callId: id,
                     output: {
                         decision,
-                        reason
+                        reason,
+                        approved,
+                        answers
                     },
                     is_error: !approved,
                     id: randomUUID()
@@ -282,6 +303,116 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 const error = asString(msg.error);
                 messageBuffer.addMessage(error ? `Task failed: ${error}` : 'Task failed', 'status');
                 sendReady();
+            } else if (msgType === 'turn_plan_updated') {
+                const entriesRaw = Array.isArray(msg.entries) ? msg.entries : [];
+                const entries = entriesRaw
+                    .map((entry, index) => {
+                        if (!entry || typeof entry !== 'object') {
+                            return null;
+                        }
+                        const item = entry as Record<string, unknown>;
+                        const content = asString(item.step ?? item.content);
+                        if (!content) {
+                            return null;
+                        }
+                        const statusRaw = asString(item.status) ?? 'pending';
+                        const status = statusRaw === 'inProgress' ? 'in_progress' : statusRaw;
+                        if (status !== 'pending' && status !== 'in_progress' && status !== 'completed') {
+                            return null;
+                        }
+                        return {
+                            id: asString(item.id) ?? `plan-${index + 1}`,
+                            content,
+                            status,
+                            priority: 'medium'
+                        };
+                    })
+                    .filter((entry): entry is { id: string; content: string; status: 'pending' | 'in_progress' | 'completed'; priority: 'medium' } => entry !== null);
+
+                if (entries.length > 0) {
+                    session.sendCodexMessage({
+                        type: 'plan',
+                        entries,
+                        id: randomUUID()
+                    });
+                }
+            } else if (msgType === 'plan_delta') {
+                const delta = asString(msg.delta);
+                if (delta) {
+                    messageBuffer.addMessage(`[Plan] ${delta.substring(0, 120)}${delta.length > 120 ? '…' : ''}`, 'system');
+                }
+            } else if (msgType === 'mcp_startup_update') {
+                const server = asString(msg.server) ?? 'unknown';
+                const status = asString(asRecord(msg.status)?.state) ?? 'unknown';
+                messageBuffer.addMessage(`MCP ${server}: ${status}`, 'status');
+            } else if (msgType === 'mcp_startup_complete') {
+                const ready = Array.isArray(msg.ready) ? msg.ready.filter((value): value is string => typeof value === 'string') : [];
+                const failed = Array.isArray(msg.failed) ? msg.failed.filter((value): value is string => typeof value === 'string') : [];
+                if (ready.length > 0) {
+                    messageBuffer.addMessage(`MCP ready: ${ready.join(', ')}`, 'status');
+                }
+                if (failed.length > 0) {
+                    messageBuffer.addMessage(`MCP failed: ${failed.join(', ')}`, 'status');
+                }
+            } else if (msgType === 'context_compacted') {
+                messageBuffer.addMessage('Context compacted', 'status');
+            } else if (msgType === 'web_search_begin') {
+                const callId = asString(msg.call_id ?? msg.callId) ?? randomUUID();
+                const query = asString(msg.query);
+                messageBuffer.addMessage(query ? `Web search: ${query}` : 'Web search started', 'tool');
+                session.sendCodexMessage({
+                    type: 'tool-call',
+                    name: 'CodexWebSearch',
+                    callId,
+                    input: {
+                        query
+                    },
+                    id: randomUUID()
+                });
+            } else if (msgType === 'web_search_end') {
+                const callId = asString(msg.call_id ?? msg.callId);
+                if (callId) {
+                    session.sendCodexMessage({
+                        type: 'tool-call-result',
+                        callId,
+                        output: {
+                            query: asString(msg.query),
+                            action: msg.action
+                        },
+                        id: randomUUID()
+                    });
+                }
+            } else if (msgType === 'mcp_tool_call_begin') {
+                const callId = asString(msg.call_id ?? msg.callId) ?? randomUUID();
+                const invocation = asRecord(msg.invocation) ?? {};
+                const server = asString(invocation.server) ?? 'unknown';
+                const tool = asString(invocation.tool) ?? 'tool';
+
+                messageBuffer.addMessage(`MCP tool: ${server}/${tool}`, 'tool');
+                session.sendCodexMessage({
+                    type: 'tool-call',
+                    name: `MCP:${server}/${tool}`,
+                    callId,
+                    input: {
+                        server,
+                        tool,
+                        arguments: invocation.arguments ?? {}
+                    },
+                    id: randomUUID()
+                });
+            } else if (msgType === 'mcp_tool_call_end') {
+                const callId = asString(msg.call_id ?? msg.callId);
+                if (callId) {
+                    session.sendCodexMessage({
+                        type: 'tool-call-result',
+                        callId,
+                        output: {
+                            duration: msg.duration,
+                            result: msg.result
+                        },
+                        id: randomUUID()
+                    });
+                }
             }
 
             if (msgType === 'task_started') {
@@ -423,10 +554,94 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             }
         };
 
+        const attachMcpHandlers = (client: CodexMcpClient) => {
+            client.setPermissionHandler(permissionHandler);
+            client.setHandler((msg) => {
+                const eventRecord = asRecord(msg) ?? { type: undefined };
+                handleCodexEvent(eventRecord);
+            });
+        };
+
         if (useAppServer && appServerClient && appServerEventConverter) {
             registerAppServerPermissionHandlers({
                 client: appServerClient,
-                permissionHandler
+                permissionHandler,
+                onUserInputRequest: async (request) => {
+                    const params = asRecord(request) ?? {};
+                    const requestId = asString(params.itemId ?? params.callId) ?? randomUUID();
+                    const result = await permissionHandler.handleToolCall(
+                        requestId,
+                        'request_user_input',
+                        params
+                    );
+
+                    if (result.decision !== 'approved' && result.decision !== 'approved_for_session') {
+                        return {};
+                    }
+
+                    const answersRaw = result.answers;
+                    if (!answersRaw || typeof answersRaw !== 'object') {
+                        return {};
+                    }
+
+                    const normalized: Record<string, { answers: string[] }> = {};
+                    for (const [key, value] of Object.entries(answersRaw as Record<string, unknown>)) {
+                        if (Array.isArray(value)) {
+                            normalized[key] = { answers: value.filter((entry): entry is string => typeof entry === 'string') };
+                            continue;
+                        }
+                        if (value && typeof value === 'object' && Array.isArray((value as Record<string, unknown>).answers)) {
+                            normalized[key] = {
+                                answers: ((value as Record<string, unknown>).answers as unknown[])
+                                    .filter((entry): entry is string => typeof entry === 'string')
+                            };
+                        }
+                    }
+
+                    return normalized;
+                },
+                onDynamicToolCall: async (request) => {
+                    const params = asRecord(request) ?? {};
+                    const callId = asString(params.callId) ?? randomUUID();
+                    const dynamicToolName = asString(params.tool) ?? 'dynamic_tool';
+
+                    session.sendCodexMessage({
+                        type: 'tool-call',
+                        name: 'CodexDynamicTool',
+                        callId,
+                        input: {
+                            tool: dynamicToolName,
+                            arguments: params.arguments ?? {}
+                        },
+                        id: randomUUID()
+                    });
+
+                    const notSupportedMessage = `Dynamic tool '${dynamicToolName}' is not supported by this hapi Codex client yet.`;
+                    messageBuffer.addMessage(notSupportedMessage, 'status');
+
+                    const output = {
+                        success: false,
+                        error: notSupportedMessage
+                    };
+
+                    session.sendCodexMessage({
+                        type: 'tool-call-result',
+                        callId,
+                        output,
+                        is_error: true,
+                        id: randomUUID()
+                    });
+
+                    return {
+                        success: false,
+                        contentItems: [
+                            {
+                                type: 'inputText',
+                                text: notSupportedMessage
+                            }
+                        ]
+                    };
+                }
             });
 
             appServerClient.setNotificationHandler((method, params) => {
@@ -437,11 +652,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 }
             });
         } else if (mcpClient) {
-            mcpClient.setPermissionHandler(permissionHandler);
-            mcpClient.setHandler((msg) => {
-                const eventRecord = asRecord(msg) ?? { type: undefined };
-                handleCodexEvent(eventRecord);
-            });
+            attachMcpHandlers(mcpClient);
         }
 
         const { server: happyServer, mcpServers } = await buildHapiMcpBridge(session.client);
@@ -477,13 +688,32 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         };
 
         if (useAppServer && appServerClient) {
-            await appServerClient.connect();
-            await appServerClient.initialize({
-                clientInfo: {
-                    name: 'hapi-codex-client',
-                    version: '1.0.0'
-                }
-            });
+            try {
+                await appServerClient.connect();
+                await appServerClient.initialize({
+                    clientInfo: {
+                        name: 'hapi-codex-client',
+                        version: '1.0.0'
+                    }
+                });
+            } catch (error) {
+                logger.warn('[Codex] Failed to initialize app-server transport, falling back to MCP transport', error);
+                try {
+                    await appServerClient.disconnect();
+                } catch { }
+                this.appServerClient = null;
+                appServerClient = null;
+                useAppServer = false;
+                this.useAppServer = false;
+                this.currentThreadId = null;
+                this.currentTurnId = null;
+                appServerEventConverter?.reset();
+
+                mcpClient = mcpClient ?? new CodexMcpClient();
+                this.mcpClient = mcpClient;
+                attachMcpHandlers(mcpClient);
+                await mcpClient.connect();
+            }
         } else if (mcpClient) {
             await mcpClient.connect();
         }
@@ -491,8 +721,11 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         let wasCreated = false;
         let currentModeHash: string | null = null;
         let pending: { message: string; mode: EnhancedMode; isolate: boolean; hash: string } | null = null;
+        let lastDisconnectedRetryKey: string | null = null;
         let first = true;
         let turnInFlight = false;
+        let forceFreshThread = false;
+        let previousThreadIdBeforeReset: string | null = null;
 
         while (!this.shouldExit) {
             logActiveHandles('loop-top');
@@ -514,6 +747,74 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
 
             if (!message) {
                 break;
+            }
+
+            // Handle isolated messages (/new, /model) – reset session state
+            if (message.isolate) {
+                const isNewCommand = message.message.trim() === '/new';
+                const isClearCommand = message.message.trim() === '/clear';
+                const isModelCommand = message.message.trim() === '/model';
+                const statusLabel = isNewCommand
+                    ? 'Starting a new conversation...'
+                    : isClearCommand
+                        ? 'Resetting context...'
+                    : isModelCommand
+                        ? 'Restarting Codex session (model changed)...'
+                        : 'Restarting Codex session...';
+
+                logger.debug(`[Codex] Isolated command received – resetting session: ${message.message}`);
+                messageBuffer.addMessage('═'.repeat(40), 'status');
+                messageBuffer.addMessage(statusLabel, 'status');
+
+                if (useAppServer) {
+                    this.currentThreadId = null;
+                    this.currentTurnId = null;
+                    if (isNewCommand && this.appServerClient) {
+                        try {
+                            await this.appServerClient.disconnect();
+                            await this.appServerClient.connect();
+                            await this.appServerClient.initialize({
+                                clientInfo: {
+                                    name: 'hapi-codex-client',
+                                    version: '1.0.0'
+                                }
+                            });
+                            logger.debug('[Codex] App-server disconnected for /new reset');
+                        } catch (error) {
+                            logger.debug('[Codex] Failed to disconnect app-server for /new reset', error);
+                        }
+                    }
+                } else {
+                    if (isNewCommand) {
+                        try {
+                            await mcpClient?.disconnect();
+                            await mcpClient?.connect();
+                            logger.debug('[Codex] MCP client disconnected for /new reset');
+                        } catch (error) {
+                            logger.debug('[Codex] Failed to disconnect MCP client for /new reset', error);
+                        }
+                    } else {
+                        mcpClient?.clearSession();
+                    }
+                }
+                wasCreated = false;
+                currentModeHash = null;
+                if (isNewCommand) {
+                    previousThreadIdBeforeReset = this.currentThreadId ?? session.sessionId;
+                    forceFreshThread = true;
+                    clearResumeThreadReference();
+                }
+                permissionHandler.reset();
+                reasoningProcessor.abort();
+                diffProcessor.reset();
+                session.onThinkingChange(false);
+                if (isNewCommand) {
+                    session.sendSessionEvent({ type: 'message', message: 'Started a new conversation' });
+                } else if (isClearCommand) {
+                    session.sendSessionEvent({ type: 'message', message: 'Context was reset' });
+                }
+                sendReady();
+                continue;
             }
 
             if (!useAppServer && wasCreated && currentModeHash && message.hash !== currentModeHash) {
@@ -543,7 +844,8 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                             cliOverrides: session.codexCliOverrides
                         });
 
-                        const resumeCandidate = session.sessionId;
+                        const canResumeExistingThread = first && !forceFreshThread;
+                        const resumeCandidate = canResumeExistingThread ? session.sessionId : null;
                         let threadId: string | null = null;
 
                         if (resumeCandidate) {
@@ -573,6 +875,28 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                             if (!threadId) {
                                 throw new Error('app-server thread/start did not return thread.id');
                             }
+
+                            if (forceFreshThread && previousThreadIdBeforeReset && threadId === previousThreadIdBeforeReset) {
+                                logger.warn(`[Codex] thread/start returned same thread after /new reset (${threadId}), forcing app-server restart and retry`);
+                                await appServerClient.disconnect();
+                                await appServerClient.connect();
+                                await appServerClient.initialize({
+                                    clientInfo: {
+                                        name: 'hapi-codex-client',
+                                        version: '1.0.0'
+                                    }
+                                });
+                                const retriedThreadResponse = await appServerClient.startThread(threadParams, {
+                                    signal: this.abortController.signal
+                                });
+                                const retriedThreadRecord = asRecord(retriedThreadResponse);
+                                const retriedThread = retriedThreadRecord ? asRecord(retriedThreadRecord.thread) : null;
+                                const retriedThreadId = asString(retriedThread?.id);
+                                if (!retriedThreadId) {
+                                    throw new Error('app-server thread/start retry did not return thread.id');
+                                }
+                                threadId = retriedThreadId;
+                            }
                         }
 
                         if (!threadId) {
@@ -581,6 +905,8 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
 
                         this.currentThreadId = threadId;
                         session.onSessionFound(threadId);
+                        forceFreshThread = false;
+                        previousThreadIdBeforeReset = null;
 
                         const turnParams = buildTurnStartParams({
                             threadId,
@@ -613,6 +939,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
 
                     wasCreated = true;
                     first = false;
+                    lastDisconnectedRetryKey = null;
                 } else if (useAppServer && appServerClient) {
                     if (!this.currentThreadId) {
                         logger.debug('[Codex] Missing thread id; restarting app-server thread');
@@ -640,10 +967,13 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 } else if (mcpClient) {
                     await mcpClient.continueSession(message.message, { signal: this.abortController.signal });
                     syncSessionId();
+                    lastDisconnectedRetryKey = null;
                 }
             } catch (error) {
                 logger.warn('Error in codex session:', error);
                 const isAbortError = error instanceof Error && error.name === 'AbortError';
+                const isDisconnectedTransportError = error instanceof Error
+                    && error.message.toLowerCase().includes('disconnected transport');
                 if (useAppServer) {
                     turnInFlight = false;
                 }
@@ -657,8 +987,32 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                         logger.debug('[Codex] Marked session as not created after abort for proper resume');
                     }
                 } else {
-                    messageBuffer.addMessage('Process exited unexpectedly', 'status');
-                    session.sendSessionEvent({ type: 'message', message: 'Process exited unexpectedly' });
+                    let sentSpecificError = false;
+                    if (!useAppServer && isDisconnectedTransportError) {
+                        const retryKey = `${message.hash}:${message.message}`;
+                        if (lastDisconnectedRetryKey !== retryKey) {
+                            logger.debug('[Codex] Disconnected transport detected, resetting session and retrying once');
+                            lastDisconnectedRetryKey = retryKey;
+                            wasCreated = false;
+                            currentModeHash = null;
+                            mcpClient?.clearSession();
+                            pending = message;
+                            continue;
+                        }
+
+                        lastDisconnectedRetryKey = null;
+                        wasCreated = false;
+                        currentModeHash = null;
+                        mcpClient?.clearSession();
+                        messageBuffer.addMessage('Codex transport disconnected. Please resend your message.', 'status');
+                        session.sendSessionEvent({ type: 'message', message: 'Codex transport disconnected. Please resend your message.' });
+                        sentSpecificError = true;
+                    } else {
+                        messageBuffer.addMessage('Process exited unexpectedly', 'status');
+                    }
+                    if (!sentSpecificError) {
+                        session.sendSessionEvent({ type: 'message', message: 'Process exited unexpectedly' });
+                    }
                     if (useAppServer) {
                         this.currentTurnId = null;
                         this.currentThreadId = null;

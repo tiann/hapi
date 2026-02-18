@@ -98,8 +98,12 @@ export type ReasoningEffort = 'low' | 'medium' | 'high' | 'auto';
 export type ReasoningSummary = 'auto' | 'none' | 'brief' | 'detailed';
 
 export type CollaborationMode = {
-    mode: 'plan' | 'code' | 'pair_programming' | 'execute' | 'custom' | (string & {});
-    settings?: Record<string, unknown>;
+    mode: 'plan' | 'default';
+    settings: {
+        model: string;
+        reasoning_effort: string | null;
+        developer_instructions: string | null;
+    };
 };
 
 export interface TurnStartParams {

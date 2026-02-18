@@ -239,7 +239,8 @@ function UnifiedButton(props: {
     // Determine button state
     const isConnecting = props.voiceStatus === 'connecting'
     const isConnected = props.voiceStatus === 'connected'
-    const isVoiceActive = isConnecting || isConnected
+    const isProcessing = props.voiceStatus === 'processing'
+    const isVoiceActive = isConnecting || isConnected || isProcessing
     const hasText = props.canSend
 
     // Determine button behavior
@@ -262,6 +263,10 @@ function UnifiedButton(props: {
         icon = <LoadingIcon />
         className = 'bg-black text-white'
         ariaLabel = t('voice.connecting')
+    } else if (isProcessing) {
+        icon = <LoadingIcon />
+        className = 'bg-black text-white'
+        ariaLabel = t('voice.processing')
     } else if (isConnected) {
         icon = <StopIcon />
         className = 'bg-black text-white'
@@ -320,7 +325,7 @@ export function ComposerButtons(props: {
     onSend: () => void
 }) {
     const { t } = useTranslation()
-    const isVoiceConnected = props.voiceStatus === 'connected'
+    const isVoiceConnected = props.voiceStatus === 'connected' || props.voiceStatus === 'processing'
 
     return (
         <div className="flex items-center justify-between px-2 pb-2">

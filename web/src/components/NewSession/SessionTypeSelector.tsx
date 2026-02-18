@@ -1,14 +1,26 @@
-import type { RefObject } from 'react'
+import type { KeyboardEvent as ReactKeyboardEvent, RefObject } from 'react'
 import type { SessionType } from './types'
+import type { Suggestion } from '@/hooks/useActiveSuggestions'
+import { Autocomplete } from '@/components/ChatInput/Autocomplete'
+import { FloatingOverlay } from '@/components/ChatInput/FloatingOverlay'
 import { useTranslation } from '@/lib/use-translation'
 
 export function SessionTypeSelector(props: {
     sessionType: SessionType
     worktreeName: string
+    worktreeBranch: string
+    branchSuggestions: readonly Suggestion[]
+    branchSelectedIndex: number
     worktreeInputRef: RefObject<HTMLInputElement | null>
+    worktreeBranchInputRef: RefObject<HTMLInputElement | null>
     isDisabled: boolean
     onSessionTypeChange: (value: SessionType) => void
     onWorktreeNameChange: (value: string) => void
+    onWorktreeBranchChange: (value: string) => void
+    onWorktreeBranchFocus: () => void
+    onWorktreeBranchBlur: () => void
+    onWorktreeBranchKeyDown: (event: ReactKeyboardEvent<HTMLInputElement>) => void
+    onWorktreeBranchSuggestionSelect: (index: number) => void
 }) {
     const { t } = useTranslation()
 
@@ -35,15 +47,42 @@ export function SessionTypeSelector(props: {
                                 <div className="flex-1">
                                     <div className="min-h-[34px] flex items-center">
                                         {props.sessionType === 'worktree' ? (
-                                            <input
-                                                ref={props.worktreeInputRef}
-                                                type="text"
-                                                placeholder={t('newSession.type.worktree.placeholder')}
-                                                value={props.worktreeName}
-                                                onChange={(e) => props.onWorktreeNameChange(e.target.value)}
-                                                disabled={props.isDisabled}
-                                                className="w-full rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-[var(--app-link)] disabled:opacity-60"
-                                            />
+                                            <div className="w-full flex flex-col gap-2">
+                                                <input
+                                                    ref={props.worktreeInputRef}
+                                                    type="text"
+                                                    placeholder={t('newSession.type.worktree.placeholder')}
+                                                    value={props.worktreeName}
+                                                    onChange={(e) => props.onWorktreeNameChange(e.target.value)}
+                                                    disabled={props.isDisabled}
+                                                    className="w-full rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-[var(--app-link)] disabled:opacity-60"
+                                                />
+                                                <div className="relative">
+                                                    <input
+                                                        ref={props.worktreeBranchInputRef}
+                                                        type="text"
+                                                        placeholder={t('newSession.type.worktree.branchPlaceholder')}
+                                                        value={props.worktreeBranch}
+                                                        onChange={(e) => props.onWorktreeBranchChange(e.target.value)}
+                                                        onFocus={props.onWorktreeBranchFocus}
+                                                        onBlur={props.onWorktreeBranchBlur}
+                                                        onKeyDown={props.onWorktreeBranchKeyDown}
+                                                        disabled={props.isDisabled}
+                                                        className="w-full rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-[var(--app-link)] disabled:opacity-60"
+                                                    />
+                                                    {props.branchSuggestions.length > 0 && (
+                                                        <div className="absolute top-full left-0 right-0 z-10 mt-1">
+                                                            <FloatingOverlay maxHeight={180}>
+                                                                <Autocomplete
+                                                                    suggestions={props.branchSuggestions}
+                                                                    selectedIndex={props.branchSelectedIndex}
+                                                                    onSelect={props.onWorktreeBranchSuggestionSelect}
+                                                                />
+                                                            </FloatingOverlay>
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            </div>
                                         ) : (
                                             <>
                                                 <label

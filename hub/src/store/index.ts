@@ -7,6 +7,7 @@ import { MessageStore } from './messageStore'
 import { PushStore } from './pushStore'
 import { SessionStore } from './sessionStore'
 import { UserStore } from './userStore'
+import { UserPreferencesStore } from './userPreferencesStore'
 
 export type {
     StoredMachine,
@@ -22,13 +23,14 @@ export { PushStore } from './pushStore'
 export { SessionStore } from './sessionStore'
 export { UserStore } from './userStore'
 
-const SCHEMA_VERSION: number = 3
+const SCHEMA_VERSION: number = 4
 const REQUIRED_TABLES = [
     'sessions',
     'machines',
     'messages',
     'users',
-    'push_subscriptions'
+    'push_subscriptions',
+    'user_preferences'
 ] as const
 
 export class Store {
@@ -40,6 +42,7 @@ export class Store {
     readonly messages: MessageStore
     readonly users: UserStore
     readonly push: PushStore
+    readonly userPreferences: UserPreferencesStore
 
     constructor(dbPath: string) {
         this.dbPath = dbPath
@@ -81,6 +84,7 @@ export class Store {
         this.messages = new MessageStore(this.db)
         this.users = new UserStore(this.db)
         this.push = new PushStore(this.db)
+        this.userPreferences = new UserPreferencesStore(this.db)
     }
 
     private initSchema(): void {
@@ -106,6 +110,12 @@ export class Store {
 
         if (currentVersion === 2 && SCHEMA_VERSION === 3) {
             this.migrateFromV2ToV3()
+            this.setUserVersion(SCHEMA_VERSION)
+            return
+        }
+
+        if (currentVersion === 3 && SCHEMA_VERSION === 4) {
+            this.migrateFromV3ToV4()
             this.setUserVersion(SCHEMA_VERSION)
             return
         }
@@ -187,6 +197,12 @@ export class Store {
                 UNIQUE(namespace, endpoint)
             );
             CREATE INDEX IF NOT EXISTS idx_push_subscriptions_namespace ON push_subscriptions(namespace);
+
+            CREATE TABLE IF NOT EXISTS user_preferences (
+                namespace TEXT PRIMARY KEY,
+                ready_announcements INTEGER NOT NULL DEFAULT 1,
+                updated_at INTEGER NOT NULL
+            );
         `)
     }
 
@@ -278,6 +294,16 @@ export class Store {
 
     private migrateFromV2ToV3(): void {
         return
+    }
+
+    private migrateFromV3ToV4(): void {
+        this.db.exec(`
+            CREATE TABLE IF NOT EXISTS user_preferences (
+                namespace TEXT PRIMARY KEY,
+                ready_announcements INTEGER NOT NULL DEFAULT 1,
+                updated_at INTEGER NOT NULL
+            );
+        `)
     }
 
     private getMachineColumnNames(): Set<string> {

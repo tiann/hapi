@@ -1,6 +1,7 @@
 import { logger } from '@/ui/logger';
 import { restoreTerminalState } from '@/ui/terminalState';
 import { spawnWithAbort } from '@/utils/spawnWithAbort';
+import { getDefaultGeminiPath } from './utils/executable';
 
 export async function geminiLocal(opts: {
     path: string;
@@ -39,7 +40,7 @@ export async function geminiLocal(opts: {
     process.stdin.pause();
     try {
         await spawnWithAbort({
-            command: 'gemini',
+            command: getDefaultGeminiPath(),
             args,
             cwd: opts.path,
             env,

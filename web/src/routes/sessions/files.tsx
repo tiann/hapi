@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useState } from 'react'
+import type { FormEvent } from 'react'
 import { useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import type { FileSearchItem, GitFileStatus } from '@/types/api'
 import { FileIcon } from '@/components/FileIcon'
@@ -67,6 +68,25 @@ function SearchIcon(props: { className?: string }) {
         >
             <circle cx="11" cy="11" r="8" />
             <line x1="21" y1="21" x2="16.65" y2="16.65" />
+        </svg>
+    )
+}
+
+function ChevronIcon(props: { className?: string; collapsed: boolean }) {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={`${props.className ?? ''} transition-transform duration-200 ${props.collapsed ? '' : 'rotate-90'}`}
+        >
+            <polyline points="9 18 15 12 9 6" />
         </svg>
     )
 }
@@ -155,29 +175,195 @@ function LineChanges(props: { added: number; removed: number }) {
     )
 }
 
+type GitChangesTreeNode = {
+    name: string
+    path: string
+    directories: GitChangesTreeNode[]
+    files: GitFileStatus[]
+}
+
+type MutableGitChangesTreeNode = {
+    name: string
+    path: string
+    directories: Map<string, MutableGitChangesTreeNode>
+    files: GitFileStatus[]
+}
+
+function createTreeNode(name: string, path: string): MutableGitChangesTreeNode {
+    return {
+        name,
+        path,
+        directories: new Map(),
+        files: []
+    }
+}
+
+function buildGitChangesTree(files: GitFileStatus[]): GitChangesTreeNode {
+    const root = createTreeNode('', '')
+
+    for (const file of files) {
+        const parts = file.fullPath.split('/').filter(Boolean)
+        if (!parts.length) {
+            root.files.push(file)
+            continue
+        }
+
+        let current = root
+        for (let index = 0; index < parts.length - 1; index += 1) {
+            const segment = parts[index]
+            if (!segment) continue
+
+            let child = current.directories.get(segment)
+            if (!child) {
+                const childPath = current.path ? `${current.path}/${segment}` : segment
+                child = createTreeNode(segment, childPath)
+                current.directories.set(segment, child)
+            }
+            current = child
+        }
+
+        current.files.push(file)
+    }
+
+    const normalize = (node: MutableGitChangesTreeNode): GitChangesTreeNode => {
+        const directories = Array.from(node.directories.values())
+            .sort((a, b) => a.name.localeCompare(b.name))
+            .map((child) => normalize(child))
+        const sortedFiles = [...node.files].sort((a, b) => a.fullPath.localeCompare(b.fullPath))
+
+        return {
+            name: node.name,
+            path: node.path,
+            directories,
+            files: sortedFiles
+        }
+    }
+
+    return normalize(root)
+}
+
 function GitFileRow(props: {
     file: GitFileStatus
     onOpen: () => void
-    showDivider: boolean
+    depth: number
 }) {
-    const subtitle = props.file.filePath || 'project root'
+    const indent = 12 + props.depth * 14
 
     return (
         <button
             type="button"
             onClick={props.onOpen}
-            className={`flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-[var(--app-subtle-bg)] transition-colors ${props.showDivider ? 'border-b border-[var(--app-divider)]' : ''}`}
+            className="flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-[var(--app-subtle-bg)] transition-colors"
+            style={{ paddingLeft: indent }}
         >
+            <span className="h-4 w-4" />
             <FileIcon fileName={props.file.fileName} size={22} />
             <div className="min-w-0 flex-1">
                 <div className="truncate font-medium">{props.file.fileName}</div>
-                <div className="truncate text-xs text-[var(--app-hint)]">{subtitle}</div>
+                {props.file.oldPath ? (
+                    <div className="truncate text-xs text-[var(--app-hint)]">{props.file.oldPath}</div>
+                ) : null}
             </div>
             <div className="flex items-center gap-2">
                 <LineChanges added={props.file.linesAdded} removed={props.file.linesRemoved} />
                 <StatusBadge status={props.file.status} />
             </div>
         </button>
+    )
+}
+
+function GitChangesDirectoryNode(props: {
+    node: GitChangesTreeNode
+    depth: number
+    expanded: Set<string>
+    onToggle: (path: string) => void
+    onOpenFile: (file: GitFileStatus) => void
+}) {
+    const isExpanded = props.expanded.has(props.node.path)
+    const indent = 12 + props.depth * 14
+    const childDepth = props.depth + 1
+
+    return (
+        <div>
+            <button
+                type="button"
+                onClick={() => props.onToggle(props.node.path)}
+                className="flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-[var(--app-subtle-bg)] transition-colors"
+                style={{ paddingLeft: indent }}
+            >
+                <ChevronIcon collapsed={!isExpanded} className="text-[var(--app-hint)]" />
+                <FolderIcon className="text-[var(--app-link)]" />
+                <div className="min-w-0 flex-1">
+                    <div className="truncate font-medium">{props.node.name}</div>
+                </div>
+            </button>
+
+            {isExpanded ? (
+                <div>
+                    {props.node.directories.map((child) => (
+                        <GitChangesDirectoryNode
+                            key={child.path}
+                            node={child}
+                            depth={childDepth}
+                            expanded={props.expanded}
+                            onToggle={props.onToggle}
+                            onOpenFile={props.onOpenFile}
+                        />
+                    ))}
+                    {props.node.files.map((file) => (
+                        <GitFileRow
+                            key={file.fullPath}
+                            file={file}
+                            onOpen={() => props.onOpenFile(file)}
+                            depth={childDepth}
+                        />
+                    ))}
+                </div>
+            ) : null}
+        </div>
+    )
+}
+
+function GitChangesTree(props: {
+    files: GitFileStatus[]
+    onOpenFile: (file: GitFileStatus) => void
+}) {
+    const tree = useMemo(() => buildGitChangesTree(props.files), [props.files])
+    const [expanded, setExpanded] = useState<Set<string>>(() => new Set(['']))
+
+    const handleToggle = useCallback((path: string) => {
+        setExpanded((prev) => {
+            const next = new Set(prev)
+            if (next.has(path)) {
+                next.delete(path)
+            } else {
+                next.add(path)
+            }
+            return next
+        })
+    }, [])
+
+    return (
+        <div>
+            {tree.directories.map((directory) => (
+                <GitChangesDirectoryNode
+                    key={directory.path}
+                    node={directory}
+                    depth={0}
+                    expanded={expanded}
+                    onToggle={handleToggle}
+                    onOpenFile={props.onOpenFile}
+                />
+            ))}
+            {tree.files.map((file) => (
+                <GitFileRow
+                    key={file.fullPath}
+                    file={file}
+                    onOpen={() => props.onOpenFile(file)}
+                    depth={0}
+                />
+            ))}
+        </div>
     )
 }
 
@@ -235,6 +421,7 @@ export default function FilesPage() {
     const { sessionId } = useParams({ from: '/sessions/$sessionId/files' })
     const search = useSearch({ from: '/sessions/$sessionId/files' })
     const { session } = useSession(api, sessionId)
+    const [searchInput, setSearchInput] = useState('')
     const [searchQuery, setSearchQuery] = useState('')
 
     const initialTab = search.tab === 'directories' ? 'directories' : 'changes'
@@ -295,6 +482,11 @@ export default function FilesPage() {
         void refetchGit()
     }, [activeTab, queryClient, refetchGit, searchQuery, sessionId])
 
+    const handleSearchSubmit = useCallback((event?: FormEvent<HTMLFormElement>) => {
+        event?.preventDefault()
+        setSearchQuery(searchInput.trim())
+    }, [searchInput])
+
     const handleTabChange = useCallback((nextTab: 'changes' | 'directories') => {
         setActiveTab(nextTab)
         navigate({
@@ -332,19 +524,31 @@ export default function FilesPage() {
             </div>
 
             <div className="bg-[var(--app-bg)]">
-                <div className="mx-auto w-full max-w-content p-3 border-b border-[var(--app-border)]">
+                <form className="mx-auto w-full max-w-content p-3 border-b border-[var(--app-border)]" onSubmit={handleSearchSubmit}>
                     <div className="flex items-center gap-2 rounded-md bg-[var(--app-subtle-bg)] px-3 py-2">
                         <SearchIcon className="text-[var(--app-hint)]" />
                         <input
-                            value={searchQuery}
-                            onChange={(event) => setSearchQuery(event.target.value)}
+                            value={searchInput}
+                            onChange={(event) => {
+                                const nextValue = event.target.value
+                                setSearchInput(nextValue)
+                                if (!nextValue.trim()) {
+                                    setSearchQuery('')
+                                }
+                            }}
                             placeholder="Search files"
                             className="w-full bg-transparent text-sm text-[var(--app-fg)] placeholder:text-[var(--app-hint)] focus:outline-none"
                             autoCapitalize="none"
                             autoCorrect="off"
                         />
+                        <button
+                            type="submit"
+                            className="rounded px-2 py-1 text-xs font-medium text-[var(--app-hint)] transition-colors hover:bg-[var(--app-secondary-bg)] hover:text-[var(--app-fg)]"
+                        >
+                            Search
+                        </button>
                     </div>
-                </div>
+                </form>
             </div>
 
             <div className="bg-[var(--app-bg)] border-b border-[var(--app-divider)]" role="tablist">
@@ -434,14 +638,10 @@ export default function FilesPage() {
                                     <div className="border-b border-[var(--app-divider)] bg-[var(--app-bg)] px-3 py-2 text-xs font-semibold text-[var(--app-git-staged-color)]">
                                         Staged Changes ({gitStatus.stagedFiles.length})
                                     </div>
-                                    {gitStatus.stagedFiles.map((file, index) => (
-                                        <GitFileRow
-                                            key={`staged-${file.fullPath}-${index}`}
-                                            file={file}
-                                            onOpen={() => handleOpenFile(file.fullPath, file.isStaged)}
-                                            showDivider={index < gitStatus.stagedFiles.length - 1 || gitStatus.unstagedFiles.length > 0}
-                                        />
-                                    ))}
+                                    <GitChangesTree
+                                        files={gitStatus.stagedFiles}
+                                        onOpenFile={(file) => handleOpenFile(file.fullPath, file.isStaged)}
+                                    />
                                 </div>
                             ) : null}
 
@@ -450,14 +650,10 @@ export default function FilesPage() {
                                     <div className="border-b border-[var(--app-divider)] bg-[var(--app-bg)] px-3 py-2 text-xs font-semibold text-[var(--app-git-unstaged-color)]">
                                         Unstaged Changes ({gitStatus.unstagedFiles.length})
                                     </div>
-                                    {gitStatus.unstagedFiles.map((file, index) => (
-                                        <GitFileRow
-                                            key={`unstaged-${file.fullPath}-${index}`}
-                                            file={file}
-                                            onOpen={() => handleOpenFile(file.fullPath, file.isStaged)}
-                                            showDivider={index < gitStatus.unstagedFiles.length - 1}
-                                        />
-                                    ))}
+                                    <GitChangesTree
+                                        files={gitStatus.unstagedFiles}
+                                        onOpenFile={(file) => handleOpenFile(file.fullPath, file.isStaged)}
+                                    />
                                 </div>
                             ) : null}
 

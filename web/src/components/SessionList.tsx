@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useSwipeable, type SwipeEventData } from 'react-swipeable'
 import type { SessionSummary } from '@/types/api'
 import type { ApiClient } from '@/api/client'
 import { useLongPress } from '@/hooks/useLongPress'
@@ -170,12 +171,16 @@ function SessionItem(props: {
 }) {
     const { t } = useTranslation()
     const { session: s, onSelect, showPath = true, api, selected = false } = props
-    const { haptic } = usePlatform()
+    const { haptic, isTouch } = usePlatform()
+    const SWIPE_MAX_PX = 112
+    const SWIPE_TRIGGER_PX = 72
     const [menuOpen, setMenuOpen] = useState(false)
     const [menuAnchorPoint, setMenuAnchorPoint] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
     const [renameOpen, setRenameOpen] = useState(false)
     const [archiveOpen, setArchiveOpen] = useState(false)
     const [deleteOpen, setDeleteOpen] = useState(false)
+    const [swipeOffset, setSwipeOffset] = useState(0)
+    const [isSwiping, setIsSwiping] = useState(false)
 
     const { archiveSession, renameSession, deleteSession, isPending } = useSessionActions(
         api,
@@ -197,74 +202,133 @@ function SessionItem(props: {
         threshold: 500
     })
 
+    const resetSwipe = () => {
+        setSwipeOffset(0)
+        setIsSwiping(false)
+    }
+
+    const triggerArchiveFromSwipe = () => {
+        if (s.active) {
+            haptic.notification('warning')
+            setArchiveOpen(true)
+        } else {
+            haptic.notification('error')
+            setDeleteOpen(true)
+        }
+        resetSwipe()
+    }
+
+    const swipeHandlers = useSwipeable({
+        trackMouse: false,
+        trackTouch: isTouch,
+        onSwipeStart: () => {
+            setIsSwiping(false)
+            setSwipeOffset(0)
+        },
+        onSwiping: (eventData: SwipeEventData) => {
+            if (eventData.dir !== 'Left') {
+                return
+            }
+            setIsSwiping(true)
+            setSwipeOffset(-Math.min(SWIPE_MAX_PX, eventData.absX))
+        },
+        onSwipedLeft: (eventData: SwipeEventData) => {
+            if (eventData.absX >= SWIPE_TRIGGER_PX && !isPending) {
+                triggerArchiveFromSwipe()
+                return
+            }
+            resetSwipe()
+        },
+        onSwiped: () => {
+            resetSwipe()
+        }
+    })
+
     const sessionName = getSessionTitle(s)
     const statusDotClass = s.active
         ? (s.thinking ? 'bg-[#007AFF]' : 'bg-[var(--app-badge-success-text)]')
         : 'bg-[var(--app-hint)]'
     return (
         <>
-            <button
-                type="button"
-                {...longPressHandlers}
-                className={`session-list-item flex w-full flex-col gap-1.5 px-3 py-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] select-none ${selected ? 'bg-[var(--app-secondary-bg)]' : ''}`}
-                style={{ WebkitTouchCallout: 'none' }}
-                aria-current={selected ? 'page' : undefined}
+            <div
+                {...(isTouch ? swipeHandlers : {})}
+                className="relative overflow-hidden"
+                style={{ touchAction: 'pan-y' }}
             >
-                <div className="flex items-center justify-between gap-3">
-                    <div className="flex items-center gap-2 min-w-0">
-                        <span className="flex h-4 w-4 items-center justify-center" aria-hidden="true">
-                            <span
-                                className={`h-2 w-2 rounded-full ${statusDotClass}`}
-                            />
+                {isTouch ? (
+                    <div className="absolute inset-y-0 right-0 flex w-28 items-center justify-center bg-red-500/85">
+                        <span className="text-xs font-semibold uppercase tracking-wide text-white">
+                            {s.active ? t('session.action.archive') : t('session.action.delete')}
                         </span>
-                        <div className="truncate text-base font-medium">
-                            {sessionName}
-                        </div>
-                    </div>
-                    <div className="flex items-center gap-2 shrink-0 text-xs">
-                        {s.thinking ? (
-                            <span className="text-[#007AFF] animate-pulse">
-                                {t('session.item.thinking')}
-                            </span>
-                        ) : null}
-                        {(() => {
-                            const progress = getTodoProgress(s)
-                            if (!progress) return null
-                            return (
-                                <span className="flex items-center gap-1 text-[var(--app-hint)]">
-                                    <BulbIcon className="h-3 w-3" />
-                                    {progress.completed}/{progress.total}
-                                </span>
-                            )
-                        })()}
-                        {s.pendingRequestsCount > 0 ? (
-                            <span className="text-[var(--app-badge-warning-text)]">
-                                {t('session.item.pending')} {s.pendingRequestsCount}
-                            </span>
-                        ) : null}
-                        <span className="text-[var(--app-hint)]">
-                            {formatRelativeTime(s.updatedAt, t)}
-                        </span>
-                    </div>
-                </div>
-                {showPath ? (
-                    <div className="truncate text-xs text-[var(--app-hint)]">
-                        {s.metadata?.path ?? s.id}
                     </div>
                 ) : null}
-                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[var(--app-hint)]">
-                    <span className="inline-flex items-center gap-2">
-                        <span className="flex h-4 w-4 items-center justify-center" aria-hidden="true">
-                            ❖
-                        </span>
-                        {getAgentLabel(s)}
-                    </span>
-                    <span>{t('session.item.modelMode')}: {s.modelMode || 'default'}</span>
-                    {s.metadata?.worktree?.branch ? (
-                        <span>{t('session.item.worktree')}: {s.metadata.worktree.branch}</span>
+                <button
+                    type="button"
+                    {...longPressHandlers}
+                    className={`session-list-item relative z-10 flex w-full flex-col gap-1.5 px-3 py-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] select-none ${selected ? 'bg-[var(--app-secondary-bg)]' : 'bg-[var(--app-bg)]'}`}
+                    style={{
+                        WebkitTouchCallout: 'none',
+                        transform: isTouch && swipeOffset !== 0 ? `translateX(${swipeOffset}px)` : undefined,
+                        transition: isTouch ? (isSwiping ? 'none' : 'transform 150ms ease-out') : undefined
+                    }}
+                    aria-current={selected ? 'page' : undefined}
+                >
+                    <div className="flex items-center justify-between gap-3">
+                        <div className="flex items-center gap-2 min-w-0">
+                            <span className="flex h-4 w-4 items-center justify-center" aria-hidden="true">
+                                <span
+                                    className={`h-2 w-2 rounded-full ${statusDotClass}`}
+                                />
+                            </span>
+                            <div className="truncate text-base font-medium">
+                                {sessionName}
+                            </div>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0 text-xs">
+                            {s.thinking ? (
+                                <span className="text-[#007AFF] animate-pulse">
+                                    {t('session.item.thinking')}
+                                </span>
+                            ) : null}
+                            {(() => {
+                                const progress = getTodoProgress(s)
+                                if (!progress) return null
+                                return (
+                                    <span className="flex items-center gap-1 text-[var(--app-hint)]">
+                                        <BulbIcon className="h-3 w-3" />
+                                        {progress.completed}/{progress.total}
+                                    </span>
+                                )
+                            })()}
+                            {s.pendingRequestsCount > 0 ? (
+                                <span className="text-[var(--app-badge-warning-text)]">
+                                    {t('session.item.pending')} {s.pendingRequestsCount}
+                                </span>
+                            ) : null}
+                            <span className="text-[var(--app-hint)]">
+                                {formatRelativeTime(s.updatedAt, t)}
+                            </span>
+                        </div>
+                    </div>
+                    {showPath ? (
+                        <div className="truncate text-xs text-[var(--app-hint)]">
+                            {s.metadata?.path ?? s.id}
+                        </div>
                     ) : null}
-                </div>
-            </button>
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[var(--app-hint)]">
+                        <span className="inline-flex items-center gap-2">
+                            <span className="flex h-4 w-4 items-center justify-center" aria-hidden="true">
+                                ❖
+                            </span>
+                            {getAgentLabel(s)}
+                        </span>
+                        <span>{t('session.item.modelMode')}: {s.modelMode || 'default'}</span>
+                        {s.metadata?.worktree?.branch ? (
+                            <span>{t('session.item.worktree')}: {s.metadata.worktree.branch}</span>
+                        ) : null}
+                    </div>
+                </button>
+            </div>
 
             <SessionActionMenu
                 isOpen={menuOpen}
@@ -314,7 +378,7 @@ function SessionItem(props: {
 export function SessionList(props: {
     sessions: SessionSummary[]
     onSelect: (sessionId: string) => void
-    onNewSession: () => void
+    onNewSession: (opts?: { directory?: string; machineId?: string }) => void
     onRefresh: () => void
     isLoading: boolean
     renderHeader?: boolean
@@ -369,7 +433,7 @@ export function SessionList(props: {
                     </div>
                     <button
                         type="button"
-                        onClick={props.onNewSession}
+                        onClick={() => props.onNewSession()}
                         className="session-list-new-button p-1.5 rounded-full text-[var(--app-link)] transition-colors"
                         title={t('sessions.new')}
                     >
@@ -381,26 +445,44 @@ export function SessionList(props: {
             <div className="flex flex-col">
                 {groups.map((group) => {
                     const isCollapsed = isGroupCollapsed(group)
+                    const canQuickCreateInGroup = group.directory !== 'Other'
+                    const groupMachineId = group.sessions[0]?.metadata?.machineId
                     return (
                         <div key={group.directory}>
-                            <button
-                                type="button"
-                                onClick={() => toggleGroup(group.directory, isCollapsed)}
-                                className="sticky top-0 z-10 flex w-full items-center gap-2 px-3 py-2 text-left bg-[var(--app-bg)] border-b border-[var(--app-divider)] transition-colors hover:bg-[var(--app-secondary-bg)]"
-                            >
-                                <ChevronIcon
-                                    className="h-4 w-4 text-[var(--app-hint)]"
-                                    collapsed={isCollapsed}
-                                />
-                                <div className="flex items-center gap-2 min-w-0 flex-1">
-                                    <span className="font-medium text-base break-words" title={group.directory}>
-                                        {group.displayName}
-                                    </span>
-                                    <span className="shrink-0 text-xs text-[var(--app-hint)]">
-                                        ({group.sessions.length})
-                                    </span>
-                                </div>
-                            </button>
+                            <div className="sticky top-0 z-10 flex items-center gap-1 border-b border-[var(--app-divider)] bg-[var(--app-bg)] px-3 py-2">
+                                <button
+                                    type="button"
+                                    onClick={() => toggleGroup(group.directory, isCollapsed)}
+                                    className="flex min-w-0 flex-1 items-center gap-2 text-left transition-colors hover:bg-[var(--app-secondary-bg)]"
+                                >
+                                    <ChevronIcon
+                                        className="h-4 w-4 text-[var(--app-hint)]"
+                                        collapsed={isCollapsed}
+                                    />
+                                    <div className="flex items-center gap-2 min-w-0 flex-1">
+                                        <span className="font-medium text-base break-words" title={group.directory}>
+                                            {group.displayName}
+                                        </span>
+                                        <span className="shrink-0 text-xs text-[var(--app-hint)]">
+                                            ({group.sessions.length})
+                                        </span>
+                                    </div>
+                                </button>
+                                {canQuickCreateInGroup ? (
+                                    <button
+                                        type="button"
+                                        onClick={() => props.onNewSession({
+                                            directory: group.directory,
+                                            machineId: groupMachineId
+                                        })}
+                                        className="inline-flex h-7 w-7 items-center justify-center rounded-full text-[var(--app-link)] transition-colors hover:bg-[var(--app-subtle-bg)]"
+                                        title={`${t('sessions.new')}: ${group.directory}`}
+                                        aria-label={`${t('sessions.new')}: ${group.directory}`}
+                                    >
+                                        <PlusIcon className="h-4 w-4" />
+                                    </button>
+                                ) : null}
+                            </div>
                             {!isCollapsed ? (
                                 <div className="flex flex-col divide-y divide-[var(--app-divider)] border-b border-[var(--app-divider)]">
                                     {group.sessions.map((s) => (

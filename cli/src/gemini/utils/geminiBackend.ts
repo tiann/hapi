@@ -1,5 +1,6 @@
 import { AcpSdkBackend } from '@/agent/backends/acp';
 import { buildGeminiEnv, resolveGeminiRuntimeConfig } from './config';
+import { getDefaultGeminiPath } from './executable';
 
 function filterEnv(env: NodeJS.ProcessEnv): Record<string, string> {
     const result: Record<string, string> = {};
@@ -39,7 +40,7 @@ export function createGeminiBackend(opts: {
     });
 
     return new AcpSdkBackend({
-        command: 'gemini',
+        command: getDefaultGeminiPath(),
         args,
         env: filterEnv(env)
     });

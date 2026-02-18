@@ -62,13 +62,16 @@ export class PushService {
         }
 
         try {
-            await webPush.sendNotification(pushSubscription, body)
+            await webPush.sendNotification(pushSubscription, body, {
+                TTL: 60,
+                urgency: 'high'
+            })
         } catch (error) {
             const statusCode = typeof (error as { statusCode?: unknown }).statusCode === 'number'
                 ? (error as { statusCode: number }).statusCode
                 : null
 
-            if (statusCode === 410) {
+            if (statusCode === 404 || statusCode === 410) {
                 this.store.push.removePushSubscription(namespace, subscription.endpoint)
                 return
             }

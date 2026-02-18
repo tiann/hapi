@@ -18,11 +18,13 @@ interface PermissionResponse {
     approved: boolean;
     decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort';
     reason?: string;
+    answers?: Record<string, string[]> | Record<string, { answers: string[] }>;
 }
 
 interface PermissionResult {
     decision: 'approved' | 'approved_for_session' | 'denied' | 'abort';
     reason?: string;
+    answers?: Record<string, string[]> | Record<string, { answers: string[] }>;
 }
 
 type CodexPermissionHandlerOptions = {
@@ -34,6 +36,7 @@ type CodexPermissionHandlerOptions = {
         approved: boolean;
         decision: PermissionResult['decision'];
         reason?: string;
+        answers?: PermissionResult['answers'];
     }) => void;
 };
 
@@ -89,11 +92,13 @@ export class CodexPermissionHandler extends BasePermissionHandler<PermissionResp
         const result: PermissionResult = response.approved
             ? {
                 decision: response.decision === 'approved_for_session' ? 'approved_for_session' : 'approved',
-                reason
+                reason,
+                answers: response.answers
             }
             : {
                 decision: response.decision === 'denied' ? 'denied' : 'abort',
-                reason
+                reason,
+                answers: response.answers
             };
 
         pending.resolve(result);
@@ -105,13 +110,15 @@ export class CodexPermissionHandler extends BasePermissionHandler<PermissionResp
             input: pending.input,
             approved: response.approved,
             decision: result.decision,
-            reason: result.reason
+            reason: result.reason,
+            answers: result.answers
         });
 
         return {
             status: response.approved ? 'approved' : 'denied',
             decision: result.decision,
-            reason: result.reason
+            reason: result.reason,
+            answers: result.answers
         };
     }
 

@@ -55,7 +55,7 @@ export async function geminiLocalLauncher(
 
     const handleTranscriptMessage = (message: { type?: string; content?: string }) => {
         if (message.type === 'user' && typeof message.content === 'string') {
-            session.sendUserMessage(message.content);
+            session.sendUserMessage(message.content, { sentFrom: 'scanner' });
             return;
         }
         if (message.type === 'gemini' && typeof message.content === 'string') {

@@ -68,7 +68,7 @@ class GeminiRemoteLauncher extends RemoteLauncherBase {
 
         await backend.initialize();
 
-        const acpSessionId = await backend.newSession({
+        let acpSessionId = await backend.newSession({
             cwd: session.path,
             mcpServers: toAcpMcpServers(mcpServers)
         });
@@ -97,6 +97,17 @@ class GeminiRemoteLauncher extends RemoteLauncherBase {
                     continue;
                 }
                 break;
+            }
+
+            if (batch.isolate && batch.message.trim() === '/new') {
+                this.messageBuffer.addMessage('Starting new Gemini session...', 'status');
+                acpSessionId = await backend.newSession({
+                    cwd: session.path,
+                    mcpServers: toAcpMcpServers(mcpServers)
+                });
+                session.onSessionFound(acpSessionId);
+                sendReady();
+                continue;
             }
 
             this.applyDisplayMode(batch.mode.permissionMode, batch.mode.model);

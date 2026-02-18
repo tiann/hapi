@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 import type { SessionMetadataSummary } from '@/types/api'
-import { isObject } from '@hapi/protocol'
+import { isObject, safeStringify } from '@hapi/protocol'
 import { BulbIcon, ClipboardIcon, EyeIcon, FileDiffIcon, GlobeIcon, PuzzleIcon, QuestionIcon, RocketIcon, SearchIcon, TerminalIcon, WrenchIcon } from '@/components/ToolCard/icons'
 import { basename, resolveDisplayPath } from '@/utils/path'
 import { getInputStringAny, truncate } from '@/lib/toolInputUtils'
@@ -128,6 +128,20 @@ export const knownTools: Record<string, {
             return tool ? `Permission: ${tool}` : 'Permission request'
         },
         subtitle: (opts) => getInputStringAny(opts.input, ['message', 'command']) ?? null,
+        minimal: true
+    },
+    CodexDynamicTool: {
+        icon: () => <PuzzleIcon className={DEFAULT_ICON_CLASS} />,
+        title: (opts) => {
+            const tool = getInputStringAny(opts.input, ['tool'])
+            return tool ? `Dynamic Tool: ${tool}` : 'Dynamic Tool'
+        },
+        subtitle: (opts) => {
+            const args = isObject(opts.input) ? opts.input.arguments : null
+            if (!args) return null
+            const text = truncate(safeStringify(args), 120)
+            return text === '{}' ? null : text
+        },
         minimal: true
     },
     shell_command: {

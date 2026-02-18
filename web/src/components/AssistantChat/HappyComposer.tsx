@@ -36,6 +36,14 @@ export interface TextInputState {
 
 const defaultSuggestionHandler = async (): Promise<Suggestion[]> => []
 
+const RUNTIME_MODEL_PRESETS: Record<string, string[]> = {
+    codex: [],
+    gemini: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash'],
+    opencode: ['default']
+}
+
+const EFFORT_PRESETS = ['low', 'medium', 'high'] as const
+
 export function HappyComposer(props: {
     disabled?: boolean
     permissionMode?: PermissionMode
@@ -49,10 +57,15 @@ export function HappyComposer(props: {
     agentFlavor?: string | null
     onPermissionModeChange?: (mode: PermissionMode) => void
     onModelModeChange?: (mode: ModelMode) => void
+    onModelCommand?: (model: string) => void
+    onEffortCommand?: (effort: (typeof EFFORT_PRESETS)[number]) => void
     onSwitchToRemote?: () => void
     onTerminal?: () => void
     autocompletePrefixes?: string[]
     autocompleteSuggestions?: (query: string) => Promise<Suggestion[]>
+    runtimeModelOptions?: string[]
+    onRefreshModelOptions?: () => Promise<void>
+    isRefreshingModelOptions?: boolean
     // Voice assistant props
     voiceStatus?: ConversationStatus
     voiceMicMuted?: boolean
@@ -73,10 +86,15 @@ export function HappyComposer(props: {
         agentFlavor,
         onPermissionModeChange,
         onModelModeChange,
+        onModelCommand,
+        onEffortCommand,
         onSwitchToRemote,
         onTerminal,
         autocompletePrefixes = ['@', '/', '$'],
         autocompleteSuggestions = defaultSuggestionHandler,
+        runtimeModelOptions,
+        onRefreshModelOptions,
+        isRefreshingModelOptions = false,
         voiceStatus = 'disconnected',
         voiceMicMuted = false,
         onVoiceToggle,
@@ -107,7 +125,7 @@ export function HappyComposer(props: {
         const path = (attachment as { path?: string }).path
         return typeof path === 'string' && path.length > 0
     })
-    const canSend = (hasText || hasAttachments) && attachmentsReady && !controlsDisabled && !threadIsRunning
+    const canSend = (hasText || hasAttachments) && attachmentsReady && !controlsDisabled
 
     const [inputState, setInputState] = useState<TextInputState>({
         text: '',
@@ -117,6 +135,24 @@ export function HappyComposer(props: {
     const [isAborting, setIsAborting] = useState(false)
     const [isSwitching, setIsSwitching] = useState(false)
     const [showContinueHint, setShowContinueHint] = useState(false)
+    const [runtimeModelSelection, setRuntimeModelSelection] = useState<string>(() => {
+        const flavorKey = agentFlavor ?? 'unknown'
+        try {
+            return localStorage.getItem(`hapi-runtime-model-${flavorKey}`) ?? ''
+        } catch {
+            return ''
+        }
+    })
+    const [effortSelection, setEffortSelection] = useState<(typeof EFFORT_PRESETS)[number]>(() => {
+        try {
+            const saved = localStorage.getItem('hapi-runtime-effort')
+            if (saved === 'low' || saved === 'medium' || saved === 'high') {
+                return saved
+            }
+        } catch {
+        }
+        return 'medium'
+    })
 
     const textareaRef = useRef<HTMLTextAreaElement>(null)
     const prevControlledByUser = useRef(controlledByUser)
@@ -386,9 +422,57 @@ export function HappyComposer(props: {
         haptic('light')
     }, [onModelModeChange, controlsDisabled, haptic])
 
+    const handleRuntimeModelChange = useCallback((model: string) => {
+        const normalized = model.trim()
+        if (!onModelCommand || controlsDisabled || normalized.length === 0) return
+        onModelCommand(normalized)
+        setRuntimeModelSelection(normalized)
+        const flavorKey = agentFlavor ?? 'unknown'
+        try {
+            localStorage.setItem(`hapi-runtime-model-${flavorKey}`, normalized)
+        } catch {
+        }
+        setShowSettings(false)
+        haptic('light')
+    }, [onModelCommand, controlsDisabled, haptic, agentFlavor])
+
+    const handleEffortChange = useCallback((effort: (typeof EFFORT_PRESETS)[number]) => {
+        if (!onEffortCommand || controlsDisabled) return
+        onEffortCommand(effort)
+        setEffortSelection(effort)
+        try {
+            localStorage.setItem('hapi-runtime-effort', effort)
+        } catch {
+        }
+        setShowSettings(false)
+        haptic('light')
+    }, [onEffortCommand, controlsDisabled, haptic])
+
+    const handleRefreshModelOptions = useCallback(async () => {
+        if (!onRefreshModelOptions || controlsDisabled) return
+        try {
+            await onRefreshModelOptions()
+            haptic('success')
+        } catch {
+            haptic('error')
+        }
+    }, [onRefreshModelOptions, controlsDisabled, haptic])
+
     const showPermissionSettings = Boolean(onPermissionModeChange && permissionModeOptions.length > 0)
-    const showModelSettings = Boolean(onModelModeChange && !isCodexFamilyFlavor(agentFlavor))
-    const showSettingsButton = Boolean(showPermissionSettings || showModelSettings)
+    const showClaudeModelSettings = Boolean(onModelModeChange && !isCodexFamilyFlavor(agentFlavor))
+    const runtimeModelPresets = useMemo(
+        () => {
+            if (runtimeModelOptions && runtimeModelOptions.length > 0) {
+                return runtimeModelOptions
+            }
+            return agentFlavor ? (RUNTIME_MODEL_PRESETS[agentFlavor] ?? []) : []
+        },
+        [agentFlavor, runtimeModelOptions]
+    )
+    const showRuntimeModelSettings = Boolean(onModelCommand && runtimeModelPresets.length > 0)
+    const showEffortSettings = Boolean(onEffortCommand && agentFlavor === 'codex')
+    const showModelSettings = showClaudeModelSettings || showRuntimeModelSettings
+    const showSettingsButton = Boolean(showPermissionSettings || showModelSettings || showEffortSettings)
     const showAbortButton = true
     const voiceEnabled = Boolean(onVoiceToggle)
 
@@ -442,7 +526,7 @@ export function HappyComposer(props: {
                             <div className="mx-3 h-px bg-[var(--app-divider)]" />
                         ) : null}
 
-                        {showModelSettings ? (
+                        {showClaudeModelSettings ? (
                             <div className="py-2">
                                 <div className="px-3 pb-1 text-xs font-semibold text-[var(--app-hint)]">
                                     {t('misc.model')}
@@ -478,6 +562,97 @@ export function HappyComposer(props: {
                                 ))}
                             </div>
                         ) : null}
+
+                        {showRuntimeModelSettings ? (
+                            <div className="py-2">
+                                <div className="px-3 pb-1 flex items-center justify-between gap-2">
+                                    <div className="text-xs font-semibold text-[var(--app-hint)]">
+                                        {t('misc.model')}
+                                    </div>
+                                    {onRefreshModelOptions ? (
+                                        <button
+                                            type="button"
+                                            disabled={controlsDisabled || isRefreshingModelOptions}
+                                            onClick={handleRefreshModelOptions}
+                                            className="text-[10px] rounded border border-[var(--app-divider)] px-2 py-0.5 text-[var(--app-hint)] hover:bg-[var(--app-secondary-bg)] disabled:cursor-not-allowed disabled:opacity-50"
+                                        >
+                                            {isRefreshingModelOptions ? '…' : t('misc.refresh')}
+                                        </button>
+                                    ) : null}
+                                </div>
+                                {runtimeModelPresets.map((preset) => (
+                                    <button
+                                        key={preset}
+                                        type="button"
+                                        disabled={controlsDisabled}
+                                        className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
+                                            controlsDisabled
+                                                ? 'cursor-not-allowed opacity-50'
+                                                : 'cursor-pointer hover:bg-[var(--app-secondary-bg)]'
+                                        }`}
+                                        onClick={() => handleRuntimeModelChange(preset)}
+                                        onMouseDown={(e) => e.preventDefault()}
+                                    >
+                                        <div
+                                            className={`flex h-4 w-4 items-center justify-center rounded-full border-2 ${
+                                                runtimeModelSelection === preset
+                                                    ? 'border-[var(--app-link)]'
+                                                    : 'border-[var(--app-hint)]'
+                                            }`}
+                                        >
+                                            {runtimeModelSelection === preset && (
+                                                <div className="h-2 w-2 rounded-full bg-[var(--app-link)]" />
+                                            )}
+                                        </div>
+                                        <span className={runtimeModelSelection === preset ? 'text-[var(--app-link)]' : ''}>
+                                            {preset}
+                                        </span>
+                                    </button>
+                                ))}
+                            </div>
+                        ) : null}
+
+                        {showEffortSettings ? (
+                            <>
+                                {(showPermissionSettings || showModelSettings) ? (
+                                    <div className="mx-3 h-px bg-[var(--app-divider)]" />
+                                ) : null}
+                                <div className="py-2">
+                                    <div className="px-3 pb-1 text-xs font-semibold text-[var(--app-hint)]">
+                                        {t('settings.runtime.effort')}
+                                    </div>
+                                    {EFFORT_PRESETS.map((effort) => (
+                                        <button
+                                            key={effort}
+                                            type="button"
+                                            disabled={controlsDisabled}
+                                            className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
+                                                controlsDisabled
+                                                    ? 'cursor-not-allowed opacity-50'
+                                                    : 'cursor-pointer hover:bg-[var(--app-secondary-bg)]'
+                                            }`}
+                                            onClick={() => handleEffortChange(effort)}
+                                            onMouseDown={(e) => e.preventDefault()}
+                                        >
+                                            <div
+                                                className={`flex h-4 w-4 items-center justify-center rounded-full border-2 ${
+                                                    effortSelection === effort
+                                                        ? 'border-[var(--app-link)]'
+                                                        : 'border-[var(--app-hint)]'
+                                                }`}
+                                            >
+                                                {effortSelection === effort && (
+                                                    <div className="h-2 w-2 rounded-full bg-[var(--app-link)]" />
+                                                )}
+                                            </div>
+                                            <span className={effortSelection === effort ? 'text-[var(--app-link)] capitalize' : 'capitalize'}>
+                                                {effort}
+                                            </span>
+                                        </button>
+                                    ))}
+                                </div>
+                            </>
+                        ) : null}
                     </FloatingOverlay>
                 </div>
             )
@@ -502,14 +677,25 @@ export function HappyComposer(props: {
         showSettings,
         showPermissionSettings,
         showModelSettings,
+        showClaudeModelSettings,
+        showRuntimeModelSettings,
+        showEffortSettings,
         suggestions,
         selectedIndex,
         controlsDisabled,
         permissionMode,
         modelMode,
+        runtimeModelSelection,
+        effortSelection,
         permissionModeOptions,
+        runtimeModelPresets,
+        onRefreshModelOptions,
+        isRefreshingModelOptions,
         handlePermissionChange,
         handleModelChange,
+        handleRuntimeModelChange,
+        handleEffortChange,
+        handleRefreshModelOptions,
         handleSuggestionSelect
     ])
 

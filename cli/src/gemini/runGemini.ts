@@ -14,6 +14,7 @@ import { resolveGeminiRuntimeConfig } from './utils/config';
 import { isPermissionModeAllowedForFlavor } from '@hapi/protocol';
 import { PermissionModeSchema } from '@hapi/protocol/schemas';
 import { formatMessageWithAttachments } from '@/utils/attachmentFormatter';
+import { parseSpecialCommand } from '@/parsers/specialCommands';
 
 export async function runGemini(opts: {
     startedBy?: 'runner' | 'terminal';
@@ -21,7 +22,7 @@ export async function runGemini(opts: {
     permissionMode?: PermissionMode;
     model?: string;
 } = {}): Promise<void> {
-    const workingDirectory = process.cwd();
+    const workingDirectory = process.env.HAPI_TARGET_CWD || process.cwd();
     const startedBy = opts.startedBy ?? 'terminal';
 
     logger.debug(`[gemini] Starting with options: startedBy=${startedBy}, startingMode=${opts.startingMode}`);
@@ -101,11 +102,19 @@ export async function runGemini(opts: {
     };
 
     session.onUserMessage((message) => {
-        const formattedText = formatMessageWithAttachments(message.content.text, message.content.attachments);
         const mode: GeminiMode = {
             permissionMode: currentPermissionMode,
             model: resolvedModel
         };
+
+        const specialCommand = parseSpecialCommand(message.content.text);
+        if (specialCommand.type === 'new') {
+            logger.debug('[gemini] Detected /new command');
+            messageQueue.pushIsolateAndClear('/new', mode);
+            return;
+        }
+
+        const formattedText = formatMessageWithAttachments(message.content.text, message.content.attachments);
         messageQueue.push(formattedText, mode);
     });
 

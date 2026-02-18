@@ -17,6 +17,8 @@ import { usePlatform } from '@/hooks/usePlatform'
 import { useSessionActions } from '@/hooks/mutations/useSessionActions'
 import { useVoiceOptional } from '@/lib/voice-context'
 import { RealtimeVoiceSession, registerSessionStore, registerVoiceHooksStore, voiceHooks } from '@/realtime'
+import { McpInfoDialog } from '@/components/McpInfoDialog'
+import { isClaudeFlavor } from '@/lib/agentFlavorUtils'
 
 export function SessionChat(props: {
     api: ApiClient
@@ -37,6 +39,9 @@ export function SessionChat(props: {
     onAtBottomChange: (atBottom: boolean) => void
     onRetryMessage?: (localId: string) => void
     autocompleteSuggestions?: (query: string) => Promise<Suggestion[]>
+    runtimeModelOptions?: string[]
+    onRefreshModelOptions?: () => Promise<void>
+    isRefreshingModelOptions?: boolean
 }) {
     const { haptic } = usePlatform()
     const navigate = useNavigate()
@@ -44,6 +49,7 @@ export function SessionChat(props: {
     const normalizedCacheRef = useRef<Map<string, { source: DecryptedMessage; normalized: NormalizedMessage | null }>>(new Map())
     const blocksByIdRef = useRef<Map<string, ChatBlock>>(new Map())
     const [forceScrollToken, setForceScrollToken] = useState(0)
+    const [showMcpInfo, setShowMcpInfo] = useState(false)
     const agentFlavor = props.session.metadata?.flavor ?? null
     const { abortSession, switchSession, setPermissionMode, setModelMode } = useSessionActions(
         props.api,
@@ -129,7 +135,7 @@ export function SessionChat(props: {
 
     const handleVoiceToggle = useCallback(async () => {
         if (!voice) return
-        if (voice.status === 'connected' || voice.status === 'connecting') {
+        if (voice.status === 'connected' || voice.status === 'connecting' || voice.status === 'processing') {
             await voice.stopVoice()
         } else {
             await voice.startVoice(props.session.id)
@@ -216,6 +222,21 @@ export function SessionChat(props: {
         }
     }, [setModelMode, props.onRefresh, haptic])
 
+    const handleRuntimeModelCommand = useCallback(async (model: string) => {
+        const flavor = props.session.metadata?.flavor ?? 'claude'
+        if (isClaudeFlavor(flavor)) {
+            // Claude uses dedicated model mode endpoint (default/sonnet/opus).
+            return
+        }
+        props.onSend(`/model ${model}`)
+        haptic.notification('success')
+    }, [props.onSend, props.session.metadata?.flavor, haptic])
+
+    const handleEffortCommand = useCallback(async (effort: 'low' | 'medium' | 'high') => {
+        props.onSend(`/effort ${effort}`)
+        haptic.notification('success')
+    }, [props.onSend, haptic])
+
     // Abort handler
     const handleAbort = useCallback(async () => {
         await abortSession()
@@ -243,6 +264,11 @@ export function SessionChat(props: {
     }, [navigate, props.session.id])
 
     const handleSend = useCallback((text: string, attachments?: AttachmentMetadata[]) => {
+        // Intercept /mcp to show native MCP info dialog alongside Claude's response
+        const trimmed = text.trim()
+        if (trimmed === '/mcp' || trimmed.startsWith('/mcp ')) {
+            setShowMcpInfo(true)
+        }
         props.onSend(text, attachments)
         setForceScrollToken((token) => token + 1)
     }, [props.onSend])
@@ -319,9 +345,14 @@ export function SessionChat(props: {
                         controlledByUser={props.session.agentState?.controlledByUser === true}
                         onPermissionModeChange={handlePermissionModeChange}
                         onModelModeChange={handleModelModeChange}
+                        onModelCommand={handleRuntimeModelCommand}
+                        onEffortCommand={handleEffortCommand}
                         onSwitchToRemote={handleSwitchToRemote}
                         onTerminal={props.session.active ? handleViewTerminal : undefined}
                         autocompleteSuggestions={props.autocompleteSuggestions}
+                        runtimeModelOptions={props.runtimeModelOptions}
+                        onRefreshModelOptions={props.onRefreshModelOptions}
+                        isRefreshingModelOptions={props.isRefreshingModelOptions}
                         voiceStatus={voice?.status}
                         voiceMicMuted={voice?.micMuted}
                         onVoiceToggle={voice ? handleVoiceToggle : undefined}
@@ -336,8 +367,29 @@ export function SessionChat(props: {
                     api={props.api}
                     micMuted={voice.micMuted}
                     onStatusChange={voice.setStatus}
+                    getSession={(sessionId) => (sessionId === props.session.id ? props.session : null)}
+                    sendMessage={(sessionId, message) => {
+                        if (sessionId !== props.session.id) return
+                        props.onSend(message)
+                    }}
+                    approvePermission={async (sessionId, requestId) => {
+                        if (sessionId !== props.session.id) return
+                        await props.api.approvePermission(props.session.id, requestId)
+                        props.onRefresh()
+                    }}
+                    denyPermission={async (sessionId, requestId) => {
+                        if (sessionId !== props.session.id) return
+                        await props.api.denyPermission(props.session.id, requestId)
+                        props.onRefresh()
+                    }}
                 />
             )}
+
+            <McpInfoDialog
+                open={showMcpInfo}
+                onOpenChange={setShowMcpInfo}
+                tools={props.session.metadata?.tools}
+            />
         </div>
     )
 }

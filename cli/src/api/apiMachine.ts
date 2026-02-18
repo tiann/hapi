@@ -3,7 +3,9 @@
  */
 
 import { io, type Socket } from 'socket.io-client'
+import { execFile } from 'node:child_process'
 import { stat } from 'node:fs/promises'
+import { promisify } from 'node:util'
 import { logger } from '@/ui/logger'
 import { configuration } from '@/configuration'
 import type { Update, UpdateMachineBody } from '@hapi/protocol'
@@ -63,6 +65,17 @@ interface PathExistsResponse {
     exists: Record<string, boolean>
 }
 
+interface GitBranchesRequest {
+    directory: string
+    limit?: number
+}
+
+interface GitBranchesResponse {
+    branches: string[]
+}
+
+const execFileAsync = promisify(execFile)
+
 export class ApiMachineClient {
     private socket!: Socket<ServerToRunnerEvents, RunnerToServerEvents>
     private keepAliveInterval: NodeJS.Timeout | null = null
@@ -97,11 +110,73 @@ export class ApiMachineClient {
 
             return { exists }
         })
+
+        this.rpcHandlerManager.registerHandler<GitBranchesRequest, GitBranchesResponse>('git-list-branches', async (params) => {
+            const directory = typeof params?.directory === 'string' ? params.directory.trim() : ''
+            const maxLimit = typeof params?.limit === 'number' ? Math.max(1, Math.min(500, Math.floor(params.limit))) : 200
+
+            if (!directory) {
+                return { branches: [] }
+            }
+
+            try {
+                const rootResult = await execFileAsync('git', ['rev-parse', '--show-toplevel'], {
+                    cwd: directory
+                })
+                const repoRoot = rootResult.stdout?.toString().trim()
+                if (!repoRoot) {
+                    return { branches: [] }
+                }
+
+                const branchResult = await execFileAsync('git', ['for-each-ref', '--format=%(refname:short)', 'refs/heads'], {
+                    cwd: repoRoot
+                })
+                const currentBranchResult = await execFileAsync('git', ['symbolic-ref', '--short', 'HEAD'], {
+                    cwd: repoRoot
+                }).catch(() => ({ stdout: '', stderr: '' }))
+
+                const currentBranch = currentBranchResult.stdout?.toString().trim() || null
+
+                const listedBranches = branchResult.stdout
+                    ?.toString()
+                    .split('\n')
+                    .map((value) => value.trim())
+                    .filter(Boolean) ?? []
+                const uniqueBranches = Array.from(new Set(listedBranches)).sort((a, b) => a.localeCompare(b))
+
+                if (currentBranch) {
+                    const currentIndex = uniqueBranches.findIndex((branch) => branch === currentBranch)
+                    if (currentIndex > 0) {
+                        uniqueBranches.splice(currentIndex, 1)
+                        uniqueBranches.unshift(currentBranch)
+                    }
+                }
+
+                return { branches: uniqueBranches.slice(0, maxLimit) }
+            } catch {
+                return { branches: [] }
+            }
+        })
     }
 
     setRPCHandlers({ spawnSession, stopSession, requestShutdown }: MachineRpcHandlers): void {
         this.rpcHandlerManager.registerHandler('spawn-happy-session', async (params: any) => {
-            const { directory, sessionId, resumeSessionId, machineId, approvedNewDirectoryCreation, agent, model, yolo, token, sessionType, worktreeName } = params || {}
+            const {
+                directory,
+                sessionId,
+                resumeSessionId,
+                machineId,
+                approvedNewDirectoryCreation,
+                agent,
+                model,
+                yolo,
+                token,
+                sessionType,
+                worktreeName,
+                worktreeBranch,
+                codexConfigOverrides,
+                codexHomeDir
+            } = params || {}
 
             if (!directory) {
                 throw new Error('Directory is required')
@@ -118,7 +193,10 @@ export class ApiMachineClient {
                 yolo,
                 token,
                 sessionType,
-                worktreeName
+                worktreeName,
+                worktreeBranch,
+                codexConfigOverrides,
+                codexHomeDir
             })
 
             switch (result.type) {
@@ -155,7 +233,7 @@ export class ApiMachineClient {
         await backoff(async () => {
             const updated = handler(this.machine.metadata)
 
-            const answer = await this.socket.emitWithAck('machine-update-metadata', {
+            const answer = await this.emitWithAckWhenConnected('machine-update-metadata', {
                 machineId: this.machine.id,
                 metadata: updated,
                 expectedVersion: this.machine.metadataVersion
@@ -188,7 +266,7 @@ export class ApiMachineClient {
         await backoff(async () => {
             const updated = handler(this.machine.runnerState)
 
-            const answer = await this.socket.emitWithAck('machine-update-state', {
+            const answer = await this.emitWithAckWhenConnected('machine-update-state', {
                 machineId: this.machine.id,
                 runnerState: updated,
                 expectedVersion: this.machine.runnerStateVersion
@@ -298,6 +376,51 @@ export class ApiMachineClient {
 
         this.socket.on('error', (payload) => {
             logger.debug('[API MACHINE] Socket error:', payload)
+        })
+    }
+
+    private async emitWithAckWhenConnected(
+        event: 'machine-update-metadata' | 'machine-update-state',
+        payload: unknown,
+        timeoutMs: number = 15_000
+    ): Promise<unknown> {
+        const connected = await this.waitForConnected(timeoutMs)
+        if (!connected) {
+            throw new Error(`Socket not connected for '${event}'`)
+        }
+        return await (this.socket as any).timeout(timeoutMs).emitWithAck(event, payload)
+    }
+
+    private async waitForConnected(timeoutMs: number): Promise<boolean> {
+        if (this.socket.connected) {
+            return true
+        }
+
+        this.socket.connect()
+
+        return await new Promise<boolean>((resolve) => {
+            let settled = false
+
+            const cleanup = () => {
+                this.socket.off('connect', onConnect)
+                clearTimeout(timeout)
+            }
+
+            const onConnect = () => {
+                if (settled) return
+                settled = true
+                cleanup()
+                resolve(true)
+            }
+
+            const timeout = setTimeout(() => {
+                if (settled) return
+                settled = true
+                cleanup()
+                resolve(false)
+            }, Math.max(0, timeoutMs))
+
+            this.socket.on('connect', onConnect)
         })
     }
 

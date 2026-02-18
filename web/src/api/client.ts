@@ -6,6 +6,7 @@ import type {
     FileReadResponse,
     FileSearchResponse,
     GitCommandResponse,
+    MachineGitBranchesResponse,
     MachinePathsExistsResponse,
     MachinesResponse,
     MessagesResponse,
@@ -13,10 +14,13 @@ import type {
     PermissionMode,
     PushSubscriptionPayload,
     PushUnsubscribePayload,
+    PreferencesResponse,
     PushVapidPublicKeyResponse,
     SlashCommandsResponse,
     SkillsResponse,
     SpawnResponse,
+    UpdatePreferencesPayload,
+    UpdatePreferencesResponse,
     UploadFileResponse,
     VisibilityPayload,
     SessionResponse,
@@ -69,6 +73,15 @@ export class ApiClient {
         this.onUnauthorized = options?.onUnauthorized ?? null
     }
 
+    getAuthToken(): string | null {
+        const live = this.getToken ? this.getToken() : null
+        return live ?? this.token ?? null
+    }
+
+    getBaseUrl(): string | null {
+        return this.baseUrl
+    }
+
     private buildUrl(path: string): string {
         if (!this.baseUrl) {
             return path
@@ -94,7 +107,9 @@ export class ApiClient {
         if (authToken) {
             headers.set('authorization', `Bearer ${authToken}`)
         }
-        if (init?.body !== undefined && !headers.has('content-type')) {
+        const hasBody = init?.body !== undefined
+        const isFormData = typeof FormData !== 'undefined' && init?.body instanceof FormData
+        if (hasBody && !isFormData && !headers.has('content-type')) {
             headers.set('content-type', 'application/json')
         }
 
@@ -180,6 +195,17 @@ export class ApiClient {
 
     async setVisibility(payload: VisibilityPayload): Promise<void> {
         await this.request('/api/visibility', {
+            method: 'POST',
+            body: JSON.stringify(payload)
+        })
+    }
+
+    async getPreferences(): Promise<PreferencesResponse> {
+        return await this.request<PreferencesResponse>('/api/preferences')
+    }
+
+    async updatePreferences(payload: UpdatePreferencesPayload): Promise<UpdatePreferencesResponse> {
+        return await this.request<UpdatePreferencesResponse>('/api/preferences', {
             method: 'POST',
             body: JSON.stringify(payload)
         })
@@ -369,6 +395,20 @@ export class ApiClient {
         )
     }
 
+    async listMachineGitBranches(
+        machineId: string,
+        directory: string,
+        limit?: number
+    ): Promise<MachineGitBranchesResponse> {
+        return await this.request<MachineGitBranchesResponse>(
+            `/api/machines/${encodeURIComponent(machineId)}/git/branches`,
+            {
+                method: 'POST',
+                body: JSON.stringify({ directory, limit })
+            }
+        )
+    }
+
     async spawnSession(
         machineId: string,
         directory: string,
@@ -376,11 +416,12 @@ export class ApiClient {
         model?: string,
         yolo?: boolean,
         sessionType?: 'simple' | 'worktree',
-        worktreeName?: string
+        worktreeName?: string,
+        worktreeBranch?: string
     ): Promise<SpawnResponse> {
         return await this.request<SpawnResponse>(`/api/machines/${encodeURIComponent(machineId)}/spawn`, {
             method: 'POST',
-            body: JSON.stringify({ directory, agent, model, yolo, sessionType, worktreeName })
+            body: JSON.stringify({ directory, agent, model, yolo, sessionType, worktreeName, worktreeBranch })
         })
     }
 
@@ -409,15 +450,44 @@ export class ApiClient {
         })
     }
 
-    async fetchVoiceToken(options?: { customAgentId?: string; customApiKey?: string }): Promise<{
-        allowed: boolean
-        token?: string
-        agentId?: string
+    async transcribeVoiceAudio(audio: Blob, language?: string): Promise<{
+        ok: boolean
+        text?: string
         error?: string
     }> {
-        return await this.request('/api/voice/token', {
+        const liveToken = this.getToken ? this.getToken() : null
+        const authToken = liveToken ?? this.token
+        const form = new FormData()
+        const file = typeof File !== 'undefined' && audio instanceof File
+            ? audio
+            : new File([audio], 'audio.webm', {
+                type: audio.type || 'audio/webm'
+            })
+        form.set('audio', file, file.name || 'audio.webm')
+        if (language) {
+            form.set('language', language)
+        }
+
+        const headers = new Headers()
+        if (authToken) {
+            headers.set('authorization', `Bearer ${authToken}`)
+        }
+
+        const res = await fetch(this.buildUrl('/api/voice/transcribe'), {
             method: 'POST',
-            body: JSON.stringify(options || {})
+            headers,
+            body: form
         })
+
+        if (!res.ok) {
+            const body = await res.text().catch(() => '')
+            throw new Error(`HTTP ${res.status} ${res.statusText}: ${body}`)
+        }
+
+        return await res.json() as {
+            ok: boolean
+            text?: string
+            error?: string
+        }
     }
 }

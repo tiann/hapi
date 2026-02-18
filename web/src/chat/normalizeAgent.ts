@@ -357,10 +357,61 @@ export function normalizeAgentRecord(
                     type: 'tool-result',
                     tool_use_id: data.callId,
                     content: data.output,
-                    is_error: false,
+                    is_error: Boolean(data.is_error),
                     uuid,
                     parentUUID: null
                 }],
+                meta
+            }
+        }
+
+        if (data.type === 'plan') {
+            const entriesRaw = Array.isArray(data.entries) ? data.entries : []
+            const entries = entriesRaw
+                .map((entry, index) => {
+                    if (!isObject(entry)) return null
+                    const content = asString(entry.content)
+                    const status = asString(entry.status)
+                    if (!content || !status) return null
+                    if (status !== 'pending' && status !== 'in_progress' && status !== 'completed') {
+                        return null
+                    }
+                    return {
+                        id: asString(entry.id) ?? `plan-${index + 1}`,
+                        content,
+                        status
+                    }
+                })
+                .filter((entry): entry is { id: string; content: string; status: string } => entry !== null)
+
+            if (entries.length === 0) return null
+            const callId = `codex-plan-${messageId}`
+
+            return {
+                id: messageId,
+                localId,
+                createdAt,
+                role: 'agent',
+                isSidechain: false,
+                content: [
+                    {
+                        type: 'tool-call',
+                        id: callId,
+                        name: 'TodoWrite',
+                        input: { todos: entries },
+                        description: null,
+                        uuid: messageId,
+                        parentUUID: null
+                    },
+                    {
+                        type: 'tool-result',
+                        tool_use_id: callId,
+                        content: { success: true },
+                        is_error: false,
+                        uuid: messageId,
+                        parentUUID: null
+                    }
+                ],
                 meta
             }
         }

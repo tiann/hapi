@@ -11,8 +11,9 @@ import type { CodexSessionConfig, CodexToolResponse } from './types';
 import { z } from 'zod';
 import { ElicitRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { CodexPermissionHandler } from './utils/permissionHandler';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import { randomUUID } from 'node:crypto';
+import { getDefaultCodexPath } from './utils/executable';
 
 type ElicitResponseValue = string | number | boolean | string[];
 type ElicitRequestedSchema = {
@@ -137,7 +138,8 @@ const DEFAULT_TIMEOUT = 14 * 24 * 60 * 60 * 1000; // 14 days, which is the half 
  */
 function getCodexMcpCommand(): string {
     try {
-        const version = execSync('codex --version', { encoding: 'utf8' }).trim();
+        const codexPath = getDefaultCodexPath();
+        const version = execFileSync(codexPath, ['--version'], { encoding: 'utf8' }).trim();
         const match = version.match(/codex-cli\s+(\d+\.\d+\.\d+(?:-alpha\.\d+)?)/);
         if (!match) return 'mcp-server'; // Default to newer command if we can't parse
 
@@ -167,6 +169,7 @@ export class CodexMcpClient {
     private connected: boolean = false;
     private sessionId: string | null = null;
     private conversationId: string | null = null;
+    private threadId: string | null = null;
     private handler: ((event: any) => void) | null = null;
     private permissionHandler: CodexPermissionHandler | null = null;
 
@@ -208,14 +211,40 @@ export class CodexMcpClient {
         this.permissionHandler = handler;
     }
 
+    private isDisconnectedTransportError(error: unknown): boolean {
+        if (!(error instanceof Error)) return false;
+        const message = error.message.toLowerCase();
+        return message.includes('disconnected transport')
+            || message.includes('transport closed')
+            || message.includes('transport is closed')
+            || message.includes('not connected');
+    }
+
+    private async resetTransportState(reason: unknown): Promise<void> {
+        logger.debug('[CodexMCP] Resetting transport/client state after transport failure', reason);
+        try {
+            await this.client.close();
+        } catch { }
+        try {
+            await this.transport?.close?.();
+        } catch { }
+
+        this.transport = null;
+        this.connected = false;
+        this.sessionId = null;
+        this.conversationId = null;
+        this.threadId = null;
+    }
+
     async connect(): Promise<void> {
         if (this.connected) return;
 
         const mcpCommand = getCodexMcpCommand();
-        logger.debug(`[CodexMCP] Connecting to Codex MCP server using command: codex ${mcpCommand}`);
+        const codexPath = getDefaultCodexPath();
+        logger.debug(`[CodexMCP] Connecting to Codex MCP server using command: ${codexPath} ${mcpCommand}`);
 
         this.transport = new StdioClientTransport({
-            command: 'codex',
+            command: codexPath,
             args: [mcpCommand],
             env: Object.keys(process.env).reduce((acc, key) => {
                 const value = process.env[key];
@@ -283,14 +312,22 @@ export class CodexMcpClient {
 
         logger.debug('[CodexMCP] Starting Codex session:', config);
 
-        const response = await this.client.callTool({
-            name: 'codex',
-            arguments: config as any
-        }, undefined, {
-            signal: options?.signal,
-            timeout: DEFAULT_TIMEOUT,
-            // maxTotalTimeout: 10000000000 
-        });
+        let response: unknown;
+        try {
+            response = await this.client.callTool({
+                name: 'codex',
+                arguments: config as any
+            }, undefined, {
+                signal: options?.signal,
+                timeout: DEFAULT_TIMEOUT,
+                // maxTotalTimeout: 10000000000 
+            });
+        } catch (error) {
+            if (this.isDisconnectedTransportError(error)) {
+                await this.resetTransportState(error);
+            }
+            throw error;
+        }
 
         logger.debug('[CodexMCP] startSession response:', response);
 
@@ -303,26 +340,34 @@ export class CodexMcpClient {
     async continueSession(prompt: string, options?: { signal?: AbortSignal }): Promise<CodexToolResponse> {
         if (!this.connected) await this.connect();
 
-        if (!this.sessionId) {
+        const threadId = this.threadId ?? this.conversationId ?? this.sessionId;
+        if (!threadId) {
             throw new Error('No active session. Call startSession first.');
         }
 
-        if (!this.conversationId) {
-            // Some Codex deployments reuse the session ID as the conversation identifier
-            this.conversationId = this.sessionId;
-            logger.debug('[CodexMCP] conversationId missing, defaulting to sessionId:', this.conversationId);
-        }
-
-        const args = { sessionId: this.sessionId, conversationId: this.conversationId, prompt };
+        const args: Record<string, unknown> = {
+            threadId,
+            // Keep deprecated field for backwards compatibility with older builds.
+            conversationId: threadId,
+            prompt
+        };
         logger.debug('[CodexMCP] Continuing Codex session:', args);
 
-        const response = await this.client.callTool({
-            name: 'codex-reply',
-            arguments: args
-        }, undefined, {
-            signal: options?.signal,
-            timeout: DEFAULT_TIMEOUT
-        });
+        let response: unknown;
+        try {
+            response = await this.client.callTool({
+                name: 'codex-reply',
+                arguments: args
+            }, undefined, {
+                signal: options?.signal,
+                timeout: DEFAULT_TIMEOUT
+            });
+        } catch (error) {
+            if (this.isDisconnectedTransportError(error)) {
+                await this.resetTransportState(error);
+            }
+            throw error;
+        }
 
         logger.debug('[CodexMCP] continueSession response:', response);
         this.extractIdentifiers(response);
@@ -353,6 +398,12 @@ export class CodexMcpClient {
                 this.conversationId = conversationId;
                 logger.debug('[CodexMCP] Conversation ID extracted from event:', this.conversationId);
             }
+
+            const threadId = candidate.thread_id ?? candidate.threadId;
+            if (threadId) {
+                this.threadId = threadId;
+                logger.debug('[CodexMCP] Thread ID extracted from event:', this.threadId);
+            }
         }
     }
     private extractIdentifiers(response: any): void {
@@ -371,6 +422,23 @@ export class CodexMcpClient {
         } else if (response?.conversationId) {
             this.conversationId = response.conversationId;
             logger.debug('[CodexMCP] Conversation ID extracted:', this.conversationId);
+        }
+
+        if (meta.threadId) {
+            this.threadId = meta.threadId;
+            logger.debug('[CodexMCP] Thread ID extracted:', this.threadId);
+        } else if (response?.threadId) {
+            this.threadId = response.threadId;
+            logger.debug('[CodexMCP] Thread ID extracted:', this.threadId);
+        }
+
+        const structuredContent = response?.structuredContent;
+        if (structuredContent && typeof structuredContent === 'object') {
+            const structuredThreadId = (structuredContent as Record<string, unknown>).threadId;
+            if (typeof structuredThreadId === 'string' && structuredThreadId.length > 0) {
+                this.threadId = structuredThreadId;
+                logger.debug('[CodexMCP] Thread ID extracted from structuredContent:', this.threadId);
+            }
         }
 
         const content = response?.content;
@@ -401,6 +469,7 @@ export class CodexMcpClient {
         const previousSessionId = this.sessionId;
         this.sessionId = null;
         this.conversationId = null;
+        this.threadId = null;
         logger.debug('[CodexMCP] Session cleared, previous sessionId:', previousSessionId);
     }
 
@@ -445,6 +514,7 @@ export class CodexMcpClient {
         this.connected = false;
         this.sessionId = null;
         this.conversationId = null;
+        this.threadId = null;
 
         logger.debug('[CodexMCP] Disconnected');
     }
