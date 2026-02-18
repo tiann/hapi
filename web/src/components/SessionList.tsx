@@ -168,8 +168,7 @@ export function groupSessionsByDirectory(
 
 export function patchGroupsVisuals(
     frozenGroups: SessionGroup[],
-    latestSessions: SessionSummary[],
-    unreadSessionIds: Set<string>
+    latestSessions: SessionSummary[]
 ): SessionGroup[] {
     const sessionMap = new Map(latestSessions.map(s => [s.id, s]))
     let anyChanged = false
@@ -198,23 +197,27 @@ export function patchGroupsVisuals(
     return anyChanged || patched.length !== frozenGroups.length ? patched : frozenGroups
 }
 
+function getSessionIdHash(sessions: SessionSummary[]): string {
+    return sessions.map(s => s.id).sort().join('\0')
+}
+
 function useFrozenGroups(
     liveGroups: SessionGroup[],
     selectedSessionId: string | null | undefined,
-    sessions: SessionSummary[],
-    unreadSessionIds: Set<string>
+    sessions: SessionSummary[]
 ): { displayGroups: SessionGroup[]; unfreezeCount: number } {
     const frozenRef = useRef<SessionGroup[] | null>(null)
     const prevSelectedRef = useRef<string | null | undefined>(null)
-    const prevSessionCountRef = useRef(sessions.length)
+    const prevSessionIdHashRef = useRef(getSessionIdHash(sessions))
     const unfreezeCountRef = useRef(0)
 
     const selectionChanged = selectedSessionId !== prevSelectedRef.current
-    const sessionCountChanged = sessions.length !== prevSessionCountRef.current
-    const shouldUnfreeze = selectionChanged || sessionCountChanged
+    const sessionIdHash = getSessionIdHash(sessions)
+    const sessionsChanged = sessionIdHash !== prevSessionIdHashRef.current
+    const shouldUnfreeze = selectionChanged || sessionsChanged
 
     prevSelectedRef.current = selectedSessionId
-    prevSessionCountRef.current = sessions.length
+    prevSessionIdHashRef.current = sessionIdHash
 
     if (shouldUnfreeze || !frozenRef.current) {
         frozenRef.current = liveGroups
@@ -222,7 +225,7 @@ function useFrozenGroups(
             unfreezeCountRef.current += 1
         }
     } else if (selectedSessionId) {
-        frozenRef.current = patchGroupsVisuals(frozenRef.current, sessions, unreadSessionIds)
+        frozenRef.current = patchGroupsVisuals(frozenRef.current, sessions)
     } else {
         frozenRef.current = liveGroups
     }
@@ -676,7 +679,6 @@ export function SessionList(props: {
     const [readHistory, setReadHistory] = useState<SessionReadHistory>(() => loadSessionReadHistory())
 
     const prevUpdatedAtRef = useRef<Map<string, number>>(new Map())
-    const prevSelectedForUnreadRef = useRef<string | null>(null)
     const [unreadSessionIds, setUnreadSessionIds] = useState<Set<string>>(() => new Set())
 
     useEffect(() => {
@@ -731,18 +733,14 @@ export function SessionList(props: {
     }, [props.sessions, selectedSessionId])
 
     useEffect(() => {
-        if (!selectedSessionId || selectedSessionId === prevSelectedForUnreadRef.current) {
-            prevSelectedForUnreadRef.current = selectedSessionId ?? null
-            return
-        }
-        prevSelectedForUnreadRef.current = selectedSessionId
-        if (!unreadSessionIds.has(selectedSessionId)) return
+        if (!selectedSessionId) return
         setUnreadSessionIds(prev => {
+            if (!prev.has(selectedSessionId)) return prev
             const next = new Set(prev)
             next.delete(selectedSessionId)
             return next
         })
-    }, [selectedSessionId, unreadSessionIds])
+    }, [selectedSessionId])
 
     const liveGroups = useMemo(
         () => groupSessionsByDirectory(props.sessions, readHistory, unreadSessionIds),
@@ -752,8 +750,7 @@ export function SessionList(props: {
     const { displayGroups, unfreezeCount } = useFrozenGroups(
         liveGroups,
         selectedSessionId,
-        props.sessions,
-        unreadSessionIds
+        props.sessions
     )
 
     const listContainerRef = useRef<HTMLDivElement>(null)

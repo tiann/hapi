@@ -123,7 +123,7 @@ describe('patchGroupsVisuals', () => {
         }]
 
         const s1Updated = makeSession({ id: 's1', active: true, thinking: true, updatedAt: 300 })
-        const patched = patchGroupsVisuals(frozenGroups, [s1Updated, s2], new Set())
+        const patched = patchGroupsVisuals(frozenGroups, [s1Updated, s2])
 
         expect(patched[0]?.sessions.map(s => s.id)).toEqual(['s1', 's2'])
         expect(patched[0]?.sessions[0]?.active).toBe(true)
@@ -143,7 +143,7 @@ describe('patchGroupsVisuals', () => {
             hasActiveSession: false
         }]
 
-        const patched = patchGroupsVisuals(frozenGroups, [s2], new Set())
+        const patched = patchGroupsVisuals(frozenGroups, [s2])
 
         expect(patched[0]?.sessions.map(s => s.id)).toEqual(['s2'])
     })
@@ -170,7 +170,7 @@ describe('patchGroupsVisuals', () => {
             }
         ]
 
-        const patched = patchGroupsVisuals(frozenGroups, [s2], new Set())
+        const patched = patchGroupsVisuals(frozenGroups, [s2])
 
         expect(patched).toHaveLength(1)
         expect(patched[0]?.directory).toBe('/repo-b')
@@ -187,7 +187,7 @@ describe('patchGroupsVisuals', () => {
             hasActiveSession: false
         }]
 
-        const patched = patchGroupsVisuals(frozenGroups, [s1], new Set())
+        const patched = patchGroupsVisuals(frozenGroups, [s1])
 
         expect(patched).toBe(frozenGroups)
     })

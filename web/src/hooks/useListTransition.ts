@@ -2,6 +2,17 @@ import { useLayoutEffect, useRef, type RefObject } from 'react'
 
 type Rect = { top: number }
 
+function escapeCssId(id: string): string {
+    if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
+        return CSS.escape(id)
+    }
+    return id.replace(/([^\w-])/g, '\\$1')
+}
+
+function querySessionEl(container: HTMLElement, id: string): HTMLElement | null {
+    return container.querySelector<HTMLElement>(`[data-session-id="${escapeCssId(id)}"]`)
+}
+
 export function useListTransition(opts: {
     listContainerRef: RefObject<HTMLElement | null>
     scrollContainerRef: RefObject<HTMLElement | null> | undefined
@@ -23,9 +34,7 @@ export function useListTransition(opts: {
         if (didUnfreeze && listContainer) {
             // Step 1: Pin scroll position for selected session
             if (scrollContainer && selectedSessionId && prevSelectedOffsetRef.current !== null) {
-                const selectedEl = listContainer.querySelector<HTMLElement>(
-                    `[data-session-id="${CSS.escape(selectedSessionId)}"]`
-                )
+                const selectedEl = querySessionEl(listContainer, selectedSessionId)
                 if (selectedEl) {
                     const containerRect = scrollContainer.getBoundingClientRect()
                     const selectedRect = selectedEl.getBoundingClientRect()
@@ -64,25 +73,26 @@ export function useListTransition(opts: {
             }
         }
 
-        // Always capture current positions for next transition
-        if (listContainer) {
-            const rects = new Map<string, Rect>()
-            const items = listContainer.querySelectorAll<HTMLElement>('[data-session-id]')
-            for (const item of items) {
-                const id = item.dataset.sessionId
-                if (id) {
-                    const rect = item.getBoundingClientRect()
-                    rects.set(id, { top: rect.top })
+        // Capture item positions on unfreeze or first render for FLIP baseline
+        if (didUnfreeze || prevRectsRef.current.size === 0) {
+            if (listContainer) {
+                const rects = new Map<string, Rect>()
+                const items = listContainer.querySelectorAll<HTMLElement>('[data-session-id]')
+                for (const item of items) {
+                    const id = item.dataset.sessionId
+                    if (id) {
+                        const rect = item.getBoundingClientRect()
+                        rects.set(id, { top: rect.top })
+                    }
                 }
+                prevRectsRef.current = rects
             }
-            prevRectsRef.current = rects
         }
 
-        // Capture selected session's offset for scroll pinning
+        // Always capture selected session's offset for scroll pinning
+        // (cheap single querySelector; accounts for user scrolling while frozen)
         if (scrollContainer && selectedSessionId && listContainer) {
-            const selectedEl = listContainer.querySelector<HTMLElement>(
-                `[data-session-id="${CSS.escape(selectedSessionId)}"]`
-            )
+            const selectedEl = querySessionEl(listContainer, selectedSessionId)
             if (selectedEl) {
                 const containerRect = scrollContainer.getBoundingClientRect()
                 const selectedRect = selectedEl.getBoundingClientRect()
