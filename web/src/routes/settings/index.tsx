@@ -4,6 +4,7 @@ import { useAppGoBack } from '@/hooks/useAppGoBack'
 import { getElevenLabsSupportedLanguages, getLanguageDisplayName, type Language } from '@/lib/languages'
 import { getFontScaleOptions, useFontScale, type FontScale } from '@/hooks/useFontScale'
 import { PROTOCOL_VERSION } from '@hapi/protocol'
+import { VOICE_PROVIDERS, type VoiceProvider } from '@hapi/protocol/voice'
 
 const locales: { value: Locale; nativeLabel: string }[] = [
     { value: 'en', nativeLabel: 'English' },
@@ -75,14 +76,29 @@ export default function SettingsPage() {
     const [isOpen, setIsOpen] = useState(false)
     const [isFontOpen, setIsFontOpen] = useState(false)
     const [isVoiceOpen, setIsVoiceOpen] = useState(false)
+    const [isVoiceProviderOpen, setIsVoiceProviderOpen] = useState(false)
     const containerRef = useRef<HTMLDivElement>(null)
     const fontContainerRef = useRef<HTMLDivElement>(null)
     const voiceContainerRef = useRef<HTMLDivElement>(null)
+    const voiceProviderRef = useRef<HTMLDivElement>(null)
     const { fontScale, setFontScale } = useFontScale()
 
     // Voice language state - read from localStorage
     const [voiceLanguage, setVoiceLanguage] = useState<string | null>(() => {
         return localStorage.getItem('hapi-voice-lang')
+    })
+
+    // Voice provider state
+    const [voiceProvider, setVoiceProvider] = useState<VoiceProvider>(() => {
+        return (localStorage.getItem('hapi-voice-provider') as VoiceProvider) || 'elevenlabs'
+    })
+
+    // Gemini config state
+    const [geminiApiKey, setGeminiApiKey] = useState(() => {
+        return localStorage.getItem('hapi-gemini-api-key') || ''
+    })
+    const [geminiVoiceUrl, setGeminiVoiceUrl] = useState(() => {
+        return localStorage.getItem('hapi-gemini-voice-url') || ''
     })
 
     const fontScaleOptions = getFontScaleOptions()
@@ -110,9 +126,38 @@ export default function SettingsPage() {
         setIsVoiceOpen(false)
     }
 
+    const handleVoiceProviderChange = (provider: VoiceProvider) => {
+        setVoiceProvider(provider)
+        localStorage.setItem('hapi-voice-provider', provider)
+        setIsVoiceProviderOpen(false)
+    }
+
+    const handleGeminiApiKeyChange = (value: string) => {
+        setGeminiApiKey(value)
+        if (value) {
+            localStorage.setItem('hapi-gemini-api-key', value)
+        } else {
+            localStorage.removeItem('hapi-gemini-api-key')
+        }
+    }
+
+    const handleGeminiVoiceUrlChange = (value: string) => {
+        setGeminiVoiceUrl(value)
+        if (value) {
+            localStorage.setItem('hapi-gemini-voice-url', value)
+        } else {
+            localStorage.removeItem('hapi-gemini-voice-url')
+        }
+    }
+
+    const voiceProviderLabels: Record<VoiceProvider, string> = {
+        elevenlabs: 'ElevenLabs',
+        gemini: 'Gemini Live'
+    }
+
     // Close dropdown when clicking outside
     useEffect(() => {
-        if (!isOpen && !isFontOpen && !isVoiceOpen) return
+        if (!isOpen && !isFontOpen && !isVoiceOpen && !isVoiceProviderOpen) return
 
         const handleClickOutside = (event: MouseEvent) => {
             if (isOpen && containerRef.current && !containerRef.current.contains(event.target as Node)) {
@@ -124,27 +169,31 @@ export default function SettingsPage() {
             if (isVoiceOpen && voiceContainerRef.current && !voiceContainerRef.current.contains(event.target as Node)) {
                 setIsVoiceOpen(false)
             }
+            if (isVoiceProviderOpen && voiceProviderRef.current && !voiceProviderRef.current.contains(event.target as Node)) {
+                setIsVoiceProviderOpen(false)
+            }
         }
 
         document.addEventListener('mousedown', handleClickOutside)
         return () => document.removeEventListener('mousedown', handleClickOutside)
-    }, [isOpen, isFontOpen, isVoiceOpen])
+    }, [isOpen, isFontOpen, isVoiceOpen, isVoiceProviderOpen])
 
     // Close on escape key
     useEffect(() => {
-        if (!isOpen && !isFontOpen && !isVoiceOpen) return
+        if (!isOpen && !isFontOpen && !isVoiceOpen && !isVoiceProviderOpen) return
 
         const handleEscape = (event: KeyboardEvent) => {
             if (event.key === 'Escape') {
                 setIsOpen(false)
                 setIsFontOpen(false)
                 setIsVoiceOpen(false)
+                setIsVoiceProviderOpen(false)
             }
         }
 
         document.addEventListener('keydown', handleEscape)
         return () => document.removeEventListener('keydown', handleEscape)
-    }, [isOpen, isFontOpen, isVoiceOpen])
+    }, [isOpen, isFontOpen, isVoiceOpen, isVoiceProviderOpen])
 
     return (
         <div className="flex h-full flex-col">
@@ -278,52 +327,45 @@ export default function SettingsPage() {
                         <div className="px-3 py-2 text-xs font-semibold text-[var(--app-hint)] uppercase tracking-wide">
                             {t('settings.voice.title')}
                         </div>
-                        <div ref={voiceContainerRef} className="relative">
+
+                        {/* Voice Provider selector */}
+                        <div ref={voiceProviderRef} className="relative">
                             <button
                                 type="button"
-                                onClick={() => setIsVoiceOpen(!isVoiceOpen)}
+                                onClick={() => setIsVoiceProviderOpen(!isVoiceProviderOpen)}
                                 className="flex w-full items-center justify-between px-3 py-3 text-left transition-colors hover:bg-[var(--app-subtle-bg)]"
-                                aria-expanded={isVoiceOpen}
+                                aria-expanded={isVoiceProviderOpen}
                                 aria-haspopup="listbox"
                             >
-                                <span className="text-[var(--app-fg)]">{t('settings.voice.language')}</span>
+                                <span className="text-[var(--app-fg)]">{t('settings.voice.provider')}</span>
                                 <span className="flex items-center gap-1 text-[var(--app-hint)]">
-                                    <span>
-                                        {currentVoiceLanguage
-                                            ? currentVoiceLanguage.code === null
-                                                ? t('settings.voice.autoDetect')
-                                                : getLanguageDisplayName(currentVoiceLanguage)
-                                            : t('settings.voice.autoDetect')}
-                                    </span>
-                                    <ChevronDownIcon className={`transition-transform ${isVoiceOpen ? 'rotate-180' : ''}`} />
+                                    <span>{voiceProviderLabels[voiceProvider]}</span>
+                                    <ChevronDownIcon className={`transition-transform ${isVoiceProviderOpen ? 'rotate-180' : ''}`} />
                                 </span>
                             </button>
 
-                            {isVoiceOpen && (
+                            {isVoiceProviderOpen && (
                                 <div
-                                    className="absolute right-3 top-full mt-1 min-w-[200px] max-h-[300px] overflow-y-auto rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] shadow-lg z-50"
+                                    className="absolute right-3 top-full mt-1 min-w-[160px] rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] shadow-lg overflow-hidden z-50"
                                     role="listbox"
-                                    aria-label={t('settings.voice.title')}
+                                    aria-label={t('settings.voice.provider')}
                                 >
-                                    {voiceLanguages.map((lang) => {
-                                        const isSelected = voiceLanguage === lang.code
-                                        const displayName = lang.code === null
-                                            ? t('settings.voice.autoDetect')
-                                            : getLanguageDisplayName(lang)
+                                    {VOICE_PROVIDERS.map((provider) => {
+                                        const isSelected = voiceProvider === provider
                                         return (
                                             <button
-                                                key={lang.code ?? 'auto'}
+                                                key={provider}
                                                 type="button"
                                                 role="option"
                                                 aria-selected={isSelected}
-                                                onClick={() => handleVoiceLanguageChange(lang)}
+                                                onClick={() => handleVoiceProviderChange(provider)}
                                                 className={`flex items-center justify-between w-full px-3 py-2 text-base text-left transition-colors ${
                                                     isSelected
                                                         ? 'text-[var(--app-link)] bg-[var(--app-subtle-bg)]'
                                                         : 'text-[var(--app-fg)] hover:bg-[var(--app-subtle-bg)]'
                                                 }`}
                                             >
-                                                <span>{displayName}</span>
+                                                <span>{voiceProviderLabels[provider]}</span>
                                                 {isSelected && (
                                                     <span className="ml-2 text-[var(--app-link)]">
                                                         <CheckIcon />
@@ -335,6 +377,103 @@ export default function SettingsPage() {
                                 </div>
                             )}
                         </div>
+
+                        {/* ElevenLabs language selector - only show when ElevenLabs is selected */}
+                        {voiceProvider === 'elevenlabs' && (
+                            <div ref={voiceContainerRef} className="relative">
+                                <button
+                                    type="button"
+                                    onClick={() => setIsVoiceOpen(!isVoiceOpen)}
+                                    className="flex w-full items-center justify-between px-3 py-3 text-left transition-colors hover:bg-[var(--app-subtle-bg)]"
+                                    aria-expanded={isVoiceOpen}
+                                    aria-haspopup="listbox"
+                                >
+                                    <span className="text-[var(--app-fg)]">{t('settings.voice.language')}</span>
+                                    <span className="flex items-center gap-1 text-[var(--app-hint)]">
+                                        <span>
+                                            {currentVoiceLanguage
+                                                ? currentVoiceLanguage.code === null
+                                                    ? t('settings.voice.autoDetect')
+                                                    : getLanguageDisplayName(currentVoiceLanguage)
+                                                : t('settings.voice.autoDetect')}
+                                        </span>
+                                        <ChevronDownIcon className={`transition-transform ${isVoiceOpen ? 'rotate-180' : ''}`} />
+                                    </span>
+                                </button>
+
+                                {isVoiceOpen && (
+                                    <div
+                                        className="absolute right-3 top-full mt-1 min-w-[200px] max-h-[300px] overflow-y-auto rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] shadow-lg z-50"
+                                        role="listbox"
+                                        aria-label={t('settings.voice.title')}
+                                    >
+                                        {voiceLanguages.map((lang) => {
+                                            const isSelected = voiceLanguage === lang.code
+                                            const displayName = lang.code === null
+                                                ? t('settings.voice.autoDetect')
+                                                : getLanguageDisplayName(lang)
+                                            return (
+                                                <button
+                                                    key={lang.code ?? 'auto'}
+                                                    type="button"
+                                                    role="option"
+                                                    aria-selected={isSelected}
+                                                    onClick={() => handleVoiceLanguageChange(lang)}
+                                                    className={`flex items-center justify-between w-full px-3 py-2 text-base text-left transition-colors ${
+                                                        isSelected
+                                                            ? 'text-[var(--app-link)] bg-[var(--app-subtle-bg)]'
+                                                            : 'text-[var(--app-fg)] hover:bg-[var(--app-subtle-bg)]'
+                                                    }`}
+                                                >
+                                                    <span>{displayName}</span>
+                                                    {isSelected && (
+                                                        <span className="ml-2 text-[var(--app-link)]">
+                                                            <CheckIcon />
+                                                        </span>
+                                                    )}
+                                                </button>
+                                            )
+                                        })}
+                                    </div>
+                                )}
+                            </div>
+                        )}
+
+                        {/* Gemini config - only show when Gemini is selected */}
+                        {voiceProvider === 'gemini' && (
+                            <>
+                                <div className="px-3 py-3">
+                                    <label className="block text-sm text-[var(--app-fg)] mb-1.5">
+                                        {t('settings.voice.geminiApiKey')}
+                                    </label>
+                                    <input
+                                        type="password"
+                                        value={geminiApiKey}
+                                        onChange={(e) => handleGeminiApiKeyChange(e.target.value)}
+                                        placeholder={t('settings.voice.geminiApiKeyPlaceholder')}
+                                        className="w-full rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-2 text-sm text-[var(--app-fg)] placeholder-[var(--app-hint)] focus:border-[var(--app-link)] focus:outline-none"
+                                    />
+                                    <p className="mt-1 text-xs text-[var(--app-hint)]">
+                                        {t('settings.voice.geminiApiKeyHint')}
+                                    </p>
+                                </div>
+                                <div className="px-3 py-3">
+                                    <label className="block text-sm text-[var(--app-fg)] mb-1.5">
+                                        {t('settings.voice.geminiUrl')}
+                                    </label>
+                                    <input
+                                        type="text"
+                                        value={geminiVoiceUrl}
+                                        onChange={(e) => handleGeminiVoiceUrlChange(e.target.value)}
+                                        placeholder={t('settings.voice.geminiUrlPlaceholder')}
+                                        className="w-full rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-2 text-sm text-[var(--app-fg)] placeholder-[var(--app-hint)] focus:border-[var(--app-link)] focus:outline-none"
+                                    />
+                                    <p className="mt-1 text-xs text-[var(--app-hint)]">
+                                        {t('settings.voice.geminiUrlHint')}
+                                    </p>
+                                </div>
+                            </>
+                        )}
                     </div>
 
                     {/* About section */}

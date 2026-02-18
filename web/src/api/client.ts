@@ -420,4 +420,13 @@ export class ApiClient {
             body: JSON.stringify(options || {})
         })
     }
+
+    async getGeminiVoiceConfig(): Promise<{
+        apiKey?: string
+        proxyUrl?: string | null
+    }> {
+        return await this.request('/api/voice/gemini-config', {
+            method: 'GET'
+        })
+    }
 }

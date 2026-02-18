@@ -18,6 +18,9 @@ export { realtimeClientTools, registerSessionStore } from './realtimeClientTools
 // Voice session component
 export { RealtimeVoiceSession, type RealtimeVoiceSessionProps } from './RealtimeVoiceSession'
 
+// Gemini Live voice session component
+export { GeminiVoiceSession, type GeminiVoiceSessionProps } from './GeminiVoiceSession'
+
 // Voice hooks
 export { voiceHooks, registerVoiceHooksStore } from './hooks/voiceHooks'
 

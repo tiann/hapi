@@ -1,12 +1,22 @@
 /**
- * Shared voice assistant configuration for ElevenLabs ConvAI.
+ * Shared voice assistant configuration.
  *
  * This module provides the unified configuration for the Hapi Voice Assistant,
  * ensuring consistency between server-side auto-creation and client-side usage.
+ *
+ * Supports two voice providers:
+ * - ElevenLabs ConvAI (WebRTC, default)
+ * - Gemini Live API (WebSocket)
  */
+
+export const VOICE_PROVIDERS = ['elevenlabs', 'gemini'] as const
+export type VoiceProvider = typeof VOICE_PROVIDERS[number]
 
 export const ELEVENLABS_API_BASE = 'https://api.elevenlabs.io/v1'
 export const VOICE_AGENT_NAME = 'Hapi Voice Assistant'
+
+export const GEMINI_LIVE_WS_BASE = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent'
+export const GEMINI_LIVE_MODEL = 'gemini-2.5-flash-preview-native-audio-dialog'
 
 export const VOICE_SYSTEM_PROMPT = `# Identity
 

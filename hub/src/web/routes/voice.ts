@@ -193,5 +193,16 @@ export function createVoiceRoutes(): Hono<WebAppEnv> {
         }
     })
 
+    // Get Gemini Live API configuration
+    app.get('/voice/gemini-config', (c) => {
+        const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY
+        const proxyUrl = process.env.GEMINI_VOICE_PROXY_URL || null
+
+        return c.json({
+            apiKey: apiKey || undefined,
+            proxyUrl
+        })
+    })
+
     return app
 }

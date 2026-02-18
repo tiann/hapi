@@ -1,9 +1,11 @@
 import type { ElevenLabsLanguage } from '@/lib/languages'
+import type { VoiceProvider } from '@hapi/protocol/voice'
 
 export interface VoiceSessionConfig {
     sessionId: string
     initialContext?: string
     language?: ElevenLabsLanguage
+    provider?: VoiceProvider
 }
 
 export interface VoiceSession {

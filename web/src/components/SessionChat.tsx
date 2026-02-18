@@ -17,6 +17,8 @@ import { usePlatform } from '@/hooks/usePlatform'
 import { useSessionActions } from '@/hooks/mutations/useSessionActions'
 import { useVoiceOptional } from '@/lib/voice-context'
 import { RealtimeVoiceSession, registerSessionStore, registerVoiceHooksStore, voiceHooks } from '@/realtime'
+import { GeminiVoiceSession } from '@/realtime/GeminiVoiceSession'
+import type { VoiceProvider } from '@hapi/protocol/voice'
 
 export function SessionChat(props: {
     api: ApiClient
@@ -330,14 +332,18 @@ export function SessionChat(props: {
                 </div>
             </AssistantRuntimeProvider>
 
-            {/* Voice session component - renders nothing but initializes ElevenLabs */}
-            {voice && (
-                <RealtimeVoiceSession
-                    api={props.api}
-                    micMuted={voice.micMuted}
-                    onStatusChange={voice.setStatus}
-                />
-            )}
+            {/* Voice session component - renders nothing but initializes the voice provider */}
+            {voice && (() => {
+                const voiceProvider = (localStorage.getItem('hapi-voice-provider') || 'elevenlabs') as VoiceProvider
+                const VoiceComponent = voiceProvider === 'gemini' ? GeminiVoiceSession : RealtimeVoiceSession
+                return (
+                    <VoiceComponent
+                        api={props.api}
+                        micMuted={voice.micMuted}
+                        onStatusChange={voice.setStatus}
+                    />
+                )
+            })()}
         </div>
     )
 }
