@@ -252,6 +252,7 @@ function SessionItem(props: {
     const permLabel = permMode ? getPermissionModeLabel(permMode).toLowerCase() : null
     const permTone = permMode ? getPermissionModeTone(permMode) : null
     const permTextClass = permTone ? PERMISSION_TONE_TEXT[permTone] : ''
+    const todoProgress = getTodoProgress(s)
 
     return (
         <>
@@ -279,16 +280,12 @@ function SessionItem(props: {
                                 {t('session.item.thinking')}
                             </span>
                         ) : null}
-                        {(() => {
-                            const progress = getTodoProgress(s)
-                            if (!progress) return null
-                            return (
-                                <span className="flex items-center gap-1 text-[var(--app-hint)]">
-                                    <BulbIcon className="h-3 w-3" />
-                                    {progress.completed}/{progress.total}
-                                </span>
-                            )
-                        })()}
+                        {todoProgress ? (
+                            <span className="flex items-center gap-1 text-[var(--app-hint)]">
+                                <BulbIcon className="h-3 w-3" />
+                                {todoProgress.completed}/{todoProgress.total}
+                            </span>
+                        ) : null}
                         {s.pendingRequestsCount > 0 ? (
                             <span className="inline-flex items-center rounded-full border border-[var(--app-badge-warning-border)] bg-[var(--app-badge-warning-bg)] px-2 py-0.5 font-medium text-[var(--app-badge-warning-text)]">
                                 {t('session.item.pending')} {s.pendingRequestsCount}

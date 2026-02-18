@@ -72,6 +72,19 @@ export function SessionHeader(props: {
     const { session, api, onSessionDeleted } = props
     const title = useMemo(() => getSessionTitle(session), [session])
     const worktreeBranch = session.metadata?.worktree?.branch
+    const flavor = session.metadata?.flavor?.trim() ?? null
+    const flavorLabel = flavor || 'unknown'
+    const flavorBadgeClass = getFlavorBadgeClass(flavor)
+    const permMode = session.permissionMode
+        && session.permissionMode !== 'default'
+        && isPermissionModeAllowedForFlavor(session.permissionMode, flavor)
+        ? session.permissionMode
+        : null
+    const permissionLabel = permMode ? getPermissionModeLabel(permMode).toLowerCase() : null
+    const permissionBadgeClass = permMode
+        ? PERMISSION_TONE_BADGE[getPermissionModeTone(permMode)]
+        : null
+    const showModelModeBadge = !flavor || flavor === 'claude'
 
     const [menuOpen, setMenuOpen] = useState(false)
     const [menuAnchorPoint, setMenuAnchorPoint] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
@@ -136,42 +149,19 @@ export function SessionHeader(props: {
                             {title}
                         </div>
                         <div className="flex flex-wrap items-center gap-1.5 pt-1 text-xs">
-                            {(() => {
-                                const flavor = session.metadata?.flavor?.trim() ?? null
-                                const flavorBadge = getFlavorBadgeClass(flavor)
-                                const label = flavor || 'unknown'
-                                return (
-                                    <span className={`inline-flex items-center rounded-full border px-2 py-0.5 font-medium ${flavorBadge}`}>
-                                        {label}
-                                    </span>
-                                )
-                            })()}
-                            {(() => {
-                                const flavor = session.metadata?.flavor?.trim() ?? null
-                                const permMode = session.permissionMode
-                                    && session.permissionMode !== 'default'
-                                    && isPermissionModeAllowedForFlavor(session.permissionMode, flavor)
-                                    ? session.permissionMode
-                                    : null
-                                if (!permMode) return null
-                                const label = getPermissionModeLabel(permMode).toLowerCase()
-                                const tone = getPermissionModeTone(permMode)
-                                const badgeClass = PERMISSION_TONE_BADGE[tone]
-                                return (
-                                    <span className={`inline-flex items-center rounded-full border px-2 py-0.5 font-medium ${badgeClass}`}>
-                                        {label}
-                                    </span>
-                                )
-                            })()}
-                            {(() => {
-                                const flav = session.metadata?.flavor?.trim() ?? null
-                                if (flav && flav !== 'claude') return null
-                                return (
-                                    <span className="inline-flex items-center rounded-full border border-[var(--app-border)] bg-[var(--app-subtle-bg)] px-2 py-0.5 font-medium text-[var(--app-fg)]">
-                                        {session.modelMode || 'default'}
-                                    </span>
-                                )
-                            })()}
+                            <span className={`inline-flex items-center rounded-full border px-2 py-0.5 font-medium ${flavorBadgeClass}`}>
+                                {flavorLabel}
+                            </span>
+                            {permissionLabel && permissionBadgeClass ? (
+                                <span className={`inline-flex items-center rounded-full border px-2 py-0.5 font-medium ${permissionBadgeClass}`}>
+                                    {permissionLabel}
+                                </span>
+                            ) : null}
+                            {showModelModeBadge ? (
+                                <span className="inline-flex items-center rounded-full border border-[var(--app-border)] bg-[var(--app-subtle-bg)] px-2 py-0.5 font-medium text-[var(--app-fg)]">
+                                    {session.modelMode || 'default'}
+                                </span>
+                            ) : null}
                             {worktreeBranch ? (
                                 <span className="inline-flex items-center rounded-full border border-[var(--app-border)] bg-[var(--app-subtle-bg)] px-2 py-0.5 text-[var(--app-hint)]">
                                     {worktreeBranch}
