@@ -192,6 +192,134 @@
     --app-flavor-opencode-border: rgba(203, 166, 247, 0.20);
 }
 
+[data-theme="gaius-light"] {
+    /* Primary — warm pearl base */
+    --app-bg: #f8f5f2;
+    --app-fg: #2a2832;
+    --app-hint: #85808a;
+    --app-link: #b04440;
+    --app-button: #2a2832;
+    --app-button-text: #f8f5f2;
+    --app-banner-bg: #eceae6;
+    --app-banner-text: #2a2832;
+    --app-secondary-bg: #f0ede9;
+    --app-selected-bg: rgba(176, 68, 64, 0.06);
+
+    /* Overlays */
+    --app-border: rgba(42, 40, 50, 0.10);
+    --app-divider: rgba(42, 40, 50, 0.07);
+    --app-subtle-bg: rgba(42, 40, 50, 0.03);
+    --app-code-bg: #f0ede8;
+    --app-inline-code-bg: rgba(42, 40, 50, 0.05);
+
+    /* Diffs — verdigris added, cinnabar removed */
+    --app-diff-added-bg: #e4edd8;
+    --app-diff-added-text: #2a2832;
+    --app-diff-removed-bg: #f2dcd8;
+    --app-diff-removed-text: #2a2832;
+
+    /* Git status */
+    --app-git-staged-color: #3a7868;
+    --app-git-unstaged-color: #b07830;
+    --app-git-deleted-color: #b84440;
+    --app-git-renamed-color: #4068a0;
+    --app-git-untracked-color: #85808a;
+
+    /* Badges — lapis, gold, verdigris, cinnabar */
+    --app-badge-info-bg: rgba(64, 104, 160, 0.10);
+    --app-badge-info-text: #3a5888;
+    --app-badge-info-border: rgba(64, 104, 160, 0.20);
+    --app-badge-warning-bg: rgba(176, 120, 48, 0.12);
+    --app-badge-warning-text: #8a5820;
+    --app-badge-warning-border: rgba(176, 120, 48, 0.22);
+    --app-badge-success-bg: rgba(58, 120, 104, 0.10);
+    --app-badge-success-text: #2a6858;
+    --app-badge-success-border: rgba(58, 120, 104, 0.20);
+    --app-badge-error-bg: rgba(184, 68, 64, 0.10);
+    --app-badge-error-text: #983838;
+    --app-badge-error-border: rgba(184, 68, 64, 0.20);
+
+    --app-perm-warning: #b84430;
+
+    /* Agent flavors — cinnabar, verdigris, lapis, violet */
+    --app-flavor-claude: #a04038;
+    --app-flavor-claude-bg: rgba(160, 64, 56, 0.08);
+    --app-flavor-claude-border: rgba(160, 64, 56, 0.18);
+    --app-flavor-codex: #2a6858;
+    --app-flavor-codex-bg: rgba(42, 104, 88, 0.08);
+    --app-flavor-codex-border: rgba(42, 104, 88, 0.18);
+    --app-flavor-gemini: #3a5888;
+    --app-flavor-gemini-bg: rgba(58, 88, 136, 0.08);
+    --app-flavor-gemini-border: rgba(58, 88, 136, 0.18);
+    --app-flavor-opencode: #6a5090;
+    --app-flavor-opencode-bg: rgba(106, 80, 144, 0.08);
+    --app-flavor-opencode-border: rgba(106, 80, 144, 0.18);
+}
+
+[data-theme="gaius-dark"] {
+    /* Primary — deep slate base */
+    --app-bg: #1e1d22;
+    --app-fg: #e6e3de;
+    --app-hint: #88848e;
+    --app-link: #d06058;
+    --app-button: #e6e3de;
+    --app-button-text: #1e1d22;
+    --app-banner-bg: #2a2930;
+    --app-banner-text: #e6e3de;
+    --app-secondary-bg: #252428;
+    --app-selected-bg: rgba(208, 96, 88, 0.06);
+
+    /* Overlays */
+    --app-border: rgba(230, 227, 222, 0.08);
+    --app-divider: rgba(230, 227, 222, 0.06);
+    --app-subtle-bg: rgba(230, 227, 222, 0.04);
+    --app-code-bg: #252430;
+    --app-inline-code-bg: rgba(230, 227, 222, 0.07);
+
+    /* Diffs */
+    --app-diff-added-bg: rgba(80, 150, 130, 0.12);
+    --app-diff-added-text: #d8d5d0;
+    --app-diff-removed-bg: rgba(200, 80, 70, 0.12);
+    --app-diff-removed-text: #d8d5d0;
+
+    /* Git status */
+    --app-git-staged-color: #68b8a0;
+    --app-git-unstaged-color: #d0a060;
+    --app-git-deleted-color: #d87068;
+    --app-git-renamed-color: #6890c8;
+    --app-git-untracked-color: #88848e;
+
+    /* Badges */
+    --app-badge-info-bg: rgba(104, 144, 200, 0.12);
+    --app-badge-info-text: #6890c8;
+    --app-badge-info-border: rgba(104, 144, 200, 0.20);
+    --app-badge-warning-bg: rgba(208, 160, 96, 0.15);
+    --app-badge-warning-text: #d0a060;
+    --app-badge-warning-border: rgba(208, 160, 96, 0.25);
+    --app-badge-success-bg: rgba(104, 184, 160, 0.10);
+    --app-badge-success-text: #68b8a0;
+    --app-badge-success-border: rgba(104, 184, 160, 0.20);
+    --app-badge-error-bg: rgba(216, 112, 104, 0.12);
+    --app-badge-error-text: #d87068;
+    --app-badge-error-border: rgba(216, 112, 104, 0.22);
+
+    --app-perm-warning: #d08050;
+
+    /* Agent flavors */
+    --app-flavor-claude: #d08858;
+    --app-flavor-claude-bg: rgba(208, 136, 88, 0.10);
+    --app-flavor-claude-border: rgba(208, 136, 88, 0.20);
+    --app-flavor-codex: #68b8a0;
+    --app-flavor-codex-bg: rgba(104, 184, 160, 0.10);
+    --app-flavor-codex-border: rgba(104, 184, 160, 0.20);
+    --app-flavor-gemini: #6890c8;
+    --app-flavor-gemini-bg: rgba(104, 144, 200, 0.10);
+    --app-flavor-gemini-border: rgba(104, 144, 200, 0.20);
+    --app-flavor-opencode: #a088c0;
+    --app-flavor-opencode-bg: rgba(160, 136, 192, 0.10);
+    --app-flavor-opencode-border: rgba(160, 136, 192, 0.20);
+}
+
 html {
     font-size: calc(100% * var(--app-font-scale, 1));
 }
@@ -272,7 +400,9 @@ body {
 html[data-theme="dark"] .shiki,
 html[data-theme="dark"] .shiki span,
 html[data-theme="catpuccin"] .shiki,
-html[data-theme="catpuccin"] .shiki span {
+html[data-theme="catpuccin"] .shiki span,
+html[data-theme="gaius-dark"] .shiki,
+html[data-theme="gaius-dark"] .shiki span {
     color: var(--shiki-dark) !important;
     font-style: var(--shiki-dark-font-style) !important;
     font-weight: var(--shiki-dark-font-weight) !important;

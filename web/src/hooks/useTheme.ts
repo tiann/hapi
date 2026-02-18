@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useState } from 'react'
 import { getTelegramWebApp } from './useTelegram'
 
-export type ThemePreference = 'system' | 'light' | 'dark' | 'catpuccin'
-type ResolvedTheme = 'light' | 'dark' | 'catpuccin'
+export type ThemePreference = 'system' | 'light' | 'dark' | 'catpuccin' | 'gaius' | 'gaius-light' | 'gaius-dark'
+type ResolvedTheme = 'light' | 'dark' | 'catpuccin' | 'gaius-light' | 'gaius-dark'
 
 const STORAGE_KEY = 'hapi-theme'
 
@@ -40,7 +40,7 @@ function safeRemoveItem(key: string): void {
 }
 
 function parseThemePreference(raw: string | null): ThemePreference {
-    if (raw === 'light' || raw === 'dark' || raw === 'catpuccin') return raw
+    if (raw === 'light' || raw === 'dark' || raw === 'catpuccin' || raw === 'gaius' || raw === 'gaius-light' || raw === 'gaius-dark') return raw
     return 'system'
 }
 
@@ -57,6 +57,7 @@ function getSystemColorScheme(): 'light' | 'dark' {
 
 function resolveTheme(pref: ThemePreference): ResolvedTheme {
     if (pref === 'system') return getSystemColorScheme()
+    if (pref === 'gaius') return getSystemColorScheme() === 'dark' ? 'gaius-dark' : 'gaius-light'
     return pref
 }
 
@@ -90,6 +91,9 @@ export function getThemeOptions(): ReadonlyArray<{ value: ThemePreference; label
         { value: 'light', label: 'light' },
         { value: 'dark', label: 'dark' },
         { value: 'catpuccin', label: 'catpuccin' },
+        { value: 'gaius', label: 'gaius' },
+        { value: 'gaius-light', label: 'gaius-light' },
+        { value: 'gaius-dark', label: 'gaius-dark' },
     ]
 }
 
@@ -106,20 +110,20 @@ export function useTheme(): {
         applyTheme(resolved)
     }, [resolved])
 
-    // Listen for system color scheme changes (only matters when pref is 'system')
+    // Listen for system color scheme changes (matters when pref is 'system' or 'gaius')
     useEffect(() => {
-        if (themePreference !== 'system') return undefined
+        if (themePreference !== 'system' && themePreference !== 'gaius') return undefined
 
         const tg = getTelegramWebApp()
         if (tg?.onEvent) {
-            const handler = () => applyTheme(resolveTheme('system'))
+            const handler = () => applyTheme(resolveTheme(themePreference))
             tg.onEvent('themeChanged', handler)
             return () => tg.offEvent?.('themeChanged', handler)
         }
 
         if (isBrowser() && window.matchMedia) {
             const mq = window.matchMedia('(prefers-color-scheme: dark)')
-            const handler = () => applyTheme(resolveTheme('system'))
+            const handler = () => applyTheme(resolveTheme(themePreference))
             mq.addEventListener('change', handler)
             return () => mq.removeEventListener('change', handler)
         }
@@ -153,6 +157,6 @@ export function useTheme(): {
     return {
         themePreference,
         setThemePreference,
-        isDark: resolved !== 'light',
+        isDark: resolved !== 'light' && resolved !== 'gaius-light',
     }
 }
