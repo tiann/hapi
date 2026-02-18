@@ -33,6 +33,10 @@ coverage/
 **/*.swp
 **/*.swo
 
+# Local rebuild script + runtime files
+rebuild.sh
+hub.pid
+
 # Claude local settings
 .claude/settings.local.json
 localdocs/

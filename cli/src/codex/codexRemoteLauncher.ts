@@ -79,6 +79,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             this.permissionHandler?.reset();
             this.reasoningProcessor?.abort();
             this.diffProcessor?.reset();
+            this.session.onThinkingChange(false);
             logger.debug('[Codex] Abort completed - session remains active');
         } catch (error) {
             logger.debug('[Codex] Error during abort:', error);
@@ -835,6 +836,9 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             messageBuffer.addMessage(message.message, 'user');
             currentModeHash = message.hash;
 
+            // Signal thinking immediately when processing begins (matches Claude behavior)
+            session.onThinkingChange(true);
+
             try {
                 if (!wasCreated) {
                     if (useAppServer && appServerClient) {
@@ -1023,8 +1027,10 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 permissionHandler.reset();
                 reasoningProcessor.abort();
                 diffProcessor.reset();
-                appServerEventConverter?.reset();
-                session.onThinkingChange(false);
+                if (!useAppServer || !turnInFlight) {
+                    appServerEventConverter?.reset();
+                    session.onThinkingChange(false);
+                }
                 if (!useAppServer || !turnInFlight) {
                     emitReadyIfIdle({
                         pending,

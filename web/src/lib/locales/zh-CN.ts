@@ -287,4 +287,7 @@ export default {
   'sessions.selection.count': '已选 {n} 项',
   'sessions.selection.cancel': '取消',
   'sessions.selection.delete': '删除',
+
+  // Session list
+  'session.item.unread': '未读',
 } as const
