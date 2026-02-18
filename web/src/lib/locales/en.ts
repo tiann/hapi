@@ -285,7 +285,4 @@ export default {
   'sessions.selection.count': '{n} selected',
   'sessions.selection.cancel': 'Cancel',
   'sessions.selection.delete': 'Delete',
-
-  // Session list
-  'session.item.unread': 'unread',
 } as const
