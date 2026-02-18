@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type WheelEvent } from 'react'
 import { useSwipeable, type SwipeEventData } from 'react-swipeable'
 import type { SessionSummary } from '@/types/api'
 import type { ApiClient } from '@/api/client'
@@ -11,7 +11,9 @@ import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { useTranslation } from '@/lib/use-translation'
 
 type SessionGroup = {
+    key: string
     directory: string
+    machineId: string | null
     displayName: string
     sessions: SessionSummary[]
     latestUpdatedAt: number
@@ -26,33 +28,60 @@ function getGroupDisplayName(directory: string): string {
     return `${parts[parts.length - 2]}/${parts[parts.length - 1]}`
 }
 
+function getSessionDirectory(session: SessionSummary): string {
+    return session.metadata?.worktree?.basePath ?? session.metadata?.path ?? 'Other'
+}
+
+function getSessionMachineId(session: SessionSummary): string | null {
+    return session.metadata?.machineId ?? null
+}
+
+function getSessionGroupKey(directory: string, machineId: string | null): string {
+    return `${machineId ?? 'unknown-machine'}::${directory}`
+}
+
 function groupSessionsByDirectory(sessions: SessionSummary[]): SessionGroup[] {
-    const groups = new Map<string, SessionSummary[]>()
+    const groups = new Map<string, { directory: string; machineId: string | null; sessions: SessionSummary[] }>()
 
     sessions.forEach(session => {
-        const path = session.metadata?.worktree?.basePath ?? session.metadata?.path ?? 'Other'
-        if (!groups.has(path)) {
-            groups.set(path, [])
+        const directory = getSessionDirectory(session)
+        const machineId = getSessionMachineId(session)
+        const key = getSessionGroupKey(directory, machineId)
+
+        if (!groups.has(key)) {
+            groups.set(key, {
+                directory,
+                machineId,
+                sessions: []
+            })
         }
-        groups.get(path)!.push(session)
+        groups.get(key)!.sessions.push(session)
     })
 
     return Array.from(groups.entries())
-        .map(([directory, groupSessions]) => {
-            const sortedSessions = [...groupSessions].sort((a, b) => {
+        .map(([key, group]) => {
+            const sortedSessions = [...group.sessions].sort((a, b) => {
                 const rankA = a.active ? (a.pendingRequestsCount > 0 ? 0 : 1) : 2
                 const rankB = b.active ? (b.pendingRequestsCount > 0 ? 0 : 1) : 2
                 if (rankA !== rankB) return rankA - rankB
                 return b.updatedAt - a.updatedAt
             })
-            const latestUpdatedAt = groupSessions.reduce(
+            const latestUpdatedAt = group.sessions.reduce(
                 (max, s) => (s.updatedAt > max ? s.updatedAt : max),
                 -Infinity
             )
-            const hasActiveSession = groupSessions.some(s => s.active)
-            const displayName = getGroupDisplayName(directory)
+            const hasActiveSession = group.sessions.some(s => s.active)
+            const displayName = getGroupDisplayName(group.directory)
 
-            return { directory, displayName, sessions: sortedSessions, latestUpdatedAt, hasActiveSession }
+            return {
+                key,
+                directory: group.directory,
+                machineId: group.machineId,
+                displayName,
+                sessions: sortedSessions,
+                latestUpdatedAt,
+                hasActiveSession
+            }
         })
         .sort((a, b) => {
             if (a.hasActiveSession !== b.hasActiveSession) {
@@ -174,6 +203,8 @@ function SessionItem(props: {
     const { haptic, isTouch } = usePlatform()
     const SWIPE_MAX_PX = 112
     const SWIPE_TRIGGER_PX = 72
+    const TRACKPAD_SWIPE_MULTIPLIER = 0.45
+    const TRACKPAD_TRIGGER_PX = 92
     const [menuOpen, setMenuOpen] = useState(false)
     const [menuAnchorPoint, setMenuAnchorPoint] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
     const [renameOpen, setRenameOpen] = useState(false)
@@ -181,6 +212,17 @@ function SessionItem(props: {
     const [deleteOpen, setDeleteOpen] = useState(false)
     const [swipeOffset, setSwipeOffset] = useState(0)
     const [isSwiping, setIsSwiping] = useState(false)
+    const trackpadSwipeOffsetRef = useRef(0)
+    const trackpadSwipeEndTimerRef = useRef<number | null>(null)
+    const isMacPlatform = useMemo(() => {
+        if (typeof navigator === 'undefined') return false
+        const userAgentData = (navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData
+        const platform = userAgentData?.platform ?? navigator.platform ?? ''
+        return /mac/i.test(platform)
+    }, [])
+    const enableTrackpadSwipe = !isTouch && isMacPlatform
+    const showSwipeUi = isTouch || enableTrackpadSwipe
+    const showSwipeAction = showSwipeUi && (isSwiping || swipeOffset < 0)
 
     const { archiveSession, renameSession, deleteSession, isPending } = useSessionActions(
         api,
@@ -202,7 +244,16 @@ function SessionItem(props: {
         threshold: 500
     })
 
+    const clearTrackpadSwipeEndTimer = () => {
+        if (trackpadSwipeEndTimerRef.current !== null) {
+            window.clearTimeout(trackpadSwipeEndTimerRef.current)
+            trackpadSwipeEndTimerRef.current = null
+        }
+    }
+
     const resetSwipe = () => {
+        clearTrackpadSwipeEndTimer()
+        trackpadSwipeOffsetRef.current = 0
         setSwipeOffset(0)
         setIsSwiping(false)
     }
@@ -244,6 +295,42 @@ function SessionItem(props: {
         }
     })
 
+    const scheduleTrackpadSwipeEnd = () => {
+        clearTrackpadSwipeEndTimer()
+        trackpadSwipeEndTimerRef.current = window.setTimeout(() => {
+            if (trackpadSwipeOffsetRef.current <= -TRACKPAD_TRIGGER_PX && !isPending) {
+                triggerArchiveFromSwipe()
+                return
+            }
+            resetSwipe()
+        }, 90)
+    }
+
+    const handleTrackpadWheel = (event: WheelEvent<HTMLDivElement>) => {
+        if (!enableTrackpadSwipe || isPending) return
+        if (event.deltaMode !== 0) return
+        if (Math.abs(event.deltaX) <= Math.abs(event.deltaY)) return
+
+        const adjustedDeltaX = event.deltaX * TRACKPAD_SWIPE_MULTIPLIER
+        const nextOffset = Math.max(
+            -SWIPE_MAX_PX,
+            Math.min(0, trackpadSwipeOffsetRef.current + adjustedDeltaX)
+        )
+        if (nextOffset === trackpadSwipeOffsetRef.current) return
+
+        event.preventDefault()
+        trackpadSwipeOffsetRef.current = nextOffset
+        setSwipeOffset(nextOffset)
+        setIsSwiping(true)
+        scheduleTrackpadSwipeEnd()
+    }
+
+    useEffect(() => {
+        return () => {
+            clearTrackpadSwipeEndTimer()
+        }
+    }, [])
+
     const sessionName = getSessionTitle(s)
     const statusDotClass = s.active
         ? (s.thinking ? 'bg-[#007AFF]' : 'bg-[var(--app-badge-success-text)]')
@@ -252,11 +339,15 @@ function SessionItem(props: {
         <>
             <div
                 {...(isTouch ? swipeHandlers : {})}
-                className="relative overflow-hidden"
+                onWheel={enableTrackpadSwipe ? handleTrackpadWheel : undefined}
+                className="relative isolate overflow-hidden"
                 style={{ touchAction: 'pan-y' }}
             >
-                {isTouch ? (
-                    <div className="absolute inset-y-0 right-0 flex w-28 items-center justify-center bg-red-500/85">
+                {showSwipeUi ? (
+                    <div
+                        className="absolute inset-y-0 right-0 -z-10 flex w-28 items-center justify-center bg-red-500/85 transition-opacity duration-100 pointer-events-none"
+                        style={{ opacity: showSwipeAction ? 1 : 0 }}
+                    >
                         <span className="text-xs font-semibold uppercase tracking-wide text-white">
                             {s.active ? t('session.action.archive') : t('session.action.delete')}
                         </span>
@@ -265,11 +356,11 @@ function SessionItem(props: {
                 <button
                     type="button"
                     {...longPressHandlers}
-                    className={`session-list-item relative z-10 flex w-full flex-col gap-1.5 px-3 py-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] select-none ${selected ? 'bg-[var(--app-secondary-bg)]' : 'bg-[var(--app-bg)]'}`}
+                    className={`session-list-item relative z-10 flex w-full flex-col gap-1.5 px-3 py-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] select-none ${selected ? 'bg-[var(--app-secondary-bg)] border-l-2 border-[var(--app-link)]' : 'bg-[var(--app-bg)]'}`}
                     style={{
                         WebkitTouchCallout: 'none',
-                        transform: isTouch && swipeOffset !== 0 ? `translateX(${swipeOffset}px)` : undefined,
-                        transition: isTouch ? (isSwiping ? 'none' : 'transform 150ms ease-out') : undefined
+                        transform: showSwipeUi && swipeOffset !== 0 ? `translateX(${swipeOffset}px)` : undefined,
+                        transition: showSwipeUi ? (isSwiping ? 'none' : 'transform 150ms ease-out') : undefined
                     }}
                     aria-current={selected ? 'page' : undefined}
                 >
@@ -384,9 +475,10 @@ export function SessionList(props: {
     renderHeader?: boolean
     api: ApiClient | null
     selectedSessionId?: string | null
+    machineNames?: Map<string, string>
 }) {
     const { t } = useTranslation()
-    const { renderHeader = true, api, selectedSessionId } = props
+    const { renderHeader = true, api, selectedSessionId, machineNames } = props
     const groups = useMemo(
         () => groupSessionsByDirectory(props.sessions),
         [props.sessions]
@@ -395,15 +487,15 @@ export function SessionList(props: {
         () => new Map()
     )
     const isGroupCollapsed = (group: SessionGroup): boolean => {
-        const override = collapseOverrides.get(group.directory)
+        const override = collapseOverrides.get(group.key)
         if (override !== undefined) return override
         return !group.hasActiveSession
     }
 
-    const toggleGroup = (directory: string, isCollapsed: boolean) => {
+    const toggleGroup = (groupKey: string, isCollapsed: boolean) => {
         setCollapseOverrides(prev => {
             const next = new Map(prev)
-            next.set(directory, !isCollapsed)
+            next.set(groupKey, !isCollapsed)
             return next
         })
     }
@@ -412,11 +504,11 @@ export function SessionList(props: {
         setCollapseOverrides(prev => {
             if (prev.size === 0) return prev
             const next = new Map(prev)
-            const knownGroups = new Set(groups.map(group => group.directory))
+            const knownGroups = new Set(groups.map(group => group.key))
             let changed = false
-            for (const directory of next.keys()) {
-                if (!knownGroups.has(directory)) {
-                    next.delete(directory)
+            for (const groupKey of next.keys()) {
+                if (!knownGroups.has(groupKey)) {
+                    next.delete(groupKey)
                     changed = true
                 }
             }
@@ -446,26 +538,34 @@ export function SessionList(props: {
                 {groups.map((group) => {
                     const isCollapsed = isGroupCollapsed(group)
                     const canQuickCreateInGroup = group.directory !== 'Other'
-                    const groupMachineId = group.sessions[0]?.metadata?.machineId
+                    const groupMachineId = group.machineId ?? undefined
+                    const groupMachineName = groupMachineId ? machineNames?.get(groupMachineId) : undefined
                     return (
-                        <div key={group.directory}>
-                            <div className="sticky top-0 z-10 flex items-center gap-1 border-b border-[var(--app-divider)] bg-[var(--app-bg)] px-3 py-2">
+                        <div key={group.key}>
+                            <div className="sticky top-0 z-10 flex items-center gap-1 border-b border-[var(--app-divider)] bg-[var(--app-subtle-bg)] px-3 py-2">
                                 <button
                                     type="button"
-                                    onClick={() => toggleGroup(group.directory, isCollapsed)}
+                                    onClick={() => toggleGroup(group.key, isCollapsed)}
                                     className="flex min-w-0 flex-1 items-center gap-2 text-left transition-colors hover:bg-[var(--app-secondary-bg)]"
                                 >
                                     <ChevronIcon
                                         className="h-4 w-4 text-[var(--app-hint)]"
                                         collapsed={isCollapsed}
                                     />
-                                    <div className="flex items-center gap-2 min-w-0 flex-1">
-                                        <span className="font-medium text-base break-words" title={group.directory}>
-                                            {group.displayName}
-                                        </span>
-                                        <span className="shrink-0 text-xs text-[var(--app-hint)]">
-                                            ({group.sessions.length})
-                                        </span>
+                                    <div className="min-w-0 flex-1">
+                                        <div className="flex items-center gap-2">
+                                            <span className="font-medium text-base break-words" title={group.directory}>
+                                                {group.displayName}
+                                            </span>
+                                            <span className="shrink-0 text-xs text-[var(--app-hint)]">
+                                                ({group.sessions.length})
+                                            </span>
+                                        </div>
+                                        {groupMachineName ? (
+                                            <div className="text-xs text-[var(--app-hint)] truncate">
+                                                {groupMachineName}
+                                            </div>
+                                        ) : null}
                                     </div>
                                 </button>
                                 {canQuickCreateInGroup ? (

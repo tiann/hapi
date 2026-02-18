@@ -32,6 +32,7 @@ import { queryKeys } from '@/lib/query-keys'
 import { useToast } from '@/lib/toast-context'
 import { useTranslation } from '@/lib/use-translation'
 import { fetchLatestMessages, seedMessageWindowFromSession } from '@/lib/message-window-store'
+import { isClaudeFlavor } from '@/lib/agentFlavorUtils'
 import FilesPage from '@/routes/sessions/files'
 import FilePage from '@/routes/sessions/file'
 import TerminalPage from '@/routes/sessions/terminal'
@@ -163,12 +164,30 @@ function SessionsPage() {
     const matchRoute = useMatchRoute()
     const { t } = useTranslation()
     const { sessions, isLoading, error, refetch } = useSessions(api)
+    const { machines } = useMachines(api, true)
+    const machineNames = useMemo(() => {
+        const map = new Map<string, string>()
+        for (const m of machines) {
+            if (m.metadata?.displayName) {
+                map.set(m.id, m.metadata.displayName)
+            } else if (m.metadata?.host) {
+                map.set(m.id, m.metadata.host)
+            }
+        }
+        return map
+    }, [machines])
 
     const handleRefresh = useCallback(() => {
         void refetch()
     }, [refetch])
 
-    const projectCount = new Set(sessions.map(s => s.metadata?.worktree?.basePath ?? s.metadata?.path ?? 'Other')).size
+    const projectCount = new Set(
+        sessions.map((session) => {
+            const directory = session.metadata?.worktree?.basePath ?? session.metadata?.path ?? 'Other'
+            const machineId = session.metadata?.machineId ?? 'unknown-machine'
+            return `${machineId}::${directory}`
+        })
+    ).size
     const sessionMatch = matchRoute({ to: '/sessions/$sessionId', fuzzy: true })
     const selectedSessionId = sessionMatch && sessionMatch.sessionId !== 'new' ? sessionMatch.sessionId : null
     const isSessionsIndex = pathname === '/sessions' || pathname === '/sessions/'
@@ -213,6 +232,7 @@ function SessionsPage() {
                     <SessionList
                         sessions={sessions}
                         selectedSessionId={selectedSessionId}
+                        machineNames={machineNames}
                         onSelect={(sessionId) => navigate({
                             to: '/sessions/$sessionId',
                             params: { sessionId },
@@ -350,6 +370,9 @@ function SessionPage() {
 
     const getAutocompleteSuggestions = useCallback(async (query: string) => {
         if (query.startsWith('$')) {
+            if (isClaudeFlavor(agentType)) {
+                return []
+            }
             return await getSkillSuggestions(query)
         }
         if (query.startsWith('@')) {

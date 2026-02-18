@@ -182,6 +182,18 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                         return c;
                                     }
                                 }
+                                // Strip agent metadata text blocks (agentId, usage stats) from Task tool results
+                                if (c.type === 'tool_result' && Array.isArray(c.content)) {
+                                    const cleanContent = (c.content as any[]).filter((block: any) => {
+                                        if (typeof block === 'object' && block !== null && block.type === 'text' && typeof block.text === 'string') {
+                                            return !block.text.startsWith('agentId:');
+                                        }
+                                        return true;
+                                    });
+                                    if (cleanContent.length !== (c.content as any[]).length) {
+                                        return { ...c, content: cleanContent.length === 1 ? cleanContent[0] : cleanContent };
+                                    }
+                                }
                                 return c;
                             })
                         }
