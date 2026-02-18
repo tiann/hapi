@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { useSwipeable, type SwipeEventData } from 'react-swipeable'
 import type { SessionSummary } from '@/types/api'
@@ -12,6 +12,7 @@ import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { clearMessageWindow } from '@/lib/message-window-store'
 import { queryKeys } from '@/lib/query-keys'
 import { useTranslation } from '@/lib/use-translation'
+import { useListTransition } from '@/hooks/useListTransition'
 
 const SESSION_READ_HISTORY_KEY = 'hapi:sessionReadHistory'
 const RECENT_READ_WINDOW_MS = 3 * 24 * 60 * 60 * 1000
@@ -163,6 +164,73 @@ export function groupSessionsByDirectory(
 
             return b.latestUpdatedAt - a.latestUpdatedAt
         })
+}
+
+export function patchGroupsVisuals(
+    frozenGroups: SessionGroup[],
+    latestSessions: SessionSummary[],
+    unreadSessionIds: Set<string>
+): SessionGroup[] {
+    const sessionMap = new Map(latestSessions.map(s => [s.id, s]))
+    let anyChanged = false
+
+    const patched = frozenGroups.map(group => {
+        const patchedSessions: SessionSummary[] = []
+        let groupChanged = false
+        for (const frozenSession of group.sessions) {
+            const latest = sessionMap.get(frozenSession.id)
+            if (!latest) {
+                groupChanged = true
+                continue
+            }
+            if (latest !== frozenSession) groupChanged = true
+            patchedSessions.push(latest)
+        }
+        if (!groupChanged) return group
+        anyChanged = true
+        return {
+            ...group,
+            sessions: patchedSessions,
+            hasActiveSession: patchedSessions.some(s => s.active)
+        }
+    }).filter(group => group.sessions.length > 0)
+
+    return anyChanged || patched.length !== frozenGroups.length ? patched : frozenGroups
+}
+
+function useFrozenGroups(
+    liveGroups: SessionGroup[],
+    selectedSessionId: string | null | undefined,
+    sessions: SessionSummary[],
+    unreadSessionIds: Set<string>
+): { displayGroups: SessionGroup[]; unfreezeCount: number } {
+    const frozenRef = useRef<SessionGroup[] | null>(null)
+    const prevSelectedRef = useRef<string | null | undefined>(null)
+    const prevSessionCountRef = useRef(sessions.length)
+    const unfreezeCountRef = useRef(0)
+
+    const selectionChanged = selectedSessionId !== prevSelectedRef.current
+    const sessionCountChanged = sessions.length !== prevSessionCountRef.current
+    const shouldUnfreeze = selectionChanged || sessionCountChanged
+
+    prevSelectedRef.current = selectedSessionId
+    prevSessionCountRef.current = sessions.length
+
+    if (shouldUnfreeze || !frozenRef.current) {
+        frozenRef.current = liveGroups
+        if (shouldUnfreeze) {
+            unfreezeCountRef.current += 1
+        }
+    } else if (selectedSessionId) {
+        frozenRef.current = patchGroupsVisuals(frozenRef.current, sessions, unreadSessionIds)
+    } else {
+        frozenRef.current = liveGroups
+    }
+
+    return {
+        displayGroups: frozenRef.current,
+        unfreezeCount: unfreezeCountRef.current
+    }
 }
 
 function PlusIcon(props: { className?: string }) {
@@ -426,6 +494,7 @@ function SessionItem(props: {
     return (
         <>
             <div
+                data-session-id={s.id}
                 {...(isTouch && !selectionMode ? swipeHandlers : {})}
                 className="relative overflow-hidden group"
                 style={{ touchAction: 'pan-y' }}
@@ -592,6 +661,7 @@ export function SessionList(props: {
     renderHeader?: boolean
     api: ApiClient | null
     selectedSessionId?: string | null
+    scrollContainerRef?: RefObject<HTMLElement | null>
 }) {
     const { t } = useTranslation()
     const queryClient = useQueryClient()
@@ -606,6 +676,7 @@ export function SessionList(props: {
     const [readHistory, setReadHistory] = useState<SessionReadHistory>(() => loadSessionReadHistory())
 
     const prevUpdatedAtRef = useRef<Map<string, number>>(new Map())
+    const prevSelectedForUnreadRef = useRef<string | null>(null)
     const [unreadSessionIds, setUnreadSessionIds] = useState<Set<string>>(() => new Set())
 
     useEffect(() => {
@@ -660,10 +731,12 @@ export function SessionList(props: {
     }, [props.sessions, selectedSessionId])
 
     useEffect(() => {
-        if (!selectedSessionId || !unreadSessionIds.has(selectedSessionId)) {
+        if (!selectedSessionId || selectedSessionId === prevSelectedForUnreadRef.current) {
+            prevSelectedForUnreadRef.current = selectedSessionId ?? null
             return
         }
-
+        prevSelectedForUnreadRef.current = selectedSessionId
+        if (!unreadSessionIds.has(selectedSessionId)) return
         setUnreadSessionIds(prev => {
             const next = new Set(prev)
             next.delete(selectedSessionId)
@@ -671,10 +744,26 @@ export function SessionList(props: {
         })
     }, [selectedSessionId, unreadSessionIds])
 
-    const groups = useMemo(
+    const liveGroups = useMemo(
         () => groupSessionsByDirectory(props.sessions, readHistory, unreadSessionIds),
         [props.sessions, readHistory, unreadSessionIds]
     )
+
+    const { displayGroups, unfreezeCount } = useFrozenGroups(
+        liveGroups,
+        selectedSessionId,
+        props.sessions,
+        unreadSessionIds
+    )
+
+    const listContainerRef = useRef<HTMLDivElement>(null)
+
+    useListTransition({
+        listContainerRef,
+        scrollContainerRef: props.scrollContainerRef,
+        selectedSessionId,
+        unfreezeCount
+    })
 
     const sessionById = useMemo(
         () => new Map(props.sessions.map(session => [session.id, session])),
@@ -713,7 +802,7 @@ export function SessionList(props: {
         setCollapseOverrides(prev => {
             if (prev.size === 0) return prev
             const next = new Map(prev)
-            const knownGroups = new Set(groups.map(group => group.directory))
+            const knownGroups = new Set(displayGroups.map(group => group.directory))
             let changed = false
             for (const directory of next.keys()) {
                 if (!knownGroups.has(directory)) {
@@ -723,7 +812,7 @@ export function SessionList(props: {
             }
             return changed ? next : prev
         })
-    }, [groups])
+    }, [displayGroups])
 
     const toggleSelectedSession = useCallback((sessionId: string) => {
         setSelectedSessionIds(prev => {
@@ -749,8 +838,17 @@ export function SessionList(props: {
         }
         setReadHistory(nextReadHistory)
         saveSessionReadHistory(nextReadHistory)
+
+        if (unreadSessionIds.has(sessionId)) {
+            setUnreadSessionIds(prev => {
+                const next = new Set(prev)
+                next.delete(sessionId)
+                return next
+            })
+        }
+
         props.onSelect(sessionId)
-    }, [props, readHistory, selectionMode, toggleSelectedSession])
+    }, [props, readHistory, selectionMode, toggleSelectedSession, unreadSessionIds])
 
     const handleEnableSelectionMode = useCallback(() => {
         setSelectionMode(true)
@@ -813,7 +911,7 @@ export function SessionList(props: {
             {renderHeader ? (
                 <div className="flex items-center justify-between px-3 py-1">
                     <div className="text-xs text-[var(--app-hint)]">
-                        {t('sessions.count', { n: props.sessions.length, m: groups.length })}
+                        {t('sessions.count', { n: props.sessions.length, m: displayGroups.length })}
                     </div>
                     <button
                         type="button"
@@ -869,8 +967,8 @@ export function SessionList(props: {
                 </div>
             ) : null}
 
-            <div className="flex flex-col">
-                {groups.map((group) => {
+            <div ref={listContainerRef} className="flex flex-col">
+                {displayGroups.map((group) => {
                     const isCollapsed = isGroupCollapsed(group)
                     const canQuickCreateInGroup = group.directory !== 'Other'
                     const groupMachineId = group.sessions[0]?.metadata?.machineId

@@ -4,6 +4,7 @@ import {
     getUnreadLabelClass,
     groupSessionsByDirectory,
     loadSessionReadHistory,
+    patchGroupsVisuals,
     pruneSessionReadHistory,
     saveSessionReadHistory
 } from './SessionList'
@@ -105,5 +106,89 @@ describe('SessionList helpers', () => {
     it('uses subdued unread style while thinking', () => {
         expect(getUnreadLabelClass(true)).toContain('opacity-70')
         expect(getUnreadLabelClass(false)).toBe('text-[#34C759]')
+    })
+})
+
+describe('patchGroupsVisuals', () => {
+    it('updates session data without changing order', () => {
+        const s1 = makeSession({ id: 's1', active: false, updatedAt: 100 })
+        const s2 = makeSession({ id: 's2', active: false, updatedAt: 200 })
+        const frozenGroups = [{
+            directory: '/repo',
+            displayName: 'repo',
+            sessions: [s1, s2],
+            latestUpdatedAt: 200,
+            latestReadAt: -Infinity,
+            hasActiveSession: false
+        }]
+
+        const s1Updated = makeSession({ id: 's1', active: true, thinking: true, updatedAt: 300 })
+        const patched = patchGroupsVisuals(frozenGroups, [s1Updated, s2], new Set())
+
+        expect(patched[0]?.sessions.map(s => s.id)).toEqual(['s1', 's2'])
+        expect(patched[0]?.sessions[0]?.active).toBe(true)
+        expect(patched[0]?.sessions[0]?.thinking).toBe(true)
+        expect(patched[0]?.hasActiveSession).toBe(true)
+    })
+
+    it('removes sessions that no longer exist', () => {
+        const s1 = makeSession({ id: 's1', updatedAt: 100 })
+        const s2 = makeSession({ id: 's2', updatedAt: 200 })
+        const frozenGroups = [{
+            directory: '/repo',
+            displayName: 'repo',
+            sessions: [s1, s2],
+            latestUpdatedAt: 200,
+            latestReadAt: -Infinity,
+            hasActiveSession: false
+        }]
+
+        const patched = patchGroupsVisuals(frozenGroups, [s2], new Set())
+
+        expect(patched[0]?.sessions.map(s => s.id)).toEqual(['s2'])
+    })
+
+    it('removes empty groups after session removal', () => {
+        const s1 = makeSession({ id: 's1', metadata: { path: '/repo-a' } })
+        const s2 = makeSession({ id: 's2', metadata: { path: '/repo-b' } })
+        const frozenGroups = [
+            {
+                directory: '/repo-a',
+                displayName: 'repo-a',
+                sessions: [s1],
+                latestUpdatedAt: 0,
+                latestReadAt: -Infinity,
+                hasActiveSession: false
+            },
+            {
+                directory: '/repo-b',
+                displayName: 'repo-b',
+                sessions: [s2],
+                latestUpdatedAt: 0,
+                latestReadAt: -Infinity,
+                hasActiveSession: false
+            }
+        ]
+
+        const patched = patchGroupsVisuals(frozenGroups, [s2], new Set())
+
+        expect(patched).toHaveLength(1)
+        expect(patched[0]?.directory).toBe('/repo-b')
+    })
+
+    it('returns same reference when nothing changed', () => {
+        const s1 = makeSession({ id: 's1', updatedAt: 100 })
+        const frozenGroups = [{
+            directory: '/repo',
+            displayName: 'repo',
+            sessions: [s1],
+            latestUpdatedAt: 100,
+            latestReadAt: -Infinity,
+            hasActiveSession: false
+        }]
+
+        const patched = patchGroupsVisuals(frozenGroups, [s1], new Set())
+
+        expect(patched).toBe(frozenGroups)
     })
 })

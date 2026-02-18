@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from 'react'
+import { useCallback, useMemo, useRef } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import {
     Navigate,
@@ -166,6 +166,7 @@ function SessionsPage() {
     const { t } = useTranslation()
     const { sessions, isLoading, error, refetch } = useSessions(api)
     const { stats: systemStats } = useSystemStats(api)
+    const scrollContainerRef = useRef<HTMLDivElement>(null)
 
     const handleRefresh = useCallback(() => {
         void refetch()
@@ -207,7 +208,7 @@ function SessionsPage() {
                     </div>
                 </div>
 
-                <div className="flex-1 min-h-0 overflow-y-auto desktop-scrollbar-left">
+                <div ref={scrollContainerRef} className="flex-1 min-h-0 overflow-y-auto desktop-scrollbar-left">
                     {error ? (
                         <div className="mx-auto w-full max-w-content px-3 py-2">
                             <div className="text-sm text-red-600">{error}</div>
@@ -216,6 +217,7 @@ function SessionsPage() {
                     <SessionList
                         sessions={sessions}
                         selectedSessionId={selectedSessionId}
+                        scrollContainerRef={scrollContainerRef}
                         onSelect={(sessionId) => navigate({
                             to: '/sessions/$sessionId',
                             params: { sessionId },
