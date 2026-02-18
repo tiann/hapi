@@ -342,6 +342,9 @@ export default function TerminalPage() {
         if (readClipboard) {
             try {
                 const clipboardText = await readClipboard.call(navigator.clipboard)
+                if (!clipboardText) {
+                    return
+                }
                 if (writePlainInput(clipboardText)) {
                     return
                 }
