@@ -178,7 +178,7 @@ describe('terminal socket handlers', () => {
         expect(terminalRegistry.get('terminal-1')).toBeNull()
     })
 
-    it('cleans up and notifies CLI on terminal socket disconnect', () => {
+    it('cleans up without closing the CLI terminal on socket disconnect', () => {
         const { terminalSocket, cliNamespace, terminalRegistry } = createHarness()
         const cliSocket = new FakeSocket('cli-socket-1')
         connectCliSocket(cliNamespace, cliSocket, 'session-1')
@@ -193,11 +193,39 @@ describe('terminal socket handlers', () => {
         terminalSocket.trigger('disconnect')
 
         const closeEvent = lastEmit(cliSocket, 'terminal:close')
-        expect(closeEvent?.data).toEqual({
-            sessionId: 'session-1',
-            terminalId: 'terminal-1'
-        })
+        expect(closeEvent).toBeUndefined()
         expect(terminalRegistry.get('terminal-1')).toBeNull()
+    })
+
+    it('allows reconnecting a disconnected terminal id', () => {
+        const { terminalSocket, cliNamespace } = createHarness()
+        const cliSocket = new FakeSocket('cli-socket-1')
+        connectCliSocket(cliNamespace, cliSocket, 'session-1')
+
+        terminalSocket.trigger('terminal:create', {
+            sessionId: 'session-1',
+            terminalId: 'terminal-1',
+            cols: 90,
+            rows: 24
+        })
+
+        terminalSocket.trigger('disconnect')
+
+        terminalSocket.trigger('terminal:create', {
+            sessionId: 'session-1',
+            terminalId: 'terminal-1',
+            cols: 110,
+            rows: 30
+        })
+
+        const openEvents = cliSocket.emitted.filter((event) => event.event === 'terminal:open')
+        expect(openEvents).toHaveLength(2)
+        expect(openEvents[1]?.data).toEqual({
+            sessionId: 'session-1',
+            terminalId: 'terminal-1',
+            cols: 110,
+            rows: 30
+        })
     })
 
     it('enforces per-socket terminal limits', () => {

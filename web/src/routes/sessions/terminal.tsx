@@ -9,6 +9,7 @@ import { useTerminalSocket } from '@/hooks/useTerminalSocket'
 import { useLongPress } from '@/hooks/useLongPress'
 import { TerminalView } from '@/components/Terminal/TerminalView'
 import { LoadingState } from '@/components/LoadingState'
+import { getSessionTerminalInstanceId } from '@/lib/terminalInstanceId'
 function BackIcon() {
     return (
         <svg
@@ -282,12 +283,7 @@ export default function TerminalPage() {
     const { api, token, baseUrl } = useAppContext()
     const goBack = useAppGoBack()
     const { session } = useSession(api, sessionId)
-    const terminalId = useMemo(() => {
-        if (typeof crypto?.randomUUID === 'function') {
-            return crypto.randomUUID()
-        }
-        return `${Date.now()}-${Math.random().toString(16).slice(2)}`
-    }, [sessionId])
+    const terminalId = useMemo(() => getSessionTerminalInstanceId(sessionId), [sessionId])
     const terminalRef = useRef<Terminal | null>(null)
     const inputDisposableRef = useRef<{ dispose: () => void } | null>(null)
     const inputHandlerRef = useRef<{ dispose: () => void } | null>(null)

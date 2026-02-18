@@ -199,9 +199,8 @@ export function registerTerminalHandlers(socket: SocketWithData, deps: TerminalH
     })
 
     socket.on('disconnect', () => {
-        const removed = terminalRegistry.removeBySocket(socket.id)
-        for (const entry of removed) {
-            emitCloseToCli(entry)
-        }
+        // Preserve terminal process on client disconnect so it can be reattached.
+        // CLI-side terminal idle timeout/session teardown is responsible for cleanup.
+        terminalRegistry.removeBySocket(socket.id)
     })
 }
