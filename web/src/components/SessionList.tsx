@@ -15,7 +15,6 @@ import { useTranslation } from '@/lib/use-translation'
 import { useListTransition } from '@/hooks/useListTransition'
 
 const SESSION_READ_HISTORY_KEY = 'hapi:sessionReadHistory'
-const RECENT_READ_WINDOW_MS = 3 * 24 * 60 * 60 * 1000
 
 type SessionGroup = {
     directory: string
@@ -40,20 +39,11 @@ function normalizeTimestamp(value: number): number {
     return value < 1_000_000_000_000 ? value * 1000 : value
 }
 
-function getSessionRank(session: SessionSummary, readAt: number | undefined, now: number, isUnread: boolean): number {
-    if (session.active) {
-        return session.pendingRequestsCount > 0 ? 0 : 1
-    }
-
-    if (isUnread) {
-        return 2
-    }
-
-    if (readAt && now - readAt <= RECENT_READ_WINDOW_MS) {
-        return 3
-    }
-
-    return 4
+function getSessionRank(session: SessionSummary, isUnread: boolean): number {
+    if (session.pendingRequestsCount > 0) return 0
+    if (isUnread && !session.thinking && !session.active) return 1
+    if (isUnread && (session.thinking || session.active)) return 2
+    return 3
 }
 
 export function loadSessionReadHistory(): SessionReadHistory {
@@ -102,23 +92,18 @@ export function pruneSessionReadHistory(
 
 export function sortSessionsByPriority(
     sessions: SessionSummary[],
-    readHistory: SessionReadHistory,
+    _readHistory: SessionReadHistory,
     unreadSessionIds: Set<string>,
-    now: number = Date.now()
+    _now: number = Date.now()
 ): SessionSummary[] {
     return [...sessions].sort((a, b) => {
-        const readA = readHistory[a.id]
-        const readB = readHistory[b.id]
-
-        const rankA = getSessionRank(a, readA, now, unreadSessionIds.has(a.id))
-        const rankB = getSessionRank(b, readB, now, unreadSessionIds.has(b.id))
+        const rankA = getSessionRank(a, unreadSessionIds.has(a.id))
+        const rankB = getSessionRank(b, unreadSessionIds.has(b.id))
         if (rankA !== rankB) return rankA - rankB
 
-        if ((readA ?? 0) !== (readB ?? 0)) {
-            return (readB ?? 0) - (readA ?? 0)
-        }
+        if (a.updatedAt !== b.updatedAt) return b.updatedAt - a.updatedAt
 
-        return b.updatedAt - a.updatedAt
+        return a.id.localeCompare(b.id)
     })
 }
 
@@ -163,15 +148,15 @@ export function groupSessionsByDirectory(
             }
         })
         .sort((a, b) => {
-            if (a.hasActiveSession !== b.hasActiveSession) {
-                return a.hasActiveSession ? -1 : 1
-            }
+            const topA = a.sessions[0]
+            const topB = b.sessions[0]
+            const groupRankA = topA ? getSessionRank(topA, unreadSessionIds.has(topA.id)) : Number.POSITIVE_INFINITY
+            const groupRankB = topB ? getSessionRank(topB, unreadSessionIds.has(topB.id)) : Number.POSITIVE_INFINITY
+            if (groupRankA !== groupRankB) return groupRankA - groupRankB
 
-            if (a.latestReadAt !== b.latestReadAt) {
-                return b.latestReadAt - a.latestReadAt
-            }
+            if (a.latestUpdatedAt !== b.latestUpdatedAt) return b.latestUpdatedAt - a.latestUpdatedAt
 
-            return b.latestUpdatedAt - a.latestUpdatedAt
+            return a.directory.localeCompare(b.directory)
         })
 }
 
@@ -258,19 +243,11 @@ export function computeFreezeStep(
     let selectionFreezeArmed = state.selectionFreezeArmed
 
     // Freeze strategy:
-    // - On selection changes (null->session or session->session), freeze immediately so the
-    //   click render doesn't reorder.
-    // - Keep freeze armed for one settled render to absorb readHistory/unread effects.
-    // - Then unfreeze once, letting list reflect latest sort inputs again.
-    // - Always unfreeze on session ID set changes or deselect.
-    const isSelecting = selectionChanged && normalizedSelectedSessionId !== null
+    // - While a session is selected, keep list order frozen to prevent selection-induced jumps.
+    // - Patch visuals in-place so status badges/timestamps still update.
+    // - Release freeze only on deselect, view change, or session ID set changes.
     const isDeselecting = selectionChanged && normalizedSelectedSessionId === null
     const shouldForceUnfreeze = sessionsChanged || isDeselecting || viewChanged
-    const shouldReleaseArmedFreeze = (
-        selectionFreezeArmed
-        && !selectionChanged
-        && normalizedSelectedSessionId !== null
-    )
 
     if (!frozenGroups) {
         frozenGroups = liveGroups
@@ -280,15 +257,9 @@ export function computeFreezeStep(
         frozenGroups = liveGroups
         unfreezeCount += 1
         selectionFreezeArmed = false
-    } else if (isSelecting) {
+    } else if (normalizedSelectedSessionId !== null) {
+        frozenGroups = patchGroupsVisuals(frozenGroups, sessions)
         selectionFreezeArmed = true
-        frozenGroups = patchGroupsVisuals(frozenGroups, sessions)
-    } else if (shouldReleaseArmedFreeze) {
-        frozenGroups = liveGroups
-        unfreezeCount += 1
-        selectionFreezeArmed = false
-    } else if (selectionFreezeArmed && normalizedSelectedSessionId !== null) {
-        frozenGroups = patchGroupsVisuals(frozenGroups, sessions)
     } else {
         frozenGroups = liveGroups
         selectionFreezeArmed = false

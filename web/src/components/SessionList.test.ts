@@ -33,57 +33,57 @@ function makeSession(overrides: Partial<SessionSummary> & { id: string }): Sessi
 }
 
 describe('sortSessionsByPriority', () => {
-    it('sorts active+pending before active before unread before recent-read before stale', () => {
+    it('sorts pending, finished unread, in-progress unread, then everything else', () => {
         const now = 1_800_000_000_000
         const sessions: SessionSummary[] = [
-            makeSession({ id: 'rank-0', active: true, pendingRequestsCount: 2, updatedAt: 1 }),
-            makeSession({ id: 'rank-1', active: true, pendingRequestsCount: 0, updatedAt: 2 }),
-            makeSession({ id: 'rank-2', updatedAt: 3 }),
-            makeSession({ id: 'rank-3', updatedAt: 4 }),
-            makeSession({ id: 'rank-4', updatedAt: 5 }),
+            makeSession({ id: 'other-old', updatedAt: 10 }),
+            makeSession({ id: 'pending-old', pendingRequestsCount: 1, updatedAt: 100 }),
+            makeSession({ id: 'in-progress-active', active: true, updatedAt: 140 }),
+            makeSession({ id: 'finished-unread', updatedAt: 150 }),
+            makeSession({ id: 'pending-new', active: true, thinking: true, pendingRequestsCount: 2, updatedAt: 200 }),
+            makeSession({ id: 'in-progress-thinking', thinking: true, updatedAt: 160 }),
+            makeSession({ id: 'other-new', updatedAt: 300 }),
         ]
-        const readHistory = {
-            'rank-3': now - 1_000,
-        }
-        const unreadSessionIds = new Set<string>(['rank-2'])
+        const unreadSessionIds = new Set<string>(['finished-unread', 'in-progress-active', 'in-progress-thinking'])
 
-        const sorted = sortSessionsByPriority(sessions, readHistory, unreadSessionIds, now)
+        const sorted = sortSessionsByPriority(sessions, {}, unreadSessionIds, now)
 
         expect(sorted.map(session => session.id)).toEqual([
-            'rank-0',
-            'rank-1',
-            'rank-2',
-            'rank-3',
-            'rank-4',
+            'pending-new',
+            'pending-old',
+            'finished-unread',
+            'in-progress-thinking',
+            'in-progress-active',
+            'other-new',
+            'other-old',
         ])
     })
 
-    it('breaks rank ties by readHistory descending', () => {
-        const now = 1_800_000_000_000
-        const olderRead = now - (5 * 24 * 60 * 60 * 1000)
-        const newerRead = now - (4 * 24 * 60 * 60 * 1000)
+    it('uses updatedAt desc for ties and id asc as deterministic fallback', () => {
         const sessions: SessionSummary[] = [
-            makeSession({ id: 'older-read', updatedAt: 100 }),
-            makeSession({ id: 'newer-read', updatedAt: 100 }),
+            makeSession({ id: 'unread-b', updatedAt: 100 }),
+            makeSession({ id: 'unread-a', updatedAt: 100 }),
+            makeSession({ id: 'unread-c', updatedAt: 200 }),
+        ]
+
+        const sorted = sortSessionsByPriority(sessions, {}, new Set(['unread-a', 'unread-b', 'unread-c']))
+
+        expect(sorted.map(session => session.id)).toEqual(['unread-c', 'unread-a', 'unread-b'])
+    })
+
+    it('ignores readHistory when ranks match', () => {
+        const now = 1_800_000_000_000
+        const sessions: SessionSummary[] = [
+            makeSession({ id: 'read-newer', updatedAt: 100 }),
+            makeSession({ id: 'read-older', updatedAt: 100 }),
         ]
 
         const sorted = sortSessionsByPriority(sessions, {
-            'older-read': olderRead,
-            'newer-read': newerRead
+            'read-newer': now - 1_000,
+            'read-older': now - 2_000
         }, new Set(), now)
 
-        expect(sorted.map(session => session.id)).toEqual(['newer-read', 'older-read'])
-    })
-
-    it('breaks readHistory ties by updatedAt descending', () => {
-        const sessions: SessionSummary[] = [
-            makeSession({ id: 'older-update', updatedAt: 100 }),
-            makeSession({ id: 'newer-update', updatedAt: 200 }),
-        ]
-
-        const sorted = sortSessionsByPriority(sessions, {}, new Set(), 1_800_000_000_000)
-
-        expect(sorted.map(session => session.id)).toEqual(['newer-update', 'older-update'])
+        expect(sorted.map(session => session.id)).toEqual(['read-newer', 'read-older'])
     })
 
     it('returns empty array for empty input', () => {
@@ -131,7 +131,7 @@ describe('flattenSessions', () => {
 
         const groups = flattenSessions(sessions, {}, new Set(['unread']), now)
 
-        expect(groups[0]?.sessions.map(session => session.id)).toEqual(['active', 'unread', 'stale'])
+        expect(groups[0]?.sessions.map(session => session.id)).toEqual(['unread', 'stale', 'active'])
     })
 
     it('uses sortSessionsByPriority for ordering', () => {
@@ -150,9 +150,9 @@ describe('flattenSessions', () => {
         }, new Set(), now)
 
         expect(groups[0]?.sessions.map(session => session.id)).toEqual([
+            'higher-updated',
             'newer-read',
             'older-read',
-            'higher-updated',
         ])
     })
 
@@ -193,7 +193,7 @@ describe('SessionList helpers', () => {
         localStorage.clear()
     })
 
-    it('prioritizes active sessions, then recently read sessions, then updatedAt', () => {
+    it('sorts non-unread sessions by updatedAt regardless of active/read state', () => {
         const now = 1_800_000_000_000
         const sessions: SessionSummary[] = [
             makeSession({ id: 'active', active: true, updatedAt: 100 }),
@@ -207,43 +207,75 @@ describe('SessionList helpers', () => {
 
         expect(groups).toHaveLength(1)
         expect(groups[0]?.sessions.map((session) => session.id)).toEqual([
-            'active',
+            'latest-updated',
             'recent-read',
-            'latest-updated'
+            'active'
         ])
     })
 
-    it('sorts groups by recent reads when no active sessions', () => {
+    it('sorts groups by highest-priority session bucket', () => {
         const now = 1_800_000_000_000
         const sessions: SessionSummary[] = [
-            makeSession({ id: 'a', metadata: { path: '/repo-a' }, updatedAt: 100 }),
-            makeSession({ id: 'b', metadata: { path: '/repo-b' }, updatedAt: 200 })
+            makeSession({ id: 'pending', metadata: { path: '/repo-pending' }, pendingRequestsCount: 1, updatedAt: 10 }),
+            makeSession({ id: 'finished-unread', metadata: { path: '/repo-finished' }, updatedAt: 20 }),
+            makeSession({ id: 'in-progress-unread', metadata: { path: '/repo-inprogress' }, active: true, updatedAt: 30 }),
+            makeSession({ id: 'other', metadata: { path: '/repo-other' }, updatedAt: 40 }),
         ]
 
-        const groups = groupSessionsByDirectory(sessions, {
-            b: now - 1_000
-        }, new Set(), now)
+        const groups = groupSessionsByDirectory(
+            sessions,
+            {},
+            new Set(['finished-unread', 'in-progress-unread']),
+            now
+        )
 
-        expect(groups.map((group) => group.directory)).toEqual(['/repo-b', '/repo-a'])
+        expect(groups.map((group) => group.directory)).toEqual([
+            '/repo-pending',
+            '/repo-finished',
+            '/repo-inprogress',
+            '/repo-other',
+        ])
     })
 
-    it('bubbles unread sessions above recently read ones', () => {
+    it('breaks group ties by latestUpdatedAt desc, then directory asc', () => {
         const now = 1_800_000_000_000
         const sessions: SessionSummary[] = [
-            makeSession({ id: 'active', active: true, updatedAt: 100 }),
+            makeSession({ id: 'repo-c', metadata: { path: '/repo-c' }, updatedAt: 300 }),
+            makeSession({ id: 'repo-b', metadata: { path: '/repo-b' }, updatedAt: 200 }),
+            makeSession({ id: 'repo-a', metadata: { path: '/repo-a' }, updatedAt: 200 }),
+        ]
+
+        const groups = groupSessionsByDirectory(
+            sessions,
+            { 'repo-b': now - 1_000 },
+            new Set(),
+            now
+        )
+
+        expect(groups.map((group) => group.directory)).toEqual([
+            '/repo-c',
+            '/repo-a',
+            '/repo-b',
+        ])
+    })
+
+    it('puts finished unread above in-progress unread sessions', () => {
+        const now = 1_800_000_000_000
+        const sessions: SessionSummary[] = [
+            makeSession({ id: 'in-progress-unread', active: true, updatedAt: 100 }),
             makeSession({ id: 'recent-read', updatedAt: 200 }),
-            makeSession({ id: 'unread', updatedAt: 50 }),
+            makeSession({ id: 'finished-unread', updatedAt: 50 }),
         ]
 
         const groups = groupSessionsByDirectory(sessions, {
             'recent-read': now - 1_000,
-        }, new Set(['unread']), now)
+        }, new Set(['in-progress-unread', 'finished-unread']), now)
 
         expect(groups).toHaveLength(1)
         expect(groups[0]?.sessions.map((session) => session.id)).toEqual([
-            'active',
-            'unread',
-            'recent-read',
+            'finished-unread',
+            'in-progress-unread',
+            'recent-read'
         ])
     })
 
@@ -376,7 +408,7 @@ describe('computeFreezeStep', () => {
         }
     }
 
-    it('freezes on selection change, then releases once selection is stable', () => {
+    it('freezes while selected, then releases on deselect', () => {
         const s1 = makeSession({ id: 's1' })
         const s2 = makeSession({ id: 's2' })
         const liveGroups = [group([s1, s2])]
@@ -387,24 +419,24 @@ describe('computeFreezeStep', () => {
         expect(r1.unfreezeCount).toBe(0)
         expect(r1.selectionFreezeArmed).toBe(true)
 
-        // Next stable render → release freeze and re-sort once.
+        // Next stable render while still selected → remain frozen.
         const r2 = computeFreezeStep(r1, liveGroups, 's1', sessions, 'grouped')
-        expect(r2.unfreezeCount).toBe(1)
-        expect(r2.selectionFreezeArmed).toBe(false)
+        expect(r2.unfreezeCount).toBe(0)
+        expect(r2.selectionFreezeArmed).toBe(true)
 
         // Switch to s2 → freeze again.
         const r3 = computeFreezeStep(r2, liveGroups, 's2', sessions, 'grouped')
-        expect(r3.unfreezeCount).toBe(1)
+        expect(r3.unfreezeCount).toBe(0)
         expect(r3.selectionFreezeArmed).toBe(true)
 
-        // Next stable render for s2 → release once.
+        // Next stable render for s2 while still selected → remain frozen.
         const r4 = computeFreezeStep(r3, liveGroups, 's2', sessions, 'grouped')
-        expect(r4.unfreezeCount).toBe(2)
-        expect(r4.selectionFreezeArmed).toBe(false)
+        expect(r4.unfreezeCount).toBe(0)
+        expect(r4.selectionFreezeArmed).toBe(true)
 
-        // Deselect → re-sorts
+        // Deselect → release and re-sort
         const r5 = computeFreezeStep(r4, liveGroups, null, sessions, 'grouped')
-        expect(r5.unfreezeCount).toBe(3)
+        expect(r5.unfreezeCount).toBe(1)
     })
 
     it('unfreezes when session ID set changes (same count replacement)', () => {
@@ -424,7 +456,7 @@ describe('computeFreezeStep', () => {
         expect(r2.unfreezeCount).toBe(1)
     })
 
-    it('releases one-shot freeze on next render even when only session data changes', () => {
+    it('keeps freeze while selected even when only session data changes', () => {
         const s1 = makeSession({ id: 's1', active: false })
         const s1Active = makeSession({ id: 's1', active: true })
         const sessions = [s1]
@@ -435,11 +467,11 @@ describe('computeFreezeStep', () => {
         expect(r1.unfreezeCount).toBe(0)
         expect(r1.selectionFreezeArmed).toBe(true)
 
-        // Next render releases one-shot freeze and adopts live order.
+        // Next render while still selected keeps order frozen but patches visuals.
         const r2 = computeFreezeStep(r1, [group(sessionsUpdated)], 's1', sessionsUpdated, 'grouped')
-        expect(r2.unfreezeCount).toBe(1)
+        expect(r2.unfreezeCount).toBe(0)
         expect(r2.displayGroups[0]?.sessions[0]?.active).toBe(true)
-        expect(r2.selectionFreezeArmed).toBe(false)
+        expect(r2.selectionFreezeArmed).toBe(true)
     })
 
     it('passes through liveGroups when no session is selected', () => {
@@ -515,14 +547,14 @@ describe('computeFreezeStep', () => {
         expect(r2.displayGroups[0]?.sessions[1]?.updatedAt).toBe(500)
         expect(r2.selectionFreezeArmed).toBe(true)
 
-        // Stable render for s2 releases freeze and adopts live order.
+        // Stable render for s2 while selected stays frozen.
         const r3 = computeFreezeStep(r2, liveAfter, 's2', sessionsAfter, 'grouped')
-        expect(r3.unfreezeCount).toBe(1)
-        expect(r3.displayGroups).toBe(liveAfter)
-        expect(r3.selectionFreezeArmed).toBe(false)
+        expect(r3.unfreezeCount).toBe(0)
+        expect(r3.displayGroups[0]?.sessions.map(s => s.id)).toEqual(['s2', 's1'])
+        expect(r3.selectionFreezeArmed).toBe(true)
     })
 
-    it('releases one-shot freeze and allows rank updates', () => {
+    it('stays frozen and patches visuals while selected', () => {
         const s1 = makeSession({ id: 's1', active: false, updatedAt: 100 })
         const s2 = makeSession({ id: 's2', active: false, updatedAt: 200 })
         const sessionsBefore = [s1, s2]
@@ -539,9 +571,10 @@ describe('computeFreezeStep', () => {
         const liveAfter = [group([s1Active, s2])]
         const r2 = computeFreezeStep(r1, liveAfter, 's1', sessionsAfter, 'grouped')
 
-        expect(r2.unfreezeCount).toBe(1)
-        expect(r2.displayGroups).toBe(liveAfter)
-        expect(r2.selectionFreezeArmed).toBe(false)
+        expect(r2.unfreezeCount).toBe(0)
+        expect(r2.displayGroups[0]?.sessions.map(s => s.id)).toEqual(['s2', 's1'])
+        expect(r2.displayGroups[0]?.sessions[1]?.active).toBe(true)
+        expect(r2.selectionFreezeArmed).toBe(true)
     })
 
     it('unfreezes when selected session is removed', () => {
@@ -642,6 +675,6 @@ describe('computeFreezeStep', () => {
         const result = computeFreezeStep(state, liveGroups, 's1', sessions, 'grouped')
 
         expect(result.unfreezeCount).toBe(0)
-        expect(result.selectionFreezeArmed).toBe(false)
+        expect(result.selectionFreezeArmed).toBe(true)
     })
 })

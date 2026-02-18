@@ -175,14 +175,14 @@ describe('SessionList DOM freeze behavior', () => {
         const initialProps = buildProps({ sessions, selectedSessionId: null })
         const view = renderSessionList(initialProps)
 
-        expect(getRenderedSessionOrder(view.container)).toEqual(['anchor', 'fast', 'slow'])
+        expect(getRenderedSessionOrder(view.container)).toEqual(['fast', 'anchor', 'slow'])
 
         view.rerenderSessionList({ ...initialProps, selectedSessionId: 'slow' })
 
         await waitForReadHistoryWrite('slow')
 
         await waitFor(() => {
-            expect(getRenderedSessionOrder(view.container)).toEqual(['anchor', 'slow', 'fast'])
+            expect(getRenderedSessionOrder(view.container)).toEqual(['fast', 'anchor', 'slow'])
         })
     })
 
@@ -213,7 +213,7 @@ describe('SessionList DOM freeze behavior', () => {
         await waitForReadHistoryWrite('slow')
 
         await waitFor(() => {
-            expect(getRenderedSessionOrder(view.container)).toEqual(['anchor', 'slow', 'fast'])
+            expect(getRenderedSessionOrder(view.container)).toEqual(['anchor', 'fast', 'slow'])
         })
     })
 
@@ -230,11 +230,11 @@ describe('SessionList DOM freeze behavior', () => {
         // Baseline order: anchor, fast, slow.
         expect(getRenderedSessionOrder(view.container)).toEqual(['anchor', 'fast', 'slow'])
 
-        // First selection freezes current order, then settles to slow first.
+        // First selection keeps current order because read-history no longer affects rank.
         view.rerenderSessionList({ ...initialProps, selectedSessionId: 'slow' })
         await waitForReadHistoryWrite('slow')
         await waitFor(() => {
-            expect(getRenderedSessionOrder(view.container)).toEqual(['anchor', 'slow', 'fast'])
+            expect(getRenderedSessionOrder(view.container)).toEqual(['anchor', 'fast', 'slow'])
         })
 
         // Same tick switch selection and update sessions.
@@ -252,7 +252,7 @@ describe('SessionList DOM freeze behavior', () => {
 
         await waitForReadHistoryWrite('fast')
         await waitFor(() => {
-            expect(getRenderedSessionOrder(view.container)).toEqual(['fast', 'anchor', 'slow'])
+            expect(getRenderedSessionOrder(view.container)).toEqual(['anchor', 'fast', 'slow'])
         })
     })
 
@@ -279,7 +279,7 @@ describe('SessionList DOM freeze behavior', () => {
         view.rerenderSessionList({ ...initialProps, selectedSessionId: null, sessions: sessionsUpdated })
 
         await waitFor(() => {
-            expect(getRenderedSessionOrder(view.container)).toEqual(['anchor', 'slow', 'fast'])
+            expect(getRenderedSessionOrder(view.container)).toEqual(['slow', 'anchor', 'fast'])
         })
     })
 })
@@ -340,7 +340,7 @@ describe('SessionList view toggle behavior', () => {
         })
 
         expect(view.container.querySelectorAll('[data-group-header]')).toHaveLength(0)
-        expect(getRenderedSessionOrder(view.container)).toEqual(['active', 'mid', 'low'])
+        expect(getRenderedSessionOrder(view.container)).toEqual(['mid', 'active', 'low'])
     })
 
     it('toggle button hidden during selection mode', () => {
