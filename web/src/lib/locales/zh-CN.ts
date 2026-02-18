@@ -247,7 +247,7 @@ export default {
   'settings.display.theme.system': '跟随系统',
   'settings.display.theme.light': '浅色',
   'settings.display.theme.dark': '深色',
-  'settings.display.theme.catpuccin': 'Catpuccin',
+  'settings.display.theme.catpuccin': 'Catppuccin',
   'settings.display.theme.gaius': 'Gaius',
   'settings.display.theme.gaius-light': 'Gaius 浅色',
   'settings.display.theme.gaius-dark': 'Gaius 深色',

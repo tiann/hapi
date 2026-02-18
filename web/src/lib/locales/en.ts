@@ -245,7 +245,7 @@ export default {
   'settings.display.theme.system': 'System',
   'settings.display.theme.light': 'Light',
   'settings.display.theme.dark': 'Dark',
-  'settings.display.theme.catpuccin': 'Catpuccin',
+  'settings.display.theme.catpuccin': 'Catppuccin',
   'settings.display.theme.gaius': 'Gaius',
   'settings.display.theme.gaius-light': 'Gaius Light',
   'settings.display.theme.gaius-dark': 'Gaius Dark',
