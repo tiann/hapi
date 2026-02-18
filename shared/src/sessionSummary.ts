@@ -1,4 +1,4 @@
-import type { ModelMode } from './modes'
+import type { ModelMode, PermissionMode } from './modes'
 import type { Session, WorktreeMetadata } from './schemas'
 
 export type SessionSummaryMetadata = {
@@ -19,6 +19,7 @@ export type SessionSummary = {
     metadata: SessionSummaryMetadata | null
     todoProgress: { completed: number; total: number } | null
     pendingRequestsCount: number
+    permissionMode?: PermissionMode
     modelMode?: ModelMode
 }
 
@@ -48,6 +49,7 @@ export function toSessionSummary(session: Session): SessionSummary {
         metadata,
         todoProgress,
         pendingRequestsCount,
+        permissionMode: session.permissionMode,
         modelMode: session.modelMode
     }
 }

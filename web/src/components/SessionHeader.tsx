@@ -1,12 +1,14 @@
 import { useId, useMemo, useRef, useState } from 'react'
 import type { Session } from '@/types/api'
 import type { ApiClient } from '@/api/client'
+import { getPermissionModeLabel, getPermissionModeTone, isPermissionModeAllowedForFlavor } from '@hapi/protocol'
 import { isTelegramApp } from '@/hooks/useTelegram'
 import { useSessionActions } from '@/hooks/mutations/useSessionActions'
 import { SessionActionMenu } from '@/components/SessionActionMenu'
 import { RenameSessionDialog } from '@/components/RenameSessionDialog'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { useTranslation } from '@/lib/use-translation'
+import { getFlavorBadgeClass, PERMISSION_TONE_BADGE } from '@/lib/agentFlavorUtils'
 
 function getSessionTitle(session: Session): string {
     if (session.metadata?.name) {
@@ -128,21 +130,52 @@ export function SessionHeader(props: {
                         </svg>
                     </button>
 
-                    {/* Session info - two lines: title and path */}
+                    {/* Session info - two lines: title and badges */}
                     <div className="min-w-0 flex-1">
                         <div className="truncate font-semibold">
                             {title}
                         </div>
-                        <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-[var(--app-hint)]">
-                            <span className="inline-flex items-center gap-1">
-                                <span aria-hidden="true">❖</span>
-                                {session.metadata?.flavor?.trim() || 'unknown'}
-                            </span>
-                            <span>
-                                {t('session.item.modelMode')}: {session.modelMode || 'default'}
-                            </span>
+                        <div className="flex flex-wrap items-center gap-1.5 pt-1 text-xs">
+                            {(() => {
+                                const flavor = session.metadata?.flavor?.trim() ?? null
+                                const flavorBadge = getFlavorBadgeClass(flavor)
+                                const label = flavor || 'unknown'
+                                return (
+                                    <span className={`inline-flex items-center rounded-full border px-2 py-0.5 font-medium ${flavorBadge}`}>
+                                        {label}
+                                    </span>
+                                )
+                            })()}
+                            {(() => {
+                                const flavor = session.metadata?.flavor?.trim() ?? null
+                                const permMode = session.permissionMode
+                                    && session.permissionMode !== 'default'
+                                    && isPermissionModeAllowedForFlavor(session.permissionMode, flavor)
+                                    ? session.permissionMode
+                                    : null
+                                if (!permMode) return null
+                                const label = getPermissionModeLabel(permMode).toLowerCase()
+                                const tone = getPermissionModeTone(permMode)
+                                const badgeClass = PERMISSION_TONE_BADGE[tone]
+                                return (
+                                    <span className={`inline-flex items-center rounded-full border px-2 py-0.5 font-medium ${badgeClass}`}>
+                                        {label}
+                                    </span>
+                                )
+                            })()}
+                            {(() => {
+                                const flav = session.metadata?.flavor?.trim() ?? null
+                                if (flav && flav !== 'claude') return null
+                                return (
+                                    <span className="inline-flex items-center rounded-full border border-[var(--app-border)] bg-[var(--app-subtle-bg)] px-2 py-0.5 font-medium text-[var(--app-fg)]">
+                                        {session.modelMode || 'default'}
+                                    </span>
+                                )
+                            })()}
                             {worktreeBranch ? (
-                                <span>{t('session.item.worktree')}: {worktreeBranch}</span>
+                                <span className="inline-flex items-center rounded-full border border-[var(--app-border)] bg-[var(--app-subtle-bg)] px-2 py-0.5 text-[var(--app-hint)]">
+                                    {worktreeBranch}
+                                </span>
                             ) : null}
                         </div>
                     </div>
