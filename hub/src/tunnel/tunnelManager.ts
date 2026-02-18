@@ -9,7 +9,7 @@
  */
 
 import { spawn, type Subprocess } from 'bun'
-import { existsSync } from 'node:fs'
+import { access } from 'node:fs/promises'
 import { join } from 'node:path'
 import { platform, arch, homedir } from 'node:os'
 import { isBunCompiled } from '../utils/bunCompiled'
@@ -101,7 +101,9 @@ export class TunnelManager {
     private async spawnTunwg(): Promise<string | null> {
         const tunwgPath = getTunwgPath()
 
-        if (!existsSync(tunwgPath)) {
+        try {
+            await access(tunwgPath)
+        } catch {
             throw new Error(`tunwg binary not found at ${tunwgPath}`)
         }
 
