@@ -40,7 +40,7 @@ describe('SessionList helpers', () => {
 
         const groups = groupSessionsByDirectory(sessions, {
             'recent-read': now - 1_000,
-        }, now)
+        }, new Set(), now)
 
         expect(groups).toHaveLength(1)
         expect(groups[0]?.sessions.map((session) => session.id)).toEqual([
@@ -59,9 +59,29 @@ describe('SessionList helpers', () => {
 
         const groups = groupSessionsByDirectory(sessions, {
             b: now - 1_000
-        }, now)
+        }, new Set(), now)
 
         expect(groups.map((group) => group.directory)).toEqual(['/repo-b', '/repo-a'])
+    })
+
+    it('bubbles unread sessions above recently read ones', () => {
+        const now = 1_800_000_000_000
+        const sessions: SessionSummary[] = [
+            makeSession({ id: 'active', active: true, updatedAt: 100 }),
+            makeSession({ id: 'recent-read', updatedAt: 200 }),
+            makeSession({ id: 'unread', updatedAt: 50 }),
+        ]
+
+        const groups = groupSessionsByDirectory(sessions, {
+            'recent-read': now - 1_000,
+        }, new Set(['unread']), now)
+
+        expect(groups).toHaveLength(1)
+        expect(groups[0]?.sessions.map((session) => session.id)).toEqual([
+            'active',
+            'unread',
+            'recent-read',
+        ])
     })
 
     it('prunes stale session IDs from read history', () => {

@@ -39,16 +39,20 @@ function normalizeTimestamp(value: number): number {
     return value < 1_000_000_000_000 ? value * 1000 : value
 }
 
-function getSessionRank(session: SessionSummary, readAt: number | undefined, now: number): number {
+function getSessionRank(session: SessionSummary, readAt: number | undefined, now: number, isUnread: boolean): number {
     if (session.active) {
         return session.pendingRequestsCount > 0 ? 0 : 1
     }
 
-    if (readAt && now - readAt <= RECENT_READ_WINDOW_MS) {
+    if (isUnread) {
         return 2
     }
 
-    return 3
+    if (readAt && now - readAt <= RECENT_READ_WINDOW_MS) {
+        return 3
+    }
+
+    return 4
 }
 
 export function loadSessionReadHistory(): SessionReadHistory {
@@ -98,6 +102,7 @@ export function pruneSessionReadHistory(
 export function groupSessionsByDirectory(
     sessions: SessionSummary[],
     readHistory: SessionReadHistory,
+    unreadSessionIds: Set<string> = new Set(),
     now: number = Date.now()
 ): SessionGroup[] {
     const groups = new Map<string, SessionSummary[]>()
@@ -116,8 +121,8 @@ export function groupSessionsByDirectory(
                 const readA = readHistory[a.id]
                 const readB = readHistory[b.id]
 
-                const rankA = getSessionRank(a, readA, now)
-                const rankB = getSessionRank(b, readB, now)
+                const rankA = getSessionRank(a, readA, now, unreadSessionIds.has(a.id))
+                const rankB = getSessionRank(b, readB, now, unreadSessionIds.has(b.id))
                 if (rankA !== rankB) return rankA - rankB
 
                 if ((readA ?? 0) !== (readB ?? 0)) {
@@ -667,8 +672,8 @@ export function SessionList(props: {
     }, [selectedSessionId, unreadSessionIds])
 
     const groups = useMemo(
-        () => groupSessionsByDirectory(props.sessions, readHistory),
-        [props.sessions, readHistory]
+        () => groupSessionsByDirectory(props.sessions, readHistory, unreadSessionIds),
+        [props.sessions, readHistory, unreadSessionIds]
     )
 
     const sessionById = useMemo(
