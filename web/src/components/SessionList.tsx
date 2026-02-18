@@ -217,7 +217,12 @@ export function computeFreezeStep(
     const selectionChanged = selectedSessionId !== state.prevSelectedSessionId
     const sessionIdHash = getSessionIdHash(sessions)
     const sessionsChanged = sessionIdHash !== state.prevSessionIdHash
-    const shouldUnfreeze = selectionChanged || sessionsChanged
+
+    // Determine if we should unfreeze (re-sort).
+    // Unfreeze when: session set changes (new/deleted), or deselecting (going to null).
+    // Stay frozen when: selecting from null, or switching between sessions.
+    const isDeselecting = selectionChanged && !selectedSessionId && !!state.prevSelectedSessionId
+    const shouldUnfreeze = sessionsChanged || isDeselecting
 
     let frozenGroups = state.frozenGroups
     let unfreezeCount = state.unfreezeCount
@@ -228,6 +233,9 @@ export function computeFreezeStep(
             unfreezeCount += 1
         }
     } else if (selectedSessionId) {
+        // Frozen: update visual properties (active, thinking, badges) without reordering.
+        // On initial selection (null → session), frozenGroups holds the pre-click order
+        // from the previous render, so patchGroupsVisuals preserves that order.
         frozenGroups = patchGroupsVisuals(frozenGroups, sessions)
     } else {
         frozenGroups = liveGroups
@@ -761,6 +769,17 @@ export function SessionList(props: {
 
     useEffect(() => {
         if (!selectedSessionId) return
+
+        // Update read history when a session is selected.
+        // This runs here (not in the click handler) so that readHistory changes
+        // only after selectedSessionId has updated, keeping the freeze logic
+        // from seeing a re-sorted liveGroups before the selection prop arrives.
+        setReadHistory(prev => {
+            const next = { ...prev, [selectedSessionId]: Date.now() }
+            saveSessionReadHistory(next)
+            return next
+        })
+
         setUnreadSessionIds(prev => {
             if (!prev.has(selectedSessionId)) return prev
             const next = new Set(prev)
@@ -856,23 +875,8 @@ export function SessionList(props: {
             return
         }
 
-        const nextReadHistory: SessionReadHistory = {
-            ...readHistory,
-            [sessionId]: Date.now()
-        }
-        setReadHistory(nextReadHistory)
-        saveSessionReadHistory(nextReadHistory)
-
-        if (unreadSessionIds.has(sessionId)) {
-            setUnreadSessionIds(prev => {
-                const next = new Set(prev)
-                next.delete(sessionId)
-                return next
-            })
-        }
-
         props.onSelect(sessionId)
-    }, [props, readHistory, selectionMode, toggleSelectedSession, unreadSessionIds])
+    }, [props, selectionMode, toggleSelectedSession])
 
     const handleEnableSelectionMode = useCallback(() => {
         setSelectionMode(true)
