@@ -1,6 +1,6 @@
 import { logger } from '@/ui/logger';
 import { loop } from '@/claude/loop';
-import { AgentState, SessionModelMode } from '@/api/types';
+import { AgentState, SessionEffortLevel, SessionModelMode } from '@/api/types';
 import { EnhancedMode, PermissionMode } from './loop';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { hashObject } from '@/utils/deterministicJson';
@@ -14,8 +14,8 @@ import { registerKillSessionHandler } from './registerKillSessionHandler';
 import type { Session } from './session';
 import { bootstrapSession } from '@/agent/sessionFactory';
 import { createModeChangeHandler, createRunnerLifecycle, setControlledByUser } from '@/agent/runnerLifecycle';
-import { isModelModeAllowedForFlavor, isPermissionModeAllowedForFlavor } from '@hapi/protocol';
-import { ModelModeSchema, PermissionModeSchema } from '@hapi/protocol/schemas';
+import { isEffortLevelAllowedForFlavor, isModelModeAllowedForFlavor, isPermissionModeAllowedForFlavor } from '@hapi/protocol';
+import { EffortLevelSchema, ModelModeSchema, PermissionModeSchema } from '@hapi/protocol/schemas';
 import { formatMessageWithAttachments } from '@/utils/attachmentFormatter';
 
 export interface StartOptions {
@@ -134,6 +134,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
     const messageQueue = new MessageQueue2<EnhancedMode>(mode => hashObject({
         isPlan: mode.permissionMode === 'plan',
         model: mode.model,
+        effort: mode.effort,
         fallbackModel: mode.fallbackModel,
         customSystemPrompt: mode.customSystemPrompt,
         appendSystemPrompt: mode.appendSystemPrompt,
@@ -144,6 +145,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
     // Forward messages to the queue
     let currentPermissionMode: PermissionMode = options.permissionMode ?? 'default';
     let currentModelMode: SessionModelMode = options.model === 'sonnet' || options.model === 'opus' ? options.model : 'default';
+    let currentEffortLevel: SessionEffortLevel | undefined = undefined; // Track current effort level
     let currentFallbackModel: string | undefined = undefined; // Track current fallback model
     let currentCustomSystemPrompt: string | undefined = undefined; // Track current custom system prompt
     let currentAppendSystemPrompt: string | undefined = undefined; // Track current append system prompt
@@ -157,7 +159,10 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         }
         sessionInstance.setPermissionMode(currentPermissionMode);
         sessionInstance.setModelMode(currentModelMode);
-        logger.debug(`[loop] Synced session modes for keepalive: permissionMode=${currentPermissionMode}, modelMode=${currentModelMode}`);
+        if (currentEffortLevel) {
+            sessionInstance.setEffortLevel(currentEffortLevel);
+        }
+        logger.debug(`[loop] Synced session modes for keepalive: permissionMode=${currentPermissionMode}, modelMode=${currentModelMode}, effortLevel=${currentEffortLevel ?? 'unset'}`);
     };
     session.onUserMessage((message) => {
         const sessionPermissionMode = currentSessionRef.current?.getPermissionMode();
@@ -166,7 +171,8 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         }
         const messagePermissionMode = currentPermissionMode;
         const messageModel = currentModelMode === 'default' ? undefined : currentModelMode;
-        logger.debug(`[loop] User message received with permission mode: ${currentPermissionMode}, model: ${currentModelMode}`);
+        const messageEffort = currentEffortLevel;
+        logger.debug(`[loop] User message received with permission mode: ${currentPermissionMode}, model: ${currentModelMode}, effort: ${currentEffortLevel ?? 'unset'}`);
 
         // Resolve custom system prompt - use message.meta.customSystemPrompt if provided, otherwise use current
         let messageCustomSystemPrompt = currentCustomSystemPrompt;
@@ -229,6 +235,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
             const enhancedMode: EnhancedMode = {
                 permissionMode: messagePermissionMode ?? 'default',
                 model: messageModel,
+                effort: messageEffort,
                 fallbackModel: messageFallbackModel,
                 customSystemPrompt: messageCustomSystemPrompt,
                 appendSystemPrompt: messageAppendSystemPrompt,
@@ -247,6 +254,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
             const enhancedMode: EnhancedMode = {
                 permissionMode: messagePermissionMode ?? 'default',
                 model: messageModel,
+                effort: messageEffort,
                 fallbackModel: messageFallbackModel,
                 customSystemPrompt: messageCustomSystemPrompt,
                 appendSystemPrompt: messageAppendSystemPrompt,
@@ -264,6 +272,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         const enhancedMode: EnhancedMode = {
             permissionMode: messagePermissionMode ?? 'default',
             model: messageModel,
+            effort: messageEffort,
             fallbackModel: messageFallbackModel,
             customSystemPrompt: messageCustomSystemPrompt,
             appendSystemPrompt: messageAppendSystemPrompt,
@@ -290,11 +299,19 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         return parsed.data;
     };
 
+    const resolveEffortLevel = (value: unknown): SessionEffortLevel => {
+        const parsed = EffortLevelSchema.safeParse(value);
+        if (!parsed.success || !isEffortLevelAllowedForFlavor(parsed.data, 'claude')) {
+            throw new Error('Invalid effort level');
+        }
+        return parsed.data;
+    };
+
     session.rpcHandlerManager.registerHandler('set-session-config', async (payload: unknown) => {
         if (!payload || typeof payload !== 'object') {
             throw new Error('Invalid session config payload');
         }
-        const config = payload as { permissionMode?: unknown; modelMode?: unknown };
+        const config = payload as { permissionMode?: unknown; modelMode?: unknown; effortLevel?: unknown };
 
         if (config.permissionMode !== undefined) {
             currentPermissionMode = resolvePermissionMode(config.permissionMode);
@@ -305,8 +322,12 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
             currentModelMode = resolvedModelMode;
         }
 
+        if (config.effortLevel !== undefined) {
+            currentEffortLevel = resolveEffortLevel(config.effortLevel);
+        }
+
         syncSessionModes();
-        return { applied: { permissionMode: currentPermissionMode, modelMode: currentModelMode } };
+        return { applied: { permissionMode: currentPermissionMode, modelMode: currentModelMode, effortLevel: currentEffortLevel } };
     });
 
     let loopError: unknown = null;

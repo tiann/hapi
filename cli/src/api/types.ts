@@ -6,7 +6,7 @@ import {
     PermissionModeSchema,
     TodosSchema
 } from '@hapi/protocol/schemas'
-import type { ModelMode, PermissionMode } from '@hapi/protocol/types'
+import type { EffortLevel, ModelMode, PermissionMode } from '@hapi/protocol/types'
 import { z } from 'zod'
 import { UsageSchema } from '@/claude/types'
 
@@ -22,6 +22,7 @@ export type {
 } from '@hapi/protocol/types'
 export type SessionPermissionMode = PermissionMode
 export type SessionModelMode = ModelMode
+export type SessionEffortLevel = EffortLevel
 
 export { AgentStateSchema, AttachmentMetadataSchema, MetadataSchema }
 

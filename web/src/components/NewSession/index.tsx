@@ -11,6 +11,7 @@ import type { AgentType, SessionType } from './types'
 import { ActionButtons } from './ActionButtons'
 import { AgentSelector } from './AgentSelector'
 import { DirectorySection } from './DirectorySection'
+import { EffortSelector } from './EffortSelector'
 import { MachineSelector } from './MachineSelector'
 import { ModelSelector } from './ModelSelector'
 import {
@@ -42,6 +43,7 @@ export function NewSession(props: {
     const [pathExistence, setPathExistence] = useState<Record<string, boolean>>({})
     const [agent, setAgent] = useState<AgentType>(loadPreferredAgent)
     const [model, setModel] = useState('auto')
+    const [effort, setEffort] = useState('auto')
     const [yoloMode, setYoloMode] = useState(loadPreferredYoloMode)
     const [sessionType, setSessionType] = useState<SessionType>('simple')
     const [worktreeName, setWorktreeName] = useState('')
@@ -56,6 +58,7 @@ export function NewSession(props: {
 
     useEffect(() => {
         setModel('auto')
+        setEffort('auto')
     }, [agent])
 
     useEffect(() => {
@@ -224,6 +227,10 @@ export function NewSession(props: {
                 haptic.notification('success')
                 setLastUsedMachineId(machineId)
                 addRecentPath(machineId, directory.trim())
+                // Apply effort level if not auto (fire-and-forget)
+                if (effort !== 'auto' && agent === 'claude') {
+                    void props.api.setEffortLevel(result.sessionId, effort as any).catch(() => {})
+                }
                 props.onSuccess(result.sessionId)
                 return
             }
@@ -278,6 +285,12 @@ export function NewSession(props: {
                 model={model}
                 isDisabled={isFormDisabled}
                 onModelChange={setModel}
+            />
+            <EffortSelector
+                agent={agent}
+                effort={effort}
+                isDisabled={isFormDisabled}
+                onEffortChange={setEffort}
             />
             <YoloToggle
                 yoloMode={yoloMode}

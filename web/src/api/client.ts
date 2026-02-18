@@ -6,6 +6,7 @@ import type {
     FileReadResponse,
     FileSearchResponse,
     GitCommandResponse,
+    EffortLevel,
     MachinePathsExistsResponse,
     MachinesResponse,
     MessagesResponse,
@@ -317,6 +318,13 @@ export class ApiClient {
         await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/model`, {
             method: 'POST',
             body: JSON.stringify({ model })
+        })
+    }
+
+    async setEffortLevel(sessionId: string, effortLevel: EffortLevel): Promise<void> {
+        await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/effort-level`, {
+            method: 'POST',
+            body: JSON.stringify({ effortLevel })
         })
     }
 

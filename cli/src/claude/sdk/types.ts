@@ -163,6 +163,7 @@ export interface QueryOptions {
     customSystemPrompt?: string
     cwd?: string
     disallowedTools?: string[]
+    effort?: string
     maxTurns?: number
     mcpServers?: Record<string, unknown>
     pathToClaudeCodeExecutable?: string

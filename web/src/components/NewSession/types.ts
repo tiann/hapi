@@ -22,3 +22,15 @@ export const MODEL_OPTIONS: Record<AgentType, { value: string; label: string }[]
     ],
     opencode: [],
 }
+
+export const EFFORT_OPTIONS: Record<AgentType, { value: string; label: string }[]> = {
+    claude: [
+        { value: 'auto', label: 'Auto' },
+        { value: 'low', label: 'Low' },
+        { value: 'medium', label: 'Medium' },
+        { value: 'high', label: 'High' },
+    ],
+    codex: [],
+    gemini: [],
+    opencode: [],
+}

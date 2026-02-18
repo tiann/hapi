@@ -14,6 +14,7 @@ export type PermissionMode = ClaudePermissionMode;
 export interface EnhancedMode {
     permissionMode: PermissionMode;
     model?: string;
+    effort?: string;
     fallbackModel?: string;
     customSystemPrompt?: string;
     appendSystemPrompt?: string;

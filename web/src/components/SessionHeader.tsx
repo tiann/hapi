@@ -141,6 +141,11 @@ export function SessionHeader(props: {
                             <span>
                                 {t('session.item.modelMode')}: {session.modelMode || 'default'}
                             </span>
+                            {session.effortLevel ? (
+                                <span>
+                                    {t('session.item.effortLevel')}: {session.effortLevel}
+                                </span>
+                            ) : null}
                             {worktreeBranch ? (
                                 <span>{t('session.item.worktree')}: {worktreeBranch}</span>
                             ) : null}

@@ -260,6 +260,9 @@ function SessionItem(props: {
                         {getAgentLabel(s)}
                     </span>
                     <span>{t('session.item.modelMode')}: {s.modelMode || 'default'}</span>
+                    {s.effortLevel ? (
+                        <span>{t('session.item.effortLevel')}: {s.effortLevel}</span>
+                    ) : null}
                     {s.metadata?.worktree?.branch ? (
                         <span>{t('session.item.worktree')}: {s.metadata.worktree.branch}</span>
                     ) : null}

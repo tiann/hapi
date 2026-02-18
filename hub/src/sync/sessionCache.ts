@@ -1,5 +1,5 @@
 import { AgentStateSchema, MetadataSchema } from '@hapi/protocol/schemas'
-import type { ModelMode, PermissionMode, Session } from '@hapi/protocol/types'
+import type { EffortLevel, ModelMode, PermissionMode, Session } from '@hapi/protocol/types'
 import type { Store } from '../store'
 import { clampAliveTime } from './aliveTime'
 import { EventPublisher } from './eventPublisher'
@@ -120,7 +120,8 @@ export class SessionCache {
             thinkingAt: existing?.thinkingAt ?? 0,
             todos,
             permissionMode: existing?.permissionMode,
-            modelMode: existing?.modelMode
+            modelMode: existing?.modelMode,
+            effortLevel: existing?.effortLevel
         }
 
         this.sessions.set(sessionId, session)
@@ -142,6 +143,7 @@ export class SessionCache {
         mode?: 'local' | 'remote'
         permissionMode?: PermissionMode
         modelMode?: ModelMode
+        effortLevel?: EffortLevel
     }): void {
         const t = clampAliveTime(payload.time)
         if (!t) return
@@ -153,6 +155,7 @@ export class SessionCache {
         const wasThinking = session.thinking
         const previousPermissionMode = session.permissionMode
         const previousModelMode = session.modelMode
+        const previousEffortLevel = session.effortLevel
 
         session.active = true
         session.activeAt = Math.max(session.activeAt, t)
@@ -164,10 +167,13 @@ export class SessionCache {
         if (payload.modelMode !== undefined) {
             session.modelMode = payload.modelMode
         }
+        if (payload.effortLevel !== undefined) {
+            session.effortLevel = payload.effortLevel
+        }
 
         const now = Date.now()
         const lastBroadcastAt = this.lastBroadcastAtBySessionId.get(session.id) ?? 0
-        const modeChanged = previousPermissionMode !== session.permissionMode || previousModelMode !== session.modelMode
+        const modeChanged = previousPermissionMode !== session.permissionMode || previousModelMode !== session.modelMode || previousEffortLevel !== session.effortLevel
         const shouldBroadcast = (!wasActive && session.active)
             || (wasThinking !== session.thinking)
             || modeChanged
@@ -182,7 +188,8 @@ export class SessionCache {
                     activeAt: session.activeAt,
                     thinking: session.thinking,
                     permissionMode: session.permissionMode,
-                    modelMode: session.modelMode
+                    modelMode: session.modelMode,
+                    effortLevel: session.effortLevel
                 }
             })
         }
@@ -217,7 +224,7 @@ export class SessionCache {
         }
     }
 
-    applySessionConfig(sessionId: string, config: { permissionMode?: PermissionMode; modelMode?: ModelMode }): void {
+    applySessionConfig(sessionId: string, config: { permissionMode?: PermissionMode; modelMode?: ModelMode; effortLevel?: EffortLevel }): void {
         const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
         if (!session) {
             return
@@ -228,6 +235,9 @@ export class SessionCache {
         }
         if (config.modelMode !== undefined) {
             session.modelMode = config.modelMode
+        }
+        if (config.effortLevel !== undefined) {
+            session.effortLevel = config.effortLevel
         }
 
         this.publisher.emit({ type: 'session-updated', sessionId, data: session })
