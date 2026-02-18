@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import { I18nContext, I18nProvider } from '@/lib/i18n-context'
+import { AppContextProvider } from '@/lib/app-context'
 import { en } from '@/lib/locales'
 import { PROTOCOL_VERSION } from '@hapi/protocol'
 import SettingsPage from './index'
@@ -32,20 +33,32 @@ vi.mock('@/lib/languages', () => ({
 }))
 
 function renderWithProviders(ui: React.ReactElement) {
+    const api = {
+        getPreferences: vi.fn(async () => ({ readyAnnouncements: false })),
+        updatePreferences: vi.fn(async () => ({ ok: true, preferences: { readyAnnouncements: false } }))
+    }
     return render(
-        <I18nProvider>
-            {ui}
-        </I18nProvider>
+        <AppContextProvider value={{ api: api as any, token: 'token', baseUrl: '' }}>
+            <I18nProvider>
+                {ui}
+            </I18nProvider>
+        </AppContextProvider>
     )
 }
 
 function renderWithSpyT(ui: React.ReactElement) {
     const translations = en as Record<string, string>
     const spyT = vi.fn((key: string) => translations[key] ?? key)
+    const api = {
+        getPreferences: vi.fn(async () => ({ readyAnnouncements: false })),
+        updatePreferences: vi.fn(async () => ({ ok: true, preferences: { readyAnnouncements: false } }))
+    }
     render(
-        <I18nContext.Provider value={{ t: spyT, locale: 'en', setLocale: vi.fn() }}>
-            {ui}
-        </I18nContext.Provider>
+        <AppContextProvider value={{ api: api as any, token: 'token', baseUrl: '' }}>
+            <I18nContext.Provider value={{ t: spyT, locale: 'en', setLocale: vi.fn() }}>
+                {ui}
+            </I18nContext.Provider>
+        </AppContextProvider>
     )
     return spyT
 }
