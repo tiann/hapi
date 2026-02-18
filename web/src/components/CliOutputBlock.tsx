@@ -3,6 +3,8 @@ import { stripAnsiAndControls } from '@/components/assistant-ui/markdown-utils'
 import { Card, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { useTranslation } from '@/lib/use-translation'
+import { parseContextOutput } from '@/lib/parseContextOutput'
+import { ContextVisualization } from '@/components/ContextVisualization'
 
 const CLI_TAG_PATTERN = '(?:local-command-[a-z-]+|command-(?:name|message|args))'
 const CLI_TAG_CHECK_REGEX = new RegExp(`<${CLI_TAG_PATTERN}>`, 'i')
@@ -105,6 +107,18 @@ export function CliOutputBlock(props: { text: string }) {
     const { t } = useTranslation()
     const content = useMemo(() => buildCliOutput(props.text, t), [props.text, t])
     const commandName = useMemo(() => extractCommandName(props.text), [props.text])
+
+    // Render /context output as a visual dashboard
+    const contextData = useMemo(() => {
+        if (commandName === '/context' || commandName === 'context') {
+            return parseContextOutput(props.text)
+        }
+        return null
+    }, [commandName, props.text])
+
+    if (contextData) {
+        return <ContextVisualization data={contextData} />
+    }
 
     return (
         <Card className="min-w-0 max-w-full overflow-hidden shadow-sm">
