@@ -24,6 +24,7 @@ import { OfflineBanner } from '@/components/OfflineBanner'
 import { SyncingBanner } from '@/components/SyncingBanner'
 import { ReconnectingBanner } from '@/components/ReconnectingBanner'
 import { VoiceErrorBanner } from '@/components/VoiceErrorBanner'
+import { PendingPromptsBanner } from '@/components/PendingPromptsBanner'
 import { LoadingState } from '@/components/LoadingState'
 import { ToastContainer } from '@/components/ToastContainer'
 import { ToastProvider, useToast } from '@/lib/toast-context'
@@ -253,12 +254,10 @@ function AppInner() {
         })
     }, [addToast])
 
-    const eventSubscription = useMemo(() => {
-        if (selectedSessionId) {
-            return { sessionId: selectedSessionId }
-        }
-        return { all: true }
-    }, [selectedSessionId])
+    const eventSubscription = useMemo(
+        () => ({ all: true }),
+        []
+    )
 
     const { subscriptionId } = useSSE({
         enabled: Boolean(api && token),
@@ -383,7 +382,10 @@ function AppInner() {
                 <VoiceErrorBanner />
                 <OfflineBanner />
                 <div className="h-full flex flex-col">
-                    <Outlet />
+                    <PendingPromptsBanner api={api} />
+                    <div className="min-h-0 flex-1">
+                        <Outlet />
+                    </div>
                 </div>
                 <ToastContainer />
                 <InstallPrompt />

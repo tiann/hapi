@@ -50,6 +50,7 @@ export default {
   'session.item.worktree': '工作树',
   'session.item.pending': '待处理',
   'session.item.thinking': '思考中',
+  'session.item.unread': '未读',
   'session.time.justNow': '刚刚',
   'session.time.minutesAgo': '{n} 分钟前',
   'session.time.hoursAgo': '{n} 小时前',
@@ -81,6 +82,12 @@ export default {
   'dialog.delete.description': '确定要删除 "{name}" 吗？此操作无法撤销。',
   'dialog.delete.confirm': '删除',
   'dialog.delete.confirming': '删除中…',
+  'dialog.delete.selected.title': '删除已选会话',
+  'dialog.delete.selected.description': '确定删除已选的 {n} 个会话吗？此操作无法撤销。',
+  'dialog.delete.selected.descriptionWithActive': '已选 {n} 个会话中有 {m} 个正在运行，将先归档再删除。',
+  'dialog.delete.selected.confirm': '删除已选',
+  'dialog.delete.selected.confirming': '删除已选中…',
+  'dialog.delete.selected.error': '有 {n} 个会话删除失败，请重试。',
   'dialog.error.default': '操作失败，请重试。',
 
   // Common buttons
@@ -103,6 +110,8 @@ export default {
   'newSession.type.worktree.desc': '在仓库旁创建新工作树',
   'newSession.type.worktree.placeholder': 'feature-x (默认 1228-xxxx)',
   'newSession.type.worktree.branchPlaceholder': '搜索本地分支或输入新分支名',
+  'newSession.worktree.auto': '检测到 Git 仓库，将自动使用工作树创建会话。',
+  'newSession.worktree.unavailable': '未检测到 Git 仓库，将直接使用所选目录创建会话。',
   'newSession.agent': '代理',
   'newSession.model': '模型',
   'newSession.model.optional': '可选',
@@ -225,6 +234,8 @@ export default {
   'syncing.title': '同步中…',
   'syncing.message': '正在同步您的数据。',
   'reconnecting.message': '正在重新连接...',
+  'pendingPrompts.message': '{m} 个会话共有 {n} 个待处理提示 · 下一个：{name}',
+  'pendingPrompts.open': '打开',
 
   // Send blocked
   'send.blocked.title': '无法发送消息',
@@ -272,4 +283,8 @@ export default {
   'misc.permissionRequired': '需要权限',
   'misc.percentLeft': '剩余 {percent}%',
   'misc.online': '在线',
+  'sessions.selection.edit': '多选',
+  'sessions.selection.count': '已选 {n} 项',
+  'sessions.selection.cancel': '取消',
+  'sessions.selection.delete': '删除',
 } as const

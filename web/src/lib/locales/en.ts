@@ -50,6 +50,7 @@ export default {
   'session.item.worktree': 'worktree',
   'session.item.pending': 'pending',
   'session.item.thinking': 'thinking',
+  'session.item.unread': 'unread',
   'session.time.justNow': 'just now',
   'session.time.minutesAgo': '{n}m ago',
   'session.time.hoursAgo': '{n}h ago',
@@ -79,6 +80,12 @@ export default {
   'dialog.delete.description': 'Are you sure you want to delete "{name}"? This action cannot be undone.',
   'dialog.delete.confirm': 'Delete',
   'dialog.delete.confirming': 'Deleting…',
+  'dialog.delete.selected.title': 'Delete selected sessions',
+  'dialog.delete.selected.description': 'Delete {n} selected sessions? This cannot be undone.',
+  'dialog.delete.selected.descriptionWithActive': '{m} of {n} selected sessions are active and will be archived before deletion.',
+  'dialog.delete.selected.confirm': 'Delete selected',
+  'dialog.delete.selected.confirming': 'Deleting selected…',
+  'dialog.delete.selected.error': 'Could not delete {n} selected sessions. Try again.',
   'dialog.error.default': 'Operation failed. Please try again.',
 
   // Common buttons
@@ -101,6 +108,8 @@ export default {
   'newSession.type.worktree.desc': 'Create a new worktree next to repo',
   'newSession.type.worktree.placeholder': 'feature-x (default 1228-xxxx)',
   'newSession.type.worktree.branchPlaceholder': 'Search local branch or type a new branch',
+  'newSession.worktree.auto': 'Git repo detected. This session will use a worktree.',
+  'newSession.worktree.unavailable': 'Git repo not detected. Session will use the selected directory directly.',
   'newSession.agent': 'Agent',
   'newSession.model': 'Model',
   'newSession.model.optional': 'optional',
@@ -223,6 +232,8 @@ export default {
   'syncing.title': 'Syncing…',
   'syncing.message': 'Your data is being synchronized.',
   'reconnecting.message': 'Reconnecting...',
+  'pendingPrompts.message': '{n} pending prompts across {m} sessions · next: {name}',
+  'pendingPrompts.open': 'Open',
 
   // Send blocked
   'send.blocked.title': 'Cannot send message',
@@ -270,4 +281,8 @@ export default {
   'misc.permissionRequired': 'permission required',
   'misc.percentLeft': '{percent}% left',
   'misc.online': 'online',
+  'sessions.selection.edit': 'Select',
+  'sessions.selection.count': '{n} selected',
+  'sessions.selection.cancel': 'Cancel',
+  'sessions.selection.delete': 'Delete',
 } as const
