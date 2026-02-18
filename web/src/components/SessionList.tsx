@@ -182,11 +182,10 @@ function SessionItem(props: {
     onSelect: (sessionId: string) => void
     showPath?: boolean
     api: ApiClient | null
-    machineLabel: string
     selected?: boolean
 }) {
     const { t } = useTranslation()
-    const { session: s, onSelect, showPath = true, api, machineLabel, selected = false } = props
+    const { session: s, onSelect, showPath = true, api, selected = false } = props
     const { haptic } = usePlatform()
     const [menuOpen, setMenuOpen] = useState(false)
     const [menuAnchorPoint, setMenuAnchorPoint] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
@@ -270,7 +269,6 @@ function SessionItem(props: {
                     </div>
                 ) : null}
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[var(--app-hint)]">
-                    <span>{t('misc.machine')}: {machineLabel}</span>
                     <span className="inline-flex items-center gap-2">
                         <span className="flex h-4 w-4 items-center justify-center" aria-hidden="true">
                             ❖
@@ -431,7 +429,7 @@ export function SessionList(props: {
                                 </div>
                                 <div className="flex min-w-0 w-full flex-wrap items-center gap-2 text-xs text-[var(--app-hint)]">
                                     <span className="inline-flex items-center rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-0.5">
-                                        {t('misc.machine')}: {groupMachineLabel}
+                                        {groupMachineLabel}
                                     </span>
                                     <span className="truncate" title={group.directory}>
                                         {group.directory}
@@ -447,7 +445,6 @@ export function SessionList(props: {
                                             onSelect={props.onSelect}
                                             showPath={false}
                                             api={api}
-                                            machineLabel={resolveMachineLabel(s.metadata?.machineId ?? null)}
                                             selected={s.id === selectedSessionId}
                                         />
                                     ))}
