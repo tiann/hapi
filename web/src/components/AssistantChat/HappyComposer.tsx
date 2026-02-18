@@ -37,7 +37,7 @@ export interface TextInputState {
 const defaultSuggestionHandler = async (): Promise<Suggestion[]> => []
 
 const RUNTIME_MODEL_PRESETS: Record<string, string[]> = {
-    codex: [],
+    codex: ['gpt-5.3-codex', 'gpt-5.3-codex-spark', 'gpt-5.2-codex', 'gpt-5-codex-mini', 'gpt-5-codex'],
     gemini: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash'],
     opencode: ['default']
 }
@@ -700,7 +700,9 @@ export function HappyComposer(props: {
     ])
 
     return (
-        <div className={`px-3 ${bottomPaddingClass} pt-2 bg-[var(--app-bg)]`}>
+        <div
+            className={`px-3 ${bottomPaddingClass} pt-2 bg-[var(--app-bg)]`}
+        >
             <div className="mx-auto w-full max-w-content">
                 <ComposerPrimitive.Root className="relative" onSubmit={handleSubmit}>
                     {overlays}
