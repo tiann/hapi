@@ -44,6 +44,10 @@ export type RpcPathExistsResponse = {
     exists: Record<string, boolean>
 }
 
+export type RpcGitBranchesResponse = {
+    branches: string[]
+}
+
 export class RpcGateway {
     constructor(
         private readonly io: Server,
@@ -111,13 +115,14 @@ export class RpcGateway {
         yolo?: boolean,
         sessionType?: 'simple' | 'worktree',
         worktreeName?: string,
+        worktreeBranch?: string,
         resumeSessionId?: string
     ): Promise<{ type: 'success'; sessionId: string } | { type: 'error'; message: string }> {
         try {
             const result = await this.machineRpc(
                 machineId,
                 'spawn-happy-session',
-                { type: 'spawn-in-directory', directory, agent, model, yolo, sessionType, worktreeName, resumeSessionId }
+                { type: 'spawn-in-directory', directory, agent, model, yolo, sessionType, worktreeName, worktreeBranch, resumeSessionId }
             )
             if (result && typeof result === 'object') {
                 const obj = result as Record<string, unknown>
@@ -150,6 +155,27 @@ export class RpcGateway {
             exists[key] = value === true
         }
         return exists
+    }
+
+    async getGitBranches(machineId: string, directory: string, limit?: number): Promise<string[]> {
+        const result = await this.machineRpc(machineId, 'git-list-branches', {
+            directory,
+            limit
+        }) as RpcGitBranchesResponse | unknown
+
+        if (!result || typeof result !== 'object') {
+            throw new Error('Unexpected git-list-branches result')
+        }
+
+        const rawBranches = (result as RpcGitBranchesResponse).branches
+        if (!Array.isArray(rawBranches)) {
+            throw new Error('Unexpected git-list-branches result')
+        }
+
+        return rawBranches
+            .filter((value): value is string => typeof value === 'string')
+            .map((value) => value.trim())
+            .filter(Boolean)
     }
 
     async getGitStatus(sessionId: string, cwd?: string): Promise<RpcCommandResponse> {

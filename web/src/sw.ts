@@ -21,6 +21,20 @@ type PushPayload = {
     }
 }
 
+self.addEventListener('install', () => {
+    self.skipWaiting()
+})
+
+self.addEventListener('activate', (event) => {
+    event.waitUntil(self.clients.claim())
+})
+
+self.addEventListener('message', (event) => {
+    if (event.data?.type === 'SKIP_WAITING') {
+        self.skipWaiting()
+    }
+})
+
 precacheAndRoute(self.__WB_MANIFEST)
 
 registerRoute(
@@ -92,7 +106,23 @@ registerRoute(
 )
 
 self.addEventListener('push', (event) => {
-    const payload = event.data?.json() as PushPayload | undefined
+    const payload = (() => {
+        if (!event.data) {
+            return null
+        }
+
+        try {
+            return event.data.json() as PushPayload
+        } catch {
+            try {
+                const text = event.data.text()
+                return JSON.parse(text) as PushPayload
+            } catch {
+                return null
+            }
+        }
+    })()
+
     if (!payload) {
         return
     }

@@ -1,0 +1,22 @@
+services:
+    speaches:
+        image: ghcr.io/speaches-ai/speaches:latest-cpu
+        container_name: speaches
+        restart: unless-stopped
+        ports:
+            - "127.0.0.1:8000:8000"
+        volumes:
+            - hf-hub-cache:/home/ubuntu/.cache/huggingface/hub
+        environment:
+            # Optional hardening: set and then mirror into HAPI as LOCAL_WHISPER_API_KEY
+            # API_KEY: "change-me"
+
+            # Preload at startup (optional but avoids first-request cold pull)
+            PRELOAD_MODELS: '["Systran/faster-distil-whisper-small.en"]'
+
+            # Optional tuning
+            STT_MODEL_TTL: "-1"
+            LOG_LEVEL: "info"
+
+volumes:
+    hf-hub-cache:

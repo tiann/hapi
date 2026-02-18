@@ -101,7 +101,7 @@ export function useSendMessage(
             haptic.notification('error')
             return
         }
-        if (mutation.isPending || resolveGuardRef.current) {
+        if (resolveGuardRef.current) {
             options?.onBlocked?.('pending')
             return
         }
@@ -148,7 +148,7 @@ export function useSendMessage(
             haptic.notification('error')
             return
         }
-        if (mutation.isPending || resolveGuardRef.current) {
+        if (resolveGuardRef.current) {
             options?.onBlocked?.('pending')
             return
         }
@@ -169,6 +169,6 @@ export function useSendMessage(
     return {
         sendMessage,
         retryMessage,
-        isSending: mutation.isPending || isResolving,
+        isSending: isResolving,
     }
 }

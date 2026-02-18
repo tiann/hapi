@@ -1,4 +1,6 @@
 import { logger } from '@/ui/logger'
+import { constants as fsConstants } from 'node:fs'
+import { accessSync } from 'node:fs'
 import type {
     TerminalErrorPayload,
     TerminalExitPayload,
@@ -46,14 +48,43 @@ function resolveEnvNumber(name: string, fallback: number): number {
     return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
 }
 
+function isExecutablePath(path: string): boolean {
+    try {
+        accessSync(path, fsConstants.X_OK)
+        return true
+    } catch {
+        return false
+    }
+}
+
 function resolveShell(): string {
-    if (process.env.SHELL) {
-        return process.env.SHELL
+    const envShell = process.env.SHELL
+    if (envShell && envShell.startsWith('/') && isExecutablePath(envShell)) {
+        return envShell
     }
-    if (process.platform === 'darwin') {
-        return '/bin/zsh'
+
+    const fallbacks = process.platform === 'darwin'
+        ? ['/bin/zsh', '/bin/bash']
+        : ['/bin/bash', '/bin/sh']
+
+    for (const candidate of fallbacks) {
+        if (isExecutablePath(candidate)) {
+            return candidate
+        }
     }
-    return '/bin/bash'
+
+    return '/bin/sh'
+}
+
+function escapeSingleQuotes(value: string): string {
+    return value.replace(/'/g, `'\\''`)
+}
+
+function buildShellSpawnArgs(shellPath: string): string[] {
+    const escapedShell = escapeSingleQuotes(shellPath)
+    // Normalize erase char to DEL for web/xterm clients before interactive shell starts.
+    const command = `stty erase '^?' 2>/dev/null; exec '${escapedShell}' -i`
+    return ['/bin/sh', '-lc', command]
 }
 
 function buildFilteredEnv(): NodeJS.ProcessEnv {
@@ -81,6 +112,7 @@ export class TerminalManager {
     private readonly maxTerminals: number
     private readonly terminals: Map<string, TerminalRuntime> = new Map()
     private readonly filteredEnv: NodeJS.ProcessEnv
+    private readonly encoder = new TextEncoder()
 
     constructor(options: TerminalManagerOptions) {
         this.sessionId = options.sessionId
@@ -122,10 +154,11 @@ export class TerminalManager {
 
         const sessionPath = this.getSessionPath() ?? process.cwd()
         const shell = resolveShell()
+        const shellSpawnArgs = buildShellSpawnArgs(shell)
         const decoder = new TextDecoder()
 
         try {
-            const proc = Bun.spawn([shell], {
+            const proc = Bun.spawn(shellSpawnArgs, {
                 cwd: sessionPath,
                 env: this.filteredEnv,
                 terminal: {
@@ -139,11 +172,6 @@ export class TerminalManager {
                         const active = this.terminals.get(terminalId)
                         if (active) {
                             this.markActivity(active)
-                        }
-                    },
-                    exit: (terminal, exitCode) => {
-                        if (exitCode === 1) {
-                            this.emitError(terminalId, 'Terminal stream closed unexpectedly.')
                         }
                     }
                 },
@@ -194,7 +222,7 @@ export class TerminalManager {
             this.emitError(terminalId, 'Terminal not found.')
             return
         }
-        runtime.terminal.write(data)
+        runtime.terminal.write(this.encoder.encode(data))
         this.markActivity(runtime)
     }
 

@@ -1,4 +1,4 @@
-import { useCallback } from 'react'
+import { useCallback, useMemo } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import {
     Navigate,
@@ -10,6 +10,7 @@ import {
     useMatchRoute,
     useNavigate,
     useParams,
+    useSearch,
 } from '@tanstack/react-router'
 import { App } from '@/App'
 import { SessionChat } from '@/components/SessionChat'
@@ -25,6 +26,7 @@ import { useSession } from '@/hooks/queries/useSession'
 import { useSessions } from '@/hooks/queries/useSessions'
 import { useSlashCommands } from '@/hooks/queries/useSlashCommands'
 import { useSkills } from '@/hooks/queries/useSkills'
+import { useFileSearch } from '@/hooks/queries/useFileSearch'
 import { useSendMessage } from '@/hooks/mutations/useSendMessage'
 import { queryKeys } from '@/lib/query-keys'
 import { useToast } from '@/lib/toast-context'
@@ -34,6 +36,66 @@ import FilesPage from '@/routes/sessions/files'
 import FilePage from '@/routes/sessions/file'
 import TerminalPage from '@/routes/sessions/terminal'
 import SettingsPage from '@/routes/settings'
+import { normalizeDecryptedMessage } from '@/chat/normalize'
+import type { DecryptedMessage, SlashCommand } from '@/types/api'
+
+function parseModelOptionsFromSlashCommands(commands: SlashCommand[]): string[] {
+    const modelCommands = commands.filter((cmd) => cmd.name.replace(/^\//, '') === 'model')
+    if (modelCommands.length === 0) {
+        return []
+    }
+
+    const values = new Set<string>()
+    const backtickPattern = /`([A-Za-z0-9][A-Za-z0-9._-]{1,})`/g
+    const bulletPattern = /^\s*[-*]\s+([A-Za-z0-9][A-Za-z0-9._-]{1,})\s*$/gm
+
+    for (const command of modelCommands) {
+        const content = command.content ?? ''
+        for (const match of content.matchAll(backtickPattern)) {
+            const token = match[1]
+            if (token) values.add(token)
+        }
+        for (const match of content.matchAll(bulletPattern)) {
+            const token = match[1]
+            if (token) values.add(token)
+        }
+    }
+
+    return [...values]
+}
+
+function parseModelOptionsFromMessages(messages: DecryptedMessage[]): string[] {
+    const values = new Set<string>()
+    const availableModelsLinePattern = /available models?:\s*([^\n]+)/gi
+    const tokenPattern = /[A-Za-z0-9][A-Za-z0-9._-]{1,}/g
+
+    for (const message of messages) {
+        const normalized = normalizeDecryptedMessage(message)
+        if (!normalized || normalized.role !== 'agent') {
+            continue
+        }
+
+        for (const part of normalized.content) {
+            if (part.type !== 'text' && part.type !== 'reasoning') {
+                continue
+            }
+            const text = part.text
+
+            for (const match of text.matchAll(availableModelsLinePattern)) {
+                const modelList = match[1] ?? ''
+                for (const tokenMatch of modelList.matchAll(tokenPattern)) {
+                    const candidate = tokenMatch[0]
+                    if (!candidate) continue
+                    const lower = candidate.toLowerCase()
+                    if (lower === 'available' || lower === 'models' || lower === 'model') continue
+                    values.add(candidate)
+                }
+            }
+        }
+    }
+
+    return [...values]
+}
 
 function BackIcon(props: { className?: string }) {
     return (
@@ -155,7 +217,13 @@ function SessionsPage() {
                             to: '/sessions/$sessionId',
                             params: { sessionId },
                         })}
-                        onNewSession={() => navigate({ to: '/sessions/new' })}
+                        onNewSession={(opts) => navigate({
+                            to: '/sessions/new',
+                            search: opts ? {
+                                ...(opts.directory ? { directory: opts.directory } : {}),
+                                ...(opts.machineId ? { machineId: opts.machineId } : {}),
+                            } : undefined
+                        })}
                         onRefresh={handleRefresh}
                         isLoading={isLoading}
                         renderHeader={false}
@@ -266,19 +334,54 @@ function SessionPage() {
 
     // Get agent type from session metadata for slash commands
     const agentType = session?.metadata?.flavor ?? 'claude'
+    const sdkSlashCommands = session?.metadata?.slashCommands ?? undefined
     const {
+        commands: slashCommands,
         getSuggestions: getSlashSuggestions,
-    } = useSlashCommands(api, sessionId, agentType)
+        refresh: refreshSlashCommands,
+        isRefreshing: isRefreshingSlashCommands,
+    } = useSlashCommands(api, sessionId, agentType, sdkSlashCommands)
     const {
         getSuggestions: getSkillSuggestions,
     } = useSkills(api, sessionId)
+    const {
+        getSuggestions: getFileSuggestions,
+    } = useFileSearch(api, sessionId)
 
     const getAutocompleteSuggestions = useCallback(async (query: string) => {
         if (query.startsWith('$')) {
             return await getSkillSuggestions(query)
         }
+        if (query.startsWith('@')) {
+            return await getFileSuggestions(query)
+        }
         return await getSlashSuggestions(query)
-    }, [getSkillSuggestions, getSlashSuggestions])
+    }, [getSkillSuggestions, getFileSuggestions, getSlashSuggestions])
+
+    const runtimeModelOptionsFromSlashCommands = useMemo(
+        () => parseModelOptionsFromSlashCommands(slashCommands),
+        [slashCommands]
+    )
+    const runtimeModelOptionsFromMessages = useMemo(
+        () => parseModelOptionsFromMessages(messages),
+        [messages]
+    )
+    const runtimeModelOptions = useMemo(
+        () => [...new Set([...runtimeModelOptionsFromMessages, ...runtimeModelOptionsFromSlashCommands])],
+        [runtimeModelOptionsFromMessages, runtimeModelOptionsFromSlashCommands]
+    )
+
+    const refreshRuntimeModelOptions = useCallback(async () => {
+        if (agentType === 'claude' || agentType === 'codex') {
+            await refreshSlashCommands()
+            return
+        }
+        sendMessage('/model')
+    }, [agentType, refreshSlashCommands, sendMessage])
+
+    const isRefreshingModelOptions = agentType === 'claude'
+        ? isRefreshingSlashCommands
+        : false
 
     const refreshSelectedSession = useCallback(() => {
         void refetchSession()
@@ -313,6 +416,9 @@ function SessionPage() {
             onAtBottomChange={setAtBottom}
             onRetryMessage={retryMessage}
             autocompleteSuggestions={getAutocompleteSuggestions}
+            runtimeModelOptions={runtimeModelOptions}
+            onRefreshModelOptions={refreshRuntimeModelOptions}
+            isRefreshingModelOptions={isRefreshingModelOptions}
         />
     )
 }
@@ -331,6 +437,7 @@ function NewSessionPage() {
     const navigate = useNavigate()
     const goBack = useAppGoBack()
     const queryClient = useQueryClient()
+    const search = useSearch({ from: '/sessions/new' })
     const { machines, isLoading: machinesLoading, error: machinesError } = useMachines(api, true)
 
     const handleCancel = useCallback(() => {
@@ -375,6 +482,8 @@ function NewSessionPage() {
                 api={api}
                 machines={machines}
                 isLoading={machinesLoading}
+                initialDirectory={search.directory}
+                initialMachineId={search.machineId}
                 onCancel={handleCancel}
                 onSuccess={handleSuccess}
             />
@@ -471,6 +580,14 @@ const sessionFileRoute = createRoute({
 const newSessionRoute = createRoute({
     getParentRoute: () => sessionsRoute,
     path: 'new',
+    validateSearch: (search: Record<string, unknown>): { directory?: string; machineId?: string } => {
+        const directory = typeof search.directory === 'string' ? search.directory.trim() : ''
+        const machineId = typeof search.machineId === 'string' ? search.machineId.trim() : ''
+        return {
+            ...(directory ? { directory } : {}),
+            ...(machineId ? { machineId } : {}),
+        }
+    },
     component: NewSessionPage,
 })
 

@@ -26,6 +26,8 @@ export function NewSession(props: {
     api: ApiClient
     machines: Machine[]
     isLoading?: boolean
+    initialDirectory?: string
+    initialMachineId?: string
     onSuccess: (sessionId: string) => void
     onCancel: () => void
 }) {
@@ -36,7 +38,7 @@ export function NewSession(props: {
     const { getRecentPaths, addRecentPath, getLastUsedMachineId, setLastUsedMachineId } = useRecentPaths()
 
     const [machineId, setMachineId] = useState<string | null>(null)
-    const [directory, setDirectory] = useState('')
+    const [directory, setDirectory] = useState(() => props.initialDirectory?.trim() ?? '')
     const [suppressSuggestions, setSuppressSuggestions] = useState(false)
     const [isDirectoryFocused, setIsDirectoryFocused] = useState(false)
     const [pathExistence, setPathExistence] = useState<Record<string, boolean>>({})
@@ -45,14 +47,56 @@ export function NewSession(props: {
     const [yoloMode, setYoloMode] = useState(loadPreferredYoloMode)
     const [sessionType, setSessionType] = useState<SessionType>('simple')
     const [worktreeName, setWorktreeName] = useState('')
+    const [worktreeBranch, setWorktreeBranch] = useState('')
+    const [availableBranches, setAvailableBranches] = useState<string[]>([])
+    const [isBranchFocused, setIsBranchFocused] = useState(false)
+    const [suppressBranchSuggestions, setSuppressBranchSuggestions] = useState(false)
     const [error, setError] = useState<string | null>(null)
     const worktreeInputRef = useRef<HTMLInputElement>(null)
+    const worktreeBranchInputRef = useRef<HTMLInputElement>(null)
 
     useEffect(() => {
         if (sessionType === 'worktree') {
             worktreeInputRef.current?.focus()
         }
     }, [sessionType])
+
+    useEffect(() => {
+        if (sessionType !== 'worktree') {
+            setAvailableBranches([])
+            return
+        }
+
+        const trimmedDirectory = directory.trim()
+        if (!machineId || !trimmedDirectory) {
+            setAvailableBranches([])
+            return
+        }
+
+        let cancelled = false
+        const timeout = setTimeout(() => {
+            void props.api.listMachineGitBranches(machineId, trimmedDirectory, 300)
+                .then((result) => {
+                    if (cancelled) return
+                    const branches = Array.isArray(result.branches)
+                        ? result.branches
+                            .filter((value): value is string => typeof value === 'string')
+                            .map((value) => value.trim())
+                            .filter(Boolean)
+                        : []
+                    setAvailableBranches(Array.from(new Set(branches)))
+                })
+                .catch(() => {
+                    if (cancelled) return
+                    setAvailableBranches([])
+                })
+        }, 250)
+
+        return () => {
+            cancelled = true
+            clearTimeout(timeout)
+        }
+    }, [props.api, machineId, directory, sessionType])
 
     useEffect(() => {
         setModel('auto')
@@ -70,17 +114,40 @@ export function NewSession(props: {
         if (props.machines.length === 0) return
         if (machineId && props.machines.find((m) => m.id === machineId)) return
 
+        const foundInitial = props.initialMachineId
+            ? props.machines.find((m) => m.id === props.initialMachineId)
+            : null
+        if (foundInitial) {
+            setMachineId(foundInitial.id)
+            return
+        }
+
         const lastUsed = getLastUsedMachineId()
         const foundLast = lastUsed ? props.machines.find((m) => m.id === lastUsed) : null
 
         if (foundLast) {
             setMachineId(foundLast.id)
             const paths = getRecentPaths(foundLast.id)
-            if (paths[0]) setDirectory(paths[0])
+            if (paths[0] && !props.initialDirectory?.trim()) {
+                setDirectory(paths[0])
+            }
         } else if (props.machines[0]) {
             setMachineId(props.machines[0].id)
         }
-    }, [props.machines, machineId, getLastUsedMachineId, getRecentPaths])
+    }, [props.machines, machineId, getLastUsedMachineId, getRecentPaths, props.initialDirectory, props.initialMachineId])
+
+    useEffect(() => {
+        if (!props.initialMachineId) return
+        if (!props.machines.find((m) => m.id === props.initialMachineId)) return
+        if (machineId && props.machines.find((m) => m.id === machineId)) return
+        setMachineId(props.initialMachineId)
+    }, [props.initialMachineId, props.machines, machineId])
+
+    useEffect(() => {
+        const nextDirectory = props.initialDirectory?.trim()
+        if (!nextDirectory) return
+        setDirectory(nextDirectory)
+    }, [props.initialDirectory])
 
     const recentPaths = useMemo(
         () => getRecentPaths(machineId),
@@ -179,6 +246,31 @@ export function NewSession(props: {
         setIsDirectoryFocused(false)
     }, [])
 
+    const getBranchSuggestions = useCallback(async (query: string): Promise<Suggestion[]> => {
+        const normalized = query.trim().toLowerCase()
+        const filtered = normalized.length === 0
+            ? availableBranches
+            : availableBranches.filter((branch) => branch.toLowerCase().includes(normalized))
+
+        return filtered
+            .slice(0, 10)
+            .map((branch) => ({
+                key: branch,
+                text: branch,
+                label: branch
+            }))
+    }, [availableBranches])
+
+    const activeBranchQuery = sessionType === 'worktree' && isBranchFocused && !suppressBranchSuggestions
+        ? worktreeBranch
+        : null
+
+    const [branchSuggestions, branchSelectedIndex, moveBranchUp, moveBranchDown, clearBranchSuggestions] = useActiveSuggestions(
+        activeBranchQuery,
+        getBranchSuggestions,
+        { allowEmptyQuery: true, autoSelectFirst: false }
+    )
+
     const handleDirectoryKeyDown = useCallback((event: ReactKeyboardEvent<HTMLInputElement>) => {
         if (suggestions.length === 0) return
 
@@ -204,6 +296,53 @@ export function NewSession(props: {
         }
     }, [suggestions, selectedIndex, moveUp, moveDown, clearSuggestions, handleSuggestionSelect])
 
+    const handleWorktreeBranchSuggestionSelect = useCallback((index: number) => {
+        const suggestion = branchSuggestions[index]
+        if (!suggestion) return
+        setWorktreeBranch(suggestion.text)
+        clearBranchSuggestions()
+        setSuppressBranchSuggestions(true)
+    }, [branchSuggestions, clearBranchSuggestions])
+
+    const handleWorktreeBranchKeyDown = useCallback((event: ReactKeyboardEvent<HTMLInputElement>) => {
+        if (branchSuggestions.length === 0) return
+
+        if (event.key === 'ArrowUp') {
+            event.preventDefault()
+            moveBranchUp()
+        }
+
+        if (event.key === 'ArrowDown') {
+            event.preventDefault()
+            moveBranchDown()
+        }
+
+        if (event.key === 'Enter' || event.key === 'Tab') {
+            if (branchSelectedIndex >= 0) {
+                event.preventDefault()
+                handleWorktreeBranchSuggestionSelect(branchSelectedIndex)
+            }
+        }
+
+        if (event.key === 'Escape') {
+            clearBranchSuggestions()
+        }
+    }, [branchSuggestions, branchSelectedIndex, moveBranchUp, moveBranchDown, clearBranchSuggestions, handleWorktreeBranchSuggestionSelect])
+
+    const handleWorktreeBranchFocus = useCallback(() => {
+        setSuppressBranchSuggestions(false)
+        setIsBranchFocused(true)
+    }, [])
+
+    const handleWorktreeBranchBlur = useCallback(() => {
+        setIsBranchFocused(false)
+    }, [])
+
+    const handleWorktreeBranchChange = useCallback((value: string) => {
+        setSuppressBranchSuggestions(false)
+        setWorktreeBranch(value)
+    }, [])
+
     async function handleCreate() {
         if (!machineId || !directory.trim()) return
 
@@ -217,7 +356,8 @@ export function NewSession(props: {
                 model: resolvedModel,
                 yolo: yoloMode,
                 sessionType,
-                worktreeName: sessionType === 'worktree' ? (worktreeName.trim() || undefined) : undefined
+                worktreeName: sessionType === 'worktree' ? (worktreeName.trim() || undefined) : undefined,
+                worktreeBranch: sessionType === 'worktree' ? (worktreeBranch.trim() || undefined) : undefined
             })
 
             if (result.type === 'success') {
@@ -263,10 +403,19 @@ export function NewSession(props: {
             <SessionTypeSelector
                 sessionType={sessionType}
                 worktreeName={worktreeName}
+                worktreeBranch={worktreeBranch}
+                branchSuggestions={branchSuggestions}
+                branchSelectedIndex={branchSelectedIndex}
                 worktreeInputRef={worktreeInputRef}
+                worktreeBranchInputRef={worktreeBranchInputRef}
                 isDisabled={isFormDisabled}
                 onSessionTypeChange={setSessionType}
                 onWorktreeNameChange={setWorktreeName}
+                onWorktreeBranchChange={handleWorktreeBranchChange}
+                onWorktreeBranchFocus={handleWorktreeBranchFocus}
+                onWorktreeBranchBlur={handleWorktreeBranchBlur}
+                onWorktreeBranchKeyDown={handleWorktreeBranchKeyDown}
+                onWorktreeBranchSuggestionSelect={handleWorktreeBranchSuggestionSelect}
             />
             <AgentSelector
                 agent={agent}

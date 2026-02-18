@@ -31,7 +31,7 @@ describe('appServerConfig', () => {
         });
 
         expect(params.sandbox).toBe('danger-full-access');
-        expect(params.approvalPolicy).toBe('on-failure');
+        expect(params.approvalPolicy).toBe('never');
     });
 
     it('builds turn params with mode defaults', () => {
@@ -55,7 +55,14 @@ describe('appServerConfig', () => {
             mode: { permissionMode: 'default', model: 'o3', collaborationMode: 'plan' }
         });
 
-        expect(params.collaborationMode).toEqual({ mode: 'plan', settings: { model: 'o3' } });
+        expect(params.collaborationMode).toEqual({
+            mode: 'plan',
+            settings: {
+                model: 'o3',
+                reasoning_effort: null,
+                developer_instructions: null
+            }
+        });
         expect(params.model).toBeUndefined();
     });
 
@@ -81,6 +88,17 @@ describe('appServerConfig', () => {
 
         expect(params.approvalPolicy).toBe('on-failure');
         expect(params.sandboxPolicy).toEqual({ type: 'workspaceWrite' });
+    });
+
+    it('maps yolo to never approval policy for turns', () => {
+        const params = buildTurnStartParams({
+            threadId: 'thread-1',
+            message: 'hello',
+            mode: { permissionMode: 'yolo' }
+        });
+
+        expect(params.approvalPolicy).toBe('never');
+        expect(params.sandboxPolicy).toEqual({ type: 'dangerFullAccess' });
     });
 
     it('prefers turn overrides', () => {

@@ -225,4 +225,26 @@ describe('terminal socket handlers', () => {
             message: 'Too many terminals open (max 1).'
         })
     })
+
+    it('ignores write and resize for unknown terminals', () => {
+        const { terminalSocket, cliNamespace } = createHarness()
+        const cliSocket = new FakeSocket('cli-socket-1')
+        connectCliSocket(cliNamespace, cliSocket, 'session-1')
+
+        terminalSocket.trigger('terminal:write', {
+            terminalId: 'missing-terminal',
+            data: 'pwd\n'
+        })
+
+        terminalSocket.trigger('terminal:resize', {
+            terminalId: 'missing-terminal',
+            cols: 120,
+            rows: 50
+        })
+
+        const writeEvent = lastEmit(cliSocket, 'terminal:write')
+        const resizeEvent = lastEmit(cliSocket, 'terminal:resize')
+        expect(writeEvent).toBeUndefined()
+        expect(resizeEvent).toBeUndefined()
+    })
 })

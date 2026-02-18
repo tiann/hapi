@@ -23,6 +23,8 @@ interface PermissionsField {
     result: 'approved' | 'denied';
     mode?: ClaudePermissionMode;
     allowedTools?: string[];
+    clearContext?: boolean;
+    autoApproveEdits?: boolean;
 }
 
 class ClaudeRemoteLauncher extends RemoteLauncherBase {
@@ -214,6 +216,14 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                     permissions.allowedTools = response.allowTools;
                                 }
 
+                                if (response.clearContext !== undefined) {
+                                    permissions.clearContext = response.clearContext;
+                                }
+
+                                if (response.autoApproveEdits !== undefined) {
+                                    permissions.autoApproveEdits = response.autoApproveEdits;
+                                }
+
                                 content[i] = {
                                     ...c,
                                     permissions
@@ -361,9 +371,15 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                         session.client.sendSessionEvent({ type: 'message', message: 'Aborted by user' });
                     }
                 } catch (e) {
-                    logger.debug('[remote]: launch error', e);
+                    const error = e instanceof Error
+                        ? { message: e.message, stack: e.stack }
+                        : { value: String(e) };
+                    logger.debugLargeJson('[remote]: launch error', error);
                     if (!this.exitReason) {
-                        session.client.sendSessionEvent({ type: 'message', message: 'Process exited unexpectedly' });
+                        const message = e instanceof Error && e.message
+                            ? `Process exited unexpectedly: ${e.message}`
+                            : 'Process exited unexpectedly';
+                        session.client.sendSessionEvent({ type: 'message', message });
                         continue;
                     }
                 } finally {

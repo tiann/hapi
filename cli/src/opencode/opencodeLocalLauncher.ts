@@ -390,7 +390,7 @@ export async function opencodeLocalLauncher(
                 const text = textFromPart ?? (key ? textBuffers.get(key) : null);
                 if (shouldFlush && text) {
                     if (role === 'user') {
-                        session.sendUserMessage(text);
+                        session.sendUserMessage(text, { sentFrom: 'scanner' });
                     } else {
                         session.sendCodexMessage({ type: 'message', message: text });
                     }

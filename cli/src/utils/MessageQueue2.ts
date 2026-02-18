@@ -177,6 +177,41 @@ export class MessageQueue2<T> {
     }
 
     /**
+     * Push an isolated message to the beginning of the queue without clearing.
+     * Ensures the message is processed alone before any other queued messages.
+     */
+    unshiftIsolate(message: string, mode: T): void {
+        if (this.closed) {
+            throw new Error('Cannot unshift to closed queue');
+        }
+
+        const modeHash = this.modeHasher(mode);
+        logger.debug(`[MessageQueue2] unshiftIsolate() called with mode hash: ${modeHash}`);
+
+        this.queue.unshift({
+            message,
+            mode,
+            modeHash,
+            isolate: true
+        });
+
+        // Trigger message handler if set
+        if (this.onMessageHandler) {
+            this.onMessageHandler(message, mode);
+        }
+
+        // Notify waiter if any
+        if (this.waiter) {
+            logger.debug(`[MessageQueue2] Notifying waiter`);
+            const waiter = this.waiter;
+            this.waiter = null;
+            waiter(true);
+        }
+
+        logger.debug(`[MessageQueue2] unshiftIsolate() completed. Queue size: ${this.queue.length}`);
+    }
+
+    /**
      * Reset the queue - clears all messages and resets to empty state
      */
     reset(): void {

@@ -42,6 +42,7 @@ export class ApiSessionClient extends EventEmitter {
     private agentStateVersion: number
     private readonly socket: Socket<ServerToClientEvents, ClientToServerEvents>
     private pendingMessages: UserMessage[] = []
+    private pendingUserEchoes: Array<{ text: string; createdAt: number }> = []
     private pendingMessageCallback: ((message: UserMessage) => void) | null = null
     private lastSeenMessageSeq: number | null = null
     private backfillInFlight: Promise<void> | null = null
@@ -51,6 +52,39 @@ export class ApiSessionClient extends EventEmitter {
     private readonly terminalManager: TerminalManager
     private agentStateLock = new AsyncLock()
     private metadataLock = new AsyncLock()
+
+    private isDisconnectedTransportError(error: unknown): boolean {
+        if (!(error instanceof Error)) {
+            return false
+        }
+        const message = error.message.toLowerCase()
+        return message.includes('disconnected transport')
+            || message.includes('transport closed')
+            || message.includes('transport is closed')
+            || message.includes('socket is not connected')
+            || message.includes('not connected')
+    }
+
+    private emitSocketSafely(
+        event: string,
+        payload: unknown,
+        options?: { allowWhenDisconnected?: boolean; volatile?: boolean }
+    ): void {
+        if (!options?.allowWhenDisconnected && !this.socket.connected) {
+            return
+        }
+
+        try {
+            const emitter = options?.volatile ? this.socket.volatile : this.socket
+            emitter.emit(event as any, payload as any)
+        } catch (error) {
+            if (this.isDisconnectedTransportError(error)) {
+                logger.debug(`[API] Dropped '${event}' due to disconnected transport`)
+                return
+            }
+            logger.debug(`[API] Failed to emit '${event}'`, error)
+        }
+    }
 
     constructor(token: string, session: Session) {
         super()
@@ -88,10 +122,10 @@ export class ApiSessionClient extends EventEmitter {
         this.terminalManager = new TerminalManager({
             sessionId: this.sessionId,
             getSessionPath: () => this.metadata?.path ?? null,
-            onReady: (payload) => this.socket.emit('terminal:ready', payload),
-            onOutput: (payload) => this.socket.emit('terminal:output', payload),
-            onExit: (payload) => this.socket.emit('terminal:exit', payload),
-            onError: (payload) => this.socket.emit('terminal:error', payload)
+            onReady: (payload) => this.emitSocketSafely('terminal:ready', payload),
+            onOutput: (payload) => this.emitSocketSafely('terminal:output', payload),
+            onExit: (payload) => this.emitSocketSafely('terminal:exit', payload),
+            onError: (payload) => this.emitSocketSafely('terminal:error', payload)
         })
 
         this.socket.on('connect', () => {
@@ -102,11 +136,11 @@ export class ApiSessionClient extends EventEmitter {
             }
             void this.backfillIfNeeded()
             this.hasConnectedOnce = true
-            this.socket.emit('session-alive', {
+            this.emitSocketSafely('session-alive', {
                 sid: this.sessionId,
                 time: Date.now(),
                 thinking: false
-            })
+            }, { allowWhenDisconnected: true })
         })
 
         this.socket.on('rpc-request', async (data: { method: string; params: string }, callback: (response: string) => void) => {
@@ -221,6 +255,40 @@ export class ApiSessionClient extends EventEmitter {
         }
     }
 
+    private normalizeUserEchoText(text: string): string {
+        return text.replace(/\s+/g, ' ').trim()
+    }
+
+    private trackPendingUserEcho(text: string): void {
+        const normalized = this.normalizeUserEchoText(text)
+        if (!normalized) {
+            return
+        }
+
+        const now = Date.now()
+        const windowMs = 120_000
+        this.pendingUserEchoes = this.pendingUserEchoes.filter((entry) => now - entry.createdAt <= windowMs)
+        this.pendingUserEchoes.push({ text: normalized, createdAt: now })
+    }
+
+    private consumePendingUserEcho(text: string): boolean {
+        const normalized = this.normalizeUserEchoText(text)
+        if (!normalized) {
+            return false
+        }
+
+        const now = Date.now()
+        const windowMs = 120_000
+        this.pendingUserEchoes = this.pendingUserEchoes.filter((entry) => now - entry.createdAt <= windowMs)
+        const index = this.pendingUserEchoes.findIndex((entry) => entry.text === normalized)
+        if (index === -1) {
+            return false
+        }
+
+        this.pendingUserEchoes.splice(index, 1)
+        return true
+    }
+
     private handleIncomingMessage(message: { seq?: number; content: unknown }): void {
         const seq = typeof message.seq === 'number' ? message.seq : null
         if (seq !== null) {
@@ -232,6 +300,11 @@ export class ApiSessionClient extends EventEmitter {
 
         const userResult = UserMessageSchema.safeParse(message.content)
         if (userResult.success) {
+            if (userResult.data.meta?.sentFrom === 'scanner') {
+                logger.debug('[API] Ignoring scanner-originated user message for agent input queue')
+                return
+            }
+            this.trackPendingUserEcho(userResult.data.content.text)
             this.enqueueUserMessage(userResult.data)
             return
         }
@@ -352,7 +425,7 @@ export class ApiSessionClient extends EventEmitter {
             }
         }
 
-        this.socket.emit('message', {
+        this.emitSocketSafely('message', {
             sid: this.sessionId,
             message: content
         })
@@ -373,6 +446,13 @@ export class ApiSessionClient extends EventEmitter {
             return
         }
 
+        // Local transcript scanners can echo messages that were already sent through hub.
+        // Suppress one matching echo to avoid duplicate persisted messages and SSE events.
+        if (this.consumePendingUserEcho(text)) {
+            logger.debug('[API] Suppressed echoed user message from local transcript scanner')
+            return
+        }
+
         const content: MessageContent = {
             role: 'user',
             content: {
@@ -385,7 +465,7 @@ export class ApiSessionClient extends EventEmitter {
             }
         }
 
-        this.socket.emit('message', {
+        this.emitSocketSafely('message', {
             sid: this.sessionId,
             message: content
         })
@@ -402,7 +482,7 @@ export class ApiSessionClient extends EventEmitter {
                 sentFrom: 'cli'
             }
         }
-        this.socket.emit('message', {
+        this.emitSocketSafely('message', {
             sid: this.sessionId,
             message: content
         })
@@ -429,7 +509,7 @@ export class ApiSessionClient extends EventEmitter {
             }
         }
 
-        this.socket.emit('message', {
+        this.emitSocketSafely('message', {
             sid: this.sessionId,
             message: content
         })
@@ -440,18 +520,18 @@ export class ApiSessionClient extends EventEmitter {
         mode: 'local' | 'remote',
         runtime?: { permissionMode?: SessionPermissionMode; modelMode?: SessionModelMode }
     ): void {
-        this.socket.volatile.emit('session-alive', {
+        this.emitSocketSafely('session-alive', {
             sid: this.sessionId,
             time: Date.now(),
             thinking,
             mode,
             ...(runtime ?? {})
-        })
+        }, { volatile: true })
     }
 
     sendSessionDeath(): void {
         void cleanupUploadDir(this.sessionId)
-        this.socket.emit('session-end', { sid: this.sessionId, time: Date.now() })
+        this.emitSocketSafely('session-end', { sid: this.sessionId, time: Date.now() }, { allowWhenDisconnected: true })
     }
 
     updateMetadata(handler: (metadata: Metadata) => Metadata): void {
@@ -460,7 +540,7 @@ export class ApiSessionClient extends EventEmitter {
                 const current = this.metadata ?? ({} as Metadata)
                 const updated = handler(current)
 
-                const answer = await this.socket.emitWithAck('update-metadata', {
+                const answer = await this.emitWithAckWhenConnected('update-metadata', {
                     sid: this.sessionId,
                     expectedVersion: this.metadataVersion,
                     metadata: updated
@@ -496,7 +576,7 @@ export class ApiSessionClient extends EventEmitter {
                 const current = this.agentState ?? ({} as AgentState)
                 const updated = handler(current)
 
-                const answer = await this.socket.emitWithAck('update-state', {
+                const answer = await this.emitWithAckWhenConnected('update-state', {
                     sid: this.sessionId,
                     expectedVersion: this.agentStateVersion,
                     agentState: updated
@@ -524,6 +604,14 @@ export class ApiSessionClient extends EventEmitter {
                 })
             })
         })
+    }
+
+    private async emitWithAckWhenConnected(event: string, payload: unknown, timeoutMs: number = 15_000): Promise<unknown> {
+        const connected = await this.waitForConnected(timeoutMs)
+        if (!connected) {
+            throw new Error(`Socket not connected for '${event}'`)
+        }
+        return await (this.socket as any).timeout(timeoutMs).emitWithAck(event, payload)
     }
 
     private async waitForConnected(timeoutMs: number): Promise<boolean> {

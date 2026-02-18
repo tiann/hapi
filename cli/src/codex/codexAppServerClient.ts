@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { logger } from '@/ui/logger';
 import { killProcessByChildProcess } from '@/utils/process';
+import { getDefaultCodexPath } from './utils/executable';
 import type {
     InitializeParams,
     InitializeResponse,
@@ -73,7 +74,7 @@ export class CodexAppServerClient {
             return;
         }
 
-        this.process = spawn('codex', ['app-server'], {
+        this.process = spawn(getDefaultCodexPath(), ['app-server'], {
             env: Object.keys(process.env).reduce((acc, key) => {
                 const value = process.env[key];
                 if (typeof value === 'string') acc[key] = value;
@@ -107,7 +108,7 @@ export class CodexAppServerClient {
             logger.debug('[CodexAppServer] Process error', error);
             const message = error instanceof Error ? error.message : String(error);
             this.rejectAllPending(new Error(
-                `Failed to spawn codex app-server: ${message}. Is it installed and on PATH?`,
+                `Failed to spawn codex app-server: ${message}. Is Codex CLI installed?`,
                 { cause: error }
             ));
             this.connected = false;

@@ -41,12 +41,21 @@ function getConnectionStatus(
 ): { text: string; color: string; dotColor: string; isPulsing: boolean } {
     const hasPermissions = agentState?.requests && Object.keys(agentState.requests).length > 0
 
-    // Voice connecting takes priority
+    // Voice states take priority
     if (voiceStatus === 'connecting') {
         return {
             text: t('voice.connecting'),
             color: 'text-[#007AFF]',
             dotColor: 'bg-[#007AFF]',
+            isPulsing: true
+        }
+    }
+
+    if (voiceStatus === 'processing') {
+        return {
+            text: t('voice.processing'),
+            color: 'text-[#FF9500]',
+            dotColor: 'bg-[#FF9500]',
             isPulsing: true
         }
     }

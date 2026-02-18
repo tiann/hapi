@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { useParams, useSearch } from '@tanstack/react-router'
+import { useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import type { GitCommandResponse } from '@/types/api'
 import { FileIcon } from '@/components/FileIcon'
 import { CopyIcon, CheckIcon } from '@/components/icons'
@@ -32,6 +32,26 @@ function BackIcon(props: { className?: string }) {
             className={props.className}
         >
             <polyline points="15 18 9 12 15 6" />
+        </svg>
+    )
+}
+
+function CloseIcon(props: { className?: string }) {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={props.className}
+        >
+            <line x1="18" y1="6" x2="6" y2="18" />
+            <line x1="6" y1="6" x2="18" y2="18" />
         </svg>
     )
 }
@@ -104,6 +124,29 @@ function isBinaryContent(content: string): boolean {
     return nonPrintable / content.length > 0.1
 }
 
+function inferImageMimeType(path: string): string | null {
+    const parts = path.split('.')
+    if (parts.length <= 1) return null
+
+    const extension = parts[parts.length - 1]?.toLowerCase()
+    if (!extension) return null
+
+    const imageMimeTypes: Record<string, string> = {
+        apng: 'image/apng',
+        avif: 'image/avif',
+        bmp: 'image/bmp',
+        gif: 'image/gif',
+        ico: 'image/x-icon',
+        jpeg: 'image/jpeg',
+        jpg: 'image/jpeg',
+        png: 'image/png',
+        svg: 'image/svg+xml',
+        webp: 'image/webp'
+    }
+
+    return imageMimeTypes[extension] ?? null
+}
+
 function extractCommandError(result: GitCommandResponse | undefined): string | null {
     if (!result) return null
     if (result.success) return null
@@ -112,6 +155,7 @@ function extractCommandError(result: GitCommandResponse | undefined): string | n
 
 export default function FilePage() {
     const { api } = useAppContext()
+    const navigate = useNavigate()
     const { copied, copy } = useCopyToClipboard()
     const goBack = useAppGoBack()
     const { sessionId } = useParams({ from: '/sessions/$sessionId/file' })
@@ -150,12 +194,17 @@ export default function FilePage() {
     const diffFailed = diffQuery.data?.success === false
 
     const fileContentResult = fileQuery.data
+    const imageMimeType = useMemo(() => inferImageMimeType(filePath), [filePath])
+    const isImageFile = Boolean(imageMimeType)
     const decodedContentResult = fileContentResult?.success && fileContentResult.content
         ? decodeBase64(fileContentResult.content)
         : { text: '', ok: true }
     const decodedContent = decodedContentResult.text
+    const imageDataUrl = fileContentResult?.success && fileContentResult.content && imageMimeType
+        ? `data:${imageMimeType};base64,${fileContentResult.content}`
+        : null
     const binaryFile = fileContentResult?.success
-        ? !decodedContentResult.ok || isBinaryContent(decodedContent)
+        ? (!isImageFile && (!decodedContentResult.ok || isBinaryContent(decodedContent)))
         : false
 
     const language = useMemo(() => resolveLanguage(filePath), [filePath])
@@ -195,6 +244,19 @@ export default function FilePage() {
                         <div className="truncate font-semibold">{fileName}</div>
                         <div className="truncate text-xs text-[var(--app-hint)]">{filePath || 'Unknown path'}</div>
                     </div>
+                    <button
+                        type="button"
+                        onClick={() => navigate({
+                            to: '/sessions/$sessionId',
+                            params: { sessionId }
+                        })}
+                        className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium text-[var(--app-hint)] transition-colors hover:bg-[var(--app-secondary-bg)] hover:text-[var(--app-fg)]"
+                        aria-label="Close preview"
+                        title="Close"
+                    >
+                        <CloseIcon className="h-3.5 w-3.5" />
+                        <span>Close</span>
+                    </button>
                 </div>
             </div>
 
@@ -228,7 +290,7 @@ export default function FilePage() {
                             onClick={() => setDisplayMode('file')}
                             className={`rounded px-3 py-1 text-xs font-semibold ${displayMode === 'file' ? 'bg-[var(--app-button)] text-[var(--app-button-text)] opacity-80' : 'bg-[var(--app-subtle-bg)] text-[var(--app-hint)]'}`}
                         >
-                            File
+                            {isImageFile ? 'Image' : 'File'}
                         </button>
                     </div>
                 </div>
@@ -256,7 +318,15 @@ export default function FilePage() {
                     ) : displayMode === 'diff' && diffError ? (
                         <div className="text-sm text-[var(--app-hint)]">{diffError}</div>
                     ) : displayMode === 'file' ? (
-                        decodedContent ? (
+                        isImageFile && imageDataUrl ? (
+                            <div className="rounded-md border border-[var(--app-border)] bg-[var(--app-code-bg)] p-3">
+                                <img
+                                    src={imageDataUrl}
+                                    alt={fileName}
+                                    className="mx-auto max-h-[75vh] w-auto max-w-full rounded"
+                                />
+                            </div>
+                        ) : decodedContent ? (
                             <pre className="shiki overflow-auto rounded-md bg-[var(--app-code-bg)] p-3 text-xs font-mono">
                                 <code>{highlighted ?? decodedContent}</code>
                             </pre>

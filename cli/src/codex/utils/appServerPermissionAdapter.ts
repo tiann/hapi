@@ -37,9 +37,17 @@ function mapDecision(decision: PermissionDecision): { decision: string } {
 export function registerAppServerPermissionHandlers(args: {
     client: CodexAppServerClient;
     permissionHandler: CodexPermissionHandler;
-    onUserInputRequest?: (request: unknown) => Promise<Record<string, string[]>>;
+    onUserInputRequest?: (request: unknown) => Promise<Record<string, { answers: string[] }>>;
+    onDynamicToolCall?: (request: unknown) => Promise<{
+        success: boolean;
+        contentItems: Array<{
+            type: 'inputText' | 'inputImage';
+            text?: string;
+            imageUrl?: string;
+        }>;
+    }>;
 }): void {
-    const { client, permissionHandler, onUserInputRequest } = args;
+    const { client, permissionHandler, onUserInputRequest, onDynamicToolCall } = args;
 
     client.registerRequestHandler('item/commandExecution/requestApproval', async (params) => {
         const record = asRecord(params) ?? {};
@@ -82,13 +90,27 @@ export function registerAppServerPermissionHandlers(args: {
     client.registerRequestHandler('item/tool/requestUserInput', async (params) => {
         if (!onUserInputRequest) {
             logger.debug('[CodexAppServer] No user-input handler registered; cancelling request');
-            return { decision: 'cancel' };
+            return { answers: {} };
         }
 
         const answers = await onUserInputRequest(params);
-        return {
-            decision: 'accept',
-            answers
-        };
+        return { answers };
+    });
+
+    client.registerRequestHandler('item/tool/call', async (params) => {
+        if (!onDynamicToolCall) {
+            logger.debug('[CodexAppServer] Dynamic tool call requested but no handler is registered');
+            return {
+                success: false,
+                contentItems: [
+                    {
+                        type: 'inputText',
+                        text: 'Dynamic tool call is not supported by this client.'
+                    }
+                ]
+            };
+        }
+
+        return await onDynamicToolCall(params);
     });
 }

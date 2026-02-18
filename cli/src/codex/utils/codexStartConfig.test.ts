@@ -32,7 +32,7 @@ describe('buildCodexStartConfig', () => {
         });
 
         expect(config.sandbox).toBe('danger-full-access');
-        expect(config['approval-policy']).toBe('on-failure');
+        expect(config['approval-policy']).toBe('never');
     });
 
     it('passes model when provided', () => {

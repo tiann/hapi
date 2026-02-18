@@ -111,6 +111,18 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 break;
             }
 
+            if (batch.isolate && batch.message.trim() === '/new') {
+                messageBuffer.addMessage('Starting new OpenCode session...', 'status');
+                acpSessionId = await backend.newSession({
+                    cwd: session.path,
+                    mcpServers: mcpServerList
+                });
+                session.onSessionFound(acpSessionId);
+                this.instructionsSent = false;
+                sendReady();
+                continue;
+            }
+
             this.applyDisplayMode(batch.mode.permissionMode);
             messageBuffer.addMessage(batch.message, 'user');
 

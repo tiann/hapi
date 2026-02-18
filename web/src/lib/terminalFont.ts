@@ -73,7 +73,9 @@ async function loadBuiltinFont(): Promise<void> {
             return
         } catch (err) {
             lastError = err as Error
-            console.warn(`[TerminalFont] Failed to load from ${url}, trying next...`)
+            if (isDev) {
+                console.warn(`[TerminalFont] Failed to load from ${url}, trying next...`)
+            }
         }
     }
     throw lastError ?? new Error('All CDN URLs failed')
@@ -101,6 +103,7 @@ const FONT_FAMILY = FONT_FAMILY_PARTS.join(', ')
 const fontProvider = new FontProvider(FONT_FAMILY)
 
 let fontLoadPromise: Promise<boolean> | null = null
+const isDev = typeof import.meta !== 'undefined' && Boolean(import.meta.env?.DEV)
 
 function isFontAvailable(fontName: string): boolean {
     if (typeof document === 'undefined') return false
@@ -134,16 +137,22 @@ export function getFontProvider(): ITerminalFontProvider {
 export function ensureBuiltinFontLoaded(): Promise<boolean> {
     if (!fontLoadPromise) {
         if (hasLocalNerdFont()) {
-            console.log('[TerminalFont] Local Nerd Font detected; skip CDN load')
+            if (isDev) {
+                console.log('[TerminalFont] Local Nerd Font detected; skip CDN load')
+            }
             fontLoadPromise = Promise.resolve(false)
         } else {
             fontLoadPromise = loadBuiltinFont()
                 .then(() => {
-                    console.log('[TerminalFont] CDN font loaded')
+                    if (isDev) {
+                        console.log('[TerminalFont] CDN font loaded')
+                    }
                     return true
                 })
                 .catch(err => {
-                    console.error('[TerminalFont] Failed to load CDN font:', err)
+                    if (isDev) {
+                        console.error('[TerminalFont] Failed to load CDN font:', err)
+                    }
                     return false
                 })
         }

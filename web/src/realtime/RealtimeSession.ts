@@ -1,5 +1,4 @@
 import type { VoiceSession } from './types'
-import type { ElevenLabsLanguage } from '@/lib/languages'
 
 let voiceSession: VoiceSession | null = null
 let voiceSessionStarted = false
@@ -8,7 +7,7 @@ let currentSessionId: string | null = null
 export async function startRealtimeSession(
     sessionId: string,
     initialContext?: string,
-    language?: ElevenLabsLanguage
+    language?: string
 ) {
     if (!voiceSession) {
         console.warn('[Voice] No voice session registered')

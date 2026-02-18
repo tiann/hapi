@@ -8,7 +8,7 @@ function resolveApprovalPolicy(mode: EnhancedMode): CodexSessionConfig['approval
         case 'default': return 'untrusted';
         case 'read-only': return 'never';
         case 'safe-yolo': return 'on-failure';
-        case 'yolo': return 'on-failure';
+        case 'yolo': return 'never';
         default: {
             throw new Error(`Unknown permission mode: ${mode.permissionMode}`);
         }

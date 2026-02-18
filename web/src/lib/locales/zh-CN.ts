@@ -102,6 +102,7 @@ export default {
   'newSession.type.worktree': '工作树',
   'newSession.type.worktree.desc': '在仓库旁创建新工作树',
   'newSession.type.worktree.placeholder': 'feature-x (默认 1228-xxxx)',
+  'newSession.type.worktree.branchPlaceholder': '搜索本地分支或输入新分支名',
   'newSession.agent': '代理',
   'newSession.model': '模型',
   'newSession.model.optional': '可选',
@@ -203,6 +204,7 @@ export default {
 
   // Voice assistant
   'voice.connecting': '连接中...',
+  'voice.processing': '处理中...',
   'voice.active': '活跃',
   'voice.muted': '已静音',
   'voice.error': '错误',
@@ -247,6 +249,8 @@ export default {
   'settings.voice.title': '语音助手',
   'settings.voice.language': '语音语言',
   'settings.voice.autoDetect': '自动检测',
+  'settings.voice.readyAnnouncements': '完成提示播报',
+  'settings.runtime.effort': '推理强度',
   'settings.about.title': '关于',
   'settings.about.website': '官方网站',
   'settings.about.appVersion': '应用版本',
@@ -257,6 +261,7 @@ export default {
   'misc.machine': '机器',
   'misc.permissionMode': '权限模式',
   'misc.model': '模型',
+  'misc.refresh': '刷新',
   'misc.loading': '加载中…',
   'misc.loadOlder': '加载更早的',
   'misc.newMessage': '{n} 条新消息',

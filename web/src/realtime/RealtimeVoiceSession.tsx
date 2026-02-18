@@ -1,126 +1,184 @@
-import { useEffect, useRef, useCallback, useState } from 'react'
-import { useConversation } from '@elevenlabs/react'
+import { useEffect, useRef } from 'react'
 import { registerVoiceSession, resetRealtimeSessionState } from './RealtimeSession'
-import { realtimeClientTools, registerSessionStore } from './realtimeClientTools'
-import { fetchVoiceToken } from '@/api/voice'
-import type { VoiceSession, VoiceSessionConfig, ConversationStatus, StatusCallback } from './types'
+import { registerSessionStore } from './realtimeClientTools'
+import type { VoiceSession, VoiceSessionConfig, StatusCallback } from './types'
+import type { SessionStore } from './transcriptRouter'
+import { routeTranscript, speak } from './transcriptRouter'
+import { RealtimeWhisperVoiceSessionImpl } from './RealtimeWhisperVoiceSession'
+import { buildVoiceWebSocketUrl, transcribeVoiceAudio } from '@/api/voice'
 import type { ApiClient } from '@/api/client'
 import type { Session } from '@/types/api'
 
-// Debug logging
 const DEBUG = import.meta.env.DEV
 
-// Static reference to the conversation hook instance
-let conversationInstance: ReturnType<typeof useConversation> | null = null
-
-// Store reference for status updates
+// Module-level state shared between the React component and VoiceSession implementations
 let statusCallback: StatusCallback | null = null
+let sessionStore: SessionStore | null = null
 
-// Global voice session implementation
-class RealtimeVoiceSessionImpl implements VoiceSession {
-    private api: ApiClient
+// ---------------------------------------------------------------------------
+// Chunked HTTP fallback implementation (uses MediaRecorder + POST /api/voice/transcribe)
+// ---------------------------------------------------------------------------
+
+class LocalWhisperVoiceSessionImpl implements VoiceSession {
+    private readonly api: ApiClient
+    private mediaStream: MediaStream | null = null
+    private mediaRecorder: MediaRecorder | null = null
+    private transcriptionChain: Promise<void> = Promise.resolve()
+    private activeSessionId: string | null = null
+    private activeLanguage: string | undefined
+    private isMuted = false
+    private rotateTimer: ReturnType<typeof setInterval> | null = null
+    private pendingTranscriptions = 0
+    private isStopping = false
 
     constructor(api: ApiClient) {
         this.api = api
     }
 
+    setMuted(muted: boolean) {
+        this.isMuted = muted
+    }
+
     async startSession(config: VoiceSessionConfig): Promise<void> {
-        if (!conversationInstance) {
-            const error = new Error('Realtime voice session not initialized')
-            console.warn('[Voice] Realtime voice session not initialized')
-            statusCallback?.('error', 'Voice session not initialized')
-            throw error
+        if (!sessionStore) {
+            statusCallback?.('error', 'Voice session store not initialized')
+            throw new Error('Voice session store not initialized')
         }
 
         statusCallback?.('connecting')
+        this.activeSessionId = config.sessionId
+        this.activeLanguage = config.language
 
-        // Request microphone permission first
-        let permissionStream: MediaStream | null = null
         try {
-            permissionStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+            this.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true })
         } catch (error) {
-            console.error('[Voice] Failed to get microphone permission:', error)
             statusCallback?.('error', 'Microphone permission denied')
             throw error
-        } finally {
-            permissionStream?.getTracks().forEach((track) => track.stop())
         }
 
-        // Fetch conversation token from server
-        let tokenResponse: Awaited<ReturnType<typeof fetchVoiceToken>>
-        try {
-            tokenResponse = await fetchVoiceToken(this.api)
-        } catch (error) {
-            console.error('[Voice] Failed to fetch voice token:', error)
-            statusCallback?.('error', 'Network error')
-            throw error
-        }
-        if (!tokenResponse.allowed || !tokenResponse.token) {
-            const error = new Error(tokenResponse.error ?? 'Voice not allowed or no token')
-            console.error('[Voice] Voice not allowed or no token:', tokenResponse.error)
-            statusCallback?.('error', tokenResponse.error ?? 'Voice not allowed')
-            throw error
-        }
-
-        // Use conversation token from server (private agent flow)
-        try {
-            const conversationId = await conversationInstance.startSession({
-                conversationToken: tokenResponse.token,
-                connectionType: 'webrtc',
-                dynamicVariables: {
-                    sessionId: config.sessionId,
-                    initialConversationContext: config.initialContext || ''
-                },
-                // Language override - requires agent to have platform_settings.overrides enabled
-                // See: https://elevenlabs.io/docs/agents-platform/customization/personalization/overrides
-                overrides: {
-                    agent: {
-                        language: config.language
-                    }
-                }
-            })
-
-            if (DEBUG) {
-                console.log('[Voice] Started conversation with ID:', conversationId)
+        this.startRecorder()
+        this.rotateTimer = setInterval(() => {
+            if (this.mediaRecorder && this.mediaRecorder.state === 'recording') {
+                this.mediaRecorder.stop()
             }
-        } catch (error) {
-            console.error('[Voice] Failed to start realtime session:', error)
-            statusCallback?.('error', 'Failed to start voice session')
-            throw error
-        }
+        }, 3000)
+        statusCallback?.('connected')
     }
 
     async endSession(): Promise<void> {
-        if (!conversationInstance) {
+        this.isStopping = true
+
+        if (this.rotateTimer) {
+            clearInterval(this.rotateTimer)
+            this.rotateTimer = null
+        }
+
+        if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
+            this.mediaRecorder.stop()
+        }
+        this.mediaRecorder = null
+
+        if (this.mediaStream) {
+            this.mediaStream.getTracks().forEach((track) => track.stop())
+            this.mediaStream = null
+        }
+
+        if (this.pendingTranscriptions > 0) {
+            statusCallback?.('processing')
+            await this.transcriptionChain
+        }
+
+        this.activeSessionId = null
+        this.activeLanguage = undefined
+        this.pendingTranscriptions = 0
+        this.isStopping = false
+
+        statusCallback?.('disconnected')
+    }
+
+    private startRecorder(): void {
+        if (!this.mediaStream || !this.activeSessionId) {
             return
         }
 
         try {
-            await conversationInstance.endSession()
-            statusCallback?.('disconnected')
-        } catch (error) {
-            console.error('[Voice] Failed to end realtime session:', error)
+            this.mediaRecorder = new MediaRecorder(this.mediaStream, {
+                mimeType: MediaRecorder.isTypeSupported('audio/webm')
+                    ? 'audio/webm'
+                    : undefined
+            })
+        } catch {
+            this.mediaRecorder = new MediaRecorder(this.mediaStream)
         }
+
+        this.mediaRecorder.addEventListener('dataavailable', (event) => {
+            if (!event.data || event.data.size === 0 || this.isMuted || !this.activeSessionId) {
+                return
+            }
+
+            const sessionId = this.activeSessionId
+            const language = this.activeLanguage
+            this.pendingTranscriptions++
+            if (this.pendingTranscriptions === 1) {
+                statusCallback?.('processing')
+            }
+            this.transcriptionChain = this.transcriptionChain.then(async () => {
+                try {
+                    const result = await transcribeVoiceAudio(this.api, event.data, language)
+                    if (!result.ok || !result.text) {
+                        if (DEBUG && result.error) {
+                            console.warn('[Voice] Transcription failed:', result.error)
+                        }
+                        return
+                    }
+
+                    const text = result.text.trim()
+                    if (!text || !sessionStore) {
+                        return
+                    }
+
+                    await routeTranscript(sessionStore, sessionId, text)
+                } finally {
+                    this.pendingTranscriptions--
+                    if (this.pendingTranscriptions === 0 && this.activeSessionId && !this.isStopping) {
+                        statusCallback?.('connected')
+                    }
+                }
+            }).catch((error) => {
+                console.error('[Voice] Transcription pipeline failed:', error)
+            })
+        })
+
+        this.mediaRecorder.addEventListener('stop', () => {
+            if (!this.activeSessionId || !this.mediaStream) {
+                return
+            }
+            this.startRecorder()
+        })
+
+        this.mediaRecorder.start()
     }
 
     sendTextMessage(message: string): void {
-        if (!conversationInstance) {
-            console.warn('[Voice] Realtime voice session not initialized')
-            return
-        }
-
-        conversationInstance.sendUserMessage(message)
+        speak(message)
     }
 
-    sendContextualUpdate(update: string): void {
-        if (!conversationInstance) {
-            console.warn('[Voice] Realtime voice session not initialized')
-            return
-        }
-
-        conversationInstance.sendContextualUpdate(update)
+    sendContextualUpdate(_update: string): void {
+        // local-whisper mode: context updates not spoken automatically
     }
 }
+
+// ---------------------------------------------------------------------------
+// A unified interface for implementations that support setMuted
+// ---------------------------------------------------------------------------
+
+interface MutableVoiceSession extends VoiceSession {
+    setMuted(muted: boolean): void
+}
+
+// ---------------------------------------------------------------------------
+// React component: selects WebSocket or chunked HTTP implementation
+// ---------------------------------------------------------------------------
 
 export interface RealtimeVoiceSessionProps {
     api: ApiClient
@@ -134,114 +192,115 @@ export interface RealtimeVoiceSessionProps {
 
 export function RealtimeVoiceSession({
     api,
-    micMuted: micMutedProp = false,
+    micMuted = false,
     onStatusChange,
     getSession,
     sendMessage,
     approvePermission,
     denyPermission
 }: RealtimeVoiceSessionProps) {
-    const hasRegistered = useRef(false)
+    const implRef = useRef<MutableVoiceSession | null>(null)
 
-    // Use local state for micMuted that syncs with prop
-    // This is recommended by ElevenLabs SDK docs
-    const [micMuted, setMicMuted] = useState(micMutedProp)
+    // Keep store synced during render so startSession can run immediately after mount.
+    if (getSession && sendMessage && approvePermission && denyPermission) {
+        const store: SessionStore = {
+            getSession,
+            sendMessage,
+            approvePermission,
+            denyPermission
+        }
+        sessionStore = store
+        registerSessionStore({
+            getSession: (sessionId: string) => getSession(sessionId) as { agentState?: { requests?: Record<string, unknown> } } | null,
+            sendMessage,
+            approvePermission,
+            denyPermission
+        })
 
-    // Sync local state with prop changes
-    useEffect(() => {
-        setMicMuted(micMutedProp)
-    }, [micMutedProp])
+        // Sync store into WebSocket impl if it's the active one
+        const impl = implRef.current
+        if (impl && impl instanceof RealtimeWhisperVoiceSessionImpl) {
+            impl.setSessionStore(store)
+        }
+    } else {
+        sessionStore = null
+    }
 
-    // Store status callback
     useEffect(() => {
         statusCallback = onStatusChange || null
+
+        // Sync callback into WebSocket impl if it's the active one
+        const impl = implRef.current
+        if (impl && impl instanceof RealtimeWhisperVoiceSessionImpl) {
+            impl.setStatusCallback(onStatusChange || null)
+        }
+
         return () => {
             statusCallback = null
         }
     }, [onStatusChange])
 
-    // Register session store for client tools
     useEffect(() => {
-        if (getSession && sendMessage && approvePermission && denyPermission) {
-            registerSessionStore({
-                getSession: (sessionId: string) => getSession(sessionId) as { agentState?: { requests?: Record<string, unknown> } } | null,
-                sendMessage,
-                approvePermission,
-                denyPermission
-            })
-        }
-    }, [getSession, sendMessage, approvePermission, denyPermission])
+        if (!implRef.current) {
+            const wsUrl = buildVoiceWebSocketUrl(api)
+            const wsImpl = new RealtimeWhisperVoiceSessionImpl(wsUrl)
+            wsImpl.setStatusCallback(statusCallback)
+            wsImpl.setSessionStore(sessionStore)
 
-    const handleConnect = useCallback(() => {
-        if (DEBUG) console.log('[Voice] Realtime session connected')
-        onStatusChange?.('connected')
-    }, [onStatusChange])
-
-    const handleDisconnect = useCallback(() => {
-        if (DEBUG) console.log('[Voice] Realtime session disconnected')
-        resetRealtimeSessionState()
-        onStatusChange?.('disconnected')
-    }, [onStatusChange])
-
-    const handleError = useCallback((error: unknown) => {
-        if (DEBUG) console.error('[Voice] Realtime error:', error)
-        const errorMessage = error instanceof Error ? error.message : 'Connection error'
-        onStatusChange?.('error', errorMessage)
-    }, [onStatusChange])
-
-    const handleMessage = useCallback((data: unknown) => {
-        if (DEBUG) console.log('[Voice] Realtime message:', data)
-    }, [])
-
-    const handleStatusChange = useCallback((data: unknown) => {
-        if (DEBUG) console.log('[Voice] Realtime status change:', data)
-    }, [])
-
-    const handleModeChange = useCallback((data: unknown) => {
-        if (DEBUG) console.log('[Voice] Realtime mode change:', data)
-    }, [])
-
-    const handleDebug = useCallback((message: unknown) => {
-        if (DEBUG) console.debug('[Voice] Realtime debug:', message)
-    }, [])
-
-    // Debug: log when micMuted changes
-    useEffect(() => {
-        if (DEBUG) console.log('[Voice] micMuted changed to:', micMuted)
-    }, [micMuted])
-
-    const conversation = useConversation({
-        clientTools: realtimeClientTools,
-        micMuted,
-        onConnect: handleConnect,
-        onDisconnect: handleDisconnect,
-        onMessage: handleMessage,
-        onError: handleError,
-        onStatusChange: handleStatusChange,
-        onModeChange: handleModeChange,
-        onDebug: handleDebug
-    })
-
-    useEffect(() => {
-        // Store the conversation instance globally
-        conversationInstance = conversation
-
-        // Register the voice session once
-        if (!hasRegistered.current) {
-            try {
-                registerVoiceSession(new RealtimeVoiceSessionImpl(api))
-                hasRegistered.current = true
-            } catch (error) {
-                console.error('[Voice] Failed to register voice session:', error)
+            // Wrap to support fallback: if startSession fails on WS, swap to chunked
+            const fallbackImpl: MutableVoiceSession = {
+                setMuted(muted: boolean) {
+                    wsImpl.setMuted(muted)
+                },
+                async startSession(config: VoiceSessionConfig): Promise<void> {
+                    try {
+                        await wsImpl.startSession(config)
+                        // WS succeeded — replace fallback wrapper internals to go direct
+                        fallbackImpl.startSession = (c) => wsImpl.startSession(c)
+                        fallbackImpl.endSession = () => wsImpl.endSession()
+                        fallbackImpl.sendTextMessage = (m) => wsImpl.sendTextMessage(m)
+                        fallbackImpl.sendContextualUpdate = (u) => wsImpl.sendContextualUpdate(u)
+                    } catch (wsError) {
+                        if (DEBUG) console.warn('[Voice] WebSocket realtime not available, falling back to chunked HTTP', wsError)
+                        // Swap to chunked HTTP
+                        const chunkedImpl = new LocalWhisperVoiceSessionImpl(api)
+                        fallbackImpl.setMuted = (m) => chunkedImpl.setMuted(m)
+                        fallbackImpl.startSession = (c) => chunkedImpl.startSession(c)
+                        fallbackImpl.endSession = () => chunkedImpl.endSession()
+                        fallbackImpl.sendTextMessage = (m) => chunkedImpl.sendTextMessage(m)
+                        fallbackImpl.sendContextualUpdate = (u) => chunkedImpl.sendContextualUpdate(u)
+                        // Retry with chunked
+                        await chunkedImpl.startSession(config)
+                    }
+                },
+                async endSession(): Promise<void> {
+                    await wsImpl.endSession()
+                },
+                sendTextMessage(message: string): void {
+                    wsImpl.sendTextMessage(message)
+                },
+                sendContextualUpdate(update: string): void {
+                    wsImpl.sendContextualUpdate(update)
+                }
             }
+
+            implRef.current = fallbackImpl
+            registerVoiceSession(fallbackImpl)
         }
 
         return () => {
-            // Clean up on unmount
-            conversationInstance = null
+            const impl = implRef.current
+            implRef.current = null
+            if (impl) {
+                void impl.endSession()
+            }
+            resetRealtimeSessionState()
         }
-    }, [conversation, api])
+    }, [api])
 
-    // This component doesn't render anything visible
+    useEffect(() => {
+        implRef.current?.setMuted(micMuted)
+    }, [micMuted])
+
     return null
 }

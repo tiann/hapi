@@ -49,12 +49,23 @@ export function TerminalView(props: {
                 cursor: foreground,
                 selectionBackground
             },
-            convertEol: true,
+            // PTY output already carries newline semantics.
+            convertEol: false,
             customGlyphs: true
         })
 
         const fitAddon = new FitAddon()
-        const webLinksAddon = new WebLinksAddon()
+        const webLinksAddon = new WebLinksAddon((_event, uri) => {
+            try {
+                const parsed = new URL(uri)
+                if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+                    return
+                }
+                window.open(parsed.toString(), '_blank', 'noopener,noreferrer')
+            } catch {
+                // Ignore malformed links.
+            }
+        })
         const canvasAddon = new CanvasAddon()
         terminal.loadAddon(fitAddon)
         terminal.loadAddon(webLinksAddon)

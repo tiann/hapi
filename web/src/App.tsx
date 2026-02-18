@@ -17,6 +17,7 @@ import { useAppGoBack } from '@/hooks/useAppGoBack'
 import { useTranslation } from '@/lib/use-translation'
 import { VoiceProvider } from '@/lib/voice-context'
 import { requireHubUrlForLogin } from '@/lib/runtime-config'
+import { setReadyAnnouncementsEnabled } from '@/lib/settings'
 import { LoginPrompt } from '@/components/LoginPrompt'
 import { InstallPrompt } from '@/components/InstallPrompt'
 import { OfflineBanner } from '@/components/OfflineBanner'
@@ -222,7 +223,27 @@ function AppInner() {
         }
     }, [])
 
-    const handleSseEvent = useCallback(() => {}, [])
+    const wasThinkingRef = useRef(false)
+    useEffect(() => {
+        wasThinkingRef.current = false
+    }, [selectedSessionId])
+    const handleSseEvent = useCallback((event: SyncEvent) => {
+        if (
+            event.type === 'session-updated' &&
+            'sessionId' in event &&
+            selectedSessionId &&
+            event.sessionId === selectedSessionId &&
+            api
+        ) {
+            const data = event.data as { thinking?: boolean } | undefined
+            const thinking = Boolean(data?.thinking)
+            const wasThinking = wasThinkingRef.current
+            wasThinkingRef.current = thinking
+            if (wasThinking && !thinking) {
+                void fetchLatestMessages(api, selectedSessionId)
+            }
+        }
+    }, [api, selectedSessionId])
     const handleToast = useCallback((event: ToastEvent) => {
         addToast({
             title: event.data.title,
@@ -255,6 +276,26 @@ function AppInner() {
         subscriptionId,
         enabled: Boolean(api && token)
     })
+
+    useEffect(() => {
+        if (!api || !token) {
+            return
+        }
+
+        let cancelled = false
+        void api.getPreferences()
+            .then((preferences) => {
+                if (cancelled) return
+                setReadyAnnouncementsEnabled(preferences.readyAnnouncements)
+            })
+            .catch(() => {
+                // Keep local fallback
+            })
+
+        return () => {
+            cancelled = true
+        }
+    }, [api, token])
 
     // Loading auth source
     if (isAuthSourceLoading) {
