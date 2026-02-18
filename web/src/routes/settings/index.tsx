@@ -3,6 +3,7 @@ import { useTranslation, type Locale } from '@/lib/use-translation'
 import { useAppGoBack } from '@/hooks/useAppGoBack'
 import { getElevenLabsSupportedLanguages, getLanguageDisplayName, type Language } from '@/lib/languages'
 import { getFontScaleOptions, useFontScale, type FontScale } from '@/hooks/useFontScale'
+import { getThemeOptions, useTheme, type ThemePreference } from '@/hooks/useTheme'
 import { PROTOCOL_VERSION } from '@hapi/protocol'
 
 const locales: { value: Locale; nativeLabel: string }[] = [
@@ -73,26 +74,36 @@ export default function SettingsPage() {
     const { t, locale, setLocale } = useTranslation()
     const goBack = useAppGoBack()
     const [isOpen, setIsOpen] = useState(false)
+    const [isThemeOpen, setIsThemeOpen] = useState(false)
     const [isFontOpen, setIsFontOpen] = useState(false)
     const [isVoiceOpen, setIsVoiceOpen] = useState(false)
     const containerRef = useRef<HTMLDivElement>(null)
+    const themeContainerRef = useRef<HTMLDivElement>(null)
     const fontContainerRef = useRef<HTMLDivElement>(null)
     const voiceContainerRef = useRef<HTMLDivElement>(null)
     const { fontScale, setFontScale } = useFontScale()
+    const { themePreference, setThemePreference } = useTheme()
 
     // Voice language state - read from localStorage
     const [voiceLanguage, setVoiceLanguage] = useState<string | null>(() => {
         return localStorage.getItem('hapi-voice-lang')
     })
 
+    const themeOptions = getThemeOptions()
     const fontScaleOptions = getFontScaleOptions()
     const currentLocale = locales.find((loc) => loc.value === locale)
+    const currentThemeLabel = t(`settings.display.theme.${themePreference}`)
     const currentFontScaleLabel = fontScaleOptions.find((opt) => opt.value === fontScale)?.label ?? '100%'
     const currentVoiceLanguage = voiceLanguages.find((lang) => lang.code === voiceLanguage)
 
     const handleLocaleChange = (newLocale: Locale) => {
         setLocale(newLocale)
         setIsOpen(false)
+    }
+
+    const handleThemeChange = (newTheme: ThemePreference) => {
+        setThemePreference(newTheme)
+        setIsThemeOpen(false)
     }
 
     const handleFontScaleChange = (newScale: FontScale) => {
@@ -112,11 +123,14 @@ export default function SettingsPage() {
 
     // Close dropdown when clicking outside
     useEffect(() => {
-        if (!isOpen && !isFontOpen && !isVoiceOpen) return
+        if (!isOpen && !isThemeOpen && !isFontOpen && !isVoiceOpen) return
 
         const handleClickOutside = (event: MouseEvent) => {
             if (isOpen && containerRef.current && !containerRef.current.contains(event.target as Node)) {
                 setIsOpen(false)
+            }
+            if (isThemeOpen && themeContainerRef.current && !themeContainerRef.current.contains(event.target as Node)) {
+                setIsThemeOpen(false)
             }
             if (isFontOpen && fontContainerRef.current && !fontContainerRef.current.contains(event.target as Node)) {
                 setIsFontOpen(false)
@@ -128,15 +142,16 @@ export default function SettingsPage() {
 
         document.addEventListener('mousedown', handleClickOutside)
         return () => document.removeEventListener('mousedown', handleClickOutside)
-    }, [isOpen, isFontOpen, isVoiceOpen])
+    }, [isOpen, isThemeOpen, isFontOpen, isVoiceOpen])
 
     // Close on escape key
     useEffect(() => {
-        if (!isOpen && !isFontOpen && !isVoiceOpen) return
+        if (!isOpen && !isThemeOpen && !isFontOpen && !isVoiceOpen) return
 
         const handleEscape = (event: KeyboardEvent) => {
             if (event.key === 'Escape') {
                 setIsOpen(false)
+                setIsThemeOpen(false)
                 setIsFontOpen(false)
                 setIsVoiceOpen(false)
             }
@@ -144,7 +159,7 @@ export default function SettingsPage() {
 
         document.addEventListener('keydown', handleEscape)
         return () => document.removeEventListener('keydown', handleEscape)
-    }, [isOpen, isFontOpen, isVoiceOpen])
+    }, [isOpen, isThemeOpen, isFontOpen, isVoiceOpen])
 
     return (
         <div className="flex h-full flex-col">
@@ -222,6 +237,54 @@ export default function SettingsPage() {
                     <div className="border-b border-[var(--app-divider)]">
                         <div className="px-3 py-2 text-xs font-semibold text-[var(--app-hint)] uppercase tracking-wide">
                             {t('settings.display.title')}
+                        </div>
+                        <div ref={themeContainerRef} className="relative">
+                            <button
+                                type="button"
+                                onClick={() => setIsThemeOpen(!isThemeOpen)}
+                                className="flex w-full items-center justify-between px-3 py-3 text-left transition-colors hover:bg-[var(--app-subtle-bg)]"
+                                aria-expanded={isThemeOpen}
+                                aria-haspopup="listbox"
+                            >
+                                <span className="text-[var(--app-fg)]">{t('settings.display.theme')}</span>
+                                <span className="flex items-center gap-1 text-[var(--app-hint)]">
+                                    <span>{currentThemeLabel}</span>
+                                    <ChevronDownIcon className={`transition-transform ${isThemeOpen ? 'rotate-180' : ''}`} />
+                                </span>
+                            </button>
+
+                            {isThemeOpen && (
+                                <div
+                                    className="absolute right-3 top-full mt-1 min-w-[160px] rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] shadow-lg overflow-hidden z-50"
+                                    role="listbox"
+                                    aria-label={t('settings.display.theme')}
+                                >
+                                    {themeOptions.map((opt) => {
+                                        const isSelected = themePreference === opt.value
+                                        return (
+                                            <button
+                                                key={opt.value}
+                                                type="button"
+                                                role="option"
+                                                aria-selected={isSelected}
+                                                onClick={() => handleThemeChange(opt.value)}
+                                                className={`flex items-center justify-between w-full px-3 py-2 text-base text-left transition-colors ${
+                                                    isSelected
+                                                        ? 'text-[var(--app-link)] bg-[var(--app-subtle-bg)]'
+                                                        : 'text-[var(--app-fg)] hover:bg-[var(--app-subtle-bg)]'
+                                                }`}
+                                            >
+                                                <span>{t(`settings.display.theme.${opt.value}`)}</span>
+                                                {isSelected && (
+                                                    <span className="ml-2 text-[var(--app-link)]">
+                                                        <CheckIcon />
+                                                    </span>
+                                                )}
+                                            </button>
+                                        )
+                                    })}
+                                </div>
+                            )}
                         </div>
                         <div ref={fontContainerRef} className="relative">
                             <button
