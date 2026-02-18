@@ -23,6 +23,7 @@ export function useListTransition(opts: {
 
     const prevRectsRef = useRef<Map<string, Rect>>(new Map())
     const prevSelectedOffsetRef = useRef<number | null>(null)
+    const prevSelectedIdRef = useRef<string | null | undefined>(null)
     const prevUnfreezeCountRef = useRef(unfreezeCount)
 
     useLayoutEffect(() => {
@@ -33,13 +34,20 @@ export function useListTransition(opts: {
 
         if (didUnfreeze && listContainer) {
             // Step 1: Pin scroll position for selected session
-            if (scrollContainer && selectedSessionId && prevSelectedOffsetRef.current !== null) {
+            // Only pin if the selected session is the same one we captured the offset for
+            const prevOffset = prevSelectedOffsetRef.current
+            if (
+                scrollContainer
+                && selectedSessionId
+                && selectedSessionId === prevSelectedIdRef.current
+                && prevOffset !== null
+            ) {
                 const selectedEl = querySessionEl(listContainer, selectedSessionId)
                 if (selectedEl) {
                     const containerRect = scrollContainer.getBoundingClientRect()
                     const selectedRect = selectedEl.getBoundingClientRect()
                     const newOffset = selectedRect.top - containerRect.top
-                    const delta = newOffset - prevSelectedOffsetRef.current
+                    const delta = newOffset - prevOffset
                     if (Math.abs(delta) > 1) {
                         scrollContainer.scrollTop += delta
                     }
@@ -91,6 +99,7 @@ export function useListTransition(opts: {
 
         // Always capture selected session's offset for scroll pinning
         // (cheap single querySelector; accounts for user scrolling while frozen)
+        prevSelectedIdRef.current = selectedSessionId ?? null
         if (scrollContainer && selectedSessionId && listContainer) {
             const selectedEl = querySessionEl(listContainer, selectedSessionId)
             if (selectedEl) {

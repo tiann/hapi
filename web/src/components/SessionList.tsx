@@ -197,8 +197,49 @@ export function patchGroupsVisuals(
     return anyChanged || patched.length !== frozenGroups.length ? patched : frozenGroups
 }
 
-function getSessionIdHash(sessions: SessionSummary[]): string {
+export function getSessionIdHash(sessions: SessionSummary[]): string {
     return sessions.map(s => s.id).sort().join('\0')
+}
+
+export type FreezeState = {
+    frozenGroups: SessionGroup[] | null
+    prevSelectedSessionId: string | null | undefined
+    prevSessionIdHash: string
+    unfreezeCount: number
+}
+
+export function computeFreezeStep(
+    state: FreezeState,
+    liveGroups: SessionGroup[],
+    selectedSessionId: string | null | undefined,
+    sessions: SessionSummary[]
+): FreezeState & { displayGroups: SessionGroup[] } {
+    const selectionChanged = selectedSessionId !== state.prevSelectedSessionId
+    const sessionIdHash = getSessionIdHash(sessions)
+    const sessionsChanged = sessionIdHash !== state.prevSessionIdHash
+    const shouldUnfreeze = selectionChanged || sessionsChanged
+
+    let frozenGroups = state.frozenGroups
+    let unfreezeCount = state.unfreezeCount
+
+    if (shouldUnfreeze || !frozenGroups) {
+        frozenGroups = liveGroups
+        if (shouldUnfreeze) {
+            unfreezeCount += 1
+        }
+    } else if (selectedSessionId) {
+        frozenGroups = patchGroupsVisuals(frozenGroups, sessions)
+    } else {
+        frozenGroups = liveGroups
+    }
+
+    return {
+        frozenGroups,
+        prevSelectedSessionId: selectedSessionId,
+        prevSessionIdHash: sessionIdHash,
+        unfreezeCount,
+        displayGroups: frozenGroups
+    }
 }
 
 function useFrozenGroups(
@@ -206,33 +247,19 @@ function useFrozenGroups(
     selectedSessionId: string | null | undefined,
     sessions: SessionSummary[]
 ): { displayGroups: SessionGroup[]; unfreezeCount: number } {
-    const frozenRef = useRef<SessionGroup[] | null>(null)
-    const prevSelectedRef = useRef<string | null | undefined>(null)
-    const prevSessionIdHashRef = useRef(getSessionIdHash(sessions))
-    const unfreezeCountRef = useRef(0)
+    const stateRef = useRef<FreezeState>({
+        frozenGroups: null,
+        prevSelectedSessionId: null,
+        prevSessionIdHash: getSessionIdHash(sessions),
+        unfreezeCount: 0
+    })
 
-    const selectionChanged = selectedSessionId !== prevSelectedRef.current
-    const sessionIdHash = getSessionIdHash(sessions)
-    const sessionsChanged = sessionIdHash !== prevSessionIdHashRef.current
-    const shouldUnfreeze = selectionChanged || sessionsChanged
-
-    prevSelectedRef.current = selectedSessionId
-    prevSessionIdHashRef.current = sessionIdHash
-
-    if (shouldUnfreeze || !frozenRef.current) {
-        frozenRef.current = liveGroups
-        if (shouldUnfreeze) {
-            unfreezeCountRef.current += 1
-        }
-    } else if (selectedSessionId) {
-        frozenRef.current = patchGroupsVisuals(frozenRef.current, sessions)
-    } else {
-        frozenRef.current = liveGroups
-    }
+    const result = computeFreezeStep(stateRef.current, liveGroups, selectedSessionId, sessions)
+    stateRef.current = result
 
     return {
-        displayGroups: frozenRef.current,
-        unfreezeCount: unfreezeCountRef.current
+        displayGroups: result.displayGroups,
+        unfreezeCount: result.unfreezeCount
     }
 }
 

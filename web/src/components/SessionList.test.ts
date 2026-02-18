@@ -1,12 +1,15 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import type { SessionSummary } from '@/types/api'
 import {
+    computeFreezeStep,
+    getSessionIdHash,
     getUnreadLabelClass,
     groupSessionsByDirectory,
     loadSessionReadHistory,
     patchGroupsVisuals,
     pruneSessionReadHistory,
-    saveSessionReadHistory
+    saveSessionReadHistory,
+    type FreezeState
 } from './SessionList'
 
 function makeSession(overrides: Partial<SessionSummary> & { id: string }): SessionSummary {
@@ -190,5 +193,102 @@ describe('patchGroupsVisuals', () => {
         const patched = patchGroupsVisuals(frozenGroups, [s1])
 
         expect(patched).toBe(frozenGroups)
+    })
+})
+
+describe('computeFreezeStep', () => {
+    const group = (sessions: SessionSummary[]) => ({
+        directory: '/repo',
+        displayName: 'repo',
+        sessions,
+        latestUpdatedAt: 0,
+        latestReadAt: -Infinity,
+        hasActiveSession: false
+    })
+
+    function initialState(sessions: SessionSummary[]): FreezeState {
+        return {
+            frozenGroups: null,
+            prevSelectedSessionId: null,
+            prevSessionIdHash: getSessionIdHash(sessions),
+            unfreezeCount: 0
+        }
+    }
+
+    it('unfreezes on selection change', () => {
+        const s1 = makeSession({ id: 's1' })
+        const s2 = makeSession({ id: 's2' })
+        const liveGroups = [group([s1, s2])]
+        const sessions = [s1, s2]
+
+        // Initial: select s1
+        const r1 = computeFreezeStep(initialState(sessions), liveGroups, 's1', sessions)
+        expect(r1.unfreezeCount).toBe(1)
+
+        // Same selection, same sessions → stays frozen
+        const r2 = computeFreezeStep(r1, liveGroups, 's1', sessions)
+        expect(r2.unfreezeCount).toBe(1)
+
+        // Change selection to s2 → unfreezes
+        const r3 = computeFreezeStep(r2, liveGroups, 's2', sessions)
+        expect(r3.unfreezeCount).toBe(2)
+    })
+
+    it('unfreezes when session ID set changes (same count replacement)', () => {
+        const s1 = makeSession({ id: 's1' })
+        const s2 = makeSession({ id: 's2' })
+        const s3 = makeSession({ id: 's3' })
+
+        const sessions12 = [s1, s2]
+        const sessions13 = [s1, s3]
+
+        const r1 = computeFreezeStep(initialState(sessions12), [group(sessions12)], 's1', sessions12)
+        expect(r1.unfreezeCount).toBe(1)
+
+        // Same selection, same count but different IDs (s2 replaced by s3) → unfreezes
+        const r2 = computeFreezeStep(r1, [group(sessions13)], 's1', sessions13)
+        expect(r2.unfreezeCount).toBe(2)
+    })
+
+    it('stays frozen when only session data changes (no ID set change)', () => {
+        const s1 = makeSession({ id: 's1', active: false })
+        const s1Active = makeSession({ id: 's1', active: true })
+        const sessions = [s1]
+        const sessionsUpdated = [s1Active]
+
+        const r1 = computeFreezeStep(initialState(sessions), [group(sessions)], 's1', sessions)
+        expect(r1.unfreezeCount).toBe(1)
+
+        // Same IDs, just data change → stays frozen, patches visuals
+        const r2 = computeFreezeStep(r1, [group(sessionsUpdated)], 's1', sessionsUpdated)
+        expect(r2.unfreezeCount).toBe(1)
+        expect(r2.displayGroups[0]?.sessions[0]?.active).toBe(true)
+    })
+
+    it('passes through liveGroups when no session is selected', () => {
+        const s1 = makeSession({ id: 's1' })
+        const sessions = [s1]
+        const liveGroups = [group(sessions)]
+
+        const r1 = computeFreezeStep(initialState(sessions), liveGroups, null, sessions)
+        expect(r1.displayGroups).toBe(liveGroups)
+
+        // New liveGroups reference → passes through immediately
+        const liveGroups2 = [group(sessions)]
+        const r2 = computeFreezeStep(r1, liveGroups2, null, sessions)
+        expect(r2.displayGroups).toBe(liveGroups2)
+    })
+
+    it('unfreezes when deselecting (selection → null)', () => {
+        const s1 = makeSession({ id: 's1' })
+        const sessions = [s1]
+        const liveGroups = [group(sessions)]
+
+        const r1 = computeFreezeStep(initialState(sessions), liveGroups, 's1', sessions)
+        expect(r1.unfreezeCount).toBe(1)
+
+        // Deselect → unfreezes
+        const r2 = computeFreezeStep(r1, liveGroups, null, sessions)
+        expect(r2.unfreezeCount).toBe(2)
     })
 })
