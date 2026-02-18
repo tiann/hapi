@@ -213,7 +213,7 @@ export class SessionCache {
             if (now - session.activeAt <= sessionTimeoutMs) continue
             session.active = false
             session.thinking = false
-            this.publisher.emit({ type: 'session-updated', sessionId: session.id, data: { active: false } })
+            this.publisher.emit({ type: 'session-updated', sessionId: session.id, data: { active: false, thinking: false } })
         }
     }
 

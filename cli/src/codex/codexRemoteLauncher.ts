@@ -808,6 +808,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 permissionHandler.reset();
                 reasoningProcessor.abort();
                 diffProcessor.reset();
+                turnInFlight = false;
                 session.onThinkingChange(false);
                 if (isNewCommand) {
                     session.sendSessionEvent({ type: 'message', message: 'Started a new conversation' });

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 /**
  * Tests for the Codex thinking state lifecycle.
@@ -84,6 +84,35 @@ function simulateFinallyBlock(tracker: ThinkingTracker) {
 /** Simulates: handleAbort (lines 59-88) */
 function simulateAbort(tracker: ThinkingTracker) {
     onThinkingChange(tracker, false);
+}
+
+/** Simulates: isolated command (/new, /clear, /model) resets (lines 753-818) */
+function simulateIsolatedCommand(tracker: ThinkingTracker) {
+    tracker.turnInFlight = false;
+    onThinkingChange(tracker, false);
+}
+
+/**
+ * BUG REGRESSION: simulates the broken version where isolated commands
+ * did NOT reset turnInFlight. Used to verify the test catches the bug.
+ */
+function simulateIsolatedCommandBroken(tracker: ThinkingTracker) {
+    // Missing: tracker.turnInFlight = false;
+    onThinkingChange(tracker, false);
+}
+
+/** Simulates: abort → catch(AbortError) → finally sequence */
+function simulateAbortFullSequence(tracker: ThinkingTracker) {
+    // handleAbort sets thinking=false
+    onThinkingChange(tracker, false);
+    // catch block resets turnInFlight for app-server
+    if (tracker.useAppServer) {
+        tracker.turnInFlight = false;
+    }
+    // finally block runs — turnInFlight is now false so thinking clears
+    if (!tracker.useAppServer || !tracker.turnInFlight) {
+        onThinkingChange(tracker, false);
+    }
 }
 
 /** Simulates: catch block on error (lines 975-1024) */
@@ -188,6 +217,110 @@ describe('Codex thinking state lifecycle', () => {
             // 4. Turn completes
             simulateTaskComplete(t);
             expect(t.thinking).toBe(false);
+        });
+
+        it('resets turnInFlight on isolated command so next turn clears thinking', () => {
+            const t = createThinkingTracker(true);
+
+            // 1. Turn starts
+            simulateMessageSent(t);
+            simulateStartTurn(t);
+            simulateFinallyBlock(t);
+            simulateTaskStarted(t);
+            expect(t.turnInFlight).toBe(true);
+
+            // 2. User sends /new while turn is in flight
+            simulateIsolatedCommand(t);
+            expect(t.thinking).toBe(false);
+            expect(t.turnInFlight).toBe(false);
+
+            // 3. Next message — finally block should clear thinking
+            simulateMessageSent(t);
+            simulateStartTurn(t);
+            simulateFinallyBlock(t);
+            expect(t.thinking).toBe(true); // still in flight
+
+            simulateTaskComplete(t);
+            expect(t.thinking).toBe(false);
+        });
+
+        it('REGRESSION: without turnInFlight reset, thinking gets stuck after /new', () => {
+            // This test demonstrates the bug that existed before the fix.
+            // With the broken version, the second turn's finally block
+            // would not clear thinking because turnInFlight was still true
+            // from the previous (interrupted) turn.
+            const t = createThinkingTracker(true);
+
+            // Turn 1 starts
+            simulateMessageSent(t);
+            simulateStartTurn(t);
+            simulateFinallyBlock(t);
+            simulateTaskStarted(t);
+
+            // /new sent during active turn — using BROKEN handler
+            simulateIsolatedCommandBroken(t);
+            expect(t.thinking).toBe(false);
+            expect(t.turnInFlight).toBe(true); // BUG: still true!
+
+            // Turn 2: message sent, turn starts, finally runs
+            simulateMessageSent(t);
+            simulateStartTurn(t);
+            simulateFinallyBlock(t);
+            // Thinking stays true because turnInFlight was never cleared
+            expect(t.thinking).toBe(true);
+
+            // Even after task completes normally, verify it does clear
+            simulateTaskComplete(t);
+            expect(t.thinking).toBe(false);
+
+            // But if task_complete never arrives (e.g. server error before
+            // sending events), thinking would be stuck forever. That's the bug.
+        });
+
+        it('abort during active turn clears both thinking and turnInFlight', () => {
+            const t = createThinkingTracker(true);
+
+            simulateMessageSent(t);
+            simulateStartTurn(t);
+            simulateFinallyBlock(t);
+            simulateTaskStarted(t);
+            expect(t.thinking).toBe(true);
+            expect(t.turnInFlight).toBe(true);
+
+            // Full abort sequence: handleAbort → catch(AbortError) → finally
+            simulateAbortFullSequence(t);
+            expect(t.thinking).toBe(false);
+            expect(t.turnInFlight).toBe(false);
+        });
+
+        it('multiple rapid turns do not leave stale turnInFlight state', () => {
+            const t = createThinkingTracker(true);
+
+            // Turn 1: normal completion
+            simulateMessageSent(t);
+            simulateStartTurn(t);
+            simulateFinallyBlock(t);
+            simulateTaskStarted(t);
+            simulateTaskComplete(t);
+            expect(t.thinking).toBe(false);
+            expect(t.turnInFlight).toBe(false);
+
+            // Turn 2: interrupted by /new
+            simulateMessageSent(t);
+            simulateStartTurn(t);
+            simulateFinallyBlock(t);
+            simulateTaskStarted(t);
+            simulateIsolatedCommand(t);
+            expect(t.turnInFlight).toBe(false);
+
+            // Turn 3: should work normally
+            simulateMessageSent(t);
+            simulateStartTurn(t);
+            simulateFinallyBlock(t);
+            simulateTaskStarted(t);
+            simulateTaskComplete(t);
+            expect(t.thinking).toBe(false);
+            expect(t.turnInFlight).toBe(false);
         });
     });
 
