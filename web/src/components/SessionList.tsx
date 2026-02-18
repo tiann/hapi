@@ -111,6 +111,27 @@ function PlusIcon(props: { className?: string }) {
     )
 }
 
+function MoreVerticalIcon(props: { className?: string }) {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="24"
+            height="24"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={props.className}
+        >
+            <circle cx="12" cy="12" r="1" />
+            <circle cx="12" cy="5" r="1" />
+            <circle cx="12" cy="19" r="1" />
+        </svg>
+    )
+}
+
 function BulbIcon(props: { className?: string }) {
     return (
         <svg
@@ -353,72 +374,91 @@ function SessionItem(props: {
                         </span>
                     </div>
                 ) : null}
-                <button
-                    type="button"
-                    {...longPressHandlers}
-                    className={`session-list-item relative z-10 flex w-full flex-col gap-1.5 px-3 py-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] select-none ${selected ? 'bg-[var(--app-secondary-bg)] border-l-2 border-[var(--app-link)]' : 'bg-[var(--app-bg)]'}`}
+                <div
+                    className={`session-list-item relative z-10 flex w-full select-none ${selected ? 'bg-[var(--app-secondary-bg)] border-l-2 border-[var(--app-link)]' : 'bg-[var(--app-bg)]'}`}
                     style={{
                         WebkitTouchCallout: 'none',
                         transform: showSwipeUi && swipeOffset !== 0 ? `translateX(${swipeOffset}px)` : undefined,
                         transition: showSwipeUi ? (isSwiping ? 'none' : 'transform 150ms ease-out') : undefined
                     }}
-                    aria-current={selected ? 'page' : undefined}
                 >
-                    <div className="flex items-center justify-between gap-3">
-                        <div className="flex items-center gap-2 min-w-0">
-                            <span className="flex h-4 w-4 items-center justify-center" aria-hidden="true">
-                                <span
-                                    className={`h-2 w-2 rounded-full ${statusDotClass}`}
-                                />
-                            </span>
-                            <div className="truncate text-base font-medium">
-                                {sessionName}
+                    <button
+                        type="button"
+                        {...longPressHandlers}
+                        className="flex-1 flex flex-col gap-1.5 px-3 py-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]"
+                        aria-current={selected ? 'page' : undefined}
+                    >
+                        <div className="flex items-center justify-between gap-3">
+                            <div className="flex items-center gap-2 min-w-0">
+                                <span className="flex h-4 w-4 items-center justify-center" aria-hidden="true">
+                                    <span
+                                        className={`h-2 w-2 rounded-full ${statusDotClass}`}
+                                    />
+                                </span>
+                                <div className="truncate text-base font-medium">
+                                    {sessionName}
+                                </div>
+                            </div>
+                            <div className="flex items-center gap-2 shrink-0 text-xs">
+                                {s.thinking ? (
+                                    <span className="text-[#007AFF] animate-pulse">
+                                        {t('session.item.thinking')}
+                                    </span>
+                                ) : null}
+                                {(() => {
+                                    const progress = getTodoProgress(s)
+                                    if (!progress) return null
+                                    return (
+                                        <span className="flex items-center gap-1 text-[var(--app-hint)]">
+                                            <BulbIcon className="h-3 w-3" />
+                                            {progress.completed}/{progress.total}
+                                        </span>
+                                    )
+                                })()}
+                                {s.pendingRequestsCount > 0 ? (
+                                    <span className="text-[var(--app-badge-warning-text)]">
+                                        {t('session.item.pending')} {s.pendingRequestsCount}
+                                    </span>
+                                ) : null}
+                                <span className="text-[var(--app-hint)]">
+                                    {formatRelativeTime(s.updatedAt, t)}
+                                </span>
                             </div>
                         </div>
-                        <div className="flex items-center gap-2 shrink-0 text-xs">
-                            {s.thinking ? (
-                                <span className="text-[#007AFF] animate-pulse">
-                                    {t('session.item.thinking')}
-                                </span>
-                            ) : null}
-                            {(() => {
-                                const progress = getTodoProgress(s)
-                                if (!progress) return null
-                                return (
-                                    <span className="flex items-center gap-1 text-[var(--app-hint)]">
-                                        <BulbIcon className="h-3 w-3" />
-                                        {progress.completed}/{progress.total}
-                                    </span>
-                                )
-                            })()}
-                            {s.pendingRequestsCount > 0 ? (
-                                <span className="text-[var(--app-badge-warning-text)]">
-                                    {t('session.item.pending')} {s.pendingRequestsCount}
-                                </span>
-                            ) : null}
-                            <span className="text-[var(--app-hint)]">
-                                {formatRelativeTime(s.updatedAt, t)}
-                            </span>
-                        </div>
-                    </div>
-                    {showPath ? (
-                        <div className="truncate text-xs text-[var(--app-hint)]">
-                            {s.metadata?.path ?? s.id}
-                        </div>
-                    ) : null}
-                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[var(--app-hint)]">
-                        <span className="inline-flex items-center gap-2">
-                            <span className="flex h-4 w-4 items-center justify-center" aria-hidden="true">
-                                ❖
-                            </span>
-                            {getAgentLabel(s)}
-                        </span>
-                        <span>{t('session.item.modelMode')}: {s.modelMode || 'default'}</span>
-                        {s.metadata?.worktree?.branch ? (
-                            <span>{t('session.item.worktree')}: {s.metadata.worktree.branch}</span>
+                        {showPath ? (
+                            <div className="truncate text-xs text-[var(--app-hint)]">
+                                {s.metadata?.path ?? s.id}
+                            </div>
                         ) : null}
-                    </div>
-                </button>
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[var(--app-hint)]">
+                            <span className="inline-flex items-center gap-2">
+                                <span className="flex h-4 w-4 items-center justify-center" aria-hidden="true">
+                                    ❖
+                                </span>
+                                {getAgentLabel(s)}
+                            </span>
+                            <span>{t('session.item.modelMode')}: {s.modelMode || 'default'}</span>
+                            {s.metadata?.worktree?.branch ? (
+                                <span>{t('session.item.worktree')}: {s.metadata.worktree.branch}</span>
+                            ) : null}
+                        </div>
+                    </button>
+                    <button
+                        type="button"
+                        className="px-2 flex items-center justify-center text-[var(--app-hint)] hover:text-[var(--app-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]"
+                        onClick={(e) => {
+                            e.stopPropagation()
+                            const rect = e.currentTarget.getBoundingClientRect()
+                            setMenuAnchorPoint({ x: rect.left, y: rect.bottom })
+                            setMenuOpen(true)
+                        }}
+                        aria-label={t('session.more')}
+                        aria-haspopup="true"
+                        aria-expanded={menuOpen}
+                    >
+                        <MoreVerticalIcon className="h-5 w-5" />
+                    </button>
+                </div>
             </div>
 
             <SessionActionMenu
@@ -547,6 +587,7 @@ export function SessionList(props: {
                                     type="button"
                                     onClick={() => toggleGroup(group.key, isCollapsed)}
                                     className="flex min-w-0 flex-1 items-center gap-2 text-left transition-colors hover:bg-[var(--app-secondary-bg)]"
+                                    aria-expanded={!isCollapsed}
                                 >
                                     <ChevronIcon
                                         className="h-4 w-4 text-[var(--app-hint)]"
