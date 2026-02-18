@@ -74,18 +74,24 @@ export class SessionCache {
 
         if (stored.todos === null && !this.todoBackfillAttemptedSessionIds.has(sessionId)) {
             this.todoBackfillAttemptedSessionIds.add(sessionId)
-            const messages = this.store.messages.getMessages(sessionId, 200)
-            for (let i = messages.length - 1; i >= 0; i -= 1) {
-                const message = messages[i]
-                const todos = extractTodoWriteTodosFromMessageContent(message.content)
-                if (todos) {
-                    const updated = this.store.sessions.setSessionTodos(sessionId, todos, message.createdAt, stored.namespace)
-                    if (updated) {
-                        stored = this.store.sessions.getSession(sessionId) ?? stored
+
+            setImmediate(() => {
+                const messages = this.store.messages.getMessages(sessionId, 200)
+                for (let i = messages.length - 1; i >= 0; i -= 1) {
+                    const message = messages[i]
+                    const todos = extractTodoWriteTodosFromMessageContent(message.content)
+                    if (todos) {
+                        const current = this.store.sessions.getSession(sessionId)
+                        if (!current) break
+
+                        const updated = this.store.sessions.setSessionTodos(sessionId, todos, message.createdAt, current.namespace)
+                        if (updated) {
+                            this.refreshSession(sessionId)
+                        }
+                        break
                     }
-                    break
                 }
-            }
+            })
         }
 
         const metadata = (() => {
