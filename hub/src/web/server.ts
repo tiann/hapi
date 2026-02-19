@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { logger } from 'hono/logger'
+import { secureHeaders } from 'hono/secure-headers'
 import { join } from 'node:path'
 import { existsSync } from 'node:fs'
 import { serveStatic } from 'hono/bun'
@@ -61,7 +62,7 @@ function serveEmbeddedAsset(asset: EmbeddedWebAsset): Response {
     })
 }
 
-function createWebApp(options: {
+export function createWebApp(options: {
     getSyncEngine: () => SyncEngine | null
     getSseManager: () => SSEManager | null
     getVisibilityTracker: () => VisibilityTracker | null
@@ -76,6 +77,7 @@ function createWebApp(options: {
     const app = new Hono<WebAppEnv>()
 
     app.use('*', logger())
+    app.use('*', secureHeaders())
 
     // Health check endpoint (no auth required)
     app.get('/health', (c) => c.json({

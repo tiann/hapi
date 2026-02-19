@@ -79,7 +79,7 @@ export async function getOrCreateCliApiToken(dataDir: string): Promise<CliApiTok
     if (envToken) {
         const normalized = normalizeCliApiToken(envToken, 'env')
         if (isWeakToken(normalized.token)) {
-            console.warn('[WARN] CLI_API_TOKEN appears to be weak. Consider using a stronger secret.')
+            throw new Error('[ERROR] CLI_API_TOKEN is too weak. It must be at least 16 characters long and not follow common weak patterns. Please use a stronger secret.')
         }
 
         // Persist env token to file if not already saved (prevents token loss on env var issues)
@@ -99,6 +99,9 @@ export async function getOrCreateCliApiToken(dataDir: string): Promise<CliApiTok
                 return null
             }
             const normalized = normalizeCliApiToken(settings.cliApiToken, 'file')
+            if (isWeakToken(normalized.token)) {
+                throw new Error('[ERROR] Saved CLI API token in settings.json is too weak. It must be at least 16 characters long. Please update it or delete the field to auto-generate a new one.')
+            }
             if (normalized.didStrip) {
                 settings.cliApiToken = normalized.token
                 return { value: normalized.token, writeBack: true }

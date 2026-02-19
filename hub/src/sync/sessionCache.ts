@@ -1,6 +1,6 @@
 import { AgentStateSchema, MetadataSchema } from '@hapi/protocol/schemas'
 import type { ModelMode, PermissionMode, Session } from '@hapi/protocol/types'
-import type { Store } from '../store'
+import type { Store, StoredSession } from '../store'
 import { clampAliveTime } from './aliveTime'
 import { EventPublisher } from './eventPublisher'
 import { extractTodoWriteTodosFromMessageContent, TodosSchema } from './todos'
@@ -57,11 +57,11 @@ export class SessionCache {
 
     getOrCreateSession(tag: string, metadata: unknown, agentState: unknown, namespace: string): Session {
         const stored = this.store.sessions.getOrCreateSession(tag, metadata, agentState, namespace)
-        return this.refreshSession(stored.id) ?? (() => { throw new Error('Failed to load session') })()
+        return this.refreshSession(stored.id, stored) ?? (() => { throw new Error('Failed to load session') })()
     }
 
-    refreshSession(sessionId: string): Session | null {
-        let stored = this.store.sessions.getSession(sessionId)
+    refreshSession(sessionId: string, existingStored?: StoredSession): Session | null {
+        let stored = existingStored ?? this.store.sessions.getSession(sessionId)
         if (!stored) {
             const existed = this.sessions.delete(sessionId)
             if (existed) {
@@ -74,18 +74,24 @@ export class SessionCache {
 
         if (stored.todos === null && !this.todoBackfillAttemptedSessionIds.has(sessionId)) {
             this.todoBackfillAttemptedSessionIds.add(sessionId)
-            const messages = this.store.messages.getMessages(sessionId, 200)
-            for (let i = messages.length - 1; i >= 0; i -= 1) {
-                const message = messages[i]
-                const todos = extractTodoWriteTodosFromMessageContent(message.content)
-                if (todos) {
-                    const updated = this.store.sessions.setSessionTodos(sessionId, todos, message.createdAt, stored.namespace)
-                    if (updated) {
-                        stored = this.store.sessions.getSession(sessionId) ?? stored
+
+            setImmediate(() => {
+                const messages = this.store.messages.getMessages(sessionId, 200)
+                for (let i = messages.length - 1; i >= 0; i -= 1) {
+                    const message = messages[i]
+                    const todos = extractTodoWriteTodosFromMessageContent(message.content)
+                    if (todos) {
+                        const current = this.store.sessions.getSession(sessionId)
+                        if (!current) break
+
+                        const updated = this.store.sessions.setSessionTodos(sessionId, todos, message.createdAt, current.namespace)
+                        if (updated) {
+                            this.refreshSession(sessionId)
+                        }
+                        break
                     }
-                    break
                 }
-            }
+            })
         }
 
         const metadata = (() => {
@@ -131,7 +137,7 @@ export class SessionCache {
     reloadAll(): void {
         const sessions = this.store.sessions.getSessions()
         for (const session of sessions) {
-            this.refreshSession(session.id)
+            this.refreshSession(session.id, session)
         }
     }
 

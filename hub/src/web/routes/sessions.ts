@@ -29,12 +29,17 @@ const uploadDeleteSchema = z.object({
 })
 
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+const MULTIPART_UPLOAD_CHUNK_BYTES = 256 * 1024
 
 function estimateBase64Bytes(base64: string): number {
     const len = base64.length
     if (len === 0) return 0
     const padding = base64.endsWith('==') ? 2 : base64.endsWith('=') ? 1 : 0
     return Math.floor((len * 3) / 4) - padding
+}
+
+function encodeChunkBase64(chunk: Uint8Array): string {
+    return Buffer.from(chunk).toString('base64')
 }
 
 export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Hono<WebAppEnv> {
@@ -153,6 +158,104 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             )
             return c.json(result)
         } catch (error) {
+            return c.json({
+                success: false,
+                error: error instanceof Error ? error.message : 'Failed to upload file'
+            }, 500)
+        }
+    })
+
+    app.post('/sessions/:id/upload/multipart', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const formData = await c.req.formData().catch(() => null)
+        const fileValue = formData?.get('file')
+        const filenameValue = formData?.get('filename')
+        const mimeTypeValue = formData?.get('mimeType')
+
+        if (!(fileValue instanceof File)) {
+            return c.json({ success: false, error: 'File is required' }, 400)
+        }
+
+        const filename = typeof filenameValue === 'string' && filenameValue.trim().length > 0
+            ? filenameValue.trim()
+            : fileValue.name
+        const mimeType = typeof mimeTypeValue === 'string' && mimeTypeValue.trim().length > 0
+            ? mimeTypeValue.trim()
+            : (fileValue.type || 'application/octet-stream')
+
+        if (!filename) {
+            return c.json({ success: false, error: 'Filename is required' }, 400)
+        }
+
+        if (fileValue.size > MAX_UPLOAD_BYTES) {
+            return c.json({ success: false, error: 'File too large (max 50MB)' }, 413)
+        }
+
+        let uploadId: string | undefined
+
+        try {
+            const start = await engine.uploadMultipartStart(sessionResult.sessionId, filename, mimeType)
+            if (!start.success || !start.uploadId) {
+                return c.json(start, 500)
+            }
+            uploadId = start.uploadId
+
+            const reader = fileValue.stream().getReader()
+            let done = false
+            let buffered = new Uint8Array(0)
+
+            while (!done) {
+                const read = await reader.read()
+                done = read.done
+                if (!read.value || read.value.length === 0) {
+                    continue
+                }
+
+                const merged = new Uint8Array(buffered.length + read.value.length)
+                merged.set(buffered)
+                merged.set(read.value, buffered.length)
+                buffered = merged
+
+                while (buffered.length >= MULTIPART_UPLOAD_CHUNK_BYTES) {
+                    const chunk = buffered.subarray(0, MULTIPART_UPLOAD_CHUNK_BYTES)
+                    const chunkResult = await engine.uploadMultipartChunk(sessionResult.sessionId, uploadId, encodeChunkBase64(chunk))
+                    if (!chunkResult.success) {
+                        throw new Error(chunkResult.error || 'Failed to upload chunk')
+                    }
+                    buffered = buffered.subarray(MULTIPART_UPLOAD_CHUNK_BYTES)
+                }
+            }
+
+            if (buffered.length > 0) {
+                const lastChunkResult = await engine.uploadMultipartChunk(
+                    sessionResult.sessionId,
+                    uploadId,
+                    encodeChunkBase64(buffered)
+                )
+                if (!lastChunkResult.success) {
+                    throw new Error(lastChunkResult.error || 'Failed to upload chunk')
+                }
+            }
+
+            const complete = await engine.uploadMultipartComplete(sessionResult.sessionId, uploadId)
+            if (!complete.success) {
+                return c.json(complete, 500)
+            }
+
+            return c.json({ success: true, path: complete.path })
+        } catch (error) {
+            if (uploadId) {
+                await engine.uploadMultipartAbort(sessionResult.sessionId, uploadId).catch(() => {})
+            }
             return c.json({
                 success: false,
                 error: error instanceof Error ? error.message : 'Failed to upload file'

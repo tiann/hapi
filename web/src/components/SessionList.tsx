@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject, type WheelEvent } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { useSwipeable, type SwipeEventData } from 'react-swipeable'
 import type { SessionSummary } from '@/types/api'
@@ -16,7 +16,9 @@ import { useTranslation } from '@/lib/use-translation'
 const SESSION_READ_HISTORY_KEY = 'hapi:sessionReadHistory'
 
 type SessionGroup = {
+    key: string
     directory: string
+    machineId: string | null
     displayName: string
     sessions: SessionSummary[]
     latestUpdatedAt: number
@@ -106,39 +108,60 @@ export function sortSessionsByPriority(
     })
 }
 
+function getSessionDirectory(session: SessionSummary): string {
+    return session.metadata?.worktree?.basePath ?? session.metadata?.path ?? 'Other'
+}
+
+function getSessionMachineId(session: SessionSummary): string | null {
+    return session.metadata?.machineId ?? null
+}
+
+function getSessionGroupKey(directory: string, machineId: string | null): string {
+    return `${machineId ?? 'unknown-machine'}::${directory}`
+}
+
 export function groupSessionsByDirectory(
     sessions: SessionSummary[],
     readHistory: SessionReadHistory,
     unreadSessionIds: Set<string> = new Set(),
     now: number = Date.now()
 ): SessionGroup[] {
-    const groups = new Map<string, SessionSummary[]>()
+    const groups = new Map<string, { directory: string; machineId: string | null; sessions: SessionSummary[] }>()
 
     sessions.forEach(session => {
-        const path = session.metadata?.worktree?.basePath ?? session.metadata?.path ?? 'Other'
-        if (!groups.has(path)) {
-            groups.set(path, [])
+        const directory = getSessionDirectory(session)
+        const machineId = getSessionMachineId(session)
+        const key = getSessionGroupKey(directory, machineId)
+
+        if (!groups.has(key)) {
+            groups.set(key, {
+                directory,
+                machineId,
+                sessions: []
+            })
         }
-        groups.get(path)!.push(session)
+        groups.get(key)!.sessions.push(session)
     })
 
     return Array.from(groups.entries())
-        .map(([directory, groupSessions]) => {
-            const sortedSessions = sortSessionsByPriority(groupSessions, readHistory, unreadSessionIds, now)
+        .map(([key, group]) => {
+            const sortedSessions = sortSessionsByPriority(group.sessions, readHistory, unreadSessionIds, now)
 
-            const latestUpdatedAt = groupSessions.reduce(
+            const latestUpdatedAt = group.sessions.reduce(
                 (max, s) => (s.updatedAt > max ? s.updatedAt : max),
                 -Infinity
             )
-            const latestReadAt = groupSessions.reduce(
+            const latestReadAt = group.sessions.reduce(
                 (max, s) => (readHistory[s.id] && readHistory[s.id] > max ? readHistory[s.id] : max),
                 -Infinity
             )
-            const hasActiveSession = groupSessions.some(s => s.active)
-            const displayName = getGroupDisplayName(directory)
+            const hasActiveSession = group.sessions.some(s => s.active)
+            const displayName = getGroupDisplayName(group.directory)
 
             return {
-                directory,
+                key,
+                directory: group.directory,
+                machineId: group.machineId,
                 displayName,
                 sessions: sortedSessions,
                 latestUpdatedAt,
@@ -170,7 +193,9 @@ export function flattenSessions(
     if (sessions.length === 0) return []
 
     return [{
+        key: FLAT_DIRECTORY_KEY,
         directory: FLAT_DIRECTORY_KEY,
+        machineId: null,
         displayName: '',
         sessions: sortSessionsByPriority(sessions, readHistory, unreadSessionIds, now),
         latestUpdatedAt: sessions.reduce((max, s) => Math.max(max, s.updatedAt), -Infinity),
@@ -314,6 +339,27 @@ function PlusIcon(props: { className?: string }) {
         >
             <line x1="12" y1="5" x2="12" y2="19" />
             <line x1="5" y1="12" x2="19" y2="12" />
+        </svg>
+    )
+}
+
+function MoreVerticalIcon(props: { className?: string }) {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="24"
+            height="24"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={props.className}
+        >
+            <circle cx="12" cy="12" r="1" />
+            <circle cx="12" cy="5" r="1" />
+            <circle cx="12" cy="19" r="1" />
         </svg>
     )
 }
@@ -474,6 +520,8 @@ function SessionItem(props: {
     const { haptic, isTouch } = usePlatform()
     const SWIPE_MAX_PX = 112
     const SWIPE_TRIGGER_PX = 72
+    const TRACKPAD_SWIPE_MULTIPLIER = 0.45
+    const TRACKPAD_TRIGGER_PX = 92
     const [menuOpen, setMenuOpen] = useState(false)
     const [menuAnchorPoint, setMenuAnchorPoint] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
     const [renameOpen, setRenameOpen] = useState(false)
@@ -481,6 +529,17 @@ function SessionItem(props: {
     const [deleteOpen, setDeleteOpen] = useState(false)
     const [swipeOffset, setSwipeOffset] = useState(0)
     const [isSwiping, setIsSwiping] = useState(false)
+    const trackpadSwipeOffsetRef = useRef(0)
+    const trackpadSwipeEndTimerRef = useRef<number | null>(null)
+    const isMacPlatform = useMemo(() => {
+        if (typeof navigator === 'undefined') return false
+        const userAgentData = (navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData
+        const platform = userAgentData?.platform ?? navigator.platform ?? ''
+        return /mac/i.test(platform)
+    }, [])
+    const enableTrackpadSwipe = !isTouch && isMacPlatform
+    const showSwipeUi = isTouch || enableTrackpadSwipe
+    const showSwipeAction = showSwipeUi && (isSwiping || swipeOffset < 0)
 
     const { archiveSession, renameSession, deleteSession, isPending } = useSessionActions(
         api,
@@ -509,7 +568,16 @@ function SessionItem(props: {
         threshold: 500
     })
 
+    const clearTrackpadSwipeEndTimer = () => {
+        if (trackpadSwipeEndTimerRef.current !== null) {
+            window.clearTimeout(trackpadSwipeEndTimerRef.current)
+            trackpadSwipeEndTimerRef.current = null
+        }
+    }
+
     const resetSwipe = () => {
+        clearTrackpadSwipeEndTimer()
+        trackpadSwipeOffsetRef.current = 0
         setSwipeOffset(0)
         setIsSwiping(false)
     }
@@ -551,6 +619,42 @@ function SessionItem(props: {
         }
     })
 
+    const scheduleTrackpadSwipeEnd = () => {
+        clearTrackpadSwipeEndTimer()
+        trackpadSwipeEndTimerRef.current = window.setTimeout(() => {
+            if (trackpadSwipeOffsetRef.current <= -TRACKPAD_TRIGGER_PX && !isPending) {
+                triggerArchiveFromSwipe()
+                return
+            }
+            resetSwipe()
+        }, 90)
+    }
+
+    const handleTrackpadWheel = (event: WheelEvent<HTMLDivElement>) => {
+        if (!enableTrackpadSwipe || isPending) return
+        if (event.deltaMode !== 0) return
+        if (Math.abs(event.deltaX) <= Math.abs(event.deltaY)) return
+
+        const adjustedDeltaX = event.deltaX * TRACKPAD_SWIPE_MULTIPLIER
+        const nextOffset = Math.max(
+            -SWIPE_MAX_PX,
+            Math.min(0, trackpadSwipeOffsetRef.current + adjustedDeltaX)
+        )
+        if (nextOffset === trackpadSwipeOffsetRef.current) return
+
+        event.preventDefault()
+        trackpadSwipeOffsetRef.current = nextOffset
+        setSwipeOffset(nextOffset)
+        setIsSwiping(true)
+        scheduleTrackpadSwipeEnd()
+    }
+
+    useEffect(() => {
+        return () => {
+            clearTrackpadSwipeEndTimer()
+        }
+    }, [])
+
     const sessionName = getSessionTitle(s)
     const statusDotClass = s.active
         ? (s.thinking ? 'bg-[#007AFF]' : 'bg-[var(--app-badge-success-text)]')
@@ -563,120 +667,124 @@ function SessionItem(props: {
             <div
                 data-session-id={s.id}
                 {...(isTouch && !selectionMode ? swipeHandlers : {})}
-                className="relative overflow-hidden group"
+                onWheel={enableTrackpadSwipe && !selectionMode ? handleTrackpadWheel : undefined}
+                className="relative isolate overflow-hidden group"
                 style={{ touchAction: 'pan-y' }}
             >
-                {!isTouch && !selectionMode ? (
-                    <button
-                        type="button"
-                        onClick={(event) => {
-                            event.preventDefault()
-                            event.stopPropagation()
-                            if (s.active) {
-                                setArchiveOpen(true)
-                                return
-                            }
-                            setDeleteOpen(true)
-                        }}
-                        className="absolute right-2 top-1/2 z-20 -translate-y-1/2 rounded p-1 text-[var(--app-hint)] opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 hover:bg-[var(--app-subtle-bg)] hover:text-red-500"
-                        title={s.active ? t('session.action.archive') : t('session.action.delete')}
-                        aria-label={s.active ? t('session.action.archive') : t('session.action.delete')}
+                {showSwipeUi && !selectionMode ? (
+                    <div
+                        className="absolute inset-y-0 right-0 -z-10 flex w-28 items-center justify-center bg-red-500/85 transition-opacity duration-100 pointer-events-none"
+                        style={{ opacity: showSwipeAction ? 1 : 0 }}
                     >
-                        <TrashIcon className="h-4 w-4" />
-                    </button>
-                ) : null}
-                {isTouch && !selectionMode ? (
-                    <div className="absolute inset-y-0 right-0 flex w-28 items-center justify-center bg-red-500/85">
                         <span className="text-xs font-semibold uppercase tracking-wide text-white">
                             {s.active ? t('session.action.archive') : t('session.action.delete')}
                         </span>
                     </div>
                 ) : null}
-                <button
-                    type="button"
-                    {...longPressHandlers}
-                    className={`session-list-item relative z-10 flex w-full flex-col gap-1.5 px-3 py-3 pr-11 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] select-none ${highlighted ? 'bg-[var(--app-secondary-bg)]' : 'bg-[var(--app-bg)]'}`}
+                <div
+                    className={`session-list-item relative z-10 flex w-full select-none ${highlighted ? 'bg-[var(--app-secondary-bg)] border-l-2 border-[var(--app-link)]' : 'bg-[var(--app-bg)]'}`}
                     style={{
                         WebkitTouchCallout: 'none',
-                        transform: isTouch && swipeOffset !== 0 ? `translateX(${swipeOffset}px)` : undefined,
-                        transition: isTouch ? (isSwiping ? 'none' : 'transform 150ms ease-out') : undefined
+                        transform: showSwipeUi && swipeOffset !== 0 ? `translateX(${swipeOffset}px)` : undefined,
+                        transition: showSwipeUi ? (isSwiping ? 'none' : 'transform 150ms ease-out') : undefined
                     }}
-                    aria-current={selected ? 'page' : undefined}
-                    aria-pressed={selectionMode ? selectedForBulk : undefined}
                 >
-                    <div className="flex items-center justify-between gap-3">
-                        <div className="flex items-center gap-2 min-w-0">
-                            {selectionMode ? (
-                                <span
-                                    className={`flex h-4 w-4 items-center justify-center rounded border ${selectedForBulk ? 'border-[var(--app-link)] bg-[var(--app-link)] text-white' : 'border-[var(--app-border)] text-transparent'}`}
-                                    aria-hidden="true"
-                                >
-                                    <CheckIcon className="h-3 w-3" />
+                    <button
+                        type="button"
+                        {...longPressHandlers}
+                        className="flex-1 flex flex-col gap-1.5 px-3 py-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]"
+                        aria-current={selected ? 'page' : undefined}
+                        aria-pressed={selectionMode ? selectedForBulk : undefined}
+                    >
+                        <div className="flex items-center justify-between gap-3">
+                            <div className="flex items-center gap-2 min-w-0">
+                                {selectionMode ? (
+                                    <span
+                                        className={`flex h-4 w-4 items-center justify-center rounded border ${selectedForBulk ? 'border-[var(--app-link)] bg-[var(--app-link)] text-white' : 'border-[var(--app-border)] text-transparent'}`}
+                                        aria-hidden="true"
+                                    >
+                                        <CheckIcon className="h-3 w-3" />
+                                    </span>
+                                ) : null}
+                                <span className="flex h-4 w-4 items-center justify-center" aria-hidden="true">
+                                    <span
+                                        className={`h-2 w-2 rounded-full ${statusDotClass}`}
+                                    />
                                 </span>
-                            ) : null}
-                            <span className="flex h-4 w-4 items-center justify-center" aria-hidden="true">
-                                <span
-                                    className={`h-2 w-2 rounded-full ${statusDotClass}`}
-                                />
-                            </span>
-                            <div className="truncate text-base font-medium">
-                                {sessionName}
+                                <div className="truncate text-base font-medium">
+                                    {sessionName}
+                                </div>
+                            </div>
+                            <div className="flex items-center gap-2 shrink-0 text-xs">
+                                {s.thinking ? (
+                                    <span className="text-[#007AFF] animate-pulse">
+                                        {t('session.item.thinking')}
+                                    </span>
+                                ) : null}
+                                {unread ? (
+                                    <span className={unreadLabelClass}>
+                                        {t('session.item.unread')}
+                                    </span>
+                                ) : null}
+                                {(() => {
+                                    const progress = getTodoProgress(s)
+                                    if (!progress) return null
+                                    return (
+                                        <span className="flex items-center gap-1 text-[var(--app-hint)]">
+                                            <BulbIcon className="h-3 w-3" />
+                                            {progress.completed}/{progress.total}
+                                        </span>
+                                    )
+                                })()}
+                                {s.pendingRequestsCount > 0 ? (
+                                    <span className="text-[var(--app-badge-warning-text)]">
+                                        {t('session.item.pending')} {s.pendingRequestsCount}
+                                    </span>
+                                ) : null}
+                                <span className="text-[var(--app-hint)]">
+                                    {formatRelativeTime(s.updatedAt, t)}
+                                </span>
                             </div>
                         </div>
-                        <div className="flex items-center gap-2 shrink-0 text-xs">
-                            {s.thinking ? (
-                                <span className="text-[#007AFF] animate-pulse">
-                                    {t('session.item.thinking')}
-                                </span>
-                            ) : null}
-                            {unread ? (
-                                <span className={unreadLabelClass}>
-                                    {t('session.item.unread')}
-                                </span>
-                            ) : null}
-                            {(() => {
-                                const progress = getTodoProgress(s)
-                                if (!progress) return null
-                                return (
-                                    <span className="flex items-center gap-1 text-[var(--app-hint)]">
-                                        <BulbIcon className="h-3 w-3" />
-                                        {progress.completed}/{progress.total}
-                                    </span>
-                                )
-                            })()}
-                            {s.pendingRequestsCount > 0 ? (
-                                <span className="text-[var(--app-badge-warning-text)]">
-                                    {t('session.item.pending')} {s.pendingRequestsCount}
-                                </span>
-                            ) : null}
-                            <span className="text-[var(--app-hint)]">
-                                {formatRelativeTime(s.updatedAt, t)}
-                            </span>
-                        </div>
-                    </div>
-                    {showPath ? (
-                        <div className="truncate text-xs text-[var(--app-hint)]">
-                            {s.metadata?.path ?? s.id}
-                        </div>
-                    ) : null}
-                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[var(--app-hint)]">
-                        {projectLabel ? (
-                            <span className="truncate max-w-[160px]" title={projectLabel} data-session-project-label>
-                                {projectLabel}
-                            </span>
+                        {showPath ? (
+                            <div className="truncate text-xs text-[var(--app-hint)]">
+                                {s.metadata?.path ?? s.id}
+                            </div>
                         ) : null}
-                        <span className="inline-flex items-center gap-2">
-                            <span className="flex h-4 w-4 items-center justify-center" aria-hidden="true">
-                                ❖
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[var(--app-hint)]">
+                            {projectLabel ? (
+                                <span className="truncate max-w-[160px]" title={projectLabel} data-session-project-label>
+                                    {projectLabel}
+                                </span>
+                            ) : null}
+                            <span className="inline-flex items-center gap-2">
+                                <span className="flex h-4 w-4 items-center justify-center" aria-hidden="true">
+                                    ❖
+                                </span>
+                                {getAgentLabel(s)}
                             </span>
-                            {getAgentLabel(s)}
-                        </span>
-                        <span>{t('session.item.modelMode')}: {s.modelMode || 'default'}</span>
-                        {s.metadata?.worktree?.branch ? (
-                            <span>{t('session.item.worktree')}: {s.metadata.worktree.branch}</span>
-                        ) : null}
-                    </div>
-                </button>
+                            <span>{t('session.item.modelMode')}: {s.modelMode || 'default'}</span>
+                            {s.metadata?.worktree?.branch ? (
+                                <span>{t('session.item.worktree')}: {s.metadata.worktree.branch}</span>
+                            ) : null}
+                        </div>
+                    </button>
+                    <button
+                        type="button"
+                        className="px-2 flex items-center justify-center text-[var(--app-hint)] hover:text-[var(--app-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]"
+                        onClick={(e) => {
+                            e.stopPropagation()
+                            const rect = e.currentTarget.getBoundingClientRect()
+                            setMenuAnchorPoint({ x: rect.left, y: rect.bottom })
+                            setMenuOpen(true)
+                        }}
+                        aria-label={t('session.more')}
+                        aria-haspopup="true"
+                        aria-expanded={menuOpen}
+                    >
+                        <MoreVerticalIcon className="h-5 w-5" />
+                    </button>
+                </div>
             </div>
 
             <SessionActionMenu
@@ -734,12 +842,13 @@ export function SessionList(props: {
     api: ApiClient | null
     selectedSessionId?: string | null
     scrollContainerRef?: RefObject<HTMLElement | null>
+    machineNames?: Map<string, string>
     view?: 'grouped' | 'flat'
     onToggleView?: () => void
 }) {
     const { t } = useTranslation()
     const queryClient = useQueryClient()
-    const { renderHeader = true, api, selectedSessionId } = props
+    const { renderHeader = true, api, selectedSessionId, machineNames } = props
 
     const [selectionMode, setSelectionMode] = useState(false)
     const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(() => new Set())
@@ -862,15 +971,15 @@ export function SessionList(props: {
     )
 
     const isGroupCollapsed = (group: SessionGroup): boolean => {
-        const override = collapseOverrides.get(group.directory)
+        const override = collapseOverrides.get(group.key)
         if (override !== undefined) return override
         return !group.hasActiveSession
     }
 
-    const toggleGroup = (directory: string, isCollapsed: boolean) => {
+    const toggleGroup = (groupKey: string, isCollapsed: boolean) => {
         setCollapseOverrides(prev => {
             const next = new Map(prev)
-            next.set(directory, !isCollapsed)
+            next.set(groupKey, !isCollapsed)
             return next
         })
     }
@@ -880,11 +989,11 @@ export function SessionList(props: {
         setCollapseOverrides(prev => {
             if (prev.size === 0) return prev
             const next = new Map(prev)
-            const knownGroups = new Set(displayGroups.map(group => group.directory))
+            const knownGroups = new Set(displayGroups.map(group => group.key))
             let changed = false
-            for (const directory of next.keys()) {
-                if (!knownGroups.has(directory)) {
-                    next.delete(directory)
+            for (const groupKey of next.keys()) {
+                if (!knownGroups.has(groupKey)) {
+                    next.delete(groupKey)
                     changed = true
                 }
             }
@@ -1075,31 +1184,40 @@ export function SessionList(props: {
 
                     const isCollapsed = isGroupCollapsed(group)
                     const canQuickCreateInGroup = group.directory !== 'Other'
-                    const groupMachineId = group.sessions[0]?.metadata?.machineId
+                    const groupMachineId = group.machineId ?? group.sessions[0]?.metadata?.machineId
+                    const groupMachineName = groupMachineId ? machineNames?.get(groupMachineId) : undefined
                     const groupUnreadCount = group.sessions.filter(session => unreadSessionIds.has(session.id)).length
                     return (
-                        <div key={group.directory}>
-                            <div data-group-header={group.directory} className="sticky top-0 z-10 flex items-center gap-1 border-b border-[var(--app-divider)] bg-[var(--app-bg)] px-3 py-2">
+                        <div key={group.key}>
+                            <div data-group-header={group.directory} className="sticky top-0 z-10 flex items-center gap-1 border-b border-[var(--app-divider)] bg-[var(--app-subtle-bg)] px-3 py-2">
                                 <button
                                     type="button"
-                                    onClick={() => toggleGroup(group.directory, isCollapsed)}
+                                    onClick={() => toggleGroup(group.key, isCollapsed)}
                                     className="flex min-w-0 flex-1 items-center gap-2 text-left transition-colors hover:bg-[var(--app-secondary-bg)]"
+                                    aria-expanded={!isCollapsed}
                                 >
                                     <ChevronIcon
                                         className="h-4 w-4 text-[var(--app-hint)]"
                                         collapsed={isCollapsed}
                                     />
-                                    <div className="flex items-center gap-2 min-w-0 flex-1">
-                                        <span className="font-medium text-base break-words" title={group.directory}>
-                                            {group.displayName}
-                                        </span>
-                                        <span className="shrink-0 text-xs text-[var(--app-hint)]">
-                                            ({group.sessions.length})
-                                        </span>
-                                        {groupUnreadCount > 0 ? (
-                                            <span className="shrink-0 text-xs text-[#34C759]">
-                                                {groupUnreadCount} {t('session.item.unread')}
+                                    <div className="min-w-0 flex-1">
+                                        <div className="flex items-center gap-2">
+                                            <span className="font-medium text-base break-words" title={group.directory}>
+                                                {group.displayName}
                                             </span>
+                                            <span className="shrink-0 text-xs text-[var(--app-hint)]">
+                                                ({group.sessions.length})
+                                            </span>
+                                            {groupUnreadCount > 0 ? (
+                                                <span className="shrink-0 text-xs text-[#34C759]">
+                                                    {groupUnreadCount} {t('session.item.unread')}
+                                                </span>
+                                            ) : null}
+                                        </div>
+                                        {groupMachineName ? (
+                                            <div className="text-xs text-[var(--app-hint)] truncate">
+                                                {groupMachineName}
+                                            </div>
                                         ) : null}
                                     </div>
                                 </button>

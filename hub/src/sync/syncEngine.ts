@@ -24,7 +24,11 @@ import {
     type RpcListDirectoryResponse,
     type RpcPathExistsResponse,
     type RpcReadFileResponse,
-    type RpcUploadFileResponse
+    type RpcUploadFileResponse,
+    type RpcUploadMultipartAbortResponse,
+    type RpcUploadMultipartChunkResponse,
+    type RpcUploadMultipartCompleteResponse,
+    type RpcUploadMultipartStartResponse
 } from './rpcGateway'
 import { SessionCache } from './sessionCache'
 
@@ -37,7 +41,11 @@ export type {
     RpcListDirectoryResponse,
     RpcPathExistsResponse,
     RpcReadFileResponse,
-    RpcUploadFileResponse
+    RpcUploadFileResponse,
+    RpcUploadMultipartAbortResponse,
+    RpcUploadMultipartChunkResponse,
+    RpcUploadMultipartCompleteResponse,
+    RpcUploadMultipartStartResponse
 } from './rpcGateway'
 
 export type ResumeSessionResult =
@@ -463,6 +471,22 @@ export class SyncEngine {
 
     async uploadFile(sessionId: string, filename: string, content: string, mimeType: string): Promise<RpcUploadFileResponse> {
         return await this.rpcGateway.uploadFile(sessionId, filename, content, mimeType)
+    }
+
+    async uploadMultipartStart(sessionId: string, filename: string, mimeType: string): Promise<RpcUploadMultipartStartResponse> {
+        return await this.rpcGateway.uploadMultipartStart(sessionId, filename, mimeType)
+    }
+
+    async uploadMultipartChunk(sessionId: string, uploadId: string, chunk: string): Promise<RpcUploadMultipartChunkResponse> {
+        return await this.rpcGateway.uploadMultipartChunk(sessionId, uploadId, chunk)
+    }
+
+    async uploadMultipartComplete(sessionId: string, uploadId: string): Promise<RpcUploadMultipartCompleteResponse> {
+        return await this.rpcGateway.uploadMultipartComplete(sessionId, uploadId)
+    }
+
+    async uploadMultipartAbort(sessionId: string, uploadId: string): Promise<RpcUploadMultipartAbortResponse> {
+        return await this.rpcGateway.uploadMultipartAbort(sessionId, uploadId)
     }
 
     async deleteUploadFile(sessionId: string, path: string): Promise<RpcDeleteUploadResponse> {

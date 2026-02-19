@@ -212,6 +212,25 @@ export class MessageQueue2<T> {
     }
 
     /**
+     * Peek at the first item in the queue without removing it.
+     */
+    peek(): { message: string; mode: T; isolate: boolean } | null {
+        if (this.queue.length === 0) return null;
+        const item = this.queue[0];
+        return { message: item.message, mode: item.mode, isolate: item.isolate ?? false };
+    }
+
+    /**
+     * Remove and return the first item from the queue.
+     */
+    shift(): { message: string; mode: T; isolate: boolean } | null {
+        if (this.queue.length === 0) return null;
+        const item = this.queue.shift()!;
+        logger.debug(`[MessageQueue2] shift() removed item. Queue size: ${this.queue.length}`);
+        return { message: item.message, mode: item.mode, isolate: item.isolate ?? false };
+    }
+
+    /**
      * Reset the queue - clears all messages and resets to empty state
      */
     reset(): void {

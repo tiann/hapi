@@ -760,6 +760,8 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 const isNewCommand = message.message.trim() === '/new';
                 const isClearCommand = message.message.trim() === '/clear';
                 const isModelCommand = message.message.trim() === '/model';
+                const requiresFreshThread = isNewCommand || isClearCommand;
+                const threadIdBeforeReset = this.currentThreadId ?? session.sessionId;
                 const statusLabel = isNewCommand
                     ? 'Starting a new conversation...'
                     : isClearCommand
@@ -805,8 +807,8 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 }
                 wasCreated = false;
                 currentModeHash = null;
-                if (isNewCommand) {
-                    previousThreadIdBeforeReset = this.currentThreadId ?? session.sessionId;
+                if (requiresFreshThread) {
+                    previousThreadIdBeforeReset = threadIdBeforeReset;
                     forceFreshThread = true;
                     clearResumeThreadReference();
                 }
@@ -887,7 +889,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                             }
 
                             if (forceFreshThread && previousThreadIdBeforeReset && threadId === previousThreadIdBeforeReset) {
-                                logger.warn(`[Codex] thread/start returned same thread after /new reset (${threadId}), forcing app-server restart and retry`);
+                                logger.warn(`[Codex] thread/start returned same thread after reset (${threadId}), forcing app-server restart and retry`);
                                 await appServerClient.disconnect();
                                 await appServerClient.connect();
                                 await appServerClient.initialize({

@@ -21,7 +21,10 @@ import { RealtimeVoiceSession, registerSessionStore, registerVoiceHooksStore, vo
 import { McpInfoDialog } from '@/components/McpInfoDialog'
 import { SessionTodoPanel } from '@/components/SessionTodoPanel'
 import { SessionBeadPanel } from '@/components/SessionBeadPanel'
+import { ModelSelectorDialog } from '@/components/ModelSelectorDialog'
+import { DevMessageStream } from '@/components/DevMessageStream'
 import { isClaudeFlavor } from '@/lib/agentFlavorUtils'
+import { MODEL_MODES } from '@hapi/protocol'
 
 export function SessionChat(props: {
     api: ApiClient
@@ -53,6 +56,8 @@ export function SessionChat(props: {
     const blocksByIdRef = useRef<Map<string, ChatBlock>>(new Map())
     const [forceScrollToken, setForceScrollToken] = useState(0)
     const [showMcpInfo, setShowMcpInfo] = useState(false)
+    const [showModelSelector, setShowModelSelector] = useState(false)
+    const [devViewOpen, setDevViewOpen] = useState(false)
     const agentFlavor = props.session.metadata?.flavor ?? null
     const { abortSession, switchSession, setPermissionMode, setModelMode } = useSessionActions(
         props.api,
@@ -268,14 +273,27 @@ export function SessionChat(props: {
     }, [navigate, props.session.id])
 
     const handleSend = useCallback((text: string, attachments?: AttachmentMetadata[]) => {
-        // Intercept /mcp to show native MCP info dialog alongside Claude's response
         const trimmed = text.trim()
+
+        // Intercept /mcp to show native MCP info dialog alongside Claude's response
         if (trimmed === '/mcp' || trimmed.startsWith('/mcp ')) {
             setShowMcpInfo(true)
         }
+
+        // Intercept /model for Claude sessions to use native model selector
+        if (isClaudeFlavor(agentFlavor) && (trimmed === '/model' || trimmed.startsWith('/model '))) {
+            const arg = trimmed.replace(/^\/model\s*/, '').trim().toLowerCase()
+            if (arg && (MODEL_MODES as readonly string[]).includes(arg)) {
+                handleModelModeChange(arg as ModelMode)
+            } else {
+                setShowModelSelector(true)
+            }
+            return
+        }
+
         props.onSend(text, attachments)
         setForceScrollToken((token) => token + 1)
-    }, [props.onSend])
+    }, [props.onSend, agentFlavor, handleModelModeChange])
 
     const attachmentAdapter = useMemo(() => {
         if (!props.session.active) {
@@ -300,6 +318,8 @@ export function SessionChat(props: {
                 session={props.session}
                 onBack={props.onBack}
                 onViewFiles={props.session.metadata?.path ? handleViewFiles : undefined}
+                onToggleDevView={() => setDevViewOpen(v => !v)}
+                devViewActive={devViewOpen}
                 api={props.api}
                 onSessionDeleted={props.onBack}
             />
@@ -308,66 +328,74 @@ export function SessionChat(props: {
 
             <SessionTodoPanel todos={props.session.todos} />
 
-            {sessionInactive ? (
-                <div className="px-3 pt-3">
-                    <div className="mx-auto w-full max-w-content rounded-md bg-[var(--app-subtle-bg)] p-3 text-sm text-[var(--app-hint)]">
-                        Session is inactive. Sending will resume it automatically.
-                    </div>
+            {devViewOpen ? (
+                <div className="flex-1 min-h-0">
+                    <DevMessageStream messages={props.messages} />
                 </div>
-            ) : null}
+            ) : (
+                <>
+                    {sessionInactive ? (
+                        <div className="px-3 pt-3">
+                            <div className="mx-auto w-full max-w-content rounded-md bg-[var(--app-subtle-bg)] p-3 text-sm text-[var(--app-hint)]">
+                                Session is inactive. Sending will resume it automatically.
+                            </div>
+                        </div>
+                    ) : null}
 
-            <AssistantRuntimeProvider runtime={runtime}>
-                <div className="relative flex min-h-0 flex-1 flex-col">
-                    <HappyThread
-                        key={props.session.id}
-                        api={props.api}
-                        sessionId={props.session.id}
-                        metadata={props.session.metadata}
-                        disabled={sessionInactive}
-                        onRefresh={props.onRefresh}
-                        onRetryMessage={props.onRetryMessage}
-                        onFlushPending={props.onFlushPending}
-                        onAtBottomChange={props.onAtBottomChange}
-                        isLoadingMessages={props.isLoadingMessages}
-                        messagesWarning={props.messagesWarning}
-                        hasMoreMessages={props.hasMoreMessages}
-                        isLoadingMoreMessages={props.isLoadingMoreMessages}
-                        onLoadMore={props.onLoadMore}
-                        pendingCount={props.pendingCount}
-                        rawMessagesCount={props.messages.length}
-                        normalizedMessagesCount={normalizedMessages.length}
-                        messagesVersion={props.messagesVersion}
-                        forceScrollToken={forceScrollToken}
-                    />
+                    <AssistantRuntimeProvider runtime={runtime}>
+                        <div className="relative flex min-h-0 flex-1 flex-col">
+                            <HappyThread
+                                key={props.session.id}
+                                api={props.api}
+                                sessionId={props.session.id}
+                                metadata={props.session.metadata}
+                                disabled={sessionInactive}
+                                onRefresh={props.onRefresh}
+                                onRetryMessage={props.onRetryMessage}
+                                onFlushPending={props.onFlushPending}
+                                onAtBottomChange={props.onAtBottomChange}
+                                isLoadingMessages={props.isLoadingMessages}
+                                messagesWarning={props.messagesWarning}
+                                hasMoreMessages={props.hasMoreMessages}
+                                isLoadingMoreMessages={props.isLoadingMoreMessages}
+                                onLoadMore={props.onLoadMore}
+                                pendingCount={props.pendingCount}
+                                rawMessagesCount={props.messages.length}
+                                normalizedMessagesCount={normalizedMessages.length}
+                                messagesVersion={props.messagesVersion}
+                                forceScrollToken={forceScrollToken}
+                            />
 
-                    <HappyComposer
-                        disabled={props.isSending}
-                        permissionMode={props.session.permissionMode}
-                        modelMode={props.session.modelMode}
-                        agentFlavor={agentFlavor}
-                        active={props.session.active}
-                        allowSendWhenInactive
-                        thinking={props.session.thinking}
-                        agentState={props.session.agentState}
-                        contextSize={reduced.latestUsage?.contextSize}
-                        controlledByUser={props.session.agentState?.controlledByUser === true}
-                        onPermissionModeChange={handlePermissionModeChange}
-                        onModelModeChange={handleModelModeChange}
-                        onModelCommand={handleRuntimeModelCommand}
-                        onEffortCommand={handleEffortCommand}
-                        onSwitchToRemote={handleSwitchToRemote}
-                        onTerminal={props.session.active ? handleViewTerminal : undefined}
-                        autocompleteSuggestions={props.autocompleteSuggestions}
-                        runtimeModelOptions={props.runtimeModelOptions}
-                        onRefreshModelOptions={props.onRefreshModelOptions}
-                        isRefreshingModelOptions={props.isRefreshingModelOptions}
-                        voiceStatus={voice?.status}
-                        voiceMicMuted={voice?.micMuted}
-                        onVoiceToggle={voice ? handleVoiceToggle : undefined}
-                        onVoiceMicToggle={voice ? handleVoiceMicToggle : undefined}
-                    />
-                </div>
-            </AssistantRuntimeProvider>
+                            <HappyComposer
+                                disabled={props.isSending}
+                                permissionMode={props.session.permissionMode}
+                                modelMode={props.session.modelMode}
+                                agentFlavor={agentFlavor}
+                                active={props.session.active}
+                                allowSendWhenInactive
+                                thinking={props.session.thinking}
+                                agentState={props.session.agentState}
+                                contextSize={reduced.latestUsage?.contextSize}
+                                controlledByUser={props.session.agentState?.controlledByUser === true}
+                                onPermissionModeChange={handlePermissionModeChange}
+                                onModelModeChange={handleModelModeChange}
+                                onModelCommand={handleRuntimeModelCommand}
+                                onEffortCommand={handleEffortCommand}
+                                onSwitchToRemote={handleSwitchToRemote}
+                                onTerminal={props.session.active ? handleViewTerminal : undefined}
+                                autocompleteSuggestions={props.autocompleteSuggestions}
+                                runtimeModelOptions={props.runtimeModelOptions}
+                                onRefreshModelOptions={props.onRefreshModelOptions}
+                                isRefreshingModelOptions={props.isRefreshingModelOptions}
+                                voiceStatus={voice?.status}
+                                voiceMicMuted={voice?.micMuted}
+                                onVoiceToggle={voice ? handleVoiceToggle : undefined}
+                                onVoiceMicToggle={voice ? handleVoiceMicToggle : undefined}
+                            />
+                        </div>
+                    </AssistantRuntimeProvider>
+                </>
+            )}
 
             {/* Voice session component - renders nothing but initializes ElevenLabs */}
             {voice && (
@@ -397,6 +425,13 @@ export function SessionChat(props: {
                 open={showMcpInfo}
                 onOpenChange={setShowMcpInfo}
                 tools={props.session.metadata?.tools}
+            />
+
+            <ModelSelectorDialog
+                open={showModelSelector}
+                onOpenChange={setShowModelSelector}
+                currentMode={props.session.modelMode ?? 'default'}
+                onSelect={handleModelModeChange}
             />
         </div>
     )

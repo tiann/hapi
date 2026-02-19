@@ -44,7 +44,7 @@ function getSessionLogPath(): string {
   return join(configuration.logsDir, filename)
 }
 
-class Logger {
+export class Logger {
   private dangerouslyUnencryptedServerLoggingUrl: string | undefined
 
   constructor(
@@ -66,15 +66,6 @@ class Logger {
 
   debug(message: string, ...args: unknown[]): void {
     this.logToFile(`[${this.localTimezoneTimestamp()}]`, message, ...args)
-
-    // NOTE: @kirill does not think its a good ideas,
-    // as it will break us using claude in interactive mode.
-    // Instead simply open the debug file in a new editor window.
-    //
-    // Also log to console in development mode
-    // if (process.env.DEBUG) {
-    //   this.logToConsole('debug', '', message, ...args)
-    // }
   }
 
   debugLargeJson(
@@ -147,18 +138,8 @@ class Logger {
     return this.logFilePath
   }
   
-  private logToConsole(level: 'debug' | 'error' | 'info' | 'warn', prefix: string, message: string, ...args: unknown[]): void {
+  private logToConsole(level: 'info' | 'warn', prefix: string, message: string, ...args: unknown[]): void {
     switch (level) {
-      case 'debug': {
-        console.log(chalk.gray(prefix), message, ...args)
-        break
-      }
-
-      case 'error': {
-        console.error(chalk.red(prefix), message, ...args)
-        break
-      }
-
       case 'info': {
         console.log(chalk.blue(prefix), message, ...args)
         break
@@ -166,12 +147,6 @@ class Logger {
 
       case 'warn': {
         console.log(chalk.yellow(prefix), message, ...args)
-        break
-      }
-
-      default: {
-        this.debug('Unknown log level:', level)
-        console.log(chalk.blue(prefix), message, ...args)
         break
       }
     }

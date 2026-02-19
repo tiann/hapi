@@ -109,6 +109,14 @@ export async function claudeRemote(opts: {
         return;
     }
 
+    // Handle /model command - intercepted by web UI, but suppress here as safety net
+    if (specialCommand.type === 'model') {
+        if (opts.onCompletionEvent) {
+            opts.onCompletionEvent('Use the model selector in the UI to change models');
+        }
+        return;
+    }
+
     // Handle /compact command
     let isCompactCommand = false;
     if (specialCommand.type === 'compact') {

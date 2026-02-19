@@ -183,22 +183,6 @@ export async function isRunnerRunningCurrentlyInstalledHappyVersion(): Promise<b
     logger.debug(`[RUNNER CONTROL] Current CLI version: ${currentCliVersion}, Runner started with version: ${state.startedWithCliVersion}`);
     return currentCliVersion === state.startedWithCliVersion;
     
-    // PREVIOUS IMPLEMENTATION - Keeping this commented in case we need it
-    // Kirill does not understand how the upgrade of npm packages happen and whether 
-    // we will get a new path or not when hapi is upgraded globally.
-    // If reading package.json doesn't work correctly after npm upgrades, 
-    // we can revert to spawning a process (but should add timeout and cleanup!)
-    /*
-    const { spawnHappyCLI } = await import('@/utils/spawnHappyCLI');
-    const happyProcess = spawnHappyCLI(['--version'], { stdio: 'pipe' });
-    let version: string | null = null;
-    happyProcess.stdout?.on('data', (data) => {
-      version = data.toString().trim();
-    });
-    await new Promise(resolve => happyProcess.stdout?.on('close', resolve));
-    logger.debug(`[RUNNER CONTROL] Current CLI version: ${version}, Runner started with version: ${state.startedWithCliVersion}`);
-    return version === state.startedWithCliVersion;
-    */
   } catch (error) {
     logger.debug('[RUNNER CONTROL] Error checking runner version', error);
     return false;

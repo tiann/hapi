@@ -51,6 +51,24 @@ export function getEventPresentation(event: AgentEvent): EventPresentation {
         const endsAt = typeof event.endsAt === 'number' ? event.endsAt : null
         return { icon: '⏳', text: endsAt ? `Usage limit reached until ${formatUnixTimestamp(endsAt)}` : 'Usage limit reached' }
     }
+    if (event.type === 'rate-limit') {
+        const utilization = typeof event.utilization === 'number' ? event.utilization : null
+        const rateLimitType = typeof event.rateLimitType === 'string' ? event.rateLimitType : null
+        const resetsAt = typeof event.resetsAt === 'number' ? event.resetsAt : null
+        const overage = event.isUsingOverage === true
+        const status = typeof event.status === 'string' ? event.status : null
+
+        const utilizationLabel = utilization !== null ? `${Math.round(utilization * 100)}%` : null
+        const windowLabel = rateLimitType ? ` (${rateLimitType.replaceAll('_', ' ')})` : ''
+        const resetLabel = resetsAt ? ` Resets ${formatUnixTimestamp(resetsAt)}.` : ''
+        const overageLabel = overage ? ' Overage active.' : ''
+        const statusPrefix = status === 'allowed_warning' ? 'Rate limit warning.' : 'Rate limit update.'
+
+        return {
+            icon: '⏳',
+            text: `${statusPrefix}${utilizationLabel ? ` Usage ${utilizationLabel}` : ''}${windowLabel}.${resetLabel}${overageLabel}`.trim()
+        }
+    }
     if (event.type === 'message') {
         return { icon: null, text: typeof event.message === 'string' ? event.message : 'Message' }
     }

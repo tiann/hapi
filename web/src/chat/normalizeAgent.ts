@@ -286,6 +286,26 @@ export function normalizeAgentRecord(
                 meta
             }
         }
+        if (data.type === 'rate_limit_event') {
+            const info = isObject(data.rate_limit_info) ? data.rate_limit_info : null
+            return {
+                id: messageId,
+                localId,
+                createdAt,
+                role: 'event',
+                content: {
+                    type: 'rate-limit',
+                    status: asString(info?.status) ?? undefined,
+                    utilization: asNumber(info?.utilization) ?? undefined,
+                    rateLimitType: asString(info?.rateLimitType) ?? undefined,
+                    resetsAt: asNumber(info?.resetsAt) ?? undefined,
+                    isUsingOverage: typeof info?.isUsingOverage === 'boolean' ? info.isUsingOverage : undefined,
+                    surpassedThreshold: asNumber(info?.surpassedThreshold) ?? undefined
+                },
+                isSidechain: false,
+                meta
+            }
+        }
         return null
     }
 

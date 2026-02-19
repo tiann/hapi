@@ -22,6 +22,28 @@ export type RpcUploadFileResponse = {
     error?: string
 }
 
+export type RpcUploadMultipartStartResponse = {
+    success: boolean
+    uploadId?: string
+    error?: string
+}
+
+export type RpcUploadMultipartChunkResponse = {
+    success: boolean
+    error?: string
+}
+
+export type RpcUploadMultipartCompleteResponse = {
+    success: boolean
+    path?: string
+    error?: string
+}
+
+export type RpcUploadMultipartAbortResponse = {
+    success: boolean
+    error?: string
+}
+
 export type RpcDeleteUploadResponse = {
     success: boolean
     error?: string
@@ -200,6 +222,22 @@ export class RpcGateway {
 
     async uploadFile(sessionId: string, filename: string, content: string, mimeType: string): Promise<RpcUploadFileResponse> {
         return await this.sessionRpc(sessionId, 'uploadFile', { sessionId, filename, content, mimeType }) as RpcUploadFileResponse
+    }
+
+    async uploadMultipartStart(sessionId: string, filename: string, mimeType: string): Promise<RpcUploadMultipartStartResponse> {
+        return await this.sessionRpc(sessionId, 'uploadMultipartStart', { sessionId, filename, mimeType }) as RpcUploadMultipartStartResponse
+    }
+
+    async uploadMultipartChunk(sessionId: string, uploadId: string, chunk: string): Promise<RpcUploadMultipartChunkResponse> {
+        return await this.sessionRpc(sessionId, 'uploadMultipartChunk', { sessionId, uploadId, chunk }) as RpcUploadMultipartChunkResponse
+    }
+
+    async uploadMultipartComplete(sessionId: string, uploadId: string): Promise<RpcUploadMultipartCompleteResponse> {
+        return await this.sessionRpc(sessionId, 'uploadMultipartComplete', { sessionId, uploadId }) as RpcUploadMultipartCompleteResponse
+    }
+
+    async uploadMultipartAbort(sessionId: string, uploadId: string): Promise<RpcUploadMultipartAbortResponse> {
+        return await this.sessionRpc(sessionId, 'uploadMultipartAbort', { sessionId, uploadId }) as RpcUploadMultipartAbortResponse
     }
 
     async deleteUploadFile(sessionId: string, path: string): Promise<RpcDeleteUploadResponse> {

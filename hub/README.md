@@ -41,6 +41,7 @@ See `src/configuration.ts` for all options.
 - `HAPI_RELAY_AUTH` - Relay auth key (default: hapi).
 - `HAPI_RELAY_FORCE_TCP` - Force TCP relay mode (true/1).
 - `VAPID_SUBJECT` - Contact email/URL for Web Push.
+- `HAPI_SOCKET_MAX_HTTP_BUFFER_SIZE` - Max Socket.IO message size in bytes (default: 83886080 / 80MB).
 
 ## Running
 
@@ -84,6 +85,7 @@ See `src/web/routes/` for all endpoints.
 - `POST /api/sessions/:id/switch` - Switch session to remote mode.
 - `POST /api/sessions/:id/resume` - Resume inactive session.
 - `POST /api/sessions/:id/upload` - Upload file (base64, max 50MB).
+- `POST /api/sessions/:id/upload/multipart` - Upload file (multipart/form-data, max 50MB).
 - `POST /api/sessions/:id/upload/delete` - Delete uploaded file.
 - `POST /api/sessions/:id/archive` - Archive active session.
 - `PATCH /api/sessions/:id` - Rename session.

@@ -28,6 +28,7 @@
         "cross-spawn": "^7.0.6",
         "fastify": "^5.6.2",
         "fastify-type-provider-zod": "6.1.0",
+        "hapi": "github:Pizzaface/hapi#main",
         "ink": "^6.6.0",
         "ps-list": "^9.0.0",
         "react": "^19.2.3",
@@ -1595,6 +1596,8 @@
     "grammy": ["grammy@1.38.4", "", { "dependencies": { "@grammyjs/types": "3.22.2", "abort-controller": "^3.0.0", "debug": "^4.4.3", "node-fetch": "^2.7.0" } }, "sha512-z07Kin3HgRwMdy40KUs+c9fmNBvGlSxGwcqY8NAH0a8KULGFYEMQaFAo3ge0V5tvmgr02Jgubkf54KjHLAMCbw=="],
 
     "hachure-fill": ["hachure-fill@0.5.2", "", {}, "sha512-3GKBOn+m2LX9iq+JC1064cSFprJY4jL1jCXTcpnfER5HYE2l/4EfWSGzkPa/ZDBmYI0ZOEj5VHV/eKnPGkHuOg=="],
+
+    "hapi": ["hapi@github:Pizzaface/hapi#e69143d", {}, "Pizzaface-hapi-e69143d"],
 
     "hapi-docs": ["hapi-docs@workspace:docs"],
 

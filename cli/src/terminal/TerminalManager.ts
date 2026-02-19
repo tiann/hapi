@@ -83,7 +83,8 @@ function escapeSingleQuotes(value: string): string {
 function buildShellSpawnArgs(shellPath: string): string[] {
     const escapedShell = escapeSingleQuotes(shellPath)
     // Normalize erase char to DEL for web/xterm clients before interactive shell starts.
-    const command = `stty erase '^?' 2>/dev/null; exec '${escapedShell}' -i`
+    // Use -li (login + interactive) so zsh reads /etc/zprofile and ~/.zprofile.
+    const command = `stty erase '^?' 2>/dev/null; exec '${escapedShell}' -li`
     return ['/bin/sh', '-lc', command]
 }
 
@@ -97,6 +98,12 @@ function buildFilteredEnv(): NodeJS.ProcessEnv {
             continue
         }
         env[key] = value
+    }
+    // Ensure TERM is set to match what xterm.js and Bun's PTY expect.
+    // Without this, zsh's line editor (ZLE) cannot look up terminfo
+    // capabilities and line editing / prompt rendering breaks.
+    if (!env.TERM) {
+        env.TERM = 'xterm-256color'
     }
     return env
 }

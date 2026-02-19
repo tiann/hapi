@@ -12,8 +12,32 @@ import {
     pruneSessionReadHistory,
     saveSessionReadHistory,
     sortSessionsByPriority,
-    type FreezeState
+    type FreezeState,
+    type SessionReadHistory,
 } from './SessionList'
+
+type SessionGroup = {
+    key: string
+    directory: string
+    machineId: string | null
+    displayName: string
+    sessions: SessionSummary[]
+    latestUpdatedAt: number
+    latestReadAt: number
+    hasActiveSession: boolean
+}
+
+function makeGroup(overrides: Partial<SessionGroup> & { directory: string; sessions: SessionSummary[] }): SessionGroup {
+    return {
+        key: overrides.key ?? `unknown-machine::${overrides.directory}`,
+        machineId: overrides.machineId ?? null,
+        displayName: overrides.displayName ?? overrides.directory.split('/').pop() ?? overrides.directory,
+        latestUpdatedAt: overrides.latestUpdatedAt ?? -Infinity,
+        latestReadAt: overrides.latestReadAt ?? -Infinity,
+        hasActiveSession: overrides.hasActiveSession ?? false,
+        ...overrides,
+    }
+}
 
 function makeSession(overrides: Partial<SessionSummary> & { id: string }): SessionSummary {
     const { id, ...rest } = overrides
@@ -307,14 +331,14 @@ describe('patchGroupsVisuals', () => {
     it('updates session data without changing order', () => {
         const s1 = makeSession({ id: 's1', active: false, updatedAt: 100 })
         const s2 = makeSession({ id: 's2', active: false, updatedAt: 200 })
-        const frozenGroups = [{
+        const frozenGroups = [makeGroup({
             directory: '/repo',
             displayName: 'repo',
             sessions: [s1, s2],
             latestUpdatedAt: 200,
             latestReadAt: -Infinity,
             hasActiveSession: false
-        }]
+        })]
 
         const s1Updated = makeSession({ id: 's1', active: true, thinking: true, updatedAt: 300 })
         const patched = patchGroupsVisuals(frozenGroups, [s1Updated, s2])
@@ -328,14 +352,14 @@ describe('patchGroupsVisuals', () => {
     it('removes sessions that no longer exist', () => {
         const s1 = makeSession({ id: 's1', updatedAt: 100 })
         const s2 = makeSession({ id: 's2', updatedAt: 200 })
-        const frozenGroups = [{
+        const frozenGroups = [makeGroup({
             directory: '/repo',
             displayName: 'repo',
             sessions: [s1, s2],
             latestUpdatedAt: 200,
             latestReadAt: -Infinity,
             hasActiveSession: false
-        }]
+        })]
 
         const patched = patchGroupsVisuals(frozenGroups, [s2])
 
@@ -346,22 +370,22 @@ describe('patchGroupsVisuals', () => {
         const s1 = makeSession({ id: 's1', metadata: { path: '/repo-a' } })
         const s2 = makeSession({ id: 's2', metadata: { path: '/repo-b' } })
         const frozenGroups = [
-            {
+            makeGroup({
                 directory: '/repo-a',
                 displayName: 'repo-a',
                 sessions: [s1],
                 latestUpdatedAt: 0,
                 latestReadAt: -Infinity,
                 hasActiveSession: false
-            },
-            {
+            }),
+            makeGroup({
                 directory: '/repo-b',
                 displayName: 'repo-b',
                 sessions: [s2],
                 latestUpdatedAt: 0,
                 latestReadAt: -Infinity,
                 hasActiveSession: false
-            }
+            })
         ]
 
         const patched = patchGroupsVisuals(frozenGroups, [s2])
@@ -372,14 +396,14 @@ describe('patchGroupsVisuals', () => {
 
     it('returns same reference when nothing changed', () => {
         const s1 = makeSession({ id: 's1', updatedAt: 100 })
-        const frozenGroups = [{
+        const frozenGroups = [makeGroup({
             directory: '/repo',
             displayName: 'repo',
             sessions: [s1],
             latestUpdatedAt: 100,
             latestReadAt: -Infinity,
             hasActiveSession: false
-        }]
+        })]
 
         const patched = patchGroupsVisuals(frozenGroups, [s1])
 
@@ -388,7 +412,7 @@ describe('patchGroupsVisuals', () => {
 })
 
 describe('computeFreezeStep', () => {
-    const group = (sessions: SessionSummary[]) => ({
+    const group = (sessions: SessionSummary[]) => makeGroup({
         directory: '/repo',
         displayName: 'repo',
         sessions,
@@ -614,14 +638,14 @@ describe('computeFreezeStep', () => {
         const s1 = makeSession({ id: 's1', active: true, updatedAt: 200 })
         const s2 = makeSession({ id: 's2', updatedAt: 100 })
         const sessions = [s1, s2]
-        const flatGroups = [{
+        const flatGroups = [makeGroup({
             directory: FLAT_DIRECTORY_KEY,
             displayName: '',
             sessions,
             latestUpdatedAt: 200,
             latestReadAt: -Infinity,
             hasActiveSession: true
-        }]
+        })]
         const state: FreezeState = {
             frozenGroups: null,
             prevSelectedSessionId: null,

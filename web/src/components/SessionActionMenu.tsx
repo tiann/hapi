@@ -16,6 +16,8 @@ type SessionActionMenuProps = {
     onRename: () => void
     onArchive: () => void
     onDelete: () => void
+    onToggleDevView?: () => void
+    devViewActive?: boolean
     anchorPoint: { x: number; y: number }
     menuId?: string
 }
@@ -61,6 +63,26 @@ function ArchiveIcon(props: { className?: string }) {
     )
 }
 
+function CodeBracketIcon(props: { className?: string }) {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={props.className}
+        >
+            <polyline points="16 18 22 12 16 6" />
+            <polyline points="8 6 2 12 8 18" />
+        </svg>
+    )
+}
+
 function TrashIcon(props: { className?: string }) {
     return (
         <svg
@@ -99,6 +121,8 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
         onRename,
         onArchive,
         onDelete,
+        onToggleDevView,
+        devViewActive,
         anchorPoint,
         menuId
     } = props
@@ -121,6 +145,11 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
     const handleDelete = () => {
         onClose()
         onDelete()
+    }
+
+    const handleDevView = () => {
+        onClose()
+        onToggleDevView?.()
     }
 
     const updatePosition = useCallback(() => {
@@ -239,6 +268,18 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
                     <EditIcon className="text-[var(--app-hint)]" />
                     {t('session.action.rename')}
                 </button>
+
+                {onToggleDevView ? (
+                    <button
+                        type="button"
+                        role="menuitem"
+                        className={`${baseItemClassName} hover:bg-[var(--app-subtle-bg)]`}
+                        onClick={handleDevView}
+                    >
+                        <CodeBracketIcon className={devViewActive ? 'text-[var(--app-link)]' : 'text-[var(--app-hint)]'} />
+                        {devViewActive ? 'Hide Developer View' : 'Developer View'}
+                    </button>
+                ) : null}
 
                 {sessionActive ? (
                     <button
