@@ -7,8 +7,17 @@ import { useAppGoBack } from '@/hooks/useAppGoBack'
 import { useSession } from '@/hooks/queries/useSession'
 import { useTerminalSocket } from '@/hooks/useTerminalSocket'
 import { useLongPress } from '@/hooks/useLongPress'
+import { useTranslation } from '@/lib/use-translation'
 import { TerminalView } from '@/components/Terminal/TerminalView'
 import { LoadingState } from '@/components/LoadingState'
+import { Button } from '@/components/ui/button'
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogHeader,
+    DialogTitle
+} from '@/components/ui/dialog'
 function BackIcon() {
     return (
         <svg
@@ -170,6 +179,7 @@ function QuickKeyButton(props: {
 }
 
 export default function TerminalPage() {
+    const { t } = useTranslation()
     const { sessionId } = useParams({ from: '/sessions/$sessionId/terminal' })
     const { api, token, baseUrl } = useAppContext()
     const goBack = useAppGoBack()
@@ -188,6 +198,8 @@ export default function TerminalPage() {
     const [exitInfo, setExitInfo] = useState<{ code: number | null; signal: string | null } | null>(null)
     const [ctrlActive, setCtrlActive] = useState(false)
     const [altActive, setAltActive] = useState(false)
+    const [pasteDialogOpen, setPasteDialogOpen] = useState(false)
+    const [manualPasteText, setManualPasteText] = useState('')
 
     const {
         state: terminalState,
@@ -312,6 +324,48 @@ export default function TerminalPage() {
     }, [terminalState.status])
 
     const quickInputDisabled = !session?.active || terminalState.status !== 'connected'
+    const writePlainInput = useCallback((text: string) => {
+        if (!text || quickInputDisabled) {
+            return false
+        }
+        write(text)
+        resetModifiers()
+        terminalRef.current?.focus()
+        return true
+    }, [quickInputDisabled, write, resetModifiers])
+
+    const handlePasteAction = useCallback(async () => {
+        if (quickInputDisabled) {
+            return
+        }
+        const readClipboard = navigator.clipboard?.readText
+        if (readClipboard) {
+            try {
+                const clipboardText = await readClipboard.call(navigator.clipboard)
+                if (!clipboardText) {
+                    return
+                }
+                if (writePlainInput(clipboardText)) {
+                    return
+                }
+            } catch {
+                // Fall through to manual paste modal.
+            }
+        }
+        setManualPasteText('')
+        setPasteDialogOpen(true)
+    }, [quickInputDisabled, writePlainInput])
+
+    const handleManualPasteSubmit = useCallback(() => {
+        if (!manualPasteText.trim()) {
+            return
+        }
+        if (writePlainInput(manualPasteText)) {
+            setPasteDialogOpen(false)
+            setManualPasteText('')
+        }
+    }, [manualPasteText, writePlainInput])
+
     const handleQuickInput = useCallback(
         (sequence: string) => {
             if (quickInputDisabled) {
@@ -406,6 +460,16 @@ export default function TerminalPage() {
             <div className="bg-[var(--app-bg)] border-t border-[var(--app-border)] pb-[env(safe-area-inset-bottom)]">
                 <div className="mx-auto w-full max-w-content px-3">
                     <div className="flex flex-col gap-2 py-2">
+                        <button
+                            type="button"
+                            onClick={() => {
+                                void handlePasteAction()
+                            }}
+                            disabled={quickInputDisabled}
+                            className="w-full rounded-md border border-[var(--app-border)] bg-[var(--app-secondary-bg)] px-3 py-2 text-sm font-medium text-[var(--app-fg)] transition-colors hover:bg-[var(--app-subtle-bg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-button)] disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                            {t('button.paste')}
+                        </button>
                         {QUICK_INPUT_ROWS.map((row, rowIndex) => (
                             <div
                                 key={`terminal-quick-row-${rowIndex}`}
@@ -432,6 +496,52 @@ export default function TerminalPage() {
                     </div>
                 </div>
             </div>
+
+            <Dialog
+                open={pasteDialogOpen}
+                onOpenChange={(open) => {
+                    setPasteDialogOpen(open)
+                    if (!open) {
+                        setManualPasteText('')
+                    }
+                }}
+            >
+                <DialogContent className="max-w-md">
+                    <DialogHeader>
+                        <DialogTitle>{t('terminal.paste.fallbackTitle')}</DialogTitle>
+                        <DialogDescription>
+                            {t('terminal.paste.fallbackDescription')}
+                        </DialogDescription>
+                    </DialogHeader>
+                    <textarea
+                        value={manualPasteText}
+                        onChange={(event) => setManualPasteText(event.target.value)}
+                        placeholder={t('terminal.paste.placeholder')}
+                        className="mt-2 min-h-32 w-full resize-y rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] p-2 text-sm focus:outline-none focus:ring-2 focus:ring-[var(--app-link)]"
+                        autoCapitalize="none"
+                        autoCorrect="off"
+                    />
+                    <div className="mt-3 flex justify-end gap-2">
+                        <Button
+                            type="button"
+                            variant="secondary"
+                            onClick={() => {
+                                setPasteDialogOpen(false)
+                                setManualPasteText('')
+                            }}
+                        >
+                            {t('button.cancel')}
+                        </Button>
+                        <Button
+                            type="button"
+                            onClick={handleManualPasteSubmit}
+                            disabled={!manualPasteText.trim()}
+                        >
+                            {t('button.paste')}
+                        </Button>
+                    </div>
+                </DialogContent>
+            </Dialog>
         </div>
     )
 }

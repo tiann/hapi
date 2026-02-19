@@ -11,6 +11,8 @@ import { queryKeys } from '@/lib/query-keys'
 import { langAlias, useShikiHighlighter } from '@/lib/shiki'
 import { decodeBase64 } from '@/lib/utils'
 
+const MAX_COPYABLE_FILE_BYTES = 1_000_000
+
 function decodePath(value: string): string {
     if (!value) return ''
     const decoded = decodeBase64(value)
@@ -94,6 +96,10 @@ function resolveLanguage(path: string): string | undefined {
     return langAlias[ext] ?? ext
 }
 
+function getUtf8ByteLength(value: string): number {
+    return new TextEncoder().encode(value).length
+}
+
 function isBinaryContent(content: string): boolean {
     if (!content) return false
     if (content.includes('\0')) return true
@@ -112,7 +118,8 @@ function extractCommandError(result: GitCommandResponse | undefined): string | n
 
 export default function FilePage() {
     const { api } = useAppContext()
-    const { copied, copy } = useCopyToClipboard()
+    const { copied: pathCopied, copy: copyPath } = useCopyToClipboard()
+    const { copied: contentCopied, copy: copyContent } = useCopyToClipboard()
     const goBack = useAppGoBack()
     const { sessionId } = useParams({ from: '/sessions/$sessionId/file' })
     const search = useSearch({ from: '/sessions/$sessionId/file' })
@@ -160,6 +167,14 @@ export default function FilePage() {
 
     const language = useMemo(() => resolveLanguage(filePath), [filePath])
     const highlighted = useShikiHighlighter(decodedContent, language)
+    const contentSizeBytes = useMemo(
+        () => (decodedContent ? getUtf8ByteLength(decodedContent) : 0),
+        [decodedContent]
+    )
+    const canCopyContent = fileContentResult?.success === true
+        && !binaryFile
+        && decodedContent.length > 0
+        && contentSizeBytes <= MAX_COPYABLE_FILE_BYTES
 
     const [displayMode, setDisplayMode] = useState<'diff' | 'file'>('diff')
 
@@ -204,11 +219,11 @@ export default function FilePage() {
                     <span className="min-w-0 flex-1 truncate text-xs text-[var(--app-hint)]">{filePath}</span>
                     <button
                         type="button"
-                        onClick={() => copy(filePath)}
+                        onClick={() => copyPath(filePath)}
                         className="shrink-0 rounded p-1 text-[var(--app-hint)] hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] transition-colors"
                         title="Copy path"
                     >
-                        {copied ? <CheckIcon className="h-3.5 w-3.5" /> : <CopyIcon className="h-3.5 w-3.5" />}
+                        {pathCopied ? <CheckIcon className="h-3.5 w-3.5" /> : <CopyIcon className="h-3.5 w-3.5" />}
                     </button>
                 </div>
             </div>
@@ -257,9 +272,21 @@ export default function FilePage() {
                         <div className="text-sm text-[var(--app-hint)]">{diffError}</div>
                     ) : displayMode === 'file' ? (
                         decodedContent ? (
-                            <pre className="shiki overflow-auto rounded-md bg-[var(--app-code-bg)] p-3 text-xs font-mono">
-                                <code>{highlighted ?? decodedContent}</code>
-                            </pre>
+                            <div className="relative">
+                                {canCopyContent ? (
+                                    <button
+                                        type="button"
+                                        onClick={() => copyContent(decodedContent)}
+                                        className="absolute right-2 top-2 z-10 rounded p-1 text-[var(--app-hint)] hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] transition-colors"
+                                        title="Copy file content"
+                                    >
+                                        {contentCopied ? <CheckIcon className="h-3.5 w-3.5" /> : <CopyIcon className="h-3.5 w-3.5" />}
+                                    </button>
+                                ) : null}
+                                <pre className="shiki overflow-auto rounded-md bg-[var(--app-code-bg)] p-3 pr-8 text-xs font-mono">
+                                    <code>{highlighted ?? decodedContent}</code>
+                                </pre>
+                            </div>
                         ) : (
                             <div className="text-sm text-[var(--app-hint)]">File is empty.</div>
                         )
