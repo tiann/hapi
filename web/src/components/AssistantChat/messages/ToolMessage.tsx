@@ -108,6 +108,20 @@ function HappyNestedBlockList(props: {
                     )
                 }
 
+                if (block.kind === 'agent-image') {
+                    const dataUrl = `data:${block.mediaType};base64,${block.base64}`
+                    return (
+                        <div key={`image:${block.id}`} className="px-1 my-2">
+                            <img
+                                src={dataUrl}
+                                alt="Image"
+                                className="max-w-full rounded-lg"
+                                style={{ maxHeight: '512px' }}
+                            />
+                        </div>
+                    )
+                }
+
                 if (block.kind === 'tool-call') {
                     const isTask = block.tool.name === 'Task'
                     const taskChildren = isTask ? splitTaskChildren(block) : null

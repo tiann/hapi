@@ -1,9 +1,23 @@
 import { MessagePrimitive, useAssistantState } from '@assistant-ui/react'
+import type { ImageMessagePartProps } from '@assistant-ui/react'
 import { MarkdownText } from '@/components/assistant-ui/markdown-text'
 import { Reasoning, ReasoningGroup } from '@/components/assistant-ui/reasoning'
 import { HappyToolMessage } from '@/components/AssistantChat/messages/ToolMessage'
 import { CliOutputBlock } from '@/components/CliOutputBlock'
 import type { HappyChatMessageMetadata } from '@/lib/assistant-runtime'
+
+function HappyImage(props: ImageMessagePartProps) {
+    return (
+        <div className="my-2">
+            <img
+                src={props.image}
+                alt={props.filename ?? 'Image'}
+                className="max-w-full rounded-lg"
+                style={{ maxHeight: '512px' }}
+            />
+        </div>
+    )
+}
 
 const TOOL_COMPONENTS = {
     Fallback: HappyToolMessage
@@ -13,6 +27,7 @@ const MESSAGE_PART_COMPONENTS = {
     Text: MarkdownText,
     Reasoning: Reasoning,
     ReasoningGroup: ReasoningGroup,
+    Image: HappyImage,
     tools: TOOL_COMPONENTS
 } as const
 

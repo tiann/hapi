@@ -61,6 +61,13 @@ function normalizeAssistantOutput(
                 blocks.push({ type: 'reasoning', text: block.thinking, uuid, parentUUID })
                 continue
             }
+            if (block.type === 'image' && isObject(block.source)) {
+                const source = block.source as Record<string, unknown>
+                if (source.type === 'base64' && typeof source.media_type === 'string' && typeof source.data === 'string') {
+                    blocks.push({ type: 'image', mediaType: source.media_type, base64: source.data, uuid, parentUUID })
+                }
+                continue
+            }
             if (block.type === 'tool_use' && typeof block.id === 'string') {
                 const name = asString(block.name) ?? 'Tool'
                 const input = 'input' in block ? (block as Record<string, unknown>).input : undefined

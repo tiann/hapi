@@ -220,6 +220,19 @@ export function reduceTimeline(
                     continue
                 }
 
+                if (c.type === 'image') {
+                    blocks.push({
+                        kind: 'agent-image',
+                        id: `${msg.id}:${idx}`,
+                        localId: msg.localId,
+                        createdAt: msg.createdAt,
+                        mediaType: c.mediaType,
+                        base64: c.base64,
+                        meta: msg.meta
+                    })
+                    continue
+                }
+
                 if (c.type === 'sidechain') {
                     blocks.push({
                         kind: 'user-text',

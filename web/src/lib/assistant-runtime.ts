@@ -90,6 +90,20 @@ function toThreadMessageLike(block: ChatBlock): ThreadMessageLike {
         }
     }
 
+    if (block.kind === 'agent-image') {
+        const messageId = `assistant:${block.id}`
+        const dataUrl = `data:${block.mediaType};base64,${block.base64}`
+        return {
+            role: 'assistant',
+            id: messageId,
+            createdAt: new Date(block.createdAt),
+            content: [{ type: 'image' as const, image: dataUrl }],
+            metadata: {
+                custom: { kind: 'assistant' } satisfies HappyChatMessageMetadata
+            }
+        }
+    }
+
     const toolBlock: ToolCallBlock = block
     const messageId = `tool:${toolBlock.id}`
     const inputText = safeStringify(toolBlock.tool.input)

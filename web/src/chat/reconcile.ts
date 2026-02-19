@@ -211,6 +211,10 @@ function reconcileBlock(block: ChatBlock, prevById: ChatBlocksById): ChatBlock {
         return areAgentReasoningBlocksEqual(prevBlock, block) ? prevBlock : block
     }
 
+    if (block.kind === 'agent-image') {
+        return prev
+    }
+
     const prevBlock = prev as AgentEventBlock
     return areAgentEventBlocksEqual(prevBlock, block) ? prevBlock : block
 }
