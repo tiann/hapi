@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Outlet, useLocation, useMatchRoute, useRouter } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
 import { getTelegramWebApp, isTelegramApp } from '@/hooks/useTelegram'
-import { initializeTheme } from '@/hooks/useTheme'
+import { initializeTheme, useTheme } from '@/hooks/useTheme'
 import { useAuth } from '@/hooks/useAuth'
 import { useAuthSource } from '@/hooks/useAuthSource'
 import { useServerUrl } from '@/hooks/useServerUrl'
@@ -41,6 +41,7 @@ export function App() {
 }
 
 function AppInner() {
+    useTheme()
     const { t } = useTranslation()
     const { serverUrl, baseUrl, setServerUrl, clearServerUrl } = useServerUrl()
     const { authSource, isLoading: isAuthSourceLoading, setAccessToken } = useAuthSource(baseUrl)
