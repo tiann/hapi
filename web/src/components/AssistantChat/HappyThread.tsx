@@ -95,6 +95,7 @@ export function HappyThread(props: {
     // Smart scroll state: autoScroll enabled when user is near bottom
     const [autoScrollEnabled, setAutoScrollEnabled] = useState(true)
     const autoScrollEnabledRef = useRef(autoScrollEnabled)
+    const prevAutoScrollEnabledRef = useRef(true)
 
     // Keep refs in sync with state
     useEffect(() => {
@@ -190,22 +191,29 @@ export function HappyThread(props: {
         }
         loadLockRef.current = true
         loadStartedRef.current = false
+        // Save current autoScroll state and disable it while loading older messages
+        // to prevent assistant-ui from scrolling to bottom when content size changes
+        prevAutoScrollEnabledRef.current = autoScrollEnabledRef.current
+        setAutoScrollEnabled(false)
         let loadPromise: Promise<unknown>
         try {
             loadPromise = onLoadMoreRef.current()
         } catch (error) {
             pendingScrollRef.current = null
             loadLockRef.current = false
+            setAutoScrollEnabled(prevAutoScrollEnabledRef.current)
             throw error
         }
         void loadPromise.catch((error) => {
             pendingScrollRef.current = null
             loadLockRef.current = false
+            setAutoScrollEnabled(prevAutoScrollEnabledRef.current)
             console.error('Failed to load older messages:', error)
         }).finally(() => {
             if (!loadStartedRef.current && !isLoadingMoreRef.current && pendingScrollRef.current) {
                 pendingScrollRef.current = null
                 loadLockRef.current = false
+                setAutoScrollEnabled(prevAutoScrollEnabledRef.current)
             }
         })
     }, [])
@@ -248,10 +256,38 @@ export function HappyThread(props: {
         if (!pending || !viewport) {
             return
         }
-        const delta = viewport.scrollHeight - pending.scrollHeight
-        viewport.scrollTop = pending.scrollTop + delta
-        pendingScrollRef.current = null
-        loadLockRef.current = false
+
+        // Wait for DOM to update before checking scroll height
+        let attempts = 0
+        const MAX_ATTEMPTS = 5
+
+        const checkAndRestore = () => {
+            const delta = viewport.scrollHeight - pending.scrollHeight
+
+            // If delta is 0, content hasn't been rendered yet, wait a bit
+            // But limit attempts to avoid infinite loop
+            if (delta === 0 && viewport.scrollHeight === pending.scrollHeight) {
+                if (attempts++ < MAX_ATTEMPTS) {
+                    requestAnimationFrame(checkAndRestore)
+                    return
+                }
+                // Max attempts reached, give up and restore autoScroll state
+                pendingScrollRef.current = null
+                loadLockRef.current = false
+                // Use setTimeout to defer state update until after DOM operations complete
+                setTimeout(() => setAutoScrollEnabled(prevAutoScrollEnabledRef.current), 0)
+                return
+            }
+
+            viewport.scrollTop = pending.scrollTop + delta
+            pendingScrollRef.current = null
+            loadLockRef.current = false
+            // Restore previous autoScroll state after DOM has settled
+            // Use longer delay to ensure all DOM operations are complete
+            setTimeout(() => setAutoScrollEnabled(prevAutoScrollEnabledRef.current), 100)
+        }
+
+        requestAnimationFrame(checkAndRestore)
     }, [props.messagesVersion])
 
     useEffect(() => {
@@ -262,6 +298,8 @@ export function HappyThread(props: {
         if (prevLoadingMoreRef.current && !props.isLoadingMoreMessages && pendingScrollRef.current) {
             pendingScrollRef.current = null
             loadLockRef.current = false
+            // Re-enable autoScroll if loading finished but useLayoutEffect didn't run
+            setAutoScrollEnabled(true)
         }
         prevLoadingMoreRef.current = props.isLoadingMoreMessages
     }, [props.isLoadingMoreMessages])
