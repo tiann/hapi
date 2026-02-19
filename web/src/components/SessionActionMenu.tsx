@@ -161,6 +161,7 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
         const handlePointerDown = (event: PointerEvent) => {
             const target = event.target as Node
             if (menuRef.current?.contains(target)) return
+            event.stopPropagation()
             onClose()
         }
 
@@ -174,13 +175,13 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
             updatePosition()
         }
 
-        document.addEventListener('pointerdown', handlePointerDown)
+        document.addEventListener('pointerdown', handlePointerDown, true)
         document.addEventListener('keydown', handleKeyDown)
         window.addEventListener('resize', handleReflow)
         window.addEventListener('scroll', handleReflow, true)
 
         return () => {
-            document.removeEventListener('pointerdown', handlePointerDown)
+            document.removeEventListener('pointerdown', handlePointerDown, true)
             document.removeEventListener('keydown', handleKeyDown)
             window.removeEventListener('resize', handleReflow)
             window.removeEventListener('scroll', handleReflow, true)
