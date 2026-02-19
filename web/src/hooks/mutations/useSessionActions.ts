@@ -1,7 +1,7 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { isPermissionModeAllowedForFlavor } from '@hapi/protocol'
+import { isEffortLevelAllowedForFlavor, isPermissionModeAllowedForFlavor } from '@hapi/protocol'
 import type { ApiClient } from '@/api/client'
-import type { ModelMode, PermissionMode } from '@/types/api'
+import type { EffortLevel, ModelMode, PermissionMode } from '@/types/api'
 import { queryKeys } from '@/lib/query-keys'
 import { clearMessageWindow } from '@/lib/message-window-store'
 import { isKnownFlavor } from '@/lib/agentFlavorUtils'
@@ -16,6 +16,7 @@ export function useSessionActions(
     switchSession: () => Promise<void>
     setPermissionMode: (mode: PermissionMode) => Promise<void>
     setModelMode: (mode: ModelMode) => Promise<void>
+    setEffortLevel: (level: EffortLevel) => Promise<void>
     renameSession: (name: string) => Promise<void>
     deleteSession: () => Promise<void>
     isPending: boolean
@@ -81,6 +82,19 @@ export function useSessionActions(
         onSuccess: () => void invalidateSession(),
     })
 
+    const effortMutation = useMutation({
+        mutationFn: async (level: EffortLevel) => {
+            if (!api || !sessionId) {
+                throw new Error('Session unavailable')
+            }
+            if (isKnownFlavor(agentFlavor) && !isEffortLevelAllowedForFlavor(level, agentFlavor)) {
+                throw new Error('Invalid effort level for session flavor')
+            }
+            await api.setEffortLevel(sessionId, level)
+        },
+        onSuccess: () => void invalidateSession(),
+    })
+
     const renameMutation = useMutation({
         mutationFn: async (name: string) => {
             if (!api || !sessionId) {
@@ -112,6 +126,7 @@ export function useSessionActions(
         switchSession: switchMutation.mutateAsync,
         setPermissionMode: permissionMutation.mutateAsync,
         setModelMode: modelMutation.mutateAsync,
+        setEffortLevel: effortMutation.mutateAsync,
         renameSession: renameMutation.mutateAsync,
         deleteSession: deleteMutation.mutateAsync,
         isPending: abortMutation.isPending
@@ -119,6 +134,7 @@ export function useSessionActions(
             || switchMutation.isPending
             || permissionMutation.isPending
             || modelMutation.isPending
+            || effortMutation.isPending
             || renameMutation.isPending
             || deleteMutation.isPending,
     }

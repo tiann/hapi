@@ -7,7 +7,7 @@
  * - No E2E encryption; data is stored as JSON in SQLite
  */
 
-import type { DecryptedMessage, ModelMode, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
+import type { DecryptedMessage, EffortLevel, ModelMode, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
 import type { Server } from 'socket.io'
 import type { Store } from '../store'
 import type { RpcRegistry } from '../socket/rpcRegistry'
@@ -188,6 +188,7 @@ export class SyncEngine {
         mode?: 'local' | 'remote'
         permissionMode?: PermissionMode
         modelMode?: ModelMode
+        effortLevel?: EffortLevel
     }): void {
         this.sessionCache.handleSessionAlive(payload)
     }
@@ -282,13 +283,14 @@ export class SyncEngine {
         config: {
             permissionMode?: PermissionMode
             modelMode?: ModelMode
+            effortLevel?: EffortLevel
         }
     ): Promise<void> {
         const result = await this.rpcGateway.requestSessionConfig(sessionId, config)
         if (!result || typeof result !== 'object') {
             throw new Error('Invalid response from session config RPC')
         }
-        const obj = result as { applied?: { permissionMode?: Session['permissionMode']; modelMode?: Session['modelMode'] } }
+        const obj = result as { applied?: { permissionMode?: Session['permissionMode']; modelMode?: Session['modelMode']; effortLevel?: Session['effortLevel'] } }
         const applied = obj.applied
         if (!applied || typeof applied !== 'object') {
             throw new Error('Missing applied session config')

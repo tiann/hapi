@@ -24,6 +24,9 @@ export type PermissionMode = typeof PERMISSION_MODES[number]
 export const MODEL_MODES = ['default', 'sonnet', 'opus'] as const
 export type ModelMode = typeof MODEL_MODES[number]
 
+export const EFFORT_LEVELS = ['low', 'medium', 'high'] as const
+export type EffortLevel = typeof EFFORT_LEVELS[number]
+
 export type AgentFlavor = 'claude' | 'codex' | 'gemini' | 'opencode'
 
 export const PERMISSION_MODE_LABELS: Record<PermissionMode, string> = {
@@ -58,6 +61,12 @@ export const MODEL_MODE_LABELS: Record<ModelMode, string> = {
     default: 'Default',
     sonnet: 'Sonnet',
     opus: 'Opus'
+}
+
+export const EFFORT_LEVEL_LABELS: Record<EffortLevel, string> = {
+    low: 'Low',
+    medium: 'Medium',
+    high: 'High'
 }
 
 export function getPermissionModeLabel(mode: PermissionMode): string {
@@ -102,4 +111,15 @@ export function getModelModesForFlavor(flavor?: string | null): readonly ModelMo
 
 export function isModelModeAllowedForFlavor(mode: ModelMode, flavor?: string | null): boolean {
     return getModelModesForFlavor(flavor).includes(mode)
+}
+
+export function getEffortLevelsForFlavor(flavor?: string | null): readonly EffortLevel[] {
+    if (flavor === 'codex' || flavor === 'gemini' || flavor === 'opencode') {
+        return []
+    }
+    return EFFORT_LEVELS
+}
+
+export function isEffortLevelAllowedForFlavor(level: EffortLevel, flavor?: string | null): boolean {
+    return getEffortLevelsForFlavor(flavor).includes(level)
 }

@@ -1,5 +1,5 @@
-import { getPermissionModesForFlavor, isModelModeAllowedForFlavor, isPermissionModeAllowedForFlavor, toSessionSummary } from '@hapi/protocol'
-import { ModelModeSchema, PermissionModeSchema } from '@hapi/protocol/schemas'
+import { getEffortLevelsForFlavor, getPermissionModesForFlavor, isEffortLevelAllowedForFlavor, isModelModeAllowedForFlavor, isPermissionModeAllowedForFlavor, toSessionSummary } from '@hapi/protocol'
+import { EffortLevelSchema, ModelModeSchema, PermissionModeSchema } from '@hapi/protocol/schemas'
 import { Hono } from 'hono'
 import { z } from 'zod'
 import type { SyncEngine, Session } from '../../sync/syncEngine'
@@ -12,6 +12,10 @@ const permissionModeSchema = z.object({
 
 const modelModeSchema = z.object({
     model: ModelModeSchema
+})
+
+const effortLevelSchema = z.object({
+    effortLevel: EffortLevelSchema
 })
 
 const renameSessionSchema = z.object({
@@ -283,6 +287,37 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return c.json({ ok: true })
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Failed to apply model mode'
+            return c.json({ error: message }, 409)
+        }
+    })
+
+    app.post('/sessions/:id/effort-level', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const body = await c.req.json().catch(() => null)
+        const parsed = effortLevelSchema.safeParse(body)
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid body' }, 400)
+        }
+
+        const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
+        if (!isEffortLevelAllowedForFlavor(parsed.data.effortLevel, flavor)) {
+            return c.json({ error: 'Effort level is only supported for Claude sessions' }, 400)
+        }
+
+        try {
+            await engine.applySessionConfig(sessionResult.sessionId, { effortLevel: parsed.data.effortLevel })
+            return c.json({ ok: true })
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Failed to apply effort level'
             return c.json({ error: message }, 409)
         }
     })
