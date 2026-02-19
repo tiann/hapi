@@ -1,4 +1,6 @@
 import type {
+    AgentStateCompletedRequest,
+    AgentStateRequest,
     DecryptedMessage as ProtocolDecryptedMessage,
     Session,
     SessionSummary,
@@ -8,6 +10,8 @@ import type {
 
 export type {
     AgentState,
+    AgentStateCompletedRequest,
+    AgentStateRequest,
     AttachmentMetadata,
     ModelMode,
     PermissionMode,
@@ -61,6 +65,12 @@ export type AuthResponse = {
 
 export type SessionsResponse = { sessions: SessionSummary[] }
 export type SessionResponse = { session: Session }
+
+export type FilteredPermissions = {
+    requests: Record<string, AgentStateRequest>
+    completedRequests: Record<string, AgentStateCompletedRequest>
+}
+
 export type MessagesResponse = {
     messages: DecryptedMessage[]
     page: {
@@ -69,6 +79,7 @@ export type MessagesResponse = {
         nextBeforeSeq: number | null
         hasMore: boolean
     }
+    permissions: FilteredPermissions
 }
 
 export type MachinesResponse = { machines: Machine[] }
