@@ -18,6 +18,7 @@ import { useSessionActions } from '@/hooks/mutations/useSessionActions'
 import { useVoiceOptional } from '@/lib/voice-context'
 import { RealtimeVoiceSession, registerSessionStore, registerVoiceHooksStore, voiceHooks } from '@/realtime'
 import { McpInfoDialog } from '@/components/McpInfoDialog'
+import { SessionTodoPanel } from '@/components/SessionTodoPanel'
 import { isClaudeFlavor } from '@/lib/agentFlavorUtils'
 
 export function SessionChat(props: {
@@ -299,6 +300,8 @@ export function SessionChat(props: {
                 api={props.api}
                 onSessionDeleted={props.onBack}
             />
+
+            <SessionTodoPanel todos={props.session.todos} />
 
             {sessionInactive ? (
                 <div className="px-3 pt-3">
