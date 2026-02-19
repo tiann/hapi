@@ -1,5 +1,5 @@
 import type React from 'react'
-import { useCallback, useRef } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 
 type UseLongPressOptions = {
     onLongPress: (point: { x: number; y: number }) => void
@@ -14,6 +14,7 @@ type UseLongPressHandlers = {
     onMouseLeave: React.MouseEventHandler
     onTouchStart: React.TouchEventHandler
     onTouchEnd: React.TouchEventHandler
+    onTouchCancel: React.TouchEventHandler
     onTouchMove: React.TouchEventHandler
     onContextMenu: React.MouseEventHandler
     onKeyDown: React.KeyboardEventHandler
@@ -33,6 +34,12 @@ export function useLongPress(options: UseLongPressOptions): UseLongPressHandlers
             timerRef.current = null
         }
     }, [])
+
+    useEffect(() => {
+        return () => {
+            clearTimer()
+        }
+    }, [clearTimer])
 
     const startTimer = useCallback((clientX: number, clientY: number) => {
         if (disabled) return
@@ -78,10 +85,12 @@ export function useLongPress(options: UseLongPressOptions): UseLongPressHandlers
     }, [startTimer])
 
     const onTouchEnd = useCallback<React.TouchEventHandler>((e) => {
-        if (isLongPressRef.current) {
-            e.preventDefault()
-        }
+        e.preventDefault()
         handleEnd(!isLongPressRef.current)
+    }, [handleEnd])
+
+    const onTouchCancel = useCallback<React.TouchEventHandler>(() => {
+        handleEnd(false)
     }, [handleEnd])
 
     const onTouchMove = useCallback<React.TouchEventHandler>(() => {
@@ -112,6 +121,7 @@ export function useLongPress(options: UseLongPressOptions): UseLongPressHandlers
         onMouseLeave,
         onTouchStart,
         onTouchEnd,
+        onTouchCancel,
         onTouchMove,
         onContextMenu,
         onKeyDown
