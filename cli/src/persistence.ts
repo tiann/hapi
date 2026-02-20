@@ -5,7 +5,7 @@
  */
 
 import { FileHandle } from 'node:fs/promises'
-import { readFile, writeFile, mkdir, open, unlink, rename, stat } from 'node:fs/promises'
+import { chmod, readFile, writeFile, mkdir, open, unlink, rename, stat } from 'node:fs/promises'
 import { existsSync, writeFileSync, readFileSync, unlinkSync } from 'node:fs'
 import { configuration } from '@/configuration'
 import { isProcessAlive } from '@/utils/process';
@@ -54,10 +54,11 @@ export async function readSettings(): Promise<Settings> {
 
 export async function writeSettings(settings: Settings): Promise<void> {
   if (!existsSync(configuration.happyHomeDir)) {
-    await mkdir(configuration.happyHomeDir, { recursive: true })
+    await mkdir(configuration.happyHomeDir, { recursive: true, mode: 0o700 })
   }
 
-  await writeFile(configuration.settingsFile, JSON.stringify(settings, null, 2))
+  await writeFile(configuration.settingsFile, JSON.stringify(settings, null, 2), { mode: 0o600 })
+  await chmod(configuration.settingsFile, 0o600).catch(() => { })
 }
 
 /**
@@ -74,7 +75,7 @@ export async function updateSettings(
   const STALE_LOCK_TIMEOUT_MS = 10000; // Consider lock stale after 10 seconds
 
   if (!existsSync(configuration.happyHomeDir)) {
-    await mkdir(configuration.happyHomeDir, { recursive: true });
+    await mkdir(configuration.happyHomeDir, { recursive: true, mode: 0o700 });
   }
 
   const lockFile = configuration.settingsFile + '.lock';
@@ -119,8 +120,9 @@ export async function updateSettings(
     const updated = await updater(current);
 
     // Write atomically using rename
-    await writeFile(tmpFile, JSON.stringify(updated, null, 2));
+    await writeFile(tmpFile, JSON.stringify(updated, null, 2), { mode: 0o600 });
     await rename(tmpFile, configuration.settingsFile); // Atomic on POSIX
+    await chmod(configuration.settingsFile, 0o600).catch(() => { });
 
     return updated;
   } finally {
@@ -136,12 +138,13 @@ export async function updateSettings(
 
 export async function writeCredentialsDataKey(credentials: { publicKey: Uint8Array, machineKey: Uint8Array, token: string }): Promise<void> {
   if (!existsSync(configuration.happyHomeDir)) {
-    await mkdir(configuration.happyHomeDir, { recursive: true })
+    await mkdir(configuration.happyHomeDir, { recursive: true, mode: 0o700 })
   }
   await writeFile(configuration.privateKeyFile, JSON.stringify({
     encryption: { publicKey: Buffer.from(credentials.publicKey).toString('base64'), machineKey: Buffer.from(credentials.machineKey).toString('base64') },
     token: credentials.token
-  }, null, 2));
+  }, null, 2), { mode: 0o600 });
+  await chmod(configuration.privateKeyFile, 0o600).catch(() => { });
 }
 
 export async function clearCredentials(): Promise<void> {

@@ -56,11 +56,11 @@ class Configuration {
         this.currentCliVersion = packageJson.version
 
         if (!existsSync(this.happyHomeDir)) {
-            mkdirSync(this.happyHomeDir, { recursive: true })
+            mkdirSync(this.happyHomeDir, { recursive: true, mode: 0o700 })
         }
         // Ensure directories exist
         if (!existsSync(this.logsDir)) {
-            mkdirSync(this.logsDir, { recursive: true })
+            mkdirSync(this.logsDir, { recursive: true, mode: 0o700 })
         }
     }
 

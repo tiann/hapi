@@ -115,7 +115,7 @@ class Configuration {
 
         // Ensure data directory exists
         if (!existsSync(this.dataDir)) {
-            mkdirSync(this.dataDir, { recursive: true })
+            mkdirSync(this.dataDir, { recursive: true, mode: 0o700 })
         }
     }
 
@@ -128,7 +128,7 @@ class Configuration {
 
         // Ensure data directory exists before loading settings
         if (!existsSync(dataDir)) {
-            mkdirSync(dataDir, { recursive: true })
+            mkdirSync(dataDir, { recursive: true, mode: 0o700 })
         }
 
         // 2. Determine DB path (env only - not persisted)
