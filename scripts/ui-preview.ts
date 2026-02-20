@@ -33,8 +33,27 @@ Options:
   --timeout <ms>         Max wait time (default: ${DEFAULTS.timeout})
   --full-page            Capture full scrollable page
   --hub <url>            Hub URL (default: ${DEFAULTS.hub})
-  --help                 Show this help`)
+  --steps <json>         Interaction steps to run before capture (JSON array)
+  --help                 Show this help
+
+Steps JSON format (array of actions executed in order):
+  {"click": "<selector>"}     Click an element
+  {"wait": "<selector>"}      Wait for element to appear
+  {"wait": 500}               Wait N milliseconds
+  {"type": "text"}            Type into the focused element
+  {"hover": "<selector>"}     Hover over an element
+  {"scroll": "<selector>"}    Scroll element into view
+
+Example:
+  --steps '[{"click":"text=Refactor auth"},{"wait":".chat-message"}]'`)
 }
+
+type Step =
+    | { click: string }
+    | { wait: string | number }
+    | { type: string }
+    | { hover: string }
+    | { scroll: string }
 
 type Options = {
     route: string
@@ -45,6 +64,7 @@ type Options = {
     timeout: number
     fullPage: boolean
     hub: string
+    steps: Step[]
     help: boolean
 }
 
@@ -59,6 +79,7 @@ function parseArgs(): Options {
         timeout: DEFAULTS.timeout,
         fullPage: false,
         hub: DEFAULTS.hub,
+        steps: [],
         help: false,
     }
 
@@ -81,6 +102,8 @@ function parseArgs(): Options {
                 opts.fullPage = true; break
             case '--hub':
                 opts.hub = args[++i]; break
+            case '--steps':
+                opts.steps = JSON.parse(args[++i]); break
             default:
                 if (!arg.startsWith('-')) {
                     opts.route = arg.startsWith('/') ? arg : `/${arg}`
@@ -159,6 +182,25 @@ async function main(): Promise<void> {
 
         if (opts.waitFor) {
             await page.waitForSelector(opts.waitFor, { timeout: opts.timeout })
+        }
+
+        // Run interaction steps
+        for (const step of opts.steps) {
+            if ('click' in step) {
+                await page.click(step.click, { timeout: opts.timeout })
+            } else if ('wait' in step) {
+                if (typeof step.wait === 'number') {
+                    await page.waitForTimeout(step.wait)
+                } else {
+                    await page.waitForSelector(step.wait, { timeout: opts.timeout })
+                }
+            } else if ('type' in step) {
+                await page.keyboard.type(step.type)
+            } else if ('hover' in step) {
+                await page.hover(step.hover, { timeout: opts.timeout })
+            } else if ('scroll' in step) {
+                await page.locator(step.scroll).scrollIntoViewIfNeeded({ timeout: opts.timeout })
+            }
         }
 
         // Allow CSS transitions/animations to settle
