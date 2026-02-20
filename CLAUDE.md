@@ -31,8 +31,26 @@ bun run test:cli           # cli only
 bun run typecheck          # tsc --noEmit across all packages
 ```
 
+## Pull Requests
+
+When creating a PR that includes UI changes (components, styling, layout, visual behavior), you MUST include a screenshot in the PR body. More broadly, include visual evidence whenever it would help the reviewer understand the change — err on the side of including an image.
+
+Use the screenshot script (requires hub running via `bun run rebuild`):
+
+```
+bun scripts/ui-preview.ts [route] [options]
+  --viewport mobile|desktop    (default: desktop)
+  --theme light|dark
+  --wait-for <selector>        Wait for element before capture
+  --output <path>              (default: /tmp/hapi-ui-preview.png)
+  --full-page                  Capture full scrollable page
+```
+
+Upload the resulting image to the PR with `gh pr edit --add-file` or embed it in the PR body.
+
 ## Agent Context
 
 - `.claude/rules/` — path-scoped rules auto-loaded when working in hub/, web/, shared/, or test files
 - `.claude/agents/` — specialized agents (bug-detective, test-runner, git-ops, code-reviewer)
-- `.claude/shared/` — shared workflows referenced by agents (TDD, core rules)
+- `.claude/shared/` — shared workflows and architecture docs referenced by agents
+  - `permission-system.md` — permission lifecycle, enforcement, modes, hooks, and local vs remote differences

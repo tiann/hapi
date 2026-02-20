@@ -115,6 +115,47 @@ To seed a specific database directly:
 bun scripts/seed-fixtures.ts --db /path/to/hapi.db
 ```
 
+## Adding screenshots to PRs
+
+**Never commit screenshot files to the repository.** Instead, upload them as
+GitHub release assets and reference the public URLs inline in the PR body.
+
+### Upload workflow
+
+```bash
+# 1. Create a release with the screenshots as assets
+gh release create pr<NUMBER>-screenshots \
+    --title "PR #<NUMBER> Screenshots" \
+    --notes "Auto-generated screenshots for PR review. Safe to delete after merge." \
+    /tmp/screenshot-desktop.png \
+    /tmp/screenshot-mobile.png
+
+# 2. Get the public download URLs
+gh api repos/<OWNER>/<REPO>/releases/tags/pr<NUMBER>-screenshots \
+    --jq '.assets[] | .browser_download_url'
+
+# 3. Reference them in the PR body markdown
+#    ![Description](https://github.com/<OWNER>/<REPO>/releases/download/pr<NUMBER>-screenshots/screenshot.png)
+
+# 4. Clean up after merge (optional)
+gh release delete pr<NUMBER>-screenshots --yes
+```
+
+### Why not commit screenshots?
+
+- Screenshot files bloat the git history permanently
+- They get merged into main and stay there forever
+- Release assets are ephemeral and can be cleaned up after merge
+
+### PR screenshot policy CI check
+
+The `ui-screenshot-policy` check requires one of:
+- An image in the PR body (markdown `![...]()`, `<img>` tag, or image URL)
+- A checked `- [x] no visual/UI changes` checkbox (only if truly non-visual)
+
+If your PR changes `web/` files, always add screenshots unless the changes are
+purely non-visual (e.g., API client refactoring with no UI impact).
+
 ## Why this matters
 
 Screenshots taken against the live hub capture the user's real sessions and
