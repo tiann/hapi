@@ -33,7 +33,7 @@ function getTodoSignature(todos: TodoItem[] | undefined): string {
 }
 
 export function SessionTodoPanel({ todos }: { todos: TodoItem[] | undefined }) {
-    const [isCollapsed, setIsCollapsed] = useState(false)
+    const [isCollapsed, setIsCollapsed] = useState(true)
 
     const todoSignature = useMemo(() => getTodoSignature(todos), [todos])
     const prevTodoSignatureRef = useRef(todoSignature)
