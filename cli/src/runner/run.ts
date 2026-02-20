@@ -525,7 +525,7 @@ export async function startRunner(): Promise<void> {
           childProcess: happyProcess,
           directoryCreated,
           message: directoryCreated ? `The path '${directory}' did not exist. We created a new folder and spawned a new session there.` : undefined,
-          codexHomeDir: resolvedCodexHomeDir
+          codexHomeDir: createdCodexHomeDir ? resolvedCodexHomeDir : undefined
         };
 
         pidToTrackedSession.set(pid, trackedSession);
@@ -570,7 +570,7 @@ export async function startRunner(): Promise<void> {
             });
           });
         });
-        if (spawnResult.type === 'success' && agent === 'codex' && resolvedCodexHomeDir) {
+        if (spawnResult.type === 'success' && agent === 'codex' && resolvedCodexHomeDir && createdCodexHomeDir) {
           codexHomeBySessionId.set(spawnResult.sessionId, resolvedCodexHomeDir);
         }
         if (spawnResult.type !== 'success') {
