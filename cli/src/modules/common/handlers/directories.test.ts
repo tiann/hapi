@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { mkdir, rm, symlink, writeFile } from 'fs/promises'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -14,20 +14,34 @@ async function createTempDir(prefix: string): Promise<string> {
 
 describe('directory RPC handlers', () => {
     let rootDir: string
+    let outsideDir: string
     let rpc: RpcHandlerManager
 
     beforeEach(async () => {
         if (rootDir) {
             await rm(rootDir, { recursive: true, force: true })
         }
+        if (outsideDir) {
+            await rm(outsideDir, { recursive: true, force: true })
+        }
 
         rootDir = await createTempDir('hapi-dir-handler')
+        outsideDir = await createTempDir('hapi-dir-outside')
         await mkdir(join(rootDir, 'src'), { recursive: true })
         await writeFile(join(rootDir, 'src', 'index.ts'), 'console.log("ok")')
         await writeFile(join(rootDir, 'README.md'), '# test')
 
         rpc = new RpcHandlerManager({ scopePrefix: 'session-test' })
         registerDirectoryHandlers(rpc, rootDir)
+    })
+
+    afterEach(async () => {
+        if (rootDir) {
+            await rm(rootDir, { recursive: true, force: true })
+        }
+        if (outsideDir) {
+            await rm(outsideDir, { recursive: true, force: true })
+        }
     })
 
     it('lists root directory via empty path', async () => {
@@ -62,5 +76,39 @@ describe('directory RPC handlers', () => {
         expect(link).toBeTruthy()
         expect(link?.type).toBe('other')
         expect(link?.size).toBeUndefined()
+    })
+
+    it('rejects listDirectory when path resolves through symlink outside working directory', async () => {
+        try {
+            await symlink(outsideDir, join(rootDir, 'escape'))
+        } catch {
+            return
+        }
+
+        const response = await rpc.handleRequest({
+            method: 'session-test:listDirectory',
+            params: JSON.stringify({ path: 'escape' })
+        })
+
+        const parsed = JSON.parse(response) as { success: boolean; error?: string }
+        expect(parsed.success).toBe(false)
+        expect(parsed.error).toContain('symlink traversal')
+    })
+
+    it('rejects getDirectoryTree when path resolves through symlink outside working directory', async () => {
+        try {
+            await symlink(outsideDir, join(rootDir, 'escape-tree'))
+        } catch {
+            return
+        }
+
+        const response = await rpc.handleRequest({
+            method: 'session-test:getDirectoryTree',
+            params: JSON.stringify({ path: 'escape-tree', maxDepth: 1 })
+        })
+
+        const parsed = JSON.parse(response) as { success: boolean; error?: string }
+        expect(parsed.success).toBe(false)
+        expect(parsed.error).toContain('symlink traversal')
     })
 })

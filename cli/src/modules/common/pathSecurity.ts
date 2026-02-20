@@ -1,8 +1,20 @@
-import { resolve, sep } from 'path';
+import { realpath } from 'fs/promises'
+import { resolve, sep } from 'path'
 
 export interface PathValidationResult {
     valid: boolean;
     error?: string;
+}
+
+function normalizePath(path: string): string {
+    return process.platform === 'win32' ? path.toLowerCase() : path
+}
+
+function isPathWithinDirectory(targetPath: string, rootDirectory: string): boolean {
+    const normalizedTarget = normalizePath(targetPath)
+    const normalizedRoot = normalizePath(rootDirectory)
+    const rootPrefix = normalizedRoot.endsWith(sep) ? normalizedRoot : `${normalizedRoot}${sep}`
+    return normalizedTarget === normalizedRoot || normalizedTarget.startsWith(rootPrefix)
 }
 
 /**
@@ -18,11 +30,7 @@ export function validatePath(targetPath: string, workingDirectory: string): Path
 
     // Check if the resolved target path starts with the working directory
     // This prevents access to files outside the working directory
-    const normalizedTarget = process.platform === 'win32' ? resolvedTarget.toLowerCase() : resolvedTarget
-    const normalizedWorkingDir = process.platform === 'win32' ? resolvedWorkingDir.toLowerCase() : resolvedWorkingDir
-    const workingDirPrefix = normalizedWorkingDir.endsWith(sep) ? normalizedWorkingDir : normalizedWorkingDir + sep
-
-    if (normalizedTarget !== normalizedWorkingDir && !normalizedTarget.startsWith(workingDirPrefix)) {
+    if (!isPathWithinDirectory(resolvedTarget, resolvedWorkingDir)) {
         return {
             valid: false,
             error: `Access denied: Path '${targetPath}' is outside the working directory`
@@ -30,4 +38,38 @@ export function validatePath(targetPath: string, workingDirectory: string): Path
     }
 
     return { valid: true };
+}
+
+/**
+ * Validates a resolved path against the real filesystem path to prevent
+ * symlink traversal outside the working directory.
+ */
+export async function validateRealPath(
+    resolvedPath: string,
+    workingDirectory: string
+): Promise<PathValidationResult> {
+    try {
+        const realTarget = await realpath(resolvedPath)
+        let realWorkingDir: string
+        try {
+            realWorkingDir = await realpath(workingDirectory)
+        } catch {
+            realWorkingDir = resolve(workingDirectory)
+        }
+
+        if (!isPathWithinDirectory(realTarget, realWorkingDir)) {
+            return {
+                valid: false,
+                error: 'Access denied: symlink traversal outside working directory'
+            }
+        }
+
+        return { valid: true }
+    } catch (error) {
+        const nodeError = error as NodeJS.ErrnoException
+        if (nodeError.code === 'ENOENT') {
+            return { valid: true }
+        }
+        throw error
+    }
 }

@@ -2,7 +2,7 @@ import { logger } from '@/ui/logger'
 import { readdir, stat } from 'fs/promises'
 import { basename, join, resolve } from 'path'
 import type { RpcHandlerManager } from '@/api/rpc/RpcHandlerManager'
-import { validatePath } from '../pathSecurity'
+import { validatePath, validateRealPath } from '../pathSecurity'
 import { getErrorMessage, rpcError } from '../rpcResponses'
 
 interface ListDirectoryRequest {
@@ -55,6 +55,11 @@ export function registerDirectoryHandlers(rpcHandlerManager: RpcHandlerManager, 
 
         try {
             const resolvedPath = resolve(workingDirectory, targetPath)
+            const realValidation = await validateRealPath(resolvedPath, workingDirectory)
+            if (!realValidation.valid) {
+                return rpcError(realValidation.error ?? 'Invalid directory path')
+            }
+
             const entries = await readdir(resolvedPath, { withFileTypes: true })
 
             const directoryEntries: DirectoryEntry[] = await Promise.all(
@@ -115,6 +120,10 @@ export function registerDirectoryHandlers(rpcHandlerManager: RpcHandlerManager, 
         }
 
         const resolvedRoot = resolve(workingDirectory, targetPath)
+        const realValidation = await validateRealPath(resolvedRoot, workingDirectory)
+        if (!realValidation.valid) {
+            return rpcError(realValidation.error ?? 'Invalid directory path')
+        }
 
         async function buildTree(path: string, name: string, currentDepth: number): Promise<TreeNode | null> {
             try {

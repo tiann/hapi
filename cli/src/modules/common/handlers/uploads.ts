@@ -1,5 +1,5 @@
 import { logger } from '@/ui/logger'
-import { mkdir, mkdtemp, rm, writeFile } from 'fs/promises'
+import { mkdir, mkdtemp, realpath, rm, writeFile } from 'fs/promises'
 import { join, resolve, sep } from 'path'
 import { rmSync } from 'node:fs'
 import type { RpcHandlerManager } from '@/api/rpc/RpcHandlerManager'
@@ -271,6 +271,19 @@ export function registerUploadHandlers(rpcHandlerManager: RpcHandlerManager): vo
         }
 
         try {
+            try {
+                const resolvedRealPath = await realpath(path)
+                if (!isPathWithinUploadDir(resolvedRealPath, data.sessionId)) {
+                    return rpcError('Invalid upload path')
+                }
+            } catch (error) {
+                const nodeError = error as NodeJS.ErrnoException
+                if (nodeError.code !== 'ENOENT') {
+                    logger.debug('Failed to resolve upload realpath:', error)
+                    return rpcError('Invalid upload path')
+                }
+            }
+
             await rm(path, { force: true })
             return { success: true }
         } catch (error) {
