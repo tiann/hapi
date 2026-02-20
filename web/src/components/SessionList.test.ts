@@ -65,6 +65,17 @@ describe('sortSessionsBySortOrder', () => {
 
         expect(sessions.map(session => session.id)).toEqual(['a', 'b'])
     })
+
+    it('uses lexicographic comparison for base62 keys (not locale-aware compare)', () => {
+        const sessions: SessionSummary[] = [
+            makeSession({ id: 'lower', sortOrder: 'a' }),
+            makeSession({ id: 'upper', sortOrder: 'Z' }),
+        ]
+
+        const sorted = sortSessionsBySortOrder(sessions)
+
+        expect(sorted.map(session => session.id)).toEqual(['upper', 'lower'])
+    })
 })
 
 describe('group + flat ordering', () => {
@@ -93,6 +104,17 @@ describe('group + flat ordering', () => {
         expect(groups).toHaveLength(1)
         expect(groups[0]?.directory).toBe(FLAT_DIRECTORY_KEY)
         expect(groups[0]?.sessions.map(session => session.id)).toEqual(['repo-a', 'repo-b', 'repo-c'])
+    })
+
+    it('orders groups by lexicographic min sortOrder (base62-safe)', () => {
+        const sessions: SessionSummary[] = [
+            makeSession({ id: 'lower', sortOrder: 'a', metadata: { path: '/repo-lower' } }),
+            makeSession({ id: 'upper', sortOrder: 'Z', metadata: { path: '/repo-upper' } }),
+        ]
+
+        const groups = groupSessionsByDirectory(sessions, {})
+
+        expect(groups.map(group => group.directory)).toEqual(['/repo-upper', '/repo-lower'])
     })
 })
 

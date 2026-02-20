@@ -144,7 +144,7 @@ export function sortSessionsBySortOrder(
         if (sortOrderA === null && sortOrderB !== null) return 1
         if (sortOrderA !== null && sortOrderB === null) return -1
         if (sortOrderA !== null && sortOrderB !== null && sortOrderA !== sortOrderB) {
-            return sortOrderA.localeCompare(sortOrderB)
+            return sortOrderA < sortOrderB ? -1 : 1
         }
 
         return a.id.localeCompare(b.id)
@@ -223,7 +223,7 @@ export function groupSessionsByDirectory(
             if (a.minSortOrder === null && b.minSortOrder !== null) return 1
             if (a.minSortOrder !== null && b.minSortOrder === null) return -1
             if (a.minSortOrder !== null && b.minSortOrder !== null && a.minSortOrder !== b.minSortOrder) {
-                return a.minSortOrder.localeCompare(b.minSortOrder)
+                return a.minSortOrder < b.minSortOrder ? -1 : 1
             }
 
             const machineCompare = (a.machineId ?? '').localeCompare(b.machineId ?? '')
