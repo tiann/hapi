@@ -49,6 +49,33 @@ bun scripts/sandbox-hub.ts stop
 bun scripts/sandbox-hub.ts status
 ```
 
+## Interaction steps (`--steps`)
+
+Use `--steps '<json>'` to interact with the page before capturing. Steps run
+in order after the page hydrates. This is required for anything that needs a
+click, hover, or text input — like opening a session from the list.
+
+| Step | Format | Description |
+|---|---|---|
+| click | `{"click": "<selector>"}` | Click an element (CSS or Playwright text selector) |
+| wait | `{"wait": "<selector>"}` | Wait for element to appear |
+| wait | `{"wait": 500}` | Wait N milliseconds |
+| type | `{"type": "text"}` | Type into the currently focused element |
+| hover | `{"hover": "<selector>"}` | Hover to reveal tooltips or menus |
+| scroll | `{"scroll": "<selector>"}` | Scroll element into view |
+
+Example — expand a project group, then open a session:
+
+```bash
+HAPI_HOME=$SANDBOX_HOME bun scripts/ui-preview.ts --hub $SANDBOX_URL \
+    --steps '[{"click":"text=api-redesign"},{"click":"text=Refactor auth"},{"wait":1500}]' \
+    --output /tmp/session-detail.png \
+    /sessions
+```
+
+Note: the seeded sessions are grouped by project path. You may need to click the
+group name first to expand it before the session name becomes clickable.
+
 ## Full example
 
 ```bash
@@ -56,13 +83,20 @@ bun scripts/sandbox-hub.ts status
 bun scripts/sandbox-hub.ts start --seed
 # Parse output for SANDBOX_URL and SANDBOX_HOME
 
-# Desktop screenshot
+# Sessions list
 HAPI_HOME=$SANDBOX_HOME bun scripts/ui-preview.ts \
     --hub $SANDBOX_URL \
     --output /tmp/hapi-sessions.png \
     /sessions
 
-# Mobile screenshot
+# Open a session via interaction
+HAPI_HOME=$SANDBOX_HOME bun scripts/ui-preview.ts \
+    --hub $SANDBOX_URL \
+    --steps '[{"click":"text=api-redesign"},{"click":"text=Refactor auth"}]' \
+    --output /tmp/hapi-session-detail.png \
+    /sessions
+
+# Mobile viewport
 HAPI_HOME=$SANDBOX_HOME bun scripts/ui-preview.ts \
     --hub $SANDBOX_URL \
     --viewport mobile \
