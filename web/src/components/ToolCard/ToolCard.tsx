@@ -371,7 +371,7 @@ function ToolCardInner(props: ToolCardProps) {
                             {header}
                         </button>
                     </DialogTrigger>
-                    <DialogContent className="max-w-2xl">
+                    <DialogContent resizable style={{ width: 'min(42rem, calc(100vw - 24px))' }}>
                         <DialogHeader>
                             <DialogTitle>{toolTitle}</DialogTitle>
                         </DialogHeader>
@@ -381,7 +381,7 @@ function ToolCardInner(props: ToolCardProps) {
                                 && Object.keys(permission.answers).length > 0
 
                             return (
-                                <div className="mt-3 flex max-h-[75vh] flex-col gap-4 overflow-auto">
+                                <div className="mt-3 flex flex-1 min-h-0 flex-col gap-4 overflow-auto">
                                     <div>
                                         <div className="mb-1 text-xs font-medium text-[var(--app-hint)]">
                                             {isQuestionToolWithAnswers ? t('tool.questionsAnswers') : t('tool.input')}

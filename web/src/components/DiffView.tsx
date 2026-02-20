@@ -70,14 +70,14 @@ export function DiffView(props: {
                     </div>
                 </button>
             </DialogTrigger>
-            <DialogContent className="max-w-4xl">
+            <DialogContent resizable style={{ width: 'min(56rem, calc(100vw - 24px))' }}>
                 <DialogHeader>
                     <DialogTitle className="break-all">{title}</DialogTitle>
                     <DialogDescription className="font-mono break-all">
                         {stats.label}
                     </DialogDescription>
                 </DialogHeader>
-                <div className="mt-3 max-h-[75vh] overflow-auto">
+                <div className="mt-3 flex-1 min-h-0 overflow-auto">
                     {DiffInline}
                 </div>
             </DialogContent>

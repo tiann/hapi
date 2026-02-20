@@ -143,11 +143,11 @@ export function CliOutputBlock(props: { text: string }) {
                             </div>
                         </button>
                     </DialogTrigger>
-                    <DialogContent className="max-w-2xl">
+                    <DialogContent resizable style={{ width: 'min(42rem, calc(100vw - 24px))' }}>
                         <DialogHeader>
                             <DialogTitle>{t('terminal.commandName')}</DialogTitle>
                         </DialogHeader>
-                        <div className="mt-3 max-h-[75vh] overflow-auto">
+                        <div className="mt-3 flex-1 min-h-0 overflow-auto">
                             <div className="min-w-0 max-w-full overflow-x-auto overflow-y-hidden">
                                 <pre className="m-0 w-max min-w-full bg-[var(--app-code-bg)] p-2 text-xs font-mono">
                                     {content}

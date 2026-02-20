@@ -7,16 +7,27 @@ export const DialogTrigger = DialogPrimitive.Trigger
 
 export const DialogContent = React.forwardRef<
     HTMLDivElement,
-    React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content>
->(({ className, ...props }, ref) => (
+    React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content> & { resizable?: boolean }
+>(({ className, resizable, style, ...props }, ref) => (
     <DialogPrimitive.Portal>
         <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/50" />
         <DialogPrimitive.Content
             ref={ref}
             className={cn(
-                'fixed left-1/2 top-1/2 z-50 w-[calc(100vw-24px)] max-w-lg -translate-x-1/2 -translate-y-1/2 rounded-xl bg-[var(--app-secondary-bg)] p-4 shadow-2xl',
+                'fixed left-1/2 top-1/2 z-50 -translate-x-1/2 -translate-y-1/2 rounded-xl bg-[var(--app-secondary-bg)] p-4 shadow-2xl',
+                resizable
+                    ? 'flex flex-col resize overflow-hidden'
+                    : 'w-[calc(100vw-24px)] max-w-lg',
                 className
             )}
+            style={resizable ? {
+                width: 'min(32rem, calc(100vw - 24px))',
+                maxWidth: 'calc(100vw - 24px)',
+                maxHeight: '90vh',
+                minWidth: '280px',
+                minHeight: '160px',
+                ...style,
+            } : style}
             {...props}
         />
     </DialogPrimitive.Portal>
