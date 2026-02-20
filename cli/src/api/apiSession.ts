@@ -63,6 +63,7 @@ export class ApiSessionClient extends EventEmitter {
     private readonly terminalManager: TerminalManager
     private agentStateLock = new AsyncLock()
     private metadataLock = new AsyncLock()
+    private _lastThinking = false
 
     private isDisconnectedTransportError(error: unknown): boolean {
         if (!(error instanceof Error)) {
@@ -150,7 +151,7 @@ export class ApiSessionClient extends EventEmitter {
             this.emitSocketSafely('session-alive', {
                 sid: this.sessionId,
                 time: Date.now(),
-                thinking: false
+                thinking: this._lastThinking
             }, { allowWhenDisconnected: true })
         })
 
@@ -638,6 +639,7 @@ export class ApiSessionClient extends EventEmitter {
         runtime?: { permissionMode?: SessionPermissionMode; modelMode?: SessionModelMode },
         options?: { volatile?: boolean }
     ): void {
+        this._lastThinking = thinking
         this.emitSocketSafely('session-alive', {
             sid: this.sessionId,
             time: Date.now(),
