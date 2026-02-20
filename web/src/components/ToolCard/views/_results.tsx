@@ -2,6 +2,7 @@ import type { ToolViewComponent, ToolViewProps } from '@/components/ToolCard/vie
 import { isObject, safeStringify } from '@hapi/protocol'
 import { CodeBlock } from '@/components/CodeBlock'
 import { MarkdownRenderer } from '@/components/MarkdownRenderer'
+import { ChatImage } from '@/components/ui/ChatImage'
 import { basename, resolveDisplayPath } from '@/utils/path'
 
 function parseToolUseError(message: string): { isToolUseError: boolean; errorMessage: string | null } {
@@ -48,12 +49,7 @@ function ResultImages(props: { images: ExtractedImage[] }) {
         <>
             {props.images.map((img, idx) => (
                 <div key={idx} className="my-2">
-                    <img
-                        src={img.dataUrl}
-                        alt="Image"
-                        className="max-w-full rounded-lg"
-                        style={{ maxHeight: '512px' }}
-                    />
+                    <ChatImage src={img.dataUrl} alt="Image" />
                 </div>
             ))}
         </>

@@ -1,5 +1,6 @@
 import type { AttachmentMetadata } from '@/types/api'
 import { FileIcon } from '@/components/FileIcon'
+import { ChatImage } from '@/components/ui/ChatImage'
 import { isImageMimeType } from '@/lib/fileAttachments'
 
 function formatFileSize(bytes: number): string {
@@ -8,16 +9,16 @@ function formatFileSize(bytes: number): string {
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
-function ImageAttachment(props: { attachment: AttachmentMetadata }) {
+function ImageAttachment(props: { attachment: AttachmentMetadata & { previewUrl: string } }) {
     const { attachment } = props
     return (
         <div className="relative overflow-hidden rounded-lg">
-            <img
+            <ChatImage
                 src={attachment.previewUrl}
                 alt={attachment.filename}
-                className="max-h-48 max-w-full object-contain"
+                maxHeight={192}
             />
-            <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/60 to-transparent px-2 py-1.5">
+            <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/60 to-transparent px-2 py-1.5">
                 <span className="text-xs text-white/90 line-clamp-1">
                     {attachment.filename}
                 </span>
@@ -47,7 +48,10 @@ export function MessageAttachments(props: { attachments: AttachmentMetadata[] })
     const { attachments } = props
     if (!attachments || attachments.length === 0) return null
 
-    const images = attachments.filter(a => isImageMimeType(a.mimeType) && a.previewUrl)
+    const images = attachments.filter(
+        (a): a is AttachmentMetadata & { previewUrl: string } =>
+            isImageMimeType(a.mimeType) && typeof a.previewUrl === 'string' && a.previewUrl.length > 0
+    )
     const files = attachments.filter(a => !isImageMimeType(a.mimeType) || !a.previewUrl)
 
     return (
