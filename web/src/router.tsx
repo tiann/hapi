@@ -40,6 +40,7 @@ import TerminalPage from '@/routes/sessions/terminal'
 import SettingsPage from '@/routes/settings'
 import { normalizeDecryptedMessage } from '@/chat/normalize'
 import { useSystemStats } from '@/hooks/queries/useSystemStats'
+import { useSidebarResize } from '@/hooks/useSidebarResize'
 import { SystemStatsBar } from '@/components/SystemStatsBar'
 import type { DecryptedMessage, SlashCommand } from '@/types/api'
 
@@ -170,6 +171,7 @@ function SessionsPage() {
     const { stats: systemStats } = useSystemStats(api)
     const { view, toggleView } = useSessionListView()
     const scrollContainerRef = useRef<HTMLDivElement>(null)
+    const { width: sidebarWidth, handleResizeStart } = useSidebarResize()
     const { machines } = useMachines(api, true)
     const machineNames = useMemo(() => {
         const map = new Map<string, string>()
@@ -201,7 +203,8 @@ function SessionsPage() {
     return (
         <div className="flex h-full min-h-0">
             <div
-                className={`${isSessionsIndex ? 'flex' : 'hidden lg:flex'} w-full lg:w-[420px] xl:w-[480px] shrink-0 flex-col bg-[var(--app-bg)] lg:border-r lg:border-[var(--app-divider)]`}
+                className={`${isSessionsIndex ? 'flex' : 'hidden lg:flex'} w-full shrink-0 flex-col bg-[var(--app-bg)]`}
+                style={{ width: sidebarWidth, maxWidth: '100%' }}
             >
                 <div className="bg-[var(--app-bg)] pt-[env(safe-area-inset-top)]">
                     <div className="mx-auto w-full max-w-content flex items-center justify-between px-3 py-2">
@@ -265,6 +268,11 @@ function SessionsPage() {
                 <SystemStatsBar stats={systemStats} />
             </div>
 
+            <div
+                onPointerDown={handleResizeStart}
+                className="hidden lg:flex w-1 shrink-0 cursor-col-resize items-center justify-center border-r border-[var(--app-divider)] bg-[var(--app-bg)] hover:bg-[var(--app-link)] hover:opacity-40 active:bg-[var(--app-link)] active:opacity-60 transition-colors"
+                title="Drag to resize"
+            />
             <div className={`${isSessionsIndex ? 'hidden lg:flex' : 'flex'} min-w-0 flex-1 flex-col bg-[var(--app-bg)]`}>
                 <div className="flex-1 min-h-0">
                     <Outlet />
