@@ -1,6 +1,7 @@
 import { logger } from '@/ui/logger'
 import type { RpcHandlerManager } from '@/api/rpc/RpcHandlerManager'
 import { run as runRipgrep } from '@/modules/ripgrep/index'
+import { validateRipgrepArgs } from '../argSecurity'
 import { validatePath } from '../pathSecurity'
 import { getErrorMessage, rpcError } from '../rpcResponses'
 
@@ -26,6 +27,11 @@ export function registerRipgrepHandlers(rpcHandlerManager: RpcHandlerManager, wo
             if (!validation.valid) {
                 return rpcError(validation.error ?? 'Invalid working directory')
             }
+        }
+
+        const argValidation = validateRipgrepArgs(data.args)
+        if (!argValidation.valid) {
+            return rpcError(argValidation.error ?? 'Invalid ripgrep arguments')
         }
 
         try {

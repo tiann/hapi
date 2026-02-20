@@ -515,6 +515,58 @@ describe('web integration routes', () => {
         }
     })
 
+    it('lists files for safe queries and rejects queries that start with a dash', async () => {
+        const ctx = createTestContext()
+
+        try {
+            const namespace = 'alpha'
+            const token = await getAccessToken(ctx.app, namespace)
+            const session = ctx.engine.getOrCreateSession(
+                'git-files-session',
+                { path: '/repo', host: 'host-a' },
+                null,
+                namespace
+            )
+
+            let ripgrepCallCount = 0
+            let ripgrepArgs: string[] = []
+            ctx.registerRpc(`${session.id}:ripgrep`, (params: unknown) => {
+                ripgrepCallCount += 1
+                ripgrepArgs = (params as { args: string[] }).args
+                return {
+                    success: true,
+                    stdout: 'src/index.ts\nREADME.md\n'
+                }
+            })
+
+            const successResponse = await ctx.app.request(`/api/sessions/${session.id}/files?query=src&limit=1`, {
+                headers: authHeaders(token)
+            })
+            expect(successResponse.status).toBe(200)
+            expect(ripgrepArgs).toEqual(['--files', '--iglob', '*src*'])
+            expect(await successResponse.json()).toEqual({
+                success: true,
+                files: [{
+                    fileName: 'index.ts',
+                    filePath: 'src',
+                    fullPath: 'src/index.ts',
+                    fileType: 'file'
+                }]
+            })
+
+            const rejectedResponse = await ctx.app.request(`/api/sessions/${session.id}/files?query=--pre`, {
+                headers: authHeaders(token)
+            })
+            expect(rejectedResponse.status).toBe(400)
+            expect(await rejectedResponse.json()).toEqual({
+                error: 'Invalid query: must not start with -'
+            })
+            expect(ripgrepCallCount).toBe(1)
+        } finally {
+            ctx.stop()
+        }
+    })
+
     it('/cli/machines and /cli/machines/:id/spawn are namespace-scoped', async () => {
         const ctx = createTestContext()
 

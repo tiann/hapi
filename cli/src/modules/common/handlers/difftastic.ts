@@ -1,6 +1,7 @@
 import { logger } from '@/ui/logger'
 import type { RpcHandlerManager } from '@/api/rpc/RpcHandlerManager'
 import { run as runDifftastic } from '@/modules/difftastic/index'
+import { validateDifftasticArgs } from '../argSecurity'
 import { validatePath } from '../pathSecurity'
 import { getErrorMessage, rpcError } from '../rpcResponses'
 
@@ -26,6 +27,11 @@ export function registerDifftasticHandlers(rpcHandlerManager: RpcHandlerManager,
             if (!validation.valid) {
                 return rpcError(validation.error ?? 'Invalid working directory')
             }
+        }
+
+        const argValidation = validateDifftasticArgs(data.args)
+        if (!argValidation.valid) {
+            return rpcError(argValidation.error ?? 'Invalid difftastic arguments')
         }
 
         try {

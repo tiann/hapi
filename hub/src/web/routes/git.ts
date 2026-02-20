@@ -152,6 +152,9 @@ export function createGitRoutes(getSyncEngine: () => SyncEngine | null): Hono<We
         }
 
         const query = parsed.data.query?.trim() ?? ''
+        if (query.startsWith('-')) {
+            return c.json({ error: 'Invalid query: must not start with -' }, 400)
+        }
         const limit = parsed.data.limit ?? 200
         const args = ['--files']
         if (query) {
