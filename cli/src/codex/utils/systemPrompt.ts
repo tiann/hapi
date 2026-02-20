@@ -17,6 +17,17 @@ export const TITLE_INSTRUCTION = trimIdent(`
 `);
 
 /**
+ * Spawn instruction for Codex to call the hapi MCP spawn tool.
+ */
+export const SPAWN_INSTRUCTION = trimIdent(`
+    Use functions.hapi__spawn_session when a delegated parallel subtask should run separately, when isolated worktree/session context is needed, or when keeping context split will reduce confusion. Do not spawn for simple follow-ups or when continuing the same focused task. The required parameter is directory (prefer absolute path); optional parameters include machineId and agent.
+`);
+
+/**
  * The system prompt to inject via developer_instructions in local mode.
  */
-export const codexSystemPrompt = TITLE_INSTRUCTION;
+export const codexSystemPrompt = trimIdent(`
+    ${TITLE_INSTRUCTION}
+
+    ${SPAWN_INSTRUCTION}
+`);

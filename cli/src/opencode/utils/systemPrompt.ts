@@ -15,6 +15,17 @@ export const TITLE_INSTRUCTION = trimIdent(`
 `);
 
 /**
+ * Spawn instruction for OpenCode to call the hapi MCP spawn tool.
+ */
+export const SPAWN_INSTRUCTION = trimIdent(`
+    Use hapi_spawn_session when a delegated parallel subtask should run in a separate context, when an isolated worktree/session is needed, or when context separation will reduce mistakes. Do not spawn for simple follow-ups or while continuing the same focused task. The required parameter is directory (prefer absolute path); optional parameters include machineId and agent.
+`);
+
+/**
  * The system prompt to inject for OpenCode sessions.
  */
-export const opencodeSystemPrompt = TITLE_INSTRUCTION;
+export const opencodeSystemPrompt = trimIdent(`
+    ${TITLE_INSTRUCTION}
+
+    ${SPAWN_INSTRUCTION}
+`);
