@@ -5,8 +5,7 @@ import { tmpdir } from 'node:os';
 import { existsSync } from 'node:fs';
 import { createCodexSessionScanner } from './codexSessionScanner';
 import type { CodexSessionEvent } from './codexEventConverter';
-
-const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+import { waitFor } from '../../test-utils/waitFor';
 
 describe('codexSessionScanner', () => {
     let testDir: string;
@@ -62,7 +61,8 @@ describe('codexSessionScanner', () => {
             onEvent: (event) => events.push(event)
         });
 
-        await wait(150);
+        const startupCheckStartedAt = Date.now();
+        await waitFor(() => Date.now() - startupCheckStartedAt >= 150 && events.length === 0);
         expect(events).toHaveLength(0);
 
         const newLine = JSON.stringify({
@@ -71,7 +71,7 @@ describe('codexSessionScanner', () => {
         });
         await appendFile(sessionFile, newLine + '\n');
 
-        await wait(200);
+        await waitFor(() => events.length === 1);
         expect(events).toHaveLength(1);
         expect(events[0].type).toBe('response_item');
     });
@@ -125,7 +125,8 @@ describe('codexSessionScanner', () => {
             onEvent: (event) => events.push(event)
         });
 
-        await wait(200);
+        const startupCheckStartedAt = Date.now();
+        await waitFor(() => Date.now() - startupCheckStartedAt >= 200 && events.length === 0);
         expect(events).toHaveLength(0);
 
         const newLine = JSON.stringify({
@@ -134,7 +135,7 @@ describe('codexSessionScanner', () => {
         });
         await appendFile(matchingFile, newLine + '\n');
 
-        await wait(200);
+        await waitFor(() => events.length === 1);
         expect(events).toHaveLength(1);
         expect(events[0].type).toBe('response_item');
     });
@@ -158,7 +159,7 @@ describe('codexSessionScanner', () => {
             }
         });
 
-        await wait(150);
+        await waitFor(() => failureMessage === matchFailedMessage);
         expect(failureMessage).toBe(matchFailedMessage);
         expect(events).toHaveLength(0);
 
@@ -168,7 +169,8 @@ describe('codexSessionScanner', () => {
         });
         await appendFile(sessionFile, newLine + '\n');
 
-        await wait(200);
+        const postAppendCheckStartedAt = Date.now();
+        await waitFor(() => Date.now() - postAppendCheckStartedAt >= 200 && events.length === 0);
         expect(events).toHaveLength(0);
     });
 });

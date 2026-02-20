@@ -5,6 +5,7 @@ import { mkdir, writeFile, appendFile, rm, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir, homedir } from 'node:os'
 import { existsSync } from 'node:fs'
+import { waitFor } from '../../test-utils/waitFor'
 
 describe('sessionScanner', () => {
   let testDir: string
@@ -63,7 +64,7 @@ describe('sessionScanner', () => {
     // Write first line
     await writeFile(sessionFile1, lines1[0] + '\n')
     scanner.onNewSession(sessionId1)
-    await new Promise(resolve => setTimeout(resolve, 100))
+    await waitFor(() => collectedMessages.length === 1)
     
     expect(collectedMessages).toHaveLength(1)
     expect(collectedMessages[0].type).toBe('user')
@@ -76,7 +77,7 @@ describe('sessionScanner', () => {
     // Write second line with delay
     await new Promise(resolve => setTimeout(resolve, 50))
     await appendFile(sessionFile1, lines1[1] + '\n')
-    await new Promise(resolve => setTimeout(resolve, 200))
+    await waitFor(() => collectedMessages.length === 2)
     
     expect(collectedMessages).toHaveLength(2)
     expect(collectedMessages[1].type).toBe('assistant')
@@ -102,7 +103,7 @@ describe('sessionScanner', () => {
     await writeFile(sessionFile2, initialContent)
     
     scanner.onNewSession(sessionId2)
-    await new Promise(resolve => setTimeout(resolve, 100))
+    await waitFor(() => collectedMessages.length === phase1Count + 1)
     
     // Should have added only 1 new message (summary) 
     // The historical user + assistant messages (lines 1-2) are deduplicated because they have same UUIDs
@@ -112,7 +113,7 @@ describe('sessionScanner', () => {
     // Write new messages (user asks for ls tool) - this is line 3
     await new Promise(resolve => setTimeout(resolve, 50))
     await appendFile(sessionFile2, lines2[3] + '\n')
-    await new Promise(resolve => setTimeout(resolve, 200))
+    await waitFor(() => collectedMessages.length >= phase1Count + 2)
     
     // Find the user message we just added
     const userMessages = collectedMessages.filter(m => m.type === 'user')
@@ -127,7 +128,7 @@ describe('sessionScanner', () => {
       await new Promise(resolve => setTimeout(resolve, 50))
       await appendFile(sessionFile2, lines2[i] + '\n')
     }
-    await new Promise(resolve => setTimeout(resolve, 300))
+    await waitFor(() => collectedMessages.length >= phase1Count + 5)
     
     // Final count check
     const finalMessages = collectedMessages.slice(phase1Count)
