@@ -433,7 +433,25 @@ export class AppServerEventConverter {
                 return events;
             }
 
-            if (itemType === 'usermessage' || itemType === 'mcptoolcall' || itemType === 'websearch') {
+            const emitItemActivity = () => {
+                events.push({
+                    type: 'item_activity',
+                    item_type: itemType,
+                    item_id: itemId
+                });
+            };
+
+            if (itemType === 'usermessage') {
+                if (method === 'item/completed') {
+                    this.completedItemKeys.add(completionKey);
+                }
+                return events;
+            }
+
+            if (itemType === 'mcptoolcall' || itemType === 'websearch') {
+                if (method === 'item/started') {
+                    emitItemActivity();
+                }
                 if (method === 'item/completed') {
                     this.completedItemKeys.add(completionKey);
                 }
@@ -441,6 +459,9 @@ export class AppServerEventConverter {
             }
 
             if (itemType === 'agentmessage') {
+                if (method === 'item/started') {
+                    emitItemActivity();
+                }
                 if (method === 'item/completed') {
                     const text = asString(item.text ?? item.message ?? item.content) ?? this.agentMessageBuffers.get(itemId);
                     if (text) {
@@ -453,6 +474,9 @@ export class AppServerEventConverter {
             }
 
             if (itemType === 'reasoning') {
+                if (method === 'item/started') {
+                    emitItemActivity();
+                }
                 if (method === 'item/completed') {
                     const text = asString(item.text ?? item.message ?? item.content) ?? this.reasoningBuffers.get(itemId);
                     if (text) {

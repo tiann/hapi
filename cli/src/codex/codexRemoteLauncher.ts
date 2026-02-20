@@ -31,6 +31,17 @@ function shouldUseAppServer(): boolean {
     return !useMcpServer;
 }
 
+const THINKING_CLEAR_GRACE_MS = 3_000;
+const WORK_START_EVENTS = new Set([
+    'task_started',
+    'exec_command_begin',
+    'exec_approval_request',
+    'patch_apply_begin',
+    'mcp_tool_call_begin',
+    'web_search_begin',
+    'item_activity'
+]);
+
 class CodexRemoteLauncher extends RemoteLauncherBase {
     private readonly session: CodexSession;
     private useAppServer: boolean;
@@ -43,6 +54,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
     private abortController: AbortController = new AbortController();
     private currentThreadId: string | null = null;
     private currentTurnId: string | null = null;
+    private thinkingClearTimer: NodeJS.Timeout | null = null;
 
     constructor(session: CodexSession) {
         super(process.env.DEBUG ? session.logPath : undefined);
@@ -59,6 +71,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
     private async handleAbort(): Promise<void> {
         logger.debug('[Codex] Abort requested - stopping current task');
         try {
+            this.clearThinkingClearTimer();
             if (this.useAppServer && this.appServerClient) {
                 if (this.currentThreadId && this.currentTurnId) {
                     try {
@@ -106,6 +119,25 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         this.exitReason = 'switch';
         this.shouldExit = true;
         await this.handleAbort();
+    }
+
+    private clearThinkingClearTimer(): void {
+        if (this.thinkingClearTimer) {
+            clearTimeout(this.thinkingClearTimer);
+            this.thinkingClearTimer = null;
+        }
+    }
+
+    private startThinkingClearGrace(session: CodexSession): void {
+        this.clearThinkingClearTimer();
+        this.thinkingClearTimer = setTimeout(() => {
+            this.thinkingClearTimer = null;
+            if (session.thinking) {
+                logger.debug('thinking completed');
+                session.onThinkingChange(false);
+            }
+        }, THINKING_CLEAR_GRACE_MS);
+        this.thinkingClearTimer.unref();
     }
 
     public async launch(): Promise<RemoteLauncherExitReason> {
@@ -240,6 +272,14 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         const handleCodexEvent = (msg: Record<string, unknown>) => {
             const msgType = asString(msg.type);
             if (!msgType) return;
+
+            if (useAppServer && WORK_START_EVENTS.has(msgType)) {
+                this.clearThinkingClearTimer();
+                if (!session.thinking) {
+                    logger.debug('thinking started');
+                    session.onThinkingChange(true);
+                }
+            }
 
             if (msgType === 'thread_started') {
                 const threadId = asString(msg.thread_id ?? msg.threadId);
@@ -420,15 +460,23 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 if (useAppServer) {
                     turnInFlight = true;
                 }
-                if (!session.thinking) {
-                    logger.debug('thinking started');
-                    session.onThinkingChange(true);
-                }
             }
-            if (msgType === 'task_complete' || msgType === 'turn_aborted' || msgType === 'task_failed') {
+            if (msgType === 'task_complete') {
+                if (useAppServer) {
+                    turnInFlight = false;
+                    this.startThinkingClearGrace(session);
+                } else if (session.thinking) {
+                    logger.debug('thinking completed');
+                    session.onThinkingChange(false);
+                }
+                diffProcessor.reset();
+                appServerEventConverter?.reset();
+            }
+            if (msgType === 'turn_aborted' || msgType === 'task_failed') {
                 if (useAppServer) {
                     turnInFlight = false;
                 }
+                this.clearThinkingClearTimer();
                 if (session.thinking) {
                     logger.debug('thinking completed');
                     session.onThinkingChange(false);
@@ -816,6 +864,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 reasoningProcessor.abort();
                 diffProcessor.reset();
                 turnInFlight = false;
+                this.clearThinkingClearTimer();
                 session.onThinkingChange(false);
                 if (isNewCommand) {
                     session.sendSessionEvent({ type: 'message', message: 'Started a new conversation' });
@@ -837,6 +886,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 permissionHandler.reset();
                 reasoningProcessor.abort();
                 diffProcessor.reset();
+                this.clearThinkingClearTimer();
                 session.onThinkingChange(false);
                 continue;
             }
@@ -845,6 +895,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             currentModeHash = message.hash;
 
             // Signal thinking immediately when processing begins (matches Claude behavior)
+            this.clearThinkingClearTimer();
             session.onThinkingChange(true);
 
             try {
@@ -1035,7 +1086,8 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 permissionHandler.reset();
                 reasoningProcessor.abort();
                 diffProcessor.reset();
-                if (!useAppServer || !turnInFlight) {
+                const shouldClearThinkingInFinally = !useAppServer || (!turnInFlight && !this.thinkingClearTimer);
+                if (shouldClearThinkingInFinally) {
                     appServerEventConverter?.reset();
                     session.onThinkingChange(false);
                 }
@@ -1050,10 +1102,16 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 logActiveHandles('after-turn');
             }
         }
+
+        this.clearThinkingClearTimer();
+        if (session.thinking) {
+            session.onThinkingChange(false);
+        }
     }
 
     protected async cleanup(): Promise<void> {
         logger.debug('[codex-remote]: cleanup start');
+        this.clearThinkingClearTimer();
         try {
             if (this.appServerClient) {
                 await this.appServerClient.disconnect();
