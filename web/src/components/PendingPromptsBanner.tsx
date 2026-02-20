@@ -65,27 +65,31 @@ export function PendingPromptsBanner(props: {
     const primaryName = getSessionTitle(primarySession)
 
     return (
-        <div className="border-b border-[var(--app-divider)] bg-amber-50/90 px-3 py-2 dark:bg-amber-500/10">
-            <div className="mx-auto flex w-full max-w-content items-center justify-between gap-3">
-                <div className="text-xs text-amber-900 dark:text-amber-100">
-                    {t('pendingPrompts.message', {
-                        n: summary.totalPrompts,
-                        m: summary.sessionsWithPending.length,
-                        name: primaryName
-                    })}
+        <div className="fixed top-0 left-0 right-0 z-40 animate-slide-down pt-[env(safe-area-inset-top)]">
+            <div className="border-b border-[var(--app-divider)] bg-amber-50/90 px-3 py-2 shadow-sm dark:bg-amber-500/10">
+                <div className="mx-auto flex w-full max-w-content items-center justify-between gap-3">
+                    <div className="min-w-0 flex-1 text-xs text-amber-900 dark:text-amber-100">
+                        <div className="truncate">
+                            {t('pendingPrompts.message', {
+                                n: summary.totalPrompts,
+                                m: summary.sessionsWithPending.length,
+                                name: primaryName
+                            })}
+                        </div>
+                    </div>
+                    <button
+                        type="button"
+                        className="inline-flex min-h-[44px] shrink-0 items-center rounded bg-amber-500 px-3 text-xs font-medium text-white hover:bg-amber-600"
+                        onClick={() => {
+                            navigate({
+                                to: '/sessions/$sessionId',
+                                params: { sessionId: primarySession.id }
+                            })
+                        }}
+                    >
+                        {t('pendingPrompts.open')}
+                    </button>
                 </div>
-                <button
-                    type="button"
-                    className="rounded bg-amber-500 px-2 py-1 text-xs font-medium text-white hover:bg-amber-600"
-                    onClick={() => {
-                        navigate({
-                            to: '/sessions/$sessionId',
-                            params: { sessionId: primarySession.id }
-                        })
-                    }}
-                >
-                    {t('pendingPrompts.open')}
-                </button>
             </div>
         </div>
     )

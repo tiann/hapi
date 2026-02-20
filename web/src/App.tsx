@@ -381,8 +381,8 @@ function AppInner() {
                 <ReconnectingBanner isReconnecting={sseDisconnected && !isSyncing} />
                 <VoiceErrorBanner />
                 <OfflineBanner />
+                <PendingPromptsBanner api={api} />
                 <div className="h-full flex flex-col">
-                    <PendingPromptsBanner api={api} />
                     <div className="min-h-0 flex-1">
                         <Outlet />
                     </div>

@@ -217,6 +217,21 @@ html[data-theme="dark"] .shiki span {
   animation: slide-up 0.3s ease-out;
 }
 
+@keyframes slide-down {
+  from {
+    transform: translateY(-100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.animate-slide-down {
+  animation: slide-down 0.3s ease-out;
+}
+
 @keyframes menu-pop {
   from {
     opacity: 0;
@@ -263,6 +278,12 @@ html[data-theme="dark"] .shiki span {
 
 .animate-bounce-in {
   animation: bounce-in 0.3s ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-slide-down {
+    animation: none;
+  }
 }
 
 /* ReactQueryDevtools button - move to middle-right to avoid blocking UI */
