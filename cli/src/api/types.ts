@@ -136,6 +136,17 @@ export const CliSpawnSessionResponseSchema = z.discriminatedUnion('type', [
 
 export type CliSpawnSessionResponse = z.infer<typeof CliSpawnSessionResponseSchema>
 
+export const CliRestartSessionsResponseSchema = z.object({
+    results: z.array(z.object({
+        sessionId: z.string(),
+        name: z.string().nullable(),
+        status: z.enum(['restarted', 'skipped', 'failed']),
+        error: z.string().optional()
+    }))
+})
+
+export type CliRestartSessionsResponse = z.infer<typeof CliRestartSessionsResponseSchema>
+
 export const MessageMetaSchema = z.object({
     sentFrom: z.string().optional(),
     fallbackModel: z.string().nullable().optional(),

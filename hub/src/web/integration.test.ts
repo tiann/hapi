@@ -680,6 +680,87 @@ describe('web integration routes', () => {
         }
     })
 
+    it('/cli/restart-sessions rejects missing auth and returns 503 when engine is unavailable', async () => {
+        const app = new Hono<WebAppEnv>()
+        app.route('/cli', createCliRoutes(() => null))
+
+        const noAuth = await app.request('/cli/restart-sessions', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({})
+        })
+        expect(noAuth.status).toBe(401)
+        expect(await noAuth.json()).toEqual({ error: 'Missing Authorization header' })
+
+        const invalidAuth = await app.request('/cli/restart-sessions', {
+            method: 'POST',
+            headers: cliJsonHeaders('wrong-token:alpha'),
+            body: JSON.stringify({})
+        })
+        expect(invalidAuth.status).toBe(401)
+        expect(await invalidAuth.json()).toEqual({ error: 'Invalid token' })
+
+        const notReady = await app.request('/cli/restart-sessions', {
+            method: 'POST',
+            headers: cliJsonHeaders(`${CLI_TOKEN}:alpha`),
+            body: JSON.stringify({})
+        })
+        expect(notReady.status).toBe(503)
+        expect(await notReady.json()).toEqual({ error: 'Not ready' })
+    })
+
+    it('/cli/restart-sessions delegates to engine and returns per-session results', async () => {
+        const ctx = createTestContext()
+
+        try {
+            const namespace = 'alpha'
+            const machine = ctx.engine.getOrCreateMachine(
+                'restart-machine',
+                { host: 'alpha-host', platform: 'linux', happyCliVersion: '1.0.0' },
+                { status: 'running' },
+                namespace
+            )
+            ctx.engine.handleMachineAlive({ machineId: machine.id, time: Date.now() })
+
+            const resumable = ctx.engine.getOrCreateSession(
+                'cli-restart-resumable',
+                { path: '/tmp/repo', host: 'alpha-host', machineId: machine.id, claudeSessionId: 'resume-token' },
+                null,
+                namespace
+            )
+            const skipped = ctx.engine.getOrCreateSession(
+                'cli-restart-skipped',
+                { path: '/tmp/repo-skip', host: 'alpha-host', machineId: machine.id, flavor: 'codex' },
+                null,
+                namespace
+            )
+            ctx.engine.handleSessionAlive({ sid: resumable.id, time: Date.now() })
+            ctx.engine.handleSessionAlive({ sid: skipped.id, time: Date.now() })
+
+            ctx.registerRpc(`${resumable.id}:killSession`, () => ({}))
+            ctx.registerRpc(`${machine.id}:spawn-happy-session`, () => {
+                ctx.engine.handleSessionAlive({ sid: resumable.id, time: Date.now() })
+                return { type: 'success', sessionId: resumable.id }
+            })
+
+            const response = await ctx.app.request('/cli/restart-sessions', {
+                method: 'POST',
+                headers: cliJsonHeaders(`${CLI_TOKEN}:alpha`),
+                body: JSON.stringify({ machineId: machine.id })
+            })
+
+            expect(response.status).toBe(200)
+            expect(await response.json()).toEqual({
+                results: [
+                    { sessionId: resumable.id, name: null, status: 'restarted' },
+                    { sessionId: skipped.id, name: null, status: 'skipped', error: 'not_resumable' }
+                ]
+            })
+        } finally {
+            ctx.stop()
+        }
+    })
+
     it('/cli/machines and /cli/machines/:id/spawn are namespace-scoped', async () => {
         const ctx = createTestContext()
 

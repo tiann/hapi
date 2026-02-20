@@ -1,4 +1,6 @@
 import chalk from 'chalk'
+import { restartSessionsViaHub } from '@/api/hubClient'
+import { readSettings } from '@/persistence'
 import { startRunner } from '@/runner/run'
 import {
     checkIfRunnerRunningAndCleanupStaleState,
@@ -48,6 +50,57 @@ export const runnerCommand: CommandDefinition = {
                 console.log('No runner running')
             }
             return
+        }
+
+        if (runnerSubcommand === 'restart-sessions') {
+            await initializeToken()
+            const settings = await readSettings()
+            const machineId = typeof settings.machineId === 'string' ? settings.machineId.trim() : ''
+            if (!machineId) {
+                console.error('Cannot restart sessions: machineId is missing in local settings. Re-run setup or reconnect this machine.')
+                process.exit(1)
+            }
+
+            const requestedSessionIds = commandArgs.slice(1)
+                .map((value) => value.trim())
+                .filter(Boolean)
+
+            let results: Array<{ sessionId: string; name: string | null; status: 'restarted' | 'skipped' | 'failed'; error?: string }> = []
+            try {
+                const response = await restartSessionsViaHub({
+                    sessionIds: requestedSessionIds.length > 0 ? requestedSessionIds : undefined,
+                    machineId
+                })
+                results = response.results
+            } catch (error) {
+                console.error(error instanceof Error ? error.message : 'Failed to restart sessions via hub')
+                process.exit(1)
+            }
+
+            if (results.length === 0) {
+                console.log('No active sessions to restart')
+                process.exit(0)
+            }
+
+            let failedCount = 0
+            for (const result of results) {
+                const label = result.name ? `${result.name} (${result.sessionId})` : result.sessionId
+                if (result.status === 'restarted') {
+                    console.log(`restarted: ${label}`)
+                    continue
+                }
+                if (result.status === 'skipped') {
+                    const reason = result.error ?? 'unknown'
+                    console.log(`skipped: ${label} (${reason})`)
+                    continue
+                }
+
+                failedCount += 1
+                const reason = result.error ?? 'unknown'
+                console.error(`failed: ${label} (${reason})`)
+            }
+
+            process.exit(failedCount > 0 ? 1 : 0)
         }
 
         if (runnerSubcommand === 'start') {
@@ -110,6 +163,7 @@ ${chalk.bold('Usage:')}
   hapi runner stop               Stop the runner (sessions stay alive)
   hapi runner status             Show runner status
   hapi runner list               List active sessions
+  hapi runner restart-sessions   Restart active sessions on this machine
 
   If you want to kill all hapi related processes run 
   ${chalk.cyan('hapi doctor clean')}

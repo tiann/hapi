@@ -56,6 +56,13 @@ export type SpawnSessionResult =
     | { type: 'success'; sessionId: string; initialPromptDelivery?: 'delivered' | 'timed_out' }
     | { type: 'error'; message: string }
 
+export type RestartResult = {
+    sessionId: string
+    name: string | null
+    status: 'restarted' | 'skipped' | 'failed'
+    error?: string
+}
+
 export class SyncEngine {
     private readonly eventPublisher: EventPublisher
     private readonly sessionCache: SessionCache
@@ -414,20 +421,12 @@ export class SyncEngine {
         }
 
         const metadata = session.metadata
-        if (!metadata || typeof metadata.path !== 'string') {
+        if (!metadata || typeof metadata.path !== 'string' || metadata.path.trim().length === 0) {
             return { type: 'error', message: 'Session metadata missing path', code: 'resume_unavailable' }
         }
 
-        const flavor = metadata.flavor === 'codex' || metadata.flavor === 'gemini' || metadata.flavor === 'opencode'
-            ? metadata.flavor
-            : 'claude'
-        const resumeToken = flavor === 'codex'
-            ? metadata.codexSessionId
-            : flavor === 'gemini'
-                ? metadata.geminiSessionId
-                : flavor === 'opencode'
-                    ? metadata.opencodeSessionId
-                    : metadata.claudeSessionId
+        const flavor = this.resolveSessionFlavor(metadata)
+        const resumeToken = this.resolveResumeToken(metadata, flavor)
 
         if (!resumeToken) {
             return { type: 'error', message: 'Resume session ID unavailable', code: 'resume_unavailable' }
@@ -487,6 +486,84 @@ export class SyncEngine {
         return { type: 'success', sessionId: spawnResult.sessionId }
     }
 
+    async restartSessions(namespace: string, opts: { sessionIds?: string[]; machineId?: string }): Promise<RestartResult[]> {
+        const sessionIdFilter = Array.isArray(opts.sessionIds) && opts.sessionIds.length > 0
+            ? new Set(opts.sessionIds)
+            : null
+
+        const sessions = this.sessionCache.getActiveSessions().filter((session) => {
+            if (session.namespace !== namespace) {
+                return false
+            }
+            if (opts.machineId && session.metadata?.machineId !== opts.machineId) {
+                return false
+            }
+            if (sessionIdFilter && !sessionIdFilter.has(session.id)) {
+                return false
+            }
+            return true
+        })
+
+        const results: RestartResult[] = []
+        for (const session of sessions) {
+            const metadata = session.metadata
+            const name = metadata?.name ?? null
+            const flavor = this.resolveSessionFlavor(metadata)
+            const resumeToken = this.resolveResumeToken(metadata, flavor)
+            const hasPath = typeof metadata?.path === 'string' && metadata.path.trim().length > 0
+            if (!hasPath || !resumeToken) {
+                results.push({
+                    sessionId: session.id,
+                    name,
+                    status: 'skipped',
+                    error: 'not_resumable'
+                })
+                continue
+            }
+
+            try {
+                await this.archiveSession(session.id)
+            } catch {
+                this.handleSessionEnd({ sid: session.id, time: Date.now() })
+            }
+
+            const stopped = await this.waitForSessionInactive(session.id, 10_000)
+            if (!stopped) {
+                results.push({
+                    sessionId: session.id,
+                    name,
+                    status: 'failed',
+                    error: 'session_did_not_stop'
+                })
+                continue
+            }
+
+            let resumeResult = await this.resumeSession(session.id, namespace)
+            if (resumeResult.type === 'error' && resumeResult.code === 'resume_failed') {
+                await this.sleep(2_000)
+                resumeResult = await this.resumeSession(session.id, namespace)
+            }
+
+            if (resumeResult.type === 'success') {
+                results.push({
+                    sessionId: session.id,
+                    name,
+                    status: 'restarted'
+                })
+                continue
+            }
+
+            results.push({
+                sessionId: session.id,
+                name,
+                status: 'failed',
+                error: resumeResult.code
+            })
+        }
+
+        return results
+    }
+
     async waitForSessionActive(sessionId: string, timeoutMs: number = 15_000): Promise<boolean> {
         const start = Date.now()
         while (Date.now() - start < timeoutMs) {
@@ -494,9 +571,56 @@ export class SyncEngine {
             if (session?.active) {
                 return true
             }
-            await new Promise((resolve) => setTimeout(resolve, 250))
+            await this.sleep(250)
         }
         return false
+    }
+
+    private resolveSessionFlavor(metadata: Session['metadata'] | null): 'claude' | 'codex' | 'gemini' | 'opencode' {
+        if (metadata?.flavor === 'codex' || metadata?.flavor === 'gemini' || metadata?.flavor === 'opencode') {
+            return metadata.flavor
+        }
+        return 'claude'
+    }
+
+    private resolveResumeToken(
+        metadata: Session['metadata'] | null,
+        flavor: 'claude' | 'codex' | 'gemini' | 'opencode'
+    ): string | null {
+        if (!metadata) {
+            return null
+        }
+
+        const token = flavor === 'codex'
+            ? metadata.codexSessionId
+            : flavor === 'gemini'
+                ? metadata.geminiSessionId
+                : flavor === 'opencode'
+                    ? metadata.opencodeSessionId
+                    : metadata.claudeSessionId
+
+        if (typeof token !== 'string') {
+            return null
+        }
+
+        const trimmed = token.trim()
+        return trimmed.length > 0 ? trimmed : null
+    }
+
+    private async waitForSessionInactive(sessionId: string, timeoutMs: number): Promise<boolean> {
+        const start = Date.now()
+        while (Date.now() - start < timeoutMs) {
+            const session = this.getSession(sessionId)
+            if (!session?.active) {
+                return true
+            }
+            await this.sleep(250)
+        }
+        return false
+    }
+
+    private async sleep(ms: number): Promise<void> {
+        await new Promise((resolve) => setTimeout(resolve, ms))
     }
 
     async checkPathsExist(machineId: string, paths: string[]): Promise<Record<string, boolean>> {

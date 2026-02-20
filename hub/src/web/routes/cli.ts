@@ -32,6 +32,11 @@ const spawnMachineSessionSchema = z.object({
     initialPrompt: z.string().max(INITIAL_PROMPT_MAX_LENGTH).optional()
 })
 
+const restartSessionsSchema = z.object({
+    sessionIds: z.array(z.string().min(1)).optional(),
+    machineId: z.string().min(1).optional()
+})
+
 const getMessagesQuerySchema = z.object({
     afterSeq: z.coerce.number().int().min(0),
     limit: z.coerce.number().int().min(1).max(200).optional()
@@ -241,6 +246,27 @@ export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<Cl
         )
 
         return c.json(result)
+    })
+
+    app.post('/restart-sessions', async (c) => {
+        const engine = getSyncEngine()
+        if (!engine) {
+            return c.json({ error: 'Not ready' }, 503)
+        }
+
+        const json = await c.req.json().catch(() => null)
+        const parsed = restartSessionsSchema.safeParse(json)
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid body' }, 400)
+        }
+
+        const namespace = c.get('namespace')
+        const results = await engine.restartSessions(namespace, {
+            sessionIds: parsed.data.sessionIds,
+            machineId: parsed.data.machineId
+        })
+
+        return c.json({ results })
     })
 
     return app
