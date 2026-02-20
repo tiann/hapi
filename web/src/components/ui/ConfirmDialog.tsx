@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import {
     Dialog,
     DialogContent,
@@ -36,6 +36,8 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
     } = props
 
     const [error, setError] = useState<string | null>(null)
+    const confirmButtonRef = useRef<HTMLButtonElement | null>(null)
+    const confirmInFlightRef = useRef(false)
 
     // Clear error when dialog opens/closes
     useEffect(() => {
@@ -45,7 +47,13 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
     }, [isOpen])
 
     const handleConfirm = async () => {
+        if (confirmInFlightRef.current) {
+            return
+        }
+
+        confirmInFlightRef.current = true
         setError(null)
+
         try {
             await onConfirm()
             onClose()
@@ -55,12 +63,25 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
                     ? err.message
                     : t('dialog.error.default')
             setError(message)
+        } finally {
+            confirmInFlightRef.current = false
         }
     }
 
     return (
         <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
-            <DialogContent className="max-w-sm">
+            <DialogContent
+                className="max-w-sm"
+                onOpenAutoFocus={(event) => {
+                    const confirmButton = confirmButtonRef.current
+                    if (!confirmButton || confirmButton.disabled) {
+                        return
+                    }
+
+                    event.preventDefault()
+                    confirmButton.focus()
+                }}
+            >
                 <DialogHeader>
                     <DialogTitle>{title}</DialogTitle>
                     <DialogDescription className="mt-2">
@@ -87,6 +108,7 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
                         type="button"
                         variant={destructive ? 'destructive' : 'secondary'}
                         onClick={handleConfirm}
+                        ref={confirmButtonRef}
                         disabled={isPending}
                     >
                         {isPending ? confirmingLabel : confirmLabel}
