@@ -20,9 +20,9 @@ function getSessionTitle(session: SessionSummary): string {
     return session.id.slice(0, 8)
 }
 
-export function summarizePendingPrompts(sessions: SessionSummary[]): PendingPromptsSummary {
+export function summarizePendingPrompts(sessions: SessionSummary[], excludeSessionId?: string | null): PendingPromptsSummary {
     const sessionsWithPending = sessions
-        .filter(session => session.pendingRequestsCount > 0)
+        .filter(session => session.pendingRequestsCount > 0 && session.id !== excludeSessionId)
         .sort((a, b) => {
             if (a.pendingRequestsCount !== b.pendingRequestsCount) {
                 return b.pendingRequestsCount - a.pendingRequestsCount
@@ -43,14 +43,15 @@ export function summarizePendingPrompts(sessions: SessionSummary[]): PendingProm
 
 export function PendingPromptsBanner(props: {
     api: ApiClient | null
+    currentSessionId?: string | null
 }) {
     const { t } = useTranslation()
     const navigate = useNavigate()
     const { sessions } = useSessions(props.api)
 
     const summary = useMemo(
-        () => summarizePendingPrompts(sessions),
-        [sessions]
+        () => summarizePendingPrompts(sessions, props.currentSessionId),
+        [sessions, props.currentSessionId]
     )
 
     if (summary.totalPrompts <= 0) {

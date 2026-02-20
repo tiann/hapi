@@ -381,7 +381,7 @@ function AppInner() {
                 <ReconnectingBanner isReconnecting={sseDisconnected && !isSyncing} />
                 <VoiceErrorBanner />
                 <OfflineBanner />
-                <PendingPromptsBanner api={api} />
+                <PendingPromptsBanner api={api} currentSessionId={selectedSessionId} />
                 <div className="h-full flex flex-col">
                     <div className="min-h-0 flex-1">
                         <Outlet />

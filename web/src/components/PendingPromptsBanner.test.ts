@@ -37,4 +37,24 @@ describe('summarizePendingPrompts', () => {
 
         expect(summary.sessionsWithPending[0]?.id).toBe('newer')
     })
+
+    it('excludes the currently viewed session when excludeSessionId is provided', () => {
+        const summary = summarizePendingPrompts([
+            makeSession({ id: 'current', pendingRequestsCount: 3, updatedAt: 200 }),
+            makeSession({ id: 'other', pendingRequestsCount: 1, updatedAt: 100 })
+        ], 'current')
+
+        expect(summary.totalPrompts).toBe(1)
+        expect(summary.sessionsWithPending.map((s) => s.id)).toEqual(['other'])
+    })
+
+    it('returns empty when only the excluded session has pending prompts', () => {
+        const summary = summarizePendingPrompts([
+            makeSession({ id: 'current', pendingRequestsCount: 2, updatedAt: 200 }),
+            makeSession({ id: 'none', pendingRequestsCount: 0 })
+        ], 'current')
+
+        expect(summary.totalPrompts).toBe(0)
+        expect(summary.sessionsWithPending).toEqual([])
+    })
 })
