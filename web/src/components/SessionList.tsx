@@ -888,7 +888,7 @@ function SessionItem(props: {
                         {...dragHandleBindings.listeners}
                         disabled={!dndEnabled}
                         data-drag-handle={s.id}
-                        className={`inline-flex h-11 w-11 shrink-0 items-center justify-center border-r border-[var(--app-divider)] text-[var(--app-hint)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] ${dndEnabled ? 'cursor-grab active:cursor-grabbing hover:text-[var(--app-fg)]' : 'cursor-not-allowed opacity-50'}`}
+                        className={`inline-flex w-11 shrink-0 self-stretch items-center justify-center border-r border-[var(--app-divider)] text-[var(--app-hint)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] ${dndEnabled ? 'cursor-grab active:cursor-grabbing hover:text-[var(--app-fg)]' : 'cursor-not-allowed opacity-50'}`}
                         aria-label={dndEnabled
                             ? t('session.dragHandle.label', { name: sessionName })
                             : t('session.dragHandle.disabled')}
