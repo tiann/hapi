@@ -20,7 +20,7 @@ export const TITLE_INSTRUCTION = trimIdent(`
  * Spawn instruction for Codex to call the hapi MCP spawn tool.
  */
 export const SPAWN_INSTRUCTION = trimIdent(`
-    Use functions.hapi__spawn_session when a delegated parallel subtask should run separately, when isolated worktree/session context is needed, or when keeping context split will reduce confusion. Do not spawn for simple follow-ups or when continuing the same focused task. The required parameter is directory (prefer absolute path); optional parameters include machineId and agent.
+    Use functions.hapi__spawn_session when a delegated parallel subtask should run separately, when isolated worktree/session context is needed, or when keeping context split will reduce confusion. Do not spawn for simple follow-ups or when continuing the same focused task. The required parameter is directory (prefer absolute path); optional parameters include machineId and agent. When the user requests a specific agent (e.g. "spawn a codex agent", "use gemini"), pass the matching value as the agent parameter (claude, codex, gemini, or opencode). Defaults to claude if omitted.
 `);
 
 /**

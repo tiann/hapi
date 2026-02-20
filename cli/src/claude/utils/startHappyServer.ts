@@ -128,7 +128,7 @@ export async function startHappyServer(client: ApiSessionClient) {
     const spawnSessionInputSchema: z.ZodTypeAny = z.object({
         directory: z.string().min(1).describe('Working directory for the new session (prefer absolute path)'),
         machineId: z.string().optional().describe('Optional machine ID. Defaults to current session machine when available'),
-        agent: z.enum(['claude', 'codex', 'gemini', 'opencode']).optional().describe('Agent flavor for the new session'),
+        agent: z.enum(['claude', 'codex', 'gemini', 'opencode']).optional().describe('Agent type for the new session: claude (default), codex (OpenAI Codex), gemini (Google Gemini), or opencode. Match to the user\'s requested agent.'),
         model: z.string().optional().describe('Optional model override for the spawned session'),
         yolo: z.boolean().optional().describe('Enable aggressive auto-approval mode for the spawned session'),
         sessionType: z.enum(['simple', 'worktree']).optional().describe('Spawn a normal session or a Git worktree session'),

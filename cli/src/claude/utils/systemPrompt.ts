@@ -8,7 +8,7 @@ export const TITLE_INSTRUCTION = trimIdent(`
 `);
 
 export const SPAWN_INSTRUCTION = trimIdent(`
-    Use mcp__hapi__spawn_session when work should be delegated as a parallel subtask, when an isolated worktree/session is needed, or when context should be kept separate. Do not spawn for simple follow-ups or when continuing the same focused thread. The required parameter is directory (prefer absolute path); optional parameters include machineId and agent.
+    Use mcp__hapi__spawn_session when work should be delegated as a parallel subtask, when an isolated worktree/session is needed, or when context should be kept separate. Do not spawn for simple follow-ups or when continuing the same focused thread. The required parameter is directory (prefer absolute path); optional parameters include machineId and agent. When the user requests a specific agent (e.g. "spawn a codex agent", "use gemini"), pass the matching value as the agent parameter (claude, codex, gemini, or opencode). Defaults to claude if omitted.
 `);
 
 export const systemPrompt = trimIdent(`
