@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { AppServerEventConverter } from '../utils/appServerEventConverter';
 
 const THINKING_CLEAR_GRACE_MS = 3_000;
 const WORK_START_EVENTS = new Set([
@@ -10,6 +11,7 @@ const WORK_START_EVENTS = new Set([
     'web_search_begin',
     'item_activity'
 ]);
+const WORK_START_EVENT_TYPES = Array.from(WORK_START_EVENTS);
 
 type ThinkingTracker = {
     thinking: boolean;
@@ -131,6 +133,21 @@ function simulateLoopExit(tracker: ThinkingTracker) {
     }
 }
 
+function handleConvertedNotifications(
+    tracker: ThinkingTracker,
+    converter: AppServerEventConverter,
+    method: string,
+    params: unknown
+) {
+    const events = converter.handleNotification(method, params);
+    for (const event of events) {
+        const msgType = typeof event.type === 'string' ? event.type : '';
+        if (msgType) {
+            handleCodexEvent(tracker, msgType);
+        }
+    }
+}
+
 describe('Codex thinking state lifecycle', () => {
     beforeEach(() => {
         vi.useFakeTimers();
@@ -198,6 +215,49 @@ describe('Codex thinking state lifecycle', () => {
 
             vi.advanceTimersByTime(1_000);
             handleCodexEvent(t, 'task_started');
+            expect(t.thinking).toBe(true);
+
+            vi.advanceTimersByTime(THINKING_CLEAR_GRACE_MS + 10);
+            expect(t.thinking).toBe(true);
+
+            handleCodexEvent(t, 'task_complete');
+            vi.advanceTimersByTime(THINKING_CLEAR_GRACE_MS);
+            expect(t.thinking).toBe(false);
+        });
+
+        it.each(WORK_START_EVENT_TYPES)('cancels grace timer on %s', (eventType) => {
+            const t = createThinkingTracker(true);
+
+            simulateMessageSent(t);
+            simulateStartTurn(t);
+            handleCodexEvent(t, 'task_complete');
+            expect(t.thinking).toBe(true);
+
+            vi.advanceTimersByTime(1_000);
+            handleCodexEvent(t, eventType);
+            expect(t.thinking).toBe(true);
+
+            vi.advanceTimersByTime(THINKING_CLEAR_GRACE_MS + 10);
+            expect(t.thinking).toBe(true);
+
+            handleCodexEvent(t, 'task_complete');
+            vi.advanceTimersByTime(THINKING_CLEAR_GRACE_MS);
+            expect(t.thinking).toBe(false);
+        });
+
+        it('converter item/started -> launcher item_activity cancels grace timer', () => {
+            const t = createThinkingTracker(true);
+            const converter = new AppServerEventConverter();
+
+            simulateMessageSent(t);
+            simulateStartTurn(t);
+            handleCodexEvent(t, 'task_complete');
+            expect(t.thinking).toBe(true);
+
+            vi.advanceTimersByTime(1_000);
+            handleConvertedNotifications(t, converter, 'item/started', {
+                item: { id: 'mcp-1', type: 'mcpToolCall' }
+            });
             expect(t.thinking).toBe(true);
 
             vi.advanceTimersByTime(THINKING_CLEAR_GRACE_MS + 10);
