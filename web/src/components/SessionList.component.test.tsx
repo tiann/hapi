@@ -113,7 +113,7 @@ function getSessionMainButton(container: HTMLElement, sessionId: string): HTMLBu
         throw new Error(`Session row not found: ${sessionId}`)
     }
     const buttons = sessionRow.querySelectorAll<HTMLButtonElement>('button')
-    const mainButton = buttons[buttons.length - 1]
+    const mainButton = buttons[0]
     if (!mainButton) {
         throw new Error(`Session button not found: ${sessionId}`)
     }
