@@ -22,6 +22,8 @@ import { tmpdir } from 'node:os'
 
 describe('cliApiToken', () => {
     const dataDir = join(tmpdir(), 'hapi-test-' + Math.random().toString(36).slice(2))
+    const settingsFile = join(dataDir, 'settings.json')
+    const tmpFile = settingsFile + '.tmp'
 
     beforeEach(() => {
         process.env.CLI_API_TOKEN = ''
@@ -63,10 +65,15 @@ describe('cliApiToken', () => {
         fsPromises.writeFile.mockResolvedValue(undefined)
         // @ts-ignore
         fsPromises.rename.mockResolvedValue(undefined)
+        // @ts-ignore
+        fsPromises.chmod.mockResolvedValue(undefined)
 
         const result = await getOrCreateCliApiToken(dataDir)
         expect(result.token).toBe(strongToken)
         expect(result.source).toBe('env')
+        expect(fsPromises.writeFile).toHaveBeenCalledWith(tmpFile, expect.any(String), { mode: 0o600 })
+        expect(fsPromises.rename).toHaveBeenCalledWith(tmpFile, settingsFile)
+        expect(fsPromises.chmod).toHaveBeenCalledWith(settingsFile, 0o600)
     })
 
     it('should allow strong CLI_API_TOKEN from settings.json', async () => {
@@ -90,9 +97,14 @@ describe('cliApiToken', () => {
         fsPromises.writeFile.mockResolvedValue(undefined)
         // @ts-ignore
         fsPromises.rename.mockResolvedValue(undefined)
+        // @ts-ignore
+        fsPromises.chmod.mockResolvedValue(undefined)
 
         const result = await getOrCreateCliApiToken(dataDir)
         expect(result.token.length).toBeGreaterThan(32)
         expect(result.source).toBe('generated')
+        expect(fsPromises.writeFile).toHaveBeenCalledWith(tmpFile, expect.any(String), { mode: 0o600 })
+        expect(fsPromises.rename).toHaveBeenCalledWith(tmpFile, settingsFile)
+        expect(fsPromises.chmod).toHaveBeenCalledWith(settingsFile, 0o600)
     })
 })

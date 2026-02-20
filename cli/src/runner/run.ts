@@ -34,7 +34,7 @@ const formatCodexConfigOverrides = (overrides: string[]): string => {
 };
 
 const writeCodexConfigFile = async (codexHomeDir: string, overrides: string[]): Promise<void> => {
-  await fs.mkdir(codexHomeDir, { recursive: true });
+  await fs.mkdir(codexHomeDir, { recursive: true, mode: 0o700 });
   const configPath = join(codexHomeDir, 'config.toml');
   await fs.writeFile(configPath, formatCodexConfigOverrides(overrides), 'utf8');
 };
@@ -43,8 +43,10 @@ const copyCodexAuthIfPresent = async (sourceDir: string, destDir: string): Promi
   try {
     const authPath = join(sourceDir, 'auth.json');
     const contents = await fs.readFile(authPath);
-    await fs.mkdir(destDir, { recursive: true });
-    await fs.writeFile(join(destDir, 'auth.json'), contents);
+    await fs.mkdir(destDir, { recursive: true, mode: 0o700 });
+    const destAuthPath = join(destDir, 'auth.json');
+    await fs.writeFile(destAuthPath, contents, { mode: 0o600 });
+    await fs.chmod(destAuthPath, 0o600).catch(() => {});
   } catch {
     // Best-effort: auth.json may not exist
   }
@@ -361,7 +363,9 @@ export async function startRunner(): Promise<void> {
               };
             }
 
-            await fs.writeFile(join(resolvedCodexHomeDir, 'auth.json'), options.token);
+            const codexAuthPath = join(resolvedCodexHomeDir, 'auth.json');
+            await fs.writeFile(codexAuthPath, options.token, { mode: 0o600 });
+            await fs.chmod(codexAuthPath, 0o600).catch(() => {});
           } else if (options.agent === 'claude' || !options.agent) {
             extraEnv = {
               ...extraEnv,
