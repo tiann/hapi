@@ -1,5 +1,5 @@
 import { realpath } from 'fs/promises'
-import { resolve, sep } from 'path'
+import { dirname, resolve, sep } from 'path'
 
 export interface PathValidationResult {
     valid: boolean;
@@ -48,28 +48,41 @@ export async function validateRealPath(
     resolvedPath: string,
     workingDirectory: string
 ): Promise<PathValidationResult> {
+    let realWorkingDir: string
     try {
-        const realTarget = await realpath(resolvedPath)
-        let realWorkingDir: string
+        realWorkingDir = await realpath(workingDirectory)
+    } catch {
+        realWorkingDir = resolve(workingDirectory)
+    }
+
+    let probePath = resolvedPath
+
+    while (true) {
         try {
-            realWorkingDir = await realpath(workingDirectory)
-        } catch {
-            realWorkingDir = resolve(workingDirectory)
-        }
-
-        if (!isPathWithinDirectory(realTarget, realWorkingDir)) {
-            return {
-                valid: false,
-                error: 'Access denied: symlink traversal outside working directory'
+            const realTarget = await realpath(probePath)
+            if (!isPathWithinDirectory(realTarget, realWorkingDir)) {
+                return {
+                    valid: false,
+                    error: 'Access denied: symlink traversal outside working directory'
+                }
             }
-        }
 
-        return { valid: true }
-    } catch (error) {
-        const nodeError = error as NodeJS.ErrnoException
-        if (nodeError.code === 'ENOENT') {
             return { valid: true }
+        } catch (error) {
+            const nodeError = error as NodeJS.ErrnoException
+            if (nodeError.code !== 'ENOENT') {
+                return {
+                    valid: false,
+                    error: 'Cannot resolve path'
+                }
+            }
+
+            const parentPath = dirname(probePath)
+            if (parentPath === probePath) {
+                return { valid: true }
+            }
+
+            probePath = parentPath
         }
-        throw error
     }
 }

@@ -88,6 +88,19 @@ describe('validateRealPath', () => {
         expect(result.valid).toBe(true)
     })
 
+    it('rejects non-existent paths when nearest existing parent resolves outside working directory', async () => {
+        const escapeDir = join(workingDir, 'escape-dir')
+        try {
+            await symlink(outsideDir, escapeDir)
+        } catch {
+            return
+        }
+
+        const result = await validateRealPath(join(escapeDir, 'new-file.txt'), workingDir)
+        expect(result.valid).toBe(false)
+        expect(result.error).toBe('Access denied: symlink traversal outside working directory')
+    })
+
     it('allows symlinks that point within the working directory', async () => {
         const targetFile = join(workingDir, 'target.txt')
         const linkPath = join(workingDir, 'inside-link.txt')

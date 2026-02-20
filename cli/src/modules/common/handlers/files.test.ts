@@ -60,6 +60,31 @@ describe('file RPC handlers', () => {
         expect(await readFile(join(workingDir, 'new-file.txt'), 'utf8')).toBe('hello')
     })
 
+    it('rejects writeFile for new files when parent symlink resolves outside the working directory', async () => {
+        const escapeDir = join(workingDir, 'escape-dir')
+        const outsideNewFile = join(outsideDir, 'new-file.txt')
+
+        try {
+            await symlink(outsideDir, escapeDir)
+        } catch {
+            return
+        }
+
+        const response = await rpc.handleRequest({
+            method: 'session-test:writeFile',
+            params: JSON.stringify({
+                path: 'escape-dir/new-file.txt',
+                content: Buffer.from('escape').toString('base64')
+            })
+        })
+
+        const parsed = JSON.parse(response) as { success: boolean; error?: string }
+        expect(parsed.success).toBe(false)
+        expect(parsed.error).toContain('symlink traversal')
+
+        await expect(readFile(outsideNewFile, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+    })
+
     it('rejects writeFile for symlink paths that resolve outside the working directory', async () => {
         const outsideFile = join(outsideDir, 'outside.txt')
         const linkPath = join(workingDir, 'escape.txt')
