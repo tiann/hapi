@@ -5,6 +5,7 @@ import { dirname } from 'node:path'
 import { MachineStore } from './machineStore'
 import { MessageStore } from './messageStore'
 import { PushStore } from './pushStore'
+import { SessionSortPreferenceStore } from './sessionSortPreferenceStore'
 import { SessionStore } from './sessionStore'
 import { UserStore } from './userStore'
 
@@ -13,22 +14,26 @@ export type {
     StoredMessage,
     StoredPushSubscription,
     StoredSession,
+    StoredSessionSortPreference,
     StoredUser,
+    SessionSortPreferenceUpdateResult,
     VersionedUpdateResult
 } from './types'
 export { MachineStore } from './machineStore'
 export { MessageStore } from './messageStore'
 export { PushStore } from './pushStore'
+export { SessionSortPreferenceStore } from './sessionSortPreferenceStore'
 export { SessionStore } from './sessionStore'
 export { UserStore } from './userStore'
 
-const SCHEMA_VERSION: number = 3
+const SCHEMA_VERSION: number = 4
 const REQUIRED_TABLES = [
     'sessions',
     'machines',
     'messages',
     'users',
-    'push_subscriptions'
+    'push_subscriptions',
+    'session_sort_preferences'
 ] as const
 
 export class Store {
@@ -40,6 +45,7 @@ export class Store {
     readonly messages: MessageStore
     readonly users: UserStore
     readonly push: PushStore
+    readonly sessionSortPreferences: SessionSortPreferenceStore
 
     constructor(dbPath: string) {
         this.dbPath = dbPath
@@ -81,6 +87,7 @@ export class Store {
         this.messages = new MessageStore(this.db)
         this.users = new UserStore(this.db)
         this.push = new PushStore(this.db)
+        this.sessionSortPreferences = new SessionSortPreferenceStore(this.db)
     }
 
     private initSchema(): void {
@@ -98,14 +105,38 @@ export class Store {
             return
         }
 
-        if (currentVersion === 1 && SCHEMA_VERSION === 2) {
+        if (currentVersion === 1 && SCHEMA_VERSION >= 2) {
             this.migrateFromV1ToV2()
+            if (SCHEMA_VERSION === 2) {
+                this.setUserVersion(SCHEMA_VERSION)
+                return
+            }
+
+            this.migrateFromV2ToV3()
+            if (SCHEMA_VERSION === 3) {
+                this.setUserVersion(SCHEMA_VERSION)
+                return
+            }
+
+            this.migrateFromV3ToV4()
             this.setUserVersion(SCHEMA_VERSION)
             return
         }
 
-        if (currentVersion === 2 && SCHEMA_VERSION === 3) {
+        if (currentVersion === 2 && SCHEMA_VERSION >= 3) {
             this.migrateFromV2ToV3()
+            if (SCHEMA_VERSION === 3) {
+                this.setUserVersion(SCHEMA_VERSION)
+                return
+            }
+
+            this.migrateFromV3ToV4()
+            this.setUserVersion(SCHEMA_VERSION)
+            return
+        }
+
+        if (currentVersion === 3 && SCHEMA_VERSION >= 4) {
+            this.migrateFromV3ToV4()
             this.setUserVersion(SCHEMA_VERSION)
             return
         }
@@ -187,6 +218,19 @@ export class Store {
                 UNIQUE(namespace, endpoint)
             );
             CREATE INDEX IF NOT EXISTS idx_push_subscriptions_namespace ON push_subscriptions(namespace);
+
+            CREATE TABLE IF NOT EXISTS session_sort_preferences (
+                user_id INTEGER NOT NULL,
+                namespace TEXT NOT NULL,
+                sort_mode TEXT NOT NULL DEFAULT 'auto',
+                manual_order TEXT NOT NULL DEFAULT '{"groupOrder":[],"sessionOrder":{}}',
+                version INTEGER NOT NULL DEFAULT 1,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (user_id, namespace)
+            );
+            CREATE INDEX IF NOT EXISTS idx_session_sort_preferences_namespace
+                ON session_sort_preferences(namespace);
         `)
     }
 
@@ -278,6 +322,23 @@ export class Store {
 
     private migrateFromV2ToV3(): void {
         return
+    }
+
+    private migrateFromV3ToV4(): void {
+        this.db.exec(`
+            CREATE TABLE IF NOT EXISTS session_sort_preferences (
+                user_id INTEGER NOT NULL,
+                namespace TEXT NOT NULL,
+                sort_mode TEXT NOT NULL DEFAULT 'auto',
+                manual_order TEXT NOT NULL DEFAULT '{"groupOrder":[],"sessionOrder":{}}',
+                version INTEGER NOT NULL DEFAULT 1,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (user_id, namespace)
+            );
+            CREATE INDEX IF NOT EXISTS idx_session_sort_preferences_namespace
+                ON session_sort_preferences(namespace);
+        `)
     }
 
     private getMachineColumnNames(): Set<string> {

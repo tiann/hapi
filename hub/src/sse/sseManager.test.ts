@@ -118,4 +118,32 @@ describe('SSEManager namespace filtering', () => {
         expect(received).toHaveLength(1)
         expect(received[0]?.id).toBe('visible')
     })
+
+    it('broadcasts session sort preference updates to namespace even with session-scoped subscription', () => {
+        const manager = new SSEManager(0, new VisibilityTracker())
+        const received: SyncEvent[] = []
+
+        manager.subscribe({
+            id: 'alpha-session',
+            namespace: 'alpha',
+            all: false,
+            sessionId: 'session-1',
+            send: (event) => {
+                received.push(event)
+            },
+            sendHeartbeat: () => {}
+        })
+
+        manager.broadcast({
+            type: 'session-sort-preference-updated',
+            namespace: 'alpha',
+            data: {
+                userId: 1,
+                version: 2
+            }
+        })
+
+        expect(received).toHaveLength(1)
+        expect(received[0]?.type).toBe('session-sort-preference-updated')
+    })
 })

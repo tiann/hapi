@@ -13,6 +13,11 @@ type SessionActionMenuProps = {
     isOpen: boolean
     onClose: () => void
     sessionActive: boolean
+    manualMode?: boolean
+    onMoveUp?: () => void
+    onMoveDown?: () => void
+    canMoveUp?: boolean
+    canMoveDown?: boolean
     onRename: () => void
     onArchive: () => void
     onDelete: () => void
@@ -84,6 +89,46 @@ function TrashIcon(props: { className?: string }) {
     )
 }
 
+function ArrowUpIcon(props: { className?: string }) {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={props.className}
+        >
+            <path d="m5 12 7-7 7 7" />
+            <path d="M12 19V6" />
+        </svg>
+    )
+}
+
+function ArrowDownIcon(props: { className?: string }) {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={props.className}
+        >
+            <path d="m19 12-7 7-7-7" />
+            <path d="M12 5v13" />
+        </svg>
+    )
+}
+
 type MenuPosition = {
     top: number
     left: number
@@ -96,6 +141,11 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
         isOpen,
         onClose,
         sessionActive,
+        manualMode = false,
+        onMoveUp,
+        onMoveDown,
+        canMoveUp = false,
+        canMoveDown = false,
         onRename,
         onArchive,
         onDelete,
@@ -121,6 +171,22 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
     const handleDelete = () => {
         onClose()
         onDelete()
+    }
+
+    const handleMoveUp = () => {
+        if (!canMoveUp || !onMoveUp) {
+            return
+        }
+        onClose()
+        onMoveUp()
+    }
+
+    const handleMoveDown = () => {
+        if (!canMoveDown || !onMoveDown) {
+            return
+        }
+        onClose()
+        onMoveDown()
     }
 
     const updatePosition = useCallback(() => {
@@ -229,6 +295,34 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
                 aria-labelledby={headingId}
                 className="flex flex-col gap-1"
             >
+                {manualMode ? (
+                    <>
+                        <button
+                            type="button"
+                            role="menuitem"
+                            className={`${baseItemClassName} ${canMoveUp ? 'hover:bg-[var(--app-subtle-bg)]' : 'opacity-40 cursor-default'}`}
+                            onClick={handleMoveUp}
+                            disabled={!canMoveUp}
+                            aria-disabled={!canMoveUp}
+                        >
+                            <ArrowUpIcon className="text-[var(--app-hint)]" />
+                            {t('session.action.moveUp')}
+                        </button>
+                        <button
+                            type="button"
+                            role="menuitem"
+                            className={`${baseItemClassName} ${canMoveDown ? 'hover:bg-[var(--app-subtle-bg)]' : 'opacity-40 cursor-default'}`}
+                            onClick={handleMoveDown}
+                            disabled={!canMoveDown}
+                            aria-disabled={!canMoveDown}
+                        >
+                            <ArrowDownIcon className="text-[var(--app-hint)]" />
+                            {t('session.action.moveDown')}
+                        </button>
+                        <div className="h-px bg-[var(--app-divider)] mx-2" />
+                    </>
+                ) : null}
+
                 <button
                     type="button"
                     role="menuitem"

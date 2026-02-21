@@ -147,6 +147,10 @@ export function useSSE(options: {
                 void queryClient.invalidateQueries({ queryKey: queryKeys.machines })
             }
 
+            if (event.type === 'session-sort-preference-updated') {
+                void queryClient.invalidateQueries({ queryKey: queryKeys.sessionSortPreference })
+            }
+
             onEventRef.current(event)
         }
 
