@@ -9,7 +9,10 @@
         "build": "vite build && cp dist/index.html dist/404.html",
         "typecheck": "tsc --noEmit",
         "preview": "vite preview",
-        "test": "vitest run"
+        "test": "vitest run",
+        "test:e2e": "BUN_BIN=${BUN_BIN:-$(command -v bun || echo $HOME/.bun/bin/bun)} playwright test --config=playwright.config.ts",
+        "test:e2e:session-sort": "BUN_BIN=${BUN_BIN:-$(command -v bun || echo $HOME/.bun/bin/bun)} playwright test --config=playwright.config.ts --grep \"session sort\"",
+        "test:e2e:install": "playwright install chromium"
     },
     "dependencies": {
         "@assistant-ui/react": "^0.11.53",
@@ -44,6 +47,7 @@
         "workbox-window": "^7.4.0"
     },
     "devDependencies": {
+        "@playwright/test": "^1.52.0",
         "@testing-library/jest-dom": "^6.6.3",
         "@testing-library/react": "^16.3.0",
         "@types/react": "^19.2.7",

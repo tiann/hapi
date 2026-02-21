@@ -14,6 +14,9 @@ import type {
     PushSubscriptionPayload,
     PushUnsubscribePayload,
     PushVapidPublicKeyResponse,
+    SessionSortPreferenceResponse,
+    SetSessionSortPreferencePayload,
+    SetSessionSortPreferenceResult,
     SlashCommandsResponse,
     SkillsResponse,
     SpawnResponse,
@@ -116,7 +119,9 @@ export class ApiClient {
 
         if (!res.ok) {
             const body = await res.text().catch(() => '')
-            throw new Error(`HTTP ${res.status} ${res.statusText}: ${body}`)
+            const code = parseErrorCode(body)
+            const detail = body ? `: ${body}` : ''
+            throw new ApiError(`HTTP ${res.status} ${res.statusText}${detail}`, res.status, code, body || undefined)
         }
 
         return await res.json() as T
@@ -158,6 +163,42 @@ export class ApiClient {
 
     async getSessions(): Promise<SessionsResponse> {
         return await this.request<SessionsResponse>('/api/sessions')
+    }
+
+    async getSessionSortPreference(): Promise<SessionSortPreferenceResponse> {
+        return await this.request<SessionSortPreferenceResponse>('/api/preferences/session-sort')
+    }
+
+    async setSessionSortPreference(
+        payload: SetSessionSortPreferencePayload
+    ): Promise<SetSessionSortPreferenceResult> {
+        try {
+            const response = await this.request<SessionSortPreferenceResponse>('/api/preferences/session-sort', {
+                method: 'PUT',
+                body: JSON.stringify(payload)
+            })
+            return {
+                status: 'success',
+                preference: response.preference
+            }
+        } catch (error) {
+            if (!(error instanceof ApiError) || error.status !== 409 || !error.body) {
+                throw error
+            }
+
+            try {
+                const parsed = JSON.parse(error.body) as { error?: string; preference?: SessionSortPreferenceResponse['preference'] }
+                if (parsed.error === 'version_mismatch' && parsed.preference) {
+                    return {
+                        status: 'version-mismatch',
+                        preference: parsed.preference
+                    }
+                }
+            } catch {
+            }
+
+            throw error
+        }
     }
 
     async getPushVapidPublicKey(): Promise<PushVapidPublicKeyResponse> {

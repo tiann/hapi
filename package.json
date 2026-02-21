@@ -22,6 +22,8 @@
         "test:cli": "cd cli && bun run test",
         "test:hub": "cd hub && bun run test",
         "test:web": "cd web && bun run test",
+        "test:e2e:web": "cd web && bun run test:e2e",
+        "test:e2e:web:session-sort": "cd web && bun run test:e2e:session-sort",
         "clean-session": "bun run hub/scripts/cleanup-sessions.ts",
         "release-all": "cd cli && bun run release-all"
     },

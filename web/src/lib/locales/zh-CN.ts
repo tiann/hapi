@@ -41,6 +41,8 @@ export default {
   // Sessions page
   'sessions.count': '{n} 个会话，{m} 个项目',
   'sessions.new': '新建会话',
+  'sessions.sort.auto': '排序：自动',
+  'sessions.sort.manual': '排序：手动',
 
   // Session list
   'session.item.path': '路径',
@@ -64,6 +66,11 @@ export default {
   'session.action.archive': '归档',
   'session.action.delete': '删除',
   'session.action.copy': '复制',
+  'session.action.moveUp': '上移',
+  'session.action.moveDown': '下移',
+  'group.more': '分组操作',
+  'group.action.moveUp': '上移',
+  'group.action.moveDown': '下移',
 
   // Dialogs
   'dialog.rename.title': '重命名会话',

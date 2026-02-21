@@ -18,6 +18,7 @@ import { createMachinesRoutes } from './routes/machines'
 import { createGitRoutes } from './routes/git'
 import { createCliRoutes } from './routes/cli'
 import { createPushRoutes } from './routes/push'
+import { createPreferencesRoutes } from './routes/preferences'
 import { createVoiceRoutes } from './routes/voice'
 import type { SSEManager } from '../sse/sseManager'
 import type { VisibilityTracker } from '../visibility/visibilityTracker'
@@ -77,7 +78,7 @@ function createWebApp(options: {
     const corsOriginOption = corsOrigins.includes('*') ? '*' : corsOrigins
     const corsMiddleware = cors({
         origin: corsOriginOption,
-        allowMethods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
+        allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
         allowHeaders: ['authorization', 'content-type']
     })
     app.use('/api/*', corsMiddleware)
@@ -96,6 +97,7 @@ function createWebApp(options: {
     app.route('/api', createMachinesRoutes(options.getSyncEngine))
     app.route('/api', createGitRoutes(options.getSyncEngine))
     app.route('/api', createPushRoutes(options.store, options.vapidPublicKey))
+    app.route('/api', createPreferencesRoutes(options.getSyncEngine))
     app.route('/api', createVoiceRoutes())
 
     // Skip static serving in relay mode, show helpful message on root
