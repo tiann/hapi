@@ -15,17 +15,18 @@
  * - CLI_API_TOKEN=... (must match the hub)
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import { execSync, spawn } from 'child_process';
-import { existsSync, unlinkSync, readFileSync, writeFileSync, readdirSync } from 'fs';
+import { existsSync, unlinkSync, readFileSync, writeFileSync, readdirSync, mkdirSync, cpSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
 import path, { join } from 'path';
 import { configuration } from '@/configuration';
-import { 
-  listRunnerSessions, 
-  stopRunnerSession, 
-  spawnRunnerSession, 
-  stopRunnerHttp, 
-  notifyRunnerSessionStarted, 
+import {
+  listRunnerSessions,
+  stopRunnerSession,
+  spawnRunnerSession,
+  stopRunnerHttp,
+  notifyRunnerSessionStarted,
   stopRunner
 } from '@/runner/controlClient';
 import { readRunnerState, clearRunnerState } from '@/persistence';
@@ -33,6 +34,55 @@ import { Metadata } from '@/api/types';
 import { spawnHappyCLI } from '@/utils/spawnHappyCLI';
 import { getLatestRunnerLog } from '@/ui/logger';
 import { isProcessAlive, isWindows, killProcess, killProcessByChildProcess } from '@/utils/process';
+
+// --- Test isolation: use a temp HAPI_HOME so tests never touch the real runner ---
+
+const testHapiHome = join(tmpdir(), `hapi-runner-test-${process.pid}-${Date.now()}`);
+const testEnv = { ...process.env, HAPI_HOME: testHapiHome };
+
+// Override the singleton configuration paths before any test runs.
+// The spawned child processes get isolation via the HAPI_HOME env var.
+function installTestHapiHome(): { originals: Record<string, string> } {
+  mkdirSync(testHapiHome, { recursive: true });
+  mkdirSync(join(testHapiHome, 'logs'), { recursive: true });
+
+  // Copy settings.json so the runner can auth with the hub
+  const realSettings = join(configuration.happyHomeDir, 'settings.json');
+  if (existsSync(realSettings)) {
+    cpSync(realSettings, join(testHapiHome, 'settings.json'));
+  }
+
+  const props = [
+    'happyHomeDir',
+    'logsDir',
+    'settingsFile',
+    'privateKeyFile',
+    'runnerStateFile',
+    'runnerLockFile',
+  ] as const;
+
+  const originals: Record<string, string> = {};
+  for (const prop of props) {
+    originals[prop] = (configuration as any)[prop];
+  }
+
+  // Redirect configuration paths to the temp dir
+  Object.defineProperty(configuration, 'happyHomeDir', { value: testHapiHome, configurable: true });
+  Object.defineProperty(configuration, 'logsDir', { value: join(testHapiHome, 'logs'), configurable: true });
+  Object.defineProperty(configuration, 'settingsFile', { value: join(testHapiHome, 'settings.json'), configurable: true });
+  Object.defineProperty(configuration, 'privateKeyFile', { value: join(testHapiHome, 'access.key'), configurable: true });
+  Object.defineProperty(configuration, 'runnerStateFile', { value: join(testHapiHome, 'runner.state.json'), configurable: true });
+  Object.defineProperty(configuration, 'runnerLockFile', { value: join(testHapiHome, 'runner.state.json.lock'), configurable: true });
+
+  return { originals };
+}
+
+function uninstallTestHapiHome(originals: Record<string, string>): void {
+  for (const [prop, value] of Object.entries(originals)) {
+    Object.defineProperty(configuration, prop, { value, configurable: true });
+  }
+  try { rmSync(testHapiHome, { recursive: true, force: true }); } catch { /* best effort */ }
+}
 
 // Utility to wait for condition
 async function waitFor(
@@ -80,23 +130,36 @@ async function isServerHealthy(): Promise<boolean> {
 
 describe.skipIf(!await isServerHealthy())('Runner Integration Tests', { timeout: 20_000 }, () => {
   let runnerPid: number;
+  let savedOriginals: Record<string, string>;
+
+  beforeAll(() => {
+    const { originals } = installTestHapiHome();
+    savedOriginals = originals;
+    console.log(`[TEST] Using isolated HAPI_HOME: ${testHapiHome}`);
+  });
+
+  afterAll(async () => {
+    // Make sure the test runner is dead before restoring
+    await stopRunner();
+    uninstallTestHapiHome(savedOriginals);
+  });
 
   beforeEach(async () => {
-    // First ensure no runner is running by checking PID in metadata file
+    // First ensure no test runner is running by checking PID in metadata file
     await stopRunner()
-    
-    // Start fresh runner for this test
-    // This will return and start a background process - we don't need to wait for it
+
+    // Start fresh runner for this test, using isolated HAPI_HOME
     void spawnHappyCLI(['runner', 'start'], {
-      stdio: 'ignore'
+      stdio: 'ignore',
+      env: testEnv
     });
-    
+
     // Wait for runner to write its state file (it needs to auth, setup, and start server)
     await waitFor(async () => {
       const state = await readRunnerState();
       return state !== null;
     }, 10_000, 250); // Wait up to 10 seconds, checking every 250ms
-    
+
     const runnerState = await readRunnerState();
     if (!runnerState) {
       throw new Error('Runner failed to start within timeout');
@@ -200,7 +263,8 @@ describe.skipIf(!await isServerHealthy())('Runner Integration Tests', { timeout:
     ], {
       cwd: '/tmp',
       detached: true,
-      stdio: 'ignore'
+      stdio: 'ignore',
+      env: testEnv
     });
     if (!terminalHappyProcess || !terminalHappyProcess.pid) {
       throw new Error('Failed to spawn terminal hapi process');
@@ -259,7 +323,7 @@ describe.skipIf(!await isServerHealthy())('Runner Integration Tests', { timeout:
     // Try to start another runner
     const secondChild = spawn('bun', ['src/index.ts', 'runner', 'start-sync'], {
       cwd: process.cwd(),
-      env: process.env,
+      env: testEnv,
       stdio: ['ignore', 'pipe', 'pipe']
     });
 
