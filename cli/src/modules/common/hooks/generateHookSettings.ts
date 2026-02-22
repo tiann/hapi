@@ -19,6 +19,7 @@ type HookSettings = {
     hooks: {
         SessionStart: HookCommandConfig[];
     };
+    env?: Record<string, string>;
 };
 
 export type HookSettingsOptions = {
@@ -43,7 +44,7 @@ function shellJoin(parts: string[]): string {
     return parts.map(shellQuote).join(' ');
 }
 
-function buildHookSettings(command: string, hooksEnabled?: boolean): HookSettings {
+function buildHookSettings(command: string, hooksEnabled?: boolean, env?: Record<string, string>): HookSettings {
     const hooks: HookSettings['hooks'] = {
         SessionStart: [
             {
@@ -63,6 +64,9 @@ function buildHookSettings(command: string, hooksEnabled?: boolean): HookSetting
         settings.hooksConfig = {
             enabled: hooksEnabled
         };
+    }
+    if (env) {
+        settings.env = env;
     }
 
     return settings;
@@ -88,7 +92,22 @@ export function generateHookSettingsFile(
     ]);
     const hookCommand = shellJoin([command, ...args]);
 
-    const settings = buildHookSettings(hookCommand, options.hooksEnabled);
+    // Read env from default Claude settings if available
+    let envFromSettings: Record<string, string> | undefined;
+    try {
+        const defaultSettingsPath = join(configuration.homeDir, '.claude', 'settings.json');
+        const { readFileSync } = require('node:fs');
+        const settingsContent = readFileSync(defaultSettingsPath, 'utf-8');
+        const settings = JSON.parse(settingsContent);
+        if (settings.env && typeof settings.env === 'object') {
+            envFromSettings = settings.env;
+            logger.debug(`[${options.logLabel}] Loaded env from ${defaultSettingsPath}`);
+        }
+    } catch (error) {
+        logger.debug(`[${options.logLabel}] Could not load env from default settings: ${error}`);
+    }
+
+    const settings = buildHookSettings(hookCommand, options.hooksEnabled, envFromSettings);
 
     writeFileSync(filepath, JSON.stringify(settings, null, 4));
     logger.debug(`[${options.logLabel}] Created hook settings file: ${filepath}`);
