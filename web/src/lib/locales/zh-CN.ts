@@ -41,6 +41,8 @@ export default {
   // Sessions page
   'sessions.count': '{n} 个会话，{m} 个项目',
   'sessions.new': '新建会话',
+  'sessions.filter.active': '运行中',
+  'sessions.filter.all': '全部',
 
   // Session list
   'session.item.path': '路径',
@@ -251,6 +253,10 @@ export default {
   'settings.language.label': '语言',
   'settings.display.title': '显示',
   'settings.display.fontSize': '字体大小',
+  'settings.notifications.title': '通知',
+  'settings.notifications.web': '浏览器通知',
+  'settings.notifications.webEnabled': '已启用',
+  'settings.notifications.webDisabled': '已禁用',
   'settings.voice.title': '语音助手',
   'settings.voice.language': '语音语言',
   'settings.voice.autoDetect': '自动检测',

@@ -9,6 +9,8 @@ import { RenameSessionDialog } from '@/components/RenameSessionDialog'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { useTranslation } from '@/lib/use-translation'
 
+type SessionFilter = 'active' | 'all'
+
 type SessionGroup = {
     directory: string
     displayName: string
@@ -323,9 +325,14 @@ export function SessionList(props: {
 }) {
     const { t } = useTranslation()
     const { renderHeader = true, api, selectedSessionId } = props
+    const [filter, setFilter] = useState<SessionFilter>('active')
+    const filteredSessions = useMemo(
+        () => filter === 'active' ? props.sessions.filter(s => s.active) : props.sessions,
+        [props.sessions, filter]
+    )
     const groups = useMemo(
-        () => groupSessionsByDirectory(props.sessions),
-        [props.sessions]
+        () => groupSessionsByDirectory(filteredSessions),
+        [filteredSessions]
     )
     const [collapseOverrides, setCollapseOverrides] = useState<Map<string, boolean>>(
         () => new Map()
@@ -364,8 +371,26 @@ export function SessionList(props: {
         <div className="mx-auto w-full max-w-content flex flex-col">
             {renderHeader ? (
                 <div className="flex items-center justify-between px-3 py-1">
-                    <div className="text-xs text-[var(--app-hint)]">
-                        {t('sessions.count', { n: props.sessions.length, m: groups.length })}
+                    <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-1 text-xs text-[var(--app-hint)]">
+                            <button
+                                type="button"
+                                onClick={() => setFilter('active')}
+                                className={`px-2 py-1 rounded-full transition-colors ${filter === 'active' ? 'bg-[var(--app-link)] text-white' : 'hover:bg-[var(--app-subtle-bg)]'}`}
+                            >
+                                {t('sessions.filter.active')}
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setFilter('all')}
+                                className={`px-2 py-1 rounded-full transition-colors ${filter === 'all' ? 'bg-[var(--app-link)] text-white' : 'hover:bg-[var(--app-subtle-bg)]'}`}
+                            >
+                                {t('sessions.filter.all')}
+                            </button>
+                        </div>
+                        <span className="text-xs text-[var(--app-hint)]">
+                            ({filter === 'active' ? props.sessions.filter(s => s.active).length : props.sessions.length})
+                        </span>
                     </div>
                     <button
                         type="button"

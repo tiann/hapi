@@ -41,6 +41,8 @@ export default {
   // Sessions page
   'sessions.count': '{n} sessions in {m} projects',
   'sessions.new': 'New Session',
+  'sessions.filter.active': 'Active',
+  'sessions.filter.all': 'All',
 
   // Session list
   'session.item.path': 'path',
@@ -249,6 +251,10 @@ export default {
   'settings.language.label': 'Language',
   'settings.display.title': 'Display',
   'settings.display.fontSize': 'Font Size',
+  'settings.notifications.title': 'Notifications',
+  'settings.notifications.web': 'Browser Notifications',
+  'settings.notifications.webEnabled': 'Enabled',
+  'settings.notifications.webDisabled': 'Disabled',
   'settings.voice.title': 'Voice Assistant',
   'settings.voice.language': 'Voice Language',
   'settings.voice.autoDetect': 'Auto-detect',

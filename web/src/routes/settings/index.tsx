@@ -114,6 +114,12 @@ export default function SettingsPage() {
     const [saveMessage, setSaveMessage] = useState<string | null>(null)
     const [showRemoveConfirm, setShowRemoveConfirm] = useState(false)
 
+    // Web notification state
+    const [webNotifications, setWebNotifications] = useState<boolean>(() => {
+        const stored = localStorage.getItem('hapi-web-notifications')
+        return stored === null ? true : stored === 'true'
+    })
+
     // Load Telegram config
     const loadTelegramConfig = useCallback(async () => {
         try {
@@ -203,6 +209,11 @@ export default function SettingsPage() {
             localStorage.setItem('hapi-voice-lang', language.code)
         }
         setIsVoiceOpen(false)
+    }
+
+    const handleWebNotificationsChange = (enabled: boolean) => {
+        setWebNotifications(enabled)
+        localStorage.setItem('hapi-web-notifications', enabled ? 'true' : 'false')
     }
 
     // Close dropdown when clicking outside
@@ -429,6 +440,25 @@ export default function SettingsPage() {
                                     })}
                                 </div>
                             )}
+                        </div>
+                    </div>
+
+                    {/* Notifications section */}
+                    <div className="border-b border-[var(--app-divider)]">
+                        <div className="px-3 py-2 text-xs font-semibold text-[var(--app-hint)] uppercase tracking-wide">
+                            {t('settings.notifications.title')}
+                        </div>
+                        <div className="flex items-center justify-between px-3 py-3">
+                            <span className="text-[var(--app-fg)]">{t('settings.notifications.web')}</span>
+                            <button
+                                type="button"
+                                onClick={() => handleWebNotificationsChange(!webNotifications)}
+                                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${webNotifications ? 'bg-[var(--app-link)]' : 'bg-gray-300'}`}
+                            >
+                                <span
+                                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${webNotifications ? 'translate-x-6' : 'translate-x-1'}`}
+                                />
+                            </button>
                         </div>
                     </div>
 
