@@ -97,7 +97,6 @@ function SettingsIcon(props: { className?: string }) {
 const SIDEBAR_WIDTH_STORAGE_KEY = 'hapi:sessions-sidebar-width'
 const SIDEBAR_MIN_WIDTH = 280
 const SIDEBAR_MAX_WIDTH_RATIO = 0.6
-const SIDEBAR_KEYBOARD_STEP = 24
 
 function SessionsPage() {
     const { api } = useAppContext()
@@ -271,20 +270,6 @@ function SessionsPage() {
                     role="separator"
                     aria-label="Resize sessions sidebar"
                     aria-orientation="vertical"
-                    aria-valuemin={SIDEBAR_MIN_WIDTH}
-                    aria-valuemax={typeof window !== 'undefined' ? Math.max(SIDEBAR_MIN_WIDTH, Math.floor(window.innerWidth * SIDEBAR_MAX_WIDTH_RATIO)) : SIDEBAR_MIN_WIDTH}
-                    aria-valuenow={sidebarWidth ?? undefined}
-                    tabIndex={0}
-                    onKeyDown={(event) => {
-                        if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') {
-                            return
-                        }
-                        event.preventDefault()
-                        const fallback = (event.currentTarget.previousElementSibling as HTMLElement | null)?.offsetWidth ?? SIDEBAR_MIN_WIDTH
-                        const currentWidth = sidebarWidthRef.current ?? fallback
-                        const delta = event.key === 'ArrowLeft' ? -SIDEBAR_KEYBOARD_STEP : SIDEBAR_KEYBOARD_STEP
-                        updateSidebarWidth(currentWidth + delta)
-                    }}
                     onPointerDown={(event) => {
                         event.preventDefault()
                         const startingWidth = sidebarWidthRef.current ?? (event.currentTarget.previousElementSibling as HTMLElement | null)?.offsetWidth
@@ -293,7 +278,7 @@ function SessionsPage() {
                         }
                         setIsDraggingSidebar(true)
                     }}
-                    className="hidden lg:flex w-2 shrink-0 cursor-col-resize items-stretch justify-center bg-transparent outline-none focus:bg-[var(--app-divider)] hover:bg-[var(--app-divider)]"
+                    className="hidden lg:flex w-2 shrink-0 cursor-col-resize items-stretch justify-center bg-transparent hover:bg-[var(--app-divider)]"
                 >
                     <span className="h-full w-px bg-[var(--app-divider)]" />
                 </div>
