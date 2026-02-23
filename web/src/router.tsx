@@ -1,4 +1,4 @@
-import { useCallback } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import {
     Navigate,
@@ -94,6 +94,11 @@ function SettingsIcon(props: { className?: string }) {
     )
 }
 
+const SIDEBAR_WIDTH_STORAGE_KEY = 'hapi:sessions-sidebar-width'
+const SIDEBAR_MIN_WIDTH = 280
+const SIDEBAR_MAX_WIDTH_RATIO = 0.6
+const SIDEBAR_KEYBOARD_STEP = 24
+
 function SessionsPage() {
     const { api } = useAppContext()
     const navigate = useNavigate()
@@ -110,11 +115,108 @@ function SessionsPage() {
     const sessionMatch = matchRoute({ to: '/sessions/$sessionId', fuzzy: true })
     const selectedSessionId = sessionMatch && sessionMatch.sessionId !== 'new' ? sessionMatch.sessionId : null
     const isSessionsIndex = pathname === '/sessions' || pathname === '/sessions/'
+    const [sidebarWidth, setSidebarWidth] = useState<number | null>(null)
+    const [isDraggingSidebar, setIsDraggingSidebar] = useState(false)
+    const sidebarWidthRef = useRef<number | null>(null)
+
+    const clampSidebarWidth = useCallback((rawWidth: number) => {
+        if (typeof window === 'undefined') {
+            return Math.max(SIDEBAR_MIN_WIDTH, rawWidth)
+        }
+        const maxWidth = Math.max(SIDEBAR_MIN_WIDTH, Math.floor(window.innerWidth * SIDEBAR_MAX_WIDTH_RATIO))
+        return Math.min(maxWidth, Math.max(SIDEBAR_MIN_WIDTH, rawWidth))
+    }, [])
+
+    const updateSidebarWidth = useCallback((nextWidth: number) => {
+        const clamped = clampSidebarWidth(nextWidth)
+        sidebarWidthRef.current = clamped
+        setSidebarWidth(clamped)
+        if (typeof window !== 'undefined') {
+            window.localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(clamped))
+        }
+    }, [clampSidebarWidth])
+
+    useEffect(() => {
+        if (typeof window === 'undefined') {
+            return
+        }
+
+        const storedWidth = window.localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY)
+        if (!storedWidth) {
+            return
+        }
+
+        const parsedWidth = Number(storedWidth)
+        if (!Number.isFinite(parsedWidth)) {
+            return
+        }
+
+        const clamped = clampSidebarWidth(parsedWidth)
+        setSidebarWidth(clamped)
+        sidebarWidthRef.current = clamped
+    }, [clampSidebarWidth])
+
+    useEffect(() => {
+        if (typeof window === 'undefined') {
+            return
+        }
+
+        const handleResize = () => {
+            if (sidebarWidthRef.current == null) {
+                return
+            }
+            const clamped = clampSidebarWidth(sidebarWidthRef.current)
+            if (clamped !== sidebarWidthRef.current) {
+                updateSidebarWidth(clamped)
+            }
+        }
+
+        window.addEventListener('resize', handleResize)
+        return () => {
+            window.removeEventListener('resize', handleResize)
+        }
+    }, [clampSidebarWidth, updateSidebarWidth])
+
+    useEffect(() => {
+        if (!isDraggingSidebar) {
+            return
+        }
+
+        const handlePointerMove = (event: PointerEvent) => {
+            updateSidebarWidth(event.clientX)
+        }
+
+        const handlePointerUp = () => {
+            setIsDraggingSidebar(false)
+        }
+
+        document.body.style.cursor = 'col-resize'
+        document.body.style.userSelect = 'none'
+        window.addEventListener('pointermove', handlePointerMove)
+        window.addEventListener('pointerup', handlePointerUp)
+
+        return () => {
+            document.body.style.cursor = ''
+            document.body.style.userSelect = ''
+            window.removeEventListener('pointermove', handlePointerMove)
+            window.removeEventListener('pointerup', handlePointerUp)
+        }
+    }, [isDraggingSidebar, updateSidebarWidth])
+
+    const desktopSidebarStyle = useMemo(() => {
+        if (sidebarWidth == null) {
+            return undefined
+        }
+        return {
+            '--sessions-sidebar-width': `${sidebarWidth}px`,
+        }
+    }, [sidebarWidth])
 
     return (
         <div className="flex h-full min-h-0">
             <div
-                className={`${isSessionsIndex ? 'flex' : 'hidden lg:flex'} w-full lg:w-[420px] xl:w-[480px] shrink-0 flex-col bg-[var(--app-bg)] lg:border-r lg:border-[var(--app-divider)]`}
+                className={`${isSessionsIndex ? 'flex' : 'hidden lg:flex'} w-full lg:w-[420px] xl:w-[480px] lg:[width:var(--sessions-sidebar-width)] xl:[width:var(--sessions-sidebar-width)] shrink-0 flex-col bg-[var(--app-bg)] lg:border-r lg:border-[var(--app-divider)]`}
+                style={desktopSidebarStyle as CSSProperties | undefined}
             >
                 <div className="bg-[var(--app-bg)] pt-[env(safe-area-inset-top)]">
                     <div className="mx-auto w-full max-w-content flex items-center justify-between px-3 py-2">
@@ -163,6 +265,39 @@ function SessionsPage() {
                     />
                 </div>
             </div>
+
+            {!isSessionsIndex ? (
+                <div
+                    role="separator"
+                    aria-label="Resize sessions sidebar"
+                    aria-orientation="vertical"
+                    aria-valuemin={SIDEBAR_MIN_WIDTH}
+                    aria-valuemax={typeof window !== 'undefined' ? Math.max(SIDEBAR_MIN_WIDTH, Math.floor(window.innerWidth * SIDEBAR_MAX_WIDTH_RATIO)) : SIDEBAR_MIN_WIDTH}
+                    aria-valuenow={sidebarWidth ?? undefined}
+                    tabIndex={0}
+                    onKeyDown={(event) => {
+                        if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') {
+                            return
+                        }
+                        event.preventDefault()
+                        const fallback = (event.currentTarget.previousElementSibling as HTMLElement | null)?.offsetWidth ?? SIDEBAR_MIN_WIDTH
+                        const currentWidth = sidebarWidthRef.current ?? fallback
+                        const delta = event.key === 'ArrowLeft' ? -SIDEBAR_KEYBOARD_STEP : SIDEBAR_KEYBOARD_STEP
+                        updateSidebarWidth(currentWidth + delta)
+                    }}
+                    onPointerDown={(event) => {
+                        event.preventDefault()
+                        const startingWidth = sidebarWidthRef.current ?? (event.currentTarget.previousElementSibling as HTMLElement | null)?.offsetWidth
+                        if (startingWidth) {
+                            sidebarWidthRef.current = clampSidebarWidth(startingWidth)
+                        }
+                        setIsDraggingSidebar(true)
+                    }}
+                    className="hidden lg:flex w-2 shrink-0 cursor-col-resize items-stretch justify-center bg-transparent outline-none focus:bg-[var(--app-divider)] hover:bg-[var(--app-divider)]"
+                >
+                    <span className="h-full w-px bg-[var(--app-divider)]" />
+                </div>
+            ) : null}
 
             <div className={`${isSessionsIndex ? 'hidden lg:flex' : 'flex'} min-w-0 flex-1 flex-col bg-[var(--app-bg)]`}>
                 <div className="flex-1 min-h-0">
