@@ -88,13 +88,20 @@ export function buildThreadStartParams(args: {
 
     const config = buildMcpServerConfig(args.mcpServers);
     const baseInstructions = args.baseInstructions ?? codexSystemPrompt;
+    const resolvedDeveloperInstructions = args.developerInstructions
+        ? `${baseInstructions}\n\n${args.developerInstructions}`
+        : baseInstructions;
+    const configWithInstructions = {
+        ...config,
+        developer_instructions: resolvedDeveloperInstructions
+    };
 
     const params: ThreadStartParams = {
         approvalPolicy: resolvedApprovalPolicy,
         sandbox: resolvedSandbox,
         baseInstructions,
-        ...(args.developerInstructions ? { developerInstructions: args.developerInstructions } : {}),
-        ...(Object.keys(config).length > 0 ? { config } : {})
+        developerInstructions: resolvedDeveloperInstructions,
+        ...(Object.keys(configWithInstructions).length > 0 ? { config: configWithInstructions } : {})
     };
 
     if (args.mode.model) {

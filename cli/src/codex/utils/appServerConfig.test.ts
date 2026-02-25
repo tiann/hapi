@@ -15,11 +15,13 @@ describe('appServerConfig', () => {
         expect(params.sandbox).toBe('danger-full-access');
         expect(params.approvalPolicy).toBe('never');
         expect(params.baseInstructions).toBe(codexSystemPrompt);
+        expect(params.developerInstructions).toBe(codexSystemPrompt);
         expect(params.config).toEqual({
             'mcp_servers.hapi': {
                 command: 'node',
                 args: ['mcp']
-            }
+            },
+            developer_instructions: codexSystemPrompt
         });
     });
 
@@ -32,6 +34,24 @@ describe('appServerConfig', () => {
 
         expect(params.sandbox).toBe('danger-full-access');
         expect(params.approvalPolicy).toBe('on-failure');
+    });
+
+    it('concatenates custom developer instructions after base instructions', () => {
+        const params = buildThreadStartParams({
+            mode: { permissionMode: 'default' },
+            mcpServers,
+            developerInstructions: 'Only respond in Chinese.'
+        });
+
+        expect(params.baseInstructions).toBe(codexSystemPrompt);
+        expect(params.developerInstructions).toBe(`${codexSystemPrompt}\n\nOnly respond in Chinese.`);
+        expect(params.config).toEqual({
+            'mcp_servers.hapi': {
+                command: 'node',
+                args: ['mcp']
+            },
+            developer_instructions: `${codexSystemPrompt}\n\nOnly respond in Chinese.`
+        });
     });
 
     it('builds turn params with mode defaults', () => {

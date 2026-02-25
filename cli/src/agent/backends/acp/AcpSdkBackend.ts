@@ -19,6 +19,7 @@ export class AcpSdkBackend implements AgentBackend {
     private activeSessionId: string | null = null;
     private isProcessingMessage = false;
     private responseCompleteResolvers: Array<() => void> = [];
+    private lastSessionUpdateAt = 0;
 
     /** Retry configuration for ACP initialization */
     private static readonly INIT_RETRY_OPTIONS = {
@@ -26,6 +27,10 @@ export class AcpSdkBackend implements AgentBackend {
         minDelay: 1000,
         maxDelay: 5000
     };
+    private static readonly UPDATE_QUIET_PERIOD_MS = 120;
+    private static readonly UPDATE_DRAIN_TIMEOUT_MS = 2000;
+    private static readonly PRE_PROMPT_UPDATE_QUIET_PERIOD_MS = 200;
+    private static readonly PRE_PROMPT_UPDATE_DRAIN_TIMEOUT_MS = 1200;
 
     constructor(private readonly options: { command: string; args?: string[]; env?: Record<string, string> }) {}
 
@@ -141,8 +146,20 @@ export class AcpSdkBackend implements AgentBackend {
         }
 
         this.activeSessionId = sessionId;
+        await this.waitForSessionUpdateQuiet(
+            AcpSdkBackend.PRE_PROMPT_UPDATE_QUIET_PERIOD_MS,
+            AcpSdkBackend.PRE_PROMPT_UPDATE_DRAIN_TIMEOUT_MS
+        );
+        this.messageHandler?.flushText();
+        this.messageHandler = null;
+        await this.waitForSessionUpdateQuiet(
+            AcpSdkBackend.PRE_PROMPT_UPDATE_QUIET_PERIOD_MS,
+            AcpSdkBackend.PRE_PROMPT_UPDATE_DRAIN_TIMEOUT_MS
+        );
         this.messageHandler = new AcpMessageHandler(onUpdate);
         this.isProcessingMessage = true;
+        this.lastSessionUpdateAt = Date.now();
+        let stopReason: string | null = null;
 
         try {
             // No timeout for prompt requests - they can run for extended periods
@@ -152,16 +169,21 @@ export class AcpSdkBackend implements AgentBackend {
                 prompt: content
             }, { timeoutMs: Infinity });
 
-            const stopReason = isObject(response) ? asString(response.stopReason) : null;
-            if (stopReason) {
-                this.messageHandler?.flushText();
-                onUpdate({ type: 'turn_complete', stopReason });
-            }
+            stopReason = isObject(response) ? asString(response.stopReason) : null;
         } finally {
+            await this.waitForSessionUpdateQuiet(
+                AcpSdkBackend.UPDATE_QUIET_PERIOD_MS,
+                AcpSdkBackend.UPDATE_DRAIN_TIMEOUT_MS
+            );
             this.messageHandler?.flushText();
-            this.messageHandler = null;
-            this.isProcessingMessage = false;
-            this.notifyResponseComplete();
+            try {
+                if (stopReason) {
+                    onUpdate({ type: 'turn_complete', stopReason });
+                }
+            } finally {
+                this.isProcessingMessage = false;
+                this.notifyResponseComplete();
+            }
         }
     }
 
@@ -215,6 +237,10 @@ export class AcpSdkBackend implements AgentBackend {
         return this.isProcessingMessage;
     }
 
+    getLastSessionUpdateAt(): number {
+        return this.lastSessionUpdateAt;
+    }
+
     /**
      * Wait for any in-progress response to complete.
      * Resolves immediately if no response is being processed.
@@ -232,6 +258,11 @@ export class AcpSdkBackend implements AgentBackend {
 
     async disconnect(): Promise<void> {
         if (!this.transport) return;
+        this.messageHandler?.flushText();
+        this.messageHandler = null;
+        this.activeSessionId = null;
+        this.isProcessingMessage = false;
+        this.notifyResponseComplete();
         await this.transport.close();
         this.transport = null;
     }
@@ -242,9 +273,29 @@ export class AcpSdkBackend implements AgentBackend {
         if (this.activeSessionId && sessionId && sessionId !== this.activeSessionId) {
             return;
         }
+        this.lastSessionUpdateAt = Date.now();
         const update = params.update;
-        if (!this.messageHandler) return;
-        this.messageHandler.handleUpdate(update);
+        this.messageHandler?.handleUpdate(update);
+    }
+
+    private async waitForSessionUpdateQuiet(quietMs: number, timeoutMs: number): Promise<void> {
+        if (quietMs <= 0 || timeoutMs <= 0) {
+            return;
+        }
+
+        const deadline = Date.now() + timeoutMs;
+
+        while (Date.now() < deadline) {
+            const elapsedSinceUpdate = Date.now() - this.lastSessionUpdateAt;
+            if (elapsedSinceUpdate >= quietMs) {
+                return;
+            }
+
+            const remainingToQuiet = quietMs - elapsedSinceUpdate;
+            const remainingBudget = deadline - Date.now();
+            const waitMs = Math.max(1, Math.min(remainingToQuiet, remainingBudget));
+            await new Promise<void>((resolve) => setTimeout(resolve, waitMs));
+        }
     }
 
     private async handlePermissionRequest(params: unknown, requestId: string | number | null): Promise<unknown> {

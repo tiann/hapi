@@ -13,7 +13,10 @@ import { trimIdent } from '@/utils/trimIdent';
  * so the tool is called as `functions.hapi__change_title`.
  */
 export const TITLE_INSTRUCTION = trimIdent(`
-    Based on this message, call functions.hapi__change_title to change chat session title that would represent the current task. If chat idea would change dramatically - call this function again to update the title.
+    ALWAYS when you start a new chat, call the title tool to set a concise task title.
+    Prefer calling functions.hapi__change_title.
+    If that exact tool name is unavailable, call an equivalent alias such as hapi__change_title, mcp__hapi__change_title, or hapi_change_title.
+    If the task focus changes significantly later, call the title tool again with a better title.
 `);
 
 /**
