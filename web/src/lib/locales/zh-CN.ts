@@ -227,6 +227,9 @@ export default {
   'syncing.title': '同步中…',
   'syncing.message': '正在同步您的数据。',
   'reconnecting.message': '正在重新连接...',
+  'reconnecting.reason.error': '流连接错误',
+  'reconnecting.reason.closed': '流连接已关闭',
+  'reconnecting.reason.heartbeatTimeout': '心跳超时',
 
   // Send blocked
   'send.blocked.title': '无法发送消息',

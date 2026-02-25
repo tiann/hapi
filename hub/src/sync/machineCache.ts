@@ -150,7 +150,7 @@ export class MachineCache {
         const shouldBroadcast = (!wasActive && machine.active) || (now - lastBroadcastAt > 10_000)
         if (shouldBroadcast) {
             this.lastBroadcastAtByMachineId.set(machine.id, now)
-            this.publisher.emit({ type: 'machine-updated', machineId: machine.id, data: { activeAt: machine.activeAt } })
+            this.publisher.emit({ type: 'machine-updated', machineId: machine.id, data: machine })
         }
     }
 
