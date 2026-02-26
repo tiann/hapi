@@ -35,14 +35,34 @@ if (!binPath) {
     process.exit(1);
 }
 
+function formatCommand(bin, args) {
+    return [bin, ...args].map((arg) => JSON.stringify(arg)).join(' ');
+}
+
 try {
     execFileSync(binPath, process.argv.slice(2), { stdio: 'inherit' });
 } catch (e) {
-    // If the binary execution fails, exit with the same code
-    if (e.status !== undefined) {
-        process.exit(e.status);
+    const args = process.argv.slice(2);
+    const command = formatCommand(binPath, args);
+    const status = typeof e.status === 'number' ? e.status : null;
+    const signal = typeof e.signal === 'string' ? e.signal : null;
+
+    console.error(`Failed to execute: ${command}`);
+    if (signal) {
+        console.error(`Binary terminated by signal ${signal}.`);
     }
-    // For other errors (e.g., binary not found), print and exit
-    console.error(`Failed to execute ${binPath}:`, e.message);
+    if (status !== null) {
+        console.error(`Binary exited with status ${status}.`);
+    }
+    if (e.message) {
+        console.error(e.message);
+    }
+
+    if (status !== null) {
+        process.exit(status);
+    }
+    if (signal) {
+        process.kill(process.pid, signal);
+    }
     process.exit(1);
 }
