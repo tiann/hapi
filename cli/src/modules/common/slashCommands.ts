@@ -108,51 +108,64 @@ async function scanCommandsDir(
     source: 'user' | 'plugin',
     pluginName?: string
 ): Promise<SlashCommand[]> {
-    try {
-        const entries = await readdir(dir, { withFileTypes: true });
-        const mdFiles = entries.filter(e => e.isFile() && e.name.endsWith('.md'));
+    async function scanRecursive(currentDir: string, segments: string[]): Promise<SlashCommand[]> {
+        const entries = await readdir(currentDir, { withFileTypes: true }).catch(() => null);
+        if (!entries) {
+            return [];
+        }
 
-        // Read all files in parallel
-        const commands = await Promise.all(
-            mdFiles.map(async (entry): Promise<SlashCommand | null> => {
+        const commandsByEntry = await Promise.all(
+            entries.map(async (entry): Promise<SlashCommand[]> => {
+                if (entry.name.startsWith('.') || entry.isSymbolicLink()) {
+                    return [];
+                }
+
+                if (entry.isDirectory()) {
+                    if (entry.name.includes(':')) return [];
+                    return scanRecursive(join(currentDir, entry.name), [...segments, entry.name]);
+                }
+
+                if (!entry.isFile() || !entry.name.endsWith('.md')) {
+                    return [];
+                }
+
                 const baseName = entry.name.slice(0, -3);
-                if (!baseName) return null;
+                if (!baseName || baseName.includes(':')) {
+                    return [];
+                }
 
-                // For plugin commands, prefix with plugin name (e.g., "superpowers:brainstorm")
-                const name = pluginName ? `${pluginName}:${baseName}` : baseName;
+                const localName = [...segments, baseName].join(':');
+                const name = pluginName ? `${pluginName}:${localName}` : localName;
+                const fallbackDescription = source === 'plugin' ? `${pluginName ?? 'plugin'} command` : 'Custom command';
 
                 try {
-                    const filePath = join(dir, entry.name);
+                    const filePath = join(currentDir, entry.name);
                     const fileContent = await readFile(filePath, 'utf-8');
                     const parsed = parseFrontmatter(fileContent);
 
-                    return {
+                    return [{
                         name,
-                        description: parsed.description ?? (source === 'plugin' ? `${pluginName} command` : 'Custom command'),
+                        description: parsed.description ?? fallbackDescription,
                         source,
                         content: parsed.content,
                         pluginName,
-                    };
+                    }];
                 } catch {
-                    // Failed to read file, return basic command
-                    return {
+                    return [{
                         name,
-                        description: source === 'plugin' ? `${pluginName} command` : 'Custom command',
+                        description: fallbackDescription,
                         source,
                         pluginName,
-                    };
+                    }];
                 }
             })
         );
 
-        // Filter nulls and sort alphabetically
-        return commands
-            .filter((cmd): cmd is SlashCommand => cmd !== null)
-            .sort((a, b) => a.name.localeCompare(b.name));
-    } catch {
-        // Directory doesn't exist or not accessible - return empty array
-        return [];
+        return commandsByEntry.flat();
     }
+
+    const commands = await scanRecursive(dir, []);
+    return commands.sort((a, b) => a.name.localeCompare(b.name));
 }
 
 /**
