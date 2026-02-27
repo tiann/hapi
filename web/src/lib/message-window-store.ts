@@ -1,7 +1,7 @@
 import type { ApiClient } from '@/api/client'
 import type { DecryptedMessage, MessageStatus } from '@/types/api'
 import { normalizeDecryptedMessage } from '@/chat/normalize'
-import { mergeMessages } from '@/lib/messages'
+import { isUserMessage, mergeMessages } from '@/lib/messages'
 
 export type MessageWindowState = {
     sessionId: string
@@ -395,14 +395,29 @@ export function ingestIncomingMessages(sessionId: string, incoming: DecryptedMes
             const pending = filterPendingAgainstVisible(prev.pending, trimmed)
             return buildState(prev, { messages: trimmed, pending })
         }
-        const pendingResult = mergeIntoPending(prev, incoming)
-        return buildState(prev, {
-            pending: pendingResult.pending,
-            pendingVisibleCount: pendingResult.pendingVisibleCount,
-            pendingOverflowCount: pendingResult.pendingOverflowCount,
-            pendingOverflowVisibleCount: pendingResult.pendingOverflowVisibleCount,
-            warning: pendingResult.warning,
-        })
+        // 不在底部时：agent 消息立即显示，user 消息才放入 pending
+        // 原因：用户必须看到 AI 回复才能继续交互，pending 机制会导致回复滞后
+        const agentMessages = incoming.filter(msg => !isUserMessage(msg))
+        const userMessages = incoming.filter(msg => isUserMessage(msg))
+
+        let state = prev
+        if (agentMessages.length > 0) {
+            const merged = mergeMessages(state.messages, agentMessages)
+            const trimmed = trimVisible(merged, 'append')
+            const pending = filterPendingAgainstVisible(state.pending, trimmed)
+            state = buildState(state, { messages: trimmed, pending })
+        }
+        if (userMessages.length > 0) {
+            const pendingResult = mergeIntoPending(state, userMessages)
+            state = buildState(state, {
+                pending: pendingResult.pending,
+                pendingVisibleCount: pendingResult.pendingVisibleCount,
+                pendingOverflowCount: pendingResult.pendingOverflowCount,
+                pendingOverflowVisibleCount: pendingResult.pendingOverflowVisibleCount,
+                warning: pendingResult.warning,
+            })
+        }
+        return state
     })
 }
 
