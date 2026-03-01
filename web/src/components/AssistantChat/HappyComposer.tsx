@@ -22,6 +22,7 @@ import { usePlatform } from '@/hooks/usePlatform'
 import { usePWAInstall } from '@/hooks/usePWAInstall'
 import { isCodexFamilyFlavor } from '@/lib/agentFlavorUtils'
 import { markSkillUsed } from '@/lib/recent-skills'
+import { getDraft, saveDraft, clearDraft } from '@/lib/composer-drafts'
 import { FloatingOverlay } from '@/components/ChatInput/FloatingOverlay'
 import { Autocomplete } from '@/components/ChatInput/Autocomplete'
 import { StatusBar } from '@/components/AssistantChat/StatusBar'
@@ -37,6 +38,7 @@ export interface TextInputState {
 const defaultSuggestionHandler = async (): Promise<Suggestion[]> => []
 
 export function HappyComposer(props: {
+    sessionId?: string
     disabled?: boolean
     permissionMode?: PermissionMode
     modelMode?: ModelMode
@@ -61,6 +63,7 @@ export function HappyComposer(props: {
 }) {
     const { t } = useTranslation()
     const {
+        sessionId,
         disabled = false,
         permissionMode: rawPermissionMode,
         modelMode: rawModelMode,
@@ -130,6 +133,30 @@ export function HappyComposer(props: {
             return { text: composerText, selection: { start: newPos, end: newPos } }
         })
     }, [composerText])
+
+    // --- Composer draft persistence across session switches ---
+    const prevDraftSessionRef = useRef<string | undefined>(undefined)
+
+    // Save draft on every text change (skip when we just switched sessions)
+    useEffect(() => {
+        if (!sessionId) return
+        if (prevDraftSessionRef.current !== sessionId) return // skip save during switch
+        saveDraft(sessionId, composerText)
+    }, [sessionId, composerText])
+
+    // Restore draft when session changes
+    useEffect(() => {
+        if (prevDraftSessionRef.current === sessionId) return
+        prevDraftSessionRef.current = sessionId
+        if (!sessionId) return
+        const draft = getDraft(sessionId)
+        if (draft) {
+            // Wait a tick for the new runtime to be ready
+            requestAnimationFrame(() => {
+                api.composer().setText(draft)
+            })
+        }
+    }, [sessionId, api])
 
     // Track one-time "continue" hint after switching from local to remote.
     useEffect(() => {
@@ -380,8 +407,11 @@ export function HappyComposer(props: {
             event.preventDefault()
             return
         }
+        if (sessionId) {
+            clearDraft(sessionId)
+        }
         setShowContinueHint(false)
-    }, [attachmentsReady])
+    }, [attachmentsReady, sessionId])
 
     const handlePermissionChange = useCallback((mode: PermissionMode) => {
         if (!onPermissionModeChange || controlsDisabled) return
