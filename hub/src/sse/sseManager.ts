@@ -5,6 +5,7 @@ import type { VisibilityTracker } from '../visibility/visibilityTracker'
 export type SSESubscription = {
     id: string
     namespace: string
+    userId: number | null
     all: boolean
     sessionId: string | null
     machineId: string | null
@@ -29,6 +30,7 @@ export class SSEManager {
     subscribe(options: {
         id: string
         namespace: string
+        userId?: number | null
         all?: boolean
         sessionId?: string | null
         machineId?: string | null
@@ -39,6 +41,7 @@ export class SSEManager {
         const subscription: SSEConnection = {
             id: options.id,
             namespace: options.namespace,
+            userId: options.userId ?? null,
             all: Boolean(options.all),
             sessionId: options.sessionId ?? null,
             machineId: options.machineId ?? null,
@@ -56,6 +59,7 @@ export class SSEManager {
         return {
             id: subscription.id,
             namespace: subscription.namespace,
+            userId: subscription.userId,
             all: subscription.all,
             sessionId: subscription.sessionId,
             machineId: subscription.machineId
@@ -161,6 +165,10 @@ export class SSEManager {
 
         if (event.type === 'connection-changed') {
             return true
+        }
+
+        if (event.type === 'session-sort-preference-updated') {
+            return connection.userId === null || connection.userId === event.data.userId
         }
 
         if (connection.all) {

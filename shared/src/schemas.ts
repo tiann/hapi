@@ -3,6 +3,25 @@ import { MODEL_MODES, PERMISSION_MODES } from './modes'
 
 export const PermissionModeSchema = z.enum(PERMISSION_MODES)
 export const ModelModeSchema = z.enum(MODEL_MODES)
+export const SessionSortModeSchema = z.enum(['auto', 'manual'])
+
+export type SessionSortMode = z.infer<typeof SessionSortModeSchema>
+
+export const SessionManualOrderSchema = z.object({
+    groupOrder: z.array(z.string().max(256)).max(500),
+    sessionOrder: z.record(z.string().max(256), z.array(z.string().max(128)).max(200))
+}).strict()
+
+export type SessionManualOrder = z.infer<typeof SessionManualOrderSchema>
+
+export const SessionSortPreferenceSchema = z.object({
+    sortMode: SessionSortModeSchema,
+    manualOrder: SessionManualOrderSchema,
+    version: z.number().int().positive(),
+    updatedAt: z.number().int().nonnegative()
+}).strict()
+
+export type SessionSortPreference = z.infer<typeof SessionSortPreferenceSchema>
 
 const MetadataSummarySchema = z.object({
     text: z.string(),
@@ -193,6 +212,13 @@ export const SyncEventSchema = z.discriminatedUnion('type', [
             status: z.string(),
             subscriptionId: z.string().optional()
         }).optional()
+    }),
+    SessionEventBaseSchema.extend({
+        type: z.literal('session-sort-preference-updated'),
+        data: z.object({
+            userId: z.number().int().nonnegative(),
+            version: z.number().int().positive()
+        })
     })
 ])
 

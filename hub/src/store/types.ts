@@ -1,3 +1,5 @@
+import type { SessionManualOrder, SessionSortMode } from '@hapi/protocol/types'
+
 export type StoredSession = {
     id: string
     tag: string | null
@@ -55,6 +57,21 @@ export type StoredPushSubscription = {
     auth: string
     createdAt: number
 }
+
+export type StoredSessionSortPreference = {
+    userId: number
+    namespace: string
+    sortMode: SessionSortMode
+    manualOrder: SessionManualOrder
+    version: number
+    createdAt: number
+    updatedAt: number
+}
+
+export type SessionSortPreferenceUpdateResult =
+    | { result: 'success'; preference: StoredSessionSortPreference }
+    | { result: 'version-mismatch'; preference: StoredSessionSortPreference }
+    | { result: 'error' }
 
 export type VersionedUpdateResult<T> =
     | { result: 'success'; version: number; value: T }

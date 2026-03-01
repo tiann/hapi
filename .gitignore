@@ -28,6 +28,7 @@ coverage/
 
 # OS / IDE
 **/.DS_Store
+**/._*
 .idea/
 .vscode/
 **/*.swp
@@ -37,6 +38,9 @@ coverage/
 .claude/settings.local.json
 localdocs/
 execplan/
+docs/plans/
+docs/LOCAL_FORK_WORKFLOW.md
+docs/GAIUS_THEME.md
 
 # Generated npm bundle output (local)
 cli/npm/main/

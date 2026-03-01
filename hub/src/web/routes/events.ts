@@ -77,10 +77,13 @@ export function createEventsRoutes(
             }
         }
 
+        const userId = c.get('userId')
+
         return streamSSE(c, async (stream) => {
             manager.subscribe({
                 id: subscriptionId,
                 namespace,
+                userId,
                 all,
                 sessionId: resolvedSessionId,
                 machineId,

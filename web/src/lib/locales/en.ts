@@ -41,6 +41,8 @@ export default {
   // Sessions page
   'sessions.count': '{n} sessions in {m} projects',
   'sessions.new': 'New Session',
+  'sessions.sort.auto': 'Sort: automatic',
+  'sessions.sort.manual': 'Sort: manual',
 
   // Session list
   'session.item.path': 'path',
@@ -64,6 +66,11 @@ export default {
   'session.action.archive': 'Archive',
   'session.action.delete': 'Delete',
   'session.action.copy': 'Copy',
+  'session.action.moveUp': 'Move Up',
+  'session.action.moveDown': 'Move Down',
+  'group.more': 'Group actions',
+  'group.action.moveUp': 'Move Up',
+  'group.action.moveDown': 'Move Down',
 
   // Dialogs
   'dialog.rename.title': 'Rename Session',
