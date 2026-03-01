@@ -120,6 +120,7 @@ The hub can be deployed on:
 
 - **Local desktop** (default) - Run on your development machine
 - **Remote host** - Deploy the hub on a VPS, cloud host, or any machine with network access
+- **Zeabur** - One-click deployment with automatic SSL and domain
 
 ### Default: Public Relay (recommended)
 
@@ -136,6 +137,33 @@ The terminal displays a URL and QR code. Scan to access from anywhere.
 - Works behind NAT, firewalls, and any network
 
 > **Tip:** The relay uses UDP by default. If you experience connectivity issues, set `HAPI_RELAY_FORCE_TCP=true` to force TCP mode.
+
+### Zeabur (One-Click Deploy)
+
+[Zeabur](https://zeabur.com) provides one-click deployment with automatic SSL certificates and a free domain.
+
+**Deploy steps:**
+
+1. Click [One-Click Deploy](https://zeabur.com/templates/7L445I) to create the service
+2. Configure the required environment variables:
+   - `PUBLIC_DOMAIN` - Your desired domain (a free `zeabur.app` domain is provided)
+   - `TELEGRAM_BOT_TOKEN` - Optional, for Telegram bot integration
+3. Zeabur automatically handles SSL certificates and service startup
+4. Copy the generated API key from the deployment output
+
+**Connect to your Zeabur hub:**
+
+```bash
+export HAPI_API_URL="https://your-domain.zeabur.app"
+export CLI_API_TOKEN="your-token"
+hapi
+```
+
+**Telegram integration (optional):**
+
+If you configured a Telegram bot token, message `/start` to your bot to control sessions from Telegram.
+
+---
 
 ### Local Only
 
