@@ -109,6 +109,8 @@ function TelegramIcon(props: { className?: string }) {
     )
 }
 
+type SessionFilter = 'active' | 'all'
+
 function SessionsPage() {
     const { api } = useAppContext()
     const navigate = useNavigate()
@@ -116,9 +118,24 @@ function SessionsPage() {
     const matchRoute = useMatchRoute()
     const { t } = useTranslation()
     const { sessions, isLoading, error, refetch } = useSessions(api)
+    const [filter, setFilter] = useState<SessionFilter>('active')
 
     // Telegram config state
     const [telegramConfig, setTelegramConfig] = useState<{ enabled: boolean } | null>(null)
+
+    // Show Telegram status in sessions list (from localStorage)
+    const [showTelegramStatus, setShowTelegramStatus] = useState<boolean>(() => {
+        return localStorage.getItem('hapi-show-telegram-status') === 'true'
+    })
+
+    // Listen for storage changes
+    useEffect(() => {
+        const handleStorageChange = () => {
+            setShowTelegramStatus(localStorage.getItem('hapi-show-telegram-status') === 'true')
+        }
+        window.addEventListener('storage', handleStorageChange)
+        return () => window.removeEventListener('storage', handleStorageChange)
+    }, [])
 
     useEffect(() => {
         if (!api) return
@@ -136,7 +153,6 @@ function SessionsPage() {
         void refetch()
     }, [refetch])
 
-    const projectCount = new Set(sessions.map(s => s.metadata?.worktree?.basePath ?? s.metadata?.path ?? 'Other')).size
     const sessionMatch = matchRoute({ to: '/sessions/$sessionId', fuzzy: true })
     const selectedSessionId = sessionMatch && sessionMatch.sessionId !== 'new' ? sessionMatch.sessionId : null
     const isSessionsIndex = pathname === '/sessions' || pathname === '/sessions/'
@@ -149,10 +165,26 @@ function SessionsPage() {
                 <div className="bg-[var(--app-bg)] pt-[env(safe-area-inset-top)]">
                     <div className="mx-auto w-full max-w-content flex items-center justify-between px-3 py-2">
                         <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-1 text-xs text-[var(--app-hint)]">
+                                <button
+                                    type="button"
+                                    onClick={() => setFilter('active')}
+                                    className={`px-2 py-1 rounded-full transition-colors ${filter === 'active' ? 'bg-[var(--app-link)] text-white' : 'hover:bg-[var(--app-subtle-bg)]'}`}
+                                >
+                                    {t('sessions.filter.active')}
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => setFilter('all')}
+                                    className={`px-2 py-1 rounded-full transition-colors ${filter === 'all' ? 'bg-[var(--app-link)] text-white' : 'hover:bg-[var(--app-subtle-bg)]'}`}
+                                >
+                                    {t('sessions.filter.all')}
+                                </button>
+                            </div>
                             <span className="text-xs text-[var(--app-hint)]">
-                                {t('sessions.count', { n: sessions.length, m: projectCount })}
+                                ({filter === 'active' ? sessions.filter(s => s.active).length : sessions.length})
                             </span>
-                            {telegramConfig?.enabled && (
+                            {showTelegramStatus && telegramConfig?.enabled && (
                                 <span
                                     className="flex items-center gap-1 text-xs text-green-600"
                                     title={t('settings.telegram.enabled')}
@@ -201,6 +233,8 @@ function SessionsPage() {
                         isLoading={isLoading}
                         renderHeader={false}
                         api={api}
+                        filter={filter}
+                        onFilterChange={setFilter}
                     />
                 </div>
             </div>

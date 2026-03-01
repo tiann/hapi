@@ -119,6 +119,11 @@ export default function SettingsPage() {
         const stored = localStorage.getItem('hapi-web-notifications')
         return stored === null ? true : stored === 'true'
     })
+    // Show Telegram status in sessions list
+    const [showTelegramStatus, setShowTelegramStatus] = useState<boolean>(() => {
+        const stored = localStorage.getItem('hapi-show-telegram-status')
+        return stored === 'true'
+    })
     // Load Telegram config
     const loadTelegramConfig = useCallback(async () => {
         try {
@@ -213,6 +218,11 @@ export default function SettingsPage() {
     const handleWebNotificationsChange = (enabled: boolean) => {
         setWebNotifications(enabled)
         localStorage.setItem('hapi-web-notifications', enabled ? 'true' : 'false')
+    }
+
+    const handleShowTelegramStatusChange = (enabled: boolean) => {
+        setShowTelegramStatus(enabled)
+        localStorage.setItem('hapi-show-telegram-status', enabled ? 'true' : 'false')
     }
 
     // Close dropdown when clicking outside
@@ -482,6 +492,20 @@ export default function SettingsPage() {
                                         <span className={`w-2 h-2 rounded-full ${telegramConfig.enabled ? 'bg-green-500' : 'bg-gray-400'}`} />
                                         {telegramConfig.enabled ? t('settings.telegram.enabled') : t('settings.telegram.disabled')}
                                     </span>
+                                </div>
+
+                                {/* Show Telegram status in sessions list */}
+                                <div className="flex items-center justify-between mb-3">
+                                    <span className="text-[var(--app-fg)]">{t('settings.telegram.showInSessions')}</span>
+                                    <button
+                                        type="button"
+                                        onClick={() => handleShowTelegramStatusChange(!showTelegramStatus)}
+                                        className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${showTelegramStatus ? 'bg-[var(--app-link)]' : 'bg-gray-300'}`}
+                                    >
+                                        <span
+                                            className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${showTelegramStatus ? 'translate-x-6' : 'translate-x-1'}`}
+                                        />
+                                    </button>
                                 </div>
 
                                 {/* Token source info */}

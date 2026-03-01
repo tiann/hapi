@@ -343,7 +343,7 @@ function AppInner() {
 
     return (
         <AppContextProvider value={{ api, token, baseUrl }}>
-            <VoiceProvider>
+            <VoiceProvider api={api}>
                 <SyncingBanner isSyncing={isSyncing} />
                 <ReconnectingBanner
                     isReconnecting={sseDisconnected && !isSyncing}

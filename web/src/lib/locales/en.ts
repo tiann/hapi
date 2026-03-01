@@ -260,6 +260,7 @@ export default {
   'settings.voice.autoDetect': 'Auto-detect',
   'settings.telegram.title': 'Telegram',
   'settings.telegram.status': 'Status',
+  'settings.telegram.showInSessions': 'Show status in sessions list',
   'settings.telegram.enabled': 'Enabled',
   'settings.telegram.disabled': 'Disabled',
   'settings.telegram.botToken': 'Bot Token',
@@ -301,4 +302,5 @@ export default {
   'misc.permissionRequired': 'permission required',
   'misc.percentLeft': '{percent}% left',
   'misc.online': 'online',
+  'misc.agentWorking': 'Agent is working... Your message will be sent after the current task completes.',
 } as const

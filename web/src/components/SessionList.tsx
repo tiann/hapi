@@ -322,10 +322,14 @@ export function SessionList(props: {
     renderHeader?: boolean
     api: ApiClient | null
     selectedSessionId?: string | null
+    filter?: SessionFilter
+    onFilterChange?: (filter: SessionFilter) => void
 }) {
     const { t } = useTranslation()
-    const { renderHeader = true, api, selectedSessionId } = props
-    const [filter, setFilter] = useState<SessionFilter>('active')
+    const { renderHeader = true, api, selectedSessionId, filter: externalFilter, onFilterChange } = props
+    const [internalFilter, setInternalFilter] = useState<SessionFilter>('active')
+    const filter = externalFilter ?? internalFilter
+    const setFilter = onFilterChange ?? setInternalFilter
     const filteredSessions = useMemo(
         () => filter === 'active' ? props.sessions.filter(s => s.active) : props.sessions,
         [props.sessions, filter]

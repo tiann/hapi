@@ -262,6 +262,7 @@ export default {
   'settings.voice.autoDetect': '自动检测',
   'settings.telegram.title': 'Telegram',
   'settings.telegram.status': '状态',
+  'settings.telegram.showInSessions': '在会话列表显示状态',
   'settings.telegram.enabled': '已启用',
   'settings.telegram.disabled': '未启用',
   'settings.telegram.botToken': '机器人 Token',
@@ -303,4 +304,5 @@ export default {
   'misc.permissionRequired': '需要权限',
   'misc.percentLeft': '剩余 {percent}%',
   'misc.online': '在线',
+  'misc.agentWorking': 'Agent 正在工作中... 当前任务完成后将发送您的消息。',
 } as const
