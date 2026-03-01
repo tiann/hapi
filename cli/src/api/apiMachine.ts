@@ -125,9 +125,9 @@ export class ApiMachineClient {
                 case 'success':
                     return { type: 'success', sessionId: result.sessionId }
                 case 'requestToApproveDirectoryCreation':
-                    return { type: 'requestToApproveDirectoryCreation', directory: result.directory }
+                    return { type: 'error', errorMessage: `Directory '${result.directory}' does not exist and needs approval to be created` }
                 case 'error':
-                    throw new Error(result.errorMessage)
+                    return { type: 'error', errorMessage: result.errorMessage }
             }
         })
 

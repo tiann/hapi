@@ -324,14 +324,14 @@ export function SessionChat(props: {
                         autocompleteSuggestions={props.autocompleteSuggestions}
                         voiceStatus={voice?.status}
                         voiceMicMuted={voice?.micMuted}
-                        onVoiceToggle={voice ? handleVoiceToggle : undefined}
-                        onVoiceMicToggle={voice ? handleVoiceMicToggle : undefined}
+                        onVoiceToggle={voice?.isVoiceAllowed ? handleVoiceToggle : undefined}
+                        onVoiceMicToggle={voice?.isVoiceAllowed ? handleVoiceMicToggle : undefined}
                     />
                 </div>
             </AssistantRuntimeProvider>
 
             {/* Voice session component - renders nothing but initializes ElevenLabs */}
-            {voice && (
+            {voice?.isVoiceAllowed && (
                 <RealtimeVoiceSession
                     api={props.api}
                     micMuted={voice.micMuted}
