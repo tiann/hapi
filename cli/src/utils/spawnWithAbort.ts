@@ -51,7 +51,8 @@ export async function spawnWithAbort(options: SpawnWithAbortOptions): Promise<vo
             stdio,
             cwd: options.cwd,
             env: options.env,
-            shell: options.shell
+            shell: options.shell,
+            windowsHide: true
         });
 
         let abortKillTimeout: NodeJS.Timeout | null = null;

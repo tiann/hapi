@@ -30,7 +30,8 @@ export function run(args: string[], options?: RipgrepOptions): Promise<RipgrepRe
         const child = spawn(binaryPath, args, {
             stdio: ['pipe', 'pipe', 'pipe'],
             cwd: options?.cwd,
-            env: withBunRuntimeEnv()
+            env: withBunRuntimeEnv(),
+            windowsHide: true
         });
 
         let stdout = '';
