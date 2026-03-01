@@ -21,7 +21,8 @@ export type ClaudeExecutable = {
 
 /** Shorthand for constructing a node-based ClaudeExecutable from a JS entry script. */
 function nodeExecutable(entryScript: string): ClaudeExecutable {
-    return { command: process.execPath, prependArgs: [entryScript] }
+    const nodeCommand = process.env.NODE ?? 'node'
+    return { command: nodeCommand, prependArgs: [entryScript] }
 }
 
 /**

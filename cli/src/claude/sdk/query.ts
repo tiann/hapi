@@ -349,7 +349,8 @@ export function query(config: {
         stdio: ['pipe', 'pipe', 'pipe'],
         signal: config.options?.abort,
         env: spawnEnv,
-        shell: false
+        shell: false,
+        windowsHide: true
     }) as ChildProcessWithoutNullStreams
 
     // Handle stdin
