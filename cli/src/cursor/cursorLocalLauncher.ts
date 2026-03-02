@@ -18,6 +18,9 @@ function permissionModeToCursorArgs(mode?: string): { mode?: 'plan' | 'ask'; yol
 
 export async function cursorLocalLauncher(session: CursorSession): Promise<'switch' | 'exit'> {
     const resumeChatId = session.sessionId;
+    if (resumeChatId) {
+        session.onSessionFound(resumeChatId);
+    }
     const { mode, yolo } = permissionModeToCursorArgs(session.getPermissionMode() as string);
 
     const launcher = new BaseLocalLauncher({
@@ -35,7 +38,8 @@ export async function cursorLocalLauncher(session: CursorSession): Promise<'swit
                 cursorArgs: session.cursorArgs,
                 model: session.model,
                 mode,
-                yolo
+                yolo,
+                onChatFound: (chatId) => session.onSessionFound(chatId)
             });
         },
         sendFailureMessage: (message) => {

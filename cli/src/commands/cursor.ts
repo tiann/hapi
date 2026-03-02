@@ -36,7 +36,6 @@ export const cursorCommand: CommandDefinition = {
                     options.startedBy = commandArgs[++i] as 'runner' | 'terminal'
                 } else if (arg === '--yolo' || arg === '--force') {
                     options.permissionMode = 'yolo'
-                    unknownArgs.push(arg)
                 } else if (arg === '--mode') {
                     const mode = commandArgs[++i]
                     if (!mode) {
@@ -45,22 +44,18 @@ export const cursorCommand: CommandDefinition = {
                     if (mode === 'plan' || mode === 'ask') {
                         options.permissionMode = mode
                     }
-                    unknownArgs.push('--mode', mode)
                 } else if (arg === '--plan') {
                     options.permissionMode = 'plan'
-                    unknownArgs.push(arg)
                 } else if (arg === '--model') {
                     const model = commandArgs[++i]
                     if (!model) {
                         throw new Error('Missing --model value')
                     }
                     options.model = model
-                    unknownArgs.push('--model', model)
                 } else if (arg === '--resume') {
                     const chatId = commandArgs[i + 1]
                     if (chatId && !chatId.startsWith('-')) {
                         options.resumeSessionId = chatId
-                        unknownArgs.push('--resume', chatId)
                         i += 1
                     } else {
                         unknownArgs.push(arg)
@@ -72,7 +67,6 @@ export const cursorCommand: CommandDefinition = {
                     if (value !== 'local' && value !== 'remote') {
                         throw new Error('Invalid --hapi-starting-mode (expected local or remote)')
                     }
-                    // consume only; do not forward to cursorArgs
                     continue
                 } else {
                     unknownArgs.push(arg)
