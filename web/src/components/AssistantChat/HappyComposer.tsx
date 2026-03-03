@@ -136,6 +136,7 @@ export function HappyComposer(props: {
 
     // --- Composer draft persistence across session switches ---
     const prevDraftSessionRef = useRef<string | undefined>(undefined)
+    const restoreDraftFrameRef = useRef<number | null>(null)
 
     // Save draft on every text change (skip when we just switched sessions)
     useEffect(() => {
@@ -144,18 +145,38 @@ export function HappyComposer(props: {
         saveDraft(sessionId, composerText)
     }, [sessionId, composerText])
 
+    useEffect(() => {
+        return () => {
+            if (restoreDraftFrameRef.current === null) return
+            cancelAnimationFrame(restoreDraftFrameRef.current)
+            restoreDraftFrameRef.current = null
+        }
+    }, [])
+
     // Restore draft when session changes
     useEffect(() => {
         if (prevDraftSessionRef.current === sessionId) return
-        prevDraftSessionRef.current = sessionId
-        if (!sessionId) return
-        const draft = getDraft(sessionId)
-        if (draft) {
-            // Wait a tick for the new runtime to be ready
-            requestAnimationFrame(() => {
-                api.composer().setText(draft)
-            })
+
+        if (restoreDraftFrameRef.current !== null) {
+            cancelAnimationFrame(restoreDraftFrameRef.current)
+            restoreDraftFrameRef.current = null
         }
+
+        prevDraftSessionRef.current = sessionId
+        if (!sessionId) {
+            api.composer().setText('')
+            return
+        }
+
+        const draft = getDraft(sessionId)
+        const restoreSessionId = sessionId
+
+        // Wait a tick for the new runtime to be ready
+        restoreDraftFrameRef.current = requestAnimationFrame(() => {
+            restoreDraftFrameRef.current = null
+            if (prevDraftSessionRef.current !== restoreSessionId) return
+            api.composer().setText(draft)
+        })
     }, [sessionId, api])
 
     // Track one-time "continue" hint after switching from local to remote.
