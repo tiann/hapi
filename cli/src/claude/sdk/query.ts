@@ -22,7 +22,7 @@ import {
     type PermissionResult,
     AbortError
 } from './types'
-import { getDefaultClaudeCodePath, logDebug, streamToStdin } from './utils'
+import { getClaudeCodeExecutable, resolveClaudeExecutable, logDebug, streamToStdin } from './utils'
 import { withBunRuntimeEnv } from '@/utils/bunRuntime'
 import { killProcessByChildProcess } from '@/utils/process'
 import { stripNewlinesForWindowsShellArg } from '@/utils/shellEscape'
@@ -269,7 +269,7 @@ export function query(config: {
             disallowedTools = [],
             maxTurns,
             mcpServers,
-            pathToClaudeCodeExecutable = getDefaultClaudeCodePath(),
+            pathToClaudeCodeExecutable,
             permissionMode = 'default',
             continue: continueConversation,
             resume,
@@ -323,33 +323,34 @@ export function query(config: {
         args.push('--input-format', 'stream-json')
     }
 
-    // Determine how to spawn Claude Code
-    // - If it's just 'claude' command → spawn('claude', args) with shell on Windows
-    // - If it's a full path to binary or script → spawn(path, args)
-    const isCommandOnly = pathToClaudeCodeExecutable === 'claude'
-    
-    // Validate executable path (skip for command-only mode)
-    if (!isCommandOnly && !existsSync(pathToClaudeCodeExecutable)) {
-        throw new ReferenceError(`Claude Code executable not found at ${pathToClaudeCodeExecutable}. Is options.pathToClaudeCodeExecutable set?`)
+    // Resolve the Claude executable
+    // If user provided a path, resolve it (handles .cmd → node + entry script)
+    // Otherwise use getClaudeCodeExecutable() which searches known locations
+    const claude = pathToClaudeCodeExecutable
+        ? resolveClaudeExecutable(pathToClaudeCodeExecutable)
+        : getClaudeCodeExecutable()
+
+    // Validate executable path (skip for command-only like 'claude')
+    const isCommandOnly = claude.command === 'claude'
+    if (!isCommandOnly && !existsSync(claude.command)) {
+        throw new ReferenceError(`Claude Code executable not found at ${claude.command}. Is options.pathToClaudeCodeExecutable set?`)
     }
 
-    const spawnCommand = pathToClaudeCodeExecutable
-    const spawnArgs = args
+    const spawnArgs = [...claude.prependArgs, ...args]
 
     cleanupMcpConfig = appendMcpConfigArg(spawnArgs, mcpServers)
 
     // Spawn Claude Code process
     const spawnEnv = withBunRuntimeEnv(process.env, { allowBunBeBun: false })
-    logDebug(`Spawning Claude Code process: ${spawnCommand} ${spawnArgs.join(' ')}`)
+    logDebug(`Spawning Claude Code process: ${claude.command} ${spawnArgs.join(' ')}`)
 
-    const child = spawn(spawnCommand, spawnArgs, {
+    const child = spawn(claude.command, spawnArgs, {
         cwd,
         stdio: ['pipe', 'pipe', 'pipe'],
         signal: config.options?.abort,
         env: spawnEnv,
-        // Use shell: false with absolute path from getDefaultClaudeCodePath()
-        // This avoids cmd.exe resolution issues on Windows
-        shell: false
+        shell: false,
+        windowsHide: true
     }) as ChildProcessWithoutNullStreams
 
     // Handle stdin

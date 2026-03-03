@@ -105,5 +105,8 @@ export function spawnHappyCLI(args: string[], options: SpawnOptions = {}): Child
     }
   }
   
-  return spawn(spawnCommand, spawnArgs, options);
+  return spawn(spawnCommand, spawnArgs, {
+    ...options,
+    windowsHide: true
+  });
 }
