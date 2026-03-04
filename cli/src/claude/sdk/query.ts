@@ -349,7 +349,9 @@ export function query(config: {
         env: spawnEnv,
         // Use shell: false with absolute path from getDefaultClaudeCodePath()
         // This avoids cmd.exe resolution issues on Windows
-        shell: false
+        shell: false,
+        // Hide transient console windows on Windows when spawning Claude Code
+        windowsHide: process.platform === 'win32'
     }) as ChildProcessWithoutNullStreams
 
     // Handle stdin

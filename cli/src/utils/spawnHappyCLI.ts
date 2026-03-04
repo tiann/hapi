@@ -105,5 +105,11 @@ export function spawnHappyCLI(args: string[], options: SpawnOptions = {}): Child
     }
   }
   
-  return spawn(spawnCommand, spawnArgs, options);
+  // On Windows, detached processes allocate a new console window by default.
+  // windowsHide: true suppresses this to prevent cmd windows from accumulating.
+  const finalOptions: SpawnOptions = { ...options };
+  if (process.platform === 'win32' && options.detached) {
+    finalOptions.windowsHide = true;
+  }
+  return spawn(spawnCommand, spawnArgs, finalOptions);
 }
