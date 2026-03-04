@@ -15,4 +15,5 @@ export const queryKeys = {
     ] as const,
     slashCommands: (sessionId: string) => ['slash-commands', sessionId] as const,
     skills: (sessionId: string) => ['skills', sessionId] as const,
+    sessionSortPreference: ['session-sort-preference'] as const,
 }

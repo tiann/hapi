@@ -1,4 +1,4 @@
-import { useCallback } from 'react'
+import { useCallback, useMemo } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import {
     Navigate,
@@ -12,8 +12,9 @@ import {
     useParams,
 } from '@tanstack/react-router'
 import { App } from '@/App'
+import { SortIcon, PinIcon } from '@/components/icons/SortIcons'
 import { SessionChat } from '@/components/SessionChat'
-import { SessionList } from '@/components/SessionList'
+import { SessionList, groupSessionsByDirectory } from '@/components/SessionList'
 import { NewSession } from '@/components/NewSession'
 import { LoadingState } from '@/components/LoadingState'
 import { useAppContext } from '@/lib/app-context'
@@ -26,10 +27,12 @@ import { useSessions } from '@/hooks/queries/useSessions'
 import { useSlashCommands } from '@/hooks/queries/useSlashCommands'
 import { useSkills } from '@/hooks/queries/useSkills'
 import { useSendMessage } from '@/hooks/mutations/useSendMessage'
+import { useSortToggle } from '@/hooks/useSortToggle'
 import { queryKeys } from '@/lib/query-keys'
 import { useToast } from '@/lib/toast-context'
 import { useTranslation } from '@/lib/use-translation'
 import { fetchLatestMessages, seedMessageWindowFromSession } from '@/lib/message-window-store'
+import type { Machine } from '@/types/api'
 import FilesPage from '@/routes/sessions/files'
 import FilePage from '@/routes/sessions/file'
 import TerminalPage from '@/routes/sessions/terminal'
@@ -94,6 +97,12 @@ function SettingsIcon(props: { className?: string }) {
     )
 }
 
+function getMachineTitle(machine: Machine): string {
+    if (machine.metadata?.displayName) return machine.metadata.displayName
+    if (machine.metadata?.host) return machine.metadata.host
+    return machine.id.slice(0, 8)
+}
+
 function SessionsPage() {
     const { api } = useAppContext()
     const navigate = useNavigate()
@@ -101,12 +110,26 @@ function SessionsPage() {
     const matchRoute = useMatchRoute()
     const { t } = useTranslation()
     const { sessions, isLoading, error, refetch } = useSessions(api)
+    const { machines } = useMachines(api, true)
 
     const handleRefresh = useCallback(() => {
         void refetch()
     }, [refetch])
 
-    const projectCount = new Set(sessions.map(s => s.metadata?.worktree?.basePath ?? s.metadata?.path ?? 'Other')).size
+    const projectCount = new Set(sessions.map(s => {
+        const path = s.metadata?.worktree?.basePath ?? s.metadata?.path ?? 'Other'
+        const machineId = s.metadata?.machineId ?? '__unknown__'
+        return `${machineId}::${path}`
+    })).size
+    const groups = useMemo(() => groupSessionsByDirectory(sessions), [sessions])
+    const { sortMode, isSortPreferencePending, toggleSortMode } = useSortToggle(api, groups)
+    const machineLabelsById = useMemo(() => {
+        const labels: Record<string, string> = {}
+        for (const machine of machines) {
+            labels[machine.id] = getMachineTitle(machine)
+        }
+        return labels
+    }, [machines])
     const sessionMatch = matchRoute({ to: '/sessions/$sessionId', fuzzy: true })
     const selectedSessionId = sessionMatch && sessionMatch.sessionId !== 'new' ? sessionMatch.sessionId : null
     const isSessionsIndex = pathname === '/sessions' || pathname === '/sessions/'
@@ -129,6 +152,18 @@ function SessionsPage() {
                                 title={t('settings.title')}
                             >
                                 <SettingsIcon className="h-5 w-5" />
+                            </button>
+                            <button
+                                type="button"
+                                onClick={toggleSortMode}
+                                className="p-1.5 rounded-full text-[var(--app-hint)] hover:text-[var(--app-link)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                title={t(sortMode === 'auto' ? 'sessions.sort.auto' : 'sessions.sort.manual')}
+                                aria-pressed={sortMode === 'manual'}
+                                disabled={isSortPreferencePending}
+                            >
+                                {sortMode === 'auto'
+                                    ? <SortIcon className="h-4 w-4" />
+                                    : <PinIcon className="h-4 w-4" />}
                             </button>
                             <button
                                 type="button"
@@ -160,6 +195,7 @@ function SessionsPage() {
                         isLoading={isLoading}
                         renderHeader={false}
                         api={api}
+                        machineLabelsById={machineLabelsById}
                     />
                 </div>
             </div>

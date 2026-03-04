@@ -197,6 +197,7 @@ function AppInner() {
             startSync()
         }
         const invalidations = [
+            queryClient.invalidateQueries({ queryKey: queryKeys.sessionSortPreference }),
             queryClient.invalidateQueries({ queryKey: queryKeys.sessions }),
             ...(selectedSessionId ? [
                 queryClient.invalidateQueries({ queryKey: queryKeys.session(selectedSessionId) })

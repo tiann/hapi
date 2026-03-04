@@ -7,7 +7,16 @@
  * - No E2E encryption; data is stored as JSON in SQLite
  */
 
-import type { DecryptedMessage, ModelMode, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
+import type {
+    DecryptedMessage,
+    ModelMode,
+    PermissionMode,
+    Session,
+    SessionManualOrder,
+    SessionSortMode,
+    SessionSortPreference,
+    SyncEvent
+} from '@hapi/protocol/types'
 import type { Server } from 'socket.io'
 import type { Store } from '../store'
 import type { RpcRegistry } from '../socket/rpcRegistry'
@@ -42,7 +51,13 @@ export type ResumeSessionResult =
     | { type: 'success'; sessionId: string }
     | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'no_machine_online' | 'resume_unavailable' | 'resume_failed' }
 
+export type SetSessionSortPreferenceResult =
+    | { result: 'success'; preference: SessionSortPreference }
+    | { result: 'version-mismatch'; preference: SessionSortPreference }
+    | { result: 'error' }
+
 export class SyncEngine {
+    private readonly store: Store
     private readonly eventPublisher: EventPublisher
     private readonly sessionCache: SessionCache
     private readonly machineCache: MachineCache
@@ -56,6 +71,7 @@ export class SyncEngine {
         rpcRegistry: RpcRegistry,
         sseManager: SSEManager
     ) {
+        this.store = store
         this.eventPublisher = new EventPublisher(sseManager, (event) => this.resolveNamespace(event))
         this.sessionCache = new SessionCache(store, this.eventPublisher)
         this.machineCache = new MachineCache(store, this.eventPublisher)
@@ -95,6 +111,63 @@ export class SyncEngine {
 
     getSessionsByNamespace(namespace: string): Session[] {
         return this.sessionCache.getSessionsByNamespace(namespace)
+    }
+
+    getSessionSortPreference(userId: number, namespace: string): SessionSortPreference {
+        const preference = this.store.sessionSortPreferences.getByUser(userId, namespace)
+        return {
+            sortMode: preference.sortMode,
+            manualOrder: preference.manualOrder,
+            version: preference.version,
+            updatedAt: preference.updatedAt
+        }
+    }
+
+    setSessionSortPreference(
+        userId: number,
+        namespace: string,
+        input: {
+            sortMode: SessionSortMode
+            manualOrder: SessionManualOrder
+            expectedVersion?: number
+        }
+    ): SetSessionSortPreferenceResult {
+        const result = this.store.sessionSortPreferences.upsertByUser(
+            userId,
+            namespace,
+            {
+                sortMode: input.sortMode,
+                manualOrder: input.manualOrder
+            },
+            input.expectedVersion
+        )
+
+        if (result.result === 'error') {
+            return { result: 'error' }
+        }
+
+        const preference: SessionSortPreference = {
+            sortMode: result.preference.sortMode,
+            manualOrder: result.preference.manualOrder,
+            version: result.preference.version,
+            updatedAt: result.preference.updatedAt
+        }
+
+        if (result.result === 'success') {
+            this.eventPublisher.emit({
+                type: 'session-sort-preference-updated',
+                namespace,
+                data: {
+                    userId,
+                    version: preference.version
+                }
+            })
+        }
+
+        return {
+            result: result.result,
+            preference
+        }
     }
 
     getSession(sessionId: string): Session | undefined {
