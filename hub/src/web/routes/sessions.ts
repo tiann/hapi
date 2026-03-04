@@ -268,12 +268,35 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
 
         const body = await c.req.json().catch(() => null)
+        const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
+
+        if (flavor === 'codex') {
+            const parsed = z.object({
+                model: z.string().min(1),
+                collaborationMode: z.string().min(1).optional().nullable()
+            }).safeParse(body)
+
+            if (!parsed.success) {
+                return c.json({ error: 'Invalid body' }, 400)
+            }
+
+            try {
+                await engine.applySessionConfig(sessionResult.sessionId, {
+                    model: parsed.data.model,
+                    collaborationMode: parsed.data.collaborationMode ?? undefined
+                })
+                return c.json({ ok: true })
+            } catch (error) {
+                const message = error instanceof Error ? error.message : 'Failed to apply codex model config'
+                return c.json({ error: message }, 409)
+            }
+        }
+
         const parsed = modelModeSchema.safeParse(body)
         if (!parsed.success) {
             return c.json({ error: 'Invalid body' }, 400)
         }
 
-        const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
         if (!isModelModeAllowedForFlavor(parsed.data.model, flavor)) {
             return c.json({ error: 'Model mode is only supported for Claude sessions' }, 400)
         }

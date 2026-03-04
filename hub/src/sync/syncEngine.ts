@@ -282,19 +282,31 @@ export class SyncEngine {
         config: {
             permissionMode?: PermissionMode
             modelMode?: ModelMode
+            model?: string
+            collaborationMode?: string
         }
     ): Promise<void> {
         const result = await this.rpcGateway.requestSessionConfig(sessionId, config)
         if (!result || typeof result !== 'object') {
             throw new Error('Invalid response from session config RPC')
         }
-        const obj = result as { applied?: { permissionMode?: Session['permissionMode']; modelMode?: Session['modelMode'] } }
+        const obj = result as {
+            applied?: {
+                permissionMode?: Session['permissionMode']
+                modelMode?: Session['modelMode']
+                model?: string
+                collaborationMode?: string
+            }
+        }
         const applied = obj.applied
         if (!applied || typeof applied !== 'object') {
             throw new Error('Missing applied session config')
         }
 
-        this.sessionCache.applySessionConfig(sessionId, applied)
+        this.sessionCache.applySessionConfig(sessionId, {
+            permissionMode: applied.permissionMode,
+            modelMode: applied.modelMode
+        })
     }
 
     async spawnSession(

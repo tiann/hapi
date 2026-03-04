@@ -313,10 +313,10 @@ export class ApiClient {
         })
     }
 
-    async setModelMode(sessionId: string, model: ModelMode): Promise<void> {
+    async setModelMode(sessionId: string, model: ModelMode | string, collaborationMode?: string): Promise<void> {
         await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/model`, {
             method: 'POST',
-            body: JSON.stringify({ model })
+            body: JSON.stringify({ model, collaborationMode })
         })
     }
 
