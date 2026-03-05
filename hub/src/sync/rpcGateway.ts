@@ -186,12 +186,12 @@ export class RpcGateway {
 
     async listSlashCommands(sessionId: string, agent: string): Promise<{
         success: boolean
-        commands?: Array<{ name: string; description?: string; source: 'builtin' | 'user' }>
+        commands?: Array<{ name: string; description?: string; source: 'builtin' | 'user' | 'plugin' | 'project' }>
         error?: string
     }> {
         return await this.sessionRpc(sessionId, 'listSlashCommands', { agent }) as {
             success: boolean
-            commands?: Array<{ name: string; description?: string; source: 'builtin' | 'user' }>
+            commands?: Array<{ name: string; description?: string; source: 'builtin' | 'user' | 'plugin' | 'project' }>
             error?: string
         }
     }

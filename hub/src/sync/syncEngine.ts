@@ -450,7 +450,7 @@ export class SyncEngine {
 
     async listSlashCommands(sessionId: string, agent: string): Promise<{
         success: boolean
-        commands?: Array<{ name: string; description?: string; source: 'builtin' | 'user' }>
+        commands?: Array<{ name: string; description?: string; source: 'builtin' | 'user' | 'plugin' | 'project' }>
         error?: string
     }> {
         return await this.rpcGateway.listSlashCommands(sessionId, agent)

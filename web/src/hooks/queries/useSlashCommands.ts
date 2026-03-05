@@ -87,7 +87,7 @@ export function useSlashCommands(
         // If API succeeded, add user-defined and plugin commands
         if (query.data?.success && query.data.commands) {
             const extraCommands = query.data.commands.filter(
-                cmd => cmd.source === 'user' || cmd.source === 'plugin'
+                cmd => cmd.source === 'user' || cmd.source === 'plugin' || cmd.source === 'project'
             )
             return [...builtin, ...extraCommands]
         }
