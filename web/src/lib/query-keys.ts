@@ -13,6 +13,6 @@ export const queryKeys = {
         path,
         staged ? 'staged' : 'unstaged'
     ] as const,
-    slashCommands: (sessionId: string) => ['slash-commands', sessionId] as const,
+    slashCommands: (sessionId: string, agentType: string) => ['slash-commands', sessionId, agentType] as const,
     skills: (sessionId: string) => ['skills', sessionId] as const,
 }

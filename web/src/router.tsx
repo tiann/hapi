@@ -268,6 +268,8 @@ function SessionPage() {
     const agentType = session?.metadata?.flavor ?? 'claude'
     const {
         getSuggestions: getSlashSuggestions,
+        refetchCommands,
+        isFetchingCommands: isFetchingSlashCommands,
     } = useSlashCommands(api, sessionId, agentType)
     const {
         getSuggestions: getSkillSuggestions,
@@ -279,6 +281,10 @@ function SessionPage() {
         }
         return await getSlashSuggestions(query)
     }, [getSkillSuggestions, getSlashSuggestions])
+
+    const handleSlashEntry = useCallback(() => {
+        void refetchCommands()
+    }, [refetchCommands])
 
     const refreshSelectedSession = useCallback(() => {
         void refetchSession()
@@ -313,6 +319,8 @@ function SessionPage() {
             onAtBottomChange={setAtBottom}
             onRetryMessage={retryMessage}
             autocompleteSuggestions={getAutocompleteSuggestions}
+            onSlashEntry={handleSlashEntry}
+            isFetchingSlashCommands={isFetchingSlashCommands}
         />
     )
 }

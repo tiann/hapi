@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
-import { useCallback, useMemo } from 'react'
+import { useCallback, useEffect, useMemo, useRef } from 'react'
 import type { ApiClient } from '@/api/client'
-import type { SlashCommand } from '@/types/api'
+import type { SlashCommand, SlashCommandsResponse } from '@/types/api'
 import type { Suggestion } from '@/hooks/useActiveSuggestions'
 import { queryKeys } from '@/lib/query-keys'
 
@@ -53,6 +53,76 @@ const BUILTIN_COMMANDS: Record<string, SlashCommand[]> = {
     opencode: [],
 }
 
+type SlashFetchState = {
+    hasFetchedSuccessfully: boolean
+    lastFetchError: string | null
+    lastEntryRefetchAt: number
+}
+
+const SLASH_ENTRY_COOLDOWN_MS = 4000
+
+function getStateKey(sessionId: string | null, agentType: string): string {
+    return `${sessionId ?? 'unknown'}::${agentType}`
+}
+
+function getOrCreateSlashFetchState(map: Map<string, SlashFetchState>, key: string): SlashFetchState {
+    const existing = map.get(key)
+    if (existing) return existing
+    const created: SlashFetchState = {
+        hasFetchedSuccessfully: false,
+        lastFetchError: null,
+        lastEntryRefetchAt: 0,
+    }
+    map.set(key, created)
+    return created
+}
+
+function extractQueryError(queryError: unknown, queryData: SlashCommandsResponse | undefined): string | null {
+    if (queryError instanceof Error) {
+        return queryError.message
+    }
+    if (queryError) {
+        return 'Failed to load commands'
+    }
+    if (queryData && queryData.success === false) {
+        return queryData.error ?? 'Failed to load commands'
+    }
+    return null
+}
+
+export function mergeSlashCommands(
+    builtin: SlashCommand[],
+    remoteCommands: SlashCommand[] | undefined
+): SlashCommand[] {
+    const merged = [...builtin]
+    const seenNames = new Set(builtin.map((command) => command.name.toLowerCase()))
+
+    for (const command of remoteCommands ?? []) {
+        if (command.source !== 'user' && command.source !== 'plugin' && command.source !== 'project') {
+            continue
+        }
+        const normalizedName = command.name.toLowerCase()
+        if (seenNames.has(normalizedName)) {
+            continue
+        }
+        seenNames.add(normalizedName)
+        merged.push(command)
+    }
+
+    return merged
+}
+
+export function shouldAttemptSlashEntryRefetch(
+    state: SlashFetchState,
+    now: number,
+    cooldownMs: number = SLASH_ENTRY_COOLDOWN_MS
+): boolean {
+    if (!state.hasFetchedSuccessfully || state.lastFetchError !== null) {
+        return true
+    }
+    return now - state.lastEntryRefetchAt >= cooldownMs
+}
+
 export function useSlashCommands(
     api: ApiClient | null,
     sessionId: string | null,
@@ -61,13 +131,18 @@ export function useSlashCommands(
     commands: SlashCommand[]
     isLoading: boolean
     error: string | null
+    isFetchingCommands: boolean
     getSuggestions: (query: string) => Promise<Suggestion[]>
+    refetchCommands: () => Promise<void>
 } {
     const resolvedSessionId = sessionId ?? 'unknown'
+    const stateKey = getStateKey(sessionId, agentType)
+    const stateBySessionRef = useRef<Map<string, SlashFetchState>>(new Map())
+    const inFlightRefetchRef = useRef<Map<string, Promise<void>>>(new Map())
 
     // Fetch user-defined commands from the CLI (requires active session)
     const query = useQuery({
-        queryKey: queryKeys.slashCommands(resolvedSessionId),
+        queryKey: queryKeys.slashCommands(resolvedSessionId, agentType),
         queryFn: async () => {
             if (!api || !sessionId) {
                 throw new Error('Session unavailable')
@@ -80,21 +155,68 @@ export function useSlashCommands(
         retry: false, // Don't retry RPC failures
     })
 
+    useEffect(() => {
+        const state = getOrCreateSlashFetchState(stateBySessionRef.current, stateKey)
+
+        if (query.data?.success) {
+            state.hasFetchedSuccessfully = true
+            state.lastFetchError = null
+            return
+        }
+
+        state.lastFetchError = extractQueryError(query.error, query.data)
+    }, [query.data, query.error, stateKey])
+
     // Merge built-in commands with user-defined and plugin commands from API
     const commands = useMemo(() => {
         const builtin = BUILTIN_COMMANDS[agentType] ?? BUILTIN_COMMANDS['claude'] ?? []
 
-        // If API succeeded, add user-defined and plugin commands
         if (query.data?.success && query.data.commands) {
-            const extraCommands = query.data.commands.filter(
-                cmd => cmd.source === 'user' || cmd.source === 'plugin' || cmd.source === 'project'
-            )
-            return [...builtin, ...extraCommands]
+            return mergeSlashCommands(builtin, query.data.commands)
         }
 
         // Fallback to built-in commands only
         return builtin
     }, [agentType, query.data])
+
+    const refetchCommands = useCallback(async (): Promise<void> => {
+        if (!api || !sessionId) {
+            return
+        }
+
+        const state = getOrCreateSlashFetchState(stateBySessionRef.current, stateKey)
+        const now = Date.now()
+        if (!shouldAttemptSlashEntryRefetch(state, now)) {
+            return
+        }
+
+        const existingInFlight = inFlightRefetchRef.current.get(stateKey)
+        if (existingInFlight) {
+            await existingInFlight
+            return
+        }
+
+        state.lastEntryRefetchAt = now
+
+        const runRefetch = (async () => {
+            try {
+                const result = await query.refetch()
+                if (result.data?.success) {
+                    state.hasFetchedSuccessfully = true
+                    state.lastFetchError = null
+                } else {
+                    state.lastFetchError = extractQueryError(result.error, result.data)
+                }
+            } catch (error) {
+                state.lastFetchError = error instanceof Error ? error.message : 'Failed to load commands'
+            } finally {
+                inFlightRefetchRef.current.delete(stateKey)
+            }
+        })()
+
+        inFlightRefetchRef.current.set(stateKey, runRefetch)
+        await runRefetch
+    }, [api, query, sessionId, stateKey])
 
     const getSuggestions = useCallback(async (queryText: string): Promise<Suggestion[]> => {
         const searchTerm = queryText.startsWith('/')
@@ -141,7 +263,9 @@ export function useSlashCommands(
     return {
         commands,
         isLoading: query.isLoading,
-        error: query.error instanceof Error ? query.error.message : query.error ? 'Failed to load commands' : null,
+        error: extractQueryError(query.error, query.data),
+        isFetchingCommands: query.isFetching,
         getSuggestions,
+        refetchCommands,
     }
 }

@@ -37,6 +37,8 @@ export function SessionChat(props: {
     onAtBottomChange: (atBottom: boolean) => void
     onRetryMessage?: (localId: string) => void
     autocompleteSuggestions?: (query: string) => Promise<Suggestion[]>
+    onSlashEntry?: () => void
+    isFetchingSlashCommands?: boolean
 }) {
     const { haptic } = usePlatform()
     const navigate = useNavigate()
@@ -322,6 +324,8 @@ export function SessionChat(props: {
                         onSwitchToRemote={handleSwitchToRemote}
                         onTerminal={props.session.active ? handleViewTerminal : undefined}
                         autocompleteSuggestions={props.autocompleteSuggestions}
+                        onSlashEntry={props.onSlashEntry}
+                        isFetchingSlashCommands={props.isFetchingSlashCommands}
                         voiceStatus={voice?.status}
                         voiceMicMuted={voice?.micMuted}
                         onVoiceToggle={voice ? handleVoiceToggle : undefined}

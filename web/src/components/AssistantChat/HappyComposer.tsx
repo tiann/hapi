@@ -53,6 +53,8 @@ export function HappyComposer(props: {
     onTerminal?: () => void
     autocompletePrefixes?: string[]
     autocompleteSuggestions?: (query: string) => Promise<Suggestion[]>
+    onSlashEntry?: () => void
+    isFetchingSlashCommands?: boolean
     // Voice assistant props
     voiceStatus?: ConversationStatus
     voiceMicMuted?: boolean
@@ -77,6 +79,8 @@ export function HappyComposer(props: {
         onTerminal,
         autocompletePrefixes = ['@', '/', '$'],
         autocompleteSuggestions = defaultSuggestionHandler,
+        onSlashEntry,
+        isFetchingSlashCommands = false,
         voiceStatus = 'disconnected',
         voiceMicMuted = false,
         onVoiceToggle,
@@ -120,6 +124,8 @@ export function HappyComposer(props: {
 
     const textareaRef = useRef<HTMLTextAreaElement>(null)
     const prevControlledByUser = useRef(controlledByUser)
+    const prevActiveWordRef = useRef<string | null>(null)
+    const prevIsFetchingSlashCommandsRef = useRef(isFetchingSlashCommands)
 
     useEffect(() => {
         setInputState((prev) => {
@@ -147,6 +153,22 @@ export function HappyComposer(props: {
     const isIOSPWA = isIOS && isStandalone
     const bottomPaddingClass = isIOSPWA ? 'pb-0' : 'pb-3'
     const activeWord = useActiveWord(inputState.text, inputState.selection, autocompletePrefixes)
+
+    useEffect(() => {
+        const prevActiveWord = prevActiveWordRef.current
+        const isInSlashContext = activeWord?.startsWith('/') ?? false
+        const enteredSlashContext = isInSlashContext && !(prevActiveWord?.startsWith('/') ?? false)
+        const fetchingSettledInSlashContext = isInSlashContext && prevIsFetchingSlashCommandsRef.current && !isFetchingSlashCommands
+
+        const shouldTriggerSlashCompensation = (enteredSlashContext && !isFetchingSlashCommands) || fetchingSettledInSlashContext
+        if (shouldTriggerSlashCompensation) {
+            onSlashEntry?.()
+        }
+
+        prevActiveWordRef.current = activeWord
+        prevIsFetchingSlashCommandsRef.current = isFetchingSlashCommands
+    }, [activeWord, isFetchingSlashCommands, onSlashEntry])
+
     const [suggestions, selectedIndex, moveUp, moveDown, clearSuggestions] = useActiveSuggestions(
         activeWord,
         autocompleteSuggestions,
