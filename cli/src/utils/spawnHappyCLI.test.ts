@@ -12,6 +12,7 @@ vi.mock('child_process', async () => {
 });
 
 const originalPlatformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+const originalVersionsDescriptor = Object.getOwnPropertyDescriptor(process, 'versions');
 
 function setPlatform(value: string) {
   Object.defineProperty(process, 'platform', {
@@ -20,14 +21,23 @@ function setPlatform(value: string) {
   });
 }
 
-function getSpawnOptionsOrThrow(): SpawnOptions {
+function setVersions(value: Record<string, string | undefined>) {
+  Object.defineProperty(process, 'versions', {
+    value,
+    configurable: true
+  });
+}
+
+function getSpawnCommandArgsOrThrow(): { command: string; args: string[]; options: SpawnOptions } {
   expect(spawnMock).toHaveBeenCalledTimes(1);
   const firstCall = spawnMock.mock.calls[0] as unknown[] | undefined;
+  const command = firstCall?.[0] as string | undefined;
+  const args = firstCall?.[1] as string[] | undefined;
   const options = firstCall?.[2] as SpawnOptions | undefined;
-  if (!options) {
-    throw new Error('Expected spawn options to be passed as third argument');
+  if (!command || !args || !options) {
+    throw new Error('Expected spawn(command, args, options) to be passed');
   }
-  return options;
+  return { command, args, options };
 }
 
 describe('spawnHappyCLI windowsHide behavior', () => {
@@ -56,7 +66,7 @@ describe('spawnHappyCLI windowsHide behavior', () => {
       stdio: 'ignore'
     });
 
-    const options = getSpawnOptionsOrThrow();
+    const { options } = getSpawnCommandArgsOrThrow();
     expect(options.detached).toBe(true);
     expect(options.windowsHide).toBe(true);
   });
@@ -70,7 +80,7 @@ describe('spawnHappyCLI windowsHide behavior', () => {
       stdio: 'ignore'
     });
 
-    const options = getSpawnOptionsOrThrow();
+    const { options } = getSpawnCommandArgsOrThrow();
     expect(options.detached).toBe(false);
     expect('windowsHide' in options).toBe(false);
   });
@@ -84,8 +94,41 @@ describe('spawnHappyCLI windowsHide behavior', () => {
       stdio: 'ignore'
     });
 
-    const options = getSpawnOptionsOrThrow();
+    const { options } = getSpawnCommandArgsOrThrow();
     expect(options.detached).toBe(true);
     expect('windowsHide' in options).toBe(false);
+  });
+});
+
+describe('spawnHappyCLI cwd propagation for bun runtime', () => {
+  beforeAll(() => {
+    if (!originalVersionsDescriptor?.configurable) {
+      throw new Error('process.versions is not configurable in this runtime');
+    }
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterAll(() => {
+    if (originalVersionsDescriptor) {
+      Object.defineProperty(process, 'versions', originalVersionsDescriptor);
+    }
+  });
+
+  it('uses caller provided cwd for bun --cwd when options.cwd is set', async () => {
+    setVersions({ ...process.versions, bun: '1.3.5' });
+    const { spawnHappyCLI } = await import('./spawnHappyCLI');
+
+    spawnHappyCLI(['runner', 'start-sync'], {
+      cwd: '/tmp/session-dir',
+      stdio: 'ignore'
+    });
+
+    const { args } = getSpawnCommandArgsOrThrow();
+    const cwdFlagIndex = args.indexOf('--cwd');
+    expect(cwdFlagIndex).toBeGreaterThanOrEqual(0);
+    expect(args[cwdFlagIndex + 1]).toBe('/tmp/session-dir');
   });
 });

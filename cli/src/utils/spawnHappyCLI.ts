@@ -48,7 +48,7 @@ export interface HappyCliCommand {
   args: string[];
 }
 
-export function getHappyCliCommand(args: string[]): HappyCliCommand {
+export function getHappyCliCommand(args: string[], workingDir?: string): HappyCliCommand {
   // Compiled binary mode: just use the executable directly
   if (isBunCompiled()) {
     return {
@@ -63,11 +63,12 @@ export function getHappyCliCommand(args: string[]): HappyCliCommand {
   const isBunRuntime = Boolean((process.versions as Record<string, string | undefined>).bun);
 
   if (isBunRuntime) {
-    // Bun can run TypeScript directly. Force CLI project root as working directory
-    // so tsconfig path aliases (e.g. @/*) resolve correctly regardless of session cwd.
+    // Bun can run TypeScript directly. Prefer caller-provided cwd for session correctness.
+    // Fall back to project root so tsconfig path aliases still resolve in dev mode.
+    const bunCwd = workingDir ?? projectRoot;
     return {
       command: process.execPath,
-      args: ['--cwd', projectRoot, entrypoint, ...args]
+      args: ['--cwd', bunCwd, entrypoint, ...args]
     };
   }
 
@@ -94,7 +95,8 @@ export function spawnHappyCLI(args: string[], options: SpawnOptions = {}): Child
   const fullCommand = `hapi ${args.join(' ')}`;
   logger.debug(`[SPAWN HAPI CLI] Spawning: ${fullCommand} in ${directory}`);
   
-  const { command: spawnCommand, args: spawnArgs } = getHappyCliCommand(args);
+  const desiredCwd = typeof options.cwd === 'string' ? options.cwd : undefined;
+  const { command: spawnCommand, args: spawnArgs } = getHappyCliCommand(args, desiredCwd);
 
   // Sanity check that the entrypoint path exists
   if (!isBunCompiled()) {
