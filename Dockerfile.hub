@@ -1,0 +1,27 @@
+# syntax=docker/dockerfile:1.7
+
+FROM oven/bun:1.3.5
+
+WORKDIR /app
+
+# Install workspace dependencies first for better caching
+COPY package.json bun.lock ./
+COPY cli/package.json ./cli/package.json
+COPY hub/package.json ./hub/package.json
+COPY shared/package.json ./shared/package.json
+COPY web/package.json ./web/package.json
+COPY docs/package.json ./docs/package.json
+COPY website/package.json ./website/package.json
+
+RUN bun install --frozen-lockfile
+
+COPY . .
+
+EXPOSE 3006
+
+ENV HAPI_LISTEN_HOST=0.0.0.0
+ENV HAPI_LISTEN_PORT=3006
+ENV HAPI_HOME=/data/hapi
+
+# Run hub directly from source (same as local dev behavior)
+CMD ["bun", "run", "--cwd", "hub", "src/index.ts"]
