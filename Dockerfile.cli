@@ -1,0 +1,29 @@
+# syntax=docker/dockerfile:1.7
+
+FROM oven/bun:1.3.5
+
+WORKDIR /app
+
+# Install workspace dependencies first for better caching
+COPY package.json bun.lock ./
+COPY cli/package.json ./cli/package.json
+COPY hub/package.json ./hub/package.json
+COPY shared/package.json ./shared/package.json
+COPY web/package.json ./web/package.json
+COPY docs/package.json ./docs/package.json
+COPY website/package.json ./website/package.json
+
+RUN bun install --frozen-lockfile
+
+COPY . .
+
+# Claude Code binary required by hapi CLI runtime
+RUN bun add -g @anthropic-ai/claude-code \
+    && ln -sf /root/.bun/bin/claude /usr/local/bin/claude
+
+ENV HAPI_HOME=/data/hapi
+ENV HAPI_API_URL=http://hub:3006
+ENV HAPI_CLAUDE_PATH=/usr/local/bin/claude
+
+# Foreground runner mode for containerized long-running service
+CMD ["bun", "run", "--cwd", "cli", "src/index.ts", "runner", "start-sync"]

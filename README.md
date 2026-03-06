@@ -32,6 +32,38 @@ The terminal will display a URL and QR code. Scan the QR code with your phone or
 
 For self-hosted options (Cloudflare Tunnel, Tailscale), see [Installation](docs/guide/installation.md)
 
+## Docker (Hub + CLI)
+
+Use Docker to run hub and CLI as separate services.
+
+```bash
+cp .env.example .env
+# Set CLI_API_TOKEN and CLAUDE_CONFIG_DIR in .env first
+
+docker compose up -d hub cli-runner
+```
+
+### Configuration
+
+- `CLI_API_TOKEN`: shared secret used by both hub and CLI
+- `HAPI_API_URL`: hub URL for CLI (`http://hub:3006` inside compose network)
+- `CLAUDE_CONFIG_DIR`: required host absolute path mounted into container for Claude Code auth/session config
+
+### CLI modes
+
+- Default service: `cli-runner` (runs `hapi runner start-sync` in foreground)
+- Optional interactive mode:
+
+```bash
+docker compose --profile interactive run --rm cli
+```
+
+You can also override the command, for example:
+
+```bash
+docker compose --profile interactive run --rm cli --help
+```
+
 ## Docs
 
 - [App](docs/guide/pwa.md)

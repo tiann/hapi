@@ -1,0 +1,25 @@
+# Keep Docker build context small
+.git
+.gitignore
+.github
+.trellis
+
+# Dependency caches
+node_modules
+**/node_modules
+
+# Build/test artifacts
+**/dist
+**/dist-exe
+**/coverage
+**/.vite
+**/.cache
+
+# Runtime leftovers
+**/*.log
+**/.DS_Store
+.hapi
+
+# Local env files
+**/.env
+**/.env.*

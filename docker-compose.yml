@@ -1,0 +1,68 @@
+services:
+  hub:
+    build:
+      context: .
+      dockerfile: Dockerfile.hub
+    image: hapi-hub:local
+    env_file:
+      - .env
+    environment:
+      HAPI_HOME: /data/hapi
+      HAPI_LISTEN_HOST: 0.0.0.0
+      HAPI_LISTEN_PORT: ${HAPI_LISTEN_PORT:-3006}
+      HAPI_PUBLIC_URL: ${HAPI_PUBLIC_URL:-http://localhost:3006}
+      CLI_API_TOKEN: ${CLI_API_TOKEN}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_NOTIFICATION: ${TELEGRAM_NOTIFICATION:-true}
+    ports:
+      - "${HAPI_LISTEN_PORT:-3006}:3006"
+    volumes:
+      - hub-data:/data/hapi
+    restart: unless-stopped
+
+  cli-runner:
+    build:
+      context: .
+      dockerfile: Dockerfile.cli
+    image: hapi-cli:local
+    env_file:
+      - .env
+    environment:
+      HAPI_HOME: /data/hapi
+      HAPI_API_URL: ${HAPI_API_URL:-http://hub:3006}
+      CLI_API_TOKEN: ${CLI_API_TOKEN}
+      HAPI_CLAUDE_PATH: ${HAPI_CLAUDE_PATH:-/usr/local/bin/claude}
+    volumes:
+      - cli-data:/data/hapi
+      - ${CLAUDE_CONFIG_DIR:?set CLAUDE_CONFIG_DIR}:/root/.claude
+    depends_on:
+      - hub
+    restart: unless-stopped
+
+  cli:
+    build:
+      context: .
+      dockerfile: Dockerfile.cli
+    image: hapi-cli:local
+    profiles:
+      - interactive
+    env_file:
+      - .env
+    environment:
+      HAPI_HOME: /data/hapi
+      HAPI_API_URL: ${HAPI_API_URL:-http://hub:3006}
+      CLI_API_TOKEN: ${CLI_API_TOKEN}
+      HAPI_CLAUDE_PATH: ${HAPI_CLAUDE_PATH:-/usr/local/bin/claude}
+    volumes:
+      - cli-data:/data/hapi
+      - ${CLAUDE_CONFIG_DIR:?set CLAUDE_CONFIG_DIR}:/root/.claude
+    depends_on:
+      - hub
+    entrypoint: ["bun", "run", "--cwd", "cli", "src/index.ts"]
+    command: ["--help"]
+    stdin_open: true
+    tty: true
+
+volumes:
+  hub-data:
+  cli-data:
