@@ -433,6 +433,90 @@ git checkout -b pr/fix-docker
 
 ---
 
+## Scenario: Independent Development Mode (Origin-only Mainline)
+
+### 1. Scope / Trigger
+- Trigger: Team decides to stop tracking upstream and move to fully independent development on fork remote only.
+- Why code-spec depth is required:
+  - Remote topology (`origin`/`upstream`) and branch tracking are executable workflow contracts.
+  - Wrong migration sequence can leave rebase/merge half-state and block pull/push.
+  - Requires explicit safety and recovery rules for conflict resolution during mainline transition.
+
+### 2. Signatures
+- Long-lived branch signature:
+  - `main` = independent product mainline (tracks `origin/main` only)
+- Optional product branch signature:
+  - `product/main` may exist as staging/integration branch, then merged into `main`
+- Remote signatures:
+  - `origin` = canonical remote after transition
+  - `upstream` = removed in independent mode
+- Transition command signatures:
+  - `git branch -u origin/main main`
+  - `git remote remove upstream`
+
+### 3. Contracts
+- Canonical remote contract:
+  - After transition, release/feature sync operations MUST use `origin/*` only.
+- Mainline tracking contract:
+  - `main` MUST track `origin/main`; detached or no-upstream state must be fixed before routine pull/push.
+- Transition sequencing contract:
+  - If `product/main` is source of truth, merge/rebase into `main` first, then update tracking/remotes.
+- Conflict recovery contract:
+  - If merge/rebase pauses with conflicts, resolve and complete (`rebase --continue` / merge commit) before any `pull`.
+- Safety contract:
+  - Before topology changes, create `backup/safety-*` anchor for current `main` tip.
+
+### 4. Validation & Error Matrix
+- `pull --rebase` while unresolved conflicts exist -> git blocks with unmerged files; resolve then continue/abort rebase.
+- `branch --unset-upstream` on branch without upstream -> non-fatal; skip and set desired upstream directly.
+- Attempting `remote remove upstream` when already removed -> non-fatal no-op; keep `origin` intact.
+- `main` ahead/behind `origin/main` after transition -> run `pull --rebase origin main`, then push.
+- Mixed commits (infra + unrelated web) during transition -> split into topic commits before merge to keep history readable.
+
+### 5. Good/Base/Bad Cases
+- Good:
+  - `main` tracks `origin/main`, no `upstream` remote, transition commit history is conflict-resolved and pushable.
+- Base:
+  - `upstream` already absent, but `main` upstream tracking still unset; set to `origin/main` and continue.
+- Bad:
+  - Topology switched mid-rebase without finishing conflict resolution; subsequent pull/push commands fail repeatedly.
+
+### 6. Tests Required (with assertion points)
+- Topology assertions:
+  - `git remote -v` returns only `origin` in independent mode.
+  - `git branch -vv` shows `main` tracking `origin/main`.
+- Workflow assertions:
+  - `git pull --rebase origin main` succeeds (or reports up to date).
+  - `git push origin main` succeeds after transition.
+- Conflict-handling assertions:
+  - During paused rebase, `git status` must clearly show unmerged paths; after resolution, status must clear conflict markers.
+
+### 7. Wrong vs Correct
+#### Wrong
+```bash
+# pull while rebase conflict is unresolved
+git pull --rebase origin main
+# remove upstream first without ensuring main tracking/pending conflict state
+```
+
+#### Correct
+```bash
+# 1) resolve paused rebase/merge first
+git status
+git add <resolved-files>
+git rebase --continue
+
+# 2) set independent tracking
+git branch -u origin/main main
+git remote remove upstream
+
+# 3) sync and publish
+git pull --rebase origin main
+git push origin main
+```
+
+---
+
 ## Scenario: Automated Clean PR Delivery Loop (Branch Governor + PR Autopilot)
 
 ### 1. Scope / Trigger

@@ -112,6 +112,20 @@ Reference executable contract:
 
 ---
 
+## Independent Mainline Migration Checklist
+
+When switching from upstream-collaboration mode to independent development mode:
+- [ ] Is `main` merged/rebased with intended source branch before changing remote topology?
+- [ ] If rebase/merge paused, did we fully resolve conflicts before running `pull`?
+- [ ] Does `main` explicitly track `origin/main`?
+- [ ] Is `upstream` remote removed (or intentionally retained) with clear policy?
+- [ ] Did we verify end-to-end sync (`pull --rebase origin main` then `push origin main`)?
+
+Reference executable contract:
+- `backend/quality-guidelines.md` -> `Scenario: Independent Development Mode (Origin-only Mainline)`
+
+---
+
 ## Branch Strategy Thinking Checklist
 
 When deciding branch strategy for fork + upstream collaboration:
