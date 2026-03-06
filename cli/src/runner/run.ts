@@ -532,7 +532,7 @@ export async function startRunner(): Promise<void> {
             });
           });
         });
-        if (spawnResult.type !== 'success') {
+        if (spawnResult.type === 'error') {
           reportSpawnOutcomeToHub?.({
             type: 'error',
             details: {
