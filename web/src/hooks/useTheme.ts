@@ -133,6 +133,7 @@ export function useAppearance(): { appearance: AppearancePreference; setAppearan
         const onStorage = (event: StorageEvent) => {
             if (event.key !== APPEARANCE_KEY) return
             setAppearanceState(parseAppearance(event.newValue))
+            updateScheme()
         }
 
         window.addEventListener('storage', onStorage)
