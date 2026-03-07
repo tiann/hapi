@@ -3,24 +3,12 @@ import type { Session } from '@/types/api'
 import type { ApiClient } from '@/api/client'
 import { isTelegramApp } from '@/hooks/useTelegram'
 import { useSessionActions } from '@/hooks/mutations/useSessionActions'
+import { MoreVerticalIcon } from '@/components/SessionIcons'
 import { SessionActionMenu } from '@/components/SessionActionMenu'
 import { RenameSessionDialog } from '@/components/RenameSessionDialog'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
+import { getSessionTitle } from '@/lib/sessionTitle'
 import { useTranslation } from '@/lib/use-translation'
-
-function getSessionTitle(session: Session): string {
-    if (session.metadata?.name) {
-        return session.metadata.name
-    }
-    if (session.metadata?.summary?.text) {
-        return session.metadata.summary.text
-    }
-    if (session.metadata?.path) {
-        const parts = session.metadata.path.split('/').filter(Boolean)
-        return parts.length > 0 ? parts[parts.length - 1] : session.id.slice(0, 8)
-    }
-    return session.id.slice(0, 8)
-}
 
 function FilesIcon(props: { className?: string }) {
     return (
@@ -38,23 +26,6 @@ function FilesIcon(props: { className?: string }) {
         >
             <path d="M14 2H7a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" />
             <path d="M14 2v6h6" />
-        </svg>
-    )
-}
-
-function MoreVerticalIcon(props: { className?: string }) {
-    return (
-        <svg
-            xmlns="http://www.w3.org/2000/svg"
-            width="18"
-            height="18"
-            viewBox="0 0 24 24"
-            fill="currentColor"
-            className={props.className}
-        >
-            <circle cx="12" cy="5" r="2" />
-            <circle cx="12" cy="12" r="2" />
-            <circle cx="12" cy="19" r="2" />
         </svg>
     )
 }
