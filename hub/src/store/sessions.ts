@@ -210,6 +210,7 @@ export function setSessionTeamState(
                 seq = seq + 1
             WHERE id = @id
               AND namespace = @namespace
+              AND (team_state_updated_at IS NULL OR team_state_updated_at < @team_state_updated_at)
         `).run({
             id,
             team_state: json,
