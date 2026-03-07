@@ -196,4 +196,25 @@ export type VisibilityPayload = {
     visibility: 'visible' | 'hidden'
 }
 
+export type TelegramConfigResponse = {
+    enabled: boolean
+    telegramBotToken: string | null
+    telegramNotification: boolean
+    publicUrl: string
+    tokenSource: 'env' | 'file' | 'default'
+    notificationSource: 'env' | 'file' | 'default'
+    urlSource: 'env' | 'file' | 'default'
+}
+
+export type TelegramConfigPayload = {
+    telegramBotToken?: string
+    telegramNotification?: boolean
+    publicUrl?: string
+}
+
+export type TelegramConfigSaveResponse = {
+    success: boolean
+    message: string
+}
+
 export type SyncEvent = ProtocolSyncEvent

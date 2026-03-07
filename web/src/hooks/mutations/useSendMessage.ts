@@ -101,7 +101,9 @@ export function useSendMessage(
             haptic.notification('error')
             return
         }
-        if (mutation.isPending || resolveGuardRef.current) {
+        // Allow sending messages even when agent is processing (messages will be queued)
+        // Only block if we're still resolving session ID to avoid duplicate sends
+        if (resolveGuardRef.current) {
             options?.onBlocked?.('pending')
             return
         }

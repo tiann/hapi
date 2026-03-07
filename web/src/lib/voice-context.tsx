@@ -1,13 +1,17 @@
-import { createContext, useCallback, useContext, useState, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react'
 import type { ConversationStatus, StatusCallback } from '@/realtime/types'
 import { startRealtimeSession, stopRealtimeSession, voiceHooks } from '@/realtime'
 import { getElevenLabsCodeFromPreference } from '@/lib/languages'
+import { fetchVoiceToken } from '@/api/voice'
+import type { ApiClient } from '@/api/client'
 
 interface VoiceContextValue {
     status: ConversationStatus
     errorMessage: string | null
     micMuted: boolean
     currentSessionId: string | null
+    isVoiceAllowed: boolean
+    isCheckingVoice: boolean
     setStatus: (status: ConversationStatus, errorMessage?: string) => void
     setMicMuted: (muted: boolean) => void
     toggleMic: () => void
@@ -17,11 +21,46 @@ interface VoiceContextValue {
 
 const VoiceContext = createContext<VoiceContextValue | null>(null)
 
-export function VoiceProvider({ children }: { children: ReactNode }) {
+export function VoiceProvider({ children, api }: { children: ReactNode; api: ApiClient | null }) {
     const [status, setStatusInternal] = useState<ConversationStatus>('disconnected')
     const [errorMessage, setErrorMessage] = useState<string | null>(null)
     const [micMuted, setMicMuted] = useState(false)
     const [currentSessionId, setCurrentSessionId] = useState<string | null>(null)
+    const [isVoiceAllowed, setIsVoiceAllowed] = useState(false)
+    const [isCheckingVoice, setIsCheckingVoice] = useState(true)
+
+    // Check if voice is allowed on the server
+    useEffect(() => {
+        if (!api) {
+            setIsVoiceAllowed(false)
+            setIsCheckingVoice(false)
+            return
+        }
+
+        let cancelled = false
+        setIsCheckingVoice(true)
+
+        fetchVoiceToken(api)
+            .then((response) => {
+                if (!cancelled) {
+                    setIsVoiceAllowed(response.allowed)
+                }
+            })
+            .catch(() => {
+                if (!cancelled) {
+                    setIsVoiceAllowed(false)
+                }
+            })
+            .finally(() => {
+                if (!cancelled) {
+                    setIsCheckingVoice(false)
+                }
+            })
+
+        return () => {
+            cancelled = true
+        }
+    }, [api])
 
     const setStatus: StatusCallback = useCallback((newStatus, error) => {
         setStatusInternal(newStatus)
@@ -62,6 +101,8 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
                 errorMessage,
                 micMuted,
                 currentSessionId,
+                isVoiceAllowed,
+                isCheckingVoice,
                 setStatus,
                 setMicMuted,
                 toggleMic,

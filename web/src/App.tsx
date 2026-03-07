@@ -114,6 +114,7 @@ function AppInner() {
     }, [goBack, pathname])
     const queryClient = useQueryClient()
     const sessionMatch = matchRoute({ to: '/sessions/$sessionId' })
+    // Filter out "new" as it's not a real session ID (it's the new session creation route)
     const selectedSessionId = sessionMatch && sessionMatch.sessionId !== 'new' ? sessionMatch.sessionId : null
     const { isSyncing, startSync, endSync } = useSyncingState()
     const [sseDisconnected, setSseDisconnected] = useState(false)
@@ -156,6 +157,9 @@ function AppInner() {
             return
         }
         if (isTelegramApp() || !isPushSupported) {
+            return
+        }
+        if (localStorage.getItem('hapi-web-notifications') === 'false') {
             return
         }
         if (pushPromptedRef.current) {
@@ -339,7 +343,7 @@ function AppInner() {
 
     return (
         <AppContextProvider value={{ api, token, baseUrl }}>
-            <VoiceProvider>
+            <VoiceProvider api={api}>
                 <SyncingBanner isSyncing={isSyncing} />
                 <ReconnectingBanner
                     isReconnecting={sseDisconnected && !isSyncing}

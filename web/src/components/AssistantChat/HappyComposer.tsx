@@ -107,7 +107,8 @@ export function HappyComposer(props: {
         const path = (attachment as { path?: string }).path
         return typeof path === 'string' && path.length > 0
     })
-    const canSend = (hasText || hasAttachments) && attachmentsReady && !controlsDisabled && !threadIsRunning
+    // Allow sending messages even when agent is processing (messages will be queued by backend)
+    const canSend = (hasText || hasAttachments) && attachmentsReady && !controlsDisabled
 
     const [inputState, setInputState] = useState<TextInputState>({
         text: '',
@@ -545,6 +546,13 @@ export function HappyComposer(props: {
                         {attachments.length > 0 ? (
                             <div className="flex flex-wrap gap-2 px-4 pt-3">
                                 <ComposerPrimitive.Attachments components={{ Attachment: AttachmentItem }} />
+                            </div>
+                        ) : null}
+
+                        {/* Show hint when agent is processing - messages will be queued */}
+                        {threadIsRunning ? (
+                            <div className="px-4 pt-2 text-xs text-[var(--app-hint)]">
+                                {t('misc.agentWorking')}
                             </div>
                         ) : null}
 
