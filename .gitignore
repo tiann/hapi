@@ -48,3 +48,4 @@ cli/npm/main/
 # Trellis local task workspace
 .trellis/task/
 .trellis/tasks/
+.trellis/tasks/archive/

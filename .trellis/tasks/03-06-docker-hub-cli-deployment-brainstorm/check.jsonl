@@ -1,7 +1,0 @@
-{"file": ".claude/commands/trellis/finish-work.md", "reason": "Finish work checklist"}
-{"file": ".trellis/spec/shared/index.md", "reason": "Shared coding standards"}
-{"file": ".claude/commands/trellis/check-backend.md", "reason": "Backend check spec"}
-{"file": ".claude/commands/trellis/check-frontend.md", "reason": "Frontend check spec"}
-{"file": "README.md", "reason": "Verify root command docs remain aligned"}
-{"file": "cli/README.md", "reason": "Verify CLI configuration and startup consistency"}
-{"file": "hub/README.md", "reason": "Verify hub runtime env variables and security"}
