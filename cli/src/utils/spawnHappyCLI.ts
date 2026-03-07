@@ -40,6 +40,11 @@ function resolveEntrypoint(projectRoot: string): string {
     return srcEntrypoint;
   }
 
+  const bunMain = globalThis.Bun?.main;
+  if (bunMain && existsSync(bunMain)) {
+    return bunMain;
+  }
+
   throw new Error('No CLI entrypoint found (expected src/index.ts)');
 }
 
@@ -98,16 +103,6 @@ export function spawnHappyCLI(args: string[], options: SpawnOptions = {}): Child
   const desiredCwd = typeof options.cwd === 'string' ? options.cwd : undefined;
   const { command: spawnCommand, args: spawnArgs } = getHappyCliCommand(args, desiredCwd);
 
-  // Sanity check that the entrypoint path exists
-  if (!isBunCompiled()) {
-    const entrypoint = spawnArgs.find((arg) => arg.endsWith('index.ts'));
-    if (entrypoint && !existsSync(entrypoint)) {
-      const errorMessage = `Entrypoint ${entrypoint} does not exist`;
-      logger.debug(`[SPAWN HAPI CLI] ${errorMessage}`);
-      throw new Error(errorMessage);
-    }
-  }
-  
   // On Windows, detached processes allocate a new console window by default.
   // windowsHide: true suppresses this to prevent cmd windows from accumulating.
   const finalOptions: SpawnOptions = { ...options };
