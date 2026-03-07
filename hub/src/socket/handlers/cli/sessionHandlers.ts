@@ -5,6 +5,7 @@ import type { ModelMode, PermissionMode } from '@hapi/protocol/types'
 import type { Store, StoredSession } from '../../../store'
 import type { SyncEvent } from '../../../sync/syncEngine'
 import { extractTodoWriteTodosFromMessageContent } from '../../../sync/todos'
+import { extractTeamStateFromMessageContent, applyTeamStateDelta } from '../../../sync/teams'
 import type { CliSocketWithData } from '../../socketTypes'
 import type { AccessErrorReason, AccessResult } from './types'
 
@@ -90,6 +91,17 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         const todos = extractTodoWriteTodosFromMessageContent(content)
         if (todos) {
             const updated = store.sessions.setSessionTodos(sid, todos, msg.createdAt, session.namespace)
+            if (updated) {
+                onWebappEvent?.({ type: 'session-updated', sessionId: sid, data: { sid } })
+            }
+        }
+
+        const teamDelta = extractTeamStateFromMessageContent(content)
+        if (teamDelta) {
+            const existingSession = store.sessions.getSession(sid)
+            const existingTeamState = existingSession?.teamState as import('@hapi/protocol/types').TeamState | null | undefined
+            const newTeamState = applyTeamStateDelta(existingTeamState ?? null, teamDelta)
+            const updated = store.sessions.setSessionTeamState(sid, newTeamState, msg.createdAt, session.namespace)
             if (updated) {
                 onWebappEvent?.({ type: 'session-updated', sessionId: sid, data: { sid } })
             }

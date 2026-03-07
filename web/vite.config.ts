@@ -6,6 +6,7 @@ import { createRequire } from 'node:module'
 
 const require = createRequire(import.meta.url)
 const base = process.env.VITE_BASE_URL || '/'
+const hubTarget = process.env.VITE_HUB_PROXY || 'http://127.0.0.1:3006'
 
 export default defineConfig({
     define: {
@@ -16,11 +17,11 @@ export default defineConfig({
         allowedHosts: ['hapidev.weishu.me'],
         proxy: {
             '/api': {
-                target: 'http://127.0.0.1:3006',
+                target: hubTarget,
                 changeOrigin: true
             },
             '/socket.io': {
-                target: 'http://127.0.0.1:3006',
+                target: hubTarget,
                 ws: true
             }
         }
