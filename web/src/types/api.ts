@@ -14,6 +14,10 @@ export type {
     Session,
     SessionSummary,
     SessionSummaryMetadata,
+    TeamMember,
+    TeamMessage,
+    TeamState,
+    TeamTask,
     TodoItem,
     WorktreeMetadata
 } from '@hapi/protocol/types'
