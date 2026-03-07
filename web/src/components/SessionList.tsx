@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { SessionSummary } from '@/types/api'
 import type { ApiClient } from '@/api/client'
+import { HostBadge } from '@/components/HostBadge'
 import { useLongPress } from '@/hooks/useLongPress'
 import { usePlatform } from '@/hooks/usePlatform'
 import { useSessionActions } from '@/hooks/mutations/useSessionActions'
@@ -372,6 +373,11 @@ function SessionItem(props: {
                     {s.metadata?.worktree?.branch ? (
                         <span>{t('session.item.worktree')}: {s.metadata.worktree.branch}</span>
                     ) : null}
+                    <HostBadge
+                        host={s.metadata?.host}
+                        machineId={s.metadata?.machineId}
+                        sessionId={s.id}
+                    />
                 </div>
             </button>
 

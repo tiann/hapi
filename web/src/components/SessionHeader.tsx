@@ -1,6 +1,7 @@
 import { useId, useMemo, useRef, useState } from 'react'
 import type { Session } from '@/types/api'
 import type { ApiClient } from '@/api/client'
+import { HostBadge } from '@/components/HostBadge'
 import { isTelegramApp } from '@/hooks/useTelegram'
 import { useSessionActions } from '@/hooks/mutations/useSessionActions'
 import { SessionActionMenu } from '@/components/SessionActionMenu'
@@ -144,6 +145,11 @@ export function SessionHeader(props: {
                             {worktreeBranch ? (
                                 <span>{t('session.item.worktree')}: {worktreeBranch}</span>
                             ) : null}
+                            <HostBadge
+                                host={session.metadata?.host}
+                                machineId={session.metadata?.machineId}
+                                sessionId={session.id}
+                            />
                         </div>
                     </div>
 

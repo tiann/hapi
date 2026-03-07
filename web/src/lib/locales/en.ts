@@ -48,6 +48,7 @@ export default {
   'session.item.model': 'model',
   'session.item.modelMode': 'mode',
   'session.item.worktree': 'worktree',
+  'session.item.hostPrefix': 'HOST',
   'session.item.pending': 'pending',
   'session.item.thinking': 'thinking',
   'session.time.justNow': 'just now',
