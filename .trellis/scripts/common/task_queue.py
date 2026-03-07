@@ -86,6 +86,8 @@ def list_tasks_by_status(
             "status": status,
             "assignee": assignee,
             "dir": d.name,
+            "children": data.get("children", []),
+            "parent": data.get("parent"),
         })
 
     return results
@@ -161,6 +163,8 @@ def list_tasks_by_assignee(
             "status": status,
             "assignee": task_assignee,
             "dir": d.name,
+            "children": data.get("children", []),
+            "parent": data.get("parent"),
         })
 
     return results

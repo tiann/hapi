@@ -36,11 +36,12 @@ def _configure_stream(stream: object) -> object:
 if sys.platform == "win32":
     sys.stdout = _configure_stream(sys.stdout)  # type: ignore[assignment]
     sys.stderr = _configure_stream(sys.stderr)  # type: ignore[assignment]
+    sys.stdin = _configure_stream(sys.stdin)  # type: ignore[assignment]
 
 
 def configure_encoding() -> None:
     """
-    Configure stdout/stderr for UTF-8 encoding on Windows.
+    Configure stdout/stderr/stdin for UTF-8 encoding on Windows.
 
     This is automatically called when importing from common,
     but can be called manually for scripts that don't import common.
@@ -51,6 +52,7 @@ def configure_encoding() -> None:
     if sys.platform == "win32":
         sys.stdout = _configure_stream(sys.stdout)  # type: ignore[assignment]
         sys.stderr = _configure_stream(sys.stderr)  # type: ignore[assignment]
+        sys.stdin = _configure_stream(sys.stdin)  # type: ignore[assignment]
 
 
 from .paths import (

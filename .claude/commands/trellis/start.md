@@ -101,7 +101,7 @@ For questions or trivial fixes, work directly:
 For simple, well-defined tasks:
 
 1. Quick confirm: "I understand you want to [goal]. Ready to proceed?"
-2. If yes, skip to **Task Workflow Step 2** (Research)
+2. If yes, proceed to **Task Workflow Phase 1 Path B** (create task, write PRD, then research)
 3. If no, clarify and confirm again
 
 ---
@@ -118,6 +118,10 @@ See `/trellis:brainstorm` for the full process. Summary:
 4. **Propose approaches** - For architectural decisions
 5. **Confirm final requirements** - Get explicit approval
 6. **Proceed to Task Workflow** - With clear requirements in PRD
+
+> **Subtask Decomposition**: If brainstorm reveals multiple independent work items,
+> consider creating subtasks using `--parent` flag or `add-subtask` command.
+> See `/trellis:brainstorm` Step 8 for details.
 
 ### Key Brainstorm Principles
 
@@ -139,90 +143,42 @@ See `/trellis:brainstorm` for the full process. Summary:
 - Check Agent verifies against code-spec requirements
 - Result: Code that follows project conventions automatically
 
-### Step 1: Understand the Task `[AI]`
+### Overview: Two Entry Points
 
-**If coming from Brainstorm:** Skip this step - requirements are already in PRD.
+```
+From Brainstorm (Complex Task):
+  PRD confirmed → Research → Configure Context → Activate → Implement → Check → Complete
 
-**If Simple Task:** Quick confirm understanding:
+From Simple Task:
+  Confirm → Create Task → Write PRD → Research → Configure Context → Activate → Implement → Check → Complete
+```
+
+**Key principle: Research happens AFTER requirements are clear (PRD exists).**
+
+---
+
+### Phase 1: Establish Requirements
+
+#### Path A: From Brainstorm (skip to Phase 2)
+
+PRD and task directory already exist from brainstorm. Skip directly to Phase 2.
+
+#### Path B: From Simple Task
+
+**Step 1: Confirm Understanding** `[AI]`
+
+Quick confirm:
 - What is the goal?
 - What type of development? (frontend / backend / fullstack)
 - Any specific requirements or constraints?
 
-### Step 1.5: Code-Spec Depth Requirement (CRITICAL) `[AI]`
-
-If the task touches infra or cross-layer contracts, do not start implementation until code-spec depth is defined.
-
-Trigger this requirement when the change includes any of:
-- New or changed command/API signatures
-- Database schema or migration changes
-- Infra integrations (storage, queue, cache, secrets, env contracts)
-- Cross-layer payload transformations
-
-Must-have before implementation:
-- [ ] Target code-spec files to update are identified
-- [ ] Concrete contract is defined (signature, fields, env keys)
-- [ ] Validation and error matrix is defined
-- [ ] At least one Good/Base/Bad case is defined
-
-### Step 2: Research the Codebase `[AI]`
-
-Call Research Agent to analyze:
-
-```
-Task(
-  subagent_type: "research",
-  prompt: "Analyze the codebase for this task:
-
-  Task: <user's task description>
-  Type: <frontend/backend/fullstack>
-
-  Please find:
-  1. Relevant code-spec files in .trellis/spec/
-  2. Existing code patterns to follow (find 2-3 examples)
-  3. Files that will likely need modification
-
-  Output:
-  ## Relevant Code-Specs
-  - <path>: <why it's relevant>
-
-  ## Code Patterns Found
-  - <pattern>: <example file path>
-
-  ## Files to Modify
-  - <path>: <what change>
-
-  ## Suggested Task Name
-  - <short-slug-name>",
-  model: "opus"
-)
-```
-
-### Step 3: Create Task Directory `[AI]`
-
-Based on research results:
+**Step 2: Create Task Directory** `[AI]`
 
 ```bash
-TASK_DIR=$(python3 ./.trellis/scripts/task.py create "<title from research>" --slug <suggested-slug>)
+TASK_DIR=$(python3 ./.trellis/scripts/task.py create "<title>" --slug <name>)
 ```
 
-### Step 4: Configure Context `[AI]`
-
-Initialize default context:
-
-```bash
-python3 ./.trellis/scripts/task.py init-context "$TASK_DIR" <type>
-# type: backend | frontend | fullstack
-```
-
-Add code-spec files found by Research Agent:
-
-```bash
-# For each relevant code-spec and code pattern:
-python3 ./.trellis/scripts/task.py add-context "$TASK_DIR" implement "<path>" "<reason>"
-python3 ./.trellis/scripts/task.py add-context "$TASK_DIR" check "<path>" "<reason>"
-```
-
-### Step 5: Write Requirements `[AI]`
+**Step 3: Write PRD** `[AI]`
 
 Create `prd.md` in the task directory with:
 
@@ -244,7 +200,76 @@ Create `prd.md` in the task directory with:
 <Any technical decisions or constraints>
 ```
 
-### Step 6: Activate Task `[AI]`
+---
+
+### Phase 2: Prepare for Implementation (shared)
+
+> Both paths converge here. PRD and task directory must exist before proceeding.
+
+**Step 4: Code-Spec Depth Check** `[AI]`
+
+If the task touches infra or cross-layer contracts, do not start implementation until code-spec depth is defined.
+
+Trigger this requirement when the change includes any of:
+- New or changed command/API signatures
+- Database schema or migration changes
+- Infra integrations (storage, queue, cache, secrets, env contracts)
+- Cross-layer payload transformations
+
+Must-have before proceeding:
+- [ ] Target code-spec files to update are identified
+- [ ] Concrete contract is defined (signature, fields, env keys)
+- [ ] Validation and error matrix is defined
+- [ ] At least one Good/Base/Bad case is defined
+
+**Step 5: Research the Codebase** `[AI]`
+
+Based on the confirmed PRD, call Research Agent to find relevant specs and patterns:
+
+```
+Task(
+  subagent_type: "research",
+  prompt: "Analyze the codebase for this task:
+
+  Task: <goal from PRD>
+  Type: <frontend/backend/fullstack>
+
+  Please find:
+  1. Relevant code-spec files in .trellis/spec/
+  2. Existing code patterns to follow (find 2-3 examples)
+  3. Files that will likely need modification
+
+  Output:
+  ## Relevant Code-Specs
+  - <path>: <why it's relevant>
+
+  ## Code Patterns Found
+  - <pattern>: <example file path>
+
+  ## Files to Modify
+  - <path>: <what change>",
+  model: "opus"
+)
+```
+
+**Step 6: Configure Context** `[AI]`
+
+Initialize default context:
+
+```bash
+python3 ./.trellis/scripts/task.py init-context "$TASK_DIR" <type>
+# type: backend | frontend | fullstack
+```
+
+Add code-spec files found by Research Agent:
+
+```bash
+# For each relevant code-spec and code pattern:
+python3 ./.trellis/scripts/task.py add-context "$TASK_DIR" implement "<path>" "<reason>"
+python3 ./.trellis/scripts/task.py add-context "$TASK_DIR" check "<path>" "<reason>"
+```
+
+**Step 7: Activate Task** `[AI]`
 
 ```bash
 python3 ./.trellis/scripts/task.py start "$TASK_DIR"
@@ -252,7 +277,11 @@ python3 ./.trellis/scripts/task.py start "$TASK_DIR"
 
 This sets `.current-task` so hooks can inject context.
 
-### Step 7: Implement `[AI]`
+---
+
+### Phase 3: Execute (shared)
+
+**Step 8: Implement** `[AI]`
 
 Call Implement Agent (code-spec context is auto-injected by hook):
 
@@ -267,7 +296,7 @@ Task(
 )
 ```
 
-### Step 8: Check Quality `[AI]`
+**Step 9: Check Quality** `[AI]`
 
 Call Check Agent (code-spec context is auto-injected by hook):
 
@@ -282,7 +311,7 @@ Task(
 )
 ```
 
-### Step 9: Complete `[AI]`
+**Step 10: Complete** `[AI]`
 
 1. Verify lint and typecheck pass
 2. Report what was implemented

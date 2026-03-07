@@ -43,7 +43,7 @@ Read relevant specs based on task type:
 
 - Backend: `.trellis/spec/backend/`
 - Frontend: `.trellis/spec/frontend/`
-- Shared: `.trellis/spec/shared/`
+- Guides: `.trellis/spec/guides/`
 
 ### 2. Understand Requirements
 

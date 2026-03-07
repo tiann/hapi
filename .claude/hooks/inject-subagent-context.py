@@ -707,7 +707,7 @@ def main():
 
     tool_name = input_data.get("tool_name", "")
 
-    if tool_name != "Task":
+    if tool_name not in ("Task", "Agent"):
         sys.exit(0)
 
     tool_input = input_data.get("tool_input", {})

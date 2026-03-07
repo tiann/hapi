@@ -124,7 +124,7 @@ def main() -> int:
     parser.add_argument("task_dir", help="Task directory path")
     parser.add_argument(
         "--platform", "-p",
-        choices=["claude", "cursor", "iflow", "opencode"],
+        choices=["claude", "cursor", "iflow", "opencode", "qoder"],
         default=DEFAULT_PLATFORM,
         help="Platform to use (default: claude)"
     )
@@ -361,6 +361,10 @@ def main() -> int:
     env["https_proxy"] = https_proxy
     env["http_proxy"] = http_proxy
     env["all_proxy"] = all_proxy
+
+    # Clear nested-session detection so the new CLI process can start
+    # (when this script runs inside a Claude Code session, CLAUDECODE=1 is inherited)
+    env.pop("CLAUDECODE", None)
 
     # Set non-interactive env var based on platform
     env.update(adapter.get_non_interactive_env())
