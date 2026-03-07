@@ -8,6 +8,7 @@ import {
     getSessionByNamespace,
     getSessions,
     getSessionsByNamespace,
+    setSessionTeamState,
     setSessionTodos,
     updateSessionAgentState,
     updateSessionMetadata
@@ -45,6 +46,10 @@ export class SessionStore {
 
     setSessionTodos(id: string, todos: unknown, todosUpdatedAt: number, namespace: string): boolean {
         return setSessionTodos(this.db, id, todos, todosUpdatedAt, namespace)
+    }
+
+    setSessionTeamState(id: string, teamState: unknown, updatedAt: number, namespace: string): boolean {
+        return setSessionTeamState(this.db, id, teamState, updatedAt, namespace)
     }
 
     getSession(id: string): StoredSession | null {
