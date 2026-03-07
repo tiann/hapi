@@ -67,10 +67,65 @@ function processTaskToolWithTeam(input: Record<string, unknown>): TeamStateDelta
     if (!teamName || !name) return null
 
     const agentType = typeof input.subagent_type === 'string' ? input.subagent_type : undefined
+    const description = typeof input.description === 'string' ? input.description : null
+
+    const delta: TeamStateDelta = {
+        _action: 'update',
+        members: [{ name, agentType, status: 'active' }],
+        updatedAt: Date.now()
+    }
+
+    // Also track the spawned agent's work as a task
+    if (description) {
+        delta.tasks = [{
+            id: `agent:${name}`,
+            title: description,
+            status: 'in_progress',
+            owner: name
+        }]
+    }
+
+    return delta
+}
+
+function processTaskCreate(input: Record<string, unknown>): TeamStateDelta | null {
+    const id = typeof input.task_id === 'string' ? input.task_id
+        : typeof input.id === 'string' ? input.id
+        : null
+    const title = typeof input.title === 'string' ? input.title
+        : typeof input.content === 'string' ? input.content
+        : null
+    if (!id || !title) return null
+
+    const description = typeof input.description === 'string' ? input.description : undefined
+    const status = typeof input.status === 'string' ? input.status as 'pending' | 'in_progress' | 'completed' | 'blocked' : 'pending'
+    const owner = typeof input.owner === 'string' ? input.owner : undefined
 
     return {
         _action: 'update',
-        members: [{ name, agentType, status: 'active' }],
+        tasks: [{ id, title, description, status, owner }],
+        updatedAt: Date.now()
+    }
+}
+
+function processTaskUpdate(input: Record<string, unknown>): TeamStateDelta | null {
+    const id = typeof input.task_id === 'string' ? input.task_id
+        : typeof input.id === 'string' ? input.id
+        : null
+    if (!id) return null
+
+    const task: Record<string, unknown> = { id }
+    if (typeof input.title === 'string') task.title = input.title
+    if (typeof input.status === 'string') task.status = input.status
+    if (typeof input.owner === 'string') task.owner = input.owner
+    if (typeof input.description === 'string') task.description = input.description
+
+    // Must have at least one field besides id
+    if (Object.keys(task).length <= 1) return null
+
+    return {
+        _action: 'update',
+        tasks: [task as { id: string; title: string; status?: 'pending' | 'in_progress' | 'completed' | 'blocked'; owner?: string }],
         updatedAt: Date.now()
     }
 }
@@ -131,6 +186,12 @@ export function extractTeamStateFromMessageContent(messageContent: unknown): Tea
                 break
             case 'Task':
                 delta = processTaskToolWithTeam(block.input)
+                break
+            case 'TaskCreate':
+                delta = processTaskCreate(block.input)
+                break
+            case 'TaskUpdate':
+                delta = processTaskUpdate(block.input)
                 break
             case 'SendMessage':
                 delta = processSendMessage(block.input)
