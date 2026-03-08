@@ -1,6 +1,6 @@
 {
   "name": "@jlovec/hapi",
-  "version": "0.2.1",
+  "version": "0.2.3",
   "description": "App for agentic coding - access coding agent anywhere",
   "author": "Kirill Dubovitskiy & weishu",
   "license": "AGPL-3.0-only",
@@ -26,11 +26,11 @@
     }
   },
   "optionalDependencies": {
-    "@jlovec/hapi-darwin-arm64": "0.2.1",
-    "@jlovec/hapi-darwin-x64": "0.2.1",
-    "@jlovec/hapi-linux-arm64": "0.2.1",
-    "@jlovec/hapi-linux-x64": "0.2.1",
-    "@jlovec/hapi-win32-x64": "0.2.1"
+    "@jlovec/hapi-darwin-arm64": "0.2.3",
+    "@jlovec/hapi-darwin-x64": "0.2.3",
+    "@jlovec/hapi-linux-arm64": "0.2.3",
+    "@jlovec/hapi-linux-x64": "0.2.3",
+    "@jlovec/hapi-win32-x64": "0.2.3"
   },
   "scripts": {
     "postinstall": "node -e \"try{require('fs').chmodSync(require('path').join(__dirname,'bin','hapi.cjs'),0o755)}catch(e){}\"",
