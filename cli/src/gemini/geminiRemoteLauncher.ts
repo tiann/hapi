@@ -1,4 +1,5 @@
 import React from 'react';
+import { randomUUID } from 'node:crypto';
 import { logger } from '@/ui/logger';
 import { buildHapiMcpBridge } from '@/codex/utils/buildHapiMcpBridge';
 import { convertAgentMessage } from '@/agent/messageConverter';
@@ -197,8 +198,10 @@ class GeminiRemoteLauncher extends RemoteLauncherBase {
         logger.debug(`[gemini-remote] Replaying ${messages.length} historical messages from ${transcriptPath}`);
         for (const message of messages) {
             if (message.type === 'user' && typeof message.content === 'string') {
+                this.session.sendUserMessage(message.content);
                 this.messageBuffer.addMessage(message.content, 'user');
             } else if (message.type === 'gemini' && typeof message.content === 'string') {
+                this.session.sendCodexMessage({ type: 'message', message: message.content, id: randomUUID() });
                 this.messageBuffer.addMessage(message.content, 'assistant');
             }
         }
