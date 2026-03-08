@@ -208,10 +208,13 @@ class GeminiRemoteLauncher extends RemoteLauncherBase {
         const messages = transcript?.messages ?? [];
         logger.debug(`[gemini-remote] Replaying ${messages.length} historical messages from ${transcriptPath}`);
         for (const message of messages) {
-            if (message.type === 'user' && typeof message.content === 'string') {
-                this.session.sendUserMessage(message.content);
-                this.messageBuffer.addMessage(message.content, 'user');
-            } else if (message.type === 'gemini' && typeof message.content === 'string') {
+            if (message.type === 'user') {
+                const text = extractMessageText(message.content);
+                if (text) {
+                    this.session.sendUserMessage(text);
+                    this.messageBuffer.addMessage(text, 'user');
+                }
+            } else if (message.type === 'gemini' && typeof message.content === 'string' && message.content) {
                 this.session.sendCodexMessage({ type: 'message', message: message.content, id: randomUUID() });
                 this.messageBuffer.addMessage(message.content, 'assistant');
             }
@@ -253,6 +256,20 @@ class GeminiRemoteLauncher extends RemoteLauncherBase {
     private async handleSwitchRequest(): Promise<void> {
         await this.requestExit('switch', () => this.handleAbort());
     }
+}
+
+/** Extracts plain text from a gemini transcript message content field.
+ * User messages store content as Array<{text: string}>, gemini messages as a plain string.
+ */
+function extractMessageText(content: string | Array<{ text?: string }> | undefined): string | null {
+    if (typeof content === 'string') {
+        return content || null;
+    }
+    if (Array.isArray(content)) {
+        const parts = content.map(p => p.text ?? '').join('');
+        return parts || null;
+    }
+    return null;
 }
 
 function toAcpMcpServers(config: Record<string, { command: string; args: string[] }>): McpServerStdio[] {

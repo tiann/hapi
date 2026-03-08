@@ -12,7 +12,7 @@ import {
 type GeminiTranscriptMessage = {
     id?: string;
     type?: string;
-    content?: string;
+    content?: string | Array<{ text?: string }>;
     [key: string]: unknown;
 };
 
