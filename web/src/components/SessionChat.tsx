@@ -13,6 +13,7 @@ import { HappyThread } from '@/components/AssistantChat/HappyThread'
 import { useHappyRuntime } from '@/lib/assistant-runtime'
 import { createAttachmentAdapter } from '@/lib/attachmentAdapter'
 import { SessionHeader } from '@/components/SessionHeader'
+import { TeamPanel } from '@/components/TeamPanel'
 import { usePlatform } from '@/hooks/usePlatform'
 import { useSessionActions } from '@/hooks/mutations/useSessionActions'
 import { useGitStatusFiles } from '@/hooks/queries/useGitStatusFiles'
@@ -294,6 +295,10 @@ export function SessionChat(props: {
                 gitLoading={gitLoading && !gitStatusForHeader}
                 gitError={Boolean(gitError) && !gitStatusForHeader}
             />
+
+            {props.session.teamState && (
+                <TeamPanel teamState={props.session.teamState} />
+            )}
 
             {sessionInactive ? (
                 <div className="px-3 pt-3">
