@@ -139,7 +139,8 @@ export class AcpSdkBackend implements AgentBackend {
     async prompt(
         sessionId: string,
         content: PromptContent[],
-        onUpdate: (msg: AgentMessage) => void
+        onUpdate: (msg: AgentMessage) => void,
+        signal?: AbortSignal
     ): Promise<void> {
         if (!this.transport) {
             throw new Error('ACP transport not initialized');
@@ -167,7 +168,7 @@ export class AcpSdkBackend implements AgentBackend {
             const response = await this.transport.sendRequest('session/prompt', {
                 sessionId,
                 prompt: content
-            }, { timeoutMs: Infinity });
+            }, { timeoutMs: Infinity, signal });
 
             stopReason = isObject(response) ? asString(response.stopReason) : null;
         } finally {

@@ -129,7 +129,7 @@ class GeminiRemoteLauncher extends RemoteLauncherBase {
             try {
                 await backend.prompt(acpSessionId, promptContent, (message: AgentMessage) => {
                     this.handleAgentMessage(message);
-                });
+                }, this.abortController.signal);
             } catch (error) {
                 logger.warn('[gemini-remote] prompt failed', error);
                 session.sendSessionEvent({

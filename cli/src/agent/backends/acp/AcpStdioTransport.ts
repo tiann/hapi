@@ -101,7 +101,7 @@ export class AcpStdioTransport {
     /** Default timeout for requests in milliseconds (2 minutes) */
     static readonly DEFAULT_TIMEOUT_MS = 120_000;
 
-    async sendRequest(method: string, params?: unknown, options?: { timeoutMs?: number }): Promise<unknown> {
+    async sendRequest(method: string, params?: unknown, options?: { timeoutMs?: number; signal?: AbortSignal }): Promise<unknown> {
         const id = this.nextId++;
         const payload: JsonRpcRequest = {
             jsonrpc: '2.0',
@@ -111,32 +111,45 @@ export class AcpStdioTransport {
         };
 
         const timeoutMs = options?.timeoutMs ?? AcpStdioTransport.DEFAULT_TIMEOUT_MS;
-
-        // Skip timeout for infinite/no-timeout requests (e.g., long-running prompts)
-        if (!Number.isFinite(timeoutMs)) {
-            return new Promise<unknown>((resolve, reject) => {
-                this.pending.set(id, { resolve, reject });
-                this.writePayload(payload);
-            });
-        }
+        const signal = options?.signal;
 
         return new Promise<unknown>((resolve, reject) => {
-            const timer = setTimeout(() => {
-                if (this.pending.has(id)) {
-                    this.pending.delete(id);
+            const cleanup = () => {
+                this.pending.delete(id);
+                clearTimeout(timer);
+                signal?.removeEventListener('abort', onAbort);
+            };
+
+            const onAbort = () => {
+                cleanup();
+                reject(new DOMException('ACP request aborted', 'AbortError'));
+            };
+
+            const timer = Number.isFinite(timeoutMs)
+                ? setTimeout(() => {
+                    cleanup();
                     reject(new Error(`ACP request '${method}' timed out after ${timeoutMs}ms`));
-                }
-            }, timeoutMs);
-            // Don't let timer keep Node alive if process wants to exit
-            timer.unref();
+                }, timeoutMs as number)
+                : null;
+
+            if (timer !== null) {
+                (timer as unknown as { unref?: () => void }).unref?.();
+            }
+
+            if (signal?.aborted) {
+                reject(new DOMException('ACP request aborted', 'AbortError'));
+                return;
+            }
+
+            signal?.addEventListener('abort', onAbort, { once: true });
 
             this.pending.set(id, {
                 resolve: (value) => {
-                    clearTimeout(timer);
+                    cleanup();
                     resolve(value);
                 },
                 reject: (error) => {
-                    clearTimeout(timer);
+                    cleanup();
                     reject(error);
                 }
             });
