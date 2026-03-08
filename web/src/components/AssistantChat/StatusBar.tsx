@@ -2,7 +2,6 @@ import { getPermissionModeLabel, getPermissionModeTone, isPermissionModeAllowedF
 import type { PermissionModeTone } from '@hapi/protocol'
 import { useMemo } from 'react'
 import type { AgentState, ModelMode, PermissionMode } from '@/types/api'
-import type { ConversationStatus } from '@/realtime/types'
 import { getContextBudgetTokens } from '@/chat/modelConfig'
 import { useTranslation } from '@/lib/use-translation'
 
@@ -36,20 +35,9 @@ function getConnectionStatus(
     active: boolean,
     thinking: boolean,
     agentState: AgentState | null | undefined,
-    voiceStatus: ConversationStatus | undefined,
     t: (key: string) => string
 ): { text: string; color: string; dotColor: string; isPulsing: boolean } {
     const hasPermissions = agentState?.requests && Object.keys(agentState.requests).length > 0
-
-    // Voice connecting takes priority
-    if (voiceStatus === 'connecting') {
-        return {
-            text: t('voice.connecting'),
-            color: 'text-[#007AFF]',
-            dotColor: 'bg-[#007AFF]',
-            isPulsing: true
-        }
-    }
 
     if (!active) {
         return {
@@ -109,12 +97,11 @@ export function StatusBar(props: {
     modelMode?: ModelMode
     permissionMode?: PermissionMode
     agentFlavor?: string | null
-    voiceStatus?: ConversationStatus
 }) {
     const { t } = useTranslation()
     const connectionStatus = useMemo(
-        () => getConnectionStatus(props.active, props.thinking, props.agentState, props.voiceStatus, t),
-        [props.active, props.thinking, props.agentState, props.voiceStatus, t]
+        () => getConnectionStatus(props.active, props.thinking, props.agentState, t),
+        [props.active, props.thinking, props.agentState, t]
     )
 
     const contextWarning = useMemo(

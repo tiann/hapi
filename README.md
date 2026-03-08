@@ -11,7 +11,6 @@ Run official Claude Code / Codex / Gemini / OpenCode sessions locally and contro
 - **AFK Without Stopping** - Step away from your desk? Approve AI requests from your phone with one tap.
 - **Your AI, Your Choice** - Claude Code, Codex, Cursor Agent, Gemini, OpenCode—different models, one unified workflow.
 - **Terminal Anywhere** - Run commands from your phone or browser, directly connected to the working machine.
-- **Voice Control** - Talk to your AI agent hands-free using the built-in voice assistant.
 
 ## Demo
 
@@ -69,7 +68,6 @@ docker compose --profile interactive run --rm cli --help
 - [App](docs/guide/pwa.md)
 - [How it Works](docs/guide/how-it-works.md)
 - [Cursor Agent](docs/guide/cursor.md)
-- [Voice Assistant](docs/guide/voice-assistant.md)
 - [Why HAPI](docs/guide/why-hapi.md)
 - [FAQ](docs/guide/faq.md)
 

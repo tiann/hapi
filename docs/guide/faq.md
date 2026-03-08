@@ -97,10 +97,6 @@ Yes. Open any session and use the chat interface to send messages directly to th
 
 Yes. Open a session in the web app and tap the Terminal tab for a remote shell.
 
-### How do I use voice control?
-
-Set `ELEVENLABS_API_KEY`, open a session in the web app, and click the microphone button. See [Voice Assistant](./voice-assistant.md).
-
 ## Security
 
 ### Is my data safe?

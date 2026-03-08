@@ -69,11 +69,6 @@ See `src/router.tsx` for route definitions.
 - Real-time via Socket.IO
 - Resize handling
 
-### Voice assistant
-
-- ElevenLabs integration (@elevenlabs/react)
-- Real-time voice control
-
 ### New session (`src/components/NewSession/`)
 
 Modular session creation:
@@ -109,7 +104,7 @@ See `src/hooks/useSSE.ts`.
 
 ## Stack
 
-React 19 + Vite + TanStack Router/Query + Tailwind + @assistant-ui/react + xterm.js + @elevenlabs/react + socket.io-client + workbox + shiki.
+React 19 + Vite + TanStack Router/Query + Tailwind + @assistant-ui/react + xterm.js + socket.io-client + workbox + shiki.
 
 ## Source structure
 

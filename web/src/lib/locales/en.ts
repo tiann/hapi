@@ -217,23 +217,6 @@ export default {
   'composer.attach': 'Attach file',
   'composer.send': 'Send',
   'composer.stop': 'Stop',
-  'composer.voice': 'Voice assistant',
-
-  // Voice assistant
-  'voice.connecting': 'Connecting...',
-  'voice.active': 'Active',
-  'voice.muted': 'Muted',
-  'voice.error': 'Error',
-  'voice.mute': 'Mute',
-  'voice.unmute': 'Unmute',
-  'voice.end': 'End',
-  'voice.error.micPermission': 'Microphone permission denied',
-  'voice.error.network': 'Network error',
-  'voice.error.notInitialized': 'Voice session not initialized',
-  'voice.error.startFailed': 'Failed to start voice session',
-  'voice.error.notAllowed': 'Voice not allowed',
-  'voice.error.connection': 'Connection error',
-  'voice.dismiss': 'Dismiss',
 
   // Banners
   'offline.title': 'Offline',
@@ -269,9 +252,6 @@ export default {
   'settings.display.appearance.dark': 'Dark',
   'settings.display.appearance.light': 'Light',
   'settings.display.fontSize': 'Font Size',
-  'settings.voice.title': 'Voice Assistant',
-  'settings.voice.language': 'Voice Language',
-  'settings.voice.autoDetect': 'Auto-detect',
   'settings.about.title': 'About',
   'settings.about.website': 'Website',
   'settings.about.appVersion': 'App Version',

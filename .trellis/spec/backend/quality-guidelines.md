@@ -608,6 +608,96 @@ gh pr create --base main --head <fork>:contrib/<topic>
 
 ---
 
+## Scenario: Voice Assistant Decommission Contract (Web + Hub + Shared + Docs)
+
+### 1. Scope / Trigger
+- Trigger: Remove an existing cross-layer capability (`Voice Assistant` / ElevenLabs) in a single phase.
+- Why code-spec depth is required:
+  - API contract removal (`POST /api/voice/token`) spans frontend call sites and backend route registration.
+  - Shared protocol export removal (`@hapi/protocol/voice`) affects compile-time imports across multiple packages.
+  - User-facing contract changes require synchronized docs, settings UI, and i18n cleanup.
+
+### 2. Signatures
+- Backend route signature to remove:
+  - `hub/src/web/routes/voice.ts`
+  - `createVoiceRoutes(): Hono<WebAppEnv>`
+  - `POST /voice/token`
+- Backend route registration signature to remove:
+  - `hub/src/web/server.ts`
+  - `app.route('/api', createVoiceRoutes())`
+- Frontend API signature to remove:
+  - `web/src/api/client.ts`
+  - `fetchVoiceToken(credentials?: VoiceCredentials): Promise<VoiceTokenResponse>`
+- Shared package export signature to remove:
+  - `shared/package.json`
+  - `"./voice": "./src/voice.ts"`
+
+### 3. Contracts
+- Request contract (removed):
+  - Endpoint: `POST /api/voice/token`
+  - Request body: `{ customAgentId?: string; customApiKey?: string }`
+  - Response body: `{ allowed: boolean; token?: string; agentId?: string; error?: string }`
+- Env contract (removed):
+  - `ELEVENLABS_API_KEY`
+  - `ELEVENLABS_AGENT_ID`
+- Frontend behavior contract (after removal):
+  - UI MUST NOT render voice entry points in composer/settings.
+  - Runtime MUST NOT initiate `/api/voice/token` requests.
+- Build contract (after removal):
+  - No remaining import of `@hapi/protocol/voice`.
+  - No remaining dependency on `@elevenlabs/react` in `web/package.json`.
+
+### 4. Validation & Error Matrix
+- Residual frontend API call to `/api/voice/token` -> 404/runtime noise; fix by removing call sites and state branches.
+- Residual backend `createVoiceRoutes` import/registration -> TypeScript compile failure; remove import + route mount together.
+- Residual `@hapi/protocol/voice` import after export removal -> unresolved module error; remove import chain before/with export deletion.
+- Docs still mention ElevenLabs env keys after code removal -> operational confusion; remove docs links and setup sections.
+- i18n/settings keys removed incompletely -> dead UI labels or lint noise; remove keys and corresponding settings blocks together.
+
+### 5. Good/Base/Bad Cases
+- Good:
+  - Web/Hub typecheck/test/build pass.
+  - No `/api/voice/token` route or client call remains.
+  - No `@hapi/protocol/voice` imports and no `@elevenlabs/react` dependency.
+  - Docs no longer reference Voice Assistant/ElevenLabs setup.
+- Base:
+  - Voice feature files removed; text chat, permission handling, session switching still function.
+- Bad:
+  - Only UI is hidden but backend/shared contracts remain.
+  - Or backend is deleted while frontend still calls removed endpoint.
+
+### 6. Tests Required (with assertion points)
+- Type-level assertions:
+  - `bun run --cwd web typecheck` passes (assert: no missing voice symbols/types/imports).
+  - `bun run --cwd hub typecheck` passes (assert: no `createVoiceRoutes` / route import residue).
+- Runtime/test assertions:
+  - `bun run --cwd web test` passes (assert: settings/chat tests no longer depend on voice state).
+  - `bun run --cwd hub test` passes.
+- Build assertions:
+  - `bun run --cwd web build` passes (assert: no voice vendor chunk rule/dependency required).
+- Optional grep assertions (recommended):
+  - No source/docs matches for `@hapi/protocol/voice`, `/api/voice/token`, `ELEVENLABS_API_KEY`, `ELEVENLABS_AGENT_ID`.
+
+### 7. Wrong vs Correct
+#### Wrong
+```ts
+// Only remove UI toggle, keep API + shared contract alive
+// - Composer voice button hidden
+// - fetchVoiceToken still exists and can be called
+// - backend /api/voice/token route still mounted
+```
+
+#### Correct
+```ts
+// Remove capability end-to-end in one contract change:
+// 1) Remove web entry/state/hooks/api call paths
+// 2) Remove hub route file + server registration
+// 3) Remove shared voice export/module
+// 4) Remove dependency/docs/env references
+```
+
+---
+
 ### Before Submitting
 
 - [ ] `bun run typecheck` passes (no TypeScript errors)

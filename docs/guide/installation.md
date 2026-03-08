@@ -187,8 +187,6 @@ On first run, HAPI:
 | `VAPID_SUBJECT` | `mailto:admin@hapi.run` | - | Web Push contact info |
 | `HAPI_HOME` | `~/.hapi` | - | Config directory path |
 | `DB_PATH` | `~/.hapi/hapi.db` | - | Database file path |
-| `ELEVENLABS_API_KEY` | - | - | ElevenLabs API key for voice |
-| `ELEVENLABS_AGENT_ID` | Auto-created | - | Custom ElevenLabs agent ID |
 </details>
 
 <details>
@@ -567,20 +565,6 @@ journalctl --user -u hapi-hub -f
 > loginctl enable-linger $USER
 > ```
 </details>
-
-### Voice assistant setup
-
-Enable voice control:
-
-1. Get an API key from [elevenlabs.io](https://elevenlabs.io/app/settings/api-keys)
-2. Set the environment variable:
-
-```bash
-export ELEVENLABS_API_KEY="your-api-key"
-hapi hub --relay
-```
-
-See [Voice Assistant](./voice-assistant.md) for usage details.
 
 ### Security notes
 

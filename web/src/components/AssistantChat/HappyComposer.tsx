@@ -14,7 +14,6 @@ import {
 } from 'react'
 import type { AgentState, ModelMode, PermissionMode } from '@/types/api'
 import type { Suggestion } from '@/hooks/useActiveSuggestions'
-import type { ConversationStatus } from '@/realtime/types'
 import { useActiveWord } from '@/hooks/useActiveWord'
 import { useActiveSuggestions } from '@/hooks/useActiveSuggestions'
 import { applySuggestion } from '@/utils/applySuggestion'
@@ -55,11 +54,6 @@ export function HappyComposer(props: {
     autocompleteSuggestions?: (query: string) => Promise<Suggestion[]>
     onSlashEntry?: () => void
     isFetchingSlashCommands?: boolean
-    // Voice assistant props
-    voiceStatus?: ConversationStatus
-    voiceMicMuted?: boolean
-    onVoiceToggle?: () => void
-    onVoiceMicToggle?: () => void
 }) {
     const { t } = useTranslation()
     const {
@@ -81,10 +75,6 @@ export function HappyComposer(props: {
         autocompleteSuggestions = defaultSuggestionHandler,
         onSlashEntry,
         isFetchingSlashCommands = false,
-        voiceStatus = 'disconnected',
-        voiceMicMuted = false,
-        onVoiceToggle,
-        onVoiceMicToggle
     } = props
 
     // Use ?? so missing values fall back to default (destructuring defaults only handle undefined)
@@ -415,7 +405,6 @@ export function HappyComposer(props: {
     const showModelSettings = Boolean(onModelModeChange && isClaudeFlavor(agentFlavor))
     const showSettingsButton = Boolean(showPermissionSettings || showModelSettings)
     const showAbortButton = true
-    const voiceEnabled = Boolean(onVoiceToggle)
 
     const handleSend = useCallback(() => {
         api.composer().send()
@@ -552,7 +541,6 @@ export function HappyComposer(props: {
                         modelMode={modelMode}
                         permissionMode={permissionMode}
                         agentFlavor={agentFlavor}
-                        voiceStatus={voiceStatus}
                     />
 
                     <div className="overflow-hidden rounded-[20px] bg-[var(--app-secondary-bg)]">
@@ -595,11 +583,6 @@ export function HappyComposer(props: {
                             switchDisabled={switchDisabled}
                             isSwitching={isSwitching}
                             onSwitch={handleSwitch}
-                            voiceEnabled={voiceEnabled}
-                            voiceStatus={voiceStatus}
-                            voiceMicMuted={voiceMicMuted}
-                            onVoiceToggle={onVoiceToggle ?? (() => {})}
-                            onVoiceMicToggle={onVoiceMicToggle}
                             onSend={handleSend}
                         />
                     </div>

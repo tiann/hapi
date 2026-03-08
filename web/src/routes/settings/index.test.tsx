@@ -32,15 +32,6 @@ vi.mock('@/hooks/useTheme', () => ({
     ],
 }))
 
-// Mock languages
-vi.mock('@/lib/languages', () => ({
-    getElevenLabsSupportedLanguages: () => [
-        { code: null, name: 'Auto-detect' },
-        { code: 'en', name: 'English' },
-    ],
-    getLanguageDisplayName: (lang: { code: string | null; name: string }) => lang.name,
-}))
-
 function renderWithProviders(ui: React.ReactElement) {
     return render(
         <I18nProvider>

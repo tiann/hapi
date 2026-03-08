@@ -10,8 +10,7 @@
         "./messages": "./src/messages.ts",
         "./modes": "./src/modes.ts",
         "./schemas": "./src/schemas.ts",
-        "./types": "./src/types.ts",
-        "./voice": "./src/voice.ts"
+        "./types": "./src/types.ts"
     },
     "sideEffects": false,
     "dependencies": {
