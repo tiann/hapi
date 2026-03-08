@@ -1,4 +1,5 @@
 import React from 'react';
+import { randomUUID } from 'node:crypto';
 import { logger } from '@/ui/logger';
 import { buildHapiMcpBridge } from '@/codex/utils/buildHapiMcpBridge';
 import { convertAgentMessage } from '@/agent/messageConverter';
@@ -71,24 +72,28 @@ class GeminiRemoteLauncher extends RemoteLauncherBase {
 
         const sessionConfig = { cwd: session.path, mcpServers: toAcpMcpServers(mcpServers) };
         let acpSessionId: string;
-        let didResume = false;
+        let resumedFromSessionId: string | null = null;
         if (session.sessionId) {
+            const originalSessionId = session.sessionId;
             try {
-                acpSessionId = await backend.loadSession({ ...sessionConfig, sessionId: session.sessionId });
-                didResume = true;
+                acpSessionId = await backend.loadSession({ ...sessionConfig, sessionId: originalSessionId });
+                resumedFromSessionId = originalSessionId;
             } catch (error) {
                 logger.warn('[gemini-remote] resume failed, starting new session', error);
                 session.sendSessionEvent({ type: 'message', message: 'Gemini resume failed; starting a new session.' });
                 acpSessionId = await backend.newSession(sessionConfig);
+                // Replay history even when loadSession fails: Gemini CLI was started with --resume
+                // so it already has the conversation context, and UI should show the transcript too.
+                resumedFromSessionId = originalSessionId;
             }
         } else {
             acpSessionId = await backend.newSession(sessionConfig);
         }
         session.onSessionFound(acpSessionId);
 
-        if (didResume && session.sessionId && !session.historyReplayed) {
+        if (resumedFromSessionId && !session.historyReplayed) {
             session.historyReplayed = true;
-            await this.replayHistoricalMessages(session.sessionId);
+            await this.replayHistoricalMessages(resumedFromSessionId);
         }
 
         this.permissionHandler = new GeminiPermissionHandler(
@@ -212,9 +217,15 @@ class GeminiRemoteLauncher extends RemoteLauncherBase {
                 const text = extractMessageText(message.content);
                 if (text) {
                     this.messageBuffer.addMessage(text, 'user');
+                    this.session.sendUserMessage(text);
                 }
             } else if (message.type === 'gemini' && typeof message.content === 'string' && message.content) {
                 this.messageBuffer.addMessage(message.content, 'assistant');
+                this.session.sendCodexMessage({
+                    type: 'message',
+                    message: message.content,
+                    id: randomUUID()
+                });
             }
         }
     }
