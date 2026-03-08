@@ -1,31 +1,33 @@
 /**
  * Integration tests for runner HTTP control system
- * 
+ *
  * Tests the full flow of runner startup, session tracking, and shutdown
- * 
+ *
  * IMPORTANT: These tests MUST be run with the integration test environment:
  * yarn test:integration-test-env
- * 
+ *
  * DO NOT run with regular 'npm test' or 'yarn test' - it will use the wrong environment
- * and the runner will not work properly!
- * 
+ * and may affect your default ~/.hapi runner!
+ *
  * The integration test environment uses .env.integration-test which sets:
- * - HAPI_HOME=~/.hapi-dev-test (DIFFERENT from dev's ~/.hapi-dev!)
  * - HAPI_API_URL=http://localhost:3006 (local hapi-hub)
- * - CLI_API_TOKEN=... (must match the hub)
+ * - CLI_API_TOKEN=jlovec (must match local hub)
+ *
+ * HAPI_HOME is isolated automatically in vitest.config.ts per process/worktree.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import { execSync, spawn } from 'child_process';
-import { existsSync, unlinkSync, readFileSync, writeFileSync, readdirSync } from 'fs';
+import { existsSync, rmSync, unlinkSync, readFileSync, writeFileSync, readdirSync } from 'fs';
+import { homedir, tmpdir } from 'os';
 import path, { join } from 'path';
 import { configuration } from '@/configuration';
-import { 
-  listRunnerSessions, 
-  stopRunnerSession, 
-  spawnRunnerSession, 
-  stopRunnerHttp, 
-  notifyRunnerSessionStarted, 
+import {
+  listRunnerSessions,
+  stopRunnerSession,
+  spawnRunnerSession,
+  stopRunnerHttp,
+  notifyRunnerSessionStarted,
   stopRunner
 } from '@/runner/controlClient';
 import { readRunnerState, clearRunnerState } from '@/persistence';
@@ -80,6 +82,38 @@ async function isServerHealthy(): Promise<boolean> {
 
 describe.skipIf(!await isServerHealthy())('Runner Integration Tests', { timeout: 20_000 }, () => {
   let runnerPid: number;
+  let shouldCleanupIsolatedHome = false;
+
+  beforeAll(() => {
+    const defaultHome = join(homedir(), '.hapi');
+    const apiUrl = configuration.apiUrl.toLowerCase();
+    const isLocalApi = apiUrl.startsWith('http://localhost:') || apiUrl.startsWith('http://127.0.0.1:');
+
+    if (configuration.happyHomeDir === defaultHome) {
+      throw new Error(
+        `[TEST] Refusing to run runner integration tests against default HAPI_HOME: ${configuration.happyHomeDir}. ` +
+          'Set isolated HAPI_HOME in .env.integration-test.'
+      );
+    }
+
+    if (!isLocalApi) {
+      throw new Error(
+        `[TEST] Refusing to run runner integration tests against non-local API URL: ${configuration.apiUrl}. ` +
+          'Use local http://localhost:<port> hub for integration tests.'
+      );
+    }
+
+    const isolatedHomePrefix = `${join(tmpdir(), 'hapi-integration-test-')}`;
+    shouldCleanupIsolatedHome = configuration.happyHomeDir.startsWith(isolatedHomePrefix);
+  });
+
+  afterAll(() => {
+    if (!shouldCleanupIsolatedHome) {
+      return;
+    }
+
+    rmSync(configuration.happyHomeDir, { recursive: true, force: true });
+  });
 
   beforeEach(async () => {
     // First ensure no runner is running by checking PID in metadata file
