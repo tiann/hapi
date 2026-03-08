@@ -68,10 +68,10 @@ class GeminiRemoteLauncher extends RemoteLauncherBase {
 
         await backend.initialize();
 
-        const acpSessionId = await backend.newSession({
-            cwd: session.path,
-            mcpServers: toAcpMcpServers(mcpServers)
-        });
+        const sessionConfig = { cwd: session.path, mcpServers: toAcpMcpServers(mcpServers) };
+        const acpSessionId = session.sessionId
+            ? await backend.loadSession({ ...sessionConfig, sessionId: session.sessionId })
+            : await backend.newSession(sessionConfig);
         session.onSessionFound(acpSessionId);
 
         this.permissionHandler = new GeminiPermissionHandler(
