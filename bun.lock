@@ -12,7 +12,7 @@
     },
     "cli": {
       "name": "@jlovec/hapi",
-      "version": "0.16.0",
+      "version": "0.1.0",
       "bin": {
         "hapi": "bin/hapi.cjs",
       },
@@ -43,11 +43,11 @@
         "vitest": "^4.0.16",
       },
       "optionalDependencies": {
-        "@jlovec/hapi-darwin-arm64": "0.16.0",
-        "@jlovec/hapi-darwin-x64": "0.16.0",
-        "@jlovec/hapi-linux-arm64": "0.16.0",
-        "@jlovec/hapi-linux-x64": "0.16.0",
-        "@jlovec/hapi-win32-x64": "0.16.0",
+        "@jlovec/hapi-darwin-arm64": "0.1.0",
+        "@jlovec/hapi-darwin-x64": "0.1.0",
+        "@jlovec/hapi-linux-arm64": "0.1.0",
+        "@jlovec/hapi-linux-x64": "0.1.0",
+        "@jlovec/hapi-win32-x64": "0.1.0",
       },
     },
     "docs": {
