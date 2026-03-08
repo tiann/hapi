@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { findGeminiTranscriptPath, readGeminiTranscript } from './sessionScanner';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
@@ -32,11 +32,11 @@ describe('findGeminiTranscriptPath', () => {
 
     it('finds the session file by the first 8 chars of the session ID', async () => {
         mockReaddir
-            .mockResolvedValueOnce(['lupin'] as unknown as fs.Dirent[])
+            .mockResolvedValueOnce(['lupin'] as any)
             .mockResolvedValueOnce([
                 'session-2026-03-08T05-31-8d5d37c2.json',
                 'session-2026-03-08T06-00-abcdef12.json'
-            ] as unknown as fs.Dirent[]);
+            ] as any);
 
         const result = await findGeminiTranscriptPath('8d5d37c2-dce5-460c-b516-94dbc1c197e9');
         expect(result).toBe(
@@ -46,8 +46,8 @@ describe('findGeminiTranscriptPath', () => {
 
     it('returns null when no matching file exists', async () => {
         mockReaddir
-            .mockResolvedValueOnce(['lupin'] as unknown as fs.Dirent[])
-            .mockResolvedValueOnce(['session-2026-03-08T06-00-abcdef12.json'] as unknown as fs.Dirent[]);
+            .mockResolvedValueOnce(['lupin'] as any)
+            .mockResolvedValueOnce(['session-2026-03-08T06-00-abcdef12.json'] as any);
 
         const result = await findGeminiTranscriptPath('8d5d37c2-dce5-460c-b516-94dbc1c197e9');
         expect(result).toBeNull();
@@ -71,7 +71,7 @@ describe('readGeminiTranscript', () => {
                 { id: '2', type: 'gemini', content: 'hi there' }
             ]
         };
-        mockReadFile.mockResolvedValue(JSON.stringify(transcript) as unknown as Buffer);
+        mockReadFile.mockResolvedValue(JSON.stringify(transcript));
         const result = await readGeminiTranscript('/some/path.json');
         expect(result?.sessionId).toBe('8d5d37c2-dce5-460c-b516-94dbc1c197e9');
         expect(result?.messages).toHaveLength(2);

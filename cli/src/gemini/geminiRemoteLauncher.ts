@@ -87,7 +87,8 @@ class GeminiRemoteLauncher extends RemoteLauncherBase {
         }
         session.onSessionFound(acpSessionId);
 
-        if (didResume && session.sessionId) {
+        if (didResume && session.sessionId && !session.historyReplayed) {
+            session.historyReplayed = true;
             await this.replayHistoricalMessages(session.sessionId);
         }
 

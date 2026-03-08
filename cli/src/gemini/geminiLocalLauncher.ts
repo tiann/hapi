@@ -53,7 +53,7 @@ export async function geminiLocalLauncher(
 
     let scanner: GeminiScannerHandle | null = null;
 
-    const handleTranscriptMessage = (message: { type?: string; content?: string }) => {
+    const handleTranscriptMessage = (message: { type?: string; content?: string | Array<{ text?: string }> }) => {
         if (message.type === 'user' && typeof message.content === 'string') {
             session.sendUserMessage(message.content);
             return;
@@ -77,6 +77,8 @@ export async function geminiLocalLauncher(
             onMessage: handleTranscriptMessage,
             onSessionId: (sessionId) => session.onSessionFound(sessionId)
         });
+        // Local mode handles live messages directly; prevent remote mode from re-replaying history
+        session.historyReplayed = true;
     };
 
     const handleTranscriptPath = (transcriptPath: string) => {
