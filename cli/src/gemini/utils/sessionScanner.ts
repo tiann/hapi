@@ -187,6 +187,20 @@ export async function readGeminiTranscript(filePath: string): Promise<GeminiTran
     return readTranscript(filePath);
 }
 
+/** Extracts plain text from a gemini transcript message content field.
+ * User messages store content as Array<{text: string}>, gemini messages as a plain string.
+ */
+export function extractMessageText(content: string | Array<{ text?: string }> | undefined): string | null {
+    if (typeof content === 'string') {
+        return content || null;
+    }
+    if (Array.isArray(content)) {
+        const parts = content.map(p => p.text ?? '').join('');
+        return parts || null;
+    }
+    return null;
+}
+
 async function readTranscript(filePath: string): Promise<GeminiTranscript | null> {
     try {
         const raw = await readFile(filePath, 'utf-8');

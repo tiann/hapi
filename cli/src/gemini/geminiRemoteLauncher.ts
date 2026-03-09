@@ -11,7 +11,7 @@ import type { PermissionMode } from './types';
 import { createGeminiBackend } from './utils/geminiBackend';
 import { GeminiPermissionHandler } from './utils/permissionHandler';
 import { resolveGeminiRuntimeConfig } from './utils/config';
-import { findGeminiTranscriptPath, readGeminiTranscript } from './utils/sessionScanner';
+import { findGeminiTranscriptPath, readGeminiTranscript, extractMessageText } from './utils/sessionScanner';
 import { isAbortError } from '@/utils/errorUtils';
 
 class GeminiRemoteLauncher extends RemoteLauncherBase {
@@ -93,7 +93,7 @@ class GeminiRemoteLauncher extends RemoteLauncherBase {
 
         if (resumedFromSessionId && !session.historyReplayed) {
             session.historyReplayed = true;
-            await this.replayHistoricalMessages(resumedFromSessionId);
+            await this.replayHistoricalMessages(resumedFromSessionId, session.historyReplayCutoff);
         }
 
         this.permissionHandler = new GeminiPermissionHandler(
@@ -207,14 +207,16 @@ class GeminiRemoteLauncher extends RemoteLauncherBase {
         }
     }
 
-    private async replayHistoricalMessages(sessionId: string): Promise<void> {
+    private async replayHistoricalMessages(sessionId: string, cutoff = 0): Promise<void> {
         const transcriptPath = await findGeminiTranscriptPath(sessionId);
         if (!transcriptPath) {
             logger.debug('[gemini-remote] No transcript file found for resume session, skipping history replay');
             return;
         }
         const transcript = await readGeminiTranscript(transcriptPath);
-        const messages = transcript?.messages ?? [];
+        const allMessages = transcript?.messages ?? [];
+        // cutoff > 0: only replay messages up to cutoff (local scanner already forwarded the rest)
+        const messages = cutoff > 0 ? allMessages.slice(0, cutoff) : allMessages;
         logger.debug(`[gemini-remote] Replaying ${messages.length} historical messages from ${transcriptPath}`);
         for (const message of messages) {
             if (message.type === 'user') {
@@ -269,20 +271,6 @@ class GeminiRemoteLauncher extends RemoteLauncherBase {
     private async handleSwitchRequest(): Promise<void> {
         await this.requestExit('switch', () => this.handleAbort());
     }
-}
-
-/** Extracts plain text from a gemini transcript message content field.
- * User messages store content as Array<{text: string}>, gemini messages as a plain string.
- */
-function extractMessageText(content: string | Array<{ text?: string }> | undefined): string | null {
-    if (typeof content === 'string') {
-        return content || null;
-    }
-    if (Array.isArray(content)) {
-        const parts = content.map(p => p.text ?? '').join('');
-        return parts || null;
-    }
-    return null;
 }
 
 function toAcpMcpServers(config: Record<string, { command: string; args: string[] }>): McpServerStdio[] {

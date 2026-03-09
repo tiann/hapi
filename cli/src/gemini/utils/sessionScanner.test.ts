@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { findGeminiTranscriptPath, readGeminiTranscript } from './sessionScanner';
+import { findGeminiTranscriptPath, readGeminiTranscript, extractMessageText } from './sessionScanner';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -51,6 +51,32 @@ describe('findGeminiTranscriptPath', () => {
 
         const result = await findGeminiTranscriptPath('8d5d37c2-dce5-460c-b516-94dbc1c197e9');
         expect(result).toBeNull();
+    });
+});
+
+describe('extractMessageText', () => {
+    it('returns string content as-is', () => {
+        expect(extractMessageText('hello')).toBe('hello');
+    });
+
+    it('returns null for empty string', () => {
+        expect(extractMessageText('')).toBeNull();
+    });
+
+    it('joins array content parts into a single string', () => {
+        expect(extractMessageText([{ text: 'hello' }, { text: ' world' }])).toBe('hello world');
+    });
+
+    it('returns null for empty array', () => {
+        expect(extractMessageText([])).toBeNull();
+    });
+
+    it('returns null for undefined', () => {
+        expect(extractMessageText(undefined)).toBeNull();
+    });
+
+    it('handles array parts with missing text property', () => {
+        expect(extractMessageText([{ text: 'hi' }, {}])).toBe('hi');
     });
 });
 

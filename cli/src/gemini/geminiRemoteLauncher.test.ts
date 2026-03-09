@@ -3,7 +3,14 @@ import { geminiRemoteLauncher } from './geminiRemoteLauncher';
 
 vi.mock('./utils/geminiBackend');
 vi.mock('./utils/config');
-vi.mock('./utils/sessionScanner');
+vi.mock('./utils/sessionScanner', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('./utils/sessionScanner')>();
+    return {
+        ...actual,
+        findGeminiTranscriptPath: vi.fn(),
+        readGeminiTranscript: vi.fn(),
+    };
+});
 vi.mock('@/codex/utils/buildHapiMcpBridge');
 vi.mock('@/ui/ink/GeminiDisplay');
 vi.mock('./utils/permissionHandler', () => ({
@@ -17,12 +24,13 @@ afterEach(() => {
     vi.clearAllMocks();
 });
 
-function makeMockSession(opts: { sessionId: string | null } = { sessionId: null }) {
+function makeMockSession(opts: { sessionId: string | null; historyReplayCutoff?: number } = { sessionId: null }) {
     return {
         sessionId: opts.sessionId,
         path: '/test/path',
         logPath: '/test/log',
         historyReplayed: false,
+        historyReplayCutoff: opts.historyReplayCutoff ?? 0,
         queue: {
             waitForMessagesAndGetAsString: vi.fn().mockResolvedValue(null),
             size: vi.fn().mockReturnValue(0),
@@ -33,6 +41,8 @@ function makeMockSession(opts: { sessionId: string | null } = { sessionId: null 
             sendSessionEvent: vi.fn(),
         },
         sendSessionEvent: vi.fn(),
+        sendUserMessage: vi.fn(),
+        sendCodexMessage: vi.fn(),
         onSessionFound: vi.fn(),
         onThinkingChange: vi.fn(),
         getPermissionMode: vi.fn().mockReturnValue('auto'),
@@ -97,6 +107,69 @@ describe('geminiRemoteLauncher', () => {
             await geminiRemoteLauncher(session as never, {});
 
             expect(findGeminiTranscriptPath).not.toHaveBeenCalled();
+        });
+
+        it('replays only up to historyReplayCutoff messages when cutoff is set', async () => {
+            const mockBackend = await setupMocks();
+            const { findGeminiTranscriptPath, readGeminiTranscript } = await import('./utils/sessionScanner');
+
+            mockBackend.loadSession.mockResolvedValue('existing-session-id');
+            vi.mocked(findGeminiTranscriptPath).mockResolvedValue('/some/transcript.json');
+            vi.mocked(readGeminiTranscript).mockResolvedValue({
+                messages: [
+                    { type: 'user', content: 'msg1' },
+                    { type: 'gemini', content: 'reply1' },
+                    { type: 'user', content: 'msg2' },
+                    { type: 'gemini', content: 'reply2' },
+                ]
+            });
+
+            // historyReplayCutoff = 2: only first 2 messages (msg1 + reply1) should be replayed
+            const session = makeMockSession({ sessionId: 'existing-session-id', historyReplayCutoff: 2 });
+            await geminiRemoteLauncher(session as never, {});
+
+            expect(session.sendUserMessage).toHaveBeenCalledTimes(1);
+            expect(session.sendUserMessage).toHaveBeenCalledWith('msg1');
+            expect(session.sendCodexMessage).toHaveBeenCalledTimes(1);
+            expect(session.sendCodexMessage).toHaveBeenCalledWith(expect.objectContaining({ message: 'reply1' }));
+        });
+
+        it('replays all messages when historyReplayCutoff is 0 (no local scanner priming)', async () => {
+            const mockBackend = await setupMocks();
+            const { findGeminiTranscriptPath, readGeminiTranscript } = await import('./utils/sessionScanner');
+
+            mockBackend.loadSession.mockResolvedValue('existing-session-id');
+            vi.mocked(findGeminiTranscriptPath).mockResolvedValue('/some/transcript.json');
+            vi.mocked(readGeminiTranscript).mockResolvedValue({
+                messages: [
+                    { type: 'user', content: 'msg1' },
+                    { type: 'gemini', content: 'reply1' },
+                ]
+            });
+
+            const session = makeMockSession({ sessionId: 'existing-session-id', historyReplayCutoff: 0 });
+            await geminiRemoteLauncher(session as never, {});
+
+            expect(session.sendUserMessage).toHaveBeenCalledTimes(1);
+            expect(session.sendCodexMessage).toHaveBeenCalledTimes(1);
+        });
+
+        it('replays user messages with array content when historyReplayCutoff is 0', async () => {
+            const mockBackend = await setupMocks();
+            const { findGeminiTranscriptPath, readGeminiTranscript } = await import('./utils/sessionScanner');
+
+            mockBackend.loadSession.mockResolvedValue('existing-session-id');
+            vi.mocked(findGeminiTranscriptPath).mockResolvedValue('/some/transcript.json');
+            vi.mocked(readGeminiTranscript).mockResolvedValue({
+                messages: [
+                    { type: 'user', content: [{ text: 'hello ' }, { text: 'world' }] },
+                ]
+            });
+
+            const session = makeMockSession({ sessionId: 'existing-session-id', historyReplayCutoff: 0 });
+            await geminiRemoteLauncher(session as never, {});
+
+            expect(session.sendUserMessage).toHaveBeenCalledWith('hello world');
         });
     });
 });
