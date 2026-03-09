@@ -6,6 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { usePlatform } from '@/hooks/usePlatform'
 import { useSpawnSession } from '@/hooks/mutations/useSpawnSession'
 import { formatRunnerSpawnError } from '@/utils/formatRunnerSpawnError'
+import { useTranslation } from '@/lib/use-translation'
 
 type SessionType = 'simple' | 'worktree'
 
@@ -24,6 +25,7 @@ export function SpawnSession(props: {
     onCancel: () => void
 }) {
     const { haptic } = usePlatform()
+    const { t } = useTranslation()
     const [directory, setDirectory] = useState('')
     const [sessionType, setSessionType] = useState<SessionType>('simple')
     const [worktreeName, setWorktreeName] = useState('')
@@ -65,7 +67,7 @@ export function SpawnSession(props: {
         <div className="p-3">
             <Card>
                 <CardHeader className="pb-2">
-                    <CardTitle>Create Session</CardTitle>
+                    <CardTitle>{t('spawn.title')}</CardTitle>
                     <CardDescription className="truncate">
                         {machineTitle}
                     </CardDescription>
@@ -165,13 +167,13 @@ export function SpawnSession(props: {
                                 onClick={props.onCancel}
                                 disabled={isPending}
                             >
-                                Cancel
+                                {t('spawn.cancel')}
                             </Button>
                             <Button
                                 onClick={spawn}
                                 disabled={isPending || !directory.trim()}
                             >
-                                {isPending ? 'Creating…' : 'Create Session'}
+                                {isPending ? t('spawn.creating') : t('spawn.create')}
                             </Button>
                         </div>
                     </div>

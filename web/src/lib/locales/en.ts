@@ -91,6 +91,7 @@ export default {
   'button.paste': 'Paste',
 
   // New session form
+  'newSession.title': 'Create Session',
   'newSession.machine': 'Machine',
   'newSession.directory': 'Directory',
   'newSession.placeholder': '/path/to/project',
@@ -248,6 +249,10 @@ export default {
   'settings.language.title': 'Language',
   'settings.language.label': 'Language',
   'settings.display.title': 'Display',
+  'settings.display.appearance': 'Appearance',
+  'settings.display.appearance.system': 'Follow System',
+  'settings.display.appearance.dark': 'Dark',
+  'settings.display.appearance.light': 'Light',
   'settings.display.fontSize': 'Font Size',
   'settings.voice.title': 'Voice Assistant',
   'settings.voice.language': 'Voice Language',

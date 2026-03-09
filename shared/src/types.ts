@@ -7,6 +7,10 @@ export type {
     Metadata,
     Session,
     SyncEvent,
+    TeamMember,
+    TeamMessage,
+    TeamState,
+    TeamTask,
     TodoItem,
     WorktreeMetadata
 } from './schemas'

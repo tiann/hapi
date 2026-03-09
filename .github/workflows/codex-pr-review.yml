@@ -2,11 +2,11 @@ name: Codex PR Review
 
 on:
   pull_request_target:
-    types: [opened, ready_for_review]
+    types: [opened, reopened, ready_for_review, synchronize]
 
 concurrency:
   group: codex-pr-review-${{ github.event.pull_request.number }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   pr-review:
@@ -22,7 +22,7 @@ jobs:
       review_result: ${{ steps.run_codex.outputs.final-message }}
 
     steps:
-      - name: Check for existing HAPI Bot review
+      - name: Check HAPI Bot review state
         id: check_bot
         uses: actions/github-script@v7
         with:
@@ -32,6 +32,7 @@ jobs:
               .split(",")
               .map((value) => value.trim())
               .filter(Boolean);
+            const currentHeadSha = context.payload.pull_request.head.sha;
             const reviews = await github.paginate(
               github.rest.pulls.listReviews,
               {
@@ -41,8 +42,8 @@ jobs:
                 per_page: 100
               }
             );
-            const hasBot = reviews.some(
-              (review) => {
+            const botReviews = reviews
+              .filter((review) => {
                 if (!(review?.body || "").includes(marker)) {
                   return false;
                 }
@@ -51,24 +52,48 @@ jobs:
                   return false;
                 }
                 return allowedLogins.includes(user.login);
-              }
+              })
+              .sort((left, right) => {
+                const leftTime = new Date(left.submitted_at || left.created_at || 0).getTime();
+                const rightTime = new Date(right.submitted_at || right.created_at || 0).getTime();
+                if (rightTime !== leftTime) {
+                  return rightTime - leftTime;
+                }
+                return (right.id || 0) - (left.id || 0);
+              });
+            const latestBotReview = botReviews[0];
+            const hasReviewForCurrentHead = botReviews.some(
+              (review) => review.commit_id === currentHeadSha
             );
-            core.setOutput("has_bot", hasBot ? "true" : "false");
-            if (hasBot) {
-              core.info("Existing HAPI Bot review found; skipping.");
+            const isFollowUpReview = Boolean(
+              latestBotReview?.commit_id && latestBotReview.commit_id !== currentHeadSha
+            );
+
+            core.setOutput("current_head_sha", currentHeadSha);
+            core.setOutput("has_review_for_current_head", hasReviewForCurrentHead ? "true" : "false");
+            core.setOutput("latest_bot_review_id", latestBotReview ? String(latestBotReview.id) : "");
+            core.setOutput("latest_bot_review_commit", latestBotReview?.commit_id || "");
+            core.setOutput("is_follow_up_review", isFollowUpReview ? "true" : "false");
+
+            if (hasReviewForCurrentHead) {
+              core.info(`Existing HAPI Bot review found for ${currentHeadSha}; skipping.`);
+            } else if (isFollowUpReview) {
+              core.info(
+                `Latest HAPI Bot review was for ${latestBotReview.commit_id}; running follow-up review for ${currentHeadSha}.`
+              );
             }
         env:
           HAPI_BOT_LOGINS: ${{ vars.HAPI_BOT_LOGINS }}
 
       - name: Checkout repository
-        if: steps.check_bot.outputs.has_bot != 'true'
+        if: steps.check_bot.outputs.has_review_for_current_head != 'true'
         uses: actions/checkout@v4
         with:
           ref: refs/pull/${{ github.event.pull_request.number }}/merge
           fetch-depth: 0
 
       - name: Pre-fetch base and head refs
-        if: steps.check_bot.outputs.has_bot != 'true'
+        if: steps.check_bot.outputs.has_review_for_current_head != 'true'
         run: |
           git fetch --no-tags origin \
             ${{ github.event.pull_request.base.ref }} \
@@ -76,11 +101,15 @@ jobs:
 
       - name: Run Codex for PR Review
         id: run_codex
-        if: steps.check_bot.outputs.has_bot != 'true'
+        if: steps.check_bot.outputs.has_review_for_current_head != 'true'
         uses: openai/codex-action@v1
         env:
           GH_TOKEN: ${{ github.token }}
           GITHUB_TOKEN: ${{ github.token }}
+          CURRENT_HEAD_SHA: ${{ steps.check_bot.outputs.current_head_sha }}
+          LATEST_BOT_REVIEW_ID: ${{ steps.check_bot.outputs.latest_bot_review_id }}
+          LATEST_BOT_REVIEW_COMMIT: ${{ steps.check_bot.outputs.latest_bot_review_commit }}
+          IS_FOLLOW_UP_REVIEW: ${{ steps.check_bot.outputs.is_follow_up_review }}
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
           responses-api-endpoint: ${{ secrets.OPENAI_BASE_URL }}

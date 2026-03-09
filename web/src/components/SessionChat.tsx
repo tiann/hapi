@@ -13,6 +13,7 @@ import { HappyThread } from '@/components/AssistantChat/HappyThread'
 import { useHappyRuntime } from '@/lib/assistant-runtime'
 import { createAttachmentAdapter } from '@/lib/attachmentAdapter'
 import { SessionHeader } from '@/components/SessionHeader'
+import { TeamPanel } from '@/components/TeamPanel'
 import { usePlatform } from '@/hooks/usePlatform'
 import { useSessionActions } from '@/hooks/mutations/useSessionActions'
 import { useVoiceOptional } from '@/lib/voice-context'
@@ -273,6 +274,10 @@ export function SessionChat(props: {
                 api={props.api}
                 onSessionDeleted={props.onBack}
             />
+
+            {props.session.teamState && (
+                <TeamPanel teamState={props.session.teamState} />
+            )}
 
             {sessionInactive ? (
                 <div className="px-3 pt-3">

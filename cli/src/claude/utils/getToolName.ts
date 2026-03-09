@@ -28,7 +28,13 @@ const STANDARD_TOOLS: Record<string, string> = {
     'TodoWrite': 'Update Tasks',
     'TodoRead': 'Read Tasks',
     'Task': 'Launch Agent',
-    
+
+    // Team management
+    'TeamCreate': 'Create Team',
+    'TeamDelete': 'Delete Team',
+    'SendMessage': 'Send Message',
+    'EnterWorktree': 'Enter Worktree',
+
     // Web tools
     'WebFetch': 'Fetch Web Page',
     'WebSearch': 'Search Web',

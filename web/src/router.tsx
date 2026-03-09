@@ -332,6 +332,7 @@ function NewSessionPage() {
     const goBack = useAppGoBack()
     const queryClient = useQueryClient()
     const { machines, isLoading: machinesLoading, error: machinesError } = useMachines(api, true)
+    const { t } = useTranslation()
 
     const handleCancel = useCallback(() => {
         navigate({ to: '/sessions' })
@@ -362,7 +363,7 @@ function NewSessionPage() {
                         <BackIcon />
                     </button>
                 )}
-                <div className="flex-1 font-semibold">Create Session</div>
+                <div className="flex-1 font-semibold">{t('newSession.title')}</div>
             </div>
 
             {machinesError ? (

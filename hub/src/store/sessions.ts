@@ -18,6 +18,8 @@ type DbSessionRow = {
     agent_state_version: number
     todos: string | null
     todos_updated_at: number | null
+    team_state: string | null
+    team_state_updated_at: number | null
     active: number
     active_at: number | null
     seq: number
@@ -37,6 +39,8 @@ function toStoredSession(row: DbSessionRow): StoredSession {
         agentStateVersion: row.agent_state_version,
         todos: safeJsonParse(row.todos),
         todosUpdatedAt: row.todos_updated_at,
+        teamState: safeJsonParse(row.team_state),
+        teamStateUpdatedAt: row.team_state_updated_at,
         active: row.active === 1,
         activeAt: row.active_at,
         seq: row.seq
@@ -180,6 +184,38 @@ export function setSessionTodos(
             todos: json,
             todos_updated_at: todosUpdatedAt,
             updated_at: todosUpdatedAt,
+            namespace
+        })
+
+        return result.changes === 1
+    } catch {
+        return false
+    }
+}
+
+export function setSessionTeamState(
+    db: Database,
+    id: string,
+    teamState: unknown,
+    updatedAt: number,
+    namespace: string
+): boolean {
+    try {
+        const json = teamState === null || teamState === undefined ? null : JSON.stringify(teamState)
+        const result = db.prepare(`
+            UPDATE sessions
+            SET team_state = @team_state,
+                team_state_updated_at = @team_state_updated_at,
+                updated_at = CASE WHEN updated_at > @updated_at THEN updated_at ELSE @updated_at END,
+                seq = seq + 1
+            WHERE id = @id
+              AND namespace = @namespace
+              AND (team_state_updated_at IS NULL OR team_state_updated_at < @team_state_updated_at)
+        `).run({
+            id,
+            team_state: json,
+            team_state_updated_at: updatedAt,
+            updated_at: updatedAt,
             namespace
         })
 
