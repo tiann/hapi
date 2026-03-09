@@ -16,6 +16,7 @@
         "dev:web": "cd web && bun run dev",
         "typecheck": "bun run typecheck:cli && bun run typecheck:web && bun run typecheck:hub",
         "type-check": "bun run typecheck",
+        "lint": "bun run typecheck",
         "typecheck:cli": "cd cli && bun run typecheck",
         "typecheck:hub": "cd hub && bun run typecheck",
         "typecheck:web": "cd web && bun run typecheck",

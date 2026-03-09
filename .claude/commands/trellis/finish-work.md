@@ -12,13 +12,13 @@ Before submitting or committing, use this checklist to ensure work completeness.
 
 ```bash
 # Must pass
-pnpm lint
-pnpm type-check
-pnpm test
+bun run lint
+bun run type-check
+bun run test
 ```
 
-- [ ] `pnpm lint` passes with 0 errors?
-- [ ] `pnpm type-check` passes with no type errors?
+- [ ] `bun run lint` passes with 0 errors?
+- [ ] `bun run type-check` passes with no type errors?
 - [ ] Tests pass?
 - [ ] No `console.log` statements (use logger)?
 - [ ] No non-null assertions (the `x!` operator)?
@@ -43,7 +43,7 @@ Check if your change needs new or updated tests (see `.trellis/spec/unit-test/co
 - [ ] Does `.trellis/spec/guides/` need updates?
   - New cross-layer flows, lessons from bugs
 
-**Key Question**: 
+**Key Question**:
 > "If I fixed a bug or discovered something non-obvious, should I document it so future me (or others) won't hit the same issue?"
 
 If YES -> Update the relevant code-spec doc.
@@ -102,7 +102,7 @@ If the change spans multiple layers:
 
 ```bash
 # 1. Code checks
-pnpm lint && pnpm type-check
+bun run lint && bun run type-check
 
 # 2. View changes
 git status
@@ -133,7 +133,7 @@ Development Flow:
   Write code -> Test -> /trellis:finish-work -> git commit -> /trellis:record-session
                           |                              |
                    Ensure completeness              Record progress
-                   
+
 Debug Flow:
   Hit bug -> Fix -> /trellis:break-loop -> Knowledge capture
                        |
