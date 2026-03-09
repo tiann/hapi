@@ -3,35 +3,35 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.hub
-    image: hapi-hub:local
+    image: zhushen-hub:local
     env_file:
       - .env
     environment:
-      HAPI_HOME: /data/hapi
-      HAPI_LISTEN_HOST: 0.0.0.0
-      HAPI_LISTEN_PORT: ${HAPI_LISTEN_PORT:-3006}
-      HAPI_PUBLIC_URL: ${HAPI_PUBLIC_URL:-http://localhost:3006}
+      ZS_HOME: /data/zhushen
+      ZS_LISTEN_HOST: 0.0.0.0
+      ZS_LISTEN_PORT: ${ZS_LISTEN_PORT:-3006}
+      ZS_PUBLIC_URL: ${ZS_PUBLIC_URL:-http://localhost:3006}
       CLI_API_TOKEN: ${CLI_API_TOKEN}
     ports:
-      - "${HAPI_LISTEN_PORT:-3006}:${HAPI_LISTEN_PORT:-3006}"
+      - "${ZS_LISTEN_PORT:-3006}:${ZS_LISTEN_PORT:-3006}"
     volumes:
-      - hub-data:/data/hapi
+      - hub-data:/data/zhushen
     restart: unless-stopped
 
   cli-runner:
     build:
       context: .
       dockerfile: Dockerfile.cli
-    image: hapi-cli:local
+    image: zhushen-cli:local
     env_file:
       - .env
     environment:
-      HAPI_HOME: /data/hapi
-      HAPI_API_URL: ${HAPI_API_URL:-http://hub:3006}
+      ZS_HOME: /data/zhushen
+      ZS_API_URL: ${ZS_API_URL:-http://hub:3006}
       CLI_API_TOKEN: ${CLI_API_TOKEN}
-      HAPI_CLAUDE_PATH: ${HAPI_CLAUDE_PATH:-/usr/local/bin/claude}
+      ZS_CLAUDE_PATH: ${ZS_CLAUDE_PATH:-/usr/local/bin/claude}
     volumes:
-      - cli-data:/data/hapi
+      - cli-data:/data/zhushen
       - ${CLAUDE_CONFIG_DIR:?set CLAUDE_CONFIG_DIR}:/root/.claude
     depends_on:
       - hub
@@ -41,18 +41,18 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.cli
-    image: hapi-cli:local
+    image: zhushen-cli:local
     profiles:
       - interactive
     env_file:
       - .env
     environment:
-      HAPI_HOME: /data/hapi
-      HAPI_API_URL: ${HAPI_API_URL:-http://hub:3006}
+      ZS_HOME: /data/zhushen
+      ZS_API_URL: ${ZS_API_URL:-http://hub:3006}
       CLI_API_TOKEN: ${CLI_API_TOKEN}
-      HAPI_CLAUDE_PATH: ${HAPI_CLAUDE_PATH:-/usr/local/bin/claude}
+      ZS_CLAUDE_PATH: ${ZS_CLAUDE_PATH:-/usr/local/bin/claude}
     volumes:
-      - cli-data:/data/hapi
+      - cli-data:/data/zhushen
       - ${CLAUDE_CONFIG_DIR:?set CLAUDE_CONFIG_DIR}:/root/.claude
     depends_on:
       - hub
