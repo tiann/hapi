@@ -57,7 +57,7 @@ Happy 的中心化方案通常需要：
 每个用户运行自己的 hub。HAPI 提供两种远程访问方式：
 
 - **自托管**（自有服务器 / Cloudflare Tunnel / Tailscale）：链路由你控制，可仅依赖 HTTPS
-- **公共中继**（`hapi hub --relay`）：通过 tunwg（WireGuard + TLS）端到端加密，中继只转发不可读数据包
+- **公共中继**（`zs hub --relay`）：通过 tunwg（WireGuard + TLS）端到端加密，中继只转发不可读数据包
 - **内嵌数据库**：SQLite，无需外部服务
 - **一键部署**：单二进制、零配置起步
 

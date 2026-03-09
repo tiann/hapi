@@ -100,9 +100,9 @@ npx @jlovec/zhushen
 从 [GitHub Releases](https://github.com/jlovec1024/hapi/releases) 下载最新版。
 
 ```bash
-xattr -d com.apple.quarantine ./hapi
-chmod +x ./hapi
-sudo mv ./hapi /usr/local/bin/
+xattr -d com.apple.quarantine ./zs
+chmod +x ./zs
+sudo mv ./zs /usr/local/bin/
 ```
 </details>
 
@@ -115,7 +115,7 @@ cd hapi
 bun install
 bun build:single-exe
 
-./cli/dist/hapi
+./cli/dist/zs
 ```
 </details>
 
@@ -245,7 +245,7 @@ zs auth logout
 
 https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/
 
-> **说明**：Cloudflare Quick Tunnels（TryCloudflare）不支持 SSE，HAPI 实时更新依赖 SSE，因此不支持。请使用 Named Tunnel。
+> **说明**：Cloudflare Quick Tunnels（TryCloudflare）不支持 SSE，主神实时更新依赖 SSE，因此不支持。请使用 Named Tunnel。
 
 **Named Tunnel 配置示例：**
 
@@ -253,11 +253,11 @@ https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/
 # 安装 cloudflared: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/
 
 # 创建并配置 named tunnel
-cloudflared tunnel create hapi
-cloudflared tunnel route dns hapi hapi.yourdomain.com
+cloudflared tunnel create zhushen
+cloudflared tunnel route dns zhushen zhushen.yourdomain.com
 
 # 运行 tunnel
-cloudflared tunnel --protocol http2 run hapi
+cloudflared tunnel --protocol http2 run zhushen
 ```
 
 > **提示**：建议使用 `--protocol http2`（而非默认 QUIC）以减少长连接超时问题。

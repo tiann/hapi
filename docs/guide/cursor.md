@@ -1,6 +1,6 @@
 # Cursor Agent
 
-HAPI 支持 [Cursor Agent CLI](https://cursor.com/docs/cli/using)，可在网页和手机端远程控制 Cursor 的 AI 编程代理。
+主神支持 [Cursor Agent CLI](https://cursor.com/docs/cli/using)，可在网页和手机端远程控制 Cursor 的 AI 编程代理。
 
 ## 前置条件
 
@@ -18,13 +18,13 @@ agent --version
 ## 用法
 
 ```bash
-hapi cursor                    # 启动 Cursor Agent 会话
-hapi cursor resume <chatId>    # 恢复指定会话
-hapi cursor --continue         # 恢复最近一次会话
-hapi cursor --mode plan        # 以 Plan 模式启动
-hapi cursor --mode ask         # 以 Ask 模式启动
-hapi cursor --yolo             # 跳过审批提示（--force）
-hapi cursor --model <model>    # 指定模型
+zs cursor                    # 启动 Cursor Agent 会话
+zs cursor resume <chatId>    # 恢复指定会话
+zs cursor --continue         # 恢复最近一次会话
+zs cursor --mode plan        # 以 Plan 模式启动
+zs cursor --mode ask         # 以 Ask 模式启动
+zs cursor --yolo             # 跳过审批提示（--force）
+zs cursor --model <model>    # 指定模型
 ```
 
 ## 权限模式
@@ -40,7 +40,7 @@ hapi cursor --model <model>    # 指定模型
 
 ## 运行模式
 
-- **本地模式**：在终端运行 `hapi cursor`，交互体验完整。
+- **本地模式**：在终端运行 `zs cursor`，交互体验完整。
 - **远程模式**：在 Web/手机端拉起（无终端场景）。底层使用 `agent -p` + `--output-format stream-json` + `--trust`。每条用户消息会拉起一个 Agent 进程，会话通过 `--resume` 延续。
 
 ## 限制说明
@@ -50,7 +50,7 @@ hapi cursor --model <model>    # 指定模型
 
 ## 集成效果
 
-启动后，Cursor 会话会出现在 HAPI Web 应用中。你可以：
+启动后，Cursor 会话会出现在主神 Web 应用中。你可以：
 
 - 监控会话活动
 - 在手机端审批权限

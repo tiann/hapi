@@ -4,25 +4,13 @@
 
 ## 安装主神
 
-::: code-group
-
-```bash [npm]
+```bash
 npm install -g @jlovec/zhushen --registry=https://registry.npmjs.org
 ```
 
-```bash [Homebrew]
-brew install jlovec1024/tap/zhushen
-```
-
-```bash [npx (一次性使用)]
-npx @jlovec/zhushen
-```
-
-:::
-
 > 建议使用 npm 官方源进行全局安装，部分镜像源可能无法及时同步平台特定的包。
 
-其他安装方式：[安装指南](./installation.md)
+其他安装方式（Homebrew、npx、源码构建、Hub 部署细节）请查看：[安装指南](./installation.md)
 
 ## 启动 Hub
 
@@ -40,7 +28,7 @@ zs hub --relay
 ## 开始编码会话
 
 ```bash
-hapi
+zs
 ```
 
 这将启动由 主神包装的 Claude Code 会话，会话会自动显示在 Web 界面中。
@@ -55,7 +43,6 @@ hapi
 
 ## 下一步
 
-- [无缝切换](./how-it-works.md#无缝切换) - 在终端和手机之间无缝切换
-- [Hub 部署](./installation.md#hub-部署) - 从任何地方访问 HAPI
-- [通知设置](./installation.md#telegram-设置) - 配置 Telegram 通知
-- [安装应用](./pwa.md) - 将 HAPI 添加到主屏幕
+- [无缝切换](./how-it-works.md#无缝接管-seamless-handoff) - 在终端和手机之间无缝切换
+- [Hub 部署](./installation.md#hub-配置) - 从任何地方访问主神
+- [安装应用](./pwa.md) - 将主神添加到主屏幕

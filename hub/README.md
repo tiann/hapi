@@ -25,7 +25,7 @@ zs hub 的 HTTP API 与实时更新服务。
 - `ZS_PUBLIC_URL`：对外 HTTPS URL，同时用于推导 web app 默认 CORS 来源。
 - `CORS_ORIGINS`：逗号分隔来源或 `*`。
 - `ZS_HOME`：数据目录（默认：`~/.zhushen`）。
-- `DB_PATH`：SQLite 数据库路径（默认：`ZS_HOME/hapi.db`）。
+- `DB_PATH`：SQLite 数据库路径（默认：`ZS_HOME/zhushen.db`）。
 - `ZS_RELAY_API`：Relay API 域名（默认：`relay.hapi.run`）。
 - `ZS_RELAY_AUTH`：Relay 认证 key（默认：`zs`）。
 - `ZS_RELAY_FORCE_TCP`：强制 TCP relay 模式（`true/1`）。

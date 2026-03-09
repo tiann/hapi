@@ -57,7 +57,7 @@
 ### 诊断
 
 - `zs doctor` - 显示完整诊断（版本、runner 状态、日志、进程）。
-- `zs doctor clean` - 清理失控的 HAPI 进程。
+- `zs doctor clean` - 清理失控的主神进程。
 
 见 `src/ui/doctor.ts`。
 

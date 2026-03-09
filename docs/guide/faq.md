@@ -26,30 +26,26 @@
 
 ### 我必须单独部署 hub 吗？
 
-不需要。主神内置 hub。直接在你的机器上运行 `zs hub` 即可，无需外部 hub。
+不需要。主神内置 hub，直接运行 `zs hub` 即可。
+
+完整部署方式（本地、relay、自托管隧道）见：[安装指南 - Hub 配置](./installation.md#hub-配置)。
 
 
 ### 如何在手机上访问主神？
 
-局域网访问：
+推荐先阅读：[安装指南 - Hub 配置](./installation.md#hub-配置)。
 
-```
-http://<你的电脑IP>:3006
-```
-
-公网访问：
-
-- 如果 hub 本身有公网 IP，可直接访问（生产环境建议通过反向代理启用 HTTPS）
-- 如果处于 NAT 后，可配置隧道（Cloudflare Tunnel、Tailscale 或 ngrok）
+简要原则：
+- 局域网：直接访问 `http://<你的电脑IP>:3006`
+- 公网：优先使用 `zs hub --relay`，或使用自托管隧道（Cloudflare/Tailscale）
 
 ### access token 是做什么的？
 
-`CLI_API_TOKEN` 是共享密钥，用于认证：
-
-- CLI 到 hub 的连接
-- Web 应用登录
+`CLI_API_TOKEN` 是共享密钥，用于 CLI 与 Web 登录认证。
 
 首次启动 hub 时会自动生成，并保存到 `~/.zhushen/settings.json`。
+
+更多认证与环境变量细节见：[安装指南 - CLI 配置](./installation.md#cli-配置)。
 
 ### 支持多账号吗？
 
@@ -98,7 +94,7 @@ http://<你的电脑IP>:3006
 
 ### 我的数据安全吗？
 
-是的。HAPI 采用本地优先设计：
+是的。主神采用本地优先设计：
 
 - 数据保留在你的机器上
 - 不上传到外部服务器
@@ -108,7 +104,7 @@ http://<你的电脑IP>:3006
 
 自动生成的 token 为 256-bit（密码学安全）。对外访问时请始终通过 HTTPS（建议配合隧道）。
 
-### 别人能访问我的 HAPI 吗？
+### 别人能访问我的主神吗？
 
 只有拿到你的 access token 才能访问。建议额外采取：
 

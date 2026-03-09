@@ -95,8 +95,10 @@ docker compose --profile interactive run --rm cli --help
 
 ## 文档
 
-- [应用](docs/guide/pwa.md)
+- [快速开始](docs/guide/quick-start.md)
+- [安装与部署](docs/guide/installation.md)
 - [工作原理](docs/guide/how-it-works.md)
+- [应用](docs/guide/pwa.md)
 - [Cursor Agent](docs/guide/cursor.md)
 - [为什么选择主神](docs/guide/why-hapi.md)
 - [常见问题](docs/guide/faq.md)
