@@ -266,17 +266,27 @@ function MemberCard({ member, activity, permissions, onApprovePermission, onDeny
                             <span className="font-medium">Task:</span> {activity.toolCalls[0].description}
                         </div>
                     )}
-                    {activity?.lastOutput ? (
-                        <div className="max-h-40 overflow-y-auto">
-                            <pre className="whitespace-pre-wrap break-words text-[10px] leading-relaxed text-[var(--app-hint)]">
-                                {activity.lastOutput}
-                            </pre>
-                        </div>
-                    ) : !hasPendingPerms ? (
-                        <div className="text-[10px] text-[var(--app-hint)]">
-                            {isActive ? 'Working...' : 'No output yet'}
-                        </div>
-                    ) : null}
+                    {(() => {
+                        // Prefer real-time lastOutput from TeamState, fallback to activity extraction
+                        const output = member.lastOutput ?? activity?.lastOutput
+                        if (output) {
+                            return (
+                                <div className="mt-1 max-h-40 overflow-y-auto">
+                                    <pre className="whitespace-pre-wrap break-words text-[10px] leading-relaxed text-[var(--app-hint)]">
+                                        {output}
+                                    </pre>
+                                </div>
+                            )
+                        }
+                        if (!hasPendingPerms) {
+                            return (
+                                <div className="text-[10px] text-[var(--app-hint)]">
+                                    {isActive ? 'Working...' : 'No output yet'}
+                                </div>
+                            )
+                        }
+                        return null
+                    })()}
                 </div>
             )}
         </div>

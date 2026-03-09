@@ -105,7 +105,9 @@ export const TeamMemberSchema = z.object({
     runInBackground: z.boolean().optional(),
     isolation: z.enum(['worktree']).optional(),
     description: z.string().optional(),
-    agentId: z.string().optional()
+    agentId: z.string().optional(),
+    lastOutput: z.string().optional(),
+    lastOutputAt: z.number().optional()
 })
 
 export type TeamMember = z.infer<typeof TeamMemberSchema>

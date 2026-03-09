@@ -197,45 +197,88 @@ function extractTeammateMessageText(record: { role: string; content: unknown }):
     return null
 }
 
-function extractTeammatePermissionRequest(record: { role: string; content: unknown }): TeamStateDelta | null {
+function extractTeammateMessage(record: { role: string; content: unknown }): TeamStateDelta | null {
     const text = extractTeammateMessageText(record)
     if (!text || !text.includes('<teammate-message')) return null
 
-    // Extract teammate_id and JSON content from <teammate-message> tags
+    // Extract teammate_id and content from <teammate-message> tags
     const tagMatch = text.match(/<teammate-message\s+[^>]*teammate_id="([^"]+)"[^>]*>([\s\S]*?)<\/teammate-message>/)
     if (!tagMatch) return null
 
     const memberId = tagMatch[1]
-    const jsonStr = tagMatch[2].trim()
+    const body = tagMatch[2].trim()
+    const now = Date.now()
 
-    let parsed: Record<string, unknown>
+    // Try to parse as JSON (structured protocol messages)
+    let parsed: Record<string, unknown> | null = null
     try {
-        parsed = JSON.parse(jsonStr) as Record<string, unknown>
+        parsed = JSON.parse(body) as Record<string, unknown>
     } catch {
+        // Not JSON — plain text output from teammate
+    }
+
+    if (parsed) {
+        // permission_request
+        if (parsed.type === 'permission_request') {
+            const requestId = typeof parsed.request_id === 'string' ? parsed.request_id : null
+            const toolName = typeof parsed.tool_name === 'string' ? parsed.tool_name : null
+            if (!requestId || !toolName) return null
+
+            return {
+                _action: 'update',
+                pendingPermissions: [{
+                    requestId,
+                    memberName: memberId,
+                    toolName,
+                    description: typeof parsed.description === 'string' ? parsed.description : undefined,
+                    input: parsed.input,
+                    createdAt: now,
+                    status: 'pending'
+                }],
+                updatedAt: now
+            }
+        }
+
+        // idle_notification — update member status
+        if (parsed.type === 'idle_notification') {
+            return {
+                _action: 'update',
+                members: [{
+                    name: memberId,
+                    status: 'idle'
+                }],
+                updatedAt: now
+            }
+        }
+
+        // Other structured messages — store summary as lastOutput
+        const summary = typeof parsed.summary === 'string' ? parsed.summary
+            : typeof parsed.content === 'string' ? parsed.content
+            : null
+        if (summary) {
+            return {
+                _action: 'update',
+                members: [{
+                    name: memberId,
+                    lastOutput: summary.length > 500 ? summary.slice(0, 500) : summary,
+                    lastOutputAt: now
+                }],
+                updatedAt: now
+            }
+        }
+
         return null
     }
 
-    if (parsed.type !== 'permission_request') return null
-
-    const requestId = typeof parsed.request_id === 'string' ? parsed.request_id : null
-    const toolName = typeof parsed.tool_name === 'string' ? parsed.tool_name : null
-    if (!requestId || !toolName) return null
-
-    const description = typeof parsed.description === 'string' ? parsed.description : undefined
-    const input = parsed.input
-
+    // Plain text/markdown output from teammate — store as lastOutput
     return {
         _action: 'update',
-        pendingPermissions: [{
-            requestId,
-            memberName: memberId,
-            toolName,
-            description,
-            input,
-            createdAt: Date.now(),
-            status: 'pending'
+        members: [{
+            name: memberId,
+            lastOutput: body.length > 500 ? body.slice(0, 500) : body,
+            lastOutputAt: now
         }],
-        updatedAt: Date.now()
+        updatedAt: now
     }
 }
 
@@ -243,9 +286,9 @@ export function extractTeamStateFromMessageContent(messageContent: unknown): Tea
     const record = unwrapRoleWrappedRecordEnvelope(messageContent)
     if (!record) return null
 
-    // Check for teammate permission requests in user messages
-    const permDelta = extractTeammatePermissionRequest(record)
-    if (permDelta) return permDelta
+    // Check for teammate messages (permissions, output, idle, etc.)
+    const teammateDelta = extractTeammateMessage(record)
+    if (teammateDelta) return teammateDelta
 
     if (record.role !== 'agent' && record.role !== 'assistant') return null
     if (!isObject(record.content) || typeof record.content.type !== 'string') return null
