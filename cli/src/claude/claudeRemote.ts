@@ -164,7 +164,15 @@ export async function claudeRemote(opts: {
         nextMessageWaitInFlight = (async () => {
             const next = await opts.nextMessage();
             if (!next) {
-                messages.end();
+                // nextMessage can return null as an intermediate sentinel (e.g. mode switch/pending),
+                // not only for final shutdown. Keep waiting unless we've been explicitly aborted.
+                if (opts.signal?.aborted) {
+                    messages.end();
+                    return;
+                }
+                queueMicrotask(() => {
+                    scheduleNextMessage();
+                });
                 return;
             }
             mode = next.mode;

@@ -39,18 +39,17 @@ function parseTeamCreateResult(value: unknown): TeamCreateResult {
 export function TeamCreateView(props: ToolViewProps) {
     const input = parseTeamCreateInput(props.block.tool.input)
     const result = parseTeamCreateResult(props.block.tool.result)
-    const teamName = result.teamName ?? input.teamName
+    const renamed = Boolean(result.teamName && input.teamName && result.teamName !== input.teamName)
+
+    if (!renamed && !result.leadAgentId && !result.teamFilePath) {
+        return null
+    }
 
     return (
         <div className="flex flex-col gap-1.5 text-sm">
-            {teamName ? (
-                <div className="text-[var(--app-fg)]">
-                    Team <span className="font-medium">{teamName}</span>
-                </div>
-            ) : null}
-            {input.description ? (
+            {renamed ? (
                 <div className="text-[var(--app-hint)]">
-                    {input.description}
+                    Effective team name: <span className="font-medium text-[var(--app-fg)]">{result.teamName}</span>
                 </div>
             ) : null}
             {result.leadAgentId ? (

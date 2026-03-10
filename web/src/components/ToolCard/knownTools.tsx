@@ -100,7 +100,14 @@ export const knownTools: Record<string, {
             return teamName ? `Team: ${teamName}` : 'Create Team'
         },
         subtitle: (opts) => getInputStringAny(opts.input, ['description']) ?? null,
-        minimal: false
+        minimal: (opts) => {
+            const inputTeamName = getInputStringAny(opts.input, ['team_name'])
+            const resultTeamName = getInputStringAny(opts.result, ['team_name'])
+            const leadAgentId = getInputStringAny(opts.result, ['lead_agent_id'])
+            const teamFilePath = getInputStringAny(opts.result, ['team_file_path'])
+            const renamed = Boolean(inputTeamName && resultTeamName && inputTeamName !== resultTeamName)
+            return !renamed && !leadAgentId && !teamFilePath
+        }
     },
     TeamDelete: {
         icon: () => <UsersIcon className={DEFAULT_ICON_CLASS} />,
