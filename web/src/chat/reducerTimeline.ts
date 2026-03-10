@@ -4,6 +4,35 @@ import { createCliOutputBlock, isCliOutputText, mergeCliOutputBlocks } from '@/c
 import { parseMessageAsEvent } from '@/chat/reducerEvents'
 import { ensureToolBlock, extractTitleFromChangeTitleInput, isChangeTitleToolName, type PermissionEntry } from '@/chat/reducerTools'
 
+function extractToolResultText(content: unknown): string {
+    if (typeof content === 'string') return content
+    if (Array.isArray(content)) {
+        return content
+            .map((item) => {
+                if (typeof item === 'string') return item
+                if (!item || typeof item !== 'object') return ''
+                if ('text' in item && typeof (item as { text?: unknown }).text === 'string') {
+                    return (item as { text: string }).text
+                }
+                if ('content' in item && typeof (item as { content?: unknown }).content === 'string') {
+                    return (item as { content: string }).content
+                }
+                return ''
+            })
+            .filter(Boolean)
+            .join('\n')
+    }
+    if (content && typeof content === 'object') {
+        if ('text' in content && typeof (content as { text?: unknown }).text === 'string') {
+            return (content as { text: string }).text
+        }
+        if ('content' in content && typeof (content as { content?: unknown }).content === 'string') {
+            return (content as { content: string }).content
+        }
+    }
+    return ''
+}
+
 export function reduceTimeline(
     messages: TracedMessage[],
     context: {
@@ -216,7 +245,11 @@ export function reduceTimeline(
 
                     block.tool.result = c.content
                     block.tool.completedAt = msg.createdAt
-                    block.tool.state = c.is_error ? 'error' : 'completed'
+                    const resultText = extractToolResultText(c.content)
+                    const isBenignTaskOutputMiss = c.is_error
+                        && block.tool.name === 'TaskOutput'
+                        && /No task found with ID:/i.test(resultText)
+                    block.tool.state = c.is_error && !isBenignTaskOutputMiss ? 'error' : 'completed'
                     continue
                 }
 

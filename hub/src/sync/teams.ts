@@ -525,15 +525,22 @@ export function applyTeamStateDelta(
     }
 
     if (delta.tasks) {
+        const canonicalTaskId = (id: string): string => {
+            if (!id.startsWith('agent:')) return id
+            const at = id.indexOf('@', 'agent:'.length)
+            if (at === -1) return id
+            return id.slice(0, at)
+        }
         const taskMap = new Map((updated.tasks ?? []).map(t => [t.id, t]))
         for (const task of delta.tasks) {
-            const existing = taskMap.get(task.id)
+            const targetId = canonicalTaskId(task.id)
+            const existing = taskMap.get(task.id) ?? taskMap.get(targetId)
             if (existing) {
-                taskMap.set(task.id, { ...existing, ...task })
+                taskMap.set(existing.id, { ...existing, ...task, id: existing.id })
             } else if (task.title) {
                 // Only insert new tasks that have a title (required by schema).
                 // Orphan TaskUpdate without title is ignored to prevent schema validation failure.
-                taskMap.set(task.id, { ...task, title: task.title })
+                taskMap.set(targetId, { ...task, id: targetId, title: task.title })
             }
         }
         updated.tasks = Array.from(taskMap.values())

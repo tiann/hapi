@@ -91,6 +91,33 @@ describe('applyTeamStateDelta - orphan TaskUpdate', () => {
         expect(tasks).toHaveLength(1)
         expect(tasks[0]).toMatchObject({ id: 'task-1', status: 'in_progress' })
     })
+
+    test('should match agent task ids with and without @team suffix', () => {
+        const stateWithTask: TeamState = {
+            ...baseTeamState,
+            tasks: [{ id: 'agent:coder', title: 'Coder task', status: 'in_progress' }]
+        }
+
+        const result = applyTeamStateDelta(stateWithTask, {
+            tasks: [{ id: 'agent:coder@quick-check', status: 'completed' } as any],
+            updatedAt: 2000
+        })
+
+        const tasks = getTasks(result)
+        expect(tasks).toHaveLength(1)
+        expect(tasks[0]).toMatchObject({ id: 'agent:coder', status: 'completed' })
+    })
+
+    test('should canonicalize new agent task ids by dropping @team suffix', () => {
+        const result = applyTeamStateDelta(baseTeamState, {
+            tasks: [{ id: 'agent:researcher@quick-check', title: 'Research task', status: 'in_progress' }],
+            updatedAt: 2000
+        })
+
+        const tasks = getTasks(result)
+        expect(tasks).toHaveLength(1)
+        expect(tasks[0]).toMatchObject({ id: 'agent:researcher', title: 'Research task' })
+    })
 })
 
 describe('extractTeamStateFromMessageContent - Agent tool', () => {
