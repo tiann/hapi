@@ -406,6 +406,54 @@ describe('extractTeamStateFromMessageContent - teammate messages', () => {
             status: 'idle'
         })
     })
+
+    test('should parse multiple teammate-message tags in a single payload', () => {
+        const payload = [
+            '<teammate-message teammate_id="researcher" color="blue">',
+            'started scanning team files',
+            '</teammate-message>',
+            '',
+            '<teammate-message teammate_id="coder" color="green">',
+            '{"type":"idle_notification","from":"coder"}',
+            '</teammate-message>'
+        ].join('\n')
+
+        const content = {
+            role: 'user',
+            content: payload
+        }
+
+        const delta = extractTeamStateFromMessageContent(content)
+        expect(delta).toBeTruthy()
+        expect(delta!.members).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                name: 'researcher',
+                lastOutput: 'started scanning team files'
+            }),
+            expect.objectContaining({
+                name: 'coder',
+                status: 'idle'
+            })
+        ]))
+        expect(delta!.tasks).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                id: 'agent:coder',
+                status: 'completed'
+            })
+        ]))
+        expect(delta!.messages).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                from: 'researcher',
+                to: 'team-lead',
+                summary: 'started scanning team files'
+            }),
+            expect.objectContaining({
+                from: 'coder',
+                to: 'team-lead',
+                summary: 'idle'
+            })
+        ]))
+    })
 })
 
 describe('extractTeamStateFromMessageContent - TeamCreate tool result', () => {

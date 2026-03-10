@@ -261,89 +261,149 @@ function extractTeammateMessage(record: { role: string; content: unknown }): Tea
     const text = extractTeammateMessageText(record)
     if (!text || !text.includes('<teammate-message')) return null
 
-    // Extract teammate_id and content from <teammate-message> tags
-    const tagMatch = text.match(/<teammate-message\s+[^>]*teammate_id="([^"]+)"[^>]*>([\s\S]*?)<\/teammate-message>/)
-    if (!tagMatch) return null
-
-    const memberId = tagMatch[1]
-    const body = tagMatch[2].trim()
+    const tagRegex = /<teammate-message\s+[^>]*teammate_id="([^"]+)"[^>]*>([\s\S]*?)<\/teammate-message>/g
+    let result: TeamStateDelta | null = null
     const now = Date.now()
 
-    // Try to parse as JSON (structured protocol messages)
-    let parsed: Record<string, unknown> | null = null
-    try {
-        parsed = JSON.parse(body) as Record<string, unknown>
-    } catch {
-        // Not JSON — plain text output from teammate
-    }
+    for (const match of text.matchAll(tagRegex)) {
+        const memberId = match[1]
+        const body = match[2].trim()
+        if (!memberId || !body) continue
 
-    if (parsed) {
-        // permission_request
-        if (parsed.type === 'permission_request') {
-            const requestId = typeof parsed.request_id === 'string' ? parsed.request_id : null
-            const toolName = typeof parsed.tool_name === 'string' ? parsed.tool_name : null
-            if (!requestId || !toolName) return null
-
-            return {
-                _action: 'update',
-                pendingPermissions: [{
-                    requestId,
-                    memberName: memberId,
-                    toolName,
-                    description: typeof parsed.description === 'string' ? parsed.description : undefined,
-                    input: parsed.input,
-                    createdAt: now,
-                    status: 'pending'
-                }],
-                updatedAt: now
-            }
+        // Try to parse as JSON (structured protocol messages)
+        let parsed: Record<string, unknown> | null = null
+        try {
+            parsed = JSON.parse(body) as Record<string, unknown>
+        } catch {
+            // Not JSON — plain text output from teammate
         }
 
-        // idle_notification — update member status and mark agent task as completed
-        if (parsed.type === 'idle_notification') {
-            return {
-                _action: 'update',
-                members: [{
-                    name: memberId,
-                    status: 'idle'
-                }],
-                tasks: [{
-                    id: `agent:${memberId}`,
-                    status: 'completed'
-                }],
-                updatedAt: now
+        if (parsed) {
+            // permission_request
+            if (parsed.type === 'permission_request') {
+                const requestId = typeof parsed.request_id === 'string' ? parsed.request_id : null
+                const toolName = typeof parsed.tool_name === 'string' ? parsed.tool_name : null
+                if (!requestId || !toolName) continue
+
+                const delta: TeamStateDelta = {
+                    _action: 'update',
+                    pendingPermissions: [{
+                        requestId,
+                        memberName: memberId,
+                        toolName,
+                        description: typeof parsed.description === 'string' ? parsed.description : undefined,
+                        input: parsed.input,
+                        createdAt: now,
+                        status: 'pending'
+                    }],
+                    messages: [{
+                        from: memberId,
+                        to: 'team-lead',
+                        summary: `${toolName} needs permission`,
+                        type: 'message',
+                        timestamp: now
+                    }],
+                    updatedAt: now
+                }
+                result = result ? mergeDelta(result, delta) : delta
+                continue
             }
+
+            // idle_notification — update member status and mark agent task as completed
+            if (parsed.type === 'idle_notification') {
+                const delta: TeamStateDelta = {
+                    _action: 'update',
+                    members: [{
+                        name: memberId,
+                        status: 'idle'
+                    }],
+                    tasks: [{
+                        id: `agent:${memberId}`,
+                        status: 'completed'
+                    }],
+                    messages: [{
+                        from: memberId,
+                        to: 'team-lead',
+                        summary: 'idle',
+                        type: 'message',
+                        timestamp: now
+                    }],
+                    updatedAt: now
+                }
+                result = result ? mergeDelta(result, delta) : delta
+                continue
+            }
+
+            if (parsed.type === 'shutdown_approved') {
+                const delta: TeamStateDelta = {
+                    _action: 'update',
+                    members: [{
+                        name: memberId,
+                        status: 'shutdown'
+                    }],
+                    messages: [{
+                        from: memberId,
+                        to: 'team-lead',
+                        summary: 'shutdown approved',
+                        type: 'shutdown_response',
+                        timestamp: now
+                    }],
+                    updatedAt: now
+                }
+                result = result ? mergeDelta(result, delta) : delta
+                continue
+            }
+
+            // Other structured messages — store summary as lastOutput
+            const summary = typeof parsed.summary === 'string' ? parsed.summary
+                : typeof parsed.content === 'string' ? parsed.content
+                : null
+            if (summary) {
+                const safeSummary = summary.length > 500 ? summary.slice(0, 500) : summary
+                const delta: TeamStateDelta = {
+                    _action: 'update',
+                    members: [{
+                        name: memberId,
+                        lastOutput: safeSummary,
+                        lastOutputAt: now
+                    }],
+                    messages: [{
+                        from: memberId,
+                        to: 'team-lead',
+                        summary: safeSummary,
+                        type: 'message',
+                        timestamp: now
+                    }],
+                    updatedAt: now
+                }
+                result = result ? mergeDelta(result, delta) : delta
+            }
+
+            continue
         }
 
-        // Other structured messages — store summary as lastOutput
-        const summary = typeof parsed.summary === 'string' ? parsed.summary
-            : typeof parsed.content === 'string' ? parsed.content
-            : null
-        if (summary) {
-            return {
-                _action: 'update',
-                members: [{
-                    name: memberId,
-                    lastOutput: summary.length > 500 ? summary.slice(0, 500) : summary,
-                    lastOutputAt: now
-                }],
-                updatedAt: now
-            }
+        // Plain text/markdown output from teammate — store as lastOutput + message history
+        const safeBody = body.length > 500 ? body.slice(0, 500) : body
+        const delta: TeamStateDelta = {
+            _action: 'update',
+            members: [{
+                name: memberId,
+                lastOutput: safeBody,
+                lastOutputAt: now
+            }],
+            messages: [{
+                from: memberId,
+                to: 'team-lead',
+                summary: safeBody,
+                type: 'message',
+                timestamp: now
+            }],
+            updatedAt: now
         }
-
-        return null
+        result = result ? mergeDelta(result, delta) : delta
     }
 
-    // Plain text/markdown output from teammate — store as lastOutput
-    return {
-        _action: 'update',
-        members: [{
-            name: memberId,
-            lastOutput: body.length > 500 ? body.slice(0, 500) : body,
-            lastOutputAt: now
-        }],
-        updatedAt: now
-    }
+    return result
 }
 
 function extractUserToolResultBlocks(record: { role: string; content: unknown }): Array<Record<string, unknown>> {
