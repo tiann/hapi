@@ -7,6 +7,8 @@ import { useSessionActions } from '@/hooks/mutations/useSessionActions'
 import { SessionActionMenu } from '@/components/SessionActionMenu'
 import { RenameSessionDialog } from '@/components/RenameSessionDialog'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
+import { useGeneratedTitles } from '@/hooks/useGeneratedTitles'
+import { getSessionTitle } from '@/lib/sessionTitle'
 import { useTranslation } from '@/lib/use-translation'
 
 type SessionGroup = {
@@ -121,20 +123,6 @@ function ChevronIcon(props: { className?: string; collapsed?: boolean }) {
     )
 }
 
-function getSessionTitle(session: SessionSummary): string {
-    if (session.metadata?.name) {
-        return session.metadata.name
-    }
-    if (session.metadata?.summary?.text) {
-        return session.metadata.summary.text
-    }
-    if (session.metadata?.path) {
-        const parts = session.metadata.path.split('/').filter(Boolean)
-        return parts.length > 0 ? parts[parts.length - 1] : session.id.slice(0, 8)
-    }
-    return session.id.slice(0, 8)
-}
-
 function getTodoProgress(session: SessionSummary): { completed: number; total: number } | null {
     if (!session.todoProgress) return null
     if (session.todoProgress.completed === session.todoProgress.total) return null
@@ -169,6 +157,7 @@ function SessionItem(props: {
     selected?: boolean
 }) {
     const { t } = useTranslation()
+    const { generatedTitlesEnabled } = useGeneratedTitles()
     const { session: s, onSelect, showPath = true, api, selected = false } = props
     const { haptic } = usePlatform()
     const [menuOpen, setMenuOpen] = useState(false)
@@ -197,7 +186,7 @@ function SessionItem(props: {
         threshold: 500
     })
 
-    const sessionName = getSessionTitle(s)
+    const sessionName = getSessionTitle(s, { allowGeneratedTitle: generatedTitlesEnabled })
     const statusDotClass = s.active
         ? (s.thinking ? 'bg-[#007AFF]' : 'bg-[var(--app-badge-success-text)]')
         : 'bg-[var(--app-hint)]'

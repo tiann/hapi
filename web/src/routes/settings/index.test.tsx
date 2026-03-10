@@ -1,9 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { I18nContext, I18nProvider } from '@/lib/i18n-context'
 import { en } from '@/lib/locales'
 import { PROTOCOL_VERSION } from '@hapi/protocol'
 import SettingsPage from './index'
+
+vi.mock('@hapi/protocol', () => ({
+    PROTOCOL_VERSION: '1'
+}))
 
 // Mock the router hooks
 vi.mock('@tanstack/react-router', () => ({
@@ -120,5 +124,26 @@ describe('SettingsPage', () => {
         const calledKeys = spyT.mock.calls.map((call) => call[0])
         expect(calledKeys).toContain('settings.display.appearance')
         expect(calledKeys).toContain('settings.display.appearance.system')
+    })
+
+    it('renders the generated titles preference', () => {
+        renderWithProviders(<SettingsPage />)
+        expect(screen.getAllByText('Generated Titles').length).toBeGreaterThanOrEqual(1)
+        expect(screen.getAllByText('Allow AI tools to keep updating session titles automatically.').length).toBeGreaterThanOrEqual(1)
+    })
+
+    it('updates localStorage when toggling generated titles', () => {
+        const setItem = vi.fn()
+        const localStorageMock = {
+            getItem: vi.fn((key: string) => key === 'hapi:generated-titles-enabled' ? 'true' : 'en'),
+            setItem,
+            removeItem: vi.fn(),
+        }
+        Object.defineProperty(window, 'localStorage', { value: localStorageMock })
+
+        renderWithProviders(<SettingsPage />)
+        fireEvent.click(screen.getAllByRole('button', { name: /Generated Titles/i })[0])
+
+        expect(setItem).toHaveBeenCalledWith('hapi:generated-titles-enabled', 'false')
     })
 })

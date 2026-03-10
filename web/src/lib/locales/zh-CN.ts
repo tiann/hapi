@@ -256,6 +256,8 @@ export default {
   'settings.display.appearance.dark': '深色',
   'settings.display.appearance.light': '浅色',
   'settings.display.fontSize': '字体大小',
+  'settings.display.generatedTitles': '自动标题',
+  'settings.display.generatedTitles.description': '允许 AI 工具自动持续更新会话标题。',
   'settings.voice.title': '语音助手',
   'settings.voice.language': '语音语言',
   'settings.voice.autoDetect': '自动检测',
@@ -263,6 +265,8 @@ export default {
   'settings.about.website': '官方网站',
   'settings.about.appVersion': '应用版本',
   'settings.about.protocolVersion': '协议版本',
+  'settings.common.enabled': '开启',
+  'settings.common.disabled': '关闭',
 
   // Misc
   'misc.noMachines': '无可用机器',

@@ -4,6 +4,7 @@ import { useAppGoBack } from '@/hooks/useAppGoBack'
 import { getElevenLabsSupportedLanguages, getLanguageDisplayName, type Language } from '@/lib/languages'
 import { getFontScaleOptions, useFontScale, type FontScale } from '@/hooks/useFontScale'
 import { useAppearance, getAppearanceOptions, type AppearancePreference } from '@/hooks/useTheme'
+import { useGeneratedTitles } from '@/hooks/useGeneratedTitles'
 import { PROTOCOL_VERSION } from '@hapi/protocol'
 
 const locales: { value: Locale; nativeLabel: string }[] = [
@@ -83,6 +84,7 @@ export default function SettingsPage() {
     const voiceContainerRef = useRef<HTMLDivElement>(null)
     const { fontScale, setFontScale } = useFontScale()
     const { appearance, setAppearance } = useAppearance()
+    const { generatedTitlesEnabled, setGeneratedTitlesEnabled } = useGeneratedTitles()
 
     // Voice language state - read from localStorage
     const [voiceLanguage, setVoiceLanguage] = useState<string | null>(() => {
@@ -334,6 +336,26 @@ export default function SettingsPage() {
                                 </div>
                             )}
                         </div>
+                        <button
+                            type="button"
+                            onClick={() => setGeneratedTitlesEnabled(!generatedTitlesEnabled)}
+                            className="flex w-full items-center justify-between px-3 py-3 text-left transition-colors hover:bg-[var(--app-subtle-bg)]"
+                            aria-pressed={generatedTitlesEnabled}
+                        >
+                            <div className="min-w-0">
+                                <div className="text-[var(--app-fg)]">{t('settings.display.generatedTitles')}</div>
+                                <div className="mt-0.5 text-xs text-[var(--app-hint)]">
+                                    {t('settings.display.generatedTitles.description')}
+                                </div>
+                            </div>
+                            <span className={`ml-3 shrink-0 rounded-full px-2 py-1 text-xs font-medium ${
+                                generatedTitlesEnabled
+                                    ? 'bg-[var(--app-link)]/12 text-[var(--app-link)]'
+                                    : 'bg-[var(--app-subtle-bg)] text-[var(--app-hint)]'
+                            }`}>
+                                {generatedTitlesEnabled ? t('settings.common.enabled') : t('settings.common.disabled')}
+                            </span>
+                        </button>
                     </div>
 
                     {/* Voice Assistant section */}

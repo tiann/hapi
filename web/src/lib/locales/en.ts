@@ -254,6 +254,8 @@ export default {
   'settings.display.appearance.dark': 'Dark',
   'settings.display.appearance.light': 'Light',
   'settings.display.fontSize': 'Font Size',
+  'settings.display.generatedTitles': 'Generated Titles',
+  'settings.display.generatedTitles.description': 'Allow AI tools to keep updating session titles automatically.',
   'settings.voice.title': 'Voice Assistant',
   'settings.voice.language': 'Voice Language',
   'settings.voice.autoDetect': 'Auto-detect',
@@ -261,6 +263,8 @@ export default {
   'settings.about.website': 'Website',
   'settings.about.appVersion': 'App Version',
   'settings.about.protocolVersion': 'Protocol Version',
+  'settings.common.enabled': 'Enabled',
+  'settings.common.disabled': 'Disabled',
 
   // Misc
   'misc.noMachines': 'No machines available',
