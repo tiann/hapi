@@ -35,12 +35,24 @@ import { existsSync } from 'node:fs';
  * Resolve the TypeScript entrypoint for development mode.
  */
 function resolveEntrypoint(projectRoot: string): string {
+  const currentEntrypoint = process.argv[1];
+  if (currentEntrypoint
+    && existsSync(currentEntrypoint)
+    && (currentEntrypoint.endsWith('/index.ts') || currentEntrypoint.endsWith('/index.js'))) {
+    return currentEntrypoint;
+  }
+
+  const distEntrypoint = join(projectRoot, 'dist', 'index.js');
+  if (existsSync(distEntrypoint)) {
+    return distEntrypoint;
+  }
+
   const srcEntrypoint = join(projectRoot, 'src', 'index.ts');
   if (existsSync(srcEntrypoint)) {
     return srcEntrypoint;
   }
 
-  throw new Error('No CLI entrypoint found (expected src/index.ts)');
+  throw new Error('No CLI entrypoint found (expected dist/index.js or src/index.ts)');
 }
 
 export interface HappyCliCommand {
