@@ -385,6 +385,7 @@ gitError?: boolean
 - Hook request in-flight and no cached status -> show loading UI.
 - Hook request fails and no cached status -> show unavailable UI.
 - Hook request fails but cached status exists -> continue showing cached normal state (no unavailable flicker).
+- Session identity changes (`session.id`) -> cached git summary must be reset before evaluating loading/error fallback, so previous session status/error never leaks into new session header.
 - `branch === null` -> show detached label (not empty string).
 - `session.metadata.path` missing -> do not render Git status block in header.
 

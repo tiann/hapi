@@ -98,6 +98,21 @@ Reference executable contract:
 
 ---
 
+## Session-Scoped Client Cache Checklist (Web State ↔ Session Identity)
+
+When UI state is cached across renders (e.g. `useRef`, query fallback, optimistic state):
+- [ ] Is cache keyed/scoped by stable identity (`session.id`, `workspaceId`, etc.)?
+- [ ] On identity change, do we reset previous identity cache before deriving fallback UI?
+- [ ] Does fallback logic prevent previous entity errors/status from leaking into the current entity?
+- [ ] Is loading/error tri-state evaluated after scope reset?
+- [ ] Is there an integration test that covers "create new entity -> initial load -> no old cache leak"?
+
+Typical failure pattern:
+- Previous session status (`Git unavailable` or stale branch counters) remains in ref fallback while new session query is still loading.
+- User sees wrong status until route remount/re-entry forces state reset.
+
+---
+
 ## PR Automation Thinking Checklist
 
 When running automated post-coding PR workflow:
