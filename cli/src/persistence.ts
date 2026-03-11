@@ -181,14 +181,16 @@ export function writeRunnerState(state: RunnerLocallyPersistedState): void {
   writeFileSync(configuration.runnerStateFile, JSON.stringify(state, null, 2), 'utf-8');
 }
 
-/**
- * Clean up runner state file and lock file
- */
 export async function clearRunnerState(): Promise<void> {
   if (existsSync(configuration.runnerStateFile)) {
     await unlink(configuration.runnerStateFile);
   }
-  // Also clean up lock file if it exists (for stale cleanup)
+}
+
+/**
+ * Remove the persisted runner lock file when it is known to be stale.
+ */
+export async function clearRunnerLock(): Promise<void> {
   if (existsSync(configuration.runnerLockFile)) {
     try {
       await unlink(configuration.runnerLockFile);

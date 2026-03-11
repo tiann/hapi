@@ -4,7 +4,7 @@
  */
 
 import { logger } from '@/ui/logger';
-import { clearRunnerState, readRunnerState } from '@/persistence';
+import { clearRunnerLock, clearRunnerState, readRunnerState } from '@/persistence';
 import { Metadata } from '@/api/types';
 import packageJson from '../../package.json';
 import { existsSync, statSync } from 'node:fs';
@@ -143,8 +143,8 @@ export async function checkIfRunnerRunningAndCleanupStaleState(): Promise<boolea
 
   // Check if the runner process is still alive
   if (!isProcessAlive(state.pid)) {
-    logger.debug('[RUNNER RUN] Runner PID not running, cleaning up state');
-    await cleanupRunnerState();
+    logger.debug('[RUNNER RUN] Runner PID not running, cleaning up stale state and lock');
+    await cleanupRunnerState(true);
     return false;
   }
 
@@ -163,9 +163,9 @@ export async function checkIfRunnerRunningAndCleanupStaleState(): Promise<boolea
       return true;
     }
 
-    logger.debug(`[RUNNER RUN] Runner state exists but control port is not healthy (HTTP ${response.status}), cleaning up state`);
+    logger.debug(`[RUNNER RUN] Runner state exists but control port is not healthy (HTTP ${response.status}), keeping lock and cleaning up stale state only`);
   } catch (error) {
-    logger.debug('[RUNNER RUN] Runner state exists but control port is unreachable, cleaning up state', error);
+    logger.debug('[RUNNER RUN] Runner state exists but control port is unreachable, keeping lock and cleaning up stale state only', error);
   }
 
   await cleanupRunnerState();
@@ -226,9 +226,14 @@ export async function isRunnerRunningCurrentlyInstalledHappyVersion(): Promise<b
   }
 }
 
-export async function cleanupRunnerState(): Promise<void> {
+export async function cleanupRunnerState(removeLock: boolean = false): Promise<void> {
   try {
     await clearRunnerState();
+    if (removeLock) {
+      await clearRunnerLock();
+      logger.debug('[RUNNER RUN] Runner state and stale lock files removed');
+      return;
+    }
     logger.debug('[RUNNER RUN] Runner state file removed');
   } catch (error) {
     logger.debug('[RUNNER RUN] Error cleaning up runner metadata', error);

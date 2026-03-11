@@ -30,7 +30,7 @@ import {
   notifyRunnerSessionStarted,
   stopRunner
 } from '@/runner/controlClient';
-import { readRunnerState, clearRunnerState } from '@/persistence';
+import { readRunnerState, clearRunnerState, clearRunnerLock } from '@/persistence';
 import { Metadata } from '@/api/types';
 import { spawnHappyCLI } from '@/utils/spawnHappyCLI';
 import { getLatestRunnerLog } from '@/ui/logger';
@@ -378,6 +378,18 @@ describe.skipIf(!await isServerHealthy())('Runner Integration Tests', { timeout:
     
     // Clean up state file manually since runner couldn't do it
     await clearRunnerState();
+  });
+
+  it('should not remove runner lock when only stale state is cleared', async () => {
+    writeFileSync(configuration.runnerLockFile, String(runnerPid), 'utf8');
+    expect(existsSync(configuration.runnerLockFile)).toBe(true);
+
+    await clearRunnerState();
+
+    expect(existsSync(configuration.runnerLockFile)).toBe(true);
+
+    await clearRunnerLock();
+    expect(existsSync(configuration.runnerLockFile)).toBe(false);
   });
 
   it('should die with cleanup logs when a graceful shutdown is requested', async () => {

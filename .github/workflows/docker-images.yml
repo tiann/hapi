@@ -108,10 +108,17 @@ jobs:
   compose-smoke:
     runs-on: ubuntu-latest
     needs: build
+    env:
+      COMPOSE_PROJECT_NAME: zs-smoke
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.3.10'
 
       - name: Create smoke env
         run: |
@@ -132,22 +139,24 @@ jobs:
       - name: Compose smoke test
         run: |
           docker compose up -d --build zs-hub zs-runner
+          hub_container="${COMPOSE_PROJECT_NAME}-zs-hub-1"
+          runner_container="${COMPOSE_PROJECT_NAME}-zs-runner-1"
           for i in $(seq 1 30); do
-            hub_status=$(docker inspect --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' docker-zs-hub-1)
-            runner_status=$(docker inspect --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' docker-zs-runner-1)
+            hub_status=$(docker inspect --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$hub_container")
+            runner_status=$(docker inspect --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$runner_container")
             if [ "$hub_status" = 'healthy' ] && [ "$runner_status" = 'healthy' ]; then
               break
             fi
             sleep 2
           done
           docker compose ps
-          docker inspect --format='hub={{.State.Health.Status}}' docker-zs-hub-1
-          docker inspect --format='runner={{.State.Health.Status}} restart_count={{.RestartCount}} restarting={{.State.Restarting}} exit_code={{.State.ExitCode}}' docker-zs-runner-1
+          docker inspect --format='hub={{.State.Health.Status}}' "$hub_container"
+          docker inspect --format='runner={{.State.Health.Status}} restart_count={{.RestartCount}} restarting={{.State.Restarting}} exit_code={{.State.ExitCode}}' "$runner_container"
           docker compose logs --no-color --tail=120 zs-hub zs-runner
-          test "$(docker inspect --format='{{.State.Health.Status}}' docker-zs-hub-1)" = 'healthy'
-          test "$(docker inspect --format='{{.State.Health.Status}}' docker-zs-runner-1)" = 'healthy'
-          test "$(docker inspect --format='{{.RestartCount}}' docker-zs-runner-1)" = '0'
-          test "$(docker inspect --format='{{.State.Restarting}}' docker-zs-runner-1)" = 'false'
+          test "$(docker inspect --format='{{.State.Health.Status}}' "$hub_container")" = 'healthy'
+          test "$(docker inspect --format='{{.State.Health.Status}}' "$runner_container")" = 'healthy'
+          test "$(docker inspect --format='{{.RestartCount}}' "$runner_container")" = '0'
+          test "$(docker inspect --format='{{.State.Restarting}}' "$runner_container")" = 'false'
 
       - name: Teardown compose stack
         if: always()
