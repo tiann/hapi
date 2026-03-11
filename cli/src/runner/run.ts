@@ -15,7 +15,7 @@ import { isProcessAlive, isWindows, killProcess, killProcessByChildProcess } fro
 import { withRetry } from '@/utils/time';
 import { isRetryableConnectionError } from '@/utils/errorUtils';
 
-import { cleanupRunnerState, getInstalledCliMtimeMs, isRunnerRunningCurrentlyInstalledHappyVersion, stopRunner } from './controlClient';
+import { cleanupRunnerState, getInstalledCliMtimeMs, getRunnerAvailability, isRunnerRunningCurrentlyInstalledHappyVersion, stopRunner } from './controlClient';
 import { startRunnerControlServer } from './controlServer';
 import { createWorktree, removeWorktree, type WorktreeInfo } from './worktree';
 import { join } from 'path';
@@ -96,6 +96,13 @@ export async function startRunner(): Promise<void> {
 
   // Check if already running
   // Check if running runner version matches current CLI version
+  const availability = await getRunnerAvailability();
+  if (availability.status === 'degraded') {
+    logger.debug('[RUNNER RUN] Runner control plane is degraded; keeping existing runner instead of forcing restart');
+    console.log('Runner already running but control port is temporarily unavailable');
+    process.exit(0);
+  }
+
   const runningRunnerVersionMatches = await isRunnerRunningCurrentlyInstalledHappyVersion();
   if (!runningRunnerVersionMatches) {
     logger.debug('[RUNNER RUN] Runner version mismatch detected, restarting runner with current CLI version');

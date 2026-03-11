@@ -96,9 +96,26 @@ When changing slash command discovery, verify:
 Reference executable contract:
 - `backend/quality-guidelines.md` → `Scenario: Slash Command Cross-Layer Contract (Project + Nested)`
 
+## Post-Merge Conflict Contract Checklist (YAML Workflow ↔ Runtime Lifecycle)
+
+When resolving merge conflicts across infra/runtime files, verify the merged result at the contract level instead of only removing conflict markers:
+- [ ] For GitHub Actions YAML, do all `needs:` references still point to real jobs after the merge?
+- [ ] For publish workflows, are smoke/validation steps still ordered before any irreversible artifact push?
+- [ ] For runtime availability helpers, did any merged boolean branch collapse `running` / `degraded` / `stale` semantics back into a single `false` path?
+- [ ] After conflict resolution, did you replay the relevant caller chain (`helper -> caller -> side effect`) rather than checking only the edited file?
+- [ ] Is there at least one regression test or static validation that would fail if the merged contract regresses again?
+
+Typical failure pattern:
+- A merge keeps both sides syntactically valid, but changes the contract meaning:
+  - YAML keeps all steps yet points `needs` to a removed job.
+  - Publish flow keeps smoke test logic but moves it after `push: true`.
+  - Availability helper keeps explicit states locally, but caller still interprets the merged return value as "restart now".
+
+Reference executable contracts:
+- `backend/quality-guidelines.md` → `Scenario: Post-Merge Conflict Resolution Contract (Workflow Dependencies + Runtime Availability)`
+
 ---
 
-## Session-Scoped Client Cache Checklist (Web State ↔ Session Identity)
 
 When UI state is cached across renders (e.g. `useRef`, query fallback, optimistic state):
 - [ ] Is cache keyed/scoped by stable identity (`session.id`, `workspaceId`, etc.)?

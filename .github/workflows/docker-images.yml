@@ -126,6 +126,14 @@ jobs:
             type=raw,value=latest,enable={{is_default_branch}}
             type=ref,event=tag
 
+      - name: Runner smoke test
+        if: matrix.name == 'runner'
+        run: |
+          docker build -f Dockerfile.runner -t zs-runner:smoke .
+          docker run --rm zs-runner:smoke zs --help
+          docker run --rm zs-runner:smoke claude --version
+          docker run --rm --entrypoint /bin/bash zs-runner:smoke -lc 'bun run --cwd /app/cli src/index.ts --help >/tmp/zs-help.txt && tail -n 20 /tmp/zs-help.txt'
+
       - name: Build and push (${{ matrix.name }})
         uses: docker/build-push-action@v6
         with:
@@ -136,17 +144,10 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
-      - name: Runner smoke test
-        if: matrix.name == 'runner'
-        run: |
-          docker build -f Dockerfile.runner -t zs-runner:smoke .
-          docker run --rm zs-runner:smoke zs --help
-          docker run --rm zs-runner:smoke claude --version
-          docker run --rm --entrypoint /bin/bash zs-runner:smoke -lc 'bun run --cwd /app/cli src/index.ts --help >/tmp/zs-help.txt && tail -n 20 /tmp/zs-help.txt'
-
   compose-smoke:
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
-    needs: build
+    needs: publish
     env:
       COMPOSE_PROJECT_NAME: zs-smoke
 

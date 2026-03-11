@@ -820,6 +820,88 @@ jobs:
 
 ---
 
+## Scenario: Post-Merge Conflict Resolution Contract (Workflow Dependencies + Runtime Availability)
+
+### 1. Scope / Trigger
+- Trigger: a branch resolves merge conflicts in files that encode executable behavior, especially:
+  - `.github/workflows/*.yml`
+  - runtime lifecycle helpers such as `cli/src/runner/controlClient.ts`, `cli/src/runner/run.ts`
+- Why code-spec depth is required:
+  - Conflict resolution often preserves syntax while silently breaking job graphs, step ordering, or caller semantics.
+  - The bug may not be local to the conflicted file; it often appears in the next caller that interprets the merged result.
+
+### 2. Signatures
+- Workflow dependency signature:
+  - `jobs.<job>.needs`
+- Workflow release gate signature:
+  - validation/smoke steps MUST precede any `push: true` artifact publish
+- Runtime availability signature:
+  - `getRunnerAvailability(): Promise<{ status: 'missing' | 'stale' | 'degraded' | 'running'; ... }>`
+  - `isRunnerRunningCurrentlyInstalledHappyVersion(): Promise<boolean>`
+  - `startRunner()` caller branch in `cli/src/runner/run.ts`
+
+### 3. Contracts
+- Workflow graph contract:
+  - every `needs:` reference MUST resolve to an existing job in the same merged workflow file.
+- Publish ordering contract:
+  - smoke/validation steps that protect artifact quality MUST run before the irreversible publish step.
+- Availability caller contract:
+  - if a helper exposes `degraded`, the caller MUST not reinterpret that state as an unconditional restart/replace signal.
+- Conflict-resolution contract:
+  - after merging, review the helper and every side-effecting caller in the same chain before considering the conflict resolved.
+
+### 4. Validation & Error Matrix
+- `needs:` points to removed job -> workflow invalid, guarded job never runs.
+- Smoke test exists but runs after `push: true` -> bad artifact can already be published.
+- Helper returns `false` for `degraded`, caller maps `false -> stopRunner()` -> temporary control-plane issue becomes forced restart.
+- File looks merged cleanly, but caller chain was not replayed -> semantic regression survives review.
+
+### 5. Good/Base/Bad Cases
+- Good:
+  - merged workflow keeps valid `needs`, validation runs before publish, and degraded runtime does not trigger stop/restart.
+- Base:
+  - workflow passes syntax but still requires explicit `gh`/review inspection of job graph and order.
+- Bad:
+  - merge only removes conflict markers; no one checks dependency edges, publish ordering, or downstream caller behavior.
+
+### 6. Tests Required (with assertion points)
+- Workflow assertions:
+  - no `needs:` entry references a missing job.
+  - smoke/validation runs before artifact push.
+- Runtime assertions:
+  - `degraded` availability does not trigger `stopRunner()` or forced restart path.
+  - same-PID stale state remains distinguishable from degraded live state.
+- Review assertions:
+  - when conflict resolution touches helper return semantics, reviewers must inspect all callers with side effects.
+
+### 7. Wrong vs Correct
+#### Wrong
+```yaml
+compose-smoke:
+  needs: build
+```
+
+```ts
+if (availability.status !== 'running') {
+  return false; // caller will stop current runner
+}
+```
+
+#### Correct
+```yaml
+compose-smoke:
+  if: github.event_name != 'pull_request'
+  needs: publish
+```
+
+```ts
+if (availability.status === 'degraded') {
+  return true; // preserve current runner, avoid forced restart
+}
+```
+
+---
+
 ## Scenario: Docker Build Lockfile Freeze Contract (Bun Workspace CI)
 
 ### 1. Scope / Trigger

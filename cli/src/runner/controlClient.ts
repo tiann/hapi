@@ -205,6 +205,11 @@ export async function checkIfRunnerRunningAndCleanupStaleState(): Promise<boolea
 export async function isRunnerRunningCurrentlyInstalledHappyVersion(): Promise<boolean> {
   logger.debug('[RUNNER CONTROL] Checking if runner is running same version');
   const availability = await getRunnerAvailability();
+  if (availability.status === 'degraded') {
+    logger.debug('[RUNNER CONTROL] Runner control plane is degraded; preserving existing runner instead of treating it as a version mismatch');
+    return true;
+  }
+
   if (availability.status !== 'running') {
     logger.debug(`[RUNNER CONTROL] Runner is not confirmed healthy (status: ${availability.status}), returning false`);
     return false;
