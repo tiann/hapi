@@ -22,6 +22,7 @@ export type WorktreeMetadata = z.infer<typeof WorktreeMetadataSchema>
 export const MetadataSchema = z.object({
     path: z.string(),
     host: z.string(),
+    model: z.string().optional(),
     version: z.string().optional(),
     name: z.string().optional(),
     os: z.string().optional(),

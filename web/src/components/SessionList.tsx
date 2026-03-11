@@ -7,6 +7,7 @@ import { useSessionActions } from '@/hooks/mutations/useSessionActions'
 import { SessionActionMenu } from '@/components/SessionActionMenu'
 import { RenameSessionDialog } from '@/components/RenameSessionDialog'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
+import { getSessionModelLabel } from '@/lib/sessionModelLabel'
 import { useTranslation } from '@/lib/use-translation'
 
 type SessionGroup = {
@@ -259,7 +260,7 @@ function SessionItem(props: {
                         </span>
                         {getAgentLabel(s)}
                     </span>
-                    <span>{t('session.item.modelMode')}: {s.modelMode || 'default'}</span>
+                    <span>{t('session.item.modelMode')}: {getSessionModelLabel(s)}</span>
                     {s.metadata?.worktree?.branch ? (
                         <span>{t('session.item.worktree')}: {s.metadata.worktree.branch}</span>
                     ) : null}

@@ -25,6 +25,7 @@ export type {
 export type SessionMetadataSummary = {
     path: string
     host: string
+    model?: string
     version?: string
     name?: string
     os?: string

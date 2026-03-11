@@ -6,6 +6,7 @@ import { useSessionActions } from '@/hooks/mutations/useSessionActions'
 import { SessionActionMenu } from '@/components/SessionActionMenu'
 import { RenameSessionDialog } from '@/components/RenameSessionDialog'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
+import { getSessionModelLabel } from '@/lib/sessionModelLabel'
 import { useTranslation } from '@/lib/use-translation'
 
 function getSessionTitle(session: Session): string {
@@ -139,7 +140,7 @@ export function SessionHeader(props: {
                                 {session.metadata?.flavor?.trim() || 'unknown'}
                             </span>
                             <span>
-                                {t('session.item.modelMode')}: {session.modelMode || 'default'}
+                                {t('session.item.modelMode')}: {getSessionModelLabel(session)}
                             </span>
                             {worktreeBranch ? (
                                 <span>{t('session.item.worktree')}: {worktreeBranch}</span>
