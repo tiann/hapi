@@ -17,6 +17,7 @@ export function createGeminiBackend(opts: {
     resumeSessionId?: string | null;
     hookSettingsPath?: string;
     cwd?: string;
+    permissionMode?: string;
 }): AcpSdkBackend {
     const { model, token } = resolveGeminiRuntimeConfig({
         model: opts.model,
@@ -29,6 +30,9 @@ export function createGeminiBackend(opts: {
     }
     if (model) {
         args.push('--model', model);
+    }
+    if (opts.permissionMode === 'yolo' || opts.permissionMode === 'safe-yolo') {
+        args.push('--yolo');
     }
 
     const env = buildGeminiEnv({

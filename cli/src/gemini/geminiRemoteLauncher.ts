@@ -56,7 +56,8 @@ class GeminiRemoteLauncher extends RemoteLauncherBase {
             token: runtimeConfig.token,
             resumeSessionId: session.sessionId,
             hookSettingsPath: this.hookSettingsPath,
-            cwd: session.path
+            cwd: session.path,
+            permissionMode: session.getPermissionMode() as string | undefined
         });
         this.backend = backend;
 
