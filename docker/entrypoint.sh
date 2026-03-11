@@ -44,6 +44,24 @@ fi
 CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-/root/.claude}"
 export CLAUDE_CONFIG_DIR
 
+if [ -n "${ZCF_API_KEY}" ] && [ -n "${ZCF_API_URL}" ]; then
+    case "${ZCF_API_KEY}" in
+        http://*|https://*)
+            case "${ZCF_API_URL}" in
+                http://*|https://*)
+                    ;;
+                *)
+                    echo "[entrypoint] WARN: Detected swapped ZCF_API_KEY/ZCF_API_URL values, auto-correcting..." >&2
+                    zcf_swapped_api_key="${ZCF_API_URL}"
+                    ZCF_API_URL="${ZCF_API_KEY}"
+                    ZCF_API_KEY="${zcf_swapped_api_key}"
+                    export ZCF_API_KEY ZCF_API_URL
+                    ;;
+            esac
+            ;;
+    esac
+fi
+
 mkdir -p "${CLAUDE_CONFIG_DIR}"
 if [ -z "$(ls -A "${CLAUDE_CONFIG_DIR}" 2>/dev/null)" ]; then
     echo "[entrypoint] Claude config is empty, running first-boot zcf init..." >&2

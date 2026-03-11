@@ -16,6 +16,12 @@ services:
       - "${ZS_LISTEN_PORT:-3006}:${ZS_LISTEN_PORT:-3006}"
     volumes:
       - hub-data:/data/zhushen
+    healthcheck:
+      test: ["CMD-SHELL", "bun -e \"fetch('http://127.0.0.1:' + (process.env.ZS_LISTEN_PORT || '3006') + '/health').then(r => { if (!r.ok) process.exit(1) }).catch(() => process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
     restart: unless-stopped
 
   zs-runner:
@@ -30,6 +36,7 @@ services:
       CLI_API_TOKEN: ${CLI_API_TOKEN}
       ZS_GO_VERSION: ${ZS_GO_VERSION:-1.24.3}
       ZS_NODE_VERSION: ${ZS_NODE_VERSION:-22}
+      # ZCF 运行时覆盖：ZCF_API_KEY 必须是 token，ZCF_API_URL 必须是 http(s) URL
       ZCF_API_KEY: ${ZCF_API_KEY:-}
       ZCF_API_URL: ${ZCF_API_URL:-}
       ZCF_API_MODEL: ${ZCF_API_MODEL:-}
@@ -43,7 +50,18 @@ services:
       - runner-data:/data
       - ${CLAUDE_CONFIG_DIR:?set CLAUDE_CONFIG_DIR}:/root/.claude
     depends_on:
-      - zs-hub
+      zs-hub:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "state_file='/data/runner.state.json'; [ -f \"$$state_file\" ] || exit 1; port=$$(node -e \"const fs=require('fs'); const state=JSON.parse(fs.readFileSync(process.argv[1],'utf8')); if (!state.httpPort) process.exit(1); process.stdout.write(String(state.httpPort));\" \"$$state_file\") || exit 1; node -e \"fetch('http://127.0.0.1:' + process.argv[1] + '/list', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1));\" \"$$port\""
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
     restart: unless-stopped
 
 volumes:

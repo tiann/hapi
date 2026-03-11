@@ -25,6 +25,7 @@
         "test:hub": "cd hub && bun run test",
         "test:web": "cd web && bun run test",
         "clean-session": "bun run hub/scripts/cleanup-sessions.ts",
+        "docker:check": "bash docker/check-compose-env.sh",
         "release-all": "cd cli && bun run release-all"
     },
     "devDependencies": {

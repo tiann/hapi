@@ -181,14 +181,16 @@ export function writeRunnerState(state: RunnerLocallyPersistedState): void {
   writeFileSync(configuration.runnerStateFile, JSON.stringify(state, null, 2), 'utf-8');
 }
 
-/**
- * Clean up runner state file and lock file
- */
 export async function clearRunnerState(): Promise<void> {
   if (existsSync(configuration.runnerStateFile)) {
     await unlink(configuration.runnerStateFile);
   }
-  // Also clean up lock file if it exists (for stale cleanup)
+}
+
+/**
+ * Remove the persisted runner lock file when it is known to be stale.
+ */
+export async function clearRunnerLock(): Promise<void> {
   if (existsSync(configuration.runnerLockFile)) {
     try {
       await unlink(configuration.runnerLockFile);
@@ -220,7 +222,14 @@ export async function acquireRunnerLock(
         try {
           const lockPid = readFileSync(configuration.runnerLockFile, 'utf-8').trim();
           if (lockPid && !isNaN(Number(lockPid))) {
-            if (!isProcessAlive(Number(lockPid))) {
+            const numericLockPid = Number(lockPid);
+            if (numericLockPid === process.pid) {
+              // Containers frequently reuse PID 1 across restarts. If the lock file claims to be
+              // held by our current PID before we acquired it, it is a stale lock from a previous container.
+              unlinkSync(configuration.runnerLockFile);
+              continue; // Retry acquisition
+            }
+            if (!isProcessAlive(numericLockPid)) {
               // Process doesn't exist, remove stale lock
               unlinkSync(configuration.runnerLockFile);
               continue; // Retry acquisition

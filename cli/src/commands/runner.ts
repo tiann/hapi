@@ -2,6 +2,7 @@ import chalk from 'chalk'
 import { startRunner } from '@/runner/run'
 import {
     checkIfRunnerRunningAndCleanupStaleState,
+    getRunnerAvailability,
     isRunnerRunningCurrentlyInstalledHappyVersion,
     listRunnerSessions,
     stopRunner,
@@ -85,15 +86,28 @@ export const runnerCommand: CommandDefinition = {
         }
 
         if (runnerSubcommand === 'start') {
-            const started = await startRunnerDetached()
-
-            if (started) {
-                console.log('Runner started successfully')
-            } else {
-                console.error('Failed to start runner')
-                process.exit(1)
+            let lastAvailability = await getRunnerAvailability()
+            if (lastAvailability.status !== 'running') {
+                const started = await startRunnerDetached()
+                if (started) {
+                    console.log('Runner started successfully')
+                    process.exit(0)
+                }
+                lastAvailability = await getRunnerAvailability()
             }
-            process.exit(0)
+
+            if (lastAvailability.status === 'running') {
+                console.log('Runner started successfully')
+                process.exit(0)
+            }
+
+            if (lastAvailability.status === 'degraded') {
+                console.log('Runner process started but control port is not healthy yet')
+                process.exit(0)
+            }
+
+            console.error('Failed to start runner')
+            process.exit(1)
         }
 
         if (runnerSubcommand === 'start-sync') {

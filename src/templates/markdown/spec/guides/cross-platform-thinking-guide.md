@@ -172,6 +172,32 @@ if (process.platform !== 'win32') {
 
 ---
 
+### 陷阱 6: 环境变量语义写反
+
+**问题**: 运行时环境变量名称正确，但值被对调，导致配置工具把 token 当成 URL、把 URL 当成 token。
+
+```bash
+# ❌ 错误：API Key / URL 值写反
+ZCF_API_KEY="https://axonhub.example.com"
+ZCF_API_URL="ah-xxxxxxxx"
+
+# ✅ 正确：名称和值语义一致
+ZCF_API_KEY="ah-xxxxxxxx"
+ZCF_API_URL="https://axonhub.example.com"
+```
+
+**症状**:
+- 配置阶段报 `Invalid base URL format`
+- 日志里 URL 显示成 token，Key 显示成域名
+- 后续流程继续执行，但实际配置已经脏掉
+
+**预防**:
+- 对成对出现的环境变量（如 `*_KEY` / `*_URL`）做语义校验，而不只检查“是否非空”
+- 在入口脚本中打印脱敏后的配置摘要，便于肉眼识别写反
+- 对明显写反的输入做告警，必要时自动纠正或直接失败
+
+---
+
 ## 跨平台检查清单
 
 ### 编码时自我检查

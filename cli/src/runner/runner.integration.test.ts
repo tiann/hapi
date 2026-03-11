@@ -29,9 +29,10 @@ import {
   stopRunnerHttp,
   notifyRunnerSessionStarted,
   stopRunner,
+  getRunnerAvailability,
   isRunnerRunningCurrentlyInstalledHappyVersion
 } from '@/runner/controlClient';
-import { readRunnerState, clearRunnerState } from '@/persistence';
+import { readRunnerState, clearRunnerState, clearRunnerLock } from '@/persistence';
 import { Metadata } from '@/api/types';
 import { spawnHappyCLI } from '@/utils/spawnHappyCLI';
 import { getLatestRunnerLog } from '@/ui/logger';
@@ -404,6 +405,79 @@ describe.skipIf(!await isServerHealthy())('Runner Integration Tests', { timeout:
     
     // Clean up state file manually since runner couldn't do it
     await clearRunnerState();
+  });
+
+  it('should preserve runner state when process is alive but control port is temporarily unreachable', async () => {
+    const initialState = await readRunnerState();
+    expect(initialState).toBeDefined();
+    expect(isProcessAlive(initialState!.pid)).toBe(true);
+
+    const originalState = readFileSync(configuration.runnerStateFile, 'utf8');
+    const unreachableState = {
+      ...initialState!,
+      httpPort: 1
+    };
+
+    try {
+      writeFileSync(configuration.runnerStateFile, JSON.stringify(unreachableState, null, 2));
+
+      const availability = await getRunnerAvailability();
+      expect(availability.status).toBe('degraded');
+      expect(availability.state).toBeDefined();
+      expect(availability.state!.pid).toBe(initialState!.pid);
+      expect(existsSync(configuration.runnerStateFile)).toBe(true);
+
+      const persistedState = await readRunnerState();
+      expect(persistedState).toBeDefined();
+      expect(persistedState!.pid).toBe(initialState!.pid);
+      expect(persistedState!.httpPort).toBe(1);
+    } finally {
+      writeFileSync(configuration.runnerStateFile, originalState);
+    }
+  });
+
+  it('should treat same-PID unreachable runner state as stale metadata', async () => {
+    const originalState = readFileSync(configuration.runnerStateFile, 'utf8');
+
+    writeFileSync(configuration.runnerLockFile, String(process.pid), 'utf8');
+    expect(existsSync(configuration.runnerLockFile)).toBe(true);
+
+    const samePidState = {
+      pid: process.pid,
+      httpPort: 1,
+      startTime: new Date().toISOString(),
+      startedWithCliVersion: 'test-version'
+    };
+
+    try {
+      writeFileSync(configuration.runnerStateFile, JSON.stringify(samePidState, null, 2));
+
+      const availability = await getRunnerAvailability();
+      expect(availability.status).toBe('stale');
+      expect(availability.state).toBeDefined();
+      expect(availability.state!.pid).toBe(process.pid);
+      expect(existsSync(configuration.runnerStateFile)).toBe(false);
+      expect(existsSync(configuration.runnerLockFile)).toBe(false);
+    } finally {
+      if (existsSync(configuration.runnerLockFile)) {
+        unlinkSync(configuration.runnerLockFile);
+      }
+      if (!existsSync(configuration.runnerStateFile)) {
+        writeFileSync(configuration.runnerStateFile, originalState);
+      }
+    }
+  });
+
+  it('should not remove runner lock when only stale state is cleared', async () => {
+    writeFileSync(configuration.runnerLockFile, String(runnerPid), 'utf8');
+    expect(existsSync(configuration.runnerLockFile)).toBe(true);
+
+    await clearRunnerState();
+
+    expect(existsSync(configuration.runnerLockFile)).toBe(true);
+
+    await clearRunnerLock();
+    expect(existsSync(configuration.runnerLockFile)).toBe(false);
   });
 
   it('should die with cleanup logs when a graceful shutdown is requested', async () => {

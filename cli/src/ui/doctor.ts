@@ -8,7 +8,7 @@
 import chalk from 'chalk'
 import { configuration } from '@/configuration'
 import { readSettings } from '@/persistence'
-import { checkIfRunnerRunningAndCleanupStaleState } from '@/runner/controlClient'
+import { getRunnerAvailability } from '@/runner/controlClient'
 import { findRunawayHappyProcesses, findAllHappyProcesses } from '@/runner/doctor'
 import { readRunnerState } from '@/persistence'
 import { existsSync, readdirSync, statSync } from 'node:fs'
@@ -152,10 +152,10 @@ export async function runDoctorCommand(filter?: 'all' | 'runner'): Promise<void>
     // Runner status - shown for both 'all' and 'runner' filters
     console.log(chalk.bold('\n🤖 Runner Status'));
     try {
-        const isRunning = await checkIfRunnerRunningAndCleanupStaleState();
-        const state = await readRunnerState();
+        const availability = await getRunnerAvailability();
+        const state = availability.state ?? await readRunnerState();
 
-        if (isRunning && state) {
+        if (availability.status === 'running' && state) {
             console.log(chalk.green('✓ Runner is running'));
             console.log(`  PID: ${state.pid}`);
             console.log(`  Started: ${new Date(state.startTime).toLocaleString()}`);
@@ -163,8 +163,17 @@ export async function runDoctorCommand(filter?: 'all' | 'runner'): Promise<void>
             if (state.httpPort) {
                 console.log(`  HTTP Port: ${state.httpPort}`);
             }
-        } else if (state && !isRunning) {
-            console.log(chalk.yellow('⚠️  Runner state exists but process not running (stale)'));
+        } else if (availability.status === 'degraded' && state) {
+            console.log(chalk.yellow('⚠️  Runner process is alive but control port is temporarily unavailable'));
+            console.log(`  PID: ${state.pid}`);
+            console.log(`  Started: ${new Date(state.startTime).toLocaleString()}`);
+            console.log(`  CLI Version: ${state.startedWithCliVersion}`);
+            if (state.httpPort) {
+                console.log(`  HTTP Port: ${state.httpPort}`);
+            }
+        } else if (availability.status === 'stale' && state) {
+            console.log(chalk.yellow('⚠️  Runner state existed but process was not running (stale metadata cleaned up)'));
+            console.log(`  Last known PID: ${state.pid}`);
         } else {
             console.log(chalk.red('❌ Runner is not running'));
         }

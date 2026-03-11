@@ -208,6 +208,49 @@ Recommended fast verification:
 
 ---
 
+## Container Service Lifecycle Checklist (Compose ↔ Entrypoint ↔ CLI Process)
+
+When packaging a CLI command as a long-running Docker/Compose service:
+- [ ] Is the configured service command designed to remain in the foreground as PID 1?
+- [ ] Can the command legitimately exit `0` after setup, handoff, or "already running" detection?
+- [ ] If the command manages a background daemon, is the container contract using the daemon process itself rather than the bootstrap command?
+- [ ] Does `restart: unless-stopped` interact safely with successful exits, or will it create an infinite restart loop?
+- [ ] Is there a compose-level verification that checks both `docker compose ps` state and health status after bootstrap settles?
+- [ ] Are logs explicit about whether exit means success, handoff, or failure?
+
+Typical failure pattern:
+- A CLI subcommand such as `runner start-sync` performs startup checks, discovers an existing matching runner, prints `Runner already running with matching version`, then exits with code `0`.
+- Docker interprets the exit as container completion and restarts it due to restart policy, producing a misleading crash loop even though no exception occurred.
+
+Recommended fast verification:
+1. Inspect the command source for `process.exit(0)` branches on success / already-running paths.
+2. Run `docker compose up -d` and then check `docker compose ps` after bootstrap delay.
+3. Inspect container state for `ExitCode=0` combined with repeated restarts.
+4. Only treat the contract as valid when the service remains `Up` and reaches `healthy`.
+
+---
+
+## Runner Availability Contract Checklist (State File ↔ Process Liveness ↔ Control Port)
+
+When a CLI or background daemon reports availability through persisted state plus runtime probes:
+- [ ] Does the availability API distinguish at least `missing`, `stale`, `degraded`, and `running` states instead of returning a bare boolean?
+- [ ] If PID liveness and control-port reachability are checked together, are they exposed as separate outcomes rather than collapsed into one false branch?
+- [ ] Do caller paths (`start`, `status`, `doctor`, upgrade logic) explicitly decide how to handle `degraded` without treating it as "not running"?
+- [ ] Is stale-state cleanup restricted to cases where the owning PID is confirmed dead, rather than any temporary probe failure?
+- [ ] Is there an integration test covering "PID alive + control port temporarily unavailable" and asserting state/lock preservation plus correct caller behavior?
+
+Typical failure pattern:
+- A helper like `checkIfRunnerRunningAndCleanupStaleState()` returns `false` for both "no runner exists" and "runner process is alive but control endpoint timed out".
+- Callers interpret `false` as "there is no runner", causing follow-up actions like restart, stop, doctor output, or version checks to take the wrong branch.
+
+Recommended fast verification:
+1. Trace every caller of the availability helper and list what branch they take on each return value.
+2. Verify the helper returns a typed status/result object instead of a boolean when more than two runtime states exist.
+3. Add an integration test that simulates control-port timeout while PID remains alive.
+4. Confirm `start`, `status`, and version-check code paths do not escalate a temporary degraded state into cleanup or restart.
+
+---
+
 ## Docker Build Lockfile Immutability Checklist (GitHub Actions + Bun Workspace)
 
 When Docker image builds use `bun install --frozen-lockfile` in CI:
