@@ -309,13 +309,6 @@ function SessionItem(props: {
                     </div>
                 ) : null}
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[var(--app-hint)]">
-                    <span className="inline-flex items-center gap-2">
-                        <span className="flex h-4 w-4 items-center justify-center" aria-hidden="true">
-                            ❖
-                        </span>
-                        {getAgentLabel(s)}
-                    </span>
-                    <span>{t('session.item.modelMode')}: {s.modelMode || 'default'}</span>
                     {s.metadata?.worktree?.branch ? (
                         <span>{t('session.item.worktree')}: {s.metadata.worktree.branch}</span>
                     ) : null}
