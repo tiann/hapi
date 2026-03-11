@@ -1,7 +1,8 @@
 import type { ClientToServerEvents } from '@hapi/protocol'
+import { isObject } from '@hapi/protocol'
 import { z } from 'zod'
 import { randomUUID } from 'node:crypto'
-import type { ModelMode, PermissionMode } from '@hapi/protocol/types'
+import type { ModelMode, PermissionMode, TeamState } from '@hapi/protocol/types'
 import type { Store, StoredSession } from '../../../store'
 import type { SyncEvent } from '../../../sync/syncEngine'
 import { extractTodoWriteTodosFromMessageContent } from '../../../sync/todos'
@@ -47,6 +48,88 @@ const updateStateSchema = z.object({
     expectedVersion: z.number().int(),
     agentState: z.unknown().nullable()
 })
+
+/**
+ * Sync agentState.requests → teamState.pendingPermissions.
+ *
+ * In-process teammate agents add permission requests to the parent session's
+ * agentState.requests, but never emit a <teammate-message> with type
+ * 'permission_request'. This function bridges the gap so that TeamPanel
+ * can display permission cards for teammate tools.
+ *
+ * It also marks teamState permissions as resolved when the corresponding
+ * agentState.requests entry is finalized (moved to completedRequests).
+ */
+function syncAgentPermissionsToTeamState(
+    store: Store,
+    sid: string,
+    namespace: string,
+    agentState: unknown,
+    onWebappEvent?: (event: SyncEvent) => void
+): void {
+    const session = store.sessions.getSessionByNamespace(sid, namespace)
+    const teamState = session?.teamState as TeamState | null | undefined
+    if (!teamState?.members?.length) return
+
+    const stateObj = isObject(agentState) ? agentState : null
+    if (!stateObj) return
+
+    const requests = isObject(stateObj.requests) ? stateObj.requests as Record<string, unknown> : {}
+    const existingPerms = teamState.pendingPermissions ?? []
+    const existingPermIds = new Set(existingPerms.map(p => p.requestId))
+
+    // Determine member name: pick the first active non-lead teammate.
+    // If multiple active members, we can't know which one owns the request,
+    // so we use a generic label.
+    const activeMembers = teamState.members.filter(m =>
+        m.status === 'active' && m.name !== 'team-lead'
+    )
+    const defaultMemberName = activeMembers.length === 1
+        ? activeMembers[0].name
+        : 'teammate'
+
+    // Add new agentState.requests entries as pending permissions
+    const newPerms: TeamState['pendingPermissions'] = []
+    for (const [requestId, rawReq] of Object.entries(requests)) {
+        if (existingPermIds.has(requestId)) continue
+        const req = isObject(rawReq) ? rawReq : null
+        if (!req) continue
+
+        newPerms.push({
+            requestId,
+            toolUseId: requestId,
+            memberName: defaultMemberName,
+            toolName: typeof req.tool === 'string' ? req.tool : 'unknown',
+            description: typeof req.description === 'string' ? req.description : undefined,
+            input: req.arguments,
+            createdAt: typeof req.createdAt === 'number' ? req.createdAt : Date.now(),
+            status: 'pending'
+        })
+    }
+
+    // Mark permissions as resolved when their request is no longer in agentState.requests
+    const requestIds = new Set(Object.keys(requests))
+    let hasResolved = false
+    const resolvedPerms = existingPerms.map(p => {
+        if (p.status === 'pending' && !requestIds.has(p.requestId)) {
+            hasResolved = true
+            return { ...p, status: 'approved' as const }
+        }
+        return p
+    })
+
+    if (newPerms.length === 0 && !hasResolved) return
+
+    const updatedPerms = hasResolved
+        ? [...resolvedPerms, ...newPerms]
+        : [...existingPerms, ...newPerms]
+
+    const newTeamState = { ...teamState, pendingPermissions: updatedPerms, updatedAt: Date.now() }
+    const updated = store.sessions.setSessionTeamState(sid, newTeamState, Date.now(), namespace)
+    if (updated) {
+        onWebappEvent?.({ type: 'session-updated', sessionId: sid, data: { sid } })
+    }
+}
 
 export type SessionHandlersDeps = {
     store: Store
@@ -239,6 +322,14 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             }
             socket.to(`session:${sid}`).emit('update', update)
             onWebappEvent?.({ type: 'session-updated', sessionId: sid, data: { sid } })
+
+            // Sync agentState.requests to teamState.pendingPermissions.
+            // In-process teammate agents have their permission requests added to the
+            // parent session's agentState.requests, but no <teammate-message> is emitted
+            // so teamState.pendingPermissions never gets populated. Bridge the gap here.
+            syncAgentPermissionsToTeamState(
+                store, sid, sessionAccess.value.namespace, agentState, onWebappEvent
+            )
         }
     }
 

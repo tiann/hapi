@@ -501,9 +501,15 @@ export function extractTeamStateFromMessageContent(messageContent: unknown): Tea
             case 'TeamDelete':
                 delta = processTeamDelete()
                 break
-            case 'Agent':
-                delta = processAgentSpawn(block.input)
+            case 'Agent': {
+                // Only treat Agent calls with team_name as team member spawns.
+                // Agents without team_name (e.g. Explore, Plan) are standalone subagents.
+                const hasTeamName = typeof block.input.team_name === 'string' && block.input.team_name.length > 0
+                if (hasTeamName) {
+                    delta = processAgentSpawn(block.input)
+                }
                 break
+            }
             case 'Task': {
                 // Legacy: Task tool with team_name is treated as agent spawn
                 const teamName = typeof block.input.team_name === 'string' ? block.input.team_name : null
