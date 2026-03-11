@@ -67,3 +67,9 @@ if [ -n "${ZCF_API_URL:-}" ] && [ -z "${ZCF_API_KEY:-}" ]; then
 fi
 
 info "环境变量检查通过"
+
+if ! docker compose --env-file "${ENV_FILE}" -f "${ROOT_DIR}/docker-compose.yml" config --quiet; then
+    fail "docker compose 配置校验失败；请检查 .env 与 compose 配置是否一致"
+fi
+
+info "docker compose 配置检查通过"

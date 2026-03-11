@@ -16,6 +16,7 @@ hub/tools/tunwg/*.exe
 **/.env
 **/.env.*
 **/.env*.local
+!**/.env.example
 
 # Logs
 **/*.log

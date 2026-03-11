@@ -78,6 +78,8 @@ docker compose up -d --build zs-hub zs-runner
 docker compose logs -f zs-hub zs-runner
 ```
 
+> `bun run docker:check` 现在会同时校验 `.env` 语义与 `docker compose config --quiet`，可以在真正启动前尽早发现配置错误。
+
 ### 配置
 
 - `CLI_API_TOKEN`: zs-hub 和 zs-runner 共用的密钥
@@ -100,6 +102,7 @@ docker compose logs -f zs-hub zs-runner
 - 默认服务: `zs-runner` (前台运行 `zs runner start-sync`)
 - 仅保留 `zs-hub` + `zs-runner`，不再提供 compose 交互 profile 服务。
 - compose 已配置 healthcheck：`zs-hub` 通过 `/health` 探针检查，`zs-runner` 通过主进程命令行检查。
+- GitHub Actions 会额外断言 `zs-runner` 的 `RestartCount=0` 且未进入 `Restarting`，避免“健康但实际处于重启环”的回归。
 
 ### 常见错误
 
