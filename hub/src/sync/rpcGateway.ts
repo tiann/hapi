@@ -51,6 +51,20 @@ export class RpcGateway {
     ) {
     }
 
+    private logSpawnEvent(
+        level: 'log' | 'error',
+        stage: string,
+        outcome: 'start' | 'success' | 'error' | 'duplicate' | 'retry',
+        details: Record<string, unknown>
+    ): void {
+        const message = `[SyncEngine] spawn stage=${stage} outcome=${outcome}`
+        if (level === 'error') {
+            console.error(message, details)
+            return
+        }
+        console.log(message, details)
+    }
+
     async approvePermission(
         sessionId: string,
         requestId: string,
@@ -113,6 +127,17 @@ export class RpcGateway {
         worktreeName?: string,
         resumeSessionId?: string
     ): Promise<{ type: 'success'; sessionId: string } | { type: 'error'; message: string }> {
+        this.logSpawnEvent('log', 'request', 'start', {
+            machineId,
+            directory,
+            agent,
+            model,
+            yolo: yolo === true,
+            sessionType: sessionType ?? 'simple',
+            worktreeName: worktreeName ?? null,
+            resumeSessionId: resumeSessionId ?? null
+        })
+
         try {
             const result = await this.machineRpc(
                 machineId,
@@ -122,18 +147,63 @@ export class RpcGateway {
             if (result && typeof result === 'object') {
                 const obj = result as Record<string, unknown>
                 if (obj.type === 'success' && typeof obj.sessionId === 'string') {
+                    this.logSpawnEvent('log', 'rpc.result', 'success', {
+                        machineId,
+                        directory,
+                        agent,
+                        sessionId: obj.sessionId,
+                        sessionType: sessionType ?? 'simple',
+                        resumeSessionId: resumeSessionId ?? null
+                    })
                     return { type: 'success', sessionId: obj.sessionId }
                 }
                 if (obj.type === 'error' && typeof obj.errorMessage === 'string') {
+                    this.logSpawnEvent('error', 'rpc.result', 'error', {
+                        machineId,
+                        directory,
+                        agent,
+                        cause: 'spawn_rpc_error',
+                        message: obj.errorMessage,
+                        sessionType: sessionType ?? 'simple',
+                        resumeSessionId: resumeSessionId ?? null
+                    })
                     return { type: 'error', message: obj.errorMessage }
                 }
                 if (obj.type === 'requestToApproveDirectoryCreation' && typeof obj.directory === 'string') {
+                    this.logSpawnEvent('error', 'rpc.result', 'error', {
+                        machineId,
+                        directory,
+                        agent,
+                        cause: 'directory_creation_requires_approval',
+                        requestedDirectory: obj.directory,
+                        sessionType: sessionType ?? 'simple',
+                        resumeSessionId: resumeSessionId ?? null
+                    })
                     return { type: 'error', message: `Directory creation requires approval: ${obj.directory}` }
                 }
                 if (typeof obj.error === 'string') {
+                    this.logSpawnEvent('error', 'rpc.result', 'error', {
+                        machineId,
+                        directory,
+                        agent,
+                        cause: 'spawn_rpc_error',
+                        message: obj.error,
+                        sessionType: sessionType ?? 'simple',
+                        resumeSessionId: resumeSessionId ?? null
+                    })
                     return { type: 'error', message: obj.error }
                 }
                 if (obj.type !== 'success' && typeof obj.message === 'string') {
+                    this.logSpawnEvent('error', 'rpc.result', 'error', {
+                        machineId,
+                        directory,
+                        agent,
+                        cause: 'spawn_rpc_message_error',
+                        message: obj.message,
+                        rawType: obj.type ?? null,
+                        sessionType: sessionType ?? 'simple',
+                        resumeSessionId: resumeSessionId ?? null
+                    })
                     return { type: 'error', message: obj.message }
                 }
             }
@@ -146,9 +216,34 @@ export class RpcGateway {
                         return String(result)
                     }
                 })()
+            this.logSpawnEvent('error', 'rpc.result', 'error', {
+                machineId,
+                directory,
+                agent,
+                cause: 'unexpected_spawn_result',
+                details,
+                sessionType: sessionType ?? 'simple',
+                resumeSessionId: resumeSessionId ?? null
+            })
             return { type: 'error', message: `Unexpected spawn result: ${details}` }
         } catch (error) {
-            return { type: 'error', message: error instanceof Error ? error.message : String(error) }
+            const message = error instanceof Error ? error.message : String(error)
+            const cause = message.startsWith('RPC handler not registered:')
+                ? 'rpc_handler_missing'
+                : message.startsWith('RPC socket disconnected:')
+                    ? 'rpc_socket_disconnected'
+                    : 'spawn_rpc_exception'
+            this.logSpawnEvent('error', 'rpc.call', 'error', {
+                machineId,
+                directory,
+                agent,
+                cause,
+                message,
+                sessionType: sessionType ?? 'simple',
+                worktreeName: worktreeName ?? null,
+                resumeSessionId: resumeSessionId ?? null
+            })
+            return { type: 'error', message }
         }
     }
 

@@ -7,6 +7,14 @@ import type {
 } from '@zs/protocol'
 import type { TerminalSession } from './types'
 
+type TerminalLogDetails = {
+    stage: string
+    outcome: 'start' | 'success' | 'error' | 'duplicate' | 'retry'
+    terminalId: string
+    cause?: string
+    [key: string]: unknown
+}
+
 type TerminalRuntime = TerminalSession & {
     proc: Bun.Subprocess
     terminal: Bun.Terminal
@@ -103,9 +111,22 @@ export class TerminalManager {
         this.filteredEnv = buildFilteredEnv()
     }
 
+    private logTerminal(details: TerminalLogDetails): void {
+        const { stage, outcome, terminalId, ...rest } = details
+        logger.debug(`[TERMINAL][session=${this.sessionId}] stage=${stage} outcome=${outcome} terminalId=${terminalId}`, rest)
+    }
+
     create(terminalId: string, cols: number, rows: number): void {
         const existing = this.terminals.get(terminalId)
         if (existing) {
+            this.logTerminal({
+                stage: 'terminal.create',
+                outcome: 'duplicate',
+                terminalId,
+                cols,
+                rows,
+                cause: 'terminal_id_reused'
+            })
             existing.cols = cols
             existing.rows = rows
             existing.terminal.resize(cols, rows)
@@ -115,11 +136,25 @@ export class TerminalManager {
         }
 
         if (this.terminals.size >= this.maxTerminals) {
+            this.logTerminal({
+                stage: 'terminal.create',
+                outcome: 'error',
+                terminalId,
+                cause: 'terminal_limit_exceeded',
+                maxTerminals: this.maxTerminals,
+                openTerminalCount: this.terminals.size
+            })
             this.emitError(terminalId, `Too many terminals open (max ${this.maxTerminals}).`)
             return
         }
 
         if (typeof Bun === 'undefined' || typeof Bun.spawn !== 'function') {
+            this.logTerminal({
+                stage: 'terminal.create',
+                outcome: 'error',
+                terminalId,
+                cause: 'bun_terminal_unavailable'
+            })
             this.emitError(terminalId, 'Terminal is unavailable in this runtime.')
             return
         }
@@ -127,6 +162,17 @@ export class TerminalManager {
         const sessionPath = this.getSessionPath() ?? process.cwd()
         const shell = resolveShell()
         const decoder = new TextDecoder()
+
+        this.logTerminal({
+            stage: 'terminal.create',
+            outcome: 'start',
+            terminalId,
+            cols,
+            rows,
+            shell,
+            sessionPath,
+            platform: process.platform
+        })
 
         try {
             const proc = Bun.spawn([shell], {
@@ -147,12 +193,27 @@ export class TerminalManager {
                     },
                     exit: (terminal, exitCode) => {
                         if (exitCode === 1) {
+                            this.logTerminal({
+                                stage: 'terminal.stream.exit',
+                                outcome: 'error',
+                                terminalId,
+                                cause: 'terminal_stream_closed_unexpectedly',
+                                exitCode
+                            })
                             this.emitError(terminalId, 'Terminal stream closed unexpectedly.')
                         }
                     }
                 },
                 onExit: (subprocess, exitCode) => {
                     const signal = subprocess.signalCode ?? null
+                    this.logTerminal({
+                        stage: 'terminal.process.exit',
+                        outcome: 'error',
+                        terminalId,
+                        cause: 'terminal_process_exit',
+                        code: exitCode ?? null,
+                        signal
+                    })
                     this.onExit({
                         sessionId: this.sessionId,
                         terminalId,
@@ -176,6 +237,15 @@ export class TerminalManager {
                     platform: process.platform,
                     terminalId
                 })
+                this.logTerminal({
+                    stage: 'terminal.attach',
+                    outcome: 'error',
+                    terminalId,
+                    cause: 'terminal_attach_missing',
+                    shell,
+                    sessionPath,
+                    platform: process.platform
+                })
                 this.emitError(terminalId, `Failed to attach terminal. Shell: ${shell}`)
                 return
             }
@@ -191,6 +261,16 @@ export class TerminalManager {
 
             this.terminals.set(terminalId, runtime)
             this.markActivity(runtime)
+            this.logTerminal({
+                stage: 'terminal.create',
+                outcome: 'success',
+                terminalId,
+                cols,
+                rows,
+                shell,
+                sessionPath,
+                pid: proc.pid
+            })
             this.onReady({ sessionId: this.sessionId, terminalId })
         } catch (error) {
             logger.warn('[TERMINAL] Failed to spawn terminal', {
@@ -198,6 +278,16 @@ export class TerminalManager {
                 sessionPath,
                 platform: process.platform,
                 error
+            })
+            this.logTerminal({
+                stage: 'terminal.spawn',
+                outcome: 'error',
+                terminalId,
+                cause: 'terminal_spawn_failed',
+                shell,
+                sessionPath,
+                platform: process.platform,
+                error: error instanceof Error ? error.message : String(error)
             })
             this.emitError(
                 terminalId,
@@ -209,6 +299,12 @@ export class TerminalManager {
     write(terminalId: string, data: string): void {
         const runtime = this.terminals.get(terminalId)
         if (!runtime) {
+            this.logTerminal({
+                stage: 'terminal.write',
+                outcome: 'error',
+                terminalId,
+                cause: 'terminal_not_found'
+            })
             this.emitError(terminalId, 'Terminal not found.')
             return
         }
@@ -219,6 +315,14 @@ export class TerminalManager {
     resize(terminalId: string, cols: number, rows: number): void {
         const runtime = this.terminals.get(terminalId)
         if (!runtime) {
+            this.logTerminal({
+                stage: 'terminal.resize',
+                outcome: 'error',
+                terminalId,
+                cause: 'terminal_not_found',
+                cols,
+                rows
+            })
             return
         }
         runtime.cols = cols
@@ -228,10 +332,21 @@ export class TerminalManager {
     }
 
     close(terminalId: string): void {
+        this.logTerminal({
+            stage: 'terminal.close',
+            outcome: 'success',
+            terminalId
+        })
         this.cleanup(terminalId)
     }
 
     closeAll(): void {
+        this.logTerminal({
+            stage: 'terminal.close_all',
+            outcome: 'success',
+            terminalId: 'all',
+            openTerminalCount: this.terminals.size
+        })
         for (const terminalId of this.terminals.keys()) {
             this.cleanup(terminalId)
         }
@@ -251,6 +366,13 @@ export class TerminalManager {
         }
 
         runtime.idleTimer = setTimeout(() => {
+            this.logTerminal({
+                stage: 'terminal.idle_timeout',
+                outcome: 'error',
+                terminalId: runtime.terminalId,
+                cause: 'terminal_inactive_timeout',
+                idleTimeoutMs: this.idleTimeoutMs
+            })
             this.emitError(runtime.terminalId, 'Terminal closed due to inactivity.')
             this.cleanup(runtime.terminalId)
         }, this.idleTimeoutMs)

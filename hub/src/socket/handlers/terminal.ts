@@ -33,7 +33,29 @@ export function registerTerminalHandlers(socket: SocketWithData, deps: TerminalH
     const cliNamespace = io.of('/cli')
     const namespace = typeof socket.data.namespace === 'string' ? socket.data.namespace : null
 
-    const emitTerminalError = (terminalId: string, message: string) => {
+    const logTerminalEvent = (
+        level: 'log' | 'error',
+        stage: string,
+        outcome: 'start' | 'success' | 'error' | 'duplicate' | 'retry',
+        details: Record<string, unknown>
+    ) => {
+        const message = `[Terminal] stage=${stage} outcome=${outcome}`
+        if (level === 'error') {
+            console.error(message, details)
+            return
+        }
+        console.log(message, details)
+    }
+
+    const emitTerminalError = (terminalId: string, message: string, cause?: string, context?: Record<string, unknown>) => {
+        logTerminalEvent('error', 'error.emit', 'error', {
+            terminalId,
+            cause: cause ?? 'terminal_error',
+            message,
+            socketId: socket.id,
+            namespace,
+            ...context
+        })
         socket.emit('terminal:error', { terminalId, message })
     }
 
@@ -50,7 +72,10 @@ export function registerTerminalHandlers(socket: SocketWithData, deps: TerminalH
         if (!cliSocket || cliSocket.data.namespace !== namespace) {
             terminalRegistry.remove(entry.terminalId)
             if (reportError) {
-                emitTerminalError(entry.terminalId, 'CLI disconnected.')
+                emitTerminalError(entry.terminalId, 'CLI disconnected.', 'cli_disconnected', {
+                    sessionId: entry.sessionId,
+                    cliSocketId: entry.cliSocketId
+                })
             }
             return null
         }
@@ -98,25 +123,51 @@ export function registerTerminalHandlers(socket: SocketWithData, deps: TerminalH
         }
 
         const { sessionId, terminalId, cols, rows } = parsed.data
+        logTerminalEvent('log', 'terminal.create.received', 'start', {
+            sessionId,
+            terminalId,
+            cols,
+            rows,
+            socketId: socket.id,
+            namespace
+        })
+
         const session = getSession(sessionId)
         if (!namespace || !session || session.namespace !== namespace || !session.active) {
-            emitTerminalError(terminalId, 'Session is inactive or unavailable.')
+            emitTerminalError(terminalId, 'Session is inactive or unavailable.', 'session_inactive_or_unavailable', {
+                sessionId,
+                socketId: socket.id,
+                namespace,
+                sessionNamespace: session?.namespace ?? null,
+                sessionActive: session?.active ?? null
+            })
             return
         }
 
         if (terminalRegistry.countForSocket(socket.id) >= maxTerminalsPerSocket) {
-            emitTerminalError(terminalId, `Too many terminals open (max ${maxTerminalsPerSocket}).`)
+            emitTerminalError(terminalId, `Too many terminals open (max ${maxTerminalsPerSocket}).`, 'terminal_limit_exceeded_per_socket', {
+                sessionId,
+                socketId: socket.id,
+                maxTerminalsPerSocket
+            })
             return
         }
 
         if (terminalRegistry.countForSession(sessionId) >= maxTerminalsPerSession) {
-            emitTerminalError(terminalId, `Too many terminals open for this session (max ${maxTerminalsPerSession}).`)
+            emitTerminalError(terminalId, `Too many terminals open for this session (max ${maxTerminalsPerSession}).`, 'terminal_limit_exceeded_per_session', {
+                sessionId,
+                terminalId,
+                maxTerminalsPerSession
+            })
             return
         }
 
         const cliSocketId = pickCliSocketId(sessionId)
         if (!cliSocketId) {
-            emitTerminalError(terminalId, 'CLI is not connected for this session.')
+            emitTerminalError(terminalId, 'CLI is not connected for this session.', 'cli_not_connected_for_session', {
+                sessionId,
+                terminalId
+            })
             return
         }
 
@@ -131,42 +182,101 @@ export function registerTerminalHandlers(socket: SocketWithData, deps: TerminalH
         if (!entry) {
             const existing = terminalRegistry.get(terminalId)
             if (!existing) {
-                emitTerminalError(terminalId, 'Terminal ID is already in use.')
+                emitTerminalError(terminalId, 'Terminal ID is already in use.', 'terminal_id_conflict', {
+                    sessionId,
+                    terminalId,
+                    socketId: socket.id
+                })
                 return
             }
 
             if (existing.sessionId !== sessionId || existing.socketId !== socket.id) {
-                emitTerminalError(terminalId, 'Terminal ID is already in use.')
+                emitTerminalError(terminalId, 'Terminal ID is already in use.', 'terminal_id_conflict', {
+                    sessionId,
+                    terminalId,
+                    socketId: socket.id,
+                    existingSessionId: existing.sessionId,
+                    existingSocketId: existing.socketId
+                })
                 return
             }
 
+            logTerminalEvent('log', 'terminal.create.duplicate', 'duplicate', {
+                sessionId,
+                terminalId,
+                socketId: socket.id,
+                existingCliSocketId: existing.cliSocketId,
+                requestedCliSocketId: cliSocketId
+            })
+
             if (!emitOpenToCli(existing.cliSocketId, openPayload)) {
+                logTerminalEvent('log', 'terminal.open.forward', 'retry', {
+                    sessionId,
+                    terminalId,
+                    reason: 'existing_cli_socket_missing',
+                    existingCliSocketId: existing.cliSocketId,
+                    retryCliSocketId: cliSocketId
+                })
+
                 terminalRegistry.remove(terminalId)
                 const retryEntry = terminalRegistry.register(terminalId, sessionId, socket.id, cliSocketId)
                 if (!retryEntry) {
-                    emitTerminalError(terminalId, 'Terminal ID is already in use.')
+                    emitTerminalError(terminalId, 'Terminal ID is already in use.', 'terminal_id_conflict', {
+                        sessionId,
+                        terminalId,
+                        socketId: socket.id,
+                        reason: 'retry_register_failed'
+                    })
                     return
                 }
                 if (!emitOpenToCli(retryEntry.cliSocketId, openPayload)) {
                     terminalRegistry.remove(terminalId)
-                    emitTerminalError(terminalId, 'CLI is not connected for this session.')
+                    emitTerminalError(terminalId, 'CLI is not connected for this session.', 'cli_not_connected_for_session', {
+                        sessionId,
+                        terminalId,
+                        cliSocketId: retryEntry.cliSocketId,
+                        reason: 'retry_open_failed'
+                    })
                     return
                 }
                 terminalRegistry.markActivity(terminalId)
+                logTerminalEvent('log', 'terminal.open.forward', 'success', {
+                    sessionId,
+                    terminalId,
+                    cliSocketId: retryEntry.cliSocketId,
+                    mode: 'retry'
+                })
                 return
             }
 
             terminalRegistry.markActivity(terminalId)
+            logTerminalEvent('log', 'terminal.open.forward', 'success', {
+                sessionId,
+                terminalId,
+                cliSocketId: existing.cliSocketId,
+                mode: 'duplicate-idempotent'
+            })
             return
         }
 
         if (!emitOpenToCli(cliSocketId, openPayload)) {
             terminalRegistry.remove(terminalId)
-            emitTerminalError(terminalId, 'CLI is not connected for this session.')
+            emitTerminalError(terminalId, 'CLI is not connected for this session.', 'cli_not_connected_for_session', {
+                sessionId,
+                terminalId,
+                cliSocketId,
+                reason: 'initial_open_failed'
+            })
             return
         }
 
         terminalRegistry.markActivity(terminalId)
+        logTerminalEvent('log', 'terminal.open.forward', 'success', {
+            sessionId,
+            terminalId,
+            cliSocketId,
+            mode: 'initial'
+        })
 
     })
 
@@ -233,6 +343,12 @@ export function registerTerminalHandlers(socket: SocketWithData, deps: TerminalH
 
         terminalRegistry.remove(terminalId)
         emitCloseToCli(entry)
+        logTerminalEvent('log', 'terminal.close', 'success', {
+            sessionId: entry.sessionId,
+            terminalId,
+            socketId: socket.id,
+            cliSocketId: entry.cliSocketId
+        })
     })
 
     socket.on('disconnect', () => {
@@ -240,5 +356,11 @@ export function registerTerminalHandlers(socket: SocketWithData, deps: TerminalH
         for (const entry of removed) {
             emitCloseToCli(entry)
         }
+        logTerminalEvent('log', 'terminal.socket.disconnect', 'success', {
+            socketId: socket.id,
+            namespace,
+            removedTerminalCount: removed.length,
+            removedTerminalIds: removed.map((entry) => entry.terminalId)
+        })
     })
 }

@@ -85,13 +85,46 @@ export class ApiSessionClient extends EventEmitter {
             autoConnect: false
         })
 
+        const logTerminalEvent = (
+            level: 'debug' | 'warn',
+            stage: string,
+            outcome: 'start' | 'success' | 'error' | 'duplicate' | 'retry',
+            details: Record<string, unknown>
+        ): void => {
+            const message = `[TERMINAL][session=${this.sessionId}] stage=${stage} outcome=${outcome}`
+            if (level === 'warn') {
+                logger.warn(message, details)
+                return
+            }
+            logger.debug(message, details)
+        }
         this.terminalManager = new TerminalManager({
             sessionId: this.sessionId,
             getSessionPath: () => this.metadata?.path ?? null,
-            onReady: (payload) => this.socket.emit('terminal:ready', payload),
+            onReady: (payload) => {
+                logTerminalEvent('debug', 'terminal.ready', 'success', {
+                    terminalId: payload.terminalId
+                })
+                this.socket.emit('terminal:ready', payload)
+            },
             onOutput: (payload) => this.socket.emit('terminal:output', payload),
-            onExit: (payload) => this.socket.emit('terminal:exit', payload),
-            onError: (payload) => this.socket.emit('terminal:error', payload)
+            onExit: (payload) => {
+                logTerminalEvent('warn', 'terminal.exit', 'error', {
+                    terminalId: payload.terminalId,
+                    code: payload.code,
+                    signal: payload.signal,
+                    cause: 'terminal_process_exit'
+                })
+                this.socket.emit('terminal:exit', payload)
+            },
+            onError: (payload) => {
+                logTerminalEvent('warn', 'terminal.error', 'error', {
+                    terminalId: payload.terminalId,
+                    message: payload.message,
+                    cause: 'terminal_runtime_error'
+                })
+                this.socket.emit('terminal:error', payload)
+            }
         })
 
         this.socket.on('connect', () => {
@@ -146,6 +179,11 @@ export class ApiSessionClient extends EventEmitter {
         }
 
         this.socket.on('terminal:open', handleTerminalEvent(TerminalOpenPayloadSchema, (payload) => {
+            logTerminalEvent('debug', 'terminal.open.received', 'start', {
+                terminalId: payload.terminalId,
+                cols: payload.cols,
+                rows: payload.rows
+            })
             this.terminalManager.create(payload.terminalId, payload.cols, payload.rows)
         }))
 
