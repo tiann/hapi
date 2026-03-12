@@ -999,6 +999,104 @@ deferred items: optional cleanup / broader UX / unrelated hardening
 
 ---
 
+## Scenario: 高风险修改前的历史提交检查契约（相关 Commit 回放 + 冲突语义保留）
+
+### 1. Scope / Trigger
+- Trigger：准备修改以下高风险区域之一：
+  - merge / rebase 冲突解决
+  - 同一文件在 24 小时内被连续修复
+  - workflow / CI / Docker / 发布链路
+  - runtime 状态机、helper 语义、生命周期逻辑
+  - 有 review comment 直接指向的文件
+- 为什么需要 code-spec 深度：
+  - 当前文件只能告诉你“代码现在长什么样”，却不会告诉你“为什么会变成这样”。
+  - 很多看似啰嗦、保守、重复的分支/测试，其实是为了锁死某次事故、review 或回归。
+  - 冲突解决如果只按文本拼接，不按历史意图排序，就很容易保留语法正确、却丢掉语义正确。
+
+### 2. Signatures
+- History-blind signature：
+  - 直接在当前文件上修改，没有先看相关 `git log` / `git show`。
+  - 看见复杂分支、奇怪测试、保守顺序时，第一反应是“简化 / 删除 / 合并掉”。
+- Conflict-risk signature：
+  - 冲突两侧都能编译，但无法说清哪一边是 bugfix、哪一边是 review 修正、哪一边只是重构。
+- Regression-signature：
+  - 某段逻辑刚修过不久，又被新的修改“顺手改回去”。
+  - 某个 test 看起来多余，删除后旧问题复发。
+
+### 3. Contracts
+- Commit-replay contract：
+  - 命中高风险场景时，修改前至少查看该文件最近 **3 个相关 commit**，并写清：
+    1. 哪个 commit 在修 bug
+    2. 哪个 commit 在回应 review
+    3. 哪个 commit 只是重构 / 清理
+- Conflict-priority contract：
+  - 冲突解决时，历史意图优先级必须是：
+    - 事故修复 > review 修正 > 功能演进 > 重构清理
+  - 不允许只按“哪边更顺眼 / 更短 / 更容易拼起来”处理冲突。
+- Caller-history contract：
+  - 修改 helper / 状态判断 / workflow 依赖时，除了看 helper 自己的历史，还必须看 caller / downstream job 的历史。
+  - 禁止只根据 helper 当前实现推断语义，而不核对调用方过去依赖的契约。
+- Test-origin contract：
+  - 当某个 test 看起来奇怪、保守、冗长时，先查它是为哪个 commit / 哪类 bug 引入的；在未确认前不得删除或弱化。
+- Minimal-history-note contract：
+  - 高风险修改前，至少写下：
+    - `相关历史 commit：A/B/C`
+    - `本次修改不能破坏：契约 X / 契约 Y`
+
+### 4. Validation & Error Matrix
+- 只看当前文件，不看历史 commit -> 容易把事故修复误判成可删复杂度。
+- 冲突解决只保留“能编译”的文本组合 -> 高概率语义回归。
+- helper 被简化，但 caller 历史语义未检查 -> 高概率出现“helper 看起来对，调用方却错了”。
+- test 被删除时说不出它锁的是哪个历史 bug -> 高概率删掉回归保护。
+- 某文件短时间内被连续修复，却没人做 commit 回放 -> 高概率重复修同一类问题。
+
+### 5. Good/Base/Bad Cases
+- Good：
+  - 修改前先回放最近相关 commit，明确哪次是事故修复、哪次是 review 修正，再做最小改动。
+- Base：
+  - 至少查看最近 3 个相关 commit，并写下“本次不能破坏的历史契约”。
+- Bad：
+  - 直接对当前文件做“看起来更优雅”的调整，冲突时按文本拼接，最后把刚修好的行为改回去。
+
+### 6. Tests Required (with assertion points)
+- Process assertions：
+  - 命中高风险场景时，修改前必须补一段简短历史说明：`相关 commit + 不可破坏契约`。
+  - 同一文件如果在 24 小时内出现连续修复，下一次改动前必须先做 commit 回放。
+- Review assertions：
+  - reviewer 应追问：
+    - “这个分支 / 测试是哪个 commit 引入的？”
+    - “本次冲突保留了哪一边的历史语义？”
+- Documentation assertions：
+  - spec / guide 必须明确要求：高风险改动不能只看文件现状，还要看相关历史 commit。
+
+### 7. Wrong vs Correct
+#### Wrong
+```text
+看到 helper 很复杂
+-> 直接简化
+看到 test 很奇怪
+-> 直接删掉
+看到冲突两边都能跑
+-> 选更顺眼的一边拼起来
+# 结果：把历史 bugfix / review 修正一起抹掉
+```
+
+#### Correct
+```text
+修改前先看最近 3 个相关 commit
+- commit A：事故修复
+- commit B：review 修正
+- commit C：重构清理
+
+本次修改不能破坏：
+- 契约 X
+- 契约 Y
+
+冲突时按优先级保留：事故修复 > review 修正 > 功能演进 > 重构清理
+```
+
+---
+
 ## Scenario: 低 ROI 工作控制契约（停止信号 + 延后判定）
 
 ### 1. Scope / Trigger
