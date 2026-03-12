@@ -1,253 +1,213 @@
-# Directory Structure
+# 目录结构
 
-> How backend code is organized in this project.
-
----
-
-## Overview
-
-HAPI Hub is a Bun-based backend service that provides:
-- HTTP API server (Hono framework)
-- Socket.IO server for real-time CLI connections
-- SSE (Server-Sent Events) for web client updates
-- SQLite database with WAL mode
-- WireGuard tunnel management
-
-**Key characteristics**:
-- Feature-based organization (notifications, socket, store, etc.)
-- Flat module structure (max 2 levels deep)
-- Clear separation of concerns (handlers, stores, services)
-- Type-safe with strict TypeScript
+> 本项目后端代码的组织方式。
 
 ---
 
-## Directory Layout
+## 概述
+
+HAPI Hub 是一个基于 Bun 的后端服务，提供：
+- HTTP API 服务器（Hono 框架）
+- Socket.IO 服务器用于实时 CLI 连接
+- SSE（Server-Sent Events）用于 Web 客户端更新
+- SQLite 数据库（WAL 模式）
+- WireGuard 隧道管理
+
+**核心特征**：
+- 基于功能的组织方式（notifications、socket、store 等）
+- 扁平的模块结构（最多 2 层深度）
+- 清晰的关注点分离（handlers、stores、services）
+- 严格的 TypeScript 类型安全
+
+---
+
+## 目录布局
 
 ```
 hub/src/
-├── config/                 # Configuration management
-│   ├── jwtSecret.ts        # JWT secret generation/loading
-│   ├── vapidKeys.ts        # VAPID keys for push notifications
-│   ├── settings.ts         # Server settings (port, CORS, etc.)
+├── config/                 # 配置管理
+│   ├── jwtSecret.ts        # JWT 密钥生成/加载
+│   ├── vapidKeys.ts        # 推送通知的 VAPID 密钥
+│   ├── settings.ts         # 服务器设置（端口、CORS 等）
 │   └── ...
-├── notifications/          # Notification system
-│   ├── notificationHub.ts  # Central notification dispatcher
-│   ├── eventParsing.ts     # Parse sync events into notifications
-│   └── notificationTypes.ts # Notification channel interface
-├── push/                   # Web Push notifications
-│   ├── pushService.ts      # Push notification service
-│   └── pushNotificationChannel.ts # Push channel implementation
-├── socket/                 # Socket.IO server
-│   ├── server.ts           # Socket.IO server setup
-│   ├── handlers/           # Socket event handlers
-│   │   ├── cli/            # CLI client handlers
+├── notifications/          # 通知系统
+│   ├── notificationHub.ts  # 中央通知分发器
+│   ├── eventParsing.ts     # 将同步事件解析为通知
+│   └── notificationTypes.ts # 通知通道接口
+├── push/                   # Web 推送通知
+│   ├── pushService.ts      # 推送通知服务
+│   └── pushNotificationChannel.ts # 推送通道实现
+├── socket/                 # Socket.IO 服务器
+│   ├── server.ts           # Socket.IO 服务器设置
+│   ├── handlers/           # Socket 事件处理器
+│   │   ├── cli/            # CLI 客户端处理器
 │   │   │   ├── machineHandlers.ts
 │   │   │   ├── sessionHandlers.ts
 │   │   │   ├── terminalHandlers.ts
 │   │   │   └── rpcHandlers.ts
-│   │   └── terminal.ts     # Terminal emulator handlers
-│   ├── rpcRegistry.ts      # RPC method registry
-│   └── terminalRegistry.ts # Terminal session registry
+│   │   └── terminal.ts     # 终端模拟器处理器
+│   ├── rpcRegistry.ts      # RPC 方法注册表
+│   └── terminalRegistry.ts # 终端会话注册表
 ├── sse/                    # Server-Sent Events
-│   └── sseManager.ts       # SSE connection manager
-├── store/                  # Database layer (SQLite)
-│   ├── index.ts            # Store initialization & schema
-│   ├── sessionStore.ts     # Session CRUD operations
-│   ├── machineStore.ts     # Machine CRUD operations
-│   ├── messageStore.ts     # Message CRUD operations
-│   ├── userStore.ts        # User CRUD operations
+│   └── sseManager.ts       # SSE 连接管理器
+├── store/                  # 数据库层（SQLite）
+│   ├── index.ts            # Store 初始化与 schema
+│   ├── sessionStore.ts     # Session CRUD 操作
+│   ├── machineStore.ts     # Machine CRUD 操作
+│   ├── messageStore.ts     # Message CRUD 操作
+│   ├── userStore.ts        # User CRUD 操作
 │   ├── pushStore.ts        # Push subscription CRUD
-│   ├── sessions.ts         # Session business logic
-│   ├── machines.ts         # Machine business logic
-│   ├── messages.ts         # Message business logic
-│   └── types.ts            # Store type definitions
-├── sync/                   # Sync engine
-│   └── syncEngine.ts       # Central state synchronization
-├── tunnel/                 # WireGuard tunnel management
+│   ├── sessions.ts         # Session 业务逻辑
+│   ├── machines.ts         # Machine 业务逻辑
+│   ├── messages.ts         # Message 业务逻辑
+│   └── types.ts            # Store 类型定义
+├── sync/                   # 同步引擎
+│   └── syncEngine.ts       # 中央状态同步
+├── tunnel/                 # WireGuard 隧道管理
 │   └── ...
-├── types/                  # Shared type definitions
+├── types/                  # 共享类型定义
 │   └── ...
-├── utils/                  # Utility functions
+├── utils/                  # 工具函数
 │   └── ...
-├── visibility/             # Visibility tracking
+├── visibility/             # 可见性跟踪
 │   └── visibilityTracker.ts
-├── web/                    # HTTP API server
-│   ├── server.ts           # Hono server setup
-│   ├── middleware/         # HTTP middleware
-│   └── routes/             # API route handlers
-├── configuration.ts        # Configuration loading
-└── index.ts                # Main entry point
+├── web/                    # HTTP API 服务器
+│   ├── server.ts           # Hono 服务器设置
+│   ├── middleware/         # HTTP 中间件
+│   └── routes/             # API 路由处理器
+├── configuration.ts        # 配置加载
+└── index.ts                # 主入口点
 ```
 
 ---
 
-## Module Organization
+## 模块组织
 
-### Feature-Based Modules
+### Store 层模式
 
-Each feature is a directory containing related functionality:
+**数据访问与业务逻辑分离**：
 
-```
-notifications/
-├── notificationHub.ts      # Main service
-├── eventParsing.ts         # Helper logic
-├── notificationTypes.ts    # Type definitions
-└── notificationHub.test.ts # Tests
-```
+- `*Store.ts` 文件 = 纯 CRUD 操作（数据库交互）
+- `*.ts` 文件（无 Store 后缀）= 业务逻辑（使用 store 函数）
 
-**Pattern**: `<feature>/<feature>Service.ts` + helpers + types + tests
-
-### Store Layer Pattern
-
-Database operations follow a two-layer pattern:
-
-1. **Store classes** (`*Store.ts`) - Raw CRUD operations
-2. **Business logic** (`*.ts`) - Higher-level operations
-
-```
-store/
-├── sessionStore.ts         # Raw CRUD: insert, update, delete, select
-├── sessions.ts             # Business logic: getOrCreateSession, updateMetadata
-└── types.ts                # Shared types
-```
-
-**Why**: Separates data access from business logic, makes testing easier.
-
-### Handler Pattern
-
-Socket.IO and HTTP handlers are organized by client type:
-
-```
-socket/handlers/
-├── cli/                    # Handlers for CLI clients
-│   ├── machineHandlers.ts  # Machine lifecycle events
-│   ├── sessionHandlers.ts  # Session management
-│   └── terminalHandlers.ts # Terminal I/O
-└── terminal.ts             # Handlers for web terminal clients
-```
-
----
-
-## Naming Conventions
-
-### Files
-
-- **Services/Managers**: PascalCase class name (e.g., `NotificationHub.ts`, `SSEManager.ts`)
-- **Stores**: PascalCase with `Store` suffix (e.g., `SessionStore.ts`, `MachineStore.ts`)
-- **Handlers**: camelCase with `Handlers` suffix (e.g., `machineHandlers.ts`, `sessionHandlers.ts`)
-- **Types**: camelCase (e.g., `types.ts`, `socketTypes.ts`)
-- **Tests**: Same as source with `.test.ts` suffix (e.g., `notificationHub.test.ts`)
-
-### Directories
-
-- **Feature directories**: lowercase (e.g., `notifications/`, `socket/`, `store/`)
-- **Subdirectories**: lowercase (e.g., `handlers/`, `middleware/`, `routes/`)
-
-### Exports
-
-- **Named exports** for all classes, functions, types
-- **Barrel exports** in `index.ts` for public API
-
+**示例**：
 ```typescript
-// store/index.ts - barrel export
-export { Store } from './index'
-export { SessionStore } from './sessionStore'
-export { MachineStore } from './machineStore'
-export type { StoredSession, StoredMachine } from './types'
-```
-
----
-
-## Entry Point Flow
-
-### Main Entry (`index.ts`)
-
-```typescript
-// 1. Load configuration
-const config = createConfiguration(configSource)
-
-// 2. Initialize store (SQLite)
-const store = new Store(dbPath)
-
-// 3. Create sync engine
-const syncEngine = new SyncEngine(store)
-
-// 4. Create notification hub
-const notificationHub = new NotificationHub(syncEngine, channels)
-
-// 5. Start web server (Hono + Socket.IO)
-const webServer = await startWebServer({ store, syncEngine, ... })
-
-// 6. Start optional services (tunnel)
-const webServer = await startWebServer({ store, syncEngine, ... })
-```
-
-**Pattern**: Configuration → Store → Services → Servers
-
----
-
-## Configuration Management
-
-Configuration is loaded from multiple sources with priority:
-
-1. Environment variables (highest priority)
-2. `settings.json` file
-3. Default values (lowest priority)
-
-```typescript
-// config/settings.ts
-export type ServerSettings = {
-    port: number
-    cors: { origins: string[] }
+// sessionStore.ts - 数据访问
+export function getSessionById(db: Database, id: string): Session | null {
+  return db.prepare('SELECT * FROM sessions WHERE id = ?').get(id)
 }
 
-// configuration.ts
-export function createConfiguration(source: ConfigSource): Configuration {
-    // Merge env, file, defaults
+// sessions.ts - 业务逻辑
+export function activateSession(db: Database, id: string): Result<void> {
+  const session = getSessionById(db, id)
+  if (!session) return { ok: false, error: 'Session not found' }
+  // ... 业务规则
 }
 ```
 
-**Pattern**: Type-safe configuration with source tracking.
+### Socket 处理器
+
+**按客户端类型组织**：
+- `socket/handlers/cli/` - CLI 客户端特定处理器
+- `socket/handlers/terminal.ts` - 终端模拟器处理器
+
+**RPC 注册表模式**：
+```typescript
+// rpcRegistry.ts
+export const rpcRegistry = {
+  'session:create': handleSessionCreate,
+  'session:stop': handleSessionStop,
+  // ...
+}
+```
+
+### 通知系统
+
+**中心化分发**：
+- `notificationHub.ts` - 中央分发器
+- `notificationTypes.ts` - 通道接口定义
+- 具体通道实现（`pushNotificationChannel.ts`、SSE 等）
+
+**事件驱动**：
+```typescript
+// 同步事件 → 通知
+syncEngine.on('session:updated', (event) => {
+  notificationHub.dispatch({
+    type: 'session:updated',
+    sessionId: event.sessionId,
+    // ...
+  })
+})
+```
 
 ---
 
-## Examples
+## 命名约定
 
-### Well-organized modules
+### 文件
 
-- **`store/`** - Clean separation between CRUD (stores) and business logic
-- **`socket/handlers/cli/`** - Clear handler organization by client type
-- **`notifications/`** - Self-contained feature with hub, parsing, types
+- **Store 文件**：`*Store.ts`（例如 `sessionStore.ts`）
+- **业务逻辑**：`*.ts`（例如 `sessions.ts`）
+- **服务**：`*Service.ts`（例如 `pushService.ts`）
+- **处理器**：`*Handlers.ts`（例如 `machineHandlers.ts`）
+- **类型**：`types.ts` 或 `*Types.ts`
 
-### Adding a new feature
+### 目录
 
-When adding a new feature (e.g., "Analytics"):
+- **功能目录**：小写，连字符分隔（例如 `notifications/`、`socket/`）
+- **处理器子目录**：按客户端类型（例如 `handlers/cli/`）
 
-1. Create feature directory: `analytics/`
-2. Add main service: `analytics/analyticsService.ts`
-3. Add types: `analytics/types.ts`
-4. Add tests: `analytics/analyticsService.test.ts`
-5. Export from barrel: `analytics/index.ts`
-6. Integrate in `index.ts` main entry point
+### 导入
+
+始终使用命名导出，避免默认导出：
+
+```typescript
+// 推荐
+export function getSessionById(db: Database, id: string): Session | null
+
+// 避免
+export default function getSessionById(db: Database, id: string): Session | null
+```
 
 ---
 
-## Anti-patterns
+## 示例
 
-### Don't
+### 组织良好的模块
 
-- ❌ Create deeply nested directories (max 2 levels: `socket/handlers/cli/`)
-- ❌ Mix business logic with data access (use store layer pattern)
-- ❌ Put everything in `index.ts` (use feature modules)
-- ❌ Use default exports (use named exports)
-- ❌ Create circular dependencies between modules
-- ❌ Put types in separate `types/` directory unless shared across many modules
+- **`store/`** - 清晰的 CRUD 与业务逻辑分离
+- **`socket/handlers/cli/`** - 按客户端类型清晰组织处理器
+- **`notifications/`** - 自包含功能，包含 hub、解析、类型
 
-### Do
+### 添加新功能
 
-- ✅ Keep modules flat and discoverable
-- ✅ Separate CRUD from business logic (store pattern)
-- ✅ Group related functionality in feature directories
-- ✅ Use named exports consistently
-- ✅ Keep types close to usage (in same module)
-- ✅ Use barrel exports for public API
+当添加新功能（例如"Analytics"）时：
+
+1. 创建功能目录：`analytics/`
+2. 添加主服务：`analytics/analyticsService.ts`
+3. 添加类型：`analytics/types.ts`
+4. 添加测试：`analytics/analyticsService.test.ts`
+5. 从 barrel 导出：`analytics/index.ts`
+6. 在 `index.ts` 主入口点集成
+
+---
+
+## 反模式
+
+### 不要
+
+- ❌ 创建深层嵌套目录（最多 2 层：`socket/handlers/cli/`）
+- ❌ 混合业务逻辑与数据访问（使用 store 层模式）
+- ❌ 把所有东西放在 `index.ts` 中（使用功能模块）
+- ❌ 使用默认导出（使用命名导出）
+- ❌ 在模块之间创建循环依赖
+- ❌ 将类型放在单独的 `types/` 目录中，除非跨多个模块共享
+
+### 要
+
+- ✅ 保持模块扁平且易于发现
+- ✅ 分离 CRUD 与业务逻辑（store 模式）
+- ✅ 在功能目录中分组相关功能
+- ✅ 一致使用命名导出
+- ✅ 将类型保持在使用位置附近（同一模块中）
+- ✅ 使用 barrel 导出作为公共 API

@@ -1,52 +1,52 @@
-# Coverage Policy
+# 覆盖率策略
 
-> Define coverage expectations for this repository.
-
----
-
-## Boundary of This Guide
-
-This guide covers only:
-
-- What logic should be covered
-- Exclusion policy
-- Coverage thresholds (if used)
-
-This guide does **not** define CI gate order or contributor workflow (see `ci-test-contract.md`).
+> 定义本仓库的覆盖率期望。
 
 ---
 
-## Policy Baseline
+## 本指南的边界
 
-- New or changed business logic should include/adjust tests
-- Critical paths should have behavior-focused coverage
-- Type-only or generated artifacts may be excluded with justification
+本指南只覆盖以下内容：
 
----
+- 哪些逻辑应该被覆盖
+- 排除策略
+- 覆盖率阈值（如果使用）
 
-## Allowed Exclusions (Examples)
-
-- Generated code
-- Thin re-export files
-- Platform wrappers validated by dedicated integration tests
+本指南**不**定义 CI 门禁顺序或贡献者工作流（见 `ci-test-contract.md`）。
 
 ---
 
-## Threshold Strategy (If Enabled)
+## 策略基线
 
-- Start with realistic module-level thresholds
-- Tighten gradually as flaky/legacy areas are improved
-- Optimize for meaningful coverage, not percentage gaming
-
----
-
-## Link to CI
-
-If coverage checks are enforced in CI, `ci-test-contract.md` should reference this file instead of duplicating thresholds.
+- 新增或变更的业务逻辑应包含或调整测试
+- 关键路径应具备面向行为的覆盖
+- 仅类型或生成的产物可在有充分理由时排除
 
 ---
 
-## Reference Files in This Repo
+## 允许排除的情况（示例）
+
+- 生成的代码
+- 薄层重导出文件
+- 已由专门集成测试验证的平台包装器
+
+---
+
+## 阈值策略（如果启用）
+
+- 从现实的模块级阈值开始
+- 随着不稳定或遗留区域改进而逐步收紧
+- 优化有意义的覆盖，而不是为了数字好看而刷百分比
+
+---
+
+## 与 CI 的关联
+
+如果 CI 中强制执行覆盖率检查，`ci-test-contract.md` 应引用本文件，而不是重复维护阈值。
+
+---
+
+## 本仓库中的参考文件
 
 - `cli/vitest.config.ts`
 - `web/vitest.config.ts`

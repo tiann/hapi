@@ -1,71 +1,71 @@
-# Directory Structure
+# 前端目录结构
 
-> How frontend code is organized in this project.
-
----
-
-## Overview
-
-HAPI Web follows a feature-based organization with clear separation between UI components, business logic (hooks), and utilities. The structure emphasizes:
-
-- **Component isolation**: UI components are separated by feature/domain
-- **Hook-based logic**: Business logic lives in custom hooks, not components
-- **Type safety**: Shared types in dedicated directory
-- **Path aliases**: `@/*` maps to `src/*` for clean imports
+> 本项目中前端代码的组织方式。
 
 ---
 
-## Directory Layout
+## 概述
+
+HAPI Web 采用基于功能的组织方式，在 UI 组件、业务逻辑（hooks）与工具函数之间保持清晰分离。该结构强调：
+
+- **组件隔离**：UI 组件按功能/领域拆分
+- **基于 Hook 的逻辑**：业务逻辑放在自定义 hooks 中，而不是组件里
+- **类型安全**：共享类型放在专门目录中
+- **路径别名**：`@/*` 映射到 `src/*`，保持导入整洁
+
+---
+
+## 目录布局
 
 ```
 web/src/
-├── api/                    # API client and HTTP utilities
-├── chat/                   # Chat-specific logic (message normalization, etc.)
-├── components/             # React components
-│   ├── assistant-ui/       # Assistant UI integration components
-│   ├── AssistantChat/      # Main chat interface components
-│   ├── ChatInput/          # Chat input with autocomplete
-│   ├── NewSession/         # Session creation flow
-│   ├── SessionFiles/       # File management UI
-│   ├── Terminal/           # Terminal emulator components
-│   ├── ToolCard/           # Tool call display components
-│   └── ui/                 # Reusable UI primitives (Button, Dialog, etc.)
-├── hooks/                  # Custom React hooks
+├── api/                    # API 客户端与 HTTP 工具
+├── chat/                   # 聊天相关逻辑（消息归一化等）
+├── components/             # React 组件
+│   ├── assistant-ui/       # Assistant UI 集成组件
+│   ├── AssistantChat/      # 主聊天界面组件
+│   ├── ChatInput/          # 带自动补全的聊天输入组件
+│   ├── NewSession/         # 会话创建流程
+│   ├── SessionFiles/       # 文件管理界面
+│   ├── Terminal/           # 终端模拟器组件
+│   ├── ToolCard/           # 工具调用展示组件
+│   └── ui/                 # 可复用 UI 基元（Button、Dialog 等）
+├── hooks/                  # 自定义 React hooks
 │   ├── mutations/          # React Query mutation hooks
 │   └── queries/            # React Query query hooks
-├── lib/                    # Shared utilities and helpers
-│   └── locales/            # i18n translation files
-├── realtime/               # Real-time connection logic (Socket.IO, SSE)
-│   └── hooks/              # Real-time specific hooks
-├── routes/                 # Route components (TanStack Router)
-│   ├── sessions/           # Session-related routes
-│   └── settings/           # Settings routes
-├── types/                  # TypeScript type definitions
-├── utils/                  # General utility functions
-├── App.tsx                 # Root app component
-├── main.tsx                # App entry point
-└── router.tsx              # Route configuration
+├── lib/                    # 共享工具与辅助函数
+│   └── locales/            # i18n 翻译文件
+├── realtime/               # 实时连接逻辑（Socket.IO、SSE）
+│   └── hooks/              # 实时连接专用 hooks
+├── routes/                 # 路由组件（TanStack Router）
+│   ├── sessions/           # 会话相关路由
+│   └── settings/           # 设置相关路由
+├── types/                  # TypeScript 类型定义
+├── utils/                  # 通用工具函数
+├── App.tsx                 # 根应用组件
+├── main.tsx                # 应用入口
+└── router.tsx              # 路由配置
 ```
 
 ---
 
-## Module Organization
+## 模块组织
 
-### Components
+### 组件
 
-**Feature-based grouping**: Components are grouped by feature/domain, not by type.
+**按功能分组**：组件按功能/领域分组，而不是按类型分组。
 
-- `components/AssistantChat/` - All chat-related components
-- `components/Terminal/` - Terminal emulator components
-- `components/ui/` - Generic, reusable UI primitives
+- `components/AssistantChat/` - 所有聊天相关组件
+- `components/Terminal/` - 终端模拟器组件
+- `components/ui/` - 通用、可复用的 UI 基元
 
-**Component file structure**:
+**组件文件结构**：
 ```
 components/AssistantChat/
-├── HappyThread.tsx         # Main thread component
-├── HappyComposer.tsx       # Message composer
-├── context.tsx             # Shared context
-├── messages/               # Message type components
+├── HappyThread.tsx         # 主线程组件
+├── HappyComposer.tsx       # 消息编辑器
+├── context.tsx             # 共享上下文
+├── messages/               # 各类消息组件
 │   ├── AssistantMessage.tsx
 │   ├── UserMessage.tsx
 │   └── SystemMessage.tsx
@@ -74,87 +74,87 @@ components/AssistantChat/
 
 ### Hooks
 
-**Separation by purpose**:
-- `hooks/` - General custom hooks (auth, clipboard, platform detection)
-- `hooks/queries/` - React Query data fetching hooks
-- `hooks/mutations/` - React Query mutation hooks
-- `realtime/hooks/` - Real-time connection hooks
+**按用途分离**：
+- `hooks/` - 通用自定义 hooks（auth、clipboard、平台检测）
+- `hooks/queries/` - React Query 数据获取 hooks
+- `hooks/mutations/` - React Query 变更 hooks
+- `realtime/hooks/` - 实时连接相关 hooks
 
-**Hook naming**: Always prefix with `use` (e.g., `useAuth`, `useCopyToClipboard`)
+**Hook 命名**：始终以 `use` 开头（例如 `useAuth`、`useCopyToClipboard`）
 
 ### Routes
 
-**File-based routing** with TanStack Router:
-- Route components live in `routes/`
-- Nested routes use subdirectories (e.g., `routes/sessions/`)
-- Route configuration in `router.tsx`
+使用 TanStack Router 的**文件路由**：
+- 路由组件放在 `routes/`
+- 嵌套路由使用子目录（例如 `routes/sessions/`）
+- 路由配置位于 `router.tsx`
 
 ---
 
-## Naming Conventions
+## 命名约定
 
-### Files
+### 文件
 
-- **Components**: PascalCase (e.g., `HappyThread.tsx`, `Button.tsx`)
-- **Hooks**: camelCase with `use` prefix (e.g., `useAuth.ts`, `useCopyToClipboard.ts`)
-- **Utilities**: camelCase (e.g., `utils.ts`, `clipboard.ts`)
-- **Types**: camelCase (e.g., `api.ts`, `session.ts`)
+- **组件**：PascalCase（例如 `HappyThread.tsx`、`Button.tsx`）
+- **Hooks**：带 `use` 前缀的 camelCase（例如 `useAuth.ts`、`useCopyToClipboard.ts`）
+- **工具函数**：camelCase（例如 `utils.ts`、`clipboard.ts`）
+- **类型**：camelCase（例如 `api.ts`、`session.ts`）
 
-### Directories
+### 目录
 
-- **Feature directories**: PascalCase (e.g., `AssistantChat/`, `Terminal/`)
-- **Utility directories**: lowercase (e.g., `hooks/`, `lib/`, `utils/`)
+- **功能目录**：PascalCase（例如 `AssistantChat/`、`Terminal/`）
+- **工具目录**：lowercase（例如 `hooks/`、`lib/`、`utils/`）
 
-### Imports
+### 导入
 
-Always use path aliases for cleaner imports:
+始终使用路径别名以保持导入整洁：
 
 ```typescript
-// Good
+// 推荐
 import { Button } from '@/components/ui/button'
 import { useAuth } from '@/hooks/useAuth'
 import type { Session } from '@/types/api'
 
-// Bad
+// 避免
 import { Button } from '../../../components/ui/button'
 ```
 
 ---
 
-## Examples
+## 示例
 
-### Well-organized modules
+### 组织良好的模块
 
-- **`components/AssistantChat/`** - Feature-complete chat interface with clear component hierarchy
-- **`hooks/useAuth.ts`** - Complex authentication logic encapsulated in a hook
-- **`components/ui/`** - Reusable UI primitives following consistent patterns
+- **`components/AssistantChat/`** - 功能完整的聊天界面，组件层次清晰
+- **`hooks/useAuth.ts`** - 复杂认证逻辑封装在 hook 中
+- **`components/ui/`** - 遵循一致模式的可复用 UI 基元
 
-### Adding a new feature
+### 添加新功能
 
-When adding a new feature (e.g., "CodeReview"):
+当新增一个功能（例如 "CodeReview"）时：
 
-1. Create feature directory: `components/CodeReview/`
-2. Add main component: `components/CodeReview/CodeReviewPanel.tsx`
-3. Add feature-specific hooks: `hooks/useCodeReview.ts`
-4. Add types: `types/codeReview.ts`
-5. Add route (if needed): `routes/code-review.tsx`
+1. 创建功能目录：`components/CodeReview/`
+2. 添加主组件：`components/CodeReview/CodeReviewPanel.tsx`
+3. 添加功能专用 hooks：`hooks/useCodeReview.ts`
+4. 添加类型：`types/codeReview.ts`
+5. 需要时添加路由：`routes/code-review.tsx`
 
 ---
 
-## Anti-patterns
+## 反模式
 
-### Don't
+### 不要
 
-- ❌ Mix feature components with UI primitives in `components/ui/`
-- ❌ Put business logic directly in components (use hooks instead)
-- ❌ Use relative imports when path aliases are available
-- ❌ Create deeply nested directory structures (max 3 levels)
-- ❌ Mix different concerns in one directory (e.g., components + hooks in same folder)
+- ❌ 在 `components/ui/` 中混入业务组件与 UI 基元
+- ❌ 直接在组件中写业务逻辑（应使用 hooks）
+- ❌ 在已有路径别名时仍使用相对导入
+- ❌ 创建深层嵌套目录结构（最多 3 层）
+- ❌ 在同一目录混合不同关注点（例如把 components 与 hooks 放一起）
 
-### Do
+### 要
 
-- ✅ Group related components by feature
-- ✅ Extract business logic into custom hooks
-- ✅ Use path aliases (`@/*`) for all imports
-- ✅ Keep directory structure flat and discoverable
-- ✅ Separate concerns (components, hooks, types, utils)
+- ✅ 按功能对相关组件分组
+- ✅ 将业务逻辑抽取到自定义 hooks
+- ✅ 所有导入统一使用路径别名（`@/*`）
+- ✅ 保持目录结构扁平、易发现
+- ✅ 分离关注点（components、hooks、types、utils）

@@ -1,29 +1,29 @@
-# Type Safety
+# 类型安全
 
-> Type safety patterns in this project.
-
----
-
-## Overview
-
-HAPI Web uses **TypeScript in strict mode** with comprehensive type coverage. Types are centralized in `types/` directory and imported via path aliases. The project emphasizes:
-
-- **Strict TypeScript** (`strict: true`, `noImplicitAny: true`, `strictNullChecks: true`)
-- **Shared protocol types** from `@hapi/protocol` workspace package
-- **Type-only imports** for better tree-shaking
-- **No runtime validation** on frontend (validation happens on backend)
-- **Explicit null handling** (no implicit undefined)
+> 本项目中的类型安全模式。
 
 ---
 
-## Type Organization
+## 概述
 
-### Shared Types (`types/api.ts`)
+HAPI Web 使用**严格模式的 TypeScript**，并具备全面的类型覆盖。类型集中在 `types/` 目录中，并通过路径别名导入。项目强调：
 
-All API-related types live in `types/api.ts`:
+- **严格 TypeScript**（`strict: true`、`noImplicitAny: true`、`strictNullChecks: true`）
+- **共享协议类型**，来自 `@hapi/protocol` workspace 包
+- **仅类型导入**，以便更好地 tree-shaking
+- **前端无运行时验证**（验证在后端进行）
+- **显式 null 处理**（无隐式 undefined）
+
+---
+
+## 类型组织
+
+### 共享类型（`types/api.ts`）
+
+所有 API 相关类型都位于 `types/api.ts`：
 
 ```typescript
-// Re-export types from shared protocol package
+// 从共享协议包重新导出类型
 export type {
     AgentState,
     AttachmentMetadata,
@@ -31,13 +31,13 @@ export type {
     SessionSummary,
 } from '@hapi/protocol/types'
 
-// Frontend-specific extensions
+// 前端特定扩展
 export type DecryptedMessage = ProtocolDecryptedMessage & {
     status?: MessageStatus
     originalText?: string
 }
 
-// API response types
+// API 响应类型
 export type SessionsResponse = { sessions: SessionSummary[] }
 export type MessagesResponse = {
     messages: DecryptedMessage[]
@@ -50,11 +50,11 @@ export type MessagesResponse = {
 }
 ```
 
-**Pattern**: Import from protocol, extend as needed, define response shapes.
+**模式**：从协议导入，按需扩展，定义响应形状。
 
-### Local Types
+### 本地类型
 
-Component-specific types are defined in the same file:
+组件特定类型在同一文件中定义：
 
 ```typescript
 // components/Spinner.tsx
@@ -65,309 +65,339 @@ type SpinnerProps = {
 }
 ```
 
-**When to use local types**:
-- Props types for components
-- Internal state types
-- Types only used in one file
+**何时使用本地类型**：
+- 组件的 props 类型
+- 内部状态类型
+- 仅在一个文件中使用的类型
 
-**When to use shared types**:
-- API data structures
-- Types used across multiple files
-- Domain models (Session, Message, Machine)
+**何时使用共享类型**：
+- API 数据结构
+- 跨多个文件使用的类型
+- 领域模型（Session、Message、Machine）
 
-### Type-Only Imports
+### 仅类型导入
 
-Always use `type` keyword for type-only imports:
+始终对仅类型导入使用 `type` 关键字：
 
 ```typescript
-// Good - explicit type import
-import type { ApiClient } from '@/api/client'
-import type { SessionSummary } from '@/types/api'
+// Good - 仅类型导入
+import type { Session, Message } from '@/types/api'
 
-// Bad - value import for types
-import { SessionSummary } from '@/types/api'
+// Bad - 运行时导入（即使只用于类型）
+import { Session, Message } from '@/types/api'
 ```
 
-**Why**: Better tree-shaking, clearer intent, faster compilation.
+**为什么**：更好的 tree-shaking，明确意图，避免循环依赖。
 
 ---
 
-## Validation
+## 类型模式
 
-### No Frontend Validation
+### 判别联合
 
-Frontend does **not** perform runtime validation. All validation happens on the backend.
-
-**Rationale**:
-- Backend is the source of truth
-- Avoids duplication
-- Frontend trusts API responses (authenticated, encrypted connection)
-
-### Type Assertions (Minimal)
-
-Type assertions are rare and only used for:
-
-1. **External library types** that are incorrect
-2. **JSON parsing** where structure is known
+对变体类型使用判别联合：
 
 ```typescript
-// Acceptable - parsing known structure
-const payload = JSON.parse(decoded) as { exp?: unknown }
+type MessageStatus =
+    | { type: 'pending' }
+    | { type: 'sent', timestamp: number }
+    | { type: 'failed', error: string }
 
-// Acceptable - library metadata typing
-const custom = message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
-```
-
-**Never** use `as any` or `as unknown as T` without good reason.
-
----
-
-## Common Patterns
-
-### Discriminated Unions
-
-Use discriminated unions for variant types:
-
-```typescript
-// Good - discriminated union
-export type SpawnResponse =
-    | { type: 'success'; sessionId: string }
-    | { type: 'error'; message: string }
-
-// Usage with type narrowing
-if (response.type === 'success') {
-    console.log(response.sessionId)  // TypeScript knows this exists
-}
-```
-
-### Optional vs Nullable
-
-- Use `?` for optional properties (may be absent)
-- Use `| null` for nullable properties (explicitly null)
-
-```typescript
-type SessionMetadata = {
-    path: string           // Required
-    version?: string       // Optional (may be absent)
-    flavor: string | null  // Nullable (explicitly null or string)
-}
-```
-
-### Function Types
-
-Use arrow function syntax for function types:
-
-```typescript
-// Good
-type OnRetry = (localId: string) => void
-type OnLoadMore = () => Promise<unknown>
-
-// Bad - verbose
-type OnRetry = { (localId: string): void }
-```
-
-### Generic Constraints
-
-Use generic constraints for reusable utilities:
-
-```typescript
-// From lib/utils.ts
-export function cn(...inputs: ClassValue[]): string {
-    return twMerge(clsx(inputs))
-}
-```
-
-### Type Guards
-
-Create type guards for runtime type checking:
-
-```typescript
-function isNotBoundError(error: unknown): boolean {
-    return error instanceof ApiError && error.status === 401 && error.code === 'not_bound'
-}
-```
-
-### Const Assertions
-
-Use `as const` for literal types:
-
-```typescript
-// Query keys with const assertion
-export const queryKeys = {
-    sessions: ['sessions'] as const,
-    session: (id: string) => ['session', id] as const,
-}
-```
-
----
-
-## TypeScript Configuration
-
-### Web (`web/tsconfig.json`)
-
-```json
-{
-    "extends": "../tsconfig.base.json",
-    "compilerOptions": {
-        "target": "ES2020",
-        "lib": ["ES2020", "ESNext", "ESNext.Disposable", "DOM", "DOM.Iterable"],
-        "jsx": "react-jsx",
-        "noEmit": true,
-        "types": ["vite/client"],
-        "baseUrl": ".",
-        "paths": {
-            "@/*": ["./src/*"]
-        }
-    },
-    "include": ["src"]
-}
-```
-
-### Base (`tsconfig.base.json`)
-
-```json
-{
-    "compilerOptions": {
-        "target": "ESNext",
-        "module": "ESNext",
-        "moduleResolution": "bundler",
-        "lib": ["ES2022"],
-        "strict": true,
-        "noImplicitAny": true,
-        "strictNullChecks": true,
-        "noImplicitReturns": true,
-        "skipLibCheck": true,
-        "resolveJsonModule": true
+function renderStatus(status: MessageStatus) {
+    switch (status.type) {
+        case 'pending':
+            return <Spinner />
+        case 'sent':
+            return <span>发送于 {formatTime(status.timestamp)}</span>
+        case 'failed':
+            return <span className="error">{status.error}</span>
     }
 }
 ```
 
-**Key settings**:
-- `strict: true` - All strict checks enabled
-- `noImplicitAny: true` - No implicit any types
-- `strictNullChecks: true` - Explicit null/undefined handling
-- `noImplicitReturns: true` - All code paths must return
+**为什么**：TypeScript 可以在 switch 中收窄类型，确保处理所有情况。
+
+### 类型守卫
+
+为运行时检查创建类型守卫：
+
+```typescript
+function isSession(value: unknown): value is Session {
+    return (
+        typeof value === 'object' &&
+        value !== null &&
+        'id' in value &&
+        'namespace' in value
+    )
+}
+
+// 使用
+if (isSession(data)) {
+    // TypeScript 知道 data 是 Session
+    console.log(data.id)
+}
+```
+
+### Null 处理
+
+显式处理 `null` 和 `undefined`：
+
+```typescript
+// Good - 显式处理
+function getSessionName(session: Session | null): string {
+    return session?.metadata?.name ?? '未命名会话'
+}
+
+// Bad - 非空断言
+function getSessionName(session: Session | null): string {
+    return session!.metadata!.name  // 可能崩溃
+}
+```
+
+### 字面量类型
+
+对常量使用 `as const`：
+
+```typescript
+// Good - 字面量类型
+const SIZES = ['sm', 'md', 'lg'] as const
+type Size = typeof SIZES[number]  // 'sm' | 'md' | 'lg'
+
+// Bad - 字符串数组
+const SIZES = ['sm', 'md', 'lg']
+type Size = string  // 过于宽泛
+```
 
 ---
 
-## Handling External Data
+## API 类型
 
-### API Responses
-
-Trust API response types (backend validates):
+### 请求类型
 
 ```typescript
+// types/api.ts
+export type CreateSessionRequest = {
+    tag?: string
+    metadata?: Record<string, unknown>
+}
+
+export type UpdateSessionRequest = {
+    metadata?: Record<string, unknown>
+    metadataVersion?: number
+}
+```
+
+### 响应类型
+
+```typescript
+// types/api.ts
+export type SessionResponse = {
+    session: Session
+}
+
+export type ErrorResponse = {
+    error: string
+}
+```
+
+### API 客户端类型
+
+```typescript
+// lib/api.ts
 export class ApiClient {
     async getSessions(): Promise<SessionsResponse> {
-        const response = await this.fetch('/api/sessions')
-        return await response.json() as SessionsResponse
+        const response = await fetch(`${this.baseUrl}/sessions`)
+        return response.json()
     }
-}
-```
 
-### Unknown Types
-
-Use `unknown` instead of `any` for truly unknown data:
-
-```typescript
-// Good - forces type checking
-function parseError(error: unknown): string {
-    if (error instanceof Error) {
-        return error.message
+    async createSession(request: CreateSessionRequest): Promise<SessionResponse> {
+        const response = await fetch(`${this.baseUrl}/sessions`, {
+            method: 'POST',
+            body: JSON.stringify(request)
+        })
+        return response.json()
     }
-    return 'Unknown error'
-}
-
-// Bad - bypasses type checking
-function parseError(error: any): string {
-    return error.message  // No type safety
 }
 ```
 
 ---
 
-## Forbidden Patterns
+## React 类型
 
-### ❌ Don't Use `any`
-
-```typescript
-// Bad
-function handleData(data: any) {
-    return data.value
-}
-
-// Good
-function handleData(data: unknown) {
-    if (typeof data === 'object' && data !== null && 'value' in data) {
-        return (data as { value: unknown }).value
-    }
-}
-```
-
-### ❌ Don't Use Non-Null Assertions Carelessly
+### 组件 Props
 
 ```typescript
-// Bad - assumes element exists
-const element = document.getElementById('root')!
-
-// Good - handle null case
-const element = document.getElementById('root')
-if (!element) throw new Error('Root element not found')
-```
-
-### ❌ Don't Ignore TypeScript Errors
-
-```typescript
-// Bad
-// @ts-ignore
-const value = data.unknownProperty
-
-// Good - fix the type or use proper type guard
-const value = 'unknownProperty' in data ? data.unknownProperty : undefined
-```
-
-### ❌ Don't Use `interface` for Props
-
-```typescript
-// Bad - use type instead
-interface ButtonProps {
-    onClick: () => void
-}
-
-// Good
+// 使用 type，不用 interface
 type ButtonProps = {
+    variant?: 'primary' | 'secondary'
+    size?: 'sm' | 'md' | 'lg'
+    disabled?: boolean
+    onClick?: () => void
+    children: React.ReactNode
+}
+
+export function Button({ variant = 'primary', size = 'md', ...props }: ButtonProps) {
+    // ...
+}
+```
+
+### Hook 返回类型
+
+```typescript
+// Good - 对象返回类型
+function useSession(id: string) {
+    const [session, setSession] = useState<Session | null>(null)
+    const [loading, setLoading] = useState(true)
+    const [error, setError] = useState<string | null>(null)
+
+    return { session, loading, error }
+}
+
+// Bad - 数组返回类型（难以记住顺序）
+function useSession(id: string) {
+    return [session, loading, error]
+}
+```
+
+### 事件处理器
+
+```typescript
+// Good - 显式类型
+function handleClick(event: React.MouseEvent<HTMLButtonElement>) {
+    event.preventDefault()
+}
+
+// Good - 推断类型
+<button onClick={(e) => console.log(e.currentTarget)}>
+```
+
+---
+
+## 类型推断
+
+### 何时标注类型
+
+```typescript
+// Good - 让 TypeScript 推断
+const sessions = await api.getSessions()  // 推断为 SessionsResponse
+
+// Good - 标注不明确的情况
+const [data, setData] = useState<Session | null>(null)
+
+// Bad - 过度标注
+const sessions: SessionsResponse = await api.getSessions()
+```
+
+### 何时使用 `unknown`
+
+```typescript
+// Good - 对真正未知的数据使用 unknown
+function handleMessage(data: unknown) {
+    if (isSession(data)) {
+        // 收窄后使用
+    }
+}
+
+// Bad - 使用 any
+function handleMessage(data: any) {
+    // 失去类型安全
+}
+```
+
+---
+
+## 常见模式
+
+### 可选链与空值合并
+
+```typescript
+// Good - 安全访问
+const name = session?.metadata?.name ?? '默认名称'
+
+// Bad - 多个 if 检查
+let name = '默认名称'
+if (session && session.metadata && session.metadata.name) {
+    name = session.metadata.name
+}
+```
+
+### 类型断言
+
+```typescript
+// Good - 使用类型守卫
+if (isSession(data)) {
+    console.log(data.id)
+}
+
+// Bad - 使用 as（绕过类型检查）
+const session = data as Session
+console.log(session.id)  // 可能崩溃
+```
+
+### 泛型
+
+```typescript
+// Good - 泛型工具函数
+function pick<T, K extends keyof T>(obj: T, keys: K[]): Pick<T, K> {
+    const result = {} as Pick<T, K>
+    for (const key of keys) {
+        result[key] = obj[key]
+    }
+    return result
+}
+
+// 使用
+const partial = pick(session, ['id', 'namespace'])
+```
+
+---
+
+## 类型 vs Interface
+
+### 始终使用 `type`
+
+```typescript
+// Good - 使用 type
+type ButtonProps = {
+    variant: 'primary' | 'secondary'
+    onClick: () => void
+}
+
+// Bad - 使用 interface
+interface ButtonProps {
+    variant: 'primary' | 'secondary'
     onClick: () => void
 }
 ```
 
-**Why**: `type` is more flexible (unions, intersections) and consistent with the codebase.
+**为什么**：`type` 更灵活（联合、交叉），并与代码库保持一致。
 
 ---
 
-## Common Mistakes
+## 常见错误
 
-- ❌ Using `any` instead of `unknown`
-- ❌ Not using `type` keyword for type-only imports
-- ❌ Using `interface` instead of `type` for props
-- ❌ Ignoring TypeScript errors with `@ts-ignore`
-- ❌ Using non-null assertions (`!`) without null checks
-- ❌ Not handling `null` and `undefined` explicitly
-- ❌ Defining types inline instead of extracting them
-- ❌ Not using discriminated unions for variant types
-- ❌ Using `as any` for type coercion
-- ❌ Not leveraging type inference (over-annotating)
+- ❌ 使用 `any` 而不是 `unknown`
+- ❌ 仅类型导入时不使用 `type` 关键字
+- ❌ 对 props 使用 `interface` 而不是 `type`
+- ❌ 使用 `@ts-ignore` 忽略 TypeScript 错误
+- ❌ 不进行 null 检查就使用非空断言（`!`）
+- ❌ 不显式处理 `null` 和 `undefined`
+- ❌ 内联定义类型而不是提取它们
+- ❌ 对变体类型不使用判别联合
+- ❌ 使用 `as any` 进行类型强制转换
+- ❌ 不利用类型推断（过度标注）
 
 ---
 
-## Best Practices
+## 最佳实践
 
-- ✅ Use `type` for all type definitions
-- ✅ Use `type` keyword for type-only imports
-- ✅ Handle `null` and `undefined` explicitly
-- ✅ Use discriminated unions for variants
-- ✅ Use `unknown` for truly unknown data
-- ✅ Create type guards for runtime checks
-- ✅ Use `as const` for literal types
-- ✅ Leverage type inference (don't over-annotate)
-- ✅ Keep types close to usage (local types in same file)
-- ✅ Share types via `types/api.ts` when needed across files
+- ✅ 对所有类型定义使用 `type`
+- ✅ 对仅类型导入使用 `type` 关键字
+- ✅ 显式处理 `null` 和 `undefined`
+- ✅ 对变体使用判别联合
+- ✅ 对真正未知的数据使用 `unknown`
+- ✅ 为运行时检查创建类型守卫
+- ✅ 对字面量类型使用 `as const`
+- ✅ 利用类型推断（不要过度标注）
+- ✅ 将类型保持在使用位置附近（本地类型在同一文件中）
+- ✅ 需要跨文件共享时通过 `types/api.ts` 共享类型

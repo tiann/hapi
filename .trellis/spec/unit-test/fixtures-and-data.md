@@ -1,47 +1,47 @@
-# Fixtures & Data
+# 夹具与测试数据
 
-> Define how test data and fixtures are created and reused.
-
----
-
-## Boundary of This Guide
-
-This guide covers only:
-
-- Fixture organization
-- Data factory/builder patterns
-- Determinism of test inputs
-
-This guide does **not** define mocking boundaries (see `mocking-guidelines.md`).
+> 定义测试数据与夹具的创建和复用方式。
 
 ---
 
-## Data Rules (Baseline)
+## 本指南的边界
 
-- Prefer factories/builders over large inline objects
-- Keep fixtures minimal and scenario-specific
-- Avoid hidden shared mutable fixture objects
+本指南只覆盖以下内容：
 
----
+- 夹具组织方式
+- 数据工厂 / builder 模式
+- 测试输入的确定性
 
-## Determinism Rules
-
-- Freeze time for time-sensitive behavior
-- Seed randomness or avoid random inputs
-- Avoid dependence on mutable external state
+本指南**不**定义 Mock 边界（见 `mocking-guidelines.md`）。
 
 ---
 
-## Discouraged Patterns
+## 数据规则（基线）
 
-- One giant shared fixture for many unrelated tests
-- Implicit defaults that hide important fields
-- Environment-dependent fixture assumptions
+- 优先使用工厂 / builder，而不是内联的大对象
+- 保持夹具最小化，并与具体场景对应
+- 避免隐藏的共享可变夹具对象
 
 ---
 
-## Examples from Codebase
+## 确定性规则
 
-- `web/src/chat/reducer.equivalence.test.ts` (scenario-based input matrix)
-- `cli/src/runner/runner.integration.test.ts` (integration-oriented test data setup)
-- `hub/src/sync/teams.test.ts` (sync event test data cases)
+- 对时间敏感行为冻结时间
+- 为随机性设定种子，或避免随机输入
+- 避免依赖可变的外部状态
+
+---
+
+## 不推荐的模式
+
+- 用一个巨大的共享夹具覆盖很多无关测试
+- 通过隐式默认值隐藏重要字段
+- 让夹具依赖运行环境差异
+
+---
+
+## 代码库中的示例
+
+- `web/src/chat/reducer.equivalence.test.ts`（基于场景的输入矩阵）
+- `cli/src/runner/runner.integration.test.ts`（偏集成式测试数据准备）
+- `hub/src/sync/teams.test.ts`（同步事件测试数据场景）

@@ -1,26 +1,26 @@
-# Component Guidelines
+# 组件规范
 
-> How components are built in this project.
-
----
-
-## Overview
-
-HAPI Web uses React 19 with TypeScript. Components follow functional patterns with clear prop typing, Tailwind CSS for styling, and accessibility built-in. Components are small, focused, and composable.
-
-**Key libraries**:
-- React 19 with hooks
-- TanStack Router for routing
-- @assistant-ui/react for AI chat primitives
-- Tailwind CSS v4 for styling
-- class-variance-authority (CVA) for variant-based styling
-- clsx + tailwind-merge via `cn()` utility
+> 本项目中组件的构建方式。
 
 ---
 
-## Component Structure
+## 概述
 
-### Standard Component Pattern
+HAPI Web 使用 React 19 与 TypeScript。组件遵循函数式模式，具备清晰的 props 类型、使用 Tailwind CSS 进行样式处理，并内建可访问性支持。组件应保持小而专注，便于组合。
+
+**关键库**：
+- React 19 + hooks
+- TanStack Router 用于路由
+- `@assistant-ui/react` 用于 AI 聊天基元
+- Tailwind CSS v4 用于样式
+- class-variance-authority（CVA）用于变体样式
+- 通过 `cn()` 工具使用 `clsx` + `tailwind-merge`
+
+---
+
+## 组件结构
+
+### 标准组件模式
 
 ```typescript
 // components/Spinner.tsx
@@ -44,16 +44,16 @@ export function Spinner({
 }
 ```
 
-Key aspects:
-1. Named function export (not default)
-2. Props type defined locally with `type` keyword
-3. Destructured props with defaults in function signature
-4. `cn()` utility for conditional className merging
-5. `useTranslation()` for any user-visible text
+关键点：
+1. 使用具名函数导出（不要 default）
+2. Props 类型在本地使用 `type` 定义
+3. 在函数参数解构中提供默认值
+4. 使用 `cn()` 处理条件 className 合并
+5. 所有面向用户的文本都使用 `useTranslation()`
 
-### Context Provider Pattern
+### Context Provider 模式
 
-Feature-scoped contexts use a Provider component + typed hook:
+功能级上下文使用 Provider 组件 + 类型化 hook：
 
 ```typescript
 // components/AssistantChat/context.tsx
@@ -69,7 +69,7 @@ export function HappyChatProvider(props: { value: HappyChatContextValue; childre
     return <HappyChatContext.Provider value={props.value}>{props.children}</HappyChatContext.Provider>
 }
 
-// Always throw when context is missing - never return undefined
+// 当 context 缺失时必须抛错，绝不返回 undefined
 export function useHappyChatContext(): HappyChatContextValue {
     const ctx = useContext(HappyChatContext)
     if (!ctx) throw new Error('HappyChatContext is missing')
@@ -77,16 +77,16 @@ export function useHappyChatContext(): HappyChatContextValue {
 }
 ```
 
-### UI Primitives with Variants (CVA pattern)
+### 带变体的 UI 基元（CVA 模式）
 
-For reusable UI primitives, use class-variance-authority:
+对于可复用 UI 基元，使用 class-variance-authority：
 
 ```typescript
 // components/ui/button.tsx
 import { cva, type VariantProps } from 'class-variance-authority'
 
 const buttonVariants = cva(
-    'inline-flex items-center justify-center ...', // base classes
+    'inline-flex items-center justify-center ...', // 基础 class
     {
         variants: {
             variant: {
@@ -116,48 +116,48 @@ Button.displayName = 'Button'
 
 ---
 
-## Props Conventions
+## Props 约定
 
-### Type Definition
+### 类型定义
 
-- Use `type` (not `interface`) for component props
-- Name props types as `<ComponentName>Props`
-- Define props types in the same file as the component
+- 组件 props 使用 `type`，不要使用 `interface`
+- props 类型命名为 `<ComponentName>Props`
+- props 类型与组件定义放在同一文件中
 
 ```typescript
-// Good
+// 推荐
 type SpinnerProps = {
     size?: 'sm' | 'md' | 'lg'
     className?: string
     label?: string | null
 }
 
-// Bad - Don't use interface for simple props
+// 不推荐 - 简单 props 不要使用 interface
 interface SpinnerProps {
     size?: string
 }
 ```
 
-### Optional vs Required
+### 可选与必选
 
-- Make props optional with `?` when they have sensible defaults
-- Always provide default values in destructuring, not as separate variables
-- Use `null` explicitly for "intentionally empty" (e.g., `label?: string | null`)
+- 当 props 具有合理默认值时，用 `?` 标记为可选
+- 默认值始终放在解构参数中，而不是单独变量里
+- 对于“有意为空”的场景，显式使用 `null`（例如 `label?: string | null`）
 
 ```typescript
-// Good - defaults in destructuring
+// 推荐 - 在解构中给默认值
 function Spinner({ size = 'md', className, label }: SpinnerProps) {}
 
-// Bad - defaults elsewhere
+// 不推荐 - 在其他地方补默认值
 function Spinner(props: SpinnerProps) {
-    const size = props.size ?? 'md'  // Don't do this
+    const size = props.size ?? 'md'  // 不要这样做
 }
 ```
 
 ### Children
 
-- Use `ReactNode` type for children prop
-- Always name it `children`
+- children 使用 `ReactNode` 类型
+- 名称始终使用 `children`
 
 ```typescript
 type MyComponentProps = {
@@ -166,66 +166,66 @@ type MyComponentProps = {
 }
 ```
 
-### Event Handlers
+### 事件处理器
 
-- Name event handler props with `on` prefix (e.g., `onRetry`, `onLoadMore`)
-- Type them precisely, not with generic `() => void`
+- 事件处理 props 统一使用 `on` 前缀（例如 `onRetry`、`onLoadMore`）
+- 类型要尽量精确，不要笼统写成 `() => void`
 
 ```typescript
 type ThreadProps = {
-    onLoadMore: () => Promise<unknown>  // Good - precise return type
-    onRetryMessage?: (localId: string) => void  // Good - parameter typed
+    onLoadMore: () => Promise<unknown>  // 推荐 - 返回类型明确
+    onRetryMessage?: (localId: string) => void  // 推荐 - 参数类型明确
 }
 ```
 
 ---
 
-## Styling Patterns
+## 样式模式
 
-### CSS Variables for Theme Colors
+### 主题颜色使用 CSS Variables
 
-Always use CSS custom properties for theme-aware colors, never hardcoded values:
+所有主题相关颜色都应使用 CSS 自定义属性，不要写死颜色值：
 
 ```typescript
-// Good - uses CSS variables
+// 推荐 - 使用 CSS 变量
 'bg-[var(--app-button)] text-[var(--app-button-text)]'
 'bg-[var(--app-secondary-bg)]'
 'text-[var(--app-fg)]'
 'border-[var(--app-border)]'
 
-// Bad - hardcoded colors that don't respond to theme
+// 不推荐 - 写死颜色，无法响应主题变化
 'bg-blue-500 text-white'
 ```
 
-Available CSS variables:
-- `--app-bg` - Main background
-- `--app-fg` - Main foreground/text
-- `--app-secondary-bg` - Secondary background
-- `--app-subtle-bg` - Subtle background (for hover states)
-- `--app-button` - Button background
-- `--app-button-text` - Button text
-- `--app-border` - Border color
-- `--app-link` - Link/accent color
-- `--app-hint` - Hint/muted text
+可用 CSS 变量：
+- `--app-bg` - 主背景
+- `--app-fg` - 主前景/正文文本
+- `--app-secondary-bg` - 次级背景
+- `--app-subtle-bg` - 弱化背景（用于 hover 等状态）
+- `--app-button` - 按钮背景
+- `--app-button-text` - 按钮文字
+- `--app-border` - 边框颜色
+- `--app-link` - 链接/强调色
+- `--app-hint` - 提示/弱化文字
 
-### The `cn()` Utility
+### `cn()` 工具
 
-Always use `cn()` for combining class names:
+组合 className 时始终使用 `cn()`：
 
 ```typescript
 import { cn } from '@/lib/utils'
 
-// Good
+// 推荐
 <div className={cn('base-classes', condition && 'conditional-class', className)} />
 
-// Bad - direct string concatenation
+// 不推荐 - 直接拼接字符串
 <div className={`base-classes ${condition ? 'conditional-class' : ''} ${className}`} />
 ```
 
-### Responsive and Conditional Classes
+### 响应式与条件类名
 
 ```typescript
-// Conditional classes
+// 条件 class
 <div className={cn(
     'base px-3 py-2',
     isActive && 'bg-[var(--app-subtle-bg)]',
@@ -235,54 +235,54 @@ import { cn } from '@/lib/utils'
 
 ---
 
-## Accessibility
+## 可访问性
 
-### Required Patterns
+### 必需模式
 
-1. **Loading states**: Use `role="status"` and `aria-label` for spinners
-2. **Hidden decorative content**: Use `aria-hidden="true"`
-3. **Screen reader only text**: Use `sr-only` Tailwind class
-4. **Interactive elements**: Ensure all clickable elements are keyboard accessible
+1. **加载态**：Spinner 使用 `role="status"` 与 `aria-label`
+2. **隐藏的装饰内容**：使用 `aria-hidden="true"`
+3. **仅供屏幕阅读器的文本**：使用 `sr-only` Tailwind class
+4. **可交互元素**：确保所有可点击元素都支持键盘访问
 
 ```typescript
-// Spinner accessibility (from Spinner.tsx)
+// Spinner 可访问性（来自 Spinner.tsx）
 const accessibilityProps = effectiveLabel === null
     ? { 'aria-hidden': true }
     : { role: 'status', 'aria-label': effectiveLabel }
 ```
 
 ```typescript
-// Screen reader only text for skeleton loading
+// Skeleton 加载中的屏幕阅读器文本
 <span className="sr-only">{t('misc.loadingMessages')}</span>
 ```
 
 ```typescript
-// Loading button state
+// Button 加载状态
 <Button aria-busy={isLoadingMoreMessages}>...</Button>
 ```
 
-### Translation
+### 翻译
 
-All user-visible text must use `useTranslation()`:
+所有面向用户的文本都必须通过 `useTranslation()`：
 
 ```typescript
-// Good
+// 推荐
 const { t } = useTranslation()
 return <span>{t('misc.loading')}</span>
 
-// Bad - hardcoded strings
+// 不推荐 - 写死字符串
 return <span>Loading...</span>
 ```
 
 ---
 
-## Scenario: Long Content Auto-Collapse (UI-only contract)
+## 场景：长内容自动折叠（仅 UI 层契约）
 
-### 1. Scope / Trigger
-- Trigger: Message/tool/CLI content can exceed readable size and degrade chat usability.
-- Scope: Frontend rendering layer only (`web/src/components/*`), no reducer/protocol/API changes.
+### 1. 范围 / 触发条件
+- 触发条件：消息 / 工具 / CLI 内容可能长到超出可读范围，降低聊天可用性。
+- 范围：仅前端渲染层（`web/src/components/*`），不涉及 reducer / protocol / API 变更。
 
-### 2. Signatures
+### 2. 签名
 
 ```typescript
 // web/src/lib/contentLimits.ts
@@ -304,66 +304,66 @@ export function LongContentCollapse(props: {
 }): JSX.Element
 ```
 
-### 3. Contracts
-- Collapse rule: `text.length > threshold` => collapsed by default.
-- Boundary rule: `text.length === threshold` => do not collapse.
-- Interaction contract:
-  - collapsed state: `aria-expanded="false"`
-  - expanded state: `aria-expanded="true"`
-- i18n contract (must not hardcode user-visible labels):
+### 3. 契约
+- 折叠规则：`text.length > threshold` 时默认折叠。
+- 边界规则：`text.length === threshold` 时不折叠。
+- 交互契约：
+  - 折叠状态：`aria-expanded="false"`
+  - 展开状态：`aria-expanded="true"`
+- i18n 契约（不得写死面向用户的标签）：
   - `content.collapse.openWithHidden`
   - `content.collapse.close`
 
-### 4. Validation & Error Matrix
-- Missing i18n key -> fallback to English key resolution path in `I18nProvider`.
-- `threshold` not provided -> use `LONG_CONTENT_COLLAPSE_THRESHOLD` default.
-- Empty text (`""`) -> never collapsed.
+### 4. 校验与错误矩阵
+- i18n key 缺失 -> 回退到 `I18nProvider` 中的英文 key 解析路径。
+- 未传 `threshold` -> 使用默认值 `LONG_CONTENT_COLLAPSE_THRESHOLD`。
+- 空文本（`""`）-> 永不折叠。
 
-### 5. Good / Base / Bad Cases
-- Good: long text in `CodeBlock`, `MarkdownRenderer`, `CliOutputBlock` collapses consistently with same toggle behavior.
-- Base: text exactly 1000 chars renders without collapse toggle.
-- Bad: hardcoded labels in component or per-view custom threshold causing inconsistent UX.
+### 5. 良好 / 基线 / 反例
+- Good：`CodeBlock`、`MarkdownRenderer`、`CliOutputBlock` 中的长文本都以一致的切换行为折叠。
+- Base：文本恰好 1000 字符时直接渲染，不显示折叠按钮。
+- Bad：组件里写死标签，或每个视图自定义不同 threshold，导致 UX 不一致。
 
-### 6. Tests Required
-- Component tests must cover:
-  1. boundary case (`=== threshold`) no toggle button,
-  2. over-threshold case (`> threshold`) default collapsed,
-  3. click toggle changes `aria-expanded` false -> true.
-- For i18n-sensitive assertions, read label from locale keys instead of duplicating hardcoded literals.
+### 6. 必需测试
+- 组件测试必须覆盖：
+  1. 边界情况（`=== threshold`）下无 toggle 按钮，
+  2. 超阈值情况（`> threshold`）默认折叠，
+  3. 点击 toggle 后 `aria-expanded` 从 false 变为 true。
+- 对 i18n 敏感的断言，应从 locale keys 读取标签，而不是复制写死文本。
 
-### 7. Wrong vs Correct
+### 7. 错误示例 vs 正确示例
 
 ```tsx
-// Wrong: hardcoded label (breaks i18n consistency)
+// Wrong: 写死标签（破坏 i18n 一致性）
 <span>展开长消息（已隐藏部分）</span>
 ```
 
 ```tsx
-// Correct: translated label
+// Correct: 使用翻译标签
 const { t } = useTranslation()
 <span>{t('content.collapse.openWithHidden')}</span>
 ```
 
 ---
 
-## Scenario: Row Navigation vs Action Buttons (Touch + Pointer)
+## 场景：行导航与操作按钮冲突（触屏 + 指针）
 
-### 1. Scope / Trigger
-- Trigger: A selectable list row has nested action buttons (rename/archive/delete/more).
-- Scope: Frontend interaction layer (`web/src/components/*`) with shared press/click hooks.
+### 1. 范围 / 触发条件
+- 触发条件：一个可选中的列表行内部又嵌套了操作按钮（rename/archive/delete/more）。
+- 范围：前端交互层（`web/src/components/*`），涉及共享的 press/click hooks。
 
-### 2. Signatures
+### 2. 签名
 
 ```typescript
-// Row-level navigation
+// 行级导航
 onSelect: (sessionId: string) => void
 
-// Nested action buttons
+// 内嵌操作按钮
 onClick: (event: React.MouseEvent<HTMLButtonElement>) => void
 ```
 
 ```typescript
-// Guard handlers attached to action area / action buttons
+// 绑定在操作区域 / 操作按钮上的 guard handlers
 const preventRowSelectHandlers = {
   onPointerDownCapture: handleActionPointerDownCapture,
   onMouseDownCapture: handleActionPointerDownCapture,
@@ -372,39 +372,39 @@ const preventRowSelectHandlers = {
 }
 ```
 
-### 3. Contracts
-- Action button click must **never** trigger row navigation.
-- Row body click must still trigger row navigation.
-- On touch devices, guard logic must cover both Touch Events and Pointer/Mouse Events.
-- If long-press hook is used on row, nested action area must set a guard flag in capture phase.
+### 3. 契约
+- 点击操作按钮时**绝不能**触发行导航。
+- 点击行主体区域时仍然必须触发行导航。
+- 在触屏设备上，guard 逻辑必须同时覆盖 Touch Events 与 Pointer/Mouse Events。
+- 如果行上使用了 long-press hook，那么内嵌操作区域必须在 capture 阶段设置 guard flag。
 
-### 4. Validation & Error Matrix
-- Desktop mouse click on action button -> only action dialog/menu opens.
-- Mobile tap on action button -> only action dialog/menu opens.
-- Tap on row non-action area -> navigation to detail page.
-- Long press on row non-action area -> row context menu opens.
-- Long press/tap on action area -> must not open row context menu or navigate.
+### 4. 校验与错误矩阵
+- 桌面端鼠标点击操作按钮 -> 只打开操作弹窗 / 菜单。
+- 移动端轻触操作按钮 -> 只打开操作弹窗 / 菜单。
+- 轻触行的非操作区域 -> 跳转到详情页。
+- 长按行的非操作区域 -> 打开行级上下文菜单。
+- 在操作区域上长按 / 轻触 -> 不得打开行级上下文菜单，也不得触发导航。
 
-### 5. Good / Base / Bad Cases
-- Good: action button uses `e.stopPropagation()` and capture handlers for pointer/mouse/touch.
-- Base: row navigation works from non-action area only.
-- Bad: only using `onClick` stopPropagation on button while row listens to `onTouchStart/onTouchEnd`; mobile tap still navigates.
+### 5. 良好 / 基线 / 反例
+- Good：操作按钮同时使用 `e.stopPropagation()` 与 pointer/mouse/touch 的 capture handlers。
+- Base：只有从非操作区域点击时才触发行导航。
+- Bad：只在按钮上通过 `onClick` 做 stopPropagation，而行监听的是 `onTouchStart/onTouchEnd`；结果移动端轻触仍然发生导航。
 
-### 6. Tests Required
-- Component interaction tests should cover:
-  1. action button tap/click does not call `onSelect`,
-  2. row body tap/click calls `onSelect`,
-  3. touch event path does not bypass row/action separation.
+### 6. 必需测试
+- 组件交互测试应覆盖：
+  1. 点击/轻触操作按钮不会调用 `onSelect`，
+  2. 点击/轻触行主体会调用 `onSelect`，
+  3. touch 事件路径不会绕过行/操作区隔离逻辑。
 
-### 7. Wrong vs Correct
+### 7. 错误示例 vs 正确示例
 
 ```tsx
-// Wrong: only stop click bubbling, but touch path still reaches row handlers
+// Wrong: 只阻止 click 冒泡，但 touch 路径仍会触发行级 handler
 <button onClick={(e) => { e.stopPropagation(); setDeleteOpen(true) }} />
 ```
 
 ```tsx
-// Correct: stop click bubbling + capture guards for touch/pointer/mouse
+// Correct: 阻止 click 冒泡 + 为 touch/pointer/mouse 添加 capture guards
 <button
   onClick={(e) => {
     e.stopPropagation()
@@ -419,12 +419,12 @@ const preventRowSelectHandlers = {
 
 ---
 
-## Local Sub-Components
+## 本地子组件
 
-For sub-components only used within one file, define them in the same file above the main export:
+对于只在单个文件内使用的子组件，应定义在同文件内，并位于主导出组件之前：
 
 ```typescript
-// Good - local helper component in same file
+// 推荐 - 本地辅助组件与主组件放在同一文件
 function NewMessagesIndicator(props: { count: number; onClick: () => void }) {
     if (props.count === 0) return null
     return <button onClick={props.onClick}>...</button>
@@ -434,10 +434,10 @@ function MessageSkeleton() {
     return <div className="space-y-3 animate-pulse">...</div>
 }
 
-// Main exported component
+// 主导出组件
 export function HappyThread(props: HappyThreadProps) {
     return (
-        // Uses local sub-components
+        // 使用本地子组件
         <NewMessagesIndicator ... />
     )
 }
@@ -445,14 +445,14 @@ export function HappyThread(props: HappyThreadProps) {
 
 ---
 
-## Common Mistakes
+## 常见错误
 
-- ❌ Using `interface` instead of `type` for props
-- ❌ Hardcoding colors instead of CSS variables
-- ❌ Leaving untranslated user-visible strings
-- ❌ Missing `aria-*` attributes on loading/interactive elements
-- ❌ Using `default export` (use named exports)
-- ❌ Putting business logic directly in component body (use hooks)
-- ❌ Using relative imports instead of `@/` aliases
-- ❌ Mutating props directly
-- ❌ Using `any` type in props definitions
+- ❌ 对 props 使用 `interface` 而不是 `type`
+- ❌ 使用写死颜色而不是 CSS 变量
+- ❌ 留下未翻译的面向用户字符串
+- ❌ 在加载态/交互元素上缺少 `aria-*` 属性
+- ❌ 使用 `default export`（应使用具名导出）
+- ❌ 直接在组件体中编写业务逻辑（应抽到 hooks）
+- ❌ 使用相对导入而不是 `@/` 别名
+- ❌ 直接修改 props
+- ❌ 在 props 定义中使用 `any`

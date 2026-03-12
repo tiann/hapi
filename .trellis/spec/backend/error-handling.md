@@ -1,72 +1,72 @@
-# Error Handling
+# 错误处理
 
-> How errors are handled in this project.
-
----
-
-## Overview
-
-HAPI Hub follows a pragmatic error handling approach:
-
-- **HTTP API**: Return `{ error: string }` JSON with appropriate HTTP status codes
-- **Socket.IO**: Silently ignore invalid events (no error propagation to client unless needed)
-- **Database**: Use result types (`VersionedUpdateResult`) instead of throwing
-- **Guards**: Return `Response | T` union type to check before using
-- **Input validation**: Zod schemas with `.safeParse()` (never throw on validation failure)
-
-**Key principle**: Fail gracefully. Don't crash the server for invalid input.
+> 本项目中错误的处理方式。
 
 ---
 
-## HTTP API Error Responses
+## 概述
 
-### Standard Format
+HAPI Hub 遵循务实的错误处理方法：
 
-All error responses use `{ error: string }` JSON:
+- **HTTP API**：返回 `{ error: string }` JSON 并使用适当的 HTTP 状态码
+- **Socket.IO**：静默忽略无效事件（除非需要，否则不向客户端传播错误）
+- **数据库**：使用结果类型（`VersionedUpdateResult`）而不是抛出异常
+- **守卫**：返回 `Response | T` 联合类型，使用前先检查
+- **输入验证**：使用 Zod schema 的 `.safeParse()`（验证失败时不抛出异常）
+
+**核心原则**：优雅失败。不要因为无效输入而让服务器崩溃。
+
+---
+
+## HTTP API 错误响应
+
+### 标准格式
+
+所有错误响应使用 `{ error: string }` JSON：
 
 ```typescript
-// 400 - Bad Request (invalid input)
+// 400 - Bad Request（无效输入）
 return c.json({ error: 'Invalid body' }, 400)
 
-// 401 - Unauthorized
+// 401 - Unauthorized（未授权）
 return c.json({ error: 'Unauthorized' }, 401)
 
-// 403 - Forbidden (exists but access denied)
+// 403 - Forbidden（存在但访问被拒绝）
 return c.json({ error: 'Session access denied' }, 403)
 
-// 404 - Not Found
+// 404 - Not Found（未找到）
 return c.json({ error: 'Session not found' }, 404)
 
-// 409 - Conflict
+// 409 - Conflict（冲突）
 return c.json({ error: 'Session is inactive' }, 409)
 
-// 503 - Service Unavailable (dependency not ready)
+// 503 - Service Unavailable（依赖未就绪）
 return c.json({ error: 'Not connected' }, 503)
 ```
 
-**Status code guide**:
-- `400` - Invalid request body/params
-- `401` - Not authenticated
-- `403` - Authenticated but access denied (namespace mismatch, etc.)
-- `404` - Resource not found
-- `409` - Conflict (wrong state)
-- `413` - Payload too large
-- `422` - Validation error (valid format but invalid semantics)
-- `503` - Service dependency not available (sync engine, machine not online)
+**状态码指南**：
+- `400` - 无效的请求体/参数
+- `401` - 未认证
+- `403` - 已认证但访问被拒绝（命名空间不匹配等）
+- `404` - 资源未找到
+- `409` - 冲突（错误状态）
+- `413` - 负载过大
+- `422` - 验证错误（格式有效但语义无效）
+- `503` - 服务依赖不可用（同步引擎、机器未在线）
 
-### Error Response in Route Handlers
+### 路由处理器中的错误响应
 
 ```typescript
 app.post('/sessions/:id/resume', async (c) => {
-    // 1. Check dependencies with guard
+    // 1. 使用守卫检查依赖
     const engine = requireSyncEngine(c, getSyncEngine)
-    if (engine instanceof Response) return engine  // Guard returned error
+    if (engine instanceof Response) return engine  // 守卫返回了错误
 
-    // 2. Check resource access with guard
+    // 2. 使用守卫检查资源访问
     const sessionResult = requireSessionFromParam(c, engine)
     if (sessionResult instanceof Response) return sessionResult
 
-    // 3. Execute operation, check result
+    // 3. 执行操作，检查结果
     const result = await engine.resumeSession(sessionResult.sessionId, namespace)
     if (result.type === 'error') {
         const status = result.code === 'no_machine_online' ? 503 : 500
@@ -79,16 +79,15 @@ app.post('/sessions/:id/resume', async (c) => {
 
 ---
 
-## Guard Pattern
+## 守卫模式
 
-Guards return `T | Response` - check with `instanceof Response` before using:
+### 什么是守卫？
+
+守卫是返回 `T | Response` 的函数。如果返回 `Response`，调用者应立即返回它。
 
 ```typescript
-// web/routes/guards.ts
-
-// Returns SyncEngine or 503 error response
-export function requireSyncEngine(
-    c: Context<WebAppEnv>,
+function requireSyncEngine(
+    c: Context,
     getSyncEngine: () => SyncEngine | null
 ): SyncEngine | Response {
     const engine = getSyncEngine()
@@ -97,341 +96,358 @@ export function requireSyncEngine(
     }
     return engine
 }
-
-// Returns session or 404/403 error response
-export function requireSession(
-    c: Context<WebAppEnv>,
-    engine: SyncEngine,
-    sessionId: string,
-    options?: { requireActive?: boolean }
-): { sessionId: string; session: Session } | Response {
-    const namespace = c.get('namespace')
-    const access = engine.resolveSessionAccess(sessionId, namespace)
-    if (!access.ok) {
-        const status = access.reason === 'access-denied' ? 403 : 404
-        const error = access.reason === 'access-denied' ? 'Session access denied' : 'Session not found'
-        return c.json({ error }, status)
-    }
-    if (options?.requireActive && !access.session.active) {
-        return c.json({ error: 'Session is inactive' }, 409)
-    }
-    return { sessionId: access.sessionId, session: access.session }
-}
 ```
 
-**Usage**:
+### 使用守卫
+
 ```typescript
+// 检查守卫返回值
 const engine = requireSyncEngine(c, getSyncEngine)
-if (engine instanceof Response) return engine  // Short-circuit on error
+if (engine instanceof Response) return engine
 
-const session = requireSession(c, engine, sessionId)
-if (session instanceof Response) return session  // Short-circuit on error
+// 现在可以安全使用 engine
+const result = await engine.doSomething()
+```
 
-// Both are valid here
-console.log(engine, session)
+**为什么使用守卫？**
+- 避免嵌套的 if/else
+- 集中错误响应逻辑
+- 类型安全（TypeScript 知道检查后的类型）
+
+---
+
+## Socket.IO 错误处理
+
+### 静默忽略无效事件
+
+Socket.IO 事件处理器**不应抛出异常**。使用 Zod `.safeParse()` 并静默忽略无效输入：
+
+```typescript
+socket.on('session:create', (data) => {
+    // 验证输入
+    const parsed = sessionCreateSchema.safeParse(data)
+    if (!parsed.success) {
+        // 静默忽略 - 来自有问题客户端的无效事件是预期的
+        return
+    }
+
+    // 处理有效事件
+    handleSessionCreate(parsed.data)
+})
+```
+
+**为什么静默忽略？**
+- 客户端可能发送格式错误的数据
+- 抛出异常会断开 socket
+- 记录每个无效事件会产生噪音
+
+### 何时发送错误给客户端
+
+只在客户端需要知道操作失败时才发送错误：
+
+```typescript
+socket.on('session:create', async (data, callback) => {
+    const parsed = sessionCreateSchema.safeParse(data)
+    if (!parsed.success) {
+        callback?.({ error: 'Invalid request' })
+        return
+    }
+
+    const result = await createSession(parsed.data)
+    if (result.type === 'error') {
+        callback?.({ error: result.message })
+        return
+    }
+
+    callback?.({ success: true, sessionId: result.sessionId })
+})
 ```
 
 ---
 
-## Input Validation with Zod
+## 数据库错误处理
 
-### Pattern
+### 使用结果类型
 
-Always use Zod `.safeParse()` for validation (never `.parse()` that throws):
+数据库操作返回结果类型而不是抛出异常：
 
 ```typescript
-import { z } from 'zod'
+export type VersionedUpdateResult =
+    | { type: 'success' }
+    | { type: 'not_found' }
+    | { type: 'version_mismatch', expected: number, actual: number }
 
-const renameSessionSchema = z.object({
-    name: z.string().min(1).max(255)
-})
-
-app.post('/sessions/:id/rename', async (c) => {
-    const json = await c.req.json().catch(() => null)  // Handle parse error
-
-    const parsed = renameSessionSchema.safeParse(json)
-    if (!parsed.success) {
-        return c.json({ error: 'Invalid body' }, 400)
+export function updateSession(
+    db: Database,
+    id: string,
+    version: number,
+    updates: Partial<Session>
+): VersionedUpdateResult {
+    const current = getSessionById(db, id)
+    if (!current) return { type: 'not_found' }
+    if (current.version !== version) {
+        return { type: 'version_mismatch', expected: version, actual: current.version }
     }
 
-    // parsed.data is typed here
-    const { name } = parsed.data
-    // ...
-})
-```
-
-**Key points**:
-- Use `.safeParse()` not `.parse()` (never throws)
-- Handle JSON parse errors with `.catch(() => null)`
-- Return 400 for validation failures
-- Return detailed error message for user-facing validation (e.g., "Name must be 1-255 characters")
-
-### Socket.IO Validation
-
-Socket events silently ignore invalid input:
-
-```typescript
-socket.on('message', (data: unknown) => {
-    const parsed = messageSchema.safeParse(data)
-    if (!parsed.success) {
-        return  // Silent ignore - don't throw, don't respond with error
-    }
-
-    // Process valid event
-    const { sid, message } = parsed.data
-})
-```
-
-**Why silent ignore**: Socket events are fire-and-forget; invalid events from CLI are bugs, not user errors.
-
----
-
-## Result Types (Database Layer)
-
-### VersionedUpdateResult
-
-Database updates return result types instead of throwing:
-
-```typescript
-type VersionedUpdateResult<T> =
-    | { result: 'success'; version: number; value: T }
-    | { result: 'version-mismatch'; version: number; value: T }
-    | { result: 'error' }
-```
-
-**Usage**:
-```typescript
-const result = store.sessions.updateSessionMetadata(id, metadata, expectedVersion, namespace)
-
-switch (result.result) {
-    case 'success':
-        // Update succeeded, use result.version
-        break
-    case 'version-mismatch':
-        // Conflict - result.value has current state, result.version has current version
-        break
-    case 'error':
-        // Row not found or database error
-        break
+    // 执行更新
+    db.prepare('UPDATE sessions SET ... WHERE id = ?').run(id)
+    return { type: 'success' }
 }
 ```
 
-### Boolean Results
-
-For simple CRUD operations, return boolean:
+### 处理数据库结果
 
 ```typescript
-deleteSession(id: string, namespace: string): boolean
-// true = deleted successfully
-// false = not found or access denied
-```
+const result = updateSession(db, id, version, updates)
 
-**Usage**:
-```typescript
-const deleted = store.sessions.deleteSession(id, namespace)
-if (!deleted) {
+if (result.type === 'not_found') {
     return c.json({ error: 'Session not found' }, 404)
 }
+
+if (result.type === 'version_mismatch') {
+    return c.json({ error: 'Version mismatch' }, 409)
+}
+
+// result.type === 'success'
+return c.json({ success: true })
 ```
 
 ---
 
-## Unknown Error Handling
+## 输入验证
 
-### In Route Handlers
+### 使用 Zod `.safeParse()`
 
-Catch-all for unexpected errors:
+**永远不要**使用 `.parse()`（会抛出异常）。始终使用 `.safeParse()`：
 
 ```typescript
-app.post('/sessions/:id/operation', async (c) => {
-    try {
-        // ... operation
-        return c.json({ success: true })
-    } catch (error) {
-        console.error('Session operation failed:', error)
-        return c.json({ error: 'Internal server error' }, 500)
-    }
-})
+// ❌ 错误 - 会抛出异常
+const data = requestSchema.parse(body)
+
+// ✅ 正确 - 返回结果
+const parsed = requestSchema.safeParse(body)
+if (!parsed.success) {
+    return c.json({ error: 'Invalid body' }, 400)
+}
+
+// 使用 parsed.data
 ```
 
-### In Background Services
+### 处理 JSON 解析错误
 
-Log and continue (don't crash the server):
+`c.req.json()` 可能抛出异常。使用 `.catch()` 处理：
 
 ```typescript
-async function processEvent(event: SyncEvent): Promise<void> {
-    try {
-        await notificationHub.notify(event)
-    } catch (error) {
-        console.error('Failed to send notification:', error)
-        // Don't rethrow - background service should continue
+const body = await c.req.json().catch(() => null)
+if (!body) {
+    return c.json({ error: 'Invalid JSON' }, 400)
+}
+
+const parsed = requestSchema.safeParse(body)
+if (!parsed.success) {
+    return c.json({ error: 'Invalid body' }, 400)
+}
+```
+
+---
+
+## 后台服务错误处理
+
+### 不要让后台任务崩溃服务器
+
+后台服务应捕获并记录错误，但继续运行：
+
+```typescript
+async function backgroundTask() {
+    while (true) {
+        try {
+            await doSomething()
+        } catch (error) {
+            console.error('[Background] Task failed:', error)
+            // 继续运行 - 不要重新抛出
+        }
+
+        await sleep(1000)
     }
 }
 ```
 
-### Discriminated Union for Operation Results
+### 通知分发错误处理
 
-For complex operations with multiple failure modes:
+通知失败不应阻止其他通知：
 
 ```typescript
-type ResumeResult =
-    | { type: 'success'; sessionId: string }
-    | { type: 'error'; code: 'no_machine_online' | 'internal'; message: string }
+async function dispatchNotification(event: NotificationEvent) {
+    const clients = getClientsForEvent(event)
 
-async function resumeSession(id: string, namespace: string): Promise<ResumeResult> {
-    const machines = this.getMachinesForNamespace(namespace)
-    if (machines.length === 0) {
-        return { type: 'error', code: 'no_machine_online', message: 'No machine available' }
-    }
-
-    try {
-        const result = await this.connectToMachine(machines[0], id)
-        return { type: 'success', sessionId: result.sessionId }
-    } catch (error) {
-        return { type: 'error', code: 'internal', message: String(error) }
+    for (const client of clients) {
+        try {
+            await client.send(event)
+        } catch (error) {
+            console.error('[Notification] Failed to send to client:', client.id, error)
+            // 继续处理其他客户端
+        }
     }
 }
+```
 
-// Caller maps error codes to HTTP status
+---
+
+## 判别联合类型
+
+### 用于多种失败模式的操作
+
+当操作有多种失败模式时，使用判别联合：
+
+```typescript
+export type ResumeSessionResult =
+    | { type: 'success' }
+    | { type: 'error', code: 'not_found', message: string }
+    | { type: 'error', code: 'no_machine_online', message: string }
+    | { type: 'error', code: 'already_active', message: string }
+
+export async function resumeSession(
+    sessionId: string
+): Promise<ResumeSessionResult> {
+    const session = getSessionById(db, sessionId)
+    if (!session) {
+        return { type: 'error', code: 'not_found', message: 'Session not found' }
+    }
+
+    if (session.status === 'active') {
+        return { type: 'error', code: 'already_active', message: 'Session is already active' }
+    }
+
+    const machine = findOnlineMachine(session.machineId)
+    if (!machine) {
+        return { type: 'error', code: 'no_machine_online', message: 'No machine online' }
+    }
+
+    // 恢复会话
+    return { type: 'success' }
+}
+```
+
+### 处理判别联合
+
+```typescript
+const result = await resumeSession(sessionId)
+
 if (result.type === 'error') {
-    const status = result.code === 'no_machine_online' ? 503 : 500
+    const status = result.code === 'no_machine_online' ? 503 :
+                   result.code === 'not_found' ? 404 : 409
     return c.json({ error: result.message }, status)
 }
+
+return c.json({ success: true })
 ```
 
 ---
 
-## Scenario: Machine spawn RPC error normalization (Hub ↔ CLI)
+## Spawn RPC 结果处理契约
 
-### 1. Scope / Trigger
-- Trigger: Cross-layer request/response contract handling changed for machine session spawn (`hub -> zs-runner` RPC).
-- Why spec-depth is required: Frontend `POST /api/machines/:id/spawn` depends on Hub returning a stable `{ type: 'success' | 'error' }` shape. Any RPC shape drift must be normalized at Hub boundary.
+### 问题
 
-### 2. Signatures
-- HTTP route: `POST /api/machines/:id/spawn` (`hub/src/web/routes/machines.ts`)
-- Hub service: `SyncEngine.spawnSession(...)` (`hub/src/sync/syncEngine.ts`)
-- Hub RPC gateway: `RpcGateway.spawnSession(...)` (`hub/src/sync/rpcGateway.ts`)
-- CLI machine RPC handler: `'spawn-happy-session'` (`cli/src/api/apiMachine.ts`)
+当处理来自 spawn RPC 的结果时，必须处理所有可能的响应形状，而不仅仅是预期的成功/错误情况。
 
-Expected Hub return type:
-```ts
-Promise<{ type: 'success'; sessionId: string } | { type: 'error'; message: string }>
-```
+### 错误示例 vs 正确示例
 
-### 3. Contracts
-- Request (Hub -> CLI machine RPC):
-  - `type: 'spawn-in-directory'`
-  - `directory: string`
-  - `agent?: 'claude' | 'codex' | 'cursor' | 'gemini' | 'opencode'`
-  - `model?: string`
-  - `yolo?: boolean`
-  - `sessionType?: 'simple' | 'worktree'`
-  - `worktreeName?: string`
-  - `resumeSessionId?: string`
-- Response candidates from CLI side (observed/allowed):
-  - `{ type: 'success'; sessionId: string }`
-  - `{ type: 'error'; errorMessage: string }`
-  - `{ error: string }` (serialized handler exception)
-  - `{ type: 'requestToApproveDirectoryCreation'; directory: string }`
-- Env keys impacting runtime path correctness:
-  - `HAPI_HOME` (required for runner state/logs)
-  - `HAPI_API_URL` (required for machine sync)
-  - `CLI_API_TOKEN` (required auth)
-
-### 4. Validation & Error Matrix
-- CLI returns `{ type: 'success', sessionId }` -> Hub returns success.
-- CLI returns `{ type: 'error', errorMessage }` -> Hub maps to `{ type: 'error', message: errorMessage }`.
-- CLI returns `{ error: string }` -> Hub maps to `{ type: 'error', message: error }`.
-- CLI returns `{ type: 'requestToApproveDirectoryCreation', directory }` -> Hub maps to explicit error message (`Directory does not exist: ...`) for Web flow.
-- Any other shape -> Hub returns `{ type: 'error', message: 'Unexpected spawn result' }`.
-
-### 5. Good/Base/Bad Cases
-- Good: Spawn succeeds, returns `sessionId`, Web creates session normally.
-- Base: Spawn fails with known runtime error (e.g. missing module), user sees real message instead of generic fallback.
-- Bad: Hub only accepts one error shape and surfaces `Unexpected spawn result`, hiding root cause.
-
-### 6. Tests Required (with assertion points)
-- Unit (Hub `RpcGateway.spawnSession`):
-  - given `{ error: 'x' }` -> assert returned `{ type: 'error', message: 'x' }`.
-  - given `{ type: 'requestToApproveDirectoryCreation', directory: '/tmp/a' }` -> assert returned message contains directory.
-  - given unknown object -> assert fallback `'Unexpected spawn result'`.
-- Integration (Hub + CLI runner):
-  - force spawn handler exception -> assert HTTP `/api/machines/:id/spawn` returns JSON with non-empty `message`, not generic fallback when parseable.
-- Regression:
-  - verify existing success path unchanged (`type === 'success'`, valid `sessionId`).
-
-### 7. Wrong vs Correct
-#### Wrong
-```ts
-if (obj.type === 'error' && typeof obj.errorMessage === 'string') {
-  return { type: 'error', message: obj.errorMessage }
-}
-return { type: 'error', message: 'Unexpected spawn result' }
-```
-
-#### Correct
-```ts
-if (obj.type === 'error' && typeof obj.errorMessage === 'string') {
-  return { type: 'error', message: obj.errorMessage }
-}
-if (typeof obj.error === 'string') {
-  return { type: 'error', message: obj.error }
-}
-if (obj.type === 'requestToApproveDirectoryCreation' && typeof obj.directory === 'string') {
-  return { type: 'error', message: `Directory does not exist: ${obj.directory}` }
-}
-return { type: 'error', message: 'Unexpected spawn result' }
-```
-
----
-
-## Logging Errors
-
-### Console Logging
-
-Simple console.error for unexpected errors:
+**❌ 错误**：只处理预期的 `errorMessage` 字段
 
 ```typescript
-console.error('Failed to process event:', error)
-console.warn('SSE client disconnected unexpectedly:', clientId)
+if (obj.type === 'error' && typeof obj.errorMessage === 'string') {
+    return { type: 'error', message: obj.errorMessage }
+}
+return { type: 'error', message: 'Unexpected spawn result' }
 ```
 
-**When to log**:
-- Unexpected errors (database errors, network failures)
-- Background task failures
-- Configuration warnings
+**✅ 正确**：处理所有可能的错误形状
 
-**When NOT to log**:
-- Expected validation failures (user sent bad input)
-- 404s (resource not found)
-- Authentication failures (expected in normal operation)
+```typescript
+if (obj.type === 'error' && typeof obj.errorMessage === 'string') {
+    return { type: 'error', message: obj.errorMessage }
+}
+if (typeof obj.error === 'string') {
+    return { type: 'error', message: obj.error }
+}
+if (obj.type === 'requestToApproveDirectoryCreation' && typeof obj.directory === 'string') {
+    return { type: 'error', message: `Directory does not exist: ${obj.directory}` }
+}
+return { type: 'error', message: 'Unexpected spawn result' }
+```
 
----
-
-## Common Mistakes
-
-- ❌ Using Zod `.parse()` (throws on validation failure) - use `.safeParse()`
-- ❌ Not checking guard return values (`if (engine instanceof Response)`)
-- ❌ Throwing errors in Socket.IO event handlers (crashes the socket)
-- ❌ Returning 500 for 404/403 situations (use correct status codes)
-- ❌ Not catching JSON parse errors (`c.req.json()` can throw - use `.catch(() => null)`)
-- ❌ Swallowing errors without logging in background services
-- ❌ Not using discriminated unions for operations with multiple failure modes
-- ❌ Exposing internal error details to clients (use generic messages for 500s)
-- ❌ Crashing the server for background task errors
-- ❌ Using `any` for caught errors (use `unknown`)
+**为什么？**
+- Spawn 结果可能有多种错误形状
+- 不同的 CLI 版本可能返回不同的字段
+- 必须优雅地处理所有情况
 
 ---
 
-## Best Practices
+## 记录错误
 
-- ✅ Return `{ error: string }` JSON for all HTTP errors
-- ✅ Use appropriate HTTP status codes
-- ✅ Use guard pattern (`T | Response`) for dependency checks
-- ✅ Use Zod `.safeParse()` for all input validation
-- ✅ Use result types for database operations
-- ✅ Use discriminated unions for operations with multiple failure modes
-- ✅ Log unexpected errors with `console.error`
-- ✅ Don't crash background services - catch and continue
-- ✅ Handle JSON parse errors explicitly with `.catch(() => null)`
-- ✅ Use `unknown` type for caught errors, narrow before using
+### 何时记录
+
+**应该记录**：
+- 意外错误（异常、数据库错误、网络失败）
+- 后台任务失败
+- 服务初始化失败
+- 配置问题
+
+```typescript
+try {
+    await doSomething()
+} catch (error) {
+    console.error('[Component] Failed to do something:', error)
+    // 继续或返回错误响应
+}
+```
+
+**不应记录**：
+- 预期的验证失败（用户发送了错误输入）
+- 404（资源未找到）
+- 认证失败（正常操作中的预期情况）
+
+### 控制台日志
+
+使用适当的日志级别：
+
+```typescript
+// 信息 - 正常操作
+console.log('[Component] Operation completed')
+
+// 警告 - 非致命问题
+console.warn('[Component] Configuration issue detected')
+
+// 错误 - 意外失败
+console.error('[Component] Operation failed:', error)
+```
+
+---
+
+## 常见错误
+
+- ❌ 使用 Zod `.parse()`（验证失败时抛出异常）- 使用 `.safeParse()`
+- ❌ 不检查守卫返回值（`if (engine instanceof Response)`）
+- ❌ 在 Socket.IO 事件处理器中抛出错误（会导致 socket 崩溃）
+- ❌ 对 404/403 情况返回 500（使用正确的状态码）
+- ❌ 不捕获 JSON 解析错误（`c.req.json()` 可能抛出异常 - 使用 `.catch(() => null)`）
+- ❌ 在后台服务中吞掉错误而不记录
+- ❌ 对有多种失败模式的操作不使用判别联合
+- ❌ 向客户端暴露内部错误详情（对 500 使用通用消息）
+- ❌ 因后台任务错误而让服务器崩溃
+- ❌ 对捕获的错误使用 `any`（使用 `unknown`）
+
+---
+
+## 最佳实践
+
+- ✅ 对所有 HTTP 错误返回 `{ error: string }` JSON
+- ✅ 使用适当的 HTTP 状态码
+- ✅ 对依赖检查使用守卫模式（`T | Response`）
+- ✅ 对所有输入验证使用 Zod `.safeParse()`
+- ✅ 对数据库操作使用结果类型
+- ✅ 对有多种失败模式的操作使用判别联合
+- ✅ 使用 `console.error` 记录意外错误
+- ✅ 不要让后台服务崩溃 - 捕获并继续
+- ✅ 使用 `.catch(() => null)` 显式处理 JSON 解析错误
+- ✅ 对捕获的错误使用 `unknown` 类型，使用前先收窄
