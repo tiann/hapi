@@ -343,15 +343,32 @@ if (process.platform === 'win32') {
 
 **预防**: 在编写 shell 相关代码时，立即检查跨平台兼容性
 
-### 案例 2: 进程树收集失败
+### 案例 3: Windows Terminal 能力误判
 
-**问题**: `collectProcessTree()` 使用 `pgrep`，Windows 上不存在
+**问题**: 前端显示 `Failed to spawn terminal using shell: C:\\WINDOWS\\system32\\cmd.exe. Error: terminal option is not supported on this platform`
 
-**现状**: 代码已经有平台检测，Windows 使用 `taskkill`
+**根因**: 代码只检查了 shell 路径（`COMSPEC` / `cmd.exe`），但真正依赖的是 `Bun.spawn(..., { terminal })` 的 PTY/terminal 能力。Windows 上即使 shell 路径正确，底层 terminal 选项仍可能不受支持。
 
-**参考**: `cli/src/utils/process.ts:57-74`
+**错误修复方式**:
+```typescript
+// ❌ 只盯着 shell 路径，误以为换成 powershell.exe 就能解决
+return process.env.COMSPEC || 'cmd.exe'
+```
 
----
+**正确思路**:
+```typescript
+// ✅ 先判断当前平台是否具备 terminal capability
+const terminalSupportIssue = getTerminalSupportIssue()
+if (terminalSupportIssue) {
+    emitError(terminalId, terminalSupportIssue)
+    return
+}
+```
+
+**预防**:
+- 处理 shell/terminal/进程启动问题时，区分“命令路径正确”与“运行时能力可用”
+- 错误日志必须同时带上 `platform`、`shell`、`capability/cause`
+- websocket 重连日志要做节流，避免同一错误每秒刷屏掩盖真正根因
 
 ## 何时使用这个指南
 

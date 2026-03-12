@@ -67,6 +67,8 @@ export class ApiMachineClient {
     private socket!: Socket<ServerToRunnerEvents, RunnerToServerEvents>
     private keepAliveInterval: NodeJS.Timeout | null = null
     private rpcHandlerManager: RpcHandlerManager
+    private consecutiveConnectErrors = 0
+    private lastConnectErrorMessage: string | null = null
 
     constructor(
         private readonly token: string,
@@ -232,7 +234,13 @@ export class ApiMachineClient {
         })
 
         this.socket.on('connect', () => {
-            logger.debug('[API MACHINE] Connected to bot')
+            this.consecutiveConnectErrors = 0
+            this.lastConnectErrorMessage = null
+            logger.debug('[API MACHINE] Connected to bot', {
+                machineId: this.machine.id,
+                apiUrl: configuration.apiUrl,
+                transport: this.socket.io.engine.transport.name
+            })
             this.rpcHandlerManager.onSocketConnect(this.socket)
             this.updateRunnerState((state) => ({
                 ...(state ?? {}),
@@ -246,8 +254,12 @@ export class ApiMachineClient {
             this.startKeepAlive()
         })
 
-        this.socket.on('disconnect', () => {
-            logger.debug('[API MACHINE] Disconnected from bot')
+        this.socket.on('disconnect', (reason) => {
+            logger.debug('[API MACHINE] Disconnected from bot', {
+                machineId: this.machine.id,
+                reason,
+                hadConnectErrorsBeforeDisconnect: this.consecutiveConnectErrors > 0
+            })
             this.rpcHandlerManager.onSocketDisconnect()
             this.stopKeepAlive()
         })
@@ -293,7 +305,20 @@ export class ApiMachineClient {
         })
 
         this.socket.on('connect_error', (error) => {
-            logger.debug(`[API MACHINE] Connection error: ${error.message}`)
+            const message = error instanceof Error ? error.message : String(error)
+            const nextCount = this.lastConnectErrorMessage === message ? this.consecutiveConnectErrors + 1 : 1
+            this.consecutiveConnectErrors = nextCount
+            this.lastConnectErrorMessage = message
+
+            if (nextCount === 1 || nextCount % 10 === 0) {
+                logger.debug('[API MACHINE] Connection error', {
+                    machineId: this.machine.id,
+                    apiUrl: configuration.apiUrl,
+                    attempt: nextCount,
+                    message,
+                    transport: this.socket.io.engine.transport.name
+                })
+            }
         })
 
         this.socket.on('error', (payload) => {
