@@ -841,31 +841,37 @@ jobs:
   - every `needs:` reference MUST resolve to an existing job in the same merged workflow file.
 - Publish ordering contract:
   - smoke/validation steps that protect artifact quality MUST run before the irreversible publish step.
+- Artifact identity contract:
+  - pre-publish compose or smoke validation MUST run against explicitly tagged candidate images prepared before publish, and MUST avoid rebuilding from the workspace inside the smoke step.
+  - if publish rebuilds later for release-only concerns (for example multi-arch output), reviewers MUST explicitly confirm that the smoke gate still executes before any irreversible push and that the smoke step is not silently validating a different ad-hoc local image after publish.
 - Availability caller contract:
-  - if a helper exposes `degraded`, the caller MUST not reinterpret that state as an unconditional restart/replace signal.
+  - helpers that answer “runner is healthy and reusable now” MUST return `true` only for `running`; `degraded` may preserve ownership/state, but it MUST NOT be treated as a healthy reusable control plane.
 - Conflict-resolution contract:
   - after merging, review the helper and every side-effecting caller in the same chain before considering the conflict resolved.
 
 ### 4. Validation & Error Matrix
 - `needs:` points to removed job -> workflow invalid, guarded job never runs.
 - Smoke test exists but runs after `push: true` -> bad artifact can already be published.
-- Helper returns `false` for `degraded`, caller maps `false -> stopRunner()` -> temporary control-plane issue becomes forced restart.
+- Smoke test rebuilds from the workspace (`docker compose up --build`) instead of loading the candidate artifact -> validation no longer proves the published image works.
+- Helper returns `true` for `degraded`, caller maps `true -> skip startup / reuse existing runner` -> later RPC or session operations still fail on the unavailable control plane.
 - File looks merged cleanly, but caller chain was not replayed -> semantic regression survives review.
 
 ### 5. Good/Base/Bad Cases
 - Good:
-  - merged workflow keeps valid `needs`, validation runs before publish, and degraded runtime does not trigger stop/restart.
+  - merged workflow keeps valid `needs`, smoke validation runs before publish against the candidate image, and only `running` counts as reusable runner health.
 - Base:
-  - workflow passes syntax but still requires explicit `gh`/review inspection of job graph and order.
+  - workflow passes syntax but still requires explicit `gh`/review inspection of job graph, order, and validated artifact identity.
 - Bad:
-  - merge only removes conflict markers; no one checks dependency edges, publish ordering, or downstream caller behavior.
+  - merge only removes conflict markers; no one checks dependency edges, publish ordering, artifact identity, or downstream caller behavior.
 
 ### 6. Tests Required (with assertion points)
 - Workflow assertions:
   - no `needs:` entry references a missing job.
   - smoke/validation runs before artifact push.
+  - smoke/validation loads the candidate artifact and avoids rebuilding from the workspace.
 - Runtime assertions:
   - `degraded` availability does not trigger `stopRunner()` or forced restart path.
+  - `degraded` availability does not satisfy helpers/callers that mean “runner is healthy and reusable now”.
   - same-PID stale state remains distinguishable from degraded live state.
 - Review assertions:
   - when conflict resolution touches helper return semantics, reviewers must inspect all callers with side effects.
@@ -874,12 +880,14 @@ jobs:
 #### Wrong
 ```yaml
 compose-smoke:
-  needs: build
+  needs: publish
+  steps:
+    - run: docker compose up -d --build
 ```
 
 ```ts
-if (availability.status !== 'running') {
-  return false; // caller will stop current runner
+if (availability.status === 'degraded') {
+  return true; // callers will skip startup and assume control-plane health
 }
 ```
 
@@ -887,12 +895,19 @@ if (availability.status !== 'running') {
 ```yaml
 compose-smoke:
   if: github.event_name != 'pull_request'
-  needs: publish
+  needs: build
+  steps:
+    - run: docker load --input /tmp/hub-image.tar
+    - run: docker load --input /tmp/runner-image.tar
+    - run: docker compose up -d --no-build
+
+publish:
+  needs: compose-smoke
 ```
 
 ```ts
-if (availability.status === 'degraded') {
-  return true; // preserve current runner, avoid forced restart
+if (availability.status !== 'running') {
+  return false;
 }
 ```
 

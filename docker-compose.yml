@@ -3,7 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.hub
-    image: zs-hub:local
+    image: ${ZS_HUB_IMAGE:-zs-hub:local}
     env_file:
       - .env
     environment:
@@ -28,7 +28,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.runner
-    image: zs-runner:local
+    image: ${ZS_RUNNER_IMAGE:-zs-runner:local}
     env_file:
       - .env
     environment:

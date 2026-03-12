@@ -101,7 +101,9 @@ Reference executable contract:
 When resolving merge conflicts across infra/runtime files, verify the merged result at the contract level instead of only removing conflict markers:
 - [ ] For GitHub Actions YAML, do all `needs:` references still point to real jobs after the merge?
 - [ ] For publish workflows, are smoke/validation steps still ordered before any irreversible artifact push?
+- [ ] For smoke steps, are you validating explicitly prepared candidate images (`--no-build` / injected image tags) rather than rebuilding a fresh local image inside the smoke job?
 - [ ] For runtime availability helpers, did any merged boolean branch collapse `running` / `degraded` / `stale` semantics back into a single `false` path?
+- [ ] For helper changes that answer "healthy and reusable now", did you replay every caller that may skip startup, reuse a process, or suppress recovery work?
 - [ ] After conflict resolution, did you replay the relevant caller chain (`helper -> caller -> side effect`) rather than checking only the edited file?
 - [ ] Is there at least one regression test or static validation that would fail if the merged contract regresses again?
 
