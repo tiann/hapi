@@ -26,7 +26,7 @@ function interpolate(str: string, params?: Record<string, string | number>): str
 export function I18nProvider({ children }: { children: ReactNode }) {
   const [locale, setLocaleState] = useState<Locale>(() => {
     const saved = localStorage.getItem('zs-lang')
-    return (saved === 'en' || saved === 'zh-CN') ? saved : 'en'
+    return (saved === 'en' || saved === 'zh-CN') ? saved : 'zh-CN'
   })
 
   const setLocale = useCallback((newLocale: Locale) => {

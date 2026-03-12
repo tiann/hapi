@@ -96,6 +96,8 @@ describe('TerminalPage paste behavior', () => {
         hasSelectionMock = false
         selectionTextMock = ''
         keyHandler = null
+        localStorage.clear()
+        localStorage.setItem('zs-lang', 'en')
     })
 
     it('does not open manual paste dialog when clipboard text is empty', async () => {
