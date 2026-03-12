@@ -118,6 +118,76 @@ Reference executable contracts:
 
 ---
 
+## Repair Cascade / Goal Drift Checklist (Many Small Fixes ↔ Long Debug Cycle)
+
+When the same bug family requires many small commits in a short time window, stop and check whether the work has turned into a repair cascade instead of a bounded fix:
+- [ ] Have you written the current primary goal in one sentence (for example: `publish must be gated by pre-publish smoke`, `degraded must not mean healthy reusable runner`) and rejected changes that do not directly serve it?
+- [ ] Are you separating **root fix**, **review follow-up**, **spec capture**, and **adjacent cleanup** into distinct scopes instead of mixing them in the same patch?
+- [ ] Before starting the next fix commit, did you identify which previous commit introduced the regression and whether the new work is undoing or compensating for that commit?
+- [ ] Did you explicitly classify each new idea as one of: required root fix, required propagation, optional hardening, or unrelated improvement?
+- [ ] Have you stopped re-checking the same evidence layer repeatedly (for example only PR UI, only one helper, only one test) without gaining new information?
+- [ ] If more than 3 sequential fix commits touch the same contract boundary, did you pause to rebuild the end-to-end model (`trigger -> state model -> caller -> side effect -> verification`) before writing more code?
+- [ ] Did you verify whether a merge commit reintroduced an already-fixed behavior before inventing a new root cause?
+- [ ] Did you keep one source of truth for conclusions so later commits do not repeat stale assumptions that have already been disproved?
+
+Typical failure pattern:
+- A large feature/refactor changes runtime state model, workflow structure, and test surfaces at the same time.
+- Follow-up fixes correctly address one symptom, but each commit slightly changes the working theory of the bug.
+- A merge/review reintroduces old behavior, and the next fix starts from the newest symptom instead of the original contract boundary.
+- The branch accumulates multiple “small” commits, but several of them are really retries, scope spillover, or repeated diagnosis from the same evidence.
+
+Reference executable contract:
+- `backend/quality-guidelines.md` → `Scenario: Repair Cascade Control Contract (Commit Chain Triage + Goal Drift)`
+
+---
+
+## 高风险修改前的历史提交检查清单
+
+当你准备修改高风险区域（冲突解决、连续修复文件、workflow/CI/Docker、runtime 状态机、helper 语义、被 review 指向的文件）时，先检查是否已经回放相关历史 commit：
+- [ ] 你是否已经查看该文件最近 **3 个相关 commit**，并区分：事故修复 / review 修正 / 功能演进 / 重构清理？
+- [ ] 你能否说清当前这段“复杂 / 保守 / 奇怪”的代码，是为了解决哪个历史 bug 或 review 意见？
+- [ ] 如果这是冲突解决，你是否按历史优先级处理：**事故修复 > review 修正 > 功能演进 > 重构清理**？
+- [ ] 如果你要修改 helper / 状态判断 / workflow 依赖，是否同时查看了 caller / downstream job 的历史，而不是只看 helper 当前实现？
+- [ ] 如果你觉得某个 test 多余、啰嗦、奇怪，是否先查过它是哪个 commit 引入、锁的是哪类回归？
+- [ ] 你是否已经写下：`相关历史 commit：A/B/C` 与 `本次修改不能破坏：契约 X / 契约 Y`？
+- [ ] 如果同一文件在 24 小时内已被连续修复，你这次是否先做了 commit 回放，而不是直接继续补丁？
+
+典型失败模式：
+- 只看当前文件，不看历史 commit，于是把事故修复误判成“可删复杂度”。
+- 冲突时只求“能编译、能跑”，却没有保留历史语义优先级。
+- helper 看起来可以简化，但调用方历史上依赖的是更保守的契约，结果一改就回归。
+- 某个 test 看起来奇怪就被删掉，之后旧问题重新出现。
+
+Reference executable contract:
+- `backend/quality-guidelines.md` → `Scenario: 高风险修改前的历史提交检查契约（相关 Commit 回放 + 冲突语义保留）`
+
+---
+
+## 低 ROI 工作停止信号检查清单
+
+当你已经深陷某个修复 / 功能 / 重构，请定期检查：这项工作是否已经变成应该停止或延后的低 ROI 消耗：
+- [ ] 你能否用一句话说清：这项工作解除的是哪个**用户可见影响**或**业务关键 blocker**？如果说不清，它真的是当前 P0 吗？
+- [ ] 如果这项工作已经持续 2 小时以上，而结果仍只是“内部状态更整洁一点”或“规范覆盖更完整一点”，它是否应该延后？
+- [ ] 你现在修的是**真实用户 / reviewer / CI 已经指出的问题**，还是只是基于假想 edge case 做预防性 hardening？
+- [ ] 如果完全删掉这项工作，是否有任何**可观察契约**会坏，还是只影响内部“整洁度 / 完整度 / 优雅性”？
+- [ ] 原始症状已经解决的前提下，你现在投入时间，是在“让修复更优雅”“多补一些边界”，还是在解决新的明确 blocker？
+- [ ] 你是否显式比较过：**继续的成本**（时间、上下文切换、review 往返、merge 风险） vs **延后的成本**（未来 bug 风险、未来返工）？
+- [ ] 如果有人问“为什么这件事还没停？”，你能否给出一个新的明确 blocker，而不是回答“感觉还没收干净”？
+- [ ] 你是否已经写下这项工作的 **done 定义**，还是在没有退出条件的情况下反复迭代？
+
+典型失败模式：
+- 修复起点是明确的 P0 blocker（例如：publish gate 失效、runner 崩溃）。
+- blocker 被修掉后，工作继续扩展到：更好的日志、更多边缘 case、顺手重构相邻代码、穷尽式 spec、预防性 hardening。
+- 每一步单独看都很小、很合理，但累计 ROI 已经快速下降，因为原始 blocker 早就不存在了。
+- 没有人明确问“现在是不是应该停”，因为工作被表述成“顺手收尾”“一次性收干净”，而不是“可选 polish”。
+- 最终分支累积大量 commit、review 往返和上下文切换，但后续每个 commit 的边际收益接近于 0。
+
+Reference executable contract:
+- `backend/quality-guidelines.md` → `Scenario: 低 ROI 工作控制契约（停止信号 + 延后判定）`
+
+---
+
+## Session-Scoped Client Cache Checklist (Web State ↔ Session Identity)
 
 When UI state is cached across renders (e.g. `useRef`, query fallback, optimistic state):
 - [ ] Is cache keyed/scoped by stable identity (`session.id`, `workspaceId`, etc.)?

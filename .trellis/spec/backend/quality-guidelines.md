@@ -913,6 +913,271 @@ if (availability.status !== 'running') {
 
 ---
 
+## Scenario: Repair Cascade Control Contract (Commit Chain Triage + Goal Drift)
+
+### 1. Scope / Trigger
+- Trigger: the same bug family causes 4+ closely spaced fix commits, repeated review follow-ups, or re-diagnosis after merge/review churn.
+- Why code-spec depth is required:
+  - Long repair chains often indicate the team is no longer solving a single bounded bug, but a moving bundle of root fix, propagation, review response, and adjacent cleanup.
+  - Once commit intent drifts, later fixes can repeat already-disproved conclusions or silently re-open previously closed scope.
+  - The waste is not only code churn; it is repeated thinking churn across the same evidence layers.
+
+### 2. Signatures
+- Commit-chain signature:
+  - `git log --oneline --date=iso -N`
+  - clusters of `fix(...)` commits touching the same files/contract boundary within hours
+- Goal-drift signature:
+  - commit subjects mention different local symptoms while the underlying contract boundary stays the same
+  - e.g. `startup status`, `same PID stale state`, `workflow contract`, `review trigger`, `degraded reusable runner`
+- Rework signature:
+  - later commits partially undo or narrow behavior introduced by earlier commits
+  - merge commits or review fixes reintroduce previously solved behavior
+- Evidence-loop signature:
+  - repeated inspection of the same UI/status layer without escalating to the true source of truth (`git`, workflow runs, caller chain, integration contract)
+
+### 3. Contracts
+- Primary-goal contract:
+  - every repair burst MUST name one primary bug contract in one sentence; work that does not directly serve that sentence MUST be split out or deferred.
+- Change-budget contract:
+  - root fix, required propagation, and optional hardening MUST be classified separately before writing the next patch.
+- Regression-origin contract:
+  - before adding another fix commit, identify which earlier commit introduced the behavior and whether the new patch is a correction, rollback, or hardening layer.
+- Re-diagnosis contract:
+  - if 3+ sequential fix commits touch the same boundary, stop coding and rebuild the full end-to-end model (`trigger -> state model -> caller -> side effect -> verification`) before continuing.
+- Merge-reentry contract:
+  - after a merge commit or large review follow-up, first test whether old behavior was reintroduced; do not invent a fresh root cause until reentry is ruled out.
+- Documentation contract:
+  - once a repair chain is recognized, capture the failed assumptions, redundant paths, and scope rules in spec/guides before resuming more feature work.
+
+### 4. Validation & Error Matrix
+- Many small commits, one unchanged contract boundary -> likely goal drift, not many independent bugs.
+- New commit explains the bug with a different theory but touches the same helper/workflow/caller set -> likely re-diagnosis without a refreshed model.
+- Merge/review fix lands, then old symptom returns -> likely regression reentry, not net-new root cause.
+- Review response mixes root fix, cleanup, docs, and unrelated improvements -> repair scope inflation makes validation slower and conclusions noisier.
+- Engineers repeatedly inspect UI aggregates (`gh pr view`, one helper result, one local test) -> evidence loop prevents escalation to source-of-truth layers.
+
+### 5. Good/Base/Bad Cases
+- Good:
+  - the team names the single active contract, maps which commit introduced the regression, isolates the minimal corrective patch, and defers adjacent cleanup.
+- Base:
+  - multiple commits are still needed, but each one has a declared role: root fix, propagation, verification hardening, or documentation capture.
+- Bad:
+  - every new symptom generates a new theory, fixes overlap in scope, old conclusions are revisited without new evidence, and merge/review churn is treated as unrelated fresh bugs.
+
+### 6. Tests Required (with assertion points)
+- Process assertions:
+  - if a bug family exceeds 3 fix commits, require a written commit-chain timeline before the next code change.
+  - each fix commit must name whether it is correcting a specific prior commit or adding new hardening.
+- Verification assertions:
+  - every diagnosis step must identify its source of truth (`git ref`, workflow-run history, integration test, caller chain) rather than a lagging aggregate signal.
+- Review assertions:
+  - reviewers should challenge patches that combine root fix and optional cleanup without explicit separation.
+- Documentation assertions:
+  - specs/guides must record redundant goals, redundant conclusions, and repeated evidence loops observed in the repair chain.
+
+### 7. Wrong vs Correct
+#### Wrong
+```text
+commit 1: fix startup
+commit 2: fix workflow
+commit 3: fix stale state
+commit 4: fix review trigger
+# each commit changes the theory, but no one stops to ask whether the same contract boundary is being re-opened
+```
+
+#### Correct
+```text
+primary contract: "candidate artifact must be validated before publish; degraded runner must not be treated as healthy reusable"
+introduced by: <commit A>, reintroduced by merge/review in <commit B>
+next patch role: corrective rollback of <commit B>
+deferred items: optional cleanup / broader UX / unrelated hardening
+```
+
+---
+
+## Scenario: 高风险修改前的历史提交检查契约（相关 Commit 回放 + 冲突语义保留）
+
+### 1. Scope / Trigger
+- Trigger：准备修改以下高风险区域之一：
+  - merge / rebase 冲突解决
+  - 同一文件在 24 小时内被连续修复
+  - workflow / CI / Docker / 发布链路
+  - runtime 状态机、helper 语义、生命周期逻辑
+  - 有 review comment 直接指向的文件
+- 为什么需要 code-spec 深度：
+  - 当前文件只能告诉你“代码现在长什么样”，却不会告诉你“为什么会变成这样”。
+  - 很多看似啰嗦、保守、重复的分支/测试，其实是为了锁死某次事故、review 或回归。
+  - 冲突解决如果只按文本拼接，不按历史意图排序，就很容易保留语法正确、却丢掉语义正确。
+
+### 2. Signatures
+- History-blind signature：
+  - 直接在当前文件上修改，没有先看相关 `git log` / `git show`。
+  - 看见复杂分支、奇怪测试、保守顺序时，第一反应是“简化 / 删除 / 合并掉”。
+- Conflict-risk signature：
+  - 冲突两侧都能编译，但无法说清哪一边是 bugfix、哪一边是 review 修正、哪一边只是重构。
+- Regression-signature：
+  - 某段逻辑刚修过不久，又被新的修改“顺手改回去”。
+  - 某个 test 看起来多余，删除后旧问题复发。
+
+### 3. Contracts
+- Commit-replay contract：
+  - 命中高风险场景时，修改前至少查看该文件最近 **3 个相关 commit**，并写清：
+    1. 哪个 commit 在修 bug
+    2. 哪个 commit 在回应 review
+    3. 哪个 commit 只是重构 / 清理
+- Conflict-priority contract：
+  - 冲突解决时，历史意图优先级必须是：
+    - 事故修复 > review 修正 > 功能演进 > 重构清理
+  - 不允许只按“哪边更顺眼 / 更短 / 更容易拼起来”处理冲突。
+- Caller-history contract：
+  - 修改 helper / 状态判断 / workflow 依赖时，除了看 helper 自己的历史，还必须看 caller / downstream job 的历史。
+  - 禁止只根据 helper 当前实现推断语义，而不核对调用方过去依赖的契约。
+- Test-origin contract：
+  - 当某个 test 看起来奇怪、保守、冗长时，先查它是为哪个 commit / 哪类 bug 引入的；在未确认前不得删除或弱化。
+- Minimal-history-note contract：
+  - 高风险修改前，至少写下：
+    - `相关历史 commit：A/B/C`
+    - `本次修改不能破坏：契约 X / 契约 Y`
+
+### 4. Validation & Error Matrix
+- 只看当前文件，不看历史 commit -> 容易把事故修复误判成可删复杂度。
+- 冲突解决只保留“能编译”的文本组合 -> 高概率语义回归。
+- helper 被简化，但 caller 历史语义未检查 -> 高概率出现“helper 看起来对，调用方却错了”。
+- test 被删除时说不出它锁的是哪个历史 bug -> 高概率删掉回归保护。
+- 某文件短时间内被连续修复，却没人做 commit 回放 -> 高概率重复修同一类问题。
+
+### 5. Good/Base/Bad Cases
+- Good：
+  - 修改前先回放最近相关 commit，明确哪次是事故修复、哪次是 review 修正，再做最小改动。
+- Base：
+  - 至少查看最近 3 个相关 commit，并写下“本次不能破坏的历史契约”。
+- Bad：
+  - 直接对当前文件做“看起来更优雅”的调整，冲突时按文本拼接，最后把刚修好的行为改回去。
+
+### 6. Tests Required (with assertion points)
+- Process assertions：
+  - 命中高风险场景时，修改前必须补一段简短历史说明：`相关 commit + 不可破坏契约`。
+  - 同一文件如果在 24 小时内出现连续修复，下一次改动前必须先做 commit 回放。
+- Review assertions：
+  - reviewer 应追问：
+    - “这个分支 / 测试是哪个 commit 引入的？”
+    - “本次冲突保留了哪一边的历史语义？”
+- Documentation assertions：
+  - spec / guide 必须明确要求：高风险改动不能只看文件现状，还要看相关历史 commit。
+
+### 7. Wrong vs Correct
+#### Wrong
+```text
+看到 helper 很复杂
+-> 直接简化
+看到 test 很奇怪
+-> 直接删掉
+看到冲突两边都能跑
+-> 选更顺眼的一边拼起来
+# 结果：把历史 bugfix / review 修正一起抹掉
+```
+
+#### Correct
+```text
+修改前先看最近 3 个相关 commit
+- commit A：事故修复
+- commit B：review 修正
+- commit C：重构清理
+
+本次修改不能破坏：
+- 契约 X
+- 契约 Y
+
+冲突时按优先级保留：事故修复 > review 修正 > 功能演进 > 重构清理
+```
+
+---
+
+
+
+### 1. Scope / Trigger
+- Trigger：某个修复 / 功能 / 重构在原始 blocker 已解决之后仍继续推进，并不断累积边际收益递减的 commit。
+- 为什么需要 code-spec 深度：
+  - 低 ROI 工作通常不是技术 bug，而是**决策 bug**：没有人明确问一句“现在是不是应该停了？”
+  - 每一步单独看都像是合理的小补充，但累计成本（时间、review 往返、上下文切换）已经超过累计收益。
+  - 这类工作常被包装成“顺手补完整”“一次性收干净”“写得更漂亮”，所以在心理上很难及时停止。
+
+### 2. Signatures
+- Blocker-resolution signature：
+  - 原始 P0 症状（崩溃、门禁失效、用户可见失败）已经被修复。
+  - 后续 commit 开始转向：日志、边缘 case、重构、穷尽式 spec、预防性 hardening。
+- Effort-escalation signature：
+  - 原本预估 1 小时左右的工作，已经消耗 4 小时以上。
+  - 多轮 review 讨论的重点变成“更优雅 / 更完整”，而不是“是否还错误”。
+- Impact-gap signature：
+  - 如果问“把这个 commit 延后，对用户可见行为有什么变化？”，答案是“没有”或“只是内部状态更整洁一点”。
+- Exit-condition signature：
+  - 没有人提前写下 done 的定义；工作一直持续到“感觉差不多完整”为止。
+
+### 3. Contracts
+- Stop-signal contract：
+  - 原始 blocker 一旦解决，必须显式问：**“如果现在停下，哪个可观察契约会坏？”**
+  - 如果答案是“没有”，剩余工作默认属于可选项，继续前必须重新评估 ROI。
+- Defer-criteria contract：
+  - 仅改善内部整洁度、覆盖假想 edge case、补穷尽式规范、但不改变外部行为的工作，默认 SHOULD 延后，除非：
+    1. reviewer / CI / 用户明确要求现在处理；或
+    2. 延后的成本（未来 bug 风险、未来返工）明显大于继续的成本（时间、review 往返、上下文切换）。
+- Done-definition contract：
+  - 在开始修复 / 功能前，先写清退出条件：`done = X 症状被消除 + Y 契约已验证`。
+  - 如果工作继续超出这个退出条件，必须为新增工作写出新的明确目标，不能只靠“顺手一起做”。
+- ROI-comparison contract：
+  - 在原始 blocker 解决之后，每增加一个 commit，都要显式比较：
+    - 继续的成本：时间、上下文切换、review 往返、merge 风险
+    - 延后的成本：未来 bug 风险、未来返工
+  - 如果继续的成本 > 延后的成本，就应该停止并延后。
+
+### 4. Validation & Error Matrix
+- 原始 blocker 已修复，但工作仍继续进入 polish -> 高概率是低 ROI churn。
+- 工作被描述成“顺手收尾 / 补完整”，但没有新的明确 blocker -> 高概率是把可选工作伪装成必做工作。
+- 多个 commit 单看都很小，但累计 ROI 逼近于 0 -> 高概率是渐进式 scope creep。
+- 没人能明确回答“如果现在停下，哪个契约会坏？” -> 高概率说明已经没有剩余的可观察 blocker。
+- 投入时间超出预估 2 倍以上，但收益仍只是“更整洁 / 更优雅 / 更完整” -> 高概率已经进入收益递减区间。
+
+### 5. Good/Base/Bad Cases
+- Good：
+  - blocker 修复后，团队显式问“现在是不是应该停”，其余工作按 ROI 归档为 deferred 项。
+- Base：
+  - blocker 修复后，仍做少量 polish，但团队写下退出条件，并在达到条件后停止。
+- Bad：
+  - blocker 修复后，工作继续扩张到边缘 case、相邻重构、穷尽式 spec、预防性 hardening，却没有任何人问“是否已经够了”。
+
+### 6. Tests Required (with assertion points)
+- Process assertions：
+  - 开始工作前必须写出：`done = X 症状被消除 + Y 契约已验证`。
+  - blocker 解决后必须显式问：**“如果现在停下，哪个可观察契约会坏？”**
+- Review assertions：
+  - reviewer 应主动质疑那些已经超出原始 blocker、却没有新的明确目标或 ROI 理由的 commit。
+- Documentation assertions：
+  - spec / guides 必须记录停止信号 checklist 与延后判定规则，避免未来继续用“感觉还没收完”驱动工作。
+
+### 7. Wrong vs Correct
+#### Wrong
+```text
+commit 1: 修复 publish gate（blocker 已解决）
+commit 2: 补更好的日志
+commit 3: 覆盖边缘 case X
+commit 4: 顺手重构相邻代码
+commit 5: 写一整套穷尽式 spec
+commit 6: 为假想问题 Y 做预防性 hardening
+# 每一步都感觉“顺手且合理”，但没有人问：现在是不是应该停？
+```
+
+#### Correct
+```text
+commit 1: 修复 publish gate（blocker 已解决）
+# 立刻问：如果现在停下，哪个可观察契约会坏？
+# 答案：没有
+# 那么把以下内容延后：更好的日志、边缘 case X、相邻重构、穷尽式 spec、预防性 hardening
+# 如果仍要继续，必须分别写出每项工作的 ROI 理由
+```
+
+---
+
 ## Scenario: GitHub PR Review Trigger Contract (Push SHA vs pull_request_target Review)
 
 ### 1. Scope / Trigger
