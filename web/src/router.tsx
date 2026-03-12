@@ -101,6 +101,7 @@ function SessionsPage() {
     const matchRoute = useMatchRoute()
     const { t } = useTranslation()
     const { sessions, isLoading, error, refetch } = useSessions(api)
+    const { machines } = useMachines(api, true)
 
     const handleRefresh = useCallback(() => {
         void refetch()
@@ -150,6 +151,7 @@ function SessionsPage() {
                     ) : null}
                     <SessionList
                         sessions={sessions}
+                        machines={machines}
                         selectedSessionId={selectedSessionId}
                         onSelect={(sessionId) => navigate({
                             to: '/sessions/$sessionId',

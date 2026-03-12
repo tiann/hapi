@@ -44,6 +44,7 @@ export default {
 
   // Session list
   'session.item.path': '路径',
+  'session.item.machine': '机器',
   'session.item.agent': '代理',
   'session.item.model': '模型',
   'session.item.modelMode': '模型',
