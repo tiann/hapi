@@ -1,92 +1,92 @@
-# Code Reuse Thinking Guide
+# 代码复用思维指南
 
-> **Purpose**: Stop and think before creating new code - does it already exist?
-
----
-
-## The Problem
-
-**Duplicated code is the #1 source of inconsistency bugs.**
-
-When you copy-paste or rewrite existing logic:
-- Bug fixes don't propagate
-- Behavior diverges over time
-- Codebase becomes harder to understand
+> **目的**：在创建新代码前先停下来想一想——它是否已经存在？
 
 ---
 
-## Before Writing New Code
+## 问题所在
 
-### Step 1: Search First
+**重复代码是造成不一致性 Bug 的头号来源。**
+
+当你复制粘贴或重写已有逻辑时：
+- Bug 修复不会自动传播
+- 行为会随着时间推移逐渐分叉
+- 代码库会变得更难理解
+
+---
+
+## 在编写新代码之前
+
+### 第 1 步：先搜索
 
 ```bash
-# Search for similar function names
+# 搜索相似的函数名
 grep -r "functionName" .
 
-# Search for similar logic
+# 搜索相似的逻辑
 grep -r "keyword" .
 ```
 
-### Step 2: Ask These Questions
+### 第 2 步：问自己这些问题
 
-| Question | If Yes... |
+| 问题 | 如果答案是肯定的…… |
 |----------|-----------|
-| Does a similar function exist? | Use or extend it |
-| Is this pattern used elsewhere? | Follow the existing pattern |
-| Could this be a shared utility? | Create it in the right place |
-| Am I copying code from another file? | **STOP** - extract to shared |
+| 是否已经有类似函数？ | 复用或扩展它 |
+| 这个模式是否已经在别处使用？ | 遵循现有模式 |
+| 这是否适合抽成共享工具？ | 在正确的位置创建它 |
+| 我是否正在复制其他文件里的代码？ | **立刻停下**——抽成共享逻辑 |
 
 ---
 
-## Common Duplication Patterns
+## 常见的重复模式
 
-### Pattern 1: Copy-Paste Functions
+### 模式 1：复制粘贴函数
 
-**Bad**: Copying a validation function to another file
+**反例**：把一个校验函数复制到另一个文件
 
-**Good**: Extract to shared utilities, import where needed
+**正例**：抽到共享工具中，在需要处导入
 
-### Pattern 2: Similar Components
+### 模式 2：相似组件
 
-**Bad**: Creating a new component that's 80% similar to existing
+**反例**：创建一个和现有组件 80% 相似的新组件
 
-**Good**: Extend existing component with props/variants
+**正例**：通过 props / variants 扩展现有组件
 
-### Pattern 3: Repeated Constants
+### 模式 3：重复常量
 
-**Bad**: Defining the same constant in multiple files
+**反例**：在多个文件中定义同一个常量
 
-**Good**: Single source of truth, import everywhere
-
----
-
-## When to Abstract
-
-**Abstract when**:
-- Same code appears 3+ times
-- Logic is complex enough to have bugs
-- Multiple people might need this
-
-**Don't abstract when**:
-- Only used once
-- Trivial one-liner
-- Abstraction would be more complex than duplication
+**正例**：建立单一事实来源，在所有地方导入复用
 
 ---
 
-## After Batch Modifications
+## 何时抽象
 
-When you've made similar changes to multiple files:
+**适合抽象的情况**：
+- 同样的代码出现了 3 次以上
+- 逻辑复杂到容易藏 Bug
+- 多个人都可能需要它
 
-1. **Review**: Did you catch all instances?
-2. **Search**: Run grep to find any missed
-3. **Consider**: Should this be abstracted?
+**不适合抽象的情况**：
+- 只使用一次
+- 非常简单的一行代码
+- 抽象的复杂度比重复本身还高
 
 ---
 
-## Checklist Before Commit
+## 批量修改之后
 
-- [ ] Searched for existing similar code
-- [ ] No copy-pasted logic that should be shared
-- [ ] Constants defined in one place
-- [ ] Similar patterns follow same structure
+当你已经对多个文件做了相似修改时：
+
+1. **复查**：是否覆盖了所有实例？
+2. **搜索**：再跑一次 grep，确认没有遗漏
+3. **思考**：这部分是否应该被抽象出来？
+
+---
+
+## 提交前检查清单
+
+- [ ] 已搜索现有相似代码
+- [ ] 没有本应共享却被复制粘贴的逻辑
+- [ ] 常量只在一个地方定义
+- [ ] 相似模式遵循同一结构

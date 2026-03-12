@@ -1,93 +1,93 @@
-# Thinking Guides
+# 思维指引
 
-> **Purpose**: Expand your thinking to catch things you might not have considered.
-
----
-
-## Why Thinking Guides?
-
-**Most bugs and tech debt come from "didn't think of that"**, not from lack of skill:
-
-- Didn't think about what happens at layer boundaries → cross-layer bugs
-- Didn't think about code patterns repeating → duplicated code everywhere
-- Didn't think about edge cases → runtime errors
-- Didn't think about future maintainers → unreadable code
-
-These guides help you **ask the right questions before coding**.
+> **目的**：帮助你在编码前想到那些最容易被忽略、却最常引发 Bug 和技术债的问题。
 
 ---
 
-## Available Guides
+## 为什么需要思维指引？
 
-| Guide | Purpose | When to Use |
-|-------|---------|-------------|
-| [Code Reuse Thinking Guide](./code-reuse-thinking-guide.md) | Identify patterns and reduce duplication | When you notice repeated patterns |
-| [Cross-Layer Thinking Guide](./cross-layer-thinking-guide.md) | Think through data flow across layers | Features spanning multiple layers |
-| [Cross-Platform Thinking Guide](./cross-platform-thinking-guide.md) | Catch platform-specific assumptions | Scripts, paths, commands |
+大多数 Bug 和技术债并不是因为不会写代码，而是因为**没有提前想到边界与后果**：
 
----
+- 没想到层之间如何传递数据 → 产生跨层 Bug
+- 没想到重复模式已经出现 → 到处复制粘贴
+- 没想到边界条件 → 运行时错误
+- 没想到维护者如何理解 → 代码难以扩展
 
-## Quick Reference: Thinking Triggers
-
-### When to Think About Cross-Layer Issues
-
-- [ ] Feature touches 3+ layers (API, Service, Component, Database)
-- [ ] Data format changes between layers
-- [ ] Multiple consumers need the same data
-- [ ] You're not sure where to put some logic
-
-→ Read [Cross-Layer Thinking Guide](./cross-layer-thinking-guide.md)
-
-### When to Think About Code Reuse
-
-- [ ] You're writing similar code to something that exists
-- [ ] You see the same pattern repeated 3+ times
-- [ ] You're adding a new field to multiple places
-- [ ] **You're modifying any constant or config**
-- [ ] **You're creating a new utility/helper function** ← Search first!
-
-→ Read [Code Reuse Thinking Guide](./code-reuse-thinking-guide.md)
-
-### When to Think About Cross-Platform Issues
-
-- [ ] Writing scripts that users will run directly
-- [ ] Adding usage examples or help text
-- [ ] Working with file paths or commands
-- [ ] **Migrating from shell scripts to Python**
-- [ ] **Using environment variables** (SHELL, HOME, USER, etc.)
-- [ ] **Spawning processes or shell commands**
-- [ ] **Hard-coding file paths** (/bin/bash, /tmp, etc.)
-- [ ] **Using platform-specific CLI tools** (ps, kill, pgrep, etc.)
-
-→ Read [Cross-Platform Thinking Guide](./cross-platform-thinking-guide.md)
+这些指南的目标，就是帮助你在动手前提出更好的问题。
 
 ---
 
-## Pre-Modification Rule (CRITICAL)
+## 可用指南
 
-> **Before changing ANY value, ALWAYS search first!**
+| 指南 | 作用 | 适用场景 |
+|------|------|----------|
+| [代码复用思维指南](./code-reuse-thinking-guide.md) | 识别重复模式并减少冗余 | 发现重复实现时 |
+| [跨层思维指南](./cross-layer-thinking-guide.md) | 在实现前理清跨层数据流 | 功能跨越多层时 |
+| [跨平台思维指南](./cross-platform-thinking-guide.md) | 避免平台特定假设 | 涉及脚本、路径、命令时 |
+
+---
+
+## 快速参考：何时触发思考
+
+### 何时考虑跨层问题
+
+- [ ] 功能涉及 3 层及以上（API / Service / Component / Database）
+- [ ] 数据在不同层之间会变形
+- [ ] 多个消费者依赖同一份数据
+- [ ] 你不确定逻辑应该放在哪一层
+
+→ 阅读 [跨层思维指南](./cross-layer-thinking-guide.md)
+
+### 何时考虑代码复用
+
+- [ ] 你写的代码和现有逻辑很相似
+- [ ] 同一模式已经重复 3 次以上
+- [ ] 你在多个地方同时新增字段
+- [ ] **你正在修改任何常量或配置**
+- [ ] **你准备新增 utility/helper 函数**
+
+→ 阅读 [代码复用思维指南](./code-reuse-thinking-guide.md)
+
+### 何时考虑跨平台问题
+
+- [ ] 编写会被用户直接运行的脚本
+- [ ] 增加用法示例或帮助文本
+- [ ] 处理文件路径或系统命令
+- [ ] **从 shell 脚本迁移到 Python/TS**
+- [ ] **使用环境变量**
+- [ ] **拉起子进程或执行命令**
+- [ ] **硬编码文件路径**
+- [ ] **依赖平台特定 CLI 工具**
+
+→ 阅读 [跨平台思维指南](./cross-platform-thinking-guide.md)
+
+---
+
+## 修改前规则（重要）
+
+> **在修改任何值之前，先搜索它出现的位置。**
 
 ```bash
-# Search for the value you're about to change
+# 搜索即将修改的值
 grep -r "value_to_change" .
 ```
 
-This single habit prevents most "forgot to update X" bugs.
+这个小习惯可以避免大量“忘了同步更新另一处”的问题。
 
 ---
 
-## How to Use This Directory
+## 如何使用本目录
 
-1. **Before coding**: Skim the relevant thinking guide
-2. **During coding**: If something feels repetitive or complex, check the guides
-3. **After bugs**: Add new insights to the relevant guide (learn from mistakes)
-
----
-
-## Contributing
-
-Found a new "didn't think of that" moment? Add it to the relevant guide.
+1. **编码前**：快速浏览对应指南
+2. **编码中**：一旦感觉到重复或复杂，回来看指南
+3. **出 Bug 后**：把新的教训补充进对应指南
 
 ---
 
-**Core Principle**: 30 minutes of thinking saves 3 hours of debugging.
+## 贡献方式
+
+如果你发现了新的“当时没想到”时刻，请把它补充到合适的指南里。
+
+---
+
+**核心原则**：多花 30 分钟思考，通常能省下 3 小时排错时间。

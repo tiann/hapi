@@ -1,73 +1,71 @@
-# Unit Test Guidelines
+# 单元测试规范
 
-> Best practices for unit testing in this project.
-
----
-
-## Overview
-
-This directory defines unit-test conventions for this repository.
-
-Use this index as the single entry point.
+> 本目录定义本仓库的单元测试约定。
 
 ---
 
-## Reading Order
+## 概述
 
-1. Read all **Core** guides first
-2. Read **Optional** guides only when your change needs them
-
----
-
-## Guidelines Index
-
-| Guide | Tier | Responsibility Boundary | Status |
-|-------|------|-------------------------|--------|
-| [Test Structure](./test-structure.md) | Core | File placement, naming, and test organization only | Baseline |
-| [Assertion Style](./assertion-style.md) | Core | Assertion quality and failure readability only | Baseline |
-| [Mocking Guidelines](./mocking-guidelines.md) | Core | Dependency-boundary mocking only | Baseline |
-| [CI Test Contract](./ci-test-contract.md) | Core | CI gates and local parity only | Baseline |
-| [Coverage Policy](./coverage-policy.md) | Optional | Coverage scope/threshold/exclusions only | Baseline |
-| [Fixtures & Data](./fixtures-and-data.md) | Optional | Test data factories, fixtures, determinism only | Baseline |
+把这里当成单元测试规范的统一入口。阅读时应先看核心指南，再按需补充可选指南。
 
 ---
 
-## Project Reality (Current Snapshot)
+## 阅读顺序
 
-Observed from repository scripts and workflow:
+1. 先阅读所有**核心**指南
+2. 只有在变更需要时，再阅读**可选**指南
 
-- Root test command: `bun run test`
-- Root typecheck command: `bun run typecheck`
-- CI runs typecheck and tests on push/PR in `.github/workflows/test.yml`
-- Existing Vitest configs include:
+---
+
+## 规范索引
+
+| 指南 | 层级 | 职责边界 | 状态 |
+|------|------|----------|------|
+| [测试结构](./test-structure.md) | 核心 | 只负责文件位置、命名与组织方式 | 基线 |
+| [断言风格](./assertion-style.md) | 核心 | 只负责断言质量与失败可读性 | 基线 |
+| [Mock 规范](./mocking-guidelines.md) | 核心 | 只负责依赖边界上的 Mock 策略 | 基线 |
+| [CI 测试契约](./ci-test-contract.md) | 核心 | 只负责 CI 门禁与本地一致性 | 基线 |
+| [覆盖率策略](./coverage-policy.md) | 可选 | 只负责覆盖范围 / 阈值 / 排除项 | 基线 |
+| [夹具与测试数据](./fixtures-and-data.md) | 可选 | 只负责工厂、夹具与确定性数据 | 基线 |
+
+---
+
+## 项目现状（当前快照）
+
+根据仓库脚本与工作流，目前可以确认：
+
+- 根测试命令：`bun run test`
+- 根类型检查命令：`bun run typecheck`
+- CI 会在 push / PR 时执行类型检查与测试，定义见 `.github/workflows/test.yml`
+- 当前存在的 Vitest 配置包括：
   - `cli/vitest.config.ts`
   - `web/vitest.config.ts`
 
 ---
 
-## Anti-Redundancy Rule (Important)
+## 防重复规则（重要）
 
-When updating docs, keep each guide within its own boundary:
+更新文档时，要确保每一份指南只负责自己的边界：
 
-- **Structure** must not define assertion rules
-- **Assertion** must not define file layout
-- **Mocking** must not define fixture factory design
-- **Fixtures** must not redefine mocking policy
-- **Coverage** must not redefine CI gates
-- **CI Contract** may reference coverage policy, but must not duplicate thresholds
-
----
-
-## Minimum Quality Bar
-
-Before merging test-related changes:
-
-- [ ] Tests are deterministic
-- [ ] Assertions are behavior-focused
-- [ ] New/changed logic has tests or justified exceptions
-- [ ] `bun run typecheck` passes
-- [ ] `bun run test` passes
+- **结构** 不定义断言规则
+- **断言** 不定义文件布局
+- **Mock** 不定义夹具工厂设计
+- **夹具** 不重复定义 Mock 规则
+- **覆盖率** 不重复定义 CI 门禁
+- **CI 契约** 可以引用覆盖率策略，但不要重复抄写阈值
 
 ---
 
-**Language**: Documentation in this folder should be written in **Chinese (Simplified)**.
+## 最低质量门槛
+
+在合并测试相关变更前：
+
+- [ ] 测试具备确定性
+- [ ] 断言聚焦于行为
+- [ ] 新增 / 修改逻辑具备测试，或有明确例外说明
+- [ ] `bun run typecheck` 通过
+- [ ] `bun run test` 通过
+
+---
+
+**语言要求**：本目录下文档统一使用**简体中文**。

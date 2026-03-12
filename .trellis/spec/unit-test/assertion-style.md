@@ -1,51 +1,51 @@
-# Assertion Style
+# 断言风格
 
-> Define assertion principles for readable and maintainable tests.
-
----
-
-## Boundary of This Guide
-
-This guide covers only:
-
-- What to assert
-- How specific assertions should be
-- How failures should remain diagnosable
-
-This guide does **not** define:
-
-- Test file layout (see `test-structure.md`)
-- Mocking boundaries (see `mocking-guidelines.md`)
+> 定义可读、可维护测试所采用的断言原则。
 
 ---
 
-## Assertion Rules (Baseline)
+## 本指南的边界
 
-- Assert externally visible behavior, not internals
-- Prefer specific assertions over broad truthy/falsy checks
-- Keep assertions near the Act step for readability
-- Keep failure output actionable
+本指南只覆盖以下内容：
 
----
+- 应该断言什么
+- 断言应当精确到什么程度
+- 如何让失败结果易于排查
 
-## Preferred Patterns
+本指南**不**定义以下内容：
 
-- Clear Arrange / Act / Assert flow
-- One primary behavior assertion per case (plus related follow-up checks)
-- Explicit expectation values and error context
+- 测试文件布局（见 `test-structure.md`）
+- Mock 边界（见 `mocking-guidelines.md`）
 
 ---
 
-## Discouraged Patterns
+## 断言规则（基线）
 
-- Snapshot overuse without intent
-- Assertion blocks so large that root cause is unclear
-- Asserting private implementation details when public behavior is enough
+- 断言对外可观察的行为，而不是内部实现细节
+- 优先使用精确断言，而不是宽泛的 truthy/falsy 检查
+- 为了可读性，让断言尽量靠近 Act 步骤
+- 失败输出应具备可执行性，便于定位问题
 
 ---
 
-## Examples from Codebase
+## 推荐模式
 
-- `cli/src/utils/deterministicJson.test.ts` (deterministic output assertions)
-- `hub/src/store/namespace.test.ts` (state/namespace behavior assertions)
-- `web/src/lib/clipboard.test.ts` (browser utility behavior assertions)
+- 清晰的 Arrange / Act / Assert 流程
+- 每个 case 只保留一个主行为断言（可带少量相关补充检查）
+- 显式给出期望值与错误上下文
+
+---
+
+## 不推荐的模式
+
+- 没有明确意图的大量快照断言
+- 过大的断言块，导致根因不清晰
+- 在公开行为已足够时仍去断言私有实现细节
+
+---
+
+## 代码库中的示例
+
+- `cli/src/utils/deterministicJson.test.ts`（确定性输出断言）
+- `hub/src/store/namespace.test.ts`（状态 / namespace 行为断言）
+- `web/src/lib/clipboard.test.ts`（浏览器工具行为断言）

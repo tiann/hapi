@@ -1,78 +1,78 @@
-# State Management
+# 状态管理
 
-> How state is managed in this project.
-
----
-
-## Overview
-
-HAPI Web uses a **hybrid state management approach**:
-
-1. **Local component state** (`useState`, `useReducer`) for UI-only state
-2. **TanStack Query** for server state (API data, caching, synchronization)
-3. **Module-level stores** for cross-component state that doesn't fit React Query
-4. **URL state** (TanStack Router) for navigation and shareable state
-5. **Context** for dependency injection (API client, session context)
-
-**No global state library** (Redux, Zustand, etc.) - state is kept as local as possible.
+> 本项目中状态的管理方式。
 
 ---
 
-## State Categories
+## 概述
 
-### 1. Local Component State
+HAPI Web 采用**混合式状态管理方案**：
 
-Use `useState` or `useReducer` for state that only affects one component:
+1. **本地组件状态**（`useState`、`useReducer`）用于仅影响 UI 的状态
+2. **TanStack Query** 用于服务端状态（API 数据、缓存、同步）
+3. **模块级 store** 用于不适合 React Query 的跨组件状态
+4. **URL 状态**（TanStack Router）用于导航与可分享状态
+5. **Context** 用于依赖注入（API client、session context）
+
+**不使用全局状态库**（Redux、Zustand 等）——状态尽量保持在靠近使用处。
+
+---
+
+## 状态分类
+
+### 1. 本地组件状态
+
+对于只影响单个组件的状态，使用 `useState` 或 `useReducer`：
 
 ```typescript
-// UI-only state
+// 仅 UI 使用的状态
 const [isOpen, setIsOpen] = useState(false)
 const [copied, setCopied] = useState(false)
 const [autoScrollEnabled, setAutoScrollEnabled] = useState(true)
 ```
 
-**When to use**:
-- UI toggles (modals, dropdowns, expanded/collapsed)
-- Form input values (before submission)
-- Temporary UI state (loading spinners, animations)
+**适用场景**：
+- UI 开关（modal、dropdown、展开/收起）
+- 表单输入值（提交前）
+- 临时 UI 状态（loading spinner、动画）
 
-### 2. Server State (TanStack Query)
+### 2. 服务端状态（TanStack Query）
 
-Use TanStack Query for all server data:
+所有服务端数据都使用 TanStack Query：
 
 ```typescript
-// Query for read operations
+// 读取查询
 const { sessions, isLoading, error, refetch } = useSessions(api)
 
-// Mutation for write operations
+// 写入 mutation
 const { sendMessage, isSending } = useSendMessage(api, sessionId)
 ```
 
-**When to use**:
-- Any data from API endpoints
-- Data that needs caching
-- Data that needs background refetching
-- Optimistic updates
+**适用场景**：
+- 任何来自 API endpoint 的数据
+- 需要缓存的数据
+- 需要后台重新获取的数据
+- 乐观更新
 
-**Configuration** (`lib/query-client.ts`):
+**配置**（`lib/query-client.ts`）：
 ```typescript
 export const queryClient = new QueryClient({
     defaultOptions: {
         queries: {
-            staleTime: 5_000,           // Cache for 5 seconds
-            refetchOnWindowFocus: false, // Don't refetch on tab focus
-            retry: 1,                    // Retry failed queries once
+            staleTime: 5_000,           // 缓存 5 秒
+            refetchOnWindowFocus: false, // Tab 聚焦时不自动重新获取
+            retry: 1,                    // 查询失败后重试一次
         },
         mutations: {
-            retry: 0,                    // Don't retry mutations
+            retry: 0,                    // mutation 不自动重试
         },
     },
 })
 ```
 
-### 3. Module-Level Stores
+### 3. 模块级 Store
 
-For cross-component state that doesn't fit React Query, use module-level stores with subscription pattern:
+对于不适合 React Query 的跨组件状态，使用带订阅模式的模块级 store：
 
 ```typescript
 // lib/message-window-store.ts
@@ -92,41 +92,41 @@ export function subscribeToMessageWindow(sessionId: string, listener: () => void
 
 export function updateMessageStatus(sessionId: string, localId: string, status: MessageStatus): void {
     const state = getMessageWindowState(sessionId)
-    // ... update state
+    // ... 更新状态
     notifyListeners(sessionId)
 }
 ```
 
-**When to use**:
-- Real-time message windows (optimistic updates, pending messages)
-- State that needs to persist across component unmounts
-- State shared by multiple unrelated components
-- Performance-critical state (avoid React re-renders)
+**适用场景**：
+- 实时消息窗口（乐观更新、待发送消息）
+- 需要在组件卸载后继续保留的状态
+- 多个无直接关系组件共享的状态
+- 对性能敏感的状态（避免 React 级联重渲染）
 
-**Pattern**: Expose getters, setters, and subscription functions. Components subscribe in `useEffect`.
+**模式**：暴露 getters、setters 与订阅函数。组件在 `useEffect` 中订阅。
 
-### 4. URL State (TanStack Router)
+### 4. URL 状态（TanStack Router）
 
-Use URL parameters for shareable/bookmarkable state:
+可分享 / 可收藏的状态使用 URL 参数表示：
 
 ```typescript
-// Route definition
+// 路由定义
 export const Route = createFileRoute('/sessions/$sessionId')({
     component: SessionPage,
 })
 
-// Access in component
+// 组件中读取
 const { sessionId } = Route.useParams()
 ```
 
-**When to use**:
-- Current page/view (session ID, settings tab)
-- Filters and search queries
-- Any state that should be shareable via URL
+**适用场景**：
+- 当前页面/视图（session ID、settings tab）
+- 筛选条件与搜索参数
+- 任何应该能通过 URL 分享的状态
 
-### 5. Context (Dependency Injection)
+### 5. Context（依赖注入）
 
-Use Context for passing dependencies down the tree, not for state:
+Context 用于向组件树下传递依赖，而不是承载频繁变化的状态：
 
 ```typescript
 // components/AssistantChat/context.tsx
@@ -143,39 +143,39 @@ export function HappyChatProvider(props: { value: HappyChatContextValue; childre
 }
 ```
 
-**When to use**:
-- Passing API client to deeply nested components
-- Feature-scoped configuration (session context, theme)
-- Callbacks that need to be accessible deep in the tree
+**适用场景**：
+- 向深层组件传递 API client
+- 功能级配置（session context、theme）
+- 需要在深层组件中可访问的 callbacks
 
-**Don't use for**:
-- Frequently changing state (causes re-renders of entire subtree)
-- State that could be local or in React Query
-
----
-
-## When to Use Global State
-
-**Prefer local state by default.** Only promote to global when:
-
-1. **Multiple unrelated components** need the same state
-2. **State must persist** across component unmounts
-3. **Performance critical** (avoiding prop drilling causes re-renders)
-4. **Real-time updates** that don't fit React Query model
-
-**Example**: Message window state is global because:
-- Multiple components need it (thread, composer, status bar)
-- Must persist when scrolling (component unmounts)
-- Optimistic updates need immediate UI feedback
-- Real-time messages arrive via WebSocket
+**不要用于**：
+- 高频变化的状态（会导致整棵子树重渲染）
+- 本可以放在本地状态或 React Query 中的状态
 
 ---
 
-## Server State Best Practices
+## 何时使用全局状态
+
+**默认优先本地状态。** 只有在以下情况下才提升为全局：
+
+1. **多个无直接关系的组件**需要共享同一份状态
+2. **状态必须持久化**，即使组件卸载也不能丢失
+3. **性能敏感**（避免 prop drilling 导致重复渲染）
+4. **实时更新**，且不适合 React Query 的数据模型
+
+**示例**：消息窗口状态之所以做成全局，是因为：
+- 多个组件都需要它（thread、composer、status bar）
+- 滚动或切换导致组件卸载时也必须保留
+- 乐观更新需要立刻反馈到 UI
+- 实时消息通过 WebSocket 到达
+
+---
+
+## 服务端状态最佳实践
 
 ### Query Keys
 
-Centralize in `lib/query-keys.ts`:
+统一收敛在 `lib/query-keys.ts`：
 
 ```typescript
 export const queryKeys = {
@@ -186,9 +186,9 @@ export const queryKeys = {
 }
 ```
 
-### Optimistic Updates
+### 乐观更新
 
-For mutations that need instant feedback:
+对于需要即时反馈的 mutation：
 
 ```typescript
 const mutation = useMutation({
@@ -196,7 +196,7 @@ const mutation = useMutation({
         await api.sendMessage(input.sessionId, input.text, input.localId)
     },
     onMutate: async (input) => {
-        // Add message to UI immediately
+        // 立即把消息加到 UI 中
         appendOptimisticMessage(input.sessionId, {
             id: input.localId,
             content: { role: 'user', content: { type: 'text', text: input.text } },
@@ -204,19 +204,19 @@ const mutation = useMutation({
         })
     },
     onSuccess: (_, input) => {
-        // Update status to 'sent'
+        // 更新状态为 'sent'
         updateMessageStatus(input.sessionId, input.localId, 'sent')
     },
     onError: (_, input) => {
-        // Update status to 'failed'
+        // 更新状态为 'failed'
         updateMessageStatus(input.sessionId, input.localId, 'failed')
     },
 })
 ```
 
-### Cache Invalidation
+### 缓存失效
 
-Invalidate queries after mutations:
+mutation 成功后要使相关查询失效：
 
 ```typescript
 const mutation = useMutation({
@@ -224,7 +224,7 @@ const mutation = useMutation({
         await api.deleteSession(sessionId)
     },
     onSuccess: () => {
-        // Refetch sessions list
+        // 重新获取 sessions 列表
         queryClient.invalidateQueries({ queryKey: queryKeys.sessions })
     },
 })
@@ -232,11 +232,11 @@ const mutation = useMutation({
 
 ---
 
-## Derived State
+## 派生状态
 
-### Compute in Render
+### 在 render 中直接计算
 
-For simple derived state, compute directly in render:
+对于简单派生状态，直接在 render 中计算：
 
 ```typescript
 function SessionList({ sessions }: { sessions: Session[] }) {
@@ -246,9 +246,9 @@ function SessionList({ sessions }: { sessions: Session[] }) {
 }
 ```
 
-### useMemo for Expensive Computations
+### 仅在昂贵计算时使用 useMemo
 
-Only use `useMemo` when computation is expensive:
+只有在计算成本较高时才使用 `useMemo`：
 
 ```typescript
 const sortedSessions = useMemo(() => {
@@ -256,68 +256,68 @@ const sortedSessions = useMemo(() => {
 }, [sessions])
 ```
 
-**Don't** use `useMemo` for cheap operations - it adds overhead.
+**不要**把 `useMemo` 用在便宜计算上——它本身也有开销。
 
 ---
 
-## Common Mistakes
+## 常见错误
 
-- ❌ Using Context for frequently changing state (causes re-renders)
-- ❌ Lifting state too early (keep it local until you need to share)
-- ❌ Not using TanStack Query for server data (reinventing caching/refetching)
-- ❌ Storing derived state instead of computing it
-- ❌ Using `useMemo` for cheap computations (premature optimization)
-- ❌ Not invalidating queries after mutations
-- ❌ Forgetting to clean up subscriptions in module-level stores
-- ❌ Putting UI state in URL (only shareable state belongs there)
-- ❌ Using global state when local state would work
-- ❌ Not providing default values for optional query data (`?? []`)
-- ❌ Treating composer draft text as global/thread state when product expectation is **session-scoped draft persistence**
-
----
-
-## Session-Scoped Draft Contract (Chat Composer)
-
-When chat input should survive session switches, follow this contract:
-
-### Required Behavior
-
-- Draft text is scoped by `session.id` (or equivalent stable session identity).
-- Switching away from session A and returning to session A restores its previous draft.
-- Switching to session B must not show session A's draft.
-- Send success clears only the active session draft.
-- Unsent draft must not be lost on in-app route/session tab switches.
-
-### Implementation Pattern
-
-- Keep a session-keyed draft store (`Map<sessionId, draft>` / module store / persistence layer).
-- On active session change:
-  - hydrate composer input from `draftStore.get(session.id) ?? ''`
-  - persist edits to the same session key on each change/debounce.
-- Never rely on a single unscoped `composer.text` value for multi-session UX.
-
-### Test Cases (minimum)
-
-- `A -> type "123" -> switch B -> switch A` => input is `123`.
-- `A has "foo", B has "bar"` => switching sessions shows correct isolated draft.
-- `A send message` => A draft clears; B draft remains unchanged.
-- Route remount/re-entry still restores draft from session-scoped store.
+- ❌ 对频繁变化的状态使用 Context（导致重渲染）
+- ❌ 过早提升状态（在真的需要共享之前应保持本地）
+- ❌ 不用 TanStack Query 管理服务端数据（重复造缓存/重新获取轮子）
+- ❌ 存储派生状态而不是直接计算
+- ❌ 对便宜计算使用 `useMemo`（过早优化）
+- ❌ mutation 后没有失效相关 queries
+- ❌ 忘记清理模块级 store 的订阅
+- ❌ 把纯 UI 状态塞进 URL（只有可分享状态才适合放那里）
+- ❌ 在本地状态足够时仍使用全局状态
+- ❌ 对可选 query 数据不提供默认值（`?? []`）
+- ❌ 将 composer 草稿文本视为全局/thread 状态，而产品预期其实是**按 session 作用域持久化草稿**
 
 ---
 
-## State Flow Example
+## Session 级草稿契约（聊天输入框）
 
-**Sending a message**:
+当聊天输入内容需要在 session 切换后仍然保留时，应遵循以下契约：
 
-1. User types in composer (local state: `useState`)
-2. User clicks send → `useSendMessage` mutation
-3. Mutation's `onMutate` adds optimistic message to module store
-4. Module store notifies subscribers → UI updates immediately
-5. API call completes → `onSuccess` updates message status
-6. Real-time WebSocket receives confirmation → updates module store again
+### 必需行为
 
-**Why this works**:
-- Local state for input (no need to share)
-- TanStack Query for API call (caching, retry, error handling)
-- Module store for message window (cross-component, real-time, optimistic)
-- No prop drilling, no unnecessary re-renders
+- 草稿文本按 `session.id`（或等价的稳定 session 标识）进行作用域隔离。
+- 从 session A 切走再回到 session A 时，应恢复它之前的草稿。
+- 切到 session B 时，不得显示 session A 的草稿。
+- 发送成功时，只清空当前活跃 session 的草稿。
+- 未发送草稿在应用内部的 route/session tab 切换时不得丢失。
+
+### 实现模式
+
+- 维护一个以 session 为 key 的 draft store（`Map<sessionId, draft>` / 模块级 store / 持久化层）。
+- 在活跃 session 变化时：
+  - 通过 `draftStore.get(session.id) ?? ''` 将草稿注入到输入框
+  - 每次变更或 debounce 后，都将编辑结果持久化到对应的 session key
+- 对多 session UX，绝不能依赖一个未分作用域的 `composer.text` 值。
+
+### 最低测试用例
+
+- `A -> 输入 "123" -> 切换 B -> 切回 A` => 输入框内容应为 `123`。
+- `A 有 "foo"，B 有 "bar"` => 切换 session 时应显示各自独立草稿。
+- `A 发送消息` => A 的草稿被清空；B 的草稿保持不变。
+- route remount / re-entry 后，仍能从 session 级 store 中恢复草稿。
+
+---
+
+## 状态流示例
+
+**发送一条消息**：
+
+1. 用户在 composer 中输入（本地状态：`useState`）
+2. 用户点击发送 -> 调用 `useSendMessage` mutation
+3. mutation 的 `onMutate` 将乐观消息写入模块级 store
+4. 模块级 store 通知订阅者 -> UI 立即更新
+5. API 调用完成 -> `onSuccess` 更新消息状态
+6. 实时 WebSocket 收到确认 -> 再次更新模块级 store
+
+**为什么这样可行**：
+- 输入框使用本地状态（无需共享）
+- API 调用使用 TanStack Query（缓存、重试、错误处理）
+- 消息窗口使用模块级 store（跨组件、实时、乐观更新）
+- 没有 prop drilling，也避免了不必要的重渲染

@@ -1,47 +1,47 @@
-# Database Guidelines
+# 数据库规范
 
-> Database patterns and conventions in this project.
-
----
-
-## Overview
-
-HAPI Hub uses **SQLite** with Bun's native SQLite driver. The database layer follows a clean architecture with:
-
-- **WAL mode** for better concurrency
-- **Strict mode** for type safety
-- **Foreign keys** enabled
-- **Versioned updates** for optimistic concurrency control
-- **Two-layer pattern**: Store classes (CRUD) + Business logic functions
-
-**Key characteristics**:
-- Single SQLite database file with WAL
-- Namespace-based multi-tenancy
-- Optimistic locking with version fields
-- Type-safe query results
-- Schema migrations with version tracking
+> 本项目中的数据库模式与约定。
 
 ---
 
-## Database Configuration
+## 概述
 
-### Initialization (`store/index.ts`)
+HAPI Hub 使用 **SQLite** 与 Bun 原生 SQLite 驱动。数据库层遵循清晰的分层架构，包含：
+
+- **WAL 模式**，提升并发能力
+- **Strict mode**，确保类型安全
+- **启用外键**
+- **版本化更新**，用于乐观并发控制
+- **双层模式**：Store 类（CRUD）+ 业务逻辑函数
+
+**关键特征**：
+- 单个启用 WAL 的 SQLite 数据库文件
+- 基于 namespace 的多租户隔离
+- 使用 version 字段实现乐观锁
+- 类型安全的查询结果
+- 带版本跟踪的 schema 迁移
+
+---
+
+## 数据库配置
+
+### 初始化（`store/index.ts`）
 
 ```typescript
 export class Store {
     constructor(dbPath: string) {
         this.db = new Database(dbPath, { create: true, readwrite: true, strict: true })
 
-        // Enable WAL mode for better concurrency
+        // 启用 WAL 模式以提升并发能力
         this.db.exec('PRAGMA journal_mode = WAL')
 
-        // NORMAL synchronous mode (balance between safety and performance)
+        // NORMAL 同步模式（在安全与性能之间折中）
         this.db.exec('PRAGMA synchronous = NORMAL')
 
-        // Enable foreign key constraints
+        // 启用外键约束
         this.db.exec('PRAGMA foreign_keys = ON')
 
-        // 5 second busy timeout for lock contention
+        // 锁竞争时最多等待 5 秒
         this.db.exec('PRAGMA busy_timeout = 5000')
 
         this.initSchema()
@@ -49,21 +49,21 @@ export class Store {
 }
 ```
 
-**Key settings**:
-- `journal_mode = WAL` - Write-Ahead Logging for concurrent reads
-- `synchronous = NORMAL` - Balance safety and performance
-- `foreign_keys = ON` - Enforce referential integrity
-- `busy_timeout = 5000` - Wait 5s for locks before failing
-- `strict: true` - Type-safe mode (Bun SQLite feature)
+**关键设置**：
+- `journal_mode = WAL` - 使用预写日志以支持并发读取
+- `synchronous = NORMAL` - 平衡安全性与性能
+- `foreign_keys = ON` - 强制保证引用完整性
+- `busy_timeout = 5000` - 锁竞争失败前等待 5 秒
+- `strict: true` - 类型安全模式（Bun SQLite 特性）
 
 ---
 
-## Schema Design
+## Schema 设计
 
-### Table Structure
+### 表结构
 
 ```sql
--- Sessions table
+-- sessions 表
 CREATE TABLE sessions (
     id TEXT PRIMARY KEY,
     tag TEXT,
@@ -79,22 +79,22 @@ CREATE TABLE sessions (
     todos_updated_at INTEGER,
     active INTEGER DEFAULT 0,         -- Boolean (0/1)
     active_at INTEGER,
-    seq INTEGER DEFAULT 0             -- Sequence number for sync
+    seq INTEGER DEFAULT 0             -- 用于同步的序号
 );
 
 CREATE INDEX idx_sessions_tag ON sessions(tag);
 CREATE INDEX idx_sessions_tag_namespace ON sessions(tag, namespace);
 ```
 
-**Conventions**:
-- Primary key: `TEXT` (UUID)
-- Timestamps: `INTEGER` (Unix milliseconds)
-- Booleans: `INTEGER` (0/1)
-- JSON data: `TEXT` with `_version` field for optimistic locking
-- Namespace: `TEXT NOT NULL` for multi-tenancy
-- Sequence: `INTEGER` for sync ordering
+**约定**：
+- 主键：`TEXT`（UUID）
+- 时间戳：`INTEGER`（Unix 毫秒）
+- 布尔值：`INTEGER`（0/1）
+- JSON 数据：`TEXT`，并配套 `_version` 字段实现乐观锁
+- Namespace：`TEXT NOT NULL`，用于多租户
+- Sequence：`INTEGER`，用于同步顺序
 
-### Foreign Keys
+### 外键
 
 ```sql
 CREATE TABLE messages (
@@ -108,25 +108,25 @@ CREATE TABLE messages (
 );
 ```
 
-**Always use**:
-- `FOREIGN KEY` constraints for relationships
-- `ON DELETE CASCADE` for dependent data
-- Indexes on foreign key columns
+**始终使用**：
+- 关系字段要有 `FOREIGN KEY` 约束
+- 依赖数据使用 `ON DELETE CASCADE`
+- 在外键列上建立索引
 
-### Naming Conventions
+### 命名约定
 
-- **Tables**: `snake_case`, plural (e.g., `sessions`, `push_subscriptions`)
-- **Columns**: `snake_case` (e.g., `created_at`, `session_id`)
-- **Indexes**: `idx_<table>_<columns>` (e.g., `idx_sessions_tag_namespace`)
-- **IDs**: `TEXT` UUID primary keys for entities, `INTEGER AUTOINCREMENT` for lookup tables
+- **表**：`snake_case`、复数形式（如 `sessions`、`push_subscriptions`）
+- **列**：`snake_case`（如 `created_at`、`session_id`）
+- **索引**：`idx_<table>_<columns>`（如 `idx_sessions_tag_namespace`）
+- **ID**：实体使用 `TEXT` UUID 主键，查找表使用 `INTEGER AUTOINCREMENT`
 
 ---
 
-## Two-Layer Pattern
+## 双层模式
 
-### Layer 1: Store Classes (CRUD)
+### 第 1 层：Store 类（CRUD）
 
-Store classes are thin wrappers that provide a typed API:
+Store 类是提供类型化 API 的薄封装：
 
 ```typescript
 // store/sessionStore.ts
@@ -161,11 +161,11 @@ export class SessionStore {
 }
 ```
 
-**Pattern**: Store class delegates to pure functions, provides type-safe API.
+**模式说明**：Store 类委托纯函数实现逻辑，并提供类型安全 API。
 
-### Layer 2: Business Logic Functions
+### 第 2 层：业务逻辑函数
 
-Business logic functions contain the actual SQL:
+业务逻辑函数中包含实际 SQL：
 
 ```typescript
 // store/sessions.ts
@@ -176,7 +176,7 @@ export function getOrCreateSession(
     agentState: unknown,
     namespace: string
 ): StoredSession {
-    // 1. Check if exists
+    // 1. 检查是否已存在
     const existing = db.prepare(
         'SELECT * FROM sessions WHERE tag = ? AND namespace = ? ORDER BY created_at DESC LIMIT 1'
     ).get(tag, namespace) as DbSessionRow | undefined
@@ -185,7 +185,7 @@ export function getOrCreateSession(
         return toStoredSession(existing)
     }
 
-    // 2. Create new
+    // 2. 创建新记录
     const id = randomUUID()
     const now = Date.now()
 
@@ -194,31 +194,31 @@ export function getOrCreateSession(
         VALUES (@id, @tag, @namespace, @created_at, @updated_at, @metadata, ...)
     `).run({ id, tag, namespace, created_at: now, updated_at: now, metadata: JSON.stringify(metadata) })
 
-    // 3. Fetch and return
+    // 3. 再查出并返回
     const row = getSession(db, id)
     if (!row) throw new Error('Failed to create session')
     return row
 }
 ```
 
-**Why two layers**:
-- Store classes provide stable, typed API
-- Business logic functions are pure and testable
-- Easy to mock database in tests
-- Clear separation of concerns
+**为什么要双层**：
+- Store 类提供稳定、类型化的 API
+- 业务逻辑函数是纯函数，更易测试
+- 测试中更容易 mock 数据库
+- 职责边界清晰
 
 ---
 
-## Optimistic Locking
+## 乐观锁
 
-### Versioned Updates
+### 版本化更新
 
-For concurrent updates, use versioned fields:
+并发更新时，使用版本字段：
 
 ```typescript
 // store/versionedUpdates.ts
 export function updateVersionedField<T>(args: VersionedUpdateArgs<T>): VersionedUpdateResult<T> {
-    // Try update with version check
+    // 带版本检查地尝试更新
     const result = args.db.prepare(
         `UPDATE ${args.table}
          SET ${args.field} = @field_value,
@@ -230,7 +230,7 @@ export function updateVersionedField<T>(args: VersionedUpdateArgs<T>): Versioned
         return { result: 'success', version: args.expectedVersion + 1, value: args.value }
     }
 
-    // Version mismatch - fetch current state
+    // 版本冲突 - 读取当前状态
     const current = args.db.prepare(
         `SELECT ${args.field} AS field_value, ${args.versionField} AS version
          FROM ${args.table} WHERE id = ? AND namespace = ?`
@@ -244,32 +244,32 @@ export function updateVersionedField<T>(args: VersionedUpdateArgs<T>): Versioned
 }
 ```
 
-**Result types**:
-- `{ result: 'success', version: number, value: T }` - Update succeeded
-- `{ result: 'version-mismatch', version: number, value: T }` - Conflict, current value returned
-- `{ result: 'error' }` - Row not found or database error
+**结果类型**：
+- `{ result: 'success', version: number, value: T }` - 更新成功
+- `{ result: 'version-mismatch', version: number, value: T }` - 冲突，返回当前值
+- `{ result: 'error' }` - 行不存在或数据库错误
 
 ---
 
-## Query Patterns
+## 查询模式
 
 ### Prepared Statements
 
-Always use prepared statements (never string concatenation):
+始终使用预编译语句（不要字符串拼接）：
 
 ```typescript
-// Good - parameterized
+// Good - 参数化查询
 const row = db.prepare(
     'SELECT * FROM sessions WHERE id = ? AND namespace = ?'
 ).get(id, namespace) as DbSessionRow | undefined
 
-// Bad - SQL injection risk
+// Bad - 存在 SQL 注入风险
 const row = db.query(`SELECT * FROM sessions WHERE id = '${id}'`)
 ```
 
-### Named Parameters
+### 命名参数
 
-Use named parameters for complex queries:
+复杂查询使用命名参数：
 
 ```typescript
 db.prepare(`
@@ -285,12 +285,12 @@ db.prepare(`
 })
 ```
 
-### Type-Safe Results
+### 类型安全的结果
 
-Always type query results with a `Db*Row` type:
+始终用 `Db*Row` 类型标注查询结果：
 
 ```typescript
-// Define DB row type (snake_case matching DB columns)
+// 定义数据库行类型（snake_case，与数据库列保持一致）
 type DbSessionRow = {
     id: string
     tag: string | null
@@ -298,14 +298,14 @@ type DbSessionRow = {
     created_at: number
     metadata: string | null
     metadata_version: number
-    active: number  // SQLite boolean (0/1)
+    active: number  // SQLite 布尔值（0/1）
 }
 
-// Type assertion
+// 类型断言
 const row = db.prepare('SELECT * FROM sessions WHERE id = ?')
     .get(id) as DbSessionRow | undefined
 
-// Transform to domain type (camelCase)
+// 转为领域类型（camelCase）
 function toStoredSession(row: DbSessionRow): StoredSession {
     return {
         id: row.id,
@@ -314,24 +314,24 @@ function toStoredSession(row: DbSessionRow): StoredSession {
         createdAt: row.created_at,
         metadata: safeJsonParse(row.metadata),
         metadataVersion: row.metadata_version,
-        active: row.active === 1  // Convert 0/1 to boolean
+        active: row.active === 1  // 将 0/1 转为 boolean
     }
 }
 ```
 
 ---
 
-## JSON Storage
+## JSON 存储
 
-### Storing JSON
+### 存储 JSON
 
 ```typescript
-// Serialize (handle null)
+// 序列化（处理 null）
 const value = data === null || data === undefined ? null : JSON.stringify(data)
 db.prepare('UPDATE sessions SET metadata = ? WHERE id = ?').run(value, id)
 ```
 
-### Parsing JSON (`store/json.ts`)
+### 解析 JSON（`store/json.ts`）
 
 ```typescript
 export function safeJsonParse(value: string | null): unknown {
@@ -344,13 +344,13 @@ export function safeJsonParse(value: string | null): unknown {
 }
 ```
 
-**Always use `safeJsonParse`** - handles null and parse errors gracefully.
+**始终使用 `safeJsonParse`** —— 能优雅处理 `null` 与解析错误。
 
 ---
 
-## Schema Migrations
+## Schema 迁移
 
-### Version Tracking
+### 版本跟踪
 
 ```typescript
 const SCHEMA_VERSION = 3
@@ -364,7 +364,7 @@ private initSchema(): void {
         return
     }
 
-    // Sequential migrations
+    // 顺序迁移
     if (currentVersion === 1 && SCHEMA_VERSION >= 2) {
         this.migrateFromV1ToV2()
         if (SCHEMA_VERSION === 2) {
@@ -385,7 +385,7 @@ private initSchema(): void {
 }
 ```
 
-### Migration Pattern
+### 迁移模式
 
 ```typescript
 private migrateFromV2ToV3(): void {
@@ -396,64 +396,64 @@ private migrateFromV2ToV3(): void {
 }
 ```
 
-**Rules**:
-- Increment `SCHEMA_VERSION` for each migration
-- One migration function per version transition
-- Migrations are one-way (no rollback)
-- `ALTER TABLE ADD COLUMN` with `DEFAULT` for backward compatibility
+**规则**：
+- 每次迁移都要递增 `SCHEMA_VERSION`
+- 每个版本跳转只对应一个迁移函数
+- 迁移是单向的（不回滚）
+- `ALTER TABLE ADD COLUMN` 配合 `DEFAULT` 以保证向后兼容
 
 ---
 
-## Multi-Tenancy (Namespaces)
+## 多租户（Namespaces）
 
-Always filter by `namespace` in all queries:
+所有查询都必须按 `namespace` 过滤：
 
 ```typescript
-// Reads - always filter by namespace
+// 读取 - 始终按 namespace 过滤
 const sessions = db.prepare(
     'SELECT * FROM sessions WHERE namespace = ?'
 ).all(namespace) as DbSessionRow[]
 
-// Writes - always include namespace check
+// 写入 - 始终包含 namespace 检查
 db.prepare(
     'UPDATE sessions SET metadata = @metadata WHERE id = @id AND namespace = @namespace'
 ).run({ metadata, id, namespace })
 
-// Deletes - always include namespace check
+// 删除 - 始终包含 namespace 检查
 db.prepare(
     'DELETE FROM sessions WHERE id = ? AND namespace = ?'
 ).run(id, namespace)
 ```
 
-**Why**: Prevents data leakage between users.
+**原因**：防止不同用户之间发生数据泄漏。
 
 ---
 
-## Common Mistakes
+## 常见错误
 
-- ❌ Not using prepared statements (SQL injection risk)
-- ❌ String concatenation in queries
-- ❌ Not typing query results (implicit `any`)
-- ❌ Forgetting `namespace` filter in queries
-- ❌ Not handling JSON parse errors (use `safeJsonParse`)
-- ❌ Not using versioned updates for concurrent modifications
-- ❌ Missing indexes on frequently queried columns
-- ❌ Not using `ON DELETE CASCADE` for dependent data
-- ❌ Storing timestamps as strings instead of integers
-- ❌ Forgetting to increment `SCHEMA_VERSION` after schema changes
-- ❌ Not enabling foreign keys (`PRAGMA foreign_keys = ON`)
+- ❌ 不使用预编译语句（存在 SQL 注入风险）
+- ❌ 在查询中做字符串拼接
+- ❌ 不为查询结果标注类型（隐式 `any`）
+- ❌ 忘记在查询中加 `namespace` 过滤
+- ❌ 不处理 JSON 解析错误（应使用 `safeJsonParse`）
+- ❌ 并发修改时不使用版本化更新
+- ❌ 高频查询列缺少索引
+- ❌ 对依赖数据不使用 `ON DELETE CASCADE`
+- ❌ 将时间戳存为字符串而不是整数
+- ❌ 修改 schema 后忘记递增 `SCHEMA_VERSION`
+- ❌ 未启用外键（`PRAGMA foreign_keys = ON`）
 
 ---
 
-## Best Practices
+## 最佳实践
 
-- ✅ Always use prepared statements with parameters
-- ✅ Type all `Db*Row` types explicitly (snake_case)
-- ✅ Transform DB rows to domain types (camelCase) in `toStored*` functions
-- ✅ Use versioned updates for concurrent modifications
-- ✅ Filter by `namespace` in all queries
-- ✅ Use `safeJsonParse` for JSON columns
-- ✅ Create indexes on frequently queried columns
-- ✅ Use foreign keys with `ON DELETE CASCADE`
-- ✅ Store timestamps as integers (Unix milliseconds)
-- ✅ Keep migrations sequential and one-way
+- ✅ 始终使用带参数的预编译语句
+- ✅ 显式定义所有 `Db*Row` 类型（snake_case）
+- ✅ 在 `toStored*` 函数中把数据库行转换为领域类型（camelCase）
+- ✅ 并发修改使用版本化更新
+- ✅ 所有查询都按 `namespace` 过滤
+- ✅ JSON 列读取使用 `safeJsonParse`
+- ✅ 为高频查询列建立索引
+- ✅ 使用带 `ON DELETE CASCADE` 的外键
+- ✅ 时间戳使用整数（Unix 毫秒）
+- ✅ 保持迁移顺序化、单向化
