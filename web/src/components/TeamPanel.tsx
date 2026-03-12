@@ -429,7 +429,7 @@ export function TeamPanel(props: {
     const [expanded, setExpanded] = useState(hasActivity || totalPendingPerms > 0)
 
     return (
-        <div className="mx-3 mt-3">
+        <div className="mx-3 mt-3 shrink-0">
             <button
                 type="button"
                 onClick={() => setExpanded(!expanded)}
@@ -486,7 +486,7 @@ export function TeamPanel(props: {
             </button>
 
             {expanded && (
-                <div className="mt-1 space-y-2 rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-2.5">
+                <div className="mt-1 max-h-[min(40vh,300px)] space-y-2 overflow-y-auto overscroll-contain rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-2.5">
                     {teamState.description && (
                         <p className="text-xs text-[var(--app-hint)]">{teamState.description}</p>
                     )}
