@@ -1,6 +1,6 @@
 {
   "name": "@jlovec/zhushen",
-  "version": "0.1.3-rc2",
+  "version": "0.1.3",
   "description": "App for agentic coding - access coding agent anywhere",
   "author": "Kirill Dubovitskiy & weishu",
   "license": "AGPL-3.0-only",
@@ -26,11 +26,11 @@
     }
   },
   "optionalDependencies": {
-    "@jlovec/zhushen-darwin-arm64": "0.1.3-rc2",
-    "@jlovec/zhushen-darwin-x64": "0.1.3-rc2",
-    "@jlovec/zhushen-linux-arm64": "0.1.3-rc2",
-    "@jlovec/zhushen-linux-x64": "0.1.3-rc2",
-    "@jlovec/zhushen-win32-x64": "0.1.3-rc2"
+    "@jlovec/zhushen-darwin-arm64": "0.1.3",
+    "@jlovec/zhushen-darwin-x64": "0.1.3",
+    "@jlovec/zhushen-linux-arm64": "0.1.3",
+    "@jlovec/zhushen-linux-x64": "0.1.3",
+    "@jlovec/zhushen-win32-x64": "0.1.3"
   },
   "scripts": {
     "postinstall": "node -e \"try{require('fs').chmodSync(require('path').join(__dirname,'bin','zs.cjs'),0o755)}catch(e){}\"",
