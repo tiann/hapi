@@ -174,6 +174,18 @@ For runtime helpers that combine persisted metadata with live probes:
 
 ---
 
+## ACP Session Completion Ordering Contract
+
+For ACP-style backends where final prompt completion and session updates arrive on separate async channels:
+
+- Do not treat prompt RPC resolution as the sole completion signal when tool/message updates for the same turn can still arrive after the response.
+- Before entering the post-response quiet wait, refresh the local last-update marker so the wait window starts from "response completed now" rather than from a stale pre-response timestamp.
+- Preserve emission order for the same turn as: trailing tool updates → buffered assistant text flush → `turn_complete`.
+- Any completion-ordering fix must be covered by a regression test that simulates `response resolves first, tool updates arrive shortly after`.
+- If ordering depends on quiet-period heuristics, keep the wait bounded but deterministic in tests.
+
+---
+
 ### ✅ Always Use
 
 1. **Named exports** for all functions, classes, types

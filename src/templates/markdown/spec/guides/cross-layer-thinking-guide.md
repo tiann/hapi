@@ -153,6 +153,26 @@ Reference executable contract:
 
 ---
 
+## ACP Prompt Completion Boundary Checklist (Transport RPC ↔ Session Update Stream ↔ UI Message Flush)
+
+When a prompt/request returns a final stop reason but related session updates may still arrive asynchronously:
+- [ ] Is the completion boundary defined by **both** RPC completion and update-stream quiet time, rather than RPC response alone?
+- [ ] Before waiting for a quiet period, do you advance/update the local "last activity" marker so that late-arriving updates consume the full quiet window instead of inheriting stale timestamps?
+- [ ] Does the message flush order guarantee trailing tool updates are emitted before final buffered text and `turn_complete`?
+- [ ] If updates and response completion are delivered on different async channels, is there a regression test for `response resolves first -> tool updates arrive shortly after`?
+- [ ] Are timeout/quiet-period constants tested with a narrow deterministic fixture so CI can catch race regressions?
+
+Typical failure pattern:
+- `session/prompt` resolves quickly with `stopReason=end_turn`.
+- The client immediately starts quiet-wait logic using an old `lastSessionUpdateAt` timestamp.
+- The wait returns too early, buffered text is flushed, and `turn_complete` is emitted before trailing `tool_call` / `tool_result` updates from the same turn are processed.
+- CI then shows order-sensitive failures such as `['text', 'turn_complete']` instead of `['tool_call', 'tool_result', 'text', 'turn_complete']`.
+
+Reference executable contract:
+- `backend/quality-guidelines.md` → `ACP Session Completion Ordering Contract`
+
+---
+
 ## Session-Switch Draft Persistence Checklist (Composer ↔ Session Identity)
 
 When chat composer text should survive switching between sessions:
