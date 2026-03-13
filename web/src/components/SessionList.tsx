@@ -13,6 +13,7 @@ import { getSessionTitle } from '@/lib/sessionTitle'
 import { useTranslation } from '@/lib/use-translation'
 
 type SessionGroup = {
+    groupKey: string
     directory: string
     displayName: string
     sessions: SessionSummary[]
@@ -34,8 +35,10 @@ function groupSessionsByDirectory(sessions: SessionSummary[]): SessionGroup[] {
 
     sessions.forEach(session => {
         const path = session.metadata?.worktree?.basePath ?? session.metadata?.path ?? 'Other'
-        const machineId = session.metadata?.machineId || 'unknown'
-        const groupKey = `${machineId}:${path}`
+        const machineKey = session.metadata?.machineId?.trim()
+            || session.metadata?.host?.trim()
+            || 'unknown'
+        const groupKey = `${machineKey}:${path}`
         if (!groups.has(groupKey)) {
             groups.set(groupKey, [])
         }
@@ -44,8 +47,8 @@ function groupSessionsByDirectory(sessions: SessionSummary[]): SessionGroup[] {
 
     return Array.from(groups.entries())
         .map(([groupKey, groupSessions]) => {
-            const [machineId, ...pathParts] = groupKey.split(':')
-            const directory = pathParts.join(':')
+            const first = groupSessions[0]
+            const directory = first?.metadata?.worktree?.basePath ?? first?.metadata?.path ?? 'Other'
             const sortedSessions = [...groupSessions].sort((a, b) => {
                 const rankA = a.active ? (a.pendingRequestsCount > 0 ? 0 : 1) : 2
                 const rankB = b.active ? (b.pendingRequestsCount > 0 ? 0 : 1) : 2
@@ -58,15 +61,17 @@ function groupSessionsByDirectory(sessions: SessionSummary[]): SessionGroup[] {
             )
             const hasActiveSession = groupSessions.some(s => s.active)
             const displayName = getGroupDisplayName(directory)
-            const host = groupSessions[0]?.metadata?.host
+            const machineId = first?.metadata?.machineId?.trim() || undefined
+            const host = first?.metadata?.host?.trim() || undefined
 
             return {
+                groupKey,
                 directory,
                 displayName,
                 sessions: sortedSessions,
                 latestUpdatedAt,
                 hasActiveSession,
-                machineId: machineId === 'unknown' ? undefined : machineId,
+                machineId,
                 host
             }
         })
@@ -394,17 +399,15 @@ export function SessionList(props: {
         () => new Map()
     )
     const isGroupCollapsed = (group: SessionGroup): boolean => {
-        const groupKey = `${group.machineId || 'unknown'}:${group.directory}`
-        const override = collapseOverrides.get(groupKey)
+        const override = collapseOverrides.get(group.groupKey)
         if (override !== undefined) return override
         return !group.hasActiveSession
     }
 
     const toggleGroup = (group: SessionGroup, isCollapsed: boolean) => {
-        const groupKey = `${group.machineId || 'unknown'}:${group.directory}`
         setCollapseOverrides(prev => {
             const next = new Map(prev)
-            next.set(groupKey, !isCollapsed)
+            next.set(group.groupKey, !isCollapsed)
             return next
         })
     }
@@ -413,7 +416,7 @@ export function SessionList(props: {
         setCollapseOverrides(prev => {
             if (prev.size === 0) return prev
             const next = new Map(prev)
-            const knownGroups = new Set(groups.map(group => `${group.machineId || 'unknown'}:${group.directory}`))
+            const knownGroups = new Set(groups.map(group => group.groupKey))
             let changed = false
             for (const groupKey of next.keys()) {
                 if (!knownGroups.has(groupKey)) {
@@ -447,7 +450,7 @@ export function SessionList(props: {
                 {groups.map((group) => {
                     const isCollapsed = isGroupCollapsed(group)
                     return (
-                        <div key={`${group.machineId || 'unknown'}:${group.directory}`}>
+                        <div key={group.groupKey}>
                             <button
                                 type="button"
                                 onClick={() => toggleGroup(group, isCollapsed)}
