@@ -33,6 +33,11 @@ export default defineConfig({
             ...process.env,
             ...testEnv,
             ZS_HOME: process.env.ZS_HOME || testEnv?.ZS_HOME || defaultIsolatedHome,
+        },
+        alias: {
+            // Mock bun-pty for test environment (vitest runs in Node.js, not Bun)
+            // bun-pty depends on bun:ffi which is not available in Node.js
+            'bun-pty': resolve('./src/__mocks__/bun-pty.ts'),
         }
     },
     resolve: {

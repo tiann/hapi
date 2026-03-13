@@ -186,6 +186,7 @@ grep -r "setup-bun" .github/workflows/ | grep -o "bun-version: [0-9.]*" | sort -
 - [ ] CI 中的测试 workflow 通过
 - [ ] 如果有 AI reviewer，确认它能运行测试
 - [ ] 如果 AI reviewer 报告"未运行测试"，检查环境配置
+- [ ] **检查是否引入了运行时特定依赖（见下方"引入运行时特定依赖"）**
 
 ### 升级运行时版本
 
@@ -193,6 +194,37 @@ grep -r "setup-bun" .github/workflows/ | grep -o "bun-version: [0-9.]*" | sort -
 - [ ] 更新 Dockerfile 中的版本号
 - [ ] 更新 `package.json` 中的 `engines` 字段
 - [ ] 更新文档中的版本要求
+
+### 引入运行时特定依赖
+
+- [ ] 依赖是否只在特定运行时可用？（如 `bun:ffi`、`bun:sqlite`、Node.js 特定模块）
+- [ ] 测试环境是否与生产环境使用相同的运行时？
+  - 是 → 无需额外处理
+  - 否 → 必须提供测试环境的 mock
+- [ ] 是否在 vitest.config.ts 中配置了 alias mock？
+- [ ] Mock 实现是否覆盖了测试所需的接口？
+- [ ] 是否添加了注释说明为何需要 mock？
+
+**示例：Mock bun-pty**
+
+```typescript
+// vitest.config.ts
+export default defineConfig({
+    test: {
+        alias: {
+            // Mock bun-pty for test environment (vitest runs in Node.js, not Bun)
+            // bun-pty depends on bun:ffi which is not available in Node.js
+            'bun-pty': resolve('./src/__mocks__/bun-pty.ts'),
+        }
+    }
+})
+```
+
+```typescript
+// src/__mocks__/bun-pty.ts
+export interface IPty { /* ... */ }
+export const spawn: null = null  // Simulate unavailable runtime
+```
 
 ---
 
@@ -244,6 +276,35 @@ bun install --frozen-lockfile
 bun run test
 ```
 
+### 问题：测试失败提示"Cannot find package 'bun:ffi'"
+
+**原因**：
+- 代码中静态导入了依赖 Bun 运行时特定模块的包（如 `bun-pty`）
+- 测试环境运行在 Node.js（vitest），无法解析 `bun:ffi` 等 Bun 特定模块
+
+**修复**：
+1. 在 `vitest.config.ts` 中添加 alias mock：
+```typescript
+export default defineConfig({
+    test: {
+        alias: {
+            'bun-pty': resolve('./src/__mocks__/bun-pty.ts'),
+        }
+    }
+})
+```
+
+2. 创建 mock 文件 `src/__mocks__/bun-pty.ts`：
+```typescript
+// Mock for bun-pty in test environment
+export interface IPty { /* ... */ }
+export const spawn: null = null  // Simulate unavailable runtime
+```
+
+**预防**：
+- 引入新的运行时特定依赖时，立即提供测试环境的 mock
+- 参考"引入运行时特定依赖" checklist
+
 ---
 
 ## 相关资源
@@ -262,4 +323,6 @@ bun run test
 
 ---
 
-**最后更新**：2026-03-13（基于 PR#24 的教训）
+**最后更新**：2026-03-13
+- 基于 PR#24 的教训：环境一致性原则
+- 基于 Issue#313-012 的教训：运行时特定依赖的 mock 处理
