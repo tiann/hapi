@@ -20,11 +20,9 @@ export default defineConfig({
     sidebar: [
       { text: 'Quick Start', link: '/guide/quick-start' },
       { text: 'Installation', link: '/guide/installation' },
-      { text: 'Docker CLI', link: '/guide/docker-cli' },
+      { text: 'Docker Runner', link: '/guide/docker-runner' },
       { text: 'PWA', link: '/guide/pwa' },
       { text: 'How it Works', link: '/guide/how-it-works' },
-      { text: 'Cursor Agent', link: '/guide/cursor' },
-      { text: 'Why Zhushen', link: '/guide/why-hapi' },
       { text: 'FAQ', link: '/guide/faq' }
     ],
 

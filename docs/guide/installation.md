@@ -6,6 +6,11 @@
 
 请先安装以下任一 CLI：Claude Code、OpenAI Codex CLI、Cursor Agent CLI、Google Gemini CLI 或 OpenCode CLI。
 
+如果你计划从源码构建或在本仓库内开发，当前项目要求：
+
+- **Node.js >= 24**
+- **Bun >= 1.3.10**
+
 可通过以下命令验证是否安装成功：
 
 ```bash
@@ -86,6 +91,8 @@ brew install jlovec1024/tap/zhushen
 
 ## 其他安装方式
 
+> 说明：源码构建与单文件可执行包的构建链路近期已加强兼容性，尤其是编译产物中的终端依赖加载方式更稳定。若你使用预编译二进制或 `bun build:single-exe` 构建版本，建议优先使用最新发布版本。
+
 <details>
 <summary>npx（免安装）</summary>
 
@@ -108,6 +115,8 @@ sudo mv ./zs /usr/local/bin/
 
 <details>
 <summary>从源码构建</summary>
+
+> 若在本仓库中直接构建，请先确认本机满足 Node.js >= 24 与 Bun >= 1.3.10 的要求。
 
 ```bash
 git clone https://github.com/jlovec1024/hapi.git
@@ -331,6 +340,8 @@ zs runner stop
 - `zs runner start` 用于首次启动后台 runner
 - `zs runner restart` 用于执行一次“先 stop 再 start”的重启，并在完成后直接展示完整状态
 - `zs runner status` 用于查看当前 runner 诊断信息
+
+如果你使用 Docker / Compose 部署 runner，或需要了解 runner 镜像内置工具、运行时版本切换、`docker:check` 校验与 compose 验证方式，请继续阅读 [Docker Runner 独立使用指南](./docker-runner.md)。
 
 Runner 运行后：
 

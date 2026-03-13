@@ -58,7 +58,6 @@ CLI 是对 AI 编程代理（Claude Code、Codex、Cursor Agent、Gemini、OpenC
 ```bash
 zs               # 启动 Claude Code 会话
 zs codex         # 启动 OpenAI Codex 会话
-zs cursor        # 启动 Cursor Agent 会话
 zs gemini        # 启动 Google Gemini 会话
 zs opencode      # 启动 OpenCode 会话
 zs runner start  # 启动后台服务，用于远程拉起会话
@@ -189,6 +188,7 @@ User (Phone)                 Hub                     CLI
 - 随时审批权限请求
 - 离开桌面时持续监控进度
 - 会话仍在你的本机继续运行
+- 终端页面重新接管时会主动清理旧连接，减少重复连接和重连异常
 
 ### 切换机制
 

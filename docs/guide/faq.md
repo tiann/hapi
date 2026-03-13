@@ -51,7 +51,17 @@
 
 支持。我们通过 namespace 提供轻量级多账号能力，适用于团队共享 hub 场景。见 [Namespace（高级）](./namespace.md)。
 
-## 使用相关
+如果你只是个人使用，通常不需要额外配置 namespace。
+
+### 最近版本有哪些体验改进？
+
+近期版本主要补充了这些面向使用体验的改进：
+
+- **终端重连更稳定**：重新接管终端页面时会主动清理旧连接，减少重复连接和异常重连。
+- **移动端会话列表交互更准确**：会话卡片点击区域与终端入口的操作冲突已修复，手机上更不容易误触。
+- **会话头信息更聚焦**：顶部展示改为更强调主机与工作树等上下文信息，同时移除了模型名和装饰性标签，降低视觉噪音。
+
+### 使用相关
 
 ### 如何远程审批权限请求？
 
@@ -90,6 +100,8 @@
 ### 能远程访问终端吗？
 
 可以。在 Web 应用中打开会话，进入 Terminal 标签页即可使用远程 shell。
+
+如果你在远程终端页面重新接管会话，系统会主动清理旧连接，减少重复连接和异常重连问题。
 
 ## 安全
 
@@ -153,20 +165,6 @@ npm install -g @anthropic-ai/claude-code
 export ZS_CLAUDE_PATH=/path/to/claude
 ```
 
-### 找不到 Cursor Agent
-
-安装 Cursor Agent CLI：
-
-```bash
-# macOS/Linux
-curl https://cursor.com/install -fsS | bash
-
-# Windows (PowerShell)
-irm 'https://cursor.com/install?win32=true' | iex
-```
-
-并确保 `agent` 已加入 PATH。
-
 ### 如何运行诊断？
 
 ```bash
@@ -179,14 +177,14 @@ zs doctor
 
 ### 主神 vs Happy
 
-| 维度 | Happy | HAPI |
+| 维度 | Happy | 主神 |
 |--------|-------|------|
 | 设计 | Cloud-first | Local-first |
 | 用户模型 | Multi-user | Single user |
 | 部署 | 多服务 | 单二进制 |
-| 数据 | 服务器端加密存储 | 数据不离开你的机器 |
+| 数据 | 服务器端加密存储 | 数据保留在你的机器上 |
 
-详见 [Why HAPI](./why-hapi.md)。
+主神更强调本地优先、自托管和轻量部署，适合希望自己掌控数据与运行环境的场景。
 
 ### 主神 vs 直接使用 Claude Code
 
