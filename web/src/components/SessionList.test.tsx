@@ -78,8 +78,8 @@ describe('SessionList action touch behavior', () => {
         const onSelect = vi.fn()
 
         const sessions: SessionSummary[] = [
-            createSession({ id: 'active-1', active: true, metadata: { path: '/tmp/project-a', flavor: 'claude' } as SessionSummary['metadata'] }),
-            createSession({ id: 'inactive-1', active: false, metadata: { path: '/tmp/project-a', flavor: 'claude' } as SessionSummary['metadata'] })
+            createSession({ id: 'active-1', active: true, metadata: { path: '/tmp/project-a', flavor: 'claude', machineId: 'machine1' } as SessionSummary['metadata'] }),
+            createSession({ id: 'inactive-1', active: false, metadata: { path: '/tmp/project-a', flavor: 'claude', machineId: 'machine1' } as SessionSummary['metadata'] })
         ]
 
         render(
@@ -110,7 +110,7 @@ describe('SessionList action touch behavior', () => {
         const onSelect = vi.fn()
 
         const sessions: SessionSummary[] = [
-            createSession({ id: 'active-2', active: true, metadata: { path: '/tmp/project-b', flavor: 'claude' } as SessionSummary['metadata'] })
+            createSession({ id: 'active-2', active: true, metadata: { path: '/tmp/project-b', flavor: 'claude', machineId: 'machine2' } as SessionSummary['metadata'] })
         ]
 
         const { container } = render(
@@ -132,5 +132,28 @@ describe('SessionList action touch behavior', () => {
         fireEvent.touchEnd(row as Element)
 
         expect(onSelect).toHaveBeenCalledWith('active-2')
+    })
+
+    it('groups sessions by machineId and path', () => {
+        const sessions: SessionSummary[] = [
+            createSession({ id: 'sess-1', active: true, metadata: { path: '/home/user/project', flavor: 'claude', machineId: 'machine1', host: 'laptop' } as SessionSummary['metadata'] }),
+            createSession({ id: 'sess-2', active: false, metadata: { path: '/home/user/project', flavor: 'claude', machineId: 'machine1', host: 'laptop' } as SessionSummary['metadata'] }),
+            createSession({ id: 'sess-3', active: true, metadata: { path: '/home/user/project', flavor: 'claude', machineId: 'machine2', host: 'server' } as SessionSummary['metadata'] })
+        ]
+
+        const { container } = render(
+            <SessionList
+                sessions={sessions}
+                onSelect={vi.fn()}
+                onNewSession={vi.fn()}
+                onRefresh={vi.fn()}
+                isLoading={false}
+                api={null}
+                selectedSessionId={null}
+            />
+        )
+
+        const groupButtons = container.querySelectorAll('button[class*="sticky"]')
+        expect(groupButtons.length).toBe(2)
     })
 })
