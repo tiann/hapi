@@ -22,7 +22,7 @@ type SpawnSessionProps = {
 export function SpawnSession(props: SpawnSessionProps) {
     const { haptic } = usePlatform()
     const { t } = useTranslation()
-    const [directory, setDirectory] = useState('')
+    const [directory, setDirectory] = useState(props.machine?.metadata?.homeDir ?? '')
     const [sessionType, setSessionType] = useState<SessionType>('simple')
     const [worktreeName, setWorktreeName] = useState('')
     const [error, setError] = useState<string | null>(null)
