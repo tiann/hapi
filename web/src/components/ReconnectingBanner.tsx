@@ -1,4 +1,4 @@
-import { useOnlineStatus } from '@/hooks/useOnlineStatus'
+import { useOnlineStatus } from '@/shared/hooks/useOnlineStatus'
 import { useTranslation } from '@/lib/use-translation'
 
 function getReasonLabel(reason: string, t: (key: string) => string): string {

@@ -1,20 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Outlet, useLocation, useMatchRoute, useRouter } from '@tanstack/react-router'
-import { useQueryClient } from '@tanstack/react-query'
-import { initializeTheme } from '@/hooks/useTheme'
-import { useAuth } from '@/hooks/useAuth'
-import { useAuthSource } from '@/hooks/useAuthSource'
-import { useServerUrl } from '@/hooks/useServerUrl'
-import { useSSE } from '@/hooks/useSSE'
-import { useSyncingState } from '@/hooks/useSyncingState'
-import { usePushNotifications } from '@/hooks/usePushNotifications'
-import { useVisibilityReporter } from '@/hooks/useVisibilityReporter'
-import { queryKeys } from '@/lib/query-keys'
+import { useEffect } from 'react'
+import { Outlet, useMatchRoute } from '@tanstack/react-router'
+import { initializeTheme } from '@/shared/hooks/useTheme'
+import { useAuthBootstrap } from '@/processes/auth-bootstrap'
+import { useSessionSync } from '@/processes/session-sync'
 import { AppContextProvider } from '@/lib/app-context'
-import { fetchLatestMessages } from '@/lib/message-window-store'
 import { useTranslation } from '@/lib/use-translation'
-import { requireHubUrlForLogin } from '@/lib/runtime-config'
-import { LoginPrompt } from '@/components/LoginPrompt'
+import { requireHubUrlForLogin } from '@/shared/lib/runtime-config'
+import { LoginPrompt } from '@/entities/auth'
 import { InstallPrompt } from '@/components/InstallPrompt'
 import { OfflineBanner } from '@/components/OfflineBanner'
 import { SyncingBanner } from '@/components/SyncingBanner'
@@ -22,9 +14,6 @@ import { ReconnectingBanner } from '@/components/ReconnectingBanner'
 import { LoadingState } from '@/components/LoadingState'
 import { ToastContainer } from '@/components/ToastContainer'
 import { ToastProvider, useToast } from '@/lib/toast-context'
-import type { SyncEvent } from '@/types/api'
-
-type ToastEvent = Extract<SyncEvent, { type: 'toast' }>
 
 const REQUIRE_SERVER_URL = requireHubUrlForLogin()
 
@@ -38,18 +27,14 @@ export function App() {
 
 function AppInner() {
     const { t } = useTranslation()
-    const { serverUrl, baseUrl, setServerUrl, clearServerUrl } = useServerUrl()
-    const { authSource, isLoading: isAuthSourceLoading, setAccessToken } = useAuthSource(baseUrl)
-    const { token, api, isLoading: isAuthLoading, error: authError } = useAuth(authSource, baseUrl)
-    const pathname = useLocation({ select: (location) => location.pathname })
-    const matchRoute = useMatchRoute()
-    const router = useRouter()
     const { addToast } = useToast()
 
+    // Initialize theme
     useEffect(() => {
         initializeTheme()
     }, [])
 
+    // Disable browser zoom
     useEffect(() => {
         const preventDefault = (event: Event) => {
             event.preventDefault()
@@ -86,151 +71,38 @@ function AppInner() {
         }
     }, [])
 
-    const queryClient = useQueryClient()
+    // Auth bootstrap process
+    const {
+        serverUrl,
+        baseUrl,
+        setServerUrl,
+        clearServerUrl,
+        authSource,
+        isAuthSourceLoading,
+        token,
+        api,
+        isAuthLoading,
+        authError,
+        setAccessToken
+    } = useAuthBootstrap()
+
+    // Get selected session ID
+    const matchRoute = useMatchRoute()
     const sessionMatch = matchRoute({ to: '/sessions/$sessionId' })
     const selectedSessionId = sessionMatch && sessionMatch.sessionId !== 'new' ? sessionMatch.sessionId : null
-    const { isSyncing, startSync, endSync } = useSyncingState()
-    const [sseDisconnected, setSseDisconnected] = useState(false)
-    const [sseDisconnectReason, setSseDisconnectReason] = useState<string | null>(null)
-    const syncTokenRef = useRef(0)
-    const isFirstConnectRef = useRef(true)
-    const baseUrlRef = useRef(baseUrl)
-    const pushPromptedRef = useRef(false)
-    const { isSupported: isPushSupported, permission: pushPermission, requestPermission, subscribe } = usePushNotifications(api)
 
-    useEffect(() => {
-        if (baseUrlRef.current === baseUrl) {
-            return
-        }
-        baseUrlRef.current = baseUrl
-        isFirstConnectRef.current = true
-        syncTokenRef.current = 0
-        queryClient.clear()
-    }, [baseUrl, queryClient])
-
-    // Clean up URL params after successful auth (for direct access links)
-    useEffect(() => {
-        if (!token || !api) return
-        const { pathname, search, hash, state } = router.history.location
-        const searchParams = new URLSearchParams(search)
-        if (!searchParams.has('server') && !searchParams.has('hub') && !searchParams.has('token')) {
-            return
-        }
-        searchParams.delete('server')
-        searchParams.delete('hub')
-        searchParams.delete('token')
-        const nextSearch = searchParams.toString()
-        const nextHref = `${pathname}${nextSearch ? `?${nextSearch}` : ''}${hash}`
-        router.history.replace(nextHref, state)
-    }, [token, api, router])
-
-    useEffect(() => {
-        if (!api || !token) {
-            pushPromptedRef.current = false
-            return
-        }
-        if (!isPushSupported) {
-            return
-        }
-        if (pushPromptedRef.current) {
-            return
-        }
-        pushPromptedRef.current = true
-
-        const run = async () => {
-            if (pushPermission === 'granted') {
-                await subscribe()
-                return
-            }
-            if (pushPermission === 'default') {
-                const granted = await requestPermission()
-                if (granted) {
-                    await subscribe()
-                }
-            }
-        }
-
-        void run()
-    }, [api, isPushSupported, pushPermission, requestPermission, subscribe, token])
-
-    const handleSseConnect = useCallback(() => {
-        // Clear disconnected state on successful connection
-        setSseDisconnected(false)
-        setSseDisconnectReason(null)
-
-        // Increment token to track this specific connection
-        const token = ++syncTokenRef.current
-
-        // Only force show banner on first connect (page load)
-        // Subsequent connects (session switches) use non-forced mode
-        // which only shows banner when returning from background
-        if (isFirstConnectRef.current) {
-            isFirstConnectRef.current = false
-            startSync({ force: true })
-        } else {
-            startSync()
-        }
-        const invalidations = [
-            queryClient.invalidateQueries({ queryKey: queryKeys.sessions }),
-            ...(selectedSessionId ? [
-                queryClient.invalidateQueries({ queryKey: queryKeys.session(selectedSessionId) })
-            ] : [])
-        ]
-        const refreshMessages = (selectedSessionId && api)
-            ? fetchLatestMessages(api, selectedSessionId)
-            : Promise.resolve()
-        Promise.all([...invalidations, refreshMessages])
-            .catch((error) => {
-                console.error('Failed to invalidate queries on SSE connect:', error)
-            })
-            .finally(() => {
-                // Only end sync if this is still the latest connection
-                if (syncTokenRef.current === token) {
-                    endSync()
-                }
-            })
-    }, [api, queryClient, selectedSessionId, startSync, endSync])
-
-    const handleSseDisconnect = useCallback((reason: string) => {
-        // Only show reconnecting banner if we've already connected once
-        if (!isFirstConnectRef.current) {
-            setSseDisconnected(true)
-            setSseDisconnectReason(reason)
-        }
-    }, [])
-
-    const handleSseEvent = useCallback(() => {}, [])
-    const handleToast = useCallback((event: ToastEvent) => {
-        addToast({
-            title: event.data.title,
-            body: event.data.body,
-            sessionId: event.data.sessionId,
-            url: event.data.url
-        })
-    }, [addToast])
-
-    const eventSubscription = useMemo(() => {
-        if (selectedSessionId) {
-            return { sessionId: selectedSessionId }
-        }
-        return { all: true }
-    }, [selectedSessionId])
-
-    const { subscriptionId } = useSSE({
+    // Session sync process
+    const {
+        isSyncing,
+        sseDisconnected,
+        sseDisconnectReason
+    } = useSessionSync({
         enabled: Boolean(api && token),
         token: token ?? '',
         baseUrl,
-        subscription: eventSubscription,
-        onConnect: handleSseConnect,
-        onDisconnect: handleSseDisconnect,
-        onEvent: handleSseEvent,
-        onToast: handleToast
-    })
-
-    useVisibilityReporter({
+        selectedSessionId,
         api,
-        subscriptionId,
-        enabled: Boolean(api && token)
+        addToast
     })
 
     // Loading auth source

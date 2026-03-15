@@ -1,7 +1,7 @@
 import type { Machine } from '@/types/api'
 import { HostBadge } from '@/components/HostBadge'
-import { Card, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { getHostDisplayName } from '@/lib/host-utils'
+import { Card, CardDescription, CardHeader, CardTitle } from '@/shared/ui/card'
+import { getHostDisplayName } from '@/shared/lib/host-utils'
 import { useTranslation } from '@/lib/use-translation'
 
 function getMachineTitle(machine: Machine): string {

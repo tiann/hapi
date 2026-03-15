@@ -137,3 +137,5 @@ export function usePushNotifications(api: ApiClient | null) {
         unsubscribe
     }
 }
+
+export type PushNotificationsReturn = ReturnType<typeof usePushNotifications>

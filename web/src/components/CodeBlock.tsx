@@ -1,5 +1,5 @@
-import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
-import { useShikiHighlighter } from '@/lib/shiki'
+import { useCopyToClipboard } from '@/shared/hooks/useCopyToClipboard'
+import { useShikiHighlighter } from '@/shared/lib/shiki'
 import { CopyIcon, CheckIcon } from '@/components/icons'
 import { LongContentCollapse } from '@/components/LongContentCollapse'
 import { useTranslation } from '@/lib/use-translation'

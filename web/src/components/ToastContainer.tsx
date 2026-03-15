@@ -1,5 +1,5 @@
 import { useNavigate } from '@tanstack/react-router'
-import { Toast } from '@/components/ui/Toast'
+import { Toast } from '@/shared/ui/Toast'
 import { useToast } from '@/lib/toast-context'
 
 export function ToastContainer() {
@@ -19,7 +19,7 @@ export function ToastContainer() {
                 <Toast
                     key={toast.id}
                     title={toast.title}
-                    body={toast.body}
+                    body={toast.body ?? ''}
                     className="cursor-pointer"
                     onClick={() => {
                         removeToast(toast.id)

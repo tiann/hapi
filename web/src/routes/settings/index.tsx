@@ -1,8 +1,8 @@
 import { useState, useRef, useEffect } from 'react'
 import { useTranslation, type Locale } from '@/lib/use-translation'
 import { useAppGoBack } from '@/hooks/useAppGoBack'
-import { getFontScaleOptions, useFontScale, type FontScale } from '@/hooks/useFontScale'
-import { useAppearance, getAppearanceOptions, type AppearancePreference } from '@/hooks/useTheme'
+import { getFontScaleOptions, useFontScale, type FontScale } from '@/shared/hooks/useFontScale'
+import { useAppearance, getAppearanceOptions, type AppearancePreference } from '@/shared/hooks/useTheme'
 import { PROTOCOL_VERSION } from '@zs/protocol'
 
 const locales: { value: Locale; nativeLabel: string }[] = [

@@ -1,5 +1,5 @@
 import type { SyntaxHighlighterProps } from '@assistant-ui/react-markdown'
-import { useShikiHighlighter } from '@/lib/shiki'
+import { useShikiHighlighter } from '@/shared/lib/shiki'
 
 export function SyntaxHighlighter(props: SyntaxHighlighterProps) {
     const highlighted = useShikiHighlighter(props.code, props.language)

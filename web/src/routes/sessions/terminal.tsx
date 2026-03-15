@@ -3,11 +3,11 @@ import type { PointerEvent } from 'react'
 import { useParams } from '@tanstack/react-router'
 import type { Terminal } from '@xterm/xterm'
 import { useAppContext } from '@/lib/app-context'
-import { safeCopyToClipboard } from '@/lib/clipboard'
+import { safeCopyToClipboard } from '@/shared/lib/clipboard'
 import { cn } from '@/lib/utils'
 import { useSession } from '@/hooks/queries/useSession'
 import { useTerminalSocket } from '@/hooks/useTerminalSocket'
-import { useLongPress } from '@/hooks/useLongPress'
+import { useLongPress } from '@/shared/hooks/useLongPress'
 import { useTranslation } from '@/lib/use-translation'
 import { useToast } from '@/lib/toast-context'
 import {
@@ -18,14 +18,14 @@ import {
 } from '@/lib/terminal-session-store'
 import { TerminalView } from '@/components/Terminal/TerminalView'
 import { LoadingState } from '@/components/LoadingState'
-import { Button } from '@/components/ui/button'
+import { Button } from '@/shared/ui/button'
 import {
     Dialog,
     DialogContent,
     DialogDescription,
     DialogHeader,
     DialogTitle
-} from '@/components/ui/dialog'
+} from '@/shared/ui/dialog'
 
 type QuickInput = {
     label: string

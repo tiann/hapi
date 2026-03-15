@@ -14,7 +14,7 @@
 
 | 指南 | 说明 | 状态 |
 |------|------|------|
-| [目录结构](./directory-structure.md) | 模块组织与文件布局 | 待补充 |
+| [目录结构](./directory-structure.md) | 模块组织与文件布局（FSD 架构） | ✅ 已更新（entities 层完成） |
 | [组件规范](./component-guidelines.md) | 组件模式、props 与组合方式 | 待补充 |
 | [Hook 规范](./hook-guidelines.md) | 自定义 Hook 与数据获取模式 | 已更新（会话头 Git 状态契约） |
 | [状态管理](./state-management.md) | 本地状态、全局状态、服务端状态 | 待补充 |

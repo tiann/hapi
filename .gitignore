@@ -52,3 +52,6 @@ cli/npm/main/
 .trellis/tasks/archive/
 
 cli/npm/*/bin/
+
+# Serena local workspace
+.serena/

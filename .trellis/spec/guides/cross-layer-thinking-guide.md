@@ -568,6 +568,63 @@ Source → Transform → Store → Retrieve → Transform → Display
 
 ---
 
+## 文件迁移相对路径检查清单
+
+当在 FSD 架构重构或任何代码迁移过程中移动文件时：
+
+### 必须检查的相对路径引用
+
+- [ ] **CSS 中的 `@config` 和 `@import`**：检查所有 CSS/SCSS 文件中的相对路径引用
+- [ ] **TypeScript/JavaScript 导入**：检查所有 `import`/`require` 语句中的相对路径
+- [ ] **配置文件引用**：检查 `tsconfig.json`、`vite.config.ts` 等配置文件中的相对路径
+- [ ] **静态资源引用**：检查图片、字体等静态资源的相对路径
+- [ ] **文档中的相对路径**：检查 README、注释中的文件路径引用
+
+### 迁移后验证步骤
+
+- [ ] **立即运行构建**：文件迁移后立即运行 `pnpm run build` 或 `pnpm run dev` 验证路径正确性
+- [ ] **检查所有引用该文件的文件**：使用 `grep -r "old/path" .` 查找所有引用旧路径的地方
+- [ ] **运行 lint 和 typecheck**：确保类型检查和 lint 工具能够捕获路径错误
+
+### 典型失败模式
+
+**反例**：迁移 CSS 文件时忘记更新 `@config` 路径
+```css
+/* 从 web/src/index.css 迁移到 web/src/app/styles/index.css */
+/* 旧路径：@config "../tailwind.config.ts" */
+/* 新路径：应该是 @config "../../../tailwind.config.ts" */
+/* 错误：仍然使用 @config "../tailwind.config.ts" */
+```
+
+**正例**：迁移后立即更新所有相对路径引用
+```css
+/* 正确更新为 3 层向上（styles → app → src → web） */
+@config "../../../tailwind.config.ts"
+```
+
+### 快速验证命令
+
+```bash
+# 查找所有 CSS 文件中的相对路径引用
+find . -name "*.css" -o -name "*.scss" | xargs grep -n "@config\|@import.*\.\./"
+
+# 查找所有 TypeScript 文件中的深层相对路径
+find . -name "*.ts" -o -name "*.tsx" | xargs grep -n "\.\./\.\./\.\./"
+```
+
+### 预防机制
+
+1. **使用 TypeScript path aliases**：在 `tsconfig.json` 中配置 `@/` 别名，减少相对路径依赖
+2. **迁移前搜索引用**：使用 `grep -r "filename" .` 查找所有引用待迁移文件的地方
+3. **构建验证**：迁移后立即运行构建，而不是等到最后
+4. **Code Review 检查项**：在 PR 模板中添加"文件迁移时检查相对路径"的检查项
+
+参考可执行契约：
+- `frontend/directory-structure.md` → FSD 架构文件组织规范
+- `frontend/quality-guidelines.md` → 代码质量检查清单
+
+---
+
 ## 前端组件生命周期 vs 后端资源生命周期检查清单
 
 当前端组件需要持有后端资源（WebSocket、终端进程、文件监听等）时：

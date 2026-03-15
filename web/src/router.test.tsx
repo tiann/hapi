@@ -1,7 +1,8 @@
 import React from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
-import { SessionDetailRoute } from './router'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { SessionDetailPage } from '@/pages/session-detail'
 
 const navigateMock = vi.fn()
 
@@ -26,7 +27,7 @@ vi.mock('@tanstack/react-router', async () => {
     }
 })
 
-vi.mock('@/hooks/queries/useSession', () => ({
+vi.mock('@/entities/session', () => ({
     useSession: () => ({
         session: {
             id: 'session-1',
@@ -38,10 +39,16 @@ vi.mock('@/hooks/queries/useSession', () => ({
             thinking: false,
             teamState: null,
         },
+        refetch: vi.fn(),
     }),
+    SessionHeader: (props: { onSessionDeleted?: () => void }) => (
+        <button type="button" onClick={props.onSessionDeleted}>
+            delete session
+        </button>
+    ),
 }))
 
-vi.mock('@/hooks/queries/useGitStatusFiles', () => ({
+vi.mock('@/entities/git', () => ({
     useGitStatusFiles: () => ({
         status: null,
         error: null,
@@ -50,21 +57,26 @@ vi.mock('@/hooks/queries/useGitStatusFiles', () => ({
     }),
 }))
 
-vi.mock('@/components/SessionHeader', () => ({
-    SessionHeader: (props: { onSessionDeleted?: () => void }) => (
-        <button type="button" onClick={props.onSessionDeleted}>
-            delete session
-        </button>
-    ),
-}))
-
 vi.mock('@/components/LoadingState', () => ({
     LoadingState: ({ label }: { label: string }) => <div>{label}</div>,
 }))
 
-describe('SessionDetailRoute', () => {
+function renderWithProviders(ui: React.ReactElement) {
+    const queryClient = new QueryClient({
+        defaultOptions: {
+            queries: { retry: false },
+        },
+    })
+    return render(
+        <QueryClientProvider client={queryClient}>
+            {ui}
+        </QueryClientProvider>
+    )
+}
+
+describe('SessionDetailPage', () => {
     it('navigates to session list after deleting from child route', () => {
-        render(<SessionDetailRoute />)
+        renderWithProviders(<SessionDetailPage />)
 
         expect(screen.getByRole('button', { name: 'delete session' })).toBeInTheDocument()
         expect(screen.getByTestId('route-outlet')).toBeInTheDocument()

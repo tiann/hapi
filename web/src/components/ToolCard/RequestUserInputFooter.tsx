@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { ApiClient } from '@/api/client'
 import type { ChatToolCall } from '@/chat/types'
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
+import { Badge } from '@/shared/ui/badge'
+import { Button } from '@/shared/ui/button'
 import {
     isRequestUserInputToolName,
     parseRequestUserInputInput,
@@ -10,7 +10,7 @@ import {
     type RequestUserInputQuestion
 } from '@/components/ToolCard/requestUserInput'
 import { cn } from '@/lib/utils'
-import { usePlatform } from '@/hooks/usePlatform'
+import { usePlatform } from '@/shared/hooks/usePlatform'
 import { Spinner } from '@/components/Spinner'
 import { useTranslation } from '@/lib/use-translation'
 

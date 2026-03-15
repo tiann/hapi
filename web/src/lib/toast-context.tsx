@@ -3,9 +3,9 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 export type Toast = {
     id: string
     title: string
-    body: string
-    sessionId: string
-    url: string
+    body?: string
+    sessionId?: string
+    url?: string
 }
 
 export type ToastContextValue = {

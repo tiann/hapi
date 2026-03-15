@@ -8,7 +8,7 @@ import {
 import remarkGfm from 'remark-gfm'
 import { cn } from '@/lib/utils'
 import { SyntaxHighlighter } from '@/components/assistant-ui/shiki-highlighter'
-import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
+import { useCopyToClipboard } from '@/shared/hooks/useCopyToClipboard'
 import { CopyIcon, CheckIcon } from '@/components/icons'
 
 export const MARKDOWN_PLUGINS = [remarkGfm]

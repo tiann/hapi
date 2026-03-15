@@ -1,0 +1,113 @@
+import { useCallback, useMemo, useState } from 'react'
+
+export type ServerUrlResult =
+    | { ok: true; value: string }
+    | { ok: false; error: string }
+
+const HUB_URL_KEY = 'hapi_hub_url'
+
+export function normalizeServerUrl(input: string): ServerUrlResult {
+    const trimmed = input.trim()
+    if (!trimmed) {
+        return { ok: false, error: 'Enter a hub URL like https://example.com' }
+    }
+
+    let parsed: URL
+    try {
+        parsed = new URL(trimmed)
+    } catch {
+        return { ok: false, error: 'Enter a valid URL including http:// or https://' }
+    }
+
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        return { ok: false, error: 'Hub URL must start with http:// or https://' }
+    }
+
+    return { ok: true, value: parsed.origin }
+}
+
+function getServerFromUrlParams(): string | null {
+    if (typeof window === 'undefined') return null
+    const query = new URLSearchParams(window.location.search)
+    const hub = query.get('hub')
+    if (hub) {
+        const normalized = normalizeServerUrl(hub)
+        return normalized.ok ? normalized.value : null
+    }
+    return null
+}
+
+function readStoredServerUrl(): string | null {
+    try {
+        const stored = localStorage.getItem(HUB_URL_KEY)
+        if (!stored) {
+            return null
+        }
+        const normalized = normalizeServerUrl(stored)
+        if (!normalized.ok) {
+            localStorage.removeItem(HUB_URL_KEY)
+            return null
+        }
+        return normalized.value
+    } catch {
+        return null
+    }
+}
+
+function writeStoredServerUrl(value: string): void {
+    try {
+        localStorage.setItem(HUB_URL_KEY, value)
+    } catch {
+        // Ignore storage errors
+    }
+}
+
+function clearStoredServerUrl(): void {
+    try {
+        localStorage.removeItem(HUB_URL_KEY)
+    } catch {
+        // Ignore storage errors
+    }
+}
+
+export function useServerUrl(): {
+    serverUrl: string | null
+    baseUrl: string
+    setServerUrl: (input: string) => ServerUrlResult
+    clearServerUrl: () => void
+} {
+    const [serverUrl, setServerUrlState] = useState<string | null>(() => {
+        // Priority: URL params > localStorage
+        const fromUrl = getServerFromUrlParams()
+        if (fromUrl) {
+            writeStoredServerUrl(fromUrl) // Save to localStorage for refresh
+            return fromUrl
+        }
+        return readStoredServerUrl()
+    })
+
+    const fallbackOrigin = typeof window !== 'undefined' ? window.location.origin : ''
+    const baseUrl = useMemo(() => serverUrl ?? fallbackOrigin, [serverUrl, fallbackOrigin])
+
+    const setServerUrl = useCallback((input: string): ServerUrlResult => {
+        const normalized = normalizeServerUrl(input)
+        if (!normalized.ok) {
+            return normalized
+        }
+        writeStoredServerUrl(normalized.value)
+        setServerUrlState(normalized.value)
+        return normalized
+    }, [])
+
+    const clearServerUrl = useCallback(() => {
+        clearStoredServerUrl()
+        setServerUrlState(null)
+    }, [])
+
+    return {
+        serverUrl,
+        baseUrl,
+        setServerUrl,
+        clearServerUrl
+    }
+}

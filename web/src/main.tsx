@@ -5,9 +5,9 @@ import { ReactQueryDevtools } from '@tanstack/react-query-devtools'
 import { RouterProvider } from '@tanstack/react-router'
 import './index.css'
 import { registerSW } from 'virtual:pwa-register'
-import { initializeFontScale } from '@/hooks/useFontScale'
+import { initializeFontScale } from '@/shared/hooks/useFontScale'
 import { queryClient } from './lib/query-client'
-import { createAppRouter } from './router'
+import { createAppRouter } from './app/router'
 import { I18nProvider } from './lib/i18n-context'
 
 async function bootstrap() {

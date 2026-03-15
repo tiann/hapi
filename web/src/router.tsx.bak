@@ -1,0 +1,3 @@
+// Re-export from app/router for backward compatibility
+export { routeTree, createAppRouter } from '@/app/router'
+export type { AppRouter } from '@/app/router'

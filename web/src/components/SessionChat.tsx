@@ -12,7 +12,7 @@ import { HappyThread } from '@/components/AssistantChat/HappyThread'
 import { useHappyRuntime } from '@/lib/assistant-runtime'
 import { createAttachmentAdapter } from '@/lib/attachmentAdapter'
 import { TeamPanel } from '@/components/TeamPanel'
-import { usePlatform } from '@/hooks/usePlatform'
+import { usePlatform } from '@/shared/hooks/usePlatform'
 import { useSessionActions } from '@/hooks/mutations/useSessionActions'
 
 type NormalizedCacheEntry = {

@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { usePWAInstall } from '@/hooks/usePWAInstall'
-import { usePlatform } from '@/hooks/usePlatform'
+import { usePlatform } from '@/shared/hooks/usePlatform'
 import { CloseIcon, ShareIcon, PlusCircleIcon } from '@/components/icons'
 import { useTranslation } from '@/lib/use-translation'
 

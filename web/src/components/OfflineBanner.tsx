@@ -1,4 +1,4 @@
-import { useOnlineStatus } from '@/hooks/useOnlineStatus'
+import { useOnlineStatus } from '@/shared/hooks/useOnlineStatus'
 import { useTranslation } from '@/lib/use-translation'
 
 export function OfflineBanner() {
