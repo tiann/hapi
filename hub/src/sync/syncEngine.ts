@@ -329,6 +329,7 @@ export class SyncEngine {
         if (!metadata || typeof metadata.path !== 'string') {
             return { type: 'error', message: 'Session metadata missing path', code: 'resume_unavailable' }
         }
+        const preferredPermissionMode = session.permissionMode ?? metadata.preferredPermissionMode
 
         const flavor = metadata.flavor === 'codex' || metadata.flavor === 'gemini' || metadata.flavor === 'opencode' || metadata.flavor === 'cursor'
             ? metadata.flavor
@@ -386,6 +387,15 @@ export class SyncEngine {
         const becameActive = await this.waitForSessionActive(spawnResult.sessionId)
         if (!becameActive) {
             return { type: 'error', message: 'Session failed to become active', code: 'resume_failed' }
+        }
+
+        if (preferredPermissionMode !== undefined) {
+            try {
+                await this.applySessionConfig(spawnResult.sessionId, { permissionMode: preferredPermissionMode })
+            } catch (error) {
+                const message = error instanceof Error ? error.message : 'Failed to restore permission mode'
+                return { type: 'error', message, code: 'resume_failed' }
+            }
         }
 
         if (spawnResult.sessionId !== access.sessionId) {

@@ -126,7 +126,7 @@ export class SessionCache {
             thinkingAt: existing?.thinkingAt ?? 0,
             todos,
             teamState,
-            permissionMode: existing?.permissionMode,
+            permissionMode: existing?.permissionMode ?? metadata?.preferredPermissionMode,
             modelMode: existing?.modelMode
         }
 
@@ -167,6 +167,7 @@ export class SessionCache {
         session.thinkingAt = t
         if (payload.permissionMode !== undefined) {
             session.permissionMode = payload.permissionMode
+            this.persistPreferredPermissionMode(session, payload.permissionMode)
         }
         if (payload.modelMode !== undefined) {
             session.modelMode = payload.modelMode
@@ -233,6 +234,7 @@ export class SessionCache {
 
         if (config.permissionMode !== undefined) {
             session.permissionMode = config.permissionMode
+            this.persistPreferredPermissionMode(session, config.permissionMode)
         }
         if (config.modelMode !== undefined) {
             session.modelMode = config.modelMode
@@ -398,7 +400,39 @@ export class SessionCache {
             merged.host = oldObj.host
             changed = true
         }
+        if (typeof oldObj.preferredPermissionMode === 'string' && typeof newObj.preferredPermissionMode !== 'string') {
+            merged.preferredPermissionMode = oldObj.preferredPermissionMode
+            changed = true
+        }
 
         return changed ? merged : newMetadata
+    }
+
+    private persistPreferredPermissionMode(session: Session, permissionMode: PermissionMode): void {
+        const currentMetadata = session.metadata
+        if (!currentMetadata || currentMetadata.preferredPermissionMode === permissionMode) {
+            return
+        }
+
+        const nextMetadata = { ...currentMetadata, preferredPermissionMode: permissionMode }
+        const result = this.store.sessions.updateSessionMetadata(
+            session.id,
+            nextMetadata,
+            session.metadataVersion,
+            session.namespace,
+            { touchUpdatedAt: false }
+        )
+
+        if (result.result === 'error') {
+            return
+        }
+
+        const parsed = MetadataSchema.safeParse(result.value)
+        if (!parsed.success) {
+            return
+        }
+
+        session.metadata = parsed.data
+        session.metadataVersion = result.version
     }
 }
