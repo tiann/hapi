@@ -20,6 +20,8 @@ interface GeminiLoopOptions {
     hookSettingsPath?: string;
     allowedTools?: string[];
     onSessionReady?: (session: GeminiSession) => void;
+    /** Gemini session ID to resume. When provided, spawns gemini with --resume <id>. */
+    resumeGeminiSessionId?: string;
 }
 
 export async function geminiLoop(opts: GeminiLoopOptions): Promise<void> {
@@ -31,7 +33,7 @@ export async function geminiLoop(opts: GeminiLoopOptions): Promise<void> {
         api: opts.api,
         client: opts.session,
         path: opts.path,
-        sessionId: null,
+        sessionId: opts.resumeGeminiSessionId ?? null,
         logPath,
         messageQueue: opts.messageQueue,
         onModeChange: opts.onModeChange,

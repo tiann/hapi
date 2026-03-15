@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { extractErrorInfo, apiValidationError } from './errorUtils'
+import { extractErrorInfo, apiValidationError, isAbortError } from './errorUtils'
 
 describe('extractErrorInfo', () => {
     it('extracts serverProtocolVersion from axios-style response header', () => {
@@ -55,6 +55,33 @@ describe('extractErrorInfo', () => {
         }
         const info = extractErrorInfo(error)
         expect(info.serverProtocolVersion).toBeUndefined()
+    })
+})
+
+describe('isAbortError', () => {
+    it('returns true for DOMException with AbortError name', () => {
+        expect(isAbortError(new DOMException('aborted', 'AbortError'))).toBe(true)
+    })
+
+    it('returns true for AbortSignal abort reason', () => {
+        const controller = new AbortController()
+        controller.abort()
+        // AbortSignal.reason is typically a DOMException
+        expect(isAbortError(controller.signal.reason)).toBe(true)
+    })
+
+    it('returns false for generic errors', () => {
+        expect(isAbortError(new Error('something went wrong'))).toBe(false)
+    })
+
+    it('returns false for DOMException with different name', () => {
+        expect(isAbortError(new DOMException('not found', 'NotFoundError'))).toBe(false)
+    })
+
+    it('returns false for null and non-error values', () => {
+        expect(isAbortError(null)).toBe(false)
+        expect(isAbortError(undefined)).toBe(false)
+        expect(isAbortError('AbortError')).toBe(false)
     })
 })
 

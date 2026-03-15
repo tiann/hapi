@@ -1,4 +1,5 @@
 import React from 'react';
+import { randomUUID } from 'node:crypto';
 import { logger } from '@/ui/logger';
 import { buildHapiMcpBridge } from '@/codex/utils/buildHapiMcpBridge';
 import { convertAgentMessage } from '@/agent/messageConverter';
@@ -10,6 +11,8 @@ import type { PermissionMode } from './types';
 import { createGeminiBackend } from './utils/geminiBackend';
 import { GeminiPermissionHandler } from './utils/permissionHandler';
 import { resolveGeminiRuntimeConfig } from './utils/config';
+import { findGeminiTranscriptPath, readGeminiTranscript, extractMessageText } from './utils/sessionScanner';
+import { isAbortError } from '@/utils/errorUtils';
 
 class GeminiRemoteLauncher extends RemoteLauncherBase {
     private readonly session: GeminiSession;
@@ -69,11 +72,30 @@ class GeminiRemoteLauncher extends RemoteLauncherBase {
 
         await backend.initialize();
 
-        const acpSessionId = await backend.newSession({
-            cwd: session.path,
-            mcpServers: toAcpMcpServers(mcpServers)
-        });
+        const sessionConfig = { cwd: session.path, mcpServers: toAcpMcpServers(mcpServers) };
+        let acpSessionId: string;
+        let resumedFromSessionId: string | null = null;
+        if (session.sessionId) {
+            const originalSessionId = session.sessionId;
+            try {
+                acpSessionId = await backend.loadSession({ ...sessionConfig, sessionId: originalSessionId });
+                resumedFromSessionId = originalSessionId;
+            } catch (error) {
+                logger.warn('[gemini-remote] resume failed, starting new session', error);
+                session.sendSessionEvent({ type: 'message', message: 'Gemini resume failed; starting a new session.' });
+                acpSessionId = await backend.newSession(sessionConfig);
+                // resumedFromSessionId stays null: session/load failed so the model has no prior
+                // context, and replaying history to the UI would be misleading.
+            }
+        } else {
+            acpSessionId = await backend.newSession(sessionConfig);
+        }
         session.onSessionFound(acpSessionId);
+
+        if (resumedFromSessionId && !session.historyReplayed) {
+            session.historyReplayed = true;
+            await this.replayHistoricalMessages(resumedFromSessionId, session.historyReplayCutoff);
+        }
 
         this.permissionHandler = new GeminiPermissionHandler(
             session.client,
@@ -113,14 +135,18 @@ class GeminiRemoteLauncher extends RemoteLauncherBase {
             try {
                 await backend.prompt(acpSessionId, promptContent, (message: AgentMessage) => {
                     this.handleAgentMessage(message);
-                });
+                }, this.abortController.signal);
             } catch (error) {
-                logger.warn('[gemini-remote] prompt failed', error);
-                session.sendSessionEvent({
-                    type: 'message',
-                    message: 'Gemini prompt failed. Check logs for details.'
-                });
-                messageBuffer.addMessage('Gemini prompt failed', 'status');
+                if (isAbortError(error)) {
+                    logger.debug('[gemini-remote] prompt aborted by user');
+                } else {
+                    logger.warn('[gemini-remote] prompt failed', error);
+                    session.sendSessionEvent({
+                        type: 'message',
+                        message: 'Gemini prompt failed. Check logs for details.'
+                    });
+                    messageBuffer.addMessage('Gemini prompt failed', 'status');
+                }
             } finally {
                 session.onThinkingChange(false);
                 await this.permissionHandler?.cancelAll('Prompt finished');
@@ -178,6 +204,35 @@ class GeminiRemoteLauncher extends RemoteLauncherBase {
             default: {
                 const _exhaustive: never = message;
                 return _exhaustive;
+            }
+        }
+    }
+
+    private async replayHistoricalMessages(sessionId: string, cutoff = 0): Promise<void> {
+        const transcriptPath = await findGeminiTranscriptPath(sessionId);
+        if (!transcriptPath) {
+            logger.debug('[gemini-remote] No transcript file found for resume session, skipping history replay');
+            return;
+        }
+        const transcript = await readGeminiTranscript(transcriptPath);
+        const allMessages = transcript?.messages ?? [];
+        // cutoff > 0: only replay messages up to cutoff (local scanner already forwarded the rest)
+        const messages = cutoff > 0 ? allMessages.slice(0, cutoff) : allMessages;
+        logger.debug(`[gemini-remote] Replaying ${messages.length} historical messages from ${transcriptPath}`);
+        for (const message of messages) {
+            if (message.type === 'user') {
+                const text = extractMessageText(message.content);
+                if (text) {
+                    this.messageBuffer.addMessage(text, 'user');
+                    this.session.sendUserMessage(text);
+                }
+            } else if (message.type === 'gemini' && typeof message.content === 'string' && message.content) {
+                this.messageBuffer.addMessage(message.content, 'assistant');
+                this.session.sendCodexMessage({
+                    type: 'message',
+                    message: message.content,
+                    id: randomUUID()
+                });
             }
         }
     }

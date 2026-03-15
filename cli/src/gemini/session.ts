@@ -13,6 +13,8 @@ export class GeminiSession extends AgentSessionBase<GeminiMode> {
     transcriptPath: string | null = null;
     readonly startedBy: 'runner' | 'terminal';
     readonly startingMode: 'local' | 'remote';
+    historyReplayed = false;
+    historyReplayCutoff = 0;
     localLaunchFailure: LocalLaunchFailure | null = null;
 
     private transcriptPathCallbacks: Array<(path: string) => void> = [];

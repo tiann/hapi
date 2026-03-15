@@ -101,4 +101,49 @@ describe('AcpSdkBackend', () => {
             'turn_complete'
         ]);
     });
+
+    it('rejects prompt() when AbortSignal fires before response arrives', async () => {
+        backendStatics.PRE_PROMPT_UPDATE_QUIET_PERIOD_MS = 0;
+        backendStatics.PRE_PROMPT_UPDATE_DRAIN_TIMEOUT_MS = 0;
+        backendStatics.UPDATE_QUIET_PERIOD_MS = 0;
+        backendStatics.UPDATE_DRAIN_TIMEOUT_MS = 0;
+
+        const backend = new AcpSdkBackend({ command: 'gemini' });
+        const backendInternal = backend as unknown as {
+            transport: {
+                sendRequest: (...args: unknown[]) => Promise<unknown>;
+                close: () => Promise<void>;
+            } | null;
+        };
+
+        // Transport that never resolves (simulates stuck Gemini CLI)
+        backendInternal.transport = {
+            sendRequest: (_method: unknown, _params: unknown, opts: unknown) => {
+                return new Promise<unknown>((_resolve, reject) => {
+                    const signal = (opts as { signal?: AbortSignal })?.signal;
+                    const onAbort = () => reject(new DOMException('ACP request aborted', 'AbortError'));
+                    if (signal?.aborted) {
+                        onAbort();
+                        return;
+                    }
+                    signal?.addEventListener('abort', onAbort, { once: true });
+                });
+            },
+            close: async () => {}
+        };
+
+        const controller = new AbortController();
+        const promptPromise = backend.prompt(
+            'session-1',
+            [{ type: 'text', text: 'hello' }],
+            () => {},
+            controller.signal
+        );
+
+        // Let prompt() advance past its internal awaits and reach sendRequest()
+        await new Promise<void>((resolve) => setTimeout(resolve, 10));
+        controller.abort();
+
+        await expect(promptPromise).rejects.toMatchObject({ name: 'AbortError' });
+    });
 });

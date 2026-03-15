@@ -1,4 +1,6 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { logger } from '@/ui/logger';
 import {
     BaseSessionScanner,
@@ -10,7 +12,7 @@ import {
 type GeminiTranscriptMessage = {
     id?: string;
     type?: string;
-    content?: string;
+    content?: string | Array<{ text?: string }>;
     [key: string]: unknown;
 };
 
@@ -151,6 +153,52 @@ class GeminiSessionScanner extends BaseSessionScanner<GeminiTranscriptMessage> {
         this.seedProcessedKeys(keys);
         this.setCursor(filePath, messages.length);
     }
+}
+
+/**
+ * Finds the transcript file path for a given gemini session ID.
+ * Gemini stores session files as ~/.gemini/tmp/<user>/chats/session-*<prefix>*.json
+ * where <prefix> is the first 8 characters of the session UUID.
+ */
+export async function findGeminiTranscriptPath(sessionId: string): Promise<string | null> {
+    const prefix = sessionId.slice(0, 8);
+    const geminiTmpDir = join(homedir(), '.gemini', 'tmp');
+    try {
+        const userDirs = await readdir(geminiTmpDir);
+        for (const userDir of userDirs) {
+            const chatsDir = join(geminiTmpDir, userDir, 'chats');
+            try {
+                const files = await readdir(chatsDir);
+                const match = files.find(f => f.includes(prefix) && f.endsWith('.json'));
+                if (match) {
+                    return join(chatsDir, match);
+                }
+            } catch {
+                continue;
+            }
+        }
+    } catch {
+        // gemini tmp dir may not exist
+    }
+    return null;
+}
+
+export async function readGeminiTranscript(filePath: string): Promise<GeminiTranscript | null> {
+    return readTranscript(filePath);
+}
+
+/** Extracts plain text from a gemini transcript message content field.
+ * User messages store content as Array<{text: string}>, gemini messages as a plain string.
+ */
+export function extractMessageText(content: string | Array<{ text?: string }> | undefined): string | null {
+    if (typeof content === 'string') {
+        return content || null;
+    }
+    if (Array.isArray(content)) {
+        const parts = content.map(p => p.text ?? '').join('');
+        return parts || null;
+    }
+    return null;
 }
 
 async function readTranscript(filePath: string): Promise<GeminiTranscript | null> {

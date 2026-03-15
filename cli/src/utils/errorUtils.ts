@@ -79,6 +79,14 @@ export function extractErrorInfo(error: unknown): ErrorInfo {
 }
 
 /**
+ * Check if an error is an AbortError (thrown when an AbortSignal fires).
+ * Covers DOMException('...', 'AbortError') produced by AbortSignal and ACP transport.
+ */
+export function isAbortError(error: unknown): boolean {
+    return error instanceof Error && error.name === 'AbortError'
+}
+
+/**
  * Check if an error is a retryable connection error
  *
  * Retryable errors:

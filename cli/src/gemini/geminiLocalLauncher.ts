@@ -1,6 +1,6 @@
 import { geminiLocal } from './geminiLocal';
 import { GeminiSession } from './session';
-import { createGeminiSessionScanner } from './utils/sessionScanner';
+import { createGeminiSessionScanner, readGeminiTranscript, extractMessageText } from './utils/sessionScanner';
 import type { PermissionMode } from './types';
 import { randomUUID } from 'node:crypto';
 import { BaseLocalLauncher } from '@/modules/common/launcher/BaseLocalLauncher';
@@ -53,12 +53,13 @@ export async function geminiLocalLauncher(
 
     let scanner: GeminiScannerHandle | null = null;
 
-    const handleTranscriptMessage = (message: { type?: string; content?: string }) => {
-        if (message.type === 'user' && typeof message.content === 'string') {
-            session.sendUserMessage(message.content);
+    const handleTranscriptMessage = (message: { type?: string; content?: string | Array<{ text?: string }> }) => {
+        const text = extractMessageText(message.content);
+        if (message.type === 'user' && text) {
+            session.sendUserMessage(text);
             return;
         }
-        if (message.type === 'gemini' && typeof message.content === 'string') {
+        if (message.type === 'gemini' && typeof message.content === 'string' && message.content) {
             session.sendCodexMessage({
                 type: 'message',
                 message: message.content,
@@ -72,11 +73,26 @@ export async function geminiLocalLauncher(
             scanner.onNewSession(transcriptPath);
             return;
         }
+        const existingTranscript = await readGeminiTranscript(transcriptPath);
+        const existingCount = existingTranscript?.messages?.length ?? 0;
         scanner = await createGeminiSessionScanner({
             transcriptPath,
             onMessage: handleTranscriptMessage,
             onSessionId: (sessionId) => session.onSessionFound(sessionId)
         });
+        if (!session.historyReplayed) {
+            if (session.startingMode === 'remote') {
+                // Session started in remote mode and switched to local; history was already
+                // handled (or there is none). No cutoff needed on the next remote switch.
+                session.historyReplayCutoff = 0;
+                session.historyReplayed = true;
+            } else {
+                // Session started in local mode with --resume. Record the number of
+                // pre-existing messages so remote mode can replay exactly those on switch.
+                session.historyReplayCutoff = existingCount;
+                session.historyReplayed = existingCount === 0;
+            }
+        }
     };
 
     const handleTranscriptPath = (transcriptPath: string) => {
