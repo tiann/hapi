@@ -122,6 +122,8 @@ export function createPermissionsRoutes(getSyncEngine: () => SyncEngine | null):
         const teamState = session.teamState as TeamState | null | undefined
         const { agentRequestId, teamPerm } = resolveAgentRequestId(requestId, requests, teamState)
 
+        console.log('[perm][approve] requestId:', requestId, 'agentRequestId:', agentRequestId, 'teamPerm:', teamPerm?.requestId, 'requests keys:', Object.keys(requests ?? {}))
+
         if (agentRequestId) {
             // RPC path: send approval directly to the CLI agent via RPC
             const mode = parsed.data.mode
@@ -131,20 +133,22 @@ export function createPermissionsRoutes(getSyncEngine: () => SyncEngine | null):
                     return c.json({ error: 'Invalid permission mode for session flavor' }, 400)
                 }
             }
+            console.log('[perm][approve] RPC path: sessionId:', sessionId, 'agentRequestId:', agentRequestId)
             await engine.approvePermission(sessionId, agentRequestId, mode, parsed.data.allowTools, parsed.data.decision, parsed.data.answers)
             updateTeamPermissionStatus(engine, sessionId, session, requestId, 'approved')
             return c.json({ ok: true })
         }
 
-        // Fallback: permission not found in agentState.requests.
-        // Send approval as a user message so the parent agent can relay it.
+        // Team permission: try RPC with toolUseId directly
         if (teamPerm) {
-            const approvalText = `Approve ${teamPerm.memberName}'s permission request to use ${teamPerm.toolName}. Request ID: ${teamPerm.requestId}`
-            await engine.sendMessage(sessionId, { text: approvalText, sentFrom: 'webapp' })
+            const rpcId = teamPerm.toolUseId ?? teamPerm.requestId
+            console.log('[perm][approve] team RPC for:', teamPerm.memberName, teamPerm.toolName, 'rpcId:', rpcId)
+            await engine.approvePermission(sessionId, rpcId, parsed.data.mode, parsed.data.allowTools, parsed.data.decision, parsed.data.answers)
             updateTeamPermissionStatus(engine, sessionId, session, requestId, 'approved')
-            return c.json({ ok: true, via: 'teammate-message' })
+            return c.json({ ok: true, via: 'team-rpc' })
         }
 
+        console.log('[perm][approve] 404: no match found')
         return c.json({ error: 'Request not found' }, 404)
     })
 
@@ -178,12 +182,12 @@ export function createPermissionsRoutes(getSyncEngine: () => SyncEngine | null):
             return c.json({ ok: true })
         }
 
-        // Fallback: send denial as a user message
+        // Team permission: try RPC with toolUseId directly
         if (teamPerm) {
-            const denyText = `Deny ${teamPerm.memberName}'s permission request to use ${teamPerm.toolName}. Request ID: ${teamPerm.requestId}`
-            await engine.sendMessage(sessionId, { text: denyText, sentFrom: 'webapp' })
+            const rpcId = teamPerm.toolUseId ?? teamPerm.requestId
+            await engine.denyPermission(sessionId, rpcId, parsed.data.decision)
             updateTeamPermissionStatus(engine, sessionId, session, requestId, 'denied')
-            return c.json({ ok: true, via: 'teammate-message' })
+            return c.json({ ok: true, via: 'team-rpc' })
         }
 
         return c.json({ error: 'Request not found' }, 404)

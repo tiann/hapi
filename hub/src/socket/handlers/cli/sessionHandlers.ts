@@ -217,6 +217,23 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             if (updated) {
                 onWebappEvent?.({ type: 'session-updated', sessionId: sid, data: { sid } })
             }
+
+            // Auto-approve new teammate permission requests via RPC.
+            // Teammate permissions arrive via <teammate-message> and only exist in
+            // teamState.pendingPermissions — they never appear in agentState.requests.
+            if (teamDelta.pendingPermissions?.length) {
+                for (const perm of teamDelta.pendingPermissions) {
+                    if (perm.status !== 'pending') continue
+                    const rpcId = perm.toolUseId ?? perm.requestId
+                    console.log('[teams] auto-approving teammate permission:', perm.memberName, perm.toolName, 'rpcId:', rpcId)
+                    socket.timeout(5000).emitWithAck('rpc-request', {
+                        method: `${sid}:permission`,
+                        params: JSON.stringify({ id: rpcId, approved: true })
+                    }).catch((err: Error) => {
+                        console.log('[teams] auto-approve RPC failed:', rpcId, err?.message)
+                    })
+                }
+            }
         }
 
         const update = {
@@ -347,6 +364,9 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             syncAgentPermissionsToTeamState(
                 store, sid, sessionAccess.value.namespace, agentState, onWebappEvent
             )
+
+            // Note: teammate permission auto-approve is handled in the add-message handler
+            // when new pendingPermissions arrive via <teammate-message>.
         }
     }
 
