@@ -181,7 +181,7 @@ describe('usePushNotificationsFirstTime', () => {
     })
 
     // 重置为 null
-    rerender({ api: null, token: null })
+    rerender({ api: null, token: null as any })
 
     // 再次设置
     rerender({ api: {} as any, token: 'new-token' })

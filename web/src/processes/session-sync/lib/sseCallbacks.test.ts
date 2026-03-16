@@ -215,7 +215,10 @@ describe('createToastHandler', () => {
     const event = {
       type: 'toast' as const,
       data: {
-        title: 'Test Title'
+        title: 'Test Title',
+        body: '',
+        sessionId: '',
+        url: ''
       }
     }
 
@@ -223,9 +226,9 @@ describe('createToastHandler', () => {
 
     expect(addToast).toHaveBeenCalledWith({
       title: 'Test Title',
-      body: undefined,
-      sessionId: undefined,
-      url: undefined
+      body: '',
+      sessionId: '',
+      url: ''
     })
   })
 

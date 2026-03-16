@@ -61,20 +61,28 @@ vi.mock('@/lib/use-translation', () => ({
 function buildSession(hasPath: boolean): Session {
     return {
         id: hasPath ? 'session-with-path' : 'session-without-path',
+        namespace: 'default',
+        seq: 1,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
         active: true,
+        activeAt: Date.now(),
         metadata: {
-            path: hasPath ? '/tmp/project' : null,
+            path: hasPath ? '/tmp/project' : '',
+            host: '',
             flavor: 'claude',
-            host: null,
-            machineId: null,
-            worktree: null,
-            os: null
+            machineId: undefined,
+            worktree: undefined,
+            os: undefined
         },
+        metadataVersion: 1,
         modelMode: 'default',
-        permissionMode: 'auto',
+        permissionMode: 'default',
         thinking: false,
+        thinkingAt: 0,
         agentState: null,
-        teamState: null
+        agentStateVersion: 0,
+        teamState: undefined
     } as Session
 }
 

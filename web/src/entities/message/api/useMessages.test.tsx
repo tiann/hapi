@@ -177,7 +177,13 @@ describe('useMessages', () => {
 
     it('returns message state from store', () => {
         const mockMessages = [
-            { id: 'msg-1', content: { role: 'user', content: { type: 'text', text: 'Hello' } } },
+            {
+                id: 'msg-1',
+                seq: 1,
+                localId: null,
+                content: { role: 'user', content: { type: 'text', text: 'Hello' } },
+                createdAt: Date.now()
+            },
         ]
 
         vi.mocked(messageWindowStore.getMessageWindowState).mockReturnValue({

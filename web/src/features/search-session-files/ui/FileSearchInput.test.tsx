@@ -86,8 +86,8 @@ describe('FileSearchInput', () => {
 
     it('displays search results when query is not empty', async () => {
         const mockFiles = [
-            { fullPath: '/src/test.ts' },
-            { fullPath: '/src/test2.ts' }
+            { fileName: 'test.ts', filePath: 'src', fullPath: '/src/test.ts', fileType: 'file' as const },
+            { fileName: 'test2.ts', filePath: 'src', fullPath: '/src/test2.ts', fileType: 'file' as const }
         ]
 
         vi.mocked(useSessionFileSearch).mockReturnValue({
@@ -115,7 +115,7 @@ describe('FileSearchInput', () => {
     it('calls onResultSelect when clicking a result', async () => {
         const onResultSelect = vi.fn()
         const mockFiles = [
-            { fullPath: '/src/test.ts' }
+            { fileName: 'test.ts', filePath: 'src', fullPath: '/src/test.ts', fileType: 'file' as const }
         ]
 
         vi.mocked(useSessionFileSearch).mockReturnValue({
@@ -143,7 +143,7 @@ describe('FileSearchInput', () => {
 
     it('clears query after selecting a result', async () => {
         const mockFiles = [
-            { fullPath: '/src/test.ts' }
+            { fileName: 'test.ts', filePath: 'src', fullPath: '/src/test.ts', fileType: 'file' as const }
         ]
 
         vi.mocked(useSessionFileSearch).mockReturnValue({
@@ -193,7 +193,7 @@ describe('FileSearchInput', () => {
 
     it('does not show results when query is empty', () => {
         const mockFiles = [
-            { fullPath: '/src/test.ts' }
+            { fileName: 'test.ts', filePath: 'src', fullPath: '/src/test.ts', fileType: 'file' as const }
         ]
 
         vi.mocked(useSessionFileSearch).mockReturnValue({

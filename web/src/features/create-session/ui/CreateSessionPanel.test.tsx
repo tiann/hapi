@@ -70,7 +70,16 @@ describe('CreateSessionPanel', () => {
         const mockApi = {} as any
 
         vi.mocked(useMachines).mockReturnValue({
-            machines: [{ id: 'machine-1', name: 'Test Machine' }],
+            machines: [{
+                id: 'machine-1',
+                active: true,
+                metadata: {
+                    host: 'test-host',
+                    platform: 'linux',
+                    happyCliVersion: '1.0.0',
+                    displayName: 'Test Machine'
+                }
+            }],
             isLoading: false,
             error: null,
             refetch: vi.fn()
@@ -95,8 +104,26 @@ describe('CreateSessionPanel', () => {
     it('passes machines to NewSession component', () => {
         const mockApi = {} as any
         const mockMachines = [
-            { id: 'machine-1', name: 'Machine 1' },
-            { id: 'machine-2', name: 'Machine 2' }
+            {
+                id: 'machine-1',
+                active: true,
+                metadata: {
+                    host: 'host-1',
+                    platform: 'linux',
+                    happyCliVersion: '1.0.0',
+                    displayName: 'Machine 1'
+                }
+            },
+            {
+                id: 'machine-2',
+                active: true,
+                metadata: {
+                    host: 'host-2',
+                    platform: 'darwin',
+                    happyCliVersion: '1.0.0',
+                    displayName: 'Machine 2'
+                }
+            }
         ]
 
         vi.mocked(useMachines).mockReturnValue({

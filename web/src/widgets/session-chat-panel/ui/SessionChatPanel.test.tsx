@@ -161,8 +161,8 @@ describe('SessionChatPanel', () => {
 
     it('passes correct props to HappyComposer', () => {
         const session = createSession({
-            permissionMode: 'manual',
-            modelMode: 'extended',
+            permissionMode: 'ask',
+            modelMode: 'opus',
             thinking: true
         })
 

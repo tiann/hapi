@@ -22,7 +22,7 @@ vi.mock('@tanstack/react-router', () => ({
 }))
 
 vi.mock('@/lib/app-context', () => ({
-    useAppContext: () => ({ api: {} }),
+    useAppContext: vi.fn(() => ({ api: {} })),
 }))
 
 vi.mock('@/hooks/useAppGoBack', () => ({
@@ -61,7 +61,7 @@ vi.mock('@/entities/git', () => ({
 }))
 
 vi.mock('@/entities/message', () => ({
-    useMessages: () => ({
+    useMessages: vi.fn(() => ({
         messages: [],
         warning: null,
         isLoading: false,
@@ -73,12 +73,12 @@ vi.mock('@/entities/message', () => ({
         messagesVersion: 1,
         flushPending: vi.fn(),
         setAtBottom: vi.fn(),
-    }),
-    useSendMessage: () => ({
+    })),
+    useSendMessage: vi.fn(() => ({
         sendMessage: vi.fn(),
         retryMessage: vi.fn(),
         isSending: false,
-    }),
+    })),
 }))
 
 vi.mock('@/hooks/queries/useSlashCommands', () => ({
@@ -114,6 +114,11 @@ vi.mock('@/lib/message-window-store', () => ({
     seedMessageWindowFromSession: vi.fn(),
 }))
 
+// Import mocked modules
+import { useMessages, useSendMessage } from '@/entities/message'
+import { useSession } from '@/entities/session'
+import { useAppContext } from '@/lib/app-context'
+
 let queryClient: QueryClient
 
 function renderWithProviders(ui: React.ReactElement) {
@@ -132,6 +137,30 @@ function renderWithProviders(ui: React.ReactElement) {
 describe('SessionDetailPage', () => {
     beforeEach(() => {
         vi.clearAllMocks()
+        // Restore default mock implementations after clearAllMocks
+        ;(useMessages as any).mockReturnValue({
+            messages: [],
+            warning: null,
+            isLoading: false,
+            isLoadingMore: false,
+            hasMore: false,
+            loadMore: vi.fn(),
+            refetch: vi.fn(),
+            pendingCount: 0,
+            messagesVersion: 1,
+            flushPending: vi.fn(),
+            setAtBottom: vi.fn(),
+        })
+        ;(useSendMessage as any).mockReturnValue({
+            sendMessage: vi.fn(),
+            retryMessage: vi.fn(),
+            isSending: false,
+        })
+        ;(useAppContext as any).mockReturnValue({ api: {} })
+        ;(useSession as any).mockReturnValue({
+            session: mockSession,
+            refetch: vi.fn(),
+        })
     })
 
     afterEach(() => {
@@ -175,7 +204,7 @@ describe('SessionChatView', () => {
     })
 
     it('shows loading state when messages are loading', () => {
-        vi.mocked(vi.importActual('@/entities/message')).useMessages = () => ({
+        ;(useMessages as any).mockImplementationOnce(() => ({
             messages: [],
             warning: null,
             isLoading: true,
@@ -187,13 +216,13 @@ describe('SessionChatView', () => {
             messagesVersion: 1,
             flushPending: vi.fn(),
             setAtBottom: vi.fn(),
-        })
+        }))
         renderWithProviders(<SessionChatView />)
         expect(screen.getAllByTestId('session-chat')[0]).toBeInTheDocument()
     })
 
     it('displays warning when messages have warning', () => {
-        vi.mocked(vi.importActual('@/entities/message')).useMessages = () => ({
+        ;(useMessages as any).mockImplementationOnce(() => ({
             messages: [],
             warning: 'Connection lost',
             isLoading: false,
@@ -205,36 +234,36 @@ describe('SessionChatView', () => {
             messagesVersion: 1,
             flushPending: vi.fn(),
             setAtBottom: vi.fn(),
-        })
+        }))
         renderWithProviders(<SessionChatView />)
         expect(screen.getAllByTestId('session-chat')[0]).toBeInTheDocument()
     })
 
     it('handles message sending', () => {
         const mockSendMessage = vi.fn()
-        vi.mocked(vi.importActual('@/entities/message')).useSendMessage = () => ({
+        ;(useSendMessage as any).mockImplementationOnce(() => ({
             sendMessage: mockSendMessage,
             retryMessage: vi.fn(),
             isSending: false,
-        })
+        }))
         renderWithProviders(<SessionChatView />)
         expect(mockSendMessage).not.toHaveBeenCalled()
     })
 
     it('handles message retry', () => {
         const mockRetryMessage = vi.fn()
-        vi.mocked(vi.importActual('@/entities/message')).useSendMessage = () => ({
+        ;(useSendMessage as any).mockImplementationOnce(() => ({
             sendMessage: vi.fn(),
             retryMessage: mockRetryMessage,
             isSending: false,
-        })
+        }))
         renderWithProviders(<SessionChatView />)
         expect(mockRetryMessage).not.toHaveBeenCalled()
     })
 
     it('handles load more messages', () => {
         const mockLoadMore = vi.fn()
-        vi.mocked(vi.importActual('@/entities/message')).useMessages = () => ({
+        ;(useMessages as any).mockImplementationOnce(() => ({
             messages: [],
             warning: null,
             isLoading: false,
@@ -246,13 +275,13 @@ describe('SessionChatView', () => {
             messagesVersion: 1,
             flushPending: vi.fn(),
             setAtBottom: vi.fn(),
-        })
+        }))
         renderWithProviders(<SessionChatView />)
         expect(mockLoadMore).not.toHaveBeenCalled()
     })
 
     it('handles pending messages', () => {
-        vi.mocked(vi.importActual('@/entities/message')).useMessages = () => ({
+        ;(useMessages as any).mockImplementationOnce(() => ({
             messages: [],
             warning: null,
             isLoading: false,
@@ -264,20 +293,39 @@ describe('SessionChatView', () => {
             messagesVersion: 1,
             flushPending: vi.fn(),
             setAtBottom: vi.fn(),
-        })
+        }))
         renderWithProviders(<SessionChatView />)
         expect(screen.getAllByTestId('session-chat')[0]).toBeInTheDocument()
     })
 
     it('handles session resume on send', async () => {
         const mockResumeSession = vi.fn().mockResolvedValue('resumed-session-id')
-        const mockApi = { resumeSession: mockResumeSession, getSession: vi.fn() }
+        const mockApi = { resumeSession: mockResumeSession, getSession: vi.fn() } as any
 
-        vi.mocked(vi.importActual('@/lib/app-context')).useAppContext = () => ({ api: mockApi })
-        vi.mocked(vi.importActual('@/entities/session')).useSession = () => ({
-            session: { ...mockSession, active: false },
+        ;(useAppContext as any).mockImplementationOnce(() => ({
+            api: mockApi,
+            token: 'test-token',
+            baseUrl: 'http://localhost'
+        } as any))
+        ;(useSession as any).mockImplementationOnce(() => ({
+            session: {
+                ...mockSession,
+                active: false,
+                namespace: 'default',
+                seq: 1,
+                createdAt: Date.now(),
+                updatedAt: Date.now(),
+                activeAt: Date.now(),
+                metadataVersion: 1,
+                agentState: null,
+                agentStateVersion: 0,
+                thinking: false,
+                thinkingAt: null
+            } as any,
             refetch: vi.fn(),
-        })
+            isLoading: false,
+            error: null
+        }))
 
         renderWithProviders(<SessionChatView />)
         expect(screen.getAllByTestId('session-chat')[0]).toBeInTheDocument()

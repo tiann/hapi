@@ -22,7 +22,7 @@ vi.mock('@/shared/ui/button', () => ({
         children: React.ReactNode
         onClick?: () => void
         disabled?: boolean
-        type?: string
+        type?: 'button' | 'submit' | 'reset'
         variant?: string
     }) => (
         <button onClick={onClick} disabled={disabled} type={type} data-variant={variant}>

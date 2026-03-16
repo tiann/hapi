@@ -25,7 +25,7 @@ vi.mock('@/hooks/mutations/useSessionActions', () => ({
 }))
 
 vi.mock('@/components/HostBadge', () => ({
-    HostBadge: (props: any) => hostBadgeMock(props)
+    HostBadge: () => hostBadgeMock()
 }))
 
 vi.mock('@/components/SessionActionMenu', () => ({

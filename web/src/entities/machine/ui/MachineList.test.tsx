@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, fireEvent } from '@testing-library/react'
 import { MachineList } from './MachineList'
 import type { Machine } from '../model/types'
 
@@ -58,7 +58,7 @@ describe('MachineList', () => {
         const { container } = render(<MachineList machines={mockMachines} onSelect={onSelect} />)
 
         const machineCards = container.querySelectorAll('.cursor-pointer')
-        machineCards[0]?.click()
+        fireEvent.click(machineCards[0] as HTMLElement)
 
         expect(onSelect).toHaveBeenCalledWith('machine-1')
     })

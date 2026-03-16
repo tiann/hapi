@@ -596,6 +596,8 @@
 
     "@jlovec/zhushen-linux-x64": ["@jlovec/zhushen-linux-x64@0.3.0", "", { "os": "linux", "cpu": "x64", "bin": { "zs": "bin/zs" } }, "sha512-80/Fc7vgCj0ped9nnhBS8sxlCeGWNKhujYT0ybCh12TP0p5DlXo0sCsg00ACEkRqCzLx7//O9QngqJz81KBGWg=="],
 
+    "@jlovec/zhushen-win32-x64": ["@jlovec/zhushen-win32-x64@0.3.0", "", { "os": "win32", "cpu": "x64", "bin": { "zs": "bin/zs.exe" } }, "sha512-ZpT1gVgomV+d9D8s7RNLdOcQ14FFhD4K2ENH6yGB9utBKN2JY91bN2LQfysVzWZFEw35g+hin3nwl7htYYCboQ=="],
+
     "@jridgewell/gen-mapping": ["@jridgewell/gen-mapping@0.3.13", "https://mirrors.cloud.tencent.com/npm/@jridgewell/gen-mapping/-/gen-mapping-0.3.13.tgz", { "dependencies": { "@jridgewell/sourcemap-codec": "^1.5.0", "@jridgewell/trace-mapping": "^0.3.24" } }, "sha512-2kkt/7niJ6MgEPxF0bYdQ6etZaA+fQvDcLKckhy1yIQOzaoKjBBjSj63/aLVjYE3qhRt5dvM+uUyfCg6UKCBbA=="],
 
     "@jridgewell/remapping": ["@jridgewell/remapping@2.3.5", "https://mirrors.cloud.tencent.com/npm/@jridgewell/remapping/-/remapping-2.3.5.tgz", { "dependencies": { "@jridgewell/gen-mapping": "^0.3.5", "@jridgewell/trace-mapping": "^0.3.24" } }, "sha512-LI9u/+laYG4Ds1TDKSJW2YPrIlcVYOwi2fUC6xB43lueCjgxV4lffOCZCtYFiH6TNOX+tQKXx97T4IKHbhyHEQ=="],

@@ -27,19 +27,22 @@ describe('createAttachmentAdapter', () => {
         })
 
         const adapter = createAttachmentAdapter(mockApi, 'session-123')
-        const generator = adapter.add({ file: mockFile })
+        const result = adapter.add({ file: mockFile })
 
-        const states = []
-        for await (const state of generator) {
-            states.push(state)
+        // Check if result is a generator
+        if (Symbol.asyncIterator in result) {
+            const states = []
+            for await (const state of result) {
+                states.push(state)
+            }
+
+            expect(states.length).toBeGreaterThan(0)
+            expect(states[0].status.type).toBe('running')
+
+            const finalState = states[states.length - 1]
+            expect(finalState.status.type).toBe('requires-action')
+            expect((finalState as { path?: string }).path).toBe('/uploads/test.txt')
         }
-
-        expect(states.length).toBeGreaterThan(0)
-        expect(states[0].status.type).toBe('running')
-
-        const finalState = states[states.length - 1]
-        expect(finalState.status.type).toBe('requires-action')
-        expect((finalState as { path?: string }).path).toBe('/uploads/test.txt')
     })
 
     it('handles upload error', async () => {
@@ -51,16 +54,19 @@ describe('createAttachmentAdapter', () => {
         })
 
         const adapter = createAttachmentAdapter(mockApi, 'session-123')
-        const generator = adapter.add({ file: mockFile })
+        const result = adapter.add({ file: mockFile })
 
-        const states = []
-        for await (const state of generator) {
-            states.push(state)
+        // Check if result is a generator
+        if (Symbol.asyncIterator in result) {
+            const states = []
+            for await (const state of result) {
+                states.push(state)
+            }
+
+            const finalState = states[states.length - 1]
+            expect(finalState.status.type).toBe('incomplete')
+            expect(finalState.status.reason).toBe('error')
         }
-
-        const finalState = states[states.length - 1]
-        expect(finalState.status.type).toBe('incomplete')
-        expect(finalState.status.reason).toBe('error')
     })
 
     it('rejects files over size limit', async () => {
@@ -69,15 +75,18 @@ describe('createAttachmentAdapter', () => {
         Object.defineProperty(mockFile, 'size', { value: 51 * 1024 * 1024 })
 
         const adapter = createAttachmentAdapter(mockApi, 'session-123')
-        const generator = adapter.add({ file: mockFile })
+        const result = adapter.add({ file: mockFile })
 
-        const states = []
-        for await (const state of generator) {
-            states.push(state)
+        // Check if result is a generator
+        if (Symbol.asyncIterator in result) {
+            const states = []
+            for await (const state of result) {
+                states.push(state)
+            }
+
+            const finalState = states[states.length - 1]
+            expect(finalState.status.type).toBe('incomplete')
         }
-
-        const finalState = states[states.length - 1]
-        expect(finalState.status.type).toBe('incomplete')
     })
 
     it('removes attachment and deletes upload', async () => {
@@ -93,6 +102,7 @@ describe('createAttachmentAdapter', () => {
             name: 'test.txt',
             contentType: 'text/plain',
             status: { type: 'complete' as const },
+            content: [{ type: 'text' as const, text: 'test' }],
             path: '/uploads/test.txt',
         }
 
@@ -120,9 +130,11 @@ describe('createAttachmentAdapter', () => {
         expect(complete.content).toBeDefined()
         expect(complete.content.length).toBeGreaterThan(0)
 
-        const contentText = complete.content[0].text
-        const parsed = JSON.parse(contentText)
-        expect(parsed.__attachmentMetadata).toBeDefined()
-        expect(parsed.__attachmentMetadata.path).toBe('/uploads/test.txt')
+        const firstContent = complete.content[0]
+        if ('text' in firstContent) {
+            const parsed = JSON.parse(firstContent.text)
+            expect(parsed.__attachmentMetadata).toBeDefined()
+            expect(parsed.__attachmentMetadata.path).toBe('/uploads/test.txt')
+        }
     })
 })

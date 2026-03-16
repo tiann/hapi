@@ -64,7 +64,9 @@ describe('useSpawnSession', () => {
             undefined
         )
         expect(response.type).toBe('success')
-        expect(response.sessionId).toBe('new-session-123')
+        if (response.type === 'success') {
+            expect(response.sessionId).toBe('new-session-123')
+        }
     })
 
     it('handles spawn error', async () => {
@@ -85,7 +87,9 @@ describe('useSpawnSession', () => {
         })
 
         expect(response.type).toBe('error')
-        expect(response.message).toBe('Failed to spawn')
+        if (response.type === 'error') {
+            expect(response.message).toBe('Failed to spawn')
+        }
     })
 
     it('passes worktree parameters', async () => {

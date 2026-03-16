@@ -49,7 +49,7 @@ vi.mock('@/lib/terminalFont', () => ({
 }))
 
 // Mock ResizeObserver
-global.ResizeObserver = class ResizeObserver {
+globalThis.ResizeObserver = class ResizeObserver {
     observe = vi.fn()
     disconnect = vi.fn()
     unobserve = vi.fn()

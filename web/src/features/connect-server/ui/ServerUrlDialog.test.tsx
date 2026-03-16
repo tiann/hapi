@@ -24,7 +24,7 @@ vi.mock('@/shared/ui/button', () => ({
     Button: ({ children, onClick, type, variant }: {
         children: React.ReactNode
         onClick?: () => void
-        type?: string
+        type?: 'button' | 'submit' | 'reset'
         variant?: string
     }) => (
         <button onClick={onClick} type={type} data-variant={variant}>
@@ -48,7 +48,7 @@ describe('ServerUrlDialog', () => {
         vi.mocked(useServerUrl).mockReturnValue({
             serverUrl: null,
             baseUrl: 'http://localhost',
-            setServerUrl: vi.fn(() => ({ ok: true, value: 'http://example.com' })),
+            setServerUrl: vi.fn(() => ({ ok: true as const, value: 'http://example.com' })),
             clearServerUrl: vi.fn()
         })
 
@@ -67,7 +67,7 @@ describe('ServerUrlDialog', () => {
         vi.mocked(useServerUrl).mockReturnValue({
             serverUrl: null,
             baseUrl: 'http://localhost',
-            setServerUrl: vi.fn(() => ({ ok: true, value: 'http://example.com' })),
+            setServerUrl: vi.fn(() => ({ ok: true as const, value: 'http://example.com' })),
             clearServerUrl: vi.fn()
         })
 
@@ -85,7 +85,7 @@ describe('ServerUrlDialog', () => {
         vi.mocked(useServerUrl).mockReturnValue({
             serverUrl: 'https://example.com',
             baseUrl: 'https://example.com',
-            setServerUrl: vi.fn(() => ({ ok: true, value: 'https://example.com' })),
+            setServerUrl: vi.fn(() => ({ ok: true as const, value: 'https://example.com' })),
             clearServerUrl: vi.fn()
         })
 
@@ -101,7 +101,7 @@ describe('ServerUrlDialog', () => {
     })
 
     it('calls setServerUrl and closes on valid submit', async () => {
-        const setServerUrl = vi.fn(() => ({ ok: true, value: 'https://newserver.com' }))
+        const setServerUrl = vi.fn(() => ({ ok: true as const, value: 'https://newserver.com' }))
         const onClose = vi.fn()
 
         vi.mocked(useServerUrl).mockReturnValue({
@@ -129,7 +129,7 @@ describe('ServerUrlDialog', () => {
     })
 
     it('displays error message when setServerUrl fails', async () => {
-        const setServerUrl = vi.fn(() => ({ ok: false, error: 'Invalid URL' }))
+        const setServerUrl = vi.fn(() => ({ ok: false as const, error: 'Invalid URL' }))
 
         vi.mocked(useServerUrl).mockReturnValue({
             serverUrl: null,
@@ -163,7 +163,7 @@ describe('ServerUrlDialog', () => {
         vi.mocked(useServerUrl).mockReturnValue({
             serverUrl: 'https://example.com',
             baseUrl: 'https://example.com',
-            setServerUrl: vi.fn(() => ({ ok: true, value: 'https://example.com' })),
+            setServerUrl: vi.fn(() => ({ ok: true as const, value: 'https://example.com' })),
             clearServerUrl
         })
 
@@ -187,7 +187,7 @@ describe('ServerUrlDialog', () => {
         vi.mocked(useServerUrl).mockReturnValue({
             serverUrl: null,
             baseUrl: 'http://localhost',
-            setServerUrl: vi.fn(() => ({ ok: true, value: 'http://example.com' })),
+            setServerUrl: vi.fn(() => ({ ok: true as const, value: 'http://example.com' })),
             clearServerUrl: vi.fn()
         })
 
@@ -208,7 +208,7 @@ describe('ServerUrlDialog', () => {
         vi.mocked(useServerUrl).mockReturnValue({
             serverUrl: null,
             baseUrl: 'http://localhost',
-            setServerUrl: vi.fn(() => ({ ok: true, value: 'https://test.com' })),
+            setServerUrl: vi.fn(() => ({ ok: true as const, value: 'https://test.com' })),
             clearServerUrl: vi.fn()
         })
 
