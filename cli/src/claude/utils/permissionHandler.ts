@@ -306,10 +306,12 @@ export class PermissionHandler extends BasePermissionHandler<PermissionResponse,
             await delay(1000);
             toolCallId = this.resolveToolCallId(toolName, input);
             if (!toolCallId) {
-                // Sub-agent (e.g. Explore) tool calls may not appear in parent's toolCalls list.
-                // Generate a synthetic ID so the permission request can still be registered
-                // in agentState.requests and resolved via the standard RPC path.
-                toolCallId = `subagent_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+                // Sub-agent / teammate tool calls don't appear in parent's toolCalls list.
+                // Auto-approve: the parent already authorized running the sub-agent,
+                // and in remote mode there's no reliable path to relay permission
+                // responses back to the sub-agent's internal permission handler.
+                logger.debug(`Auto-approving sub-agent tool: ${toolName}`);
+                return { behavior: 'allow', updatedInput: input as Record<string, unknown> };
             }
         }
         return this.handlePermissionRequest(toolCallId, toolName, input, options.signal);
