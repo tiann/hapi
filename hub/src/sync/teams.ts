@@ -285,9 +285,6 @@ function extractTeammateMessage(record: { role: string; content: unknown }): Tea
             // in pendingPermissions to avoid showing unapprovable UI cards.
             if (parsed.type === 'permission_request') {
                 continue
-                }
-                result = result ? mergeDelta(result, delta) : delta
-                continue
             }
 
             // idle_notification — update member status and mark agent task as completed
