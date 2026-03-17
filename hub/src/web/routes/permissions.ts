@@ -66,7 +66,7 @@ function resolveAgentRequestId(
     requestId: string,
     requests: Record<string, unknown> | null,
     teamState: TeamState | null | undefined
-): { agentRequestId: string | null; teamPerm: TeamState['pendingPermissions'][0] | null } {
+): { agentRequestId: string | null; teamPerm: NonNullable<TeamState['pendingPermissions']>[0] | null } {
     // Direct match
     if (requests && requests[requestId]) {
         return { agentRequestId: requestId, teamPerm: null }
