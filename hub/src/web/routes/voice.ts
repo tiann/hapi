@@ -4,12 +4,20 @@ import type { WebAppEnv } from '../middleware/auth'
 import {
     ELEVENLABS_API_BASE,
     VOICE_AGENT_NAME,
+    TTS_VOICE_ID,
+    TTS_MODEL_ID,
     buildVoiceAgentConfig
 } from '@hapi/protocol/voice'
 
 const tokenRequestSchema = z.object({
     customAgentId: z.string().optional(),
     customApiKey: z.string().optional()
+})
+
+const ttsRequestSchema = z.object({
+    text: z.string().min(1).max(500),
+    voiceId: z.string().optional(),
+    modelId: z.string().optional()
 })
 
 // Cache for auto-created agent IDs (keyed by API key hash)
@@ -189,6 +197,67 @@ export function createVoiceRoutes(): Hono<WebAppEnv> {
             return c.json({
                 allowed: false,
                 error: error instanceof Error ? error.message : 'Network error'
+            }, 500)
+        }
+    })
+
+    // Text-to-speech endpoint for voice notifications (proxies to ElevenLabs TTS)
+    app.post('/voice/tts', async (c) => {
+        const json = await c.req.json().catch(() => null)
+        const parsed = ttsRequestSchema.safeParse(json ?? {})
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid request body' }, 400)
+        }
+
+        const { text, voiceId, modelId } = parsed.data
+        const apiKey = process.env.ELEVENLABS_API_KEY
+        if (!apiKey) {
+            return c.json({ error: 'ElevenLabs API key not configured' }, 400)
+        }
+
+        const voice = voiceId || TTS_VOICE_ID
+        const model = modelId || TTS_MODEL_ID
+
+        try {
+            const response = await fetch(
+                `${ELEVENLABS_API_BASE}/text-to-speech/${encodeURIComponent(voice)}`,
+                {
+                    method: 'POST',
+                    headers: {
+                        'xi-api-key': apiKey,
+                        'Content-Type': 'application/json',
+                        'Accept': 'audio/mpeg'
+                    },
+                    body: JSON.stringify({
+                        text,
+                        model_id: model,
+                        voice_settings: {
+                            stability: 0.5,
+                            similarity_boost: 0.75,
+                            speed: 1.1
+                        }
+                    })
+                }
+            )
+
+            if (!response.ok) {
+                const errorData = await response.text().catch(() => '')
+                console.error('[Voice] TTS API error:', response.status, errorData)
+                return c.json({ error: `TTS API error: ${response.status}` }, 500)
+            }
+
+            const audioBuffer = await response.arrayBuffer()
+            return new Response(audioBuffer, {
+                status: 200,
+                headers: {
+                    'Content-Type': 'audio/mpeg',
+                    'Cache-Control': 'no-store'
+                }
+            })
+        } catch (error) {
+            console.error('[Voice] TTS error:', error)
+            return c.json({
+                error: error instanceof Error ? error.message : 'TTS request failed'
             }, 500)
         }
     })

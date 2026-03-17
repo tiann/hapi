@@ -22,6 +22,7 @@ type SSESubscription = {
 type VisibilityState = 'visible' | 'hidden'
 
 type ToastEvent = Extract<SyncEvent, { type: 'toast' }>
+type VoiceNotificationEvent = Extract<SyncEvent, { type: 'voice-notification' }>
 
 const HEARTBEAT_STALE_MS = 90_000
 const HEARTBEAT_WATCHDOG_INTERVAL_MS = 10_000
@@ -174,6 +175,7 @@ export function useSSE(options: {
     onDisconnect?: (reason: string) => void
     onError?: (error: unknown) => void
     onToast?: (event: ToastEvent) => void
+    onVoiceNotification?: (event: VoiceNotificationEvent) => void
 }): { subscriptionId: string | null } {
     const queryClient = useQueryClient()
     const onEventRef = useRef(options.onEvent)
@@ -181,6 +183,7 @@ export function useSSE(options: {
     const onDisconnectRef = useRef(options.onDisconnect)
     const onErrorRef = useRef(options.onError)
     const onToastRef = useRef(options.onToast)
+    const onVoiceNotificationRef = useRef(options.onVoiceNotification)
     const eventSourceRef = useRef<EventSource | null>(null)
     const invalidationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
     const pendingInvalidationsRef = useRef<{
@@ -213,6 +216,10 @@ export function useSSE(options: {
     useEffect(() => {
         onToastRef.current = options.onToast
     }, [options.onToast])
+
+    useEffect(() => {
+        onVoiceNotificationRef.current = options.onVoiceNotification
+    }, [options.onVoiceNotification])
 
     const subscription = options.subscription ?? {}
 
@@ -485,6 +492,11 @@ export function useSSE(options: {
 
             if (event.type === 'toast') {
                 onToastRef.current?.(event)
+                return
+            }
+
+            if (event.type === 'voice-notification') {
+                onVoiceNotificationRef.current?.(event)
                 return
             }
 

@@ -4,6 +4,8 @@ import { useAppGoBack } from '@/hooks/useAppGoBack'
 import { getElevenLabsSupportedLanguages, getLanguageDisplayName, type Language } from '@/lib/languages'
 import { getFontScaleOptions, useFontScale, type FontScale } from '@/hooks/useFontScale'
 import { useAppearance, getAppearanceOptions, type AppearancePreference } from '@/hooks/useTheme'
+import { useVoiceNotificationsOptional } from '@/lib/voice-notification-context'
+import type { VoiceNotificationProvider as VNProvider } from '@hapi/protocol/voice'
 import { PROTOCOL_VERSION } from '@hapi/protocol'
 
 const locales: { value: Locale; nativeLabel: string }[] = [
@@ -70,6 +72,17 @@ function ChevronDownIcon(props: { className?: string }) {
     )
 }
 
+const voiceProviderOptions: { value: VNProvider; label: string }[] = [
+    { value: 'browser', label: 'Browser (free)' },
+    { value: 'elevenlabs', label: 'ElevenLabs (premium)' }
+]
+
+const voicePriorityOptions: { value: 'low' | 'normal' | 'high'; label: string }[] = [
+    { value: 'low', label: 'All notifications' },
+    { value: 'normal', label: 'Normal & high priority' },
+    { value: 'high', label: 'High priority only' }
+]
+
 export default function SettingsPage() {
     const { t, locale, setLocale } = useTranslation()
     const goBack = useAppGoBack()
@@ -77,6 +90,11 @@ export default function SettingsPage() {
     const [isAppearanceOpen, setIsAppearanceOpen] = useState(false)
     const [isFontOpen, setIsFontOpen] = useState(false)
     const [isVoiceOpen, setIsVoiceOpen] = useState(false)
+    const [isVoiceProviderOpen, setIsVoiceProviderOpen] = useState(false)
+    const [isVoicePriorityOpen, setIsVoicePriorityOpen] = useState(false)
+    const voiceProviderContainerRef = useRef<HTMLDivElement>(null)
+    const voicePriorityContainerRef = useRef<HTMLDivElement>(null)
+    const voiceNotifications = useVoiceNotificationsOptional()
     const containerRef = useRef<HTMLDivElement>(null)
     const appearanceContainerRef = useRef<HTMLDivElement>(null)
     const fontContainerRef = useRef<HTMLDivElement>(null)
@@ -123,7 +141,7 @@ export default function SettingsPage() {
 
     // Close dropdown when clicking outside
     useEffect(() => {
-        if (!isOpen && !isAppearanceOpen && !isFontOpen && !isVoiceOpen) return
+        if (!isOpen && !isAppearanceOpen && !isFontOpen && !isVoiceOpen && !isVoiceProviderOpen && !isVoicePriorityOpen) return
 
         const handleClickOutside = (event: MouseEvent) => {
             if (isOpen && containerRef.current && !containerRef.current.contains(event.target as Node)) {
@@ -138,15 +156,21 @@ export default function SettingsPage() {
             if (isVoiceOpen && voiceContainerRef.current && !voiceContainerRef.current.contains(event.target as Node)) {
                 setIsVoiceOpen(false)
             }
+            if (isVoiceProviderOpen && voiceProviderContainerRef.current && !voiceProviderContainerRef.current.contains(event.target as Node)) {
+                setIsVoiceProviderOpen(false)
+            }
+            if (isVoicePriorityOpen && voicePriorityContainerRef.current && !voicePriorityContainerRef.current.contains(event.target as Node)) {
+                setIsVoicePriorityOpen(false)
+            }
         }
 
         document.addEventListener('mousedown', handleClickOutside)
         return () => document.removeEventListener('mousedown', handleClickOutside)
-    }, [isOpen, isAppearanceOpen, isFontOpen, isVoiceOpen])
+    }, [isOpen, isAppearanceOpen, isFontOpen, isVoiceOpen, isVoiceProviderOpen, isVoicePriorityOpen])
 
     // Close on escape key
     useEffect(() => {
-        if (!isOpen && !isAppearanceOpen && !isFontOpen && !isVoiceOpen) return
+        if (!isOpen && !isAppearanceOpen && !isFontOpen && !isVoiceOpen && !isVoiceProviderOpen && !isVoicePriorityOpen) return
 
         const handleEscape = (event: KeyboardEvent) => {
             if (event.key === 'Escape') {
@@ -154,12 +178,14 @@ export default function SettingsPage() {
                 setIsAppearanceOpen(false)
                 setIsFontOpen(false)
                 setIsVoiceOpen(false)
+                setIsVoiceProviderOpen(false)
+                setIsVoicePriorityOpen(false)
             }
         }
 
         document.addEventListener('keydown', handleEscape)
         return () => document.removeEventListener('keydown', handleEscape)
-    }, [isOpen, isAppearanceOpen, isFontOpen, isVoiceOpen])
+    }, [isOpen, isAppearanceOpen, isFontOpen, isVoiceOpen, isVoiceProviderOpen, isVoicePriorityOpen])
 
     return (
         <div className="flex h-full flex-col">
@@ -399,6 +425,137 @@ export default function SettingsPage() {
                             )}
                         </div>
                     </div>
+
+                    {/* Voice Notifications section */}
+                    {voiceNotifications && (
+                        <div className="border-b border-[var(--app-divider)]">
+                            <div className="px-3 py-2 text-xs font-semibold text-[var(--app-hint)] uppercase tracking-wide">
+                                Voice Notifications
+                            </div>
+
+                            {/* Enable toggle */}
+                            <button
+                                type="button"
+                                onClick={() => voiceNotifications.updateSettings({ enabled: !voiceNotifications.settings.enabled })}
+                                className="flex w-full items-center justify-between px-3 py-3 text-left transition-colors hover:bg-[var(--app-subtle-bg)]"
+                            >
+                                <span className="text-[var(--app-fg)]">Speak agent events</span>
+                                <span className={`w-10 h-6 rounded-full relative transition-colors ${voiceNotifications.settings.enabled ? 'bg-[var(--app-link)]' : 'bg-[var(--app-border)]'}`}>
+                                    <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${voiceNotifications.settings.enabled ? 'translate-x-4' : 'translate-x-0.5'}`} />
+                                </span>
+                            </button>
+
+                            {voiceNotifications.settings.enabled && (
+                                <>
+                                    {/* Provider selector */}
+                                    <div ref={voiceProviderContainerRef} className="relative">
+                                        <button
+                                            type="button"
+                                            onClick={() => setIsVoiceProviderOpen(!isVoiceProviderOpen)}
+                                            className="flex w-full items-center justify-between px-3 py-3 text-left transition-colors hover:bg-[var(--app-subtle-bg)]"
+                                            aria-expanded={isVoiceProviderOpen}
+                                            aria-haspopup="listbox"
+                                        >
+                                            <span className="text-[var(--app-fg)]">Voice engine</span>
+                                            <span className="flex items-center gap-1 text-[var(--app-hint)]">
+                                                <span>{voiceProviderOptions.find((o) => o.value === voiceNotifications.settings.provider)?.label ?? 'Browser'}</span>
+                                                <ChevronDownIcon className={`transition-transform ${isVoiceProviderOpen ? 'rotate-180' : ''}`} />
+                                            </span>
+                                        </button>
+
+                                        {isVoiceProviderOpen && (
+                                            <div
+                                                className="absolute right-3 top-full mt-1 min-w-[200px] rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] shadow-lg overflow-hidden z-50"
+                                                role="listbox"
+                                                aria-label="Voice engine"
+                                            >
+                                                {voiceProviderOptions.map((opt) => {
+                                                    const isSelected = voiceNotifications.settings.provider === opt.value
+                                                    return (
+                                                        <button
+                                                            key={opt.value}
+                                                            type="button"
+                                                            role="option"
+                                                            aria-selected={isSelected}
+                                                            onClick={() => {
+                                                                voiceNotifications.updateSettings({ provider: opt.value })
+                                                                setIsVoiceProviderOpen(false)
+                                                            }}
+                                                            className={`flex items-center justify-between w-full px-3 py-2 text-base text-left transition-colors ${
+                                                                isSelected
+                                                                    ? 'text-[var(--app-link)] bg-[var(--app-subtle-bg)]'
+                                                                    : 'text-[var(--app-fg)] hover:bg-[var(--app-subtle-bg)]'
+                                                            }`}
+                                                        >
+                                                            <span>{opt.label}</span>
+                                                            {isSelected && (
+                                                                <span className="ml-2 text-[var(--app-link)]">
+                                                                    <CheckIcon />
+                                                                </span>
+                                                            )}
+                                                        </button>
+                                                    )
+                                                })}
+                                            </div>
+                                        )}
+                                    </div>
+
+                                    {/* Priority selector */}
+                                    <div ref={voicePriorityContainerRef} className="relative">
+                                        <button
+                                            type="button"
+                                            onClick={() => setIsVoicePriorityOpen(!isVoicePriorityOpen)}
+                                            className="flex w-full items-center justify-between px-3 py-3 text-left transition-colors hover:bg-[var(--app-subtle-bg)]"
+                                            aria-expanded={isVoicePriorityOpen}
+                                            aria-haspopup="listbox"
+                                        >
+                                            <span className="text-[var(--app-fg)]">Announce</span>
+                                            <span className="flex items-center gap-1 text-[var(--app-hint)]">
+                                                <span>{voicePriorityOptions.find((o) => o.value === voiceNotifications.settings.minPriority)?.label ?? 'Normal & high'}</span>
+                                                <ChevronDownIcon className={`transition-transform ${isVoicePriorityOpen ? 'rotate-180' : ''}`} />
+                                            </span>
+                                        </button>
+
+                                        {isVoicePriorityOpen && (
+                                            <div
+                                                className="absolute right-3 top-full mt-1 min-w-[220px] rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] shadow-lg overflow-hidden z-50"
+                                                role="listbox"
+                                                aria-label="Announce priority"
+                                            >
+                                                {voicePriorityOptions.map((opt) => {
+                                                    const isSelected = voiceNotifications.settings.minPriority === opt.value
+                                                    return (
+                                                        <button
+                                                            key={opt.value}
+                                                            type="button"
+                                                            role="option"
+                                                            aria-selected={isSelected}
+                                                            onClick={() => {
+                                                                voiceNotifications.updateSettings({ minPriority: opt.value })
+                                                                setIsVoicePriorityOpen(false)
+                                                            }}
+                                                            className={`flex items-center justify-between w-full px-3 py-2 text-base text-left transition-colors ${
+                                                                isSelected
+                                                                    ? 'text-[var(--app-link)] bg-[var(--app-subtle-bg)]'
+                                                                    : 'text-[var(--app-fg)] hover:bg-[var(--app-subtle-bg)]'
+                                                            }`}
+                                                        >
+                                                            <span>{opt.label}</span>
+                                                            {isSelected && (
+                                                                <span className="ml-2 text-[var(--app-link)]">
+                                                                    <CheckIcon />
+                                                                </span>
+                                                            )}
+                                                        </button>
+                                                    )
+                                                })}
+                                            </div>
+                                        )}
+                                    </div>
+                                </>
+                            )}
+                        </div>
+                    )}
 
                     {/* About section */}
                     <div className="border-b border-[var(--app-divider)]">

@@ -416,6 +416,29 @@ export class ApiClient {
         })
     }
 
+    async fetchTTS(text: string): Promise<ArrayBuffer> {
+        const liveToken = this.getToken ? this.getToken() : null
+        const authToken = liveToken ?? this.token
+        const headers: Record<string, string> = {
+            'content-type': 'application/json'
+        }
+        if (authToken) {
+            headers['authorization'] = `Bearer ${authToken}`
+        }
+
+        const res = await fetch(this.buildUrl('/api/voice/tts'), {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ text })
+        })
+
+        if (!res.ok) {
+            throw new Error(`TTS request failed: ${res.status}`)
+        }
+
+        return await res.arrayBuffer()
+    }
+
     async fetchVoiceToken(options?: { customAgentId?: string; customApiKey?: string }): Promise<{
         allowed: boolean
         token?: string

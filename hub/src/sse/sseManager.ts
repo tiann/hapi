@@ -70,6 +70,38 @@ export class SSEManager {
         }
     }
 
+    async sendVoiceNotification(namespace: string, event: Extract<SyncEvent, { type: 'voice-notification' }>): Promise<number> {
+        // Voice notifications go to ALL connections in the namespace (not just visible),
+        // since audio can play even when the tab is in the background.
+        const deliveries: Array<Promise<{ id: string; ok: boolean }>> = []
+        for (const connection of this.connections.values()) {
+            if (connection.namespace !== namespace) {
+                continue
+            }
+            deliveries.push(
+                Promise.resolve(connection.send(event))
+                    .then(() => ({ id: connection.id, ok: true }))
+                    .catch(() => ({ id: connection.id, ok: false }))
+            )
+        }
+
+        if (deliveries.length === 0) {
+            return 0
+        }
+
+        const results = await Promise.all(deliveries)
+        let successCount = 0
+        for (const result of results) {
+            if (result.ok) {
+                successCount += 1
+                continue
+            }
+            this.unsubscribe(result.id)
+        }
+
+        return successCount
+    }
+
     async sendToast(namespace: string, event: Extract<SyncEvent, { type: 'toast' }>): Promise<number> {
         const deliveries: Array<Promise<{ id: string; ok: boolean }>> = []
         for (const connection of this.connections.values()) {

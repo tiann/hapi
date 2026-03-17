@@ -26,9 +26,11 @@ import { VoiceErrorBanner } from '@/components/VoiceErrorBanner'
 import { LoadingState } from '@/components/LoadingState'
 import { ToastContainer } from '@/components/ToastContainer'
 import { ToastProvider, useToast } from '@/lib/toast-context'
+import { VoiceNotificationProvider, useVoiceNotifications } from '@/lib/voice-notification-context'
 import type { SyncEvent } from '@/types/api'
 
 type ToastEvent = Extract<SyncEvent, { type: 'toast' }>
+type VoiceNotificationSSEEvent = Extract<SyncEvent, { type: 'voice-notification' }>
 
 const REQUIRE_SERVER_URL = requireHubUrlForLogin()
 
@@ -38,6 +40,32 @@ export function App() {
             <AppInner />
         </ToastProvider>
     )
+}
+
+/**
+ * Drains queued voice-notification SSE events and forwards them to
+ * the VoiceNotificationProvider context (which lives higher in the tree
+ * but only becomes available after auth).
+ */
+function VoiceNotificationBridge({ queueRef }: { queueRef: { current: VoiceNotificationSSEEvent[] } }) {
+    const { speak } = useVoiceNotifications()
+
+    useEffect(() => {
+        const interval = setInterval(() => {
+            while (queueRef.current.length > 0) {
+                const event = queueRef.current.shift()!
+                speak({
+                    text: event.data.text,
+                    sessionId: event.data.sessionId,
+                    priority: event.data.priority,
+                    category: event.data.category
+                })
+            }
+        }, 200)
+        return () => clearInterval(interval)
+    }, [speak, queueRef])
+
+    return null
 }
 
 function AppInner() {
@@ -235,6 +263,11 @@ function AppInner() {
         })
     }, [addToast])
 
+    const voiceNotificationQueueRef = useRef<VoiceNotificationSSEEvent[]>([])
+    const handleVoiceNotification = useCallback((event: VoiceNotificationSSEEvent) => {
+        voiceNotificationQueueRef.current.push(event)
+    }, [])
+
     const eventSubscription = useMemo(() => {
         if (selectedSessionId) {
             return { sessionId: selectedSessionId }
@@ -250,7 +283,8 @@ function AppInner() {
         onConnect: handleSseConnect,
         onDisconnect: handleSseDisconnect,
         onEvent: handleSseEvent,
-        onToast: handleToast
+        onToast: handleToast,
+        onVoiceNotification: handleVoiceNotification
     })
 
     useVisibilityReporter({
@@ -339,20 +373,23 @@ function AppInner() {
 
     return (
         <AppContextProvider value={{ api, token, baseUrl }}>
-            <VoiceProvider>
-                <SyncingBanner isSyncing={isSyncing} />
-                <ReconnectingBanner
-                    isReconnecting={sseDisconnected && !isSyncing}
-                    reason={sseDisconnectReason}
-                />
-                <VoiceErrorBanner />
-                <OfflineBanner />
-                <div className="h-full flex flex-col">
-                    <Outlet />
-                </div>
-                <ToastContainer />
-                <InstallPrompt />
-            </VoiceProvider>
+            <VoiceNotificationProvider api={api}>
+                <VoiceNotificationBridge queueRef={voiceNotificationQueueRef} />
+                <VoiceProvider>
+                    <SyncingBanner isSyncing={isSyncing} />
+                    <ReconnectingBanner
+                        isReconnecting={sseDisconnected && !isSyncing}
+                        reason={sseDisconnectReason}
+                    />
+                    <VoiceErrorBanner />
+                    <OfflineBanner />
+                    <div className="h-full flex flex-col">
+                        <Outlet />
+                    </div>
+                    <ToastContainer />
+                    <InstallPrompt />
+                </VoiceProvider>
+            </VoiceNotificationProvider>
         </AppContextProvider>
     )
 }

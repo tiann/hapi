@@ -177,6 +177,28 @@ export const VOICE_TOOLS = [
     }
 ]
 
+// ---------- TTS Notification Configuration ----------
+
+export const TTS_VOICE_ID = 'cgSgspJ2msm6clMCkdW9' // Jessica
+export const TTS_MODEL_ID = 'eleven_flash_v2'
+
+export type VoiceNotificationProvider = 'browser' | 'elevenlabs'
+
+export interface VoiceNotificationSettings {
+    /** Whether voice notifications are enabled */
+    enabled: boolean
+    /** TTS provider: 'browser' uses Web Speech API (free), 'elevenlabs' uses ElevenLabs TTS */
+    provider: VoiceNotificationProvider
+    /** Minimum priority to announce: 'low' = everything, 'normal' = skip low, 'high' = only urgent */
+    minPriority: 'low' | 'normal' | 'high'
+}
+
+export const DEFAULT_VOICE_NOTIFICATION_SETTINGS: VoiceNotificationSettings = {
+    enabled: false,
+    provider: 'browser',
+    minPriority: 'normal'
+}
+
 export interface VoiceAgentConfig {
     name: string
     conversation_config: {

@@ -224,6 +224,15 @@ export const SyncEventSchema = z.discriminatedUnion('type', [
         })
     }),
     SessionEventBaseSchema.extend({
+        type: z.literal('voice-notification'),
+        data: z.object({
+            text: z.string(),
+            sessionId: z.string(),
+            priority: z.enum(['low', 'normal', 'high']),
+            category: z.enum(['permission', 'ready', 'error', 'completion'])
+        })
+    }),
+    SessionEventBaseSchema.extend({
         type: z.literal('heartbeat'),
         data: z.object({
             timestamp: z.number()
