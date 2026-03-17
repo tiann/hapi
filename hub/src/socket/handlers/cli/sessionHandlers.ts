@@ -49,7 +49,6 @@ const updateStateSchema = z.object({
     agentState: z.unknown().nullable()
 })
 
-
 export type SessionHandlersDeps = {
     store: Store
     resolveSessionAccess: ResolveSessionAccess

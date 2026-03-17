@@ -1,6 +1,6 @@
 import { isPermissionModeAllowedForFlavor, isObject } from '@hapi/protocol'
 import { PermissionModeSchema } from '@hapi/protocol/schemas'
-import type { TeamState } from '@hapi/protocol/types'
+import type { TeamPermission, TeamState } from '@hapi/protocol/types'
 import { Hono } from 'hono'
 import { z } from 'zod'
 import type { SyncEngine } from '../../sync/syncEngine'
@@ -66,7 +66,7 @@ function resolveAgentRequestId(
     requestId: string,
     requests: Record<string, unknown> | null,
     teamState: TeamState | null | undefined
-): { agentRequestId: string | null; teamPerm: NonNullable<TeamState['pendingPermissions']>[0] | null } {
+): { agentRequestId: string | null; teamPerm: TeamPermission | null } {
     // Direct match
     if (requests && requests[requestId]) {
         return { agentRequestId: requestId, teamPerm: null }
