@@ -5,6 +5,7 @@ import {
     isPermissionModeAllowedForFlavor
 } from '@hapi/protocol'
 import type { PermissionModeTone } from '@hapi/protocol'
+import type { TeamState } from '@hapi/protocol/types'
 import { useMemo } from 'react'
 import type { AgentState, CodexCollaborationMode, PermissionMode } from '@/types/api'
 import type { ConversationStatus } from '@/realtime/types'
@@ -40,6 +41,7 @@ const PERMISSION_TONE_CLASSES: Record<PermissionModeTone, string> = {
 function getConnectionStatus(
     active: boolean,
     thinking: boolean,
+    teamBusy: boolean,
     agentState: AgentState | null | undefined,
     voiceStatus: ConversationStatus | undefined,
     t: (key: string) => string
@@ -74,10 +76,10 @@ function getConnectionStatus(
         }
     }
 
-    if (thinking) {
+    if (thinking || teamBusy) {
         const vibingMessage = VIBING_MESSAGES[Math.floor(Math.random() * VIBING_MESSAGES.length)].toLowerCase() + '…'
         return {
-            text: vibingMessage,
+            text: thinking ? vibingMessage : t('session.item.thinking'),
             color: 'text-[#007AFF]',
             dotColor: 'bg-[#007AFF]',
             isPulsing: true
@@ -109,6 +111,7 @@ function getContextWarning(contextSize: number, maxContextSize: number, t: (key:
 export function StatusBar(props: {
     active: boolean
     thinking: boolean
+    teamState?: TeamState
     agentState: AgentState | null | undefined
     contextSize?: number
     model?: string | null
@@ -118,9 +121,17 @@ export function StatusBar(props: {
     voiceStatus?: ConversationStatus
 }) {
     const { t } = useTranslation()
+    const teamBusy = useMemo(() => {
+        const state = props.teamState
+        if (!state) return false
+        const activeMembers = (state.members ?? []).some(member => member.status === 'active')
+        const activeTasks = (state.tasks ?? []).some(task => task.status === 'in_progress')
+        return activeMembers || activeTasks
+    }, [props.teamState])
+
     const connectionStatus = useMemo(
-        () => getConnectionStatus(props.active, props.thinking, props.agentState, props.voiceStatus, t),
-        [props.active, props.thinking, props.agentState, props.voiceStatus, t]
+        () => getConnectionStatus(props.active, props.thinking, teamBusy, props.agentState, props.voiceStatus, t),
+        [props.active, props.thinking, teamBusy, props.agentState, props.voiceStatus, t]
     )
 
     const contextWarning = useMemo(

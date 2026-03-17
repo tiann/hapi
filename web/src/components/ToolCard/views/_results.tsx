@@ -3,6 +3,7 @@ import { isObject, safeStringify } from '@hapi/protocol'
 import { CodeBlock } from '@/components/CodeBlock'
 import { MarkdownRenderer } from '@/components/MarkdownRenderer'
 import { ChecklistList, extractTodoChecklist } from '@/components/ToolCard/checklist'
+import { TeamCreateResultView } from '@/components/ToolCard/views/TeamCreateView'
 import { basename, resolveDisplayPath } from '@/utils/path'
 
 function parseToolUseError(message: string): { isToolUseError: boolean; errorMessage: string | null } {
@@ -556,6 +557,7 @@ export const toolResultViewRegistry: Record<string, ToolViewComponent> = {
     NotebookRead: ReadResultView,
     NotebookEdit: MutationResultView,
     TodoWrite: TodoWriteResultView,
+    TeamCreate: TeamCreateResultView,
     CodexReasoning: CodexReasoningResultView,
     CodexPatch: CodexPatchResultView,
     CodexDiff: CodexDiffResultView,

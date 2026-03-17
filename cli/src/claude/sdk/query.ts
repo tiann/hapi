@@ -236,7 +236,7 @@ export class Query implements AsyncIterableIterator<SDKMessage> {
                 signal
             })
         }
-        
+
         throw new Error('Unsupported control request subtype: ' + request.request.subtype)
     }
 

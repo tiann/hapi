@@ -6,6 +6,7 @@ import { CodexPatchView } from '@/components/ToolCard/views/CodexPatchView'
 import { EditView } from '@/components/ToolCard/views/EditView'
 import { AskUserQuestionView } from '@/components/ToolCard/views/AskUserQuestionView'
 import { RequestUserInputView } from '@/components/ToolCard/views/RequestUserInputView'
+import { TeamCreateView } from '@/components/ToolCard/views/TeamCreateView'
 import { ExitPlanModeView } from '@/components/ToolCard/views/ExitPlanModeView'
 import { MultiEditFullView, MultiEditView } from '@/components/ToolCard/views/MultiEditView'
 import { TodoWriteView } from '@/components/ToolCard/views/TodoWriteView'
@@ -24,6 +25,7 @@ export const toolViewRegistry: Record<string, ToolViewComponent> = {
     MultiEdit: MultiEditView,
     Write: WriteView,
     TodoWrite: TodoWriteView,
+    TeamCreate: TeamCreateView,
     update_plan: UpdatePlanView,
     CodexDiff: CodexDiffCompactView,
     AskUserQuestion: AskUserQuestionView,
@@ -37,6 +39,7 @@ export const toolFullViewRegistry: Record<string, ToolViewComponent> = {
     Edit: EditView,
     MultiEdit: MultiEditFullView,
     Write: WriteView,
+    TeamCreate: TeamCreateView,
     CodexDiff: CodexDiffFullView,
     CodexPatch: CodexPatchView,
     AskUserQuestion: AskUserQuestionView,

@@ -9,6 +9,7 @@ export type {
     SyncEvent,
     TeamMember,
     TeamMessage,
+    TeamPermission,
     TeamState,
     TeamTask,
     TodoItem,

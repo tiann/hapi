@@ -1,4 +1,5 @@
 import { getCodexCollaborationModeOptions, getPermissionModeOptionsForFlavor } from '@hapi/protocol'
+import type { TeamState } from '@hapi/protocol/types'
 import { ComposerPrimitive, useAssistantApi, useAssistantState } from '@assistant-ui/react'
 import {
     type ChangeEvent as ReactChangeEvent,
@@ -45,6 +46,7 @@ export function HappyComposer(props: {
     active?: boolean
     allowSendWhenInactive?: boolean
     thinking?: boolean
+    teamState?: TeamState
     agentState?: AgentState | null
     contextSize?: number
     controlledByUser?: boolean
@@ -71,6 +73,7 @@ export function HappyComposer(props: {
         active = true,
         allowSendWhenInactive = false,
         thinking = false,
+        teamState,
         agentState,
         contextSize,
         controlledByUser = false,
@@ -600,6 +603,7 @@ export function HappyComposer(props: {
                     <StatusBar
                         active={active}
                         thinking={thinking}
+                        teamState={teamState}
                         agentState={agentState}
                         contextSize={contextSize}
                         model={model}

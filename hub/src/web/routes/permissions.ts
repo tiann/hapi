@@ -1,5 +1,6 @@
-import { isPermissionModeAllowedForFlavor } from '@hapi/protocol'
+import { isPermissionModeAllowedForFlavor, isObject } from '@hapi/protocol'
 import { PermissionModeSchema } from '@hapi/protocol/schemas'
+import type { TeamPermission, TeamState } from '@hapi/protocol/types'
 import { Hono } from 'hono'
 import { z } from 'zod'
 import type { SyncEngine } from '../../sync/syncEngine'
@@ -26,6 +27,74 @@ const denyBodySchema = z.object({
     decision: decisionSchema.optional()
 })
 
+/**
+ * Update the teamState.pendingPermissions status for a given requestId (toolUseId).
+ * This keeps the TeamPanel UI in sync after API-based approval/denial.
+ */
+function updateTeamPermissionStatus(
+    engine: SyncEngine,
+    sessionId: string,
+    session: { teamState?: TeamState | null; namespace: string },
+    requestId: string,
+    status: 'approved' | 'denied'
+): void {
+    const teamState = session.teamState as TeamState | null | undefined
+    if (!teamState?.pendingPermissions?.length) return
+
+    const updated = teamState.pendingPermissions.map(p =>
+        (p.requestId === requestId || p.toolUseId === requestId)
+            ? { ...p, status: status as 'approved' | 'denied' }
+            : p
+    )
+
+    // Only persist if something actually changed
+    if (updated.every((p, i) => p === teamState.pendingPermissions![i])) return
+
+    const newTeamState = { ...teamState, pendingPermissions: updated, updatedAt: Date.now() }
+    engine.updateSessionTeamState(sessionId, newTeamState, session.namespace)
+}
+
+/**
+ * Resolve the correct agentState.requests key for a permission request.
+ *
+ * The requestId from the web UI may be a teammate message ID ("perm-...") or
+ * SDK tool_use_id ("toolu_...") that doesn't match the agentState.requests key.
+ * Try to resolve via teamState.pendingPermissions.toolUseId, which is updated
+ * by syncAgentPermissionsToTeamState to point to the agentState.requests key.
+ */
+function resolveAgentRequestId(
+    requestId: string,
+    requests: Record<string, unknown> | null,
+    teamState: TeamState | null | undefined
+): { agentRequestId: string | null; teamPerm: TeamPermission | null } {
+    // Direct match
+    if (requests && requests[requestId]) {
+        return { agentRequestId: requestId, teamPerm: null }
+    }
+
+    // Try resolving via teamState
+    const teamPerm = teamState?.pendingPermissions?.find(
+        p => p.requestId === requestId || p.toolUseId === requestId
+    ) ?? null
+
+    if (teamPerm) {
+        if (teamPerm.toolUseId && requests?.[teamPerm.toolUseId]) {
+            return { agentRequestId: teamPerm.toolUseId, teamPerm }
+        }
+        if (teamPerm.requestId && requests?.[teamPerm.requestId]) {
+            return { agentRequestId: teamPerm.requestId, teamPerm }
+        }
+        // Last resort: find by tool name match in agentState.requests
+        for (const [key, req] of Object.entries(requests ?? {})) {
+            if (isObject(req) && req.tool === teamPerm.toolName) {
+                return { agentRequestId: key, teamPerm }
+            }
+        }
+    }
+
+    return { agentRequestId: null, teamPerm }
+}
+
 export function createPermissionsRoutes(getSyncEngine: () => SyncEngine | null): Hono<WebAppEnv> {
     const app = new Hono<WebAppEnv>()
 
@@ -50,22 +119,27 @@ export function createPermissionsRoutes(getSyncEngine: () => SyncEngine | null):
         }
 
         const requests = session.agentState?.requests ?? null
-        if (!requests || !requests[requestId]) {
-            return c.json({ error: 'Request not found' }, 404)
+        const teamState = session.teamState as TeamState | null | undefined
+        const { agentRequestId, teamPerm } = resolveAgentRequestId(requestId, requests, teamState)
+
+        if (agentRequestId) {
+            // RPC path: send approval directly to the CLI agent via RPC
+            const mode = parsed.data.mode
+            if (mode !== undefined) {
+                const flavor = session.metadata?.flavor ?? 'claude'
+                if (!isPermissionModeAllowedForFlavor(mode, flavor)) {
+                    return c.json({ error: 'Invalid permission mode for session flavor' }, 400)
+                }
+            }
+            await engine.approvePermission(sessionId, agentRequestId, mode, parsed.data.allowTools, parsed.data.decision, parsed.data.answers)
+            updateTeamPermissionStatus(engine, sessionId, session, requestId, 'approved')
+            return c.json({ ok: true })
         }
 
-        const mode = parsed.data.mode
-        if (mode !== undefined) {
-            const flavor = session.metadata?.flavor ?? 'claude'
-            if (!isPermissionModeAllowedForFlavor(mode, flavor)) {
-                return c.json({ error: 'Invalid permission mode for session flavor' }, 400)
-            }
-        }
-        const allowTools = parsed.data.allowTools
-        const decision = parsed.data.decision
-        const answers = parsed.data.answers
-        await engine.approvePermission(sessionId, requestId, mode, allowTools, decision, answers)
-        return c.json({ ok: true })
+        // Team permissions are resolved internally by the team lead agent.
+        // No external approval path exists.
+
+        return c.json({ error: 'Request not found' }, 404)
     })
 
     app.post('/sessions/:id/permissions/:requestId/deny', async (c) => {
@@ -82,19 +156,25 @@ export function createPermissionsRoutes(getSyncEngine: () => SyncEngine | null):
         }
         const { sessionId, session } = sessionResult
 
-        const requests = session.agentState?.requests ?? null
-        if (!requests || !requests[requestId]) {
-            return c.json({ error: 'Request not found' }, 404)
-        }
-
         const json = await c.req.json().catch(() => null)
         const parsed = denyBodySchema.safeParse(json ?? {})
         if (!parsed.success) {
             return c.json({ error: 'Invalid body' }, 400)
         }
 
-        await engine.denyPermission(sessionId, requestId, parsed.data.decision)
-        return c.json({ ok: true })
+        const requests = session.agentState?.requests ?? null
+        const teamState = session.teamState as TeamState | null | undefined
+        const { agentRequestId, teamPerm } = resolveAgentRequestId(requestId, requests, teamState)
+
+        if (agentRequestId) {
+            await engine.denyPermission(sessionId, agentRequestId, parsed.data.decision)
+            updateTeamPermissionStatus(engine, sessionId, session, requestId, 'denied')
+            return c.json({ ok: true })
+        }
+
+        // Team permissions are resolved internally by the team lead agent.
+
+        return c.json({ error: 'Request not found' }, 404)
     })
 
     return app

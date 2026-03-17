@@ -67,6 +67,12 @@ export async function claudeLocal(opts: {
         args.push(...opts.claudeArgs);
     }
 
+    // Bypass Claude's built-in terminal permission prompts.
+    // In HAPI, permissions are managed by the web UI via hooks/settings,
+    // not by Claude's interactive terminal prompts. Without this, subagent
+    // and teammate tool calls block waiting for terminal input that never comes.
+    args.push('--dangerously-skip-permissions');
+
     // Add hook settings for session tracking
     args.push('--settings', opts.hookSettingsPath);
     logger.debug(`[ClaudeLocal] Using hook settings: ${opts.hookSettingsPath}`);

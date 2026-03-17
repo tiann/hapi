@@ -257,6 +257,10 @@ export class SyncEngine {
         await this.rpcGateway.denyPermission(sessionId, requestId, decision)
     }
 
+    updateSessionTeamState(sessionId: string, teamState: unknown, namespace: string): void {
+        this.sessionCache.updateTeamState(sessionId, teamState, namespace)
+    }
+
     async abortSession(sessionId: string): Promise<void> {
         await this.rpcGateway.abortSession(sessionId)
     }

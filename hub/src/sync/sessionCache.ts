@@ -136,6 +136,19 @@ export class SessionCache {
         return session
     }
 
+    updateTeamState(sessionId: string, teamState: unknown, namespace: string): void {
+        const now = Date.now()
+        const updated = this.store.sessions.setSessionTeamState(sessionId, teamState, now, namespace)
+        if (updated) {
+            const session = this.sessions.get(sessionId)
+            if (session) {
+                const parsed = TeamStateSchema.safeParse(teamState)
+                session.teamState = parsed.success ? parsed.data : undefined
+                this.publisher.emit({ type: 'session-updated', sessionId, data: session })
+            }
+        }
+    }
+
     reloadAll(): void {
         const sessions = this.store.sessions.getSessions()
         for (const session of sessions) {
