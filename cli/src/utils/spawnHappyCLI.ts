@@ -26,7 +26,7 @@
  */
 
 import { spawn, SpawnOptions, type ChildProcess } from 'child_process';
-import { join, isAbsolute, resolve } from 'node:path';
+import { join, isAbsolute, resolve, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isBunCompiled, projectPath } from '@/projectPath';
 import { logger } from '@/ui/logger';
@@ -49,17 +49,22 @@ export interface HappyCliCommand {
   args: string[];
 }
 
+function isCrossPlatformAbsolutePath(value: string): boolean {
+  return isAbsolute(value) || win32.isAbsolute(value);
+}
+
 function resolveInvokedCwd(cwd: SpawnOptions['cwd']): string {
   if (cwd instanceof URL) {
     return fileURLToPath(cwd);
   }
 
   if (typeof cwd === 'string' && cwd.trim().length > 0) {
-    return isAbsolute(cwd) ? cwd : resolve(cwd);
+    const normalizedCwd = cwd.trim();
+    return isCrossPlatformAbsolutePath(normalizedCwd) ? normalizedCwd : resolve(normalizedCwd);
   }
 
   const inheritedInvokedCwd = process.env.HAPI_INVOKED_CWD?.trim();
-  if (inheritedInvokedCwd && isAbsolute(inheritedInvokedCwd)) {
+  if (inheritedInvokedCwd && isCrossPlatformAbsolutePath(inheritedInvokedCwd)) {
     return inheritedInvokedCwd;
   }
 
@@ -131,7 +136,7 @@ export function spawnHappyCLI(args: string[], options: SpawnOptions = {}): Child
   if (!isBunCompiled()) {
     const finalEnv = { ...process.env, ...options.env };
     const invokedCwd = finalEnv.HAPI_INVOKED_CWD?.trim();
-    finalEnv.HAPI_INVOKED_CWD = invokedCwd && isAbsolute(invokedCwd)
+    finalEnv.HAPI_INVOKED_CWD = invokedCwd && isCrossPlatformAbsolutePath(invokedCwd)
       ? invokedCwd
       : resolveInvokedCwd(options.cwd);
     finalOptions.env = finalEnv;
