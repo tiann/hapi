@@ -71,7 +71,9 @@ export class NotificationHub {
 
             // Handle assistant messages
             const assistantText = extractAssistantMessageText(event)
-            console.log(`[NotificationHub] Assistant text: ${assistantText ? assistantText.substring(0, 100) : 'null'}`)
+            if (process.env.HAPI_DEBUG_NOTIFICATIONS === 'true') {
+                console.log(`[NotificationHub] assistantTextLen=${assistantText?.length ?? 0}`)
+            }
 
             if (assistantText) {
                 this.sendMessageNotification(event.sessionId, assistantText).catch((error) => {
@@ -185,7 +187,9 @@ export class NotificationHub {
     }
 
     private async sendMessageNotification(sessionId: string, text: string): Promise<void> {
-        console.log(`[NotificationHub] sendMessageNotification: sessionId=${sessionId}, text=${text.substring(0, 50)}`)
+        if (process.env.HAPI_DEBUG_NOTIFICATIONS === 'true') {
+            console.log(`[NotificationHub] sendMessageNotification: sessionId=${sessionId}, textLen=${text.length}`)
+        }
 
         const session = this.getNotifiableSession(sessionId)
         if (!session) {

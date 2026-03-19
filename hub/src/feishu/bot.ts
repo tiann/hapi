@@ -196,7 +196,15 @@ export class FeishuBot implements NotificationChannel {
      * Handle im.message.receive_v1 event
      */
     private async handleMessageEvent(data: ImMessageReceiveV1Data): Promise<void> {
-        console.log('[FeishuBot] Received im.message.receive_v1 event:', JSON.stringify(data, null, 2))
+        // Log only safe fields, avoiding sensitive data like tokens or message content
+        if (process.env.HAPI_DEBUG_FEISHU === 'true') {
+            const safeLog = {
+                message_type: data.message?.message_type,
+                chat_type: data.message?.chat_type,
+                create_time: data.message?.create_time,
+            }
+            console.log('[FeishuBot] Received im.message.receive_v1 event:', JSON.stringify(safeLog))
+        }
 
         const message = data.message
         if (!message) {
@@ -217,42 +225,60 @@ export class FeishuBot implements NotificationChannel {
         const anyData = data as unknown as Record<string, unknown>
         const eventSender = anyData.sender as Record<string, unknown> | undefined
         senderOpenId = (eventSender?.sender_id as Record<string, string> | undefined)?.open_id
-        console.log(`[FeishuBot] Location 1 (data.sender.sender_id.open_id): ${senderOpenId}`)
+        if (process.env.HAPI_DEBUG_FEISHU === 'true') {
+            console.log(`[FeishuBot] Location 1 (data.sender.sender_id.open_id): ${senderOpenId}`)
+        }
 
         // Location 2: message.sender.sender_id.open_id (SDK typed structure)
         if (!senderOpenId) {
             senderOpenId = message.sender?.sender_id?.open_id
-            console.log(`[FeishuBot] Location 2 (message.sender.sender_id.open_id): ${senderOpenId}`)
+            if (process.env.HAPI_DEBUG_FEISHU === 'true') {
+                console.log(`[FeishuBot] Location 2 (message.sender.sender_id.open_id): ${senderOpenId}`)
+            }
         }
 
         // Location 3: data.open_id
         if (!senderOpenId) {
             senderOpenId = anyData.open_id as string | undefined
-            console.log(`[FeishuBot] Location 3 (data.open_id): ${senderOpenId}`)
+            if (process.env.HAPI_DEBUG_FEISHU === 'true') {
+                console.log(`[FeishuBot] Location 3 (data.open_id): ${senderOpenId}`)
+            }
         }
 
         // Location 4: message.chat_id (fallback)
         if (!senderOpenId) {
-            console.log(`[FeishuBot] Using chat_id as fallback: ${message.chat_id}`)
+            if (process.env.HAPI_DEBUG_FEISHU === 'true') {
+                console.log(`[FeishuBot] Using chat_id as fallback: ${message.chat_id}`)
+            }
             senderOpenId = message.chat_id
         }
 
         if (!senderOpenId) {
-            console.log('[FeishuBot] No sender open_id found anywhere')
+            if (process.env.HAPI_DEBUG_FEISHU === 'true') {
+                console.log('[FeishuBot] No sender open_id found anywhere')
+            }
             return
         }
-        console.log(`[FeishuBot] Final senderOpenId: ${senderOpenId}`)
+        if (process.env.HAPI_DEBUG_FEISHU === 'true') {
+            console.log(`[FeishuBot] Final senderOpenId: ${senderOpenId}`)
+        }
 
         // Parse message content
         let text = ''
         try {
             if (message.content) {
-                console.log(`[FeishuBot] Raw message content: ${message.content}`)
+                if (process.env.HAPI_DEBUG_FEISHU === 'true') {
+                    console.log(`[FeishuBot] Raw message content: ${message.content}`)
+                }
                 const content = JSON.parse(message.content)
                 text = content.text || ''
-                console.log(`[FeishuBot] Parsed text: ${text}`)
+                if (process.env.HAPI_DEBUG_FEISHU === 'true') {
+                    console.log(`[FeishuBot] Parsed text: ${text}`)
+                }
             } else {
-                console.log('[FeishuBot] No message content')
+                if (process.env.HAPI_DEBUG_FEISHU === 'true') {
+                    console.log('[FeishuBot] No message content')
+                }
             }
         } catch (e) {
             console.error('[FeishuBot] Failed to parse message content:', e)
@@ -260,13 +286,17 @@ export class FeishuBot implements NotificationChannel {
         }
 
         if (!text) {
-            console.log('[FeishuBot] Empty text, ignoring')
+            if (process.env.HAPI_DEBUG_FEISHU === 'true') {
+                console.log('[FeishuBot] Empty text, ignoring')
+            }
             return
         }
 
         // Parse and handle command
         const command = this.parseCommand(text)
-        console.log(`[FeishuBot] Parsed command: ${command.command}, args: ${JSON.stringify(command.args)}`)
+        if (process.env.HAPI_DEBUG_FEISHU === 'true') {
+            console.log(`[FeishuBot] Parsed command: ${command.command}, args: ${JSON.stringify(command.args)}`)
+        }
         await this.handleCommand(senderOpenId, command, message.message_id)
     }
 
@@ -274,7 +304,13 @@ export class FeishuBot implements NotificationChannel {
      * Handle card.action.trigger event
      */
     private async handleCardActionEvent(data: CardActionEventData): Promise<{ toast?: { type: 'success' | 'error'; content: string }; card?: unknown } | void> {
-        console.log('[FeishuBot] Received card.action.trigger event:', JSON.stringify(data, null, 2))
+        if (process.env.HAPI_DEBUG_FEISHU === 'true') {
+            const safeLog = {
+                action: data.action?.value,
+                open_id: data.open_id ? '***' : undefined,
+            }
+            console.log('[FeishuBot] Received card.action.trigger event:', JSON.stringify(safeLog))
+        }
 
         const { action, open_id } = data
         if (!action) {
@@ -299,7 +335,9 @@ export class FeishuBot implements NotificationChannel {
         messageId: string,
         value: { action: string; sessionId?: string; requestId?: string }
     ): Promise<void> {
-        console.log(`[FeishuBot] handlePermissionAction: openId=${openId}, action=${value.action}, sessionId=${value.sessionId}, requestId=${value.requestId}`)
+        if (process.env.HAPI_DEBUG_FEISHU === 'true') {
+            console.log(`[FeishuBot] handlePermissionAction: action=${value.action}, sessionId=${value.sessionId}, requestId=${value.requestId}`)
+        }
 
         if (!this.syncEngine || !this.apiClient) {
             await this.replyToMessage(messageId, 'HAPI is not ready')
@@ -307,14 +345,18 @@ export class FeishuBot implements NotificationChannel {
         }
 
         const namespace = this.getNamespaceForOpenId(openId)
-        console.log(`[FeishuBot] Namespace for openId: ${namespace}`)
+        if (process.env.HAPI_DEBUG_FEISHU === 'true') {
+            console.log(`[FeishuBot] Namespace for openId: ${namespace}`)
+        }
         if (!namespace) {
             await this.replyToMessage(messageId, 'Your Feishu account is not bound. Use /bind <token>')
             return
         }
 
         const session = value.sessionId ? this.syncEngine.getSession(value.sessionId) : null
-        console.log(`[FeishuBot] Session: ${session?.id}, namespace=${session?.namespace}`)
+        if (process.env.HAPI_DEBUG_FEISHU === 'true') {
+            console.log(`[FeishuBot] Session: ${session?.id}, namespace=${session?.namespace}`)
+        }
         if (!session || session.namespace !== namespace) {
             await this.replyToMessage(messageId, 'Session not found or access denied')
             return
@@ -393,10 +435,14 @@ export class FeishuBot implements NotificationChannel {
      * Handle /bind command
      */
     private async handleBind(openId: string, args: string[], messageId: string): Promise<void> {
-        console.log(`[FeishuBot] handleBind called: openId=${openId}, args=${JSON.stringify(args)}, messageId=${messageId}`)
+        if (process.env.HAPI_DEBUG_FEISHU === 'true') {
+            console.log(`[FeishuBot] handleBind called: messageId=${messageId}`)
+        }
 
         if (args.length === 0) {
-            console.log('[FeishuBot] No args provided, sending usage message')
+            if (process.env.HAPI_DEBUG_FEISHU === 'true') {
+                console.log('[FeishuBot] No args provided, sending usage message')
+            }
             await this.replyToMessage(messageId, 'Usage: /bind <token>')
             return
         }
@@ -405,25 +451,41 @@ export class FeishuBot implements NotificationChannel {
         const namespace = token.includes(':') ? token.split(':')[1] : 'default'
 
         // Remove ALL existing feishu users for this namespace to avoid cross-app open_id issues
-        console.log(`[FeishuBot] Removing all existing feishu users for namespace ${namespace}`)
+        if (process.env.HAPI_DEBUG_FEISHU === 'true') {
+            console.log(`[FeishuBot] Removing all existing feishu users for namespace ${namespace}`)
+        }
         const existingUsers = this.store.users.getUsersByPlatformAndNamespace('feishu', namespace)
-        console.log(`[FeishuBot] Found ${existingUsers.length} existing users:`, existingUsers)
+        if (process.env.HAPI_DEBUG_FEISHU === 'true') {
+            console.log(`[FeishuBot] Found ${existingUsers.length} existing users`)
+        }
         for (const user of existingUsers) {
-            console.log(`[FeishuBot] Removing old user: ${user.platformUserId}`)
+            if (process.env.HAPI_DEBUG_FEISHU === 'true') {
+                console.log(`[FeishuBot] Removing old user: ${user.platformUserId}`)
+            }
             this.store.users.removeUser('feishu', user.platformUserId)
         }
 
-        console.log(`[FeishuBot] Adding user: platform=feishu, openId=${openId}, namespace=${namespace}`)
+        if (process.env.HAPI_DEBUG_FEISHU === 'true') {
+            console.log(`[FeishuBot] Adding user: platform=feishu, namespace=${namespace}`)
+        }
         const newUser = this.store.users.addUser('feishu', openId, namespace)
-        console.log(`[FeishuBot] New user added:`, newUser)
+        if (process.env.HAPI_DEBUG_FEISHU === 'true') {
+            console.log(`[FeishuBot] New user added`)
+        }
 
         // Verify
         const verifyUsers = this.store.users.getUsersByPlatformAndNamespace('feishu', namespace)
-        console.log(`[FeishuBot] After bind, users in namespace:`, verifyUsers)
+        if (process.env.HAPI_DEBUG_FEISHU === 'true') {
+            console.log(`[FeishuBot] After bind, users in namespace: ${verifyUsers.length}`)
+        }
 
-        console.log(`[FeishuBot] User added, sending reply...`)
+        if (process.env.HAPI_DEBUG_FEISHU === 'true') {
+            console.log(`[FeishuBot] User added, sending reply...`)
+        }
         await this.replyToMessage(messageId, `✅ Bound to namespace: ${namespace}`)
-        console.log(`[FeishuBot] Bind complete`)
+        if (process.env.HAPI_DEBUG_FEISHU === 'true') {
+            console.log(`[FeishuBot] Bind complete`)
+        }
     }
 
     /**
@@ -478,15 +540,21 @@ export class FeishuBot implements NotificationChannel {
      * Handle direct message (not a command)
      */
     private async handleDirectMessage(openId: string, text: string, messageId: string): Promise<void> {
-        console.log(`[FeishuBot] handleDirectMessage: openId=${openId}, text=${text.substring(0, 50)}`)
+        if (process.env.HAPI_DEBUG_FEISHU === 'true') {
+            console.log(`[FeishuBot] handleDirectMessage: textLen=${text.length}`)
+        }
 
         const namespace = this.getNamespaceForOpenId(openId)
         if (!namespace) {
-            console.log(`[FeishuBot] No namespace found for openId=${openId}`)
+            if (process.env.HAPI_DEBUG_FEISHU === 'true') {
+                console.log(`[FeishuBot] No namespace found`)
+            }
             await this.replyToMessage(messageId, 'Not bound. Use /bind <token> first.')
             return
         }
-        console.log(`[FeishuBot] Found namespace: ${namespace}`)
+        if (process.env.HAPI_DEBUG_FEISHU === 'true') {
+            console.log(`[FeishuBot] Found namespace: ${namespace}`)
+        }
 
         if (!this.syncEngine) {
             await this.replyToMessage(messageId, 'HAPI is not ready')
@@ -494,17 +562,23 @@ export class FeishuBot implements NotificationChannel {
         }
 
         const sessions = this.syncEngine.getSessionsByNamespace(namespace)
-        console.log(`[FeishuBot] Found ${sessions.length} sessions in namespace ${namespace}`)
+        if (process.env.HAPI_DEBUG_FEISHU === 'true') {
+            console.log(`[FeishuBot] Found ${sessions.length} sessions in namespace ${namespace}`)
+        }
 
         // Debug: list all sessions and their namespaces
         const allSessions = this.syncEngine.getSessions()
-        console.log(`[FeishuBot] All sessions: ${allSessions.length}`)
-        for (const s of allSessions) {
-            console.log(`  - ${s.id}: namespace=${s.namespace}, active=${s.active}`)
+        if (process.env.HAPI_DEBUG_FEISHU === 'true') {
+            console.log(`[FeishuBot] All sessions: ${allSessions.length}`)
+            for (const s of allSessions) {
+                console.log(`  - ${s.id}: namespace=${s.namespace}, active=${s.active}`)
+            }
         }
 
         const activeSessions = sessions.filter((s: Session) => s.active)
-        console.log(`[FeishuBot] Found ${activeSessions.length} active sessions`)
+        if (process.env.HAPI_DEBUG_FEISHU === 'true') {
+            console.log(`[FeishuBot] Found ${activeSessions.length} active sessions`)
+        }
 
         if (activeSessions.length === 0) {
             await this.replyToMessage(messageId, 'No active sessions. Start a session in HAPI first.')
@@ -516,7 +590,9 @@ export class FeishuBot implements NotificationChannel {
             (a: Session, b: Session) => (b.updatedAt || 0) - (a.updatedAt || 0)
         )[0]
 
-        console.log(`[FeishuBot] Using session: ${session.id}`)
+        if (process.env.HAPI_DEBUG_FEISHU === 'true') {
+            console.log(`[FeishuBot] Using session: ${session.id}`)
+        }
         await this.sendMessageToSession(openId, session.id, text.trim(), messageId)
     }
 
@@ -557,7 +633,9 @@ export class FeishuBot implements NotificationChannel {
                 text,
                 sentFrom: 'feishu'  // Use feishu type for external messages
             })
-            console.log(`[FeishuBot] Message sent to session ${sessionId}: ${text}`)
+            if (process.env.HAPI_DEBUG_FEISHU === 'true') {
+                console.log(`[FeishuBot] Message sent to session ${sessionId}`)
+            }
             await this.replyToMessage(replyToMessageId, `✅ Message sent to session`)
         } catch (error) {
             console.error(`[FeishuBot] Failed to send message to session ${sessionId}:`, error)
@@ -654,9 +732,10 @@ export class FeishuBot implements NotificationChannel {
      * Get namespace for Feishu open_id
      */
     private getNamespaceForOpenId(openId: string): string | null {
-        console.log(`[FeishuBot] getNamespaceForOpenId: openId=${openId}`)
         const stored = this.store.users.getUser('feishu', openId)
-        console.log(`[FeishuBot] getUser result:`, stored)
+        if (process.env.HAPI_DEBUG_FEISHU === 'true') {
+            console.log(`[FeishuBot] getNamespaceForOpenId: found=${!!stored}`)
+        }
         return stored?.namespace ?? null
     }
 
@@ -665,7 +744,9 @@ export class FeishuBot implements NotificationChannel {
      */
     private getBoundOpenIds(namespace: string): string[] {
         const users = this.store.users.getUsersByPlatformAndNamespace('feishu', namespace)
-        console.log(`[FeishuBot] getBoundOpenIds for namespace ${namespace}:`, users.map(u => ({ id: u.id, platformUserId: u.platformUserId, namespace: u.namespace })))
+        if (process.env.HAPI_DEBUG_FEISHU === 'true') {
+            console.log(`[FeishuBot] getBoundOpenIds for namespace ${namespace}: count=${users.length}`)
+        }
         return users.map((u) => u.platformUserId)
     }
 
@@ -843,15 +924,21 @@ export class FeishuBot implements NotificationChannel {
      * Send assistant message notification
      */
     async sendMessage(session: Session, text: string): Promise<void> {
-        console.log(`[FeishuBot] sendMessage: session=${session.id}, text=${text.substring(0, 50)}`)
+        if (process.env.HAPI_DEBUG_FEISHU === 'true') {
+            console.log(`[FeishuBot] sendMessage: session=${session.id}, textLen=${text.length}`)
+        }
 
         if (!session.active || !this.apiClient) {
-            console.log(`[FeishuBot] Session not active or apiClient not ready`)
+            if (process.env.HAPI_DEBUG_FEISHU === 'true') {
+                console.log(`[FeishuBot] Session not active or apiClient not ready`)
+            }
             return
         }
 
         const openIds = this.getBoundOpenIds(session.namespace)
-        console.log(`[FeishuBot] Found ${openIds.length} bound openIds in namespace ${session.namespace}`)
+        if (process.env.HAPI_DEBUG_FEISHU === 'true') {
+            console.log(`[FeishuBot] Found ${openIds.length} bound openIds in namespace ${session.namespace}`)
+        }
 
         if (openIds.length === 0) {
             return
@@ -865,7 +952,9 @@ export class FeishuBot implements NotificationChannel {
 
         for (const openId of openIds) {
             try {
-                console.log(`[FeishuBot] Sending message to openId=${openId}`)
+                if (process.env.HAPI_DEBUG_FEISHU === 'true') {
+                    console.log(`[FeishuBot] Sending message to openId`)
+                }
                 await this.sendTextMessage(openId, `🤖 **${agentName}**\n\n${displayText}`)
             } catch (error) {
                 console.error(`[FeishuBot] Failed to send message to ${openId}:`, error)
