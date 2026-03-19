@@ -1,9 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { I18nContext, I18nProvider } from '@/lib/i18n-context'
 import { en } from '@/lib/locales'
 import { PROTOCOL_VERSION } from '@hapi/protocol'
 import SettingsPage from './index'
+
+vi.mock('@hapi/protocol', () => ({
+    PROTOCOL_VERSION: '1'
+}))
 
 // Mock the router hooks
 vi.mock('@tanstack/react-router', () => ({
@@ -29,6 +33,17 @@ vi.mock('@/hooks/useTheme', () => ({
         { value: 'system', labelKey: 'settings.display.appearance.system' },
         { value: 'dark', labelKey: 'settings.display.appearance.dark' },
         { value: 'light', labelKey: 'settings.display.appearance.light' },
+    ],
+}))
+
+const setAutoArchiveTimeoutMs = vi.fn()
+
+vi.mock('@/hooks/useAutoArchiveTimeout', () => ({
+    useAutoArchiveTimeout: () => ({ autoArchiveTimeoutMs: 0, setAutoArchiveTimeoutMs }),
+    getAutoArchiveTimeoutOptions: () => [
+        { value: 0, labelKey: 'settings.display.autoArchive.off' },
+        { value: 900000, labelKey: 'settings.display.autoArchive.15m' },
+        { value: 1800000, labelKey: 'settings.display.autoArchive.30m' },
     ],
 }))
 
@@ -120,5 +135,21 @@ describe('SettingsPage', () => {
         const calledKeys = spyT.mock.calls.map((call) => call[0])
         expect(calledKeys).toContain('settings.display.appearance')
         expect(calledKeys).toContain('settings.display.appearance.system')
+    })
+
+    it('renders the auto-archive setting', () => {
+        renderWithProviders(<SettingsPage />)
+        expect(screen.getAllByText('Auto-Archive Timeout').length).toBeGreaterThanOrEqual(1)
+        expect(screen.getAllByText('Automatically archive active sessions after they stay idle for the selected time.').length).toBeGreaterThanOrEqual(1)
+        expect(screen.getAllByText('Off').length).toBeGreaterThanOrEqual(1)
+    })
+
+    it('updates the auto-archive timeout when selecting an option', () => {
+        renderWithProviders(<SettingsPage />)
+
+        fireEvent.click(screen.getAllByRole('button', { name: /Auto-Archive Timeout/i })[0])
+        fireEvent.click(screen.getByRole('option', { name: '15 minutes' }))
+
+        expect(setAutoArchiveTimeoutMs).toHaveBeenCalledWith(900000)
     })
 })
