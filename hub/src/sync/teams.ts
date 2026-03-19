@@ -1,3 +1,4 @@
+import { AGENT_MESSAGE_PAYLOAD_TYPE } from "@hapi/protocol"
 import { isObject } from '@hapi/protocol'
 import { unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
 import type { TeamState } from '@hapi/protocol/types'
@@ -28,8 +29,8 @@ function extractToolBlocks(content: Record<string, unknown>): Array<{ name: stri
         }
     }
 
-    // Codex format: { type: 'codex', data: { type: 'tool-call', name: '...', input: {...} } }
-    if (content.type === 'codex') {
+    // Agent payload format: { type: 'codex', data: { type: 'tool-call', name: '...', input: {...} } }
+    if (content.type === AGENT_MESSAGE_PAYLOAD_TYPE) {
         const data = isObject(content.data) ? content.data : null
         if (!data || data.type !== 'tool-call') return blocks
         const name = typeof data.name === 'string' ? data.name : null
