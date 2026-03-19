@@ -122,6 +122,10 @@ export default {
   'spawn.cancel': '取消',
   'spawn.create': '创建会话',
   'spawn.creating': '创建中…',
+  'session.directoryMissingSimple': '目录不存在，创建会话时将自动创建。',
+  'session.directoryMissingSimpleConfirm': '目录不存在。再次点击按钮将自动新建该目录。',
+  'session.directoryMissingWorktree': 'worktree 需要已存在的仓库目录。',
+  'session.createAndCreateDirectory': '创建并新建目录',
 
   // Machine
   'machine.unknown': '未知平台',

@@ -10,6 +10,8 @@ export function DirectorySection(props: {
     selectedIndex: number
     isDisabled: boolean
     recentPaths: string[]
+    statusMessage?: string | null
+    statusTone?: 'warning' | 'error' | null
     onDirectoryChange: (value: string) => void
     onDirectoryFocus: () => void
     onDirectoryBlur: () => void
@@ -68,6 +70,18 @@ export function DirectorySection(props: {
                     </div>
                 </div>
             )}
+
+            {props.statusMessage ? (
+                <div
+                    className={`mt-1 rounded-md px-2 py-1 text-xs ${
+                        props.statusTone === 'error'
+                            ? 'bg-red-50 text-red-600 dark:bg-red-900/20 dark:text-red-400'
+                            : 'bg-amber-500/10 text-[var(--app-hint)]'
+                    }`}
+                >
+                    {props.statusMessage}
+                </div>
+            ) : null}
         </div>
     )
 }

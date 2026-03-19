@@ -1,8 +1,9 @@
-import { useMemo, useState } from 'react'
+import { useDeferredValue, useEffect, useMemo, useState } from 'react'
 import type { ApiClient } from '@/api/client'
 import type { Machine } from '@/types/api'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { useMachinePathsExists } from '@/hooks/useMachinePathsExists'
 import { usePlatform } from '@/hooks/usePlatform'
 import { useSpawnSession } from '@/hooks/mutations/useSpawnSession'
 import { formatRunnerSpawnError } from '@/utils/formatRunnerSpawnError'
@@ -29,6 +30,7 @@ export function SpawnSession(props: {
     const [directory, setDirectory] = useState('')
     const [sessionType, setSessionType] = useState<SessionType>('simple')
     const [worktreeName, setWorktreeName] = useState('')
+    const [directoryCreationConfirmed, setDirectoryCreationConfirmed] = useState(false)
     const [error, setError] = useState<string | null>(null)
     const { spawnSession, isPending, error: spawnError } = useSpawnSession(props.api)
 
@@ -37,16 +39,59 @@ export function SpawnSession(props: {
         () => formatRunnerSpawnError(props.machine),
         [props.machine?.runnerState?.lastSpawnError]
     )
+    const trimmedDirectory = directory.trim()
+    const deferredDirectory = useDeferredValue(trimmedDirectory)
+    const pathsToCheck = useMemo(
+        () => deferredDirectory ? [deferredDirectory] : [],
+        [deferredDirectory]
+    )
+    const { pathExistence, checkPathsExists } = useMachinePathsExists(
+        props.api,
+        props.machineId,
+        pathsToCheck
+    )
+    const currentDirectoryExists = trimmedDirectory ? pathExistence[trimmedDirectory] : undefined
+    const needsDirectoryCreationWarning = sessionType === 'simple' && trimmedDirectory !== '' && currentDirectoryExists === false
+    const missingWorktreeDirectory = sessionType === 'worktree' && trimmedDirectory !== '' && currentDirectoryExists === false
+    const directoryStatusMessage = missingWorktreeDirectory
+        ? t('session.directoryMissingWorktree')
+        : needsDirectoryCreationWarning
+            ? (
+                directoryCreationConfirmed
+                    ? t('session.directoryMissingSimpleConfirm')
+                    : t('session.directoryMissingSimple')
+            )
+            : null
+    const createLabel = needsDirectoryCreationWarning && directoryCreationConfirmed
+        ? t('session.createAndCreateDirectory')
+        : t('spawn.create')
+
+    useEffect(() => {
+        setDirectoryCreationConfirmed(false)
+    }, [props.machineId, sessionType, trimmedDirectory])
 
     async function spawn() {
-        const trimmed = directory.trim()
-        if (!trimmed) return
+        if (!trimmedDirectory) return
 
         setError(null)
         try {
+            const existsResult = await checkPathsExists([trimmedDirectory])
+            const directoryExists = existsResult[trimmedDirectory]
+
+            if (sessionType === 'worktree' && directoryExists === false) {
+                haptic.notification('error')
+                setError(t('session.directoryMissingWorktree'))
+                return
+            }
+
+            if (sessionType === 'simple' && directoryExists === false && !directoryCreationConfirmed) {
+                setDirectoryCreationConfirmed(true)
+                return
+            }
+
             const result = await spawnSession({
                 machineId: props.machineId,
-                directory: trimmed,
+                directory: trimmedDirectory,
                 sessionType,
                 worktreeName: sessionType === 'worktree' ? (worktreeName.trim() || undefined) : undefined
             })
@@ -81,6 +126,16 @@ export function SpawnSession(props: {
                             onChange={(e) => setDirectory(e.target.value)}
                             className="w-full rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] p-2 text-sm focus:outline-none focus:ring-2 focus:ring-[var(--app-link)]"
                         />
+
+                        {directoryStatusMessage ? (
+                            <div className={`rounded-md px-2 py-1 text-xs ${
+                                missingWorktreeDirectory
+                                    ? 'bg-red-50 text-red-600 dark:bg-red-900/20 dark:text-red-400'
+                                    : 'bg-amber-500/10 text-[var(--app-hint)]'
+                            }`}>
+                                {directoryStatusMessage}
+                            </div>
+                        ) : null}
 
                         <div className="flex flex-col gap-2">
                             <label className="text-xs font-medium text-[var(--app-hint)]">
@@ -171,9 +226,9 @@ export function SpawnSession(props: {
                             </Button>
                             <Button
                                 onClick={spawn}
-                                disabled={isPending || !directory.trim()}
+                                disabled={isPending || !trimmedDirectory || missingWorktreeDirectory}
                             >
-                                {isPending ? t('spawn.creating') : t('spawn.create')}
+                                {isPending ? t('spawn.creating') : createLabel}
                             </Button>
                         </div>
                     </div>

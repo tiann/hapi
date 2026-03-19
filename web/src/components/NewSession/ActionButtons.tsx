@@ -6,6 +6,7 @@ export function ActionButtons(props: {
     isPending: boolean
     canCreate: boolean
     isDisabled: boolean
+    createLabel?: string
     onCancel: () => void
     onCreate: () => void
 }) {
@@ -32,7 +33,7 @@ export function ActionButtons(props: {
                         {t('newSession.creating')}
                     </>
                 ) : (
-                    t('newSession.create')
+                    (props.createLabel ?? t('newSession.create'))
                 )}
             </Button>
         </div>
