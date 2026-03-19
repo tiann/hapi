@@ -1,3 +1,10 @@
+/**
+ * @description The legacy payload type identifier used for all generic agent messages.
+ * Changing this value will affect the communication schema between CLI, Hub, and Web.
+ * A migration plan is required if this literal is ever modified.
+ */
+export const AGENT_MESSAGE_PAYLOAD_TYPE = 'codex' as const
+
 export const CLAUDE_PERMISSION_MODES = ['default', 'acceptEdits', 'bypassPermissions', 'plan'] as const
 export type ClaudePermissionMode = typeof CLAUDE_PERMISSION_MODES[number]
 
