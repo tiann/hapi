@@ -5,6 +5,10 @@ import { en } from '@/lib/locales'
 import { PROTOCOL_VERSION } from '@hapi/protocol'
 import SettingsPage from './index'
 
+vi.mock('@hapi/protocol', () => ({
+    PROTOCOL_VERSION: 1,
+}))
+
 // Mock the router hooks
 vi.mock('@tanstack/react-router', () => ({
     useNavigate: () => vi.fn(),
@@ -19,6 +23,15 @@ vi.mock('@/hooks/useFontScale', () => ({
         { value: 0.875, label: '87.5%' },
         { value: 1, label: '100%' },
         { value: 1.125, label: '112.5%' },
+    ],
+}))
+
+vi.mock('@/hooks/useTerminalFontSize', () => ({
+    useTerminalFontSize: () => ({ terminalFontSize: 13, setTerminalFontSize: vi.fn() }),
+    getTerminalFontSizeOptions: () => [
+        { value: 9, label: '9px' },
+        { value: 13, label: '13px' },
+        { value: 17, label: '17px' },
     ],
 }))
 
@@ -120,5 +133,11 @@ describe('SettingsPage', () => {
         const calledKeys = spyT.mock.calls.map((call) => call[0])
         expect(calledKeys).toContain('settings.display.appearance')
         expect(calledKeys).toContain('settings.display.appearance.system')
+    })
+
+    it('renders the Terminal Font Size setting', () => {
+        renderWithProviders(<SettingsPage />)
+        expect(screen.getAllByText('Terminal Font Size').length).toBeGreaterThanOrEqual(1)
+        expect(screen.getAllByText('13px').length).toBeGreaterThanOrEqual(1)
     })
 })
