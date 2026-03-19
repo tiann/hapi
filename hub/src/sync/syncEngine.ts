@@ -232,7 +232,7 @@ export class SyncEngine {
                 path: string
                 previewUrl?: string
             }>
-            sentFrom?: 'telegram-bot' | 'webapp'
+            sentFrom?: 'telegram-bot' | 'webapp' | 'feishu'
         }
     ): Promise<void> {
         await this.messageService.sendMessage(sessionId, payload)

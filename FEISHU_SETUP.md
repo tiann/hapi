@@ -1,11 +1,5 @@
 # 飞书配置指南
 
-## ⚠️ 安全提醒
-
-**以下凭据为敏感信息，请妥善保管：**
-- App ID: `cli_a933a4feadb81cc9`
-- App Secret: `e7ScIG1itQdnQPPT4KFsZfsWxrKSXhAT`
-- Verification Token: `4bcHA2FSS93WLDsKrOmKDgZ3RrV26oS0`
 
 **请勿：**
 1. 将这些凭据提交到 Git 仓库
@@ -21,9 +15,9 @@
 ```bash
 cd hub
 # Windows PowerShell
-$env:FEISHU_APP_ID="cli_a933a4feadb81cc9"
-$env:FEISHU_APP_SECRET="e7ScIG1itQdnQPPT4KFsZfsWxrKSXhAT"
-$env:FEISHU_VERIFICATION_TOKEN="4bcHA2FSS93WLDsKrOmKDgZ3RrV26oS0"
+$env:FEISHU_APP_ID="cli_xx"
+$env:FEISHU_APP_SECRET="xxx"
+$env:FEISHU_VERIFICATION_TOKEN="xxx"
 $env:FEISHU_ENABLED="true"
 $env:FEISHU_NOTIFICATION="true"
 ```
@@ -31,9 +25,9 @@ $env:FEISHU_NOTIFICATION="true"
 或在 `~/.bashrc` / `~/.zshrc` 中添加：
 
 ```bash
-export FEISHU_APP_ID="cli_a933a4feadb81cc9"
-export FEISHU_APP_SECRET="e7ScIG1itQdnQPPT4KFsZfsWxrKSXhAT"
-export FEISHU_VERIFICATION_TOKEN="4bcHA2FSS93WLDsKrOmKDgZ3RrV26oS0"
+export FEISHU_APP_ID="cli_xxx"
+export FEISHU_APP_SECRET="xxx"
+export FEISHU_VERIFICATION_TOKEN="xxx"
 export FEISHU_BASE_URL="https://open.feishu.cn"  # 国内版
 # export FEISHU_BASE_URL="https://open.larksuite.com"  # 国际版
 export FEISHU_ENABLED="true"
@@ -46,9 +40,9 @@ export FEISHU_NOTIFICATION="true"
 
 ```json
 {
-  "feishuAppId": "cli_a933a4feadb81cc9",
-  "feishuAppSecret": "e7ScIG1itQdnQPPT4KFsZfsWxrKSXhAT",
-  "feishuVerificationToken": "4bcHA2FSS93WLDsKrOmKDgZ3RrV26oS0",
+  "feishuAppId": "cli_xxx",
+  "feishuAppSecret": "xx",
+  "feishuVerificationToken": "xxx",
   "feishuBaseUrl": "https://open.feishu.cn",
   "feishuEnabled": true,
   "feishuNotification": true

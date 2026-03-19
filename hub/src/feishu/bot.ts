@@ -11,6 +11,74 @@ import type { SyncEngine, Session } from '../sync/syncEngine'
 import type { Store } from '../store'
 import type { NotificationChannel } from '../notifications/notificationTypes'
 
+// Feishu event types
+type ImMessageReceiveV1Data = {
+    event_id?: string
+    token?: string
+    create_time?: string
+    event_type?: string
+    tenant_key?: string
+    ts?: string
+    uuid?: string
+    type?: string
+    app_id?: string
+    sender: {
+        sender_id?: {
+            union_id?: string
+            user_id?: string
+            open_id?: string
+        }
+        sender_type: string
+        tenant_key?: string
+    }
+    message: {
+        message_id: string
+        root_id?: string
+        parent_id?: string
+        create_time: string
+        update_time?: string
+        chat_id: string
+        thread_id?: string
+        chat_type: string
+        message_type: string
+        content: string
+        mentions?: Array<{
+            key: string
+            id: {
+                union_id?: string
+                user_id?: string
+                open_id?: string
+            }
+            name: string
+            tenant_key?: string
+        }>
+        user_agent?: string
+        sender?: {
+            sender_id?: {
+                union_id?: string
+                user_id?: string
+                open_id?: string
+            }
+            sender_type?: string
+            tenant_key?: string
+        }
+    }
+}
+
+type CardActionEventData = {
+    open_id: string
+    user_id?: string
+    tenant_key: string
+    open_message_id: string
+    token: string
+    action: {
+        value: Record<string, unknown>
+        tag: string
+        option?: string
+        timezone?: string
+    }
+}
+
 export interface FeishuBotConfig {
     syncEngine: SyncEngine
     appId: string
@@ -40,10 +108,11 @@ export class FeishuBot implements NotificationChannel {
         this.syncEngine = config.syncEngine
 
         // Initialize API client
+        const domain = config.baseUrl ? config.baseUrl as unknown as lark.Domain : lark.Domain.Feishu
         this.apiClient = new lark.Client({
             appId: config.appId,
             appSecret: config.appSecret,
-            domain: config.baseUrl as lark.Domain ?? lark.Domain.Feishu,
+            domain,
             appType: lark.AppType.SelfBuild,
             loggerLevel: lark.LoggerLevel.info,
         })
@@ -68,10 +137,11 @@ export class FeishuBot implements NotificationChannel {
         this.isRunning = true
 
         // Create WebSocket client
+        const wsDomain = this.config.baseUrl ? this.config.baseUrl as unknown as lark.Domain : lark.Domain.Feishu
         this.wsClient = new lark.WSClient({
             appId: this.config.appId,
             appSecret: this.config.appSecret,
-            domain: this.config.baseUrl as lark.Domain ?? lark.Domain.Feishu,
+            domain: wsDomain,
             loggerLevel: lark.LoggerLevel.info,
         })
 
@@ -83,17 +153,19 @@ export class FeishuBot implements NotificationChannel {
 
         // Register event handlers
         eventDispatcher.register({
-            'im.message.receive_v1': async (data) => {
-                await this.handleMessageEvent(data)
+            'im.message.receive_v1': async (data: unknown) => {
+                await this.handleMessageEvent(data as ImMessageReceiveV1Data)
             },
-            'card.action.trigger': async (data) => {
-                return await this.handleCardActionEvent(data)
+            'card.action.trigger': async (data: unknown) => {
+                return await this.handleCardActionEvent(data as CardActionEventData)
             },
-            'im.bot.added_v1': async (data) => {
-                console.log('[FeishuBot] Bot added to chat:', data.event?.chat_id)
+            'im.bot.added_v1': async (data: unknown) => {
+                const eventData = data as { event?: { chat_id?: string } }
+                console.log('[FeishuBot] Bot added to chat:', eventData.event?.chat_id)
             },
-            'im.bot.deleted_v1': async (data) => {
-                console.log('[FeishuBot] Bot removed from chat:', data.event?.chat_id)
+            'im.bot.deleted_v1': async (data: unknown) => {
+                const eventData = data as { event?: { chat_id?: string } }
+                console.log('[FeishuBot] Bot removed from chat:', eventData.event?.chat_id)
             },
         })
 
@@ -123,7 +195,7 @@ export class FeishuBot implements NotificationChannel {
     /**
      * Handle im.message.receive_v1 event
      */
-    private async handleMessageEvent(data: lark.ImMessageReceiveV1): Promise<void> {
+    private async handleMessageEvent(data: ImMessageReceiveV1Data): Promise<void> {
         console.log('[FeishuBot] Received im.message.receive_v1 event:', JSON.stringify(data, null, 2))
 
         const message = data.message
@@ -201,16 +273,14 @@ export class FeishuBot implements NotificationChannel {
     /**
      * Handle card.action.trigger event
      */
-    private async handleCardActionEvent(data: lark.InteractiveCardActionEvent): Promise<{ toast?: { type: 'success' | 'error'; content: string }; card?: unknown } | void> {
+    private async handleCardActionEvent(data: CardActionEventData): Promise<{ toast?: { type: 'success' | 'error'; content: string }; card?: unknown } | void> {
         console.log('[FeishuBot] Received card.action.trigger event:', JSON.stringify(data, null, 2))
 
-        const { action } = data
+        const { action, open_id } = data
         if (!action) {
             console.log('[FeishuBot] No action in card event')
             return { toast: { type: 'error', content: 'No action found' } }
         }
-
-        const { open_id } = action
 
         // Card interaction is not supported, redirect to text commands
         return {
@@ -250,8 +320,8 @@ export class FeishuBot implements NotificationChannel {
             return
         }
 
-        if (!value.requestId) {
-            await this.replyToMessage(messageId, 'No request ID found')
+        if (!value.requestId || !value.sessionId) {
+            await this.replyToMessage(messageId, 'No request ID or session ID found')
             return
         }
 
@@ -485,7 +555,7 @@ export class FeishuBot implements NotificationChannel {
             // Send message via syncEngine to CLI
             await this.syncEngine.sendMessage(sessionId, {
                 text,
-                sentFrom: 'telegram-bot'  // Use telegram-bot type for external messages
+                sentFrom: 'feishu'  // Use feishu type for external messages
             })
             console.log(`[FeishuBot] Message sent to session ${sessionId}: ${text}`)
             await this.replyToMessage(replyToMessageId, `✅ Message sent to session`)
@@ -664,26 +734,6 @@ export class FeishuBot implements NotificationChannel {
         }
     }
 
-    /**
-     * Update card message using SDK
-     */
-    private async updateCardMessage(messageId: string, card: unknown): Promise<void> {
-        if (!this.apiClient) return
-
-        try {
-            await this.apiClient.interactive.cardActions.update({
-                path: {
-                    token: messageId,
-                },
-                data: {
-                    card: card as Record<string, unknown>,
-                },
-            })
-        } catch (error) {
-            console.error('[FeishuBot] Failed to update card message:', error)
-        }
-    }
-
     //
     // NotificationChannel implementation
     //
@@ -811,10 +861,12 @@ export class FeishuBot implements NotificationChannel {
         const maxLength = 2000
         const displayText = text.length > maxLength ? text.slice(0, maxLength) + '...' : text
 
+        const agentName = session.metadata?.flavor ? session.metadata.flavor.charAt(0).toUpperCase() + session.metadata.flavor.slice(1) : 'Agent'
+
         for (const openId of openIds) {
             try {
                 console.log(`[FeishuBot] Sending message to openId=${openId}`)
-                await this.sendTextMessage(openId, `🤖 **Claude**\n\n${displayText}`)
+                await this.sendTextMessage(openId, `🤖 **${agentName}**\n\n${displayText}`)
             } catch (error) {
                 console.error(`[FeishuBot] Failed to send message to ${openId}:`, error)
             }
