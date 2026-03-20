@@ -9,6 +9,13 @@ import { RenameSessionDialog } from '@/components/RenameSessionDialog'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { getSessionModelLabel } from '@/lib/sessionModelLabel'
 import { useTranslation } from '@/lib/use-translation'
+import {
+    getSessionReadState,
+    isSessionUnread,
+    markSessionReadInState,
+    persistSessionReadState,
+    type SessionReadState,
+} from '@/lib/sessionReadState'
 
 type SessionGroup = {
     directory: string
@@ -164,13 +171,14 @@ function formatRelativeTime(value: number, t: (key: string, params?: Record<stri
 
 function SessionItem(props: {
     session: SessionSummary
+    unread: boolean
     onSelect: (sessionId: string) => void
     showPath?: boolean
     api: ApiClient | null
     selected?: boolean
 }) {
     const { t } = useTranslation()
-    const { session: s, onSelect, showPath = true, api, selected = false } = props
+    const { session: s, unread, onSelect, showPath = true, api, selected = false } = props
     const { haptic } = usePlatform()
     const [menuOpen, setMenuOpen] = useState(false)
     const [menuAnchorPoint, setMenuAnchorPoint] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
@@ -242,6 +250,11 @@ function SessionItem(props: {
                         {s.pendingRequestsCount > 0 ? (
                             <span className="text-[var(--app-badge-warning-text)]">
                                 {t('session.item.pending')} {s.pendingRequestsCount}
+                            </span>
+                        ) : null}
+                        {unread ? (
+                            <span className="rounded-full bg-[#007AFF]/12 px-2 py-0.5 font-medium text-[#007AFF]">
+                                {t('session.item.unread')}
                             </span>
                         ) : null}
                         <span className="text-[var(--app-hint)]">
@@ -327,6 +340,7 @@ export function SessionList(props: {
 }) {
     const { t } = useTranslation()
     const { renderHeader = true, api, selectedSessionId } = props
+    const [readState, setReadState] = useState<SessionReadState>(() => getSessionReadState())
     const groups = useMemo(
         () => groupSessionsByDirectory(props.sessions),
         [props.sessions]
@@ -337,7 +351,10 @@ export function SessionList(props: {
     const isGroupCollapsed = (group: SessionGroup): boolean => {
         const override = collapseOverrides.get(group.directory)
         if (override !== undefined) return override
-        return !group.hasActiveSession
+        const hasUnread = group.sessions.some(
+            session => session.id !== selectedSessionId && isSessionUnread(session, readState)
+        )
+        return !group.hasActiveSession && !hasUnread
     }
 
     const toggleGroup = (directory: string, isCollapsed: boolean) => {
@@ -363,6 +380,32 @@ export function SessionList(props: {
             return changed ? next : prev
         })
     }, [groups])
+
+    useEffect(() => {
+        if (!selectedSessionId) return
+        const selectedSession = props.sessions.find(session => session.id === selectedSessionId)
+        if (!selectedSession) return
+
+        setReadState(prev => {
+            const next = markSessionReadInState(prev, selectedSession.id, selectedSession.updatedAt)
+            if (next === prev) return prev
+            persistSessionReadState(next)
+            return next
+        })
+    }, [props.sessions, selectedSessionId])
+
+    const handleSelect = (sessionId: string) => {
+        const target = props.sessions.find(session => session.id === sessionId)
+        if (target) {
+            setReadState(prev => {
+                const next = markSessionReadInState(prev, target.id, target.updatedAt)
+                if (next === prev) return prev
+                persistSessionReadState(next)
+                return next
+            })
+        }
+        props.onSelect(sessionId)
+    }
 
     return (
         <div className="mx-auto w-full max-w-content flex flex-col">
@@ -411,7 +454,8 @@ export function SessionList(props: {
                                         <SessionItem
                                             key={s.id}
                                             session={s}
-                                            onSelect={props.onSelect}
+                                            unread={s.id !== selectedSessionId && isSessionUnread(s, readState)}
+                                            onSelect={handleSelect}
                                             showPath={false}
                                             api={api}
                                             selected={s.id === selectedSessionId}
