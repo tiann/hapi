@@ -11,7 +11,10 @@ export function resolveCodexPermissionModeConfig(mode: CodexPermissionMode): Cod
     switch (mode) {
         case 'default':
             return {
-                approvalPolicy: 'untrusted',
+                // Remote Codex sessions rely on HAPI's approval UI for sandbox escalation.
+                // `on-request` keeps workspace-write sandboxing while still surfacing a
+                // user-approvable elevation request when the model needs it.
+                approvalPolicy: 'on-request',
                 sandbox: 'workspace-write',
                 sandboxPolicy: { type: 'workspaceWrite' }
             };
