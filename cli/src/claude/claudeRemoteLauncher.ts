@@ -348,8 +348,15 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             session.clearSessionId();
                         },
                         onReady: () => {
+                            logger.debug(
+                                `[claudeRemoteLauncher][async-debug] onReady callback ` +
+                                `(hasPending=${Boolean(pending)}, queueSize=${session.queue.size()})`
+                            );
                             if (!pending && session.queue.size() === 0) {
                                 session.client.sendSessionEvent({ type: 'ready' });
+                                logger.debug('[claudeRemoteLauncher][async-debug] ready event sent to hub');
+                            } else {
+                                logger.debug('[claudeRemoteLauncher][async-debug] ready event suppressed (pending input exists)');
                             }
                         },
                         signal: controller.signal,
