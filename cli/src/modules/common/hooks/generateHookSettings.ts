@@ -19,6 +19,9 @@ type HookSettings = {
     hooks: {
         SessionStart: HookCommandConfig[];
     };
+    permissions?: {
+        deny?: string[];
+    };
 };
 
 export type HookSettingsOptions = {
@@ -64,6 +67,25 @@ function buildHookSettings(command: string, hooksEnabled?: boolean): HookSetting
             enabled: hooksEnabled
         };
     }
+
+    // Deny dangerous Bash patterns as a safety net.
+    // Even with --dangerously-skip-permissions, deny rules are still enforced.
+    settings.permissions = {
+        deny: [
+            'Bash(rm -rf:*)',
+            'Bash(rm -r /:*)',
+            'Bash(sudo rm:*)',
+            'Bash(sudo chmod:*)',
+            'Bash(sudo chown:*)',
+            'Bash(mkfs:*)',
+            'Bash(dd if=:*)',
+            'Bash(git push --force:*)',
+            'Bash(git push -f:*)',
+            'Bash(git reset --hard:*)',
+            'Bash(> /dev/:*)',
+            'Bash(chmod 777:*)',
+        ]
+    };
 
     return settings;
 }

@@ -306,7 +306,12 @@ export class PermissionHandler extends BasePermissionHandler<PermissionResponse,
             await delay(1000);
             toolCallId = this.resolveToolCallId(toolName, input);
             if (!toolCallId) {
-                throw new Error(`Could not resolve tool call ID for ${toolName}`);
+                // Sub-agent / teammate tool calls don't appear in parent's toolCalls list.
+                // Auto-approve: the parent already authorized running the sub-agent,
+                // and in remote mode there's no reliable path to relay permission
+                // responses back to the sub-agent's internal permission handler.
+                logger.debug(`Auto-approving sub-agent tool: ${toolName}`);
+                return { behavior: 'allow', updatedInput: input as Record<string, unknown> };
             }
         }
         return this.handlePermissionRequest(toolCallId, toolName, input, options.signal);

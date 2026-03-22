@@ -114,7 +114,10 @@ export async function claudeRemote(opts: {
         cwd: opts.path,
         resume: startFrom ?? undefined,
         mcpServers: opts.mcpServers,
-        permissionMode: initial.mode.permissionMode,
+        // Use 'bypassPermissions' so the SDK auto-approves teammate/sub-agent
+        // permissions internally. Main agent permissions are still gated by
+        // canCallTool (which ignores this mode and uses its own approval flow).
+        permissionMode: 'bypassPermissions',
         model: initial.mode.model,
         fallbackModel: initial.mode.fallbackModel,
         customSystemPrompt: initial.mode.customSystemPrompt ? initial.mode.customSystemPrompt + '\n\n' + systemPrompt : undefined,

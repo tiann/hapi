@@ -1,7 +1,7 @@
 import type { ClientToServerEvents } from '@hapi/protocol'
 import { z } from 'zod'
 import { randomUUID } from 'node:crypto'
-import type { CodexCollaborationMode, PermissionMode } from '@hapi/protocol/types'
+import type { CodexCollaborationMode, PermissionMode, TeamState } from '@hapi/protocol/types'
 import type { Store, StoredSession } from '../../../store'
 import type { SyncEvent } from '../../../sync/syncEngine'
 import { extractTodoWriteTodosFromMessageContent } from '../../../sync/todos'
@@ -99,13 +99,23 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
 
         const teamDelta = extractTeamStateFromMessageContent(content)
         if (teamDelta) {
-            const existingSession = store.sessions.getSession(sid)
+            const existingSession = store.sessions.getSessionByNamespace(sid, session.namespace)
             const existingTeamState = existingSession?.teamState as import('@hapi/protocol/types').TeamState | null | undefined
             const newTeamState = applyTeamStateDelta(existingTeamState ?? null, teamDelta)
-            const updated = store.sessions.setSessionTeamState(sid, newTeamState, msg.createdAt, session.namespace)
+            // Guard against accidental team-state wipe:
+            // if we only got an incremental update but no existing team state, skip persistence.
+            const shouldPersist = !(teamDelta._action === 'update' && !existingTeamState && newTeamState === null)
+            const updated = shouldPersist
+                ? store.sessions.setSessionTeamState(sid, newTeamState, msg.createdAt, session.namespace)
+                : false
             if (updated) {
                 onWebappEvent?.({ type: 'session-updated', sessionId: sid, data: { sid } })
             }
+
+            // Note: teammate permission_request messages are part of Claude's internal
+            // team protocol. They cannot be approved via RPC — the teammate resolves
+            // permissions through its own SendMessage-based approval flow with the
+            // team lead agent. We no longer attempt auto-approve here.
         }
 
         const update = {
@@ -228,6 +238,9 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             }
             socket.to(`session:${sid}`).emit('update', update)
             onWebappEvent?.({ type: 'session-updated', sessionId: sid, data: { sid } })
+
+            // Note: teammate permissions are resolved internally by the team lead
+            // agent via SendMessage. We no longer sync or auto-approve them.
         }
     }
 

@@ -129,7 +129,7 @@ export class ApiMachineClient {
                 case 'requestToApproveDirectoryCreation':
                     return { type: 'requestToApproveDirectoryCreation', directory: result.directory }
                 case 'error':
-                    return { type: 'error', errorMessage: result.errorMessage }
+                    throw new Error(result.errorMessage)
             }
         })
 

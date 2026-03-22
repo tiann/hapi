@@ -45,14 +45,7 @@ export const RunnerStateSchema = z.object({
     httpPort: z.number().optional(),
     startedAt: z.number().optional(),
     shutdownRequestedAt: z.number().optional(),
-    shutdownSource: z.union([z.enum(['mobile-app', 'cli', 'os-signal', 'unknown']), z.string()]).optional(),
-    lastSpawnError: z.object({
-        message: z.string(),
-        pid: z.number().optional(),
-        exitCode: z.number().nullable().optional(),
-        signal: z.string().nullable().optional(),
-        at: z.number()
-    }).nullable().optional()
+    shutdownSource: z.union([z.enum(['mobile-app', 'cli', 'os-signal', 'unknown']), z.string()]).optional()
 })
 
 export type RunnerState = z.infer<typeof RunnerStateSchema>

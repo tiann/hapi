@@ -1,5 +1,4 @@
 import { Hono } from 'hono'
-import { streamSSE } from 'hono/streaming'
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import type { SSEManager } from '../../sse/sseManager'
@@ -31,6 +30,12 @@ const visibilitySchema = z.object({
     subscriptionId: z.string().min(1),
     visibility: z.enum(['visible', 'hidden'])
 })
+
+const encoder = new TextEncoder()
+
+function formatSSE(data: string): Uint8Array {
+    return encoder.encode(`data: ${data}\n\n`)
+}
 
 export function createEventsRoutes(
     getSseManager: () => SSEManager | null,
@@ -77,45 +82,80 @@ export function createEventsRoutes(
             }
         }
 
-        return streamSSE(c, async (stream) => {
-            manager.subscribe({
-                id: subscriptionId,
-                namespace,
-                all,
-                sessionId: resolvedSessionId,
-                machineId,
-                visibility,
-                send: (event) => stream.writeSSE({ data: JSON.stringify(event) }),
-                sendHeartbeat: async () => {
-                    await stream.writeSSE({
-                        data: JSON.stringify({
-                            type: 'heartbeat',
-                            namespace,
-                            data: {
-                                timestamp: Date.now()
-                            }
-                        })
-                    })
-                }
-            })
+        // Use a direct push-based ReadableStream instead of Hono's streamSSE
+        // which wraps through TransformStream and can cause buffering delays in Bun.
+        let streamController: ReadableStreamDefaultController<Uint8Array> | null = null
+        let closed = false
 
-            await stream.writeSSE({
-                data: JSON.stringify({
-                    type: 'connection-changed',
-                    data: {
-                        status: 'connected',
-                        subscriptionId
+        const body = new ReadableStream<Uint8Array>({
+            start(controller) {
+                streamController = controller
+
+                manager.subscribe({
+                    id: subscriptionId,
+                    namespace,
+                    all,
+                    sessionId: resolvedSessionId,
+                    machineId,
+                    visibility,
+                    send: (event) => {
+                        if (closed) return
+                        try {
+                            controller.enqueue(formatSSE(JSON.stringify(event)))
+                        } catch {
+                            // Stream closed
+                        }
+                    },
+                    sendHeartbeat: () => {
+                        if (closed) return
+                        try {
+                            controller.enqueue(formatSSE(JSON.stringify({
+                                type: 'heartbeat',
+                                namespace,
+                                data: { timestamp: Date.now() }
+                            })))
+                        } catch {
+                            // Stream closed
+                        }
                     }
                 })
-            })
 
-            await new Promise<void>((resolve) => {
-                const done = () => resolve()
-                c.req.raw.signal.addEventListener('abort', done, { once: true })
-                stream.onAbort(done)
-            })
+                // Send initial connection event
+                try {
+                    controller.enqueue(formatSSE(JSON.stringify({
+                        type: 'connection-changed',
+                        data: { status: 'connected', subscriptionId }
+                    })))
+                } catch {
+                    // Stream closed
+                }
+            },
+            cancel() {
+                closed = true
+                streamController = null
+                manager.unsubscribe(subscriptionId)
+            }
+        })
 
+        // Also handle request abort
+        c.req.raw.signal.addEventListener('abort', () => {
+            closed = true
             manager.unsubscribe(subscriptionId)
+            try {
+                streamController?.close()
+            } catch {
+                // Already closed
+            }
+            streamController = null
+        }, { once: true })
+
+        return new Response(body, {
+            headers: {
+                'Content-Type': 'text/event-stream',
+                'Cache-Control': 'no-cache',
+                'Connection': 'keep-alive',
+                'X-Accel-Buffering': 'no',
+            }
         })
     })
 

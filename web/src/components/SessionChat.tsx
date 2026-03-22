@@ -17,6 +17,7 @@ import { TeamPanel } from '@/components/TeamPanel'
 import { usePlatform } from '@/hooks/usePlatform'
 import { useSessionActions } from '@/hooks/mutations/useSessionActions'
 import { useVoiceOptional } from '@/lib/voice-context'
+import { useToast } from '@/lib/toast-context'
 import { RealtimeVoiceSession, registerSessionStore, registerVoiceHooksStore, voiceHooks } from '@/realtime'
 import { isRemoteTerminalSupported } from '@/utils/terminalSupport'
 
@@ -110,6 +111,26 @@ export function SessionChat(props: {
 
         prevThinkingRef.current = props.session.thinking
     }, [props.session.thinking, props.session.id])
+
+    // Notify when teammate permission requests appear
+    const { addToast } = useToast()
+    const prevTeamPermIdsRef = useRef<Set<string>>(new Set())
+
+    useEffect(() => {
+        const perms = props.session.teamState?.pendingPermissions ?? []
+        const pending = perms.filter(p => p.status === 'pending')
+        for (const perm of pending) {
+            if (!prevTeamPermIdsRef.current.has(perm.requestId)) {
+                addToast({
+                    title: `${perm.memberName} requests approval`,
+                    body: `Tool: ${perm.toolName}${perm.description ? ` — ${perm.description}` : ''}`,
+                    sessionId: props.session.id,
+                    url: ''
+                })
+            }
+        }
+        prevTeamPermIdsRef.current = new Set(pending.map(p => p.requestId))
+    }, [props.session.teamState?.pendingPermissions, props.session.id, addToast])
 
     // Report permission requests to voice assistant
     // Note: voiceHooks internally checks isVoiceSessionStarted() so we don't need to check voice.status here
@@ -292,7 +313,13 @@ export function SessionChat(props: {
             />
 
             {props.session.teamState && (
-                <TeamPanel teamState={props.session.teamState} />
+                <TeamPanel
+                    teamState={props.session.teamState}
+                    messages={props.messages}
+                    api={props.api}
+                    sessionId={props.session.id}
+                    onSend={props.onSend}
+                />
             )}
 
             {sessionInactive ? (
@@ -336,6 +363,7 @@ export function SessionChat(props: {
                         active={props.session.active}
                         allowSendWhenInactive
                         thinking={props.session.thinking}
+                        teamState={props.session.teamState}
                         agentState={props.session.agentState}
                         contextSize={reduced.latestUsage?.contextSize}
                         controlledByUser={controlledByUser}
