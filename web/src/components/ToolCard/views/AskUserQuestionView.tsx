@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import type { ToolViewProps } from '@/components/ToolCard/views/_all'
 import { parseAskUserQuestionInput } from '@/components/ToolCard/askUserQuestion'
+import { MarkdownRenderer } from '@/components/MarkdownRenderer'
 import { cn } from '@/lib/utils'
 
 type AnswersFormat = Record<string, string[]> | Record<string, { answers: string[] }>
@@ -134,8 +135,8 @@ export function AskUserQuestionView(props: ToolViewProps) {
                 return (
                     <div key={idx} className="rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] p-3">
                         {q.question ? (
-                            <div className="text-sm text-[var(--app-fg)] break-words">
-                                {q.question}
+                            <div>
+                                <MarkdownRenderer content={q.question} />
                             </div>
                         ) : null}
 

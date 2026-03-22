@@ -3,6 +3,7 @@ import type { ApiClient } from '@/api/client'
 import type { ChatToolCall } from '@/chat/types'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { MarkdownRenderer } from '@/components/MarkdownRenderer'
 import {
     isRequestUserInputToolName,
     parseRequestUserInputInput,
@@ -205,8 +206,8 @@ export function RequestUserInputFooter(props: {
             {currentQuestion ? (
                 <div className="mt-3">
                     {currentQuestion.question ? (
-                        <div className="text-sm text-[var(--app-fg)] break-words">
-                            {currentQuestion.question}
+                        <div>
+                            <MarkdownRenderer content={currentQuestion.question} />
                         </div>
                     ) : null}
 

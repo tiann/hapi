@@ -3,6 +3,7 @@ import type { ApiClient } from '@/api/client'
 import type { ChatToolCall } from '@/chat/types'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { MarkdownRenderer } from '@/components/MarkdownRenderer'
 import { isAskUserQuestionToolName, parseAskUserQuestionInput, type AskUserQuestionQuestion } from '@/components/ToolCard/askUserQuestion'
 import { cn } from '@/lib/utils'
 import { usePlatform } from '@/hooks/usePlatform'
@@ -303,11 +304,8 @@ export function AskUserQuestionFooter(props: {
                                 </div>
                             ) : null}
                             {questions[clampedStep]?.question ? (
-                                <div className={cn(
-                                    "text-sm text-[var(--app-fg)] break-words",
-                                    questions[clampedStep]?.header ? "mt-2" : ""
-                                )}>
-                                    {questions[clampedStep].question}
+                                <div className={cn(questions[clampedStep]?.header ? "mt-2" : "")}>
+                                    <MarkdownRenderer content={questions[clampedStep].question} />
                                 </div>
                             ) : null}
                         </div>

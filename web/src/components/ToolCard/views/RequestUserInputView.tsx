@@ -3,6 +3,7 @@ import {
     parseRequestUserInputInput,
     parseRequestUserInputAnswers
 } from '@/components/ToolCard/requestUserInput'
+import { MarkdownRenderer } from '@/components/MarkdownRenderer'
 import { cn } from '@/lib/utils'
 
 function getSelectionMark(isSelected: boolean): string {
@@ -42,8 +43,8 @@ export function RequestUserInputView(props: ToolViewProps) {
                 return (
                     <div key={q.id} className="rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] p-3">
                         {q.question ? (
-                            <div className="text-sm text-[var(--app-fg)] break-words">
-                                {q.question}
+                            <div>
+                                <MarkdownRenderer content={q.question} />
                             </div>
                         ) : null}
 
