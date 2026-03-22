@@ -1,4 +1,5 @@
 import type { MessageStatus } from '@/types/api'
+import { useTranslation } from '@/lib/use-translation'
 
 function ErrorIcon() {
     return (
@@ -14,6 +15,15 @@ export function MessageStatusIndicator(props: {
     status?: MessageStatus
     onRetry?: () => void
 }) {
+    const { t } = useTranslation()
+    if (props.status === 'queued') {
+        return (
+            <span className="text-xs text-[var(--app-hint)]">
+                {t('message.status.queued')}
+            </span>
+        )
+    }
+
     if (props.status !== 'failed') {
         return null
     }
@@ -29,7 +39,7 @@ export function MessageStatusIndicator(props: {
                     onClick={props.onRetry}
                     className="text-xs text-blue-500 hover:underline"
                 >
-                    Retry
+                    {t('message.status.retry')}
                 </button>
             ) : null}
         </span>

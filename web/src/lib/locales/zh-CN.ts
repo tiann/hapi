@@ -81,6 +81,8 @@ export default {
   'dialog.delete.confirm': '删除',
   'dialog.delete.confirming': '删除中…',
   'dialog.error.default': '操作失败，请重试。',
+  'message.status.queued': '已排队',
+  'message.status.retry': '重试',
 
   // Common buttons
   'button.cancel': '取消',

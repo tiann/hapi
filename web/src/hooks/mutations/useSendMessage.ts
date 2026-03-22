@@ -1,7 +1,7 @@
 import { useMutation } from '@tanstack/react-query'
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { ApiClient } from '@/api/client'
-import type { AttachmentMetadata, DecryptedMessage } from '@/types/api'
+import type { AttachmentMetadata, DecryptedMessage, MessageStatus } from '@/types/api'
 import { makeClientSideId } from '@/lib/messages'
 import {
     appendOptimisticMessage,
@@ -16,6 +16,7 @@ type SendMessageInput = {
     localId: string
     createdAt: number
     attachments?: AttachmentMetadata[]
+    appendOptimistic?: boolean
 }
 
 type BlockedReason = 'no-api' | 'no-session' | 'pending'
@@ -24,6 +25,27 @@ type UseSendMessageOptions = {
     resolveSessionId?: (sessionId: string) => Promise<string>
     onSessionResolved?: (sessionId: string) => void
     onBlocked?: (reason: BlockedReason) => void
+    isSessionRunning?: boolean
+    enableQueue?: boolean
+}
+
+function createOptimisticMessage(input: SendMessageInput, status: MessageStatus): DecryptedMessage {
+    return {
+        id: input.localId,
+        seq: null,
+        localId: input.localId,
+        content: {
+            role: 'user',
+            content: {
+                type: 'text',
+                text: input.text,
+                attachments: input.attachments
+            }
+        },
+        createdAt: input.createdAt,
+        status,
+        originalText: input.text,
+    }
 }
 
 function findMessageByLocalId(
@@ -51,6 +73,8 @@ export function useSendMessage(
 } {
     const { haptic } = usePlatform()
     const [isResolving, setIsResolving] = useState(false)
+    const [isDequeuing, setIsDequeuing] = useState(false)
+    const [queuedMessages, setQueuedMessages] = useState<SendMessageInput[]>([])
     const resolveGuardRef = useRef(false)
 
     const mutation = useMutation({
@@ -61,24 +85,10 @@ export function useSendMessage(
             await api.sendMessage(input.sessionId, input.text, input.localId, input.attachments)
         },
         onMutate: async (input) => {
-            const optimisticMessage: DecryptedMessage = {
-                id: input.localId,
-                seq: null,
-                localId: input.localId,
-                content: {
-                    role: 'user',
-                    content: {
-                        type: 'text',
-                        text: input.text,
-                        attachments: input.attachments
-                    }
-                },
-                createdAt: input.createdAt,
-                status: 'sending',
-                originalText: input.text,
+            if (input.appendOptimistic === false) {
+                return
             }
-
-            appendOptimisticMessage(input.sessionId, optimisticMessage)
+            appendOptimisticMessage(input.sessionId, createOptimisticMessage(input, 'sending'))
         },
         onSuccess: (_, input) => {
             updateMessageStatus(input.sessionId, input.localId, 'sent')
@@ -88,7 +98,29 @@ export function useSendMessage(
             updateMessageStatus(input.sessionId, input.localId, 'failed')
             haptic.notification('error')
         },
+        onSettled: () => {
+            setIsDequeuing(false)
+        }
     })
+
+    const busy = mutation.isPending || resolveGuardRef.current || isResolving || isDequeuing
+    const running = options?.isSessionRunning === true
+    const canQueue = options?.enableQueue === true
+
+    useEffect(() => {
+        if (!api || busy || running || queuedMessages.length === 0) {
+            return
+        }
+
+        const [next, ...rest] = queuedMessages
+        setQueuedMessages(rest)
+        setIsDequeuing(true)
+        updateMessageStatus(next.sessionId, next.localId, 'sending')
+        mutation.mutate({
+            ...next,
+            appendOptimistic: false
+        })
+    }, [api, busy, mutation, queuedMessages, running])
 
     const sendMessage = (text: string, attachments?: AttachmentMetadata[]) => {
         if (!api) {
@@ -101,12 +133,28 @@ export function useSendMessage(
             haptic.notification('error')
             return
         }
-        if (mutation.isPending || resolveGuardRef.current) {
+        const localId = makeClientSideId('local')
+        const createdAt = Date.now()
+
+        if ((busy || running) && canQueue) {
+            const queuedInput: SendMessageInput = {
+                sessionId,
+                text,
+                localId,
+                createdAt,
+                attachments,
+                appendOptimistic: false
+            }
+            appendOptimisticMessage(sessionId, createOptimisticMessage(queuedInput, 'queued'))
+            setQueuedMessages(prev => [...prev, queuedInput])
+            haptic.impact('light')
+            return
+        }
+
+        if (busy) {
             options?.onBlocked?.('pending')
             return
         }
-        const localId = makeClientSideId('local')
-        const createdAt = Date.now()
         void (async () => {
             let targetSessionId = sessionId
             if (options?.resolveSessionId) {
@@ -133,6 +181,7 @@ export function useSendMessage(
                 localId,
                 createdAt,
                 attachments,
+                appendOptimistic: true
             })
         })()
     }
@@ -148,7 +197,7 @@ export function useSendMessage(
             haptic.notification('error')
             return
         }
-        if (mutation.isPending || resolveGuardRef.current) {
+        if (busy) {
             options?.onBlocked?.('pending')
             return
         }
@@ -169,6 +218,6 @@ export function useSendMessage(
     return {
         sendMessage,
         retryMessage,
-        isSending: mutation.isPending || isResolving,
+        isSending: mutation.isPending || isResolving || isDequeuing,
     }
 }

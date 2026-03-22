@@ -261,7 +261,9 @@ function SessionPage() {
                 })
             }
             // 'no-session' and 'pending' don't need toast - either invalid state or expected behavior
-        }
+        },
+        isSessionRunning: Boolean(session?.thinking),
+        enableQueue: Boolean(session?.active)
     })
 
     // Get agent type from session metadata for slash commands

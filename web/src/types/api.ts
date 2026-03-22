@@ -35,7 +35,7 @@ export type SessionMetadataSummary = {
     worktree?: WorktreeMetadata
 }
 
-export type MessageStatus = 'sending' | 'sent' | 'failed'
+export type MessageStatus = 'queued' | 'sending' | 'sent' | 'failed'
 
 export type DecryptedMessage = ProtocolDecryptedMessage & {
     status?: MessageStatus

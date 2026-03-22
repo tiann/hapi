@@ -79,6 +79,8 @@ export default {
   'dialog.delete.confirm': 'Delete',
   'dialog.delete.confirming': 'Deleting…',
   'dialog.error.default': 'Operation failed. Please try again.',
+  'message.status.queued': 'Queued',
+  'message.status.retry': 'Retry',
 
   // Common buttons
   'button.cancel': 'Cancel',

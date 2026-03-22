@@ -115,7 +115,7 @@ export function HappyComposer(props: {
         const path = (attachment as { path?: string }).path
         return typeof path === 'string' && path.length > 0
     })
-    const canSend = (hasText || hasAttachments) && attachmentsReady && !controlsDisabled && !threadIsRunning
+    const canSend = (hasText || hasAttachments) && attachmentsReady && !controlsDisabled
 
     const [inputState, setInputState] = useState<TextInputState>({
         text: '',
