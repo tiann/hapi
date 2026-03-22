@@ -43,10 +43,12 @@ function OptionRow(props: {
         >
             <SelectionMark checked={props.checked} />
             <span className="min-w-0 flex-1">
-                <div className="font-medium text-[var(--app-fg)] break-words">{props.title}</div>
+                <div className="[&_.aui-md]:font-medium [&_.aui-md]:text-sm [&_.aui-md]:text-[var(--app-fg)]">
+                    <MarkdownRenderer content={props.title} />
+                </div>
                 {props.description ? (
-                    <div className="mt-0.5 text-xs text-[var(--app-hint)] break-words">
-                        {props.description}
+                    <div className="mt-0.5 [&_.aui-md]:text-xs [&_.aui-md]:text-[var(--app-hint)]">
+                        <MarkdownRenderer content={props.description} />
                     </div>
                 ) : null}
             </span>
