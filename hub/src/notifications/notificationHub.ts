@@ -1,6 +1,6 @@
 import type { Session, SyncEngine, SyncEvent } from '../sync/syncEngine'
 import type { NotificationChannel, NotificationHubOptions } from './notificationTypes'
-import { extractMessageEventType } from './eventParsing'
+import { extractMessageEventType, extractAssistantMessageText } from './eventParsing'
 
 export class NotificationHub {
     private readonly channels: NotificationChannel[]
@@ -9,6 +9,8 @@ export class NotificationHub {
     private readonly lastKnownRequests: Map<string, Set<string>> = new Map()
     private readonly notificationDebounce: Map<string, NodeJS.Timeout> = new Map()
     private readonly lastReadyNotificationAt: Map<string, number> = new Map()
+    private readonly lastMessageNotificationAt: Map<string, number> = new Map()
+    private readonly messageCooldownMs: number = 100  // Reduced cooldown for better responsiveness
     private unsubscribeSyncEvents: (() => void) | null = null
 
     constructor(
@@ -36,6 +38,7 @@ export class NotificationHub {
         this.notificationDebounce.clear()
         this.lastKnownRequests.clear()
         this.lastReadyNotificationAt.clear()
+        this.lastMessageNotificationAt.clear()
     }
 
     private handleSyncEvent(event: SyncEvent): void {
@@ -55,10 +58,24 @@ export class NotificationHub {
         }
 
         if (event.type === 'message-received' && event.sessionId) {
+            console.log(`[NotificationHub] message-received event, sessionId=${event.sessionId}`)
+
             const eventType = extractMessageEventType(event)
+            console.log(`[NotificationHub] Event type: ${eventType}`)
+
             if (eventType === 'ready') {
                 this.sendReadyNotification(event.sessionId).catch((error) => {
                     console.error('[NotificationHub] Failed to send ready notification:', error)
+                })
+            }
+
+            // Handle assistant messages
+            const assistantText = extractAssistantMessageText(event)
+            console.log(`[NotificationHub] Assistant text: ${assistantText ? assistantText.substring(0, 100) : 'null'}`)
+
+            if (assistantText) {
+                this.sendMessageNotification(event.sessionId, assistantText).catch((error) => {
+                    console.error('[NotificationHub] Failed to send message notification:', error)
                 })
             }
         }
@@ -72,6 +89,7 @@ export class NotificationHub {
         }
         this.lastKnownRequests.delete(sessionId)
         this.lastReadyNotificationAt.delete(sessionId)
+        this.lastMessageNotificationAt.delete(sessionId)
     }
 
     private getNotifiableSession(sessionId: string): Session | null {
@@ -162,6 +180,39 @@ export class NotificationHub {
                 await channel.sendPermissionRequest(session)
             } catch (error) {
                 console.error('[NotificationHub] Failed to send permission notification:', error)
+            }
+        }
+    }
+
+    private async sendMessageNotification(sessionId: string, text: string): Promise<void> {
+        console.log(`[NotificationHub] sendMessageNotification: sessionId=${sessionId}, text=${text.substring(0, 50)}`)
+
+        const session = this.getNotifiableSession(sessionId)
+        if (!session) {
+            console.log(`[NotificationHub] No notifiable session found`)
+            return
+        }
+
+        // Apply cooldown per session
+        const now = Date.now()
+        const last = this.lastMessageNotificationAt.get(sessionId) ?? 0
+        if (now - last < this.messageCooldownMs) {
+            console.log(`[NotificationHub] Message cooldown active, skipping`)
+            return
+        }
+        this.lastMessageNotificationAt.set(sessionId, now)
+
+        console.log(`[NotificationHub] Calling notifyMessage for ${this.channels.length} channels`)
+        await this.notifyMessage(session, text)
+    }
+
+    private async notifyMessage(session: Session, text: string): Promise<void> {
+        for (const channel of this.channels) {
+            if (!channel.sendMessage) continue
+            try {
+                await channel.sendMessage(session, text)
+            } catch (error) {
+                console.error('[NotificationHub] Failed to send message notification:', error)
             }
         }
     }

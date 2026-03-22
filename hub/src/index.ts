@@ -14,6 +14,7 @@ import { SyncEngine, type SyncEvent } from './sync/syncEngine'
 import { NotificationHub } from './notifications/notificationHub'
 import type { NotificationChannel } from './notifications/notificationTypes'
 import { HappyBot } from './telegram/bot'
+import { FeishuBot } from './feishu/bot'
 import { startWebServer } from './web/server'
 import { getOrCreateJwtSecret } from './config/jwtSecret'
 import { createSocketServer } from './socket/server'
@@ -99,6 +100,7 @@ function mergeCorsOrigins(base: string[], extra: string[]): string[] {
 
 let syncEngine: SyncEngine | null = null
 let happyBot: HappyBot | null = null
+let feishuBot: FeishuBot | null = null
 let webServer: BunServer<WebSocketData> | null = null
 let sseManager: SSEManager | null = null
 let visibilityTracker: VisibilityTracker | null = null
@@ -148,6 +150,15 @@ async function main() {
         console.log(`[Hub] Telegram: enabled (${tokenSource})`)
         const notificationSource = formatSource(config.sources.telegramNotification)
         console.log(`[Hub] Telegram notifications: ${config.telegramNotification ? 'enabled' : 'disabled'} (${notificationSource})`)
+    }
+
+    if (!config.feishuEnabled) {
+        console.log('[Hub] Feishu: disabled (no FEISHU_APP_ID/FEISHU_APP_SECRET)')
+    } else {
+        const appIdSource = formatSource(config.sources.feishuAppId)
+        console.log(`[Hub] Feishu: enabled (${appIdSource})`)
+        const notificationSource = formatSource(config.sources.feishuNotification)
+        console.log(`[Hub] Feishu notifications: ${config.feishuNotification ? 'enabled' : 'disabled'} (${notificationSource})`)
     }
 
     // Display tunnel status
@@ -202,6 +213,23 @@ async function main() {
         }
     }
 
+    // Initialize Feishu bot (optional)
+    if (config.feishuEnabled && config.feishuAppId && config.feishuAppSecret) {
+        feishuBot = new FeishuBot({
+            syncEngine,
+            appId: config.feishuAppId,
+            appSecret: config.feishuAppSecret,
+            baseUrl: config.feishuBaseUrl,
+            encryptKey: config.feishuEncryptKey,
+            verificationToken: config.feishuVerificationToken,
+            store
+        })
+        // Only add to notification channels if notifications are enabled
+        if (config.feishuNotification) {
+            notificationChannels.push(feishuBot)
+        }
+    }
+
     notificationHub = new NotificationHub(syncEngine, notificationChannels)
 
     // Start HTTP service first (before tunnel, so tunnel has something to forward to)
@@ -218,9 +246,12 @@ async function main() {
         officialWebUrl
     })
 
-    // Start the bot if configured
+    // Start the bots if configured
     if (happyBot) {
         await happyBot.start()
+    }
+    if (feishuBot) {
+        await feishuBot.start()
     }
 
     console.log('')
@@ -295,6 +326,7 @@ async function main() {
         console.log('\nShutting down...')
         await tunnelManager?.stop()
         await happyBot?.stop()
+        await feishuBot?.stop()
         notificationHub?.stop()
         syncEngine?.stop()
         sseManager?.stop()

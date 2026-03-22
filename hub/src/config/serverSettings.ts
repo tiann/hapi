@@ -13,6 +13,13 @@ import { getSettingsFile, readSettings, writeSettings } from './settings'
 export interface ServerSettings {
     telegramBotToken: string | null
     telegramNotification: boolean
+    feishuAppId: string | null
+    feishuAppSecret: string | null
+    feishuEncryptKey: string | null
+    feishuVerificationToken: string | null
+    feishuEnabled: boolean
+    feishuNotification: boolean
+    feishuBaseUrl: string
     listenHost: string
     listenPort: number
     publicUrl: string
@@ -24,6 +31,13 @@ export interface ServerSettingsResult {
     sources: {
         telegramBotToken: 'env' | 'file' | 'default'
         telegramNotification: 'env' | 'file' | 'default'
+        feishuAppId: 'env' | 'file' | 'default'
+        feishuAppSecret: 'env' | 'file' | 'default'
+        feishuEncryptKey: 'env' | 'file' | 'default'
+        feishuVerificationToken: 'env' | 'file' | 'default'
+        feishuEnabled: 'env' | 'file' | 'default'
+        feishuNotification: 'env' | 'file' | 'default'
+        feishuBaseUrl: 'env' | 'file' | 'default'
         listenHost: 'env' | 'file' | 'default'
         listenPort: 'env' | 'file' | 'default'
         publicUrl: 'env' | 'file' | 'default'
@@ -87,11 +101,19 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
     const sources: ServerSettingsResult['sources'] = {
         telegramBotToken: 'default',
         telegramNotification: 'default',
+        feishuAppId: 'default',
+        feishuAppSecret: 'default',
+        feishuEncryptKey: 'default',
+        feishuVerificationToken: 'default',
+        feishuEnabled: 'default',
+        feishuNotification: 'default',
+        feishuBaseUrl: 'default',
         listenHost: 'default',
         listenPort: 'default',
         publicUrl: 'default',
         corsOrigins: 'default',
     }
+
     // telegramBotToken: env > file > null
     let telegramBotToken: string | null = null
     if (process.env.TELEGRAM_BOT_TOKEN) {
@@ -118,6 +140,104 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
     } else if (settings.telegramNotification !== undefined) {
         telegramNotification = settings.telegramNotification
         sources.telegramNotification = 'file'
+    }
+
+    // feishuAppId: env > file > null
+    let feishuAppId: string | null = null
+    if (process.env.FEISHU_APP_ID) {
+        feishuAppId = process.env.FEISHU_APP_ID
+        sources.feishuAppId = 'env'
+        if (settings.feishuAppId === undefined) {
+            settings.feishuAppId = feishuAppId
+            needsSave = true
+        }
+    } else if (settings.feishuAppId !== undefined) {
+        feishuAppId = settings.feishuAppId
+        sources.feishuAppId = 'file'
+    }
+
+    // feishuAppSecret: env > file > null
+    let feishuAppSecret: string | null = null
+    if (process.env.FEISHU_APP_SECRET) {
+        feishuAppSecret = process.env.FEISHU_APP_SECRET
+        sources.feishuAppSecret = 'env'
+        if (settings.feishuAppSecret === undefined) {
+            settings.feishuAppSecret = feishuAppSecret
+            needsSave = true
+        }
+    } else if (settings.feishuAppSecret !== undefined) {
+        feishuAppSecret = settings.feishuAppSecret
+        sources.feishuAppSecret = 'file'
+    }
+
+    // feishuEncryptKey: env > file > null
+    let feishuEncryptKey: string | null = null
+    if (process.env.FEISHU_ENCRYPT_KEY) {
+        feishuEncryptKey = process.env.FEISHU_ENCRYPT_KEY
+        sources.feishuEncryptKey = 'env'
+        if (settings.feishuEncryptKey === undefined) {
+            settings.feishuEncryptKey = feishuEncryptKey
+            needsSave = true
+        }
+    } else if (settings.feishuEncryptKey !== undefined) {
+        feishuEncryptKey = settings.feishuEncryptKey
+        sources.feishuEncryptKey = 'file'
+    }
+
+    // feishuVerificationToken: env > file > null
+    let feishuVerificationToken: string | null = null
+    if (process.env.FEISHU_VERIFICATION_TOKEN) {
+        feishuVerificationToken = process.env.FEISHU_VERIFICATION_TOKEN
+        sources.feishuVerificationToken = 'env'
+        if (settings.feishuVerificationToken === undefined) {
+            settings.feishuVerificationToken = feishuVerificationToken
+            needsSave = true
+        }
+    } else if (settings.feishuVerificationToken !== undefined) {
+        feishuVerificationToken = settings.feishuVerificationToken
+        sources.feishuVerificationToken = 'file'
+    }
+
+    // feishuEnabled: env > file > true if credentials present
+    let feishuEnabled = Boolean(feishuAppId && feishuAppSecret)
+    if (process.env.FEISHU_ENABLED !== undefined) {
+        feishuEnabled = process.env.FEISHU_ENABLED === 'true'
+        sources.feishuEnabled = 'env'
+        if (settings.feishuEnabled === undefined) {
+            settings.feishuEnabled = feishuEnabled
+            needsSave = true
+        }
+    } else if (settings.feishuEnabled !== undefined) {
+        feishuEnabled = settings.feishuEnabled
+        sources.feishuEnabled = 'file'
+    }
+
+    // feishuNotification: env > file > true (default enabled)
+    let feishuNotification = true
+    if (process.env.FEISHU_NOTIFICATION !== undefined) {
+        feishuNotification = process.env.FEISHU_NOTIFICATION === 'true'
+        sources.feishuNotification = 'env'
+        if (settings.feishuNotification === undefined) {
+            settings.feishuNotification = feishuNotification
+            needsSave = true
+        }
+    } else if (settings.feishuNotification !== undefined) {
+        feishuNotification = settings.feishuNotification
+        sources.feishuNotification = 'file'
+    }
+
+    // feishuBaseUrl: env > file > default (feishu.cn for CN, larksuite.com for international)
+    let feishuBaseUrl = 'https://open.feishu.cn'
+    if (process.env.FEISHU_BASE_URL) {
+        feishuBaseUrl = process.env.FEISHU_BASE_URL
+        sources.feishuBaseUrl = 'env'
+        if (settings.feishuBaseUrl === undefined) {
+            settings.feishuBaseUrl = feishuBaseUrl
+            needsSave = true
+        }
+    } else if (settings.feishuBaseUrl !== undefined) {
+        feishuBaseUrl = settings.feishuBaseUrl
+        sources.feishuBaseUrl = 'file'
     }
 
     // listenHost: env > file (new or old name) > default
@@ -212,6 +332,13 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
         settings: {
             telegramBotToken,
             telegramNotification,
+            feishuAppId,
+            feishuAppSecret,
+            feishuEncryptKey,
+            feishuVerificationToken,
+            feishuEnabled,
+            feishuNotification,
+            feishuBaseUrl,
             listenHost,
             listenPort,
             publicUrl,
