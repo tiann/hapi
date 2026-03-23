@@ -10,10 +10,27 @@ function ErrorIcon() {
     )
 }
 
+function SendingIcon() {
+    return (
+        <svg className="h-[14px] w-[14px] animate-spin" viewBox="0 0 16 16" fill="none">
+            <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="1.5" opacity="0.3" />
+            <path d="M14 8a6 6 0 0 0-6-6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+        </svg>
+    )
+}
+
 export function MessageStatusIndicator(props: {
     status?: MessageStatus
     onRetry?: () => void
 }) {
+    if (props.status === 'sending') {
+        return (
+            <span className="inline-flex items-center text-[var(--app-fg-muted)]">
+                <SendingIcon />
+            </span>
+        )
+    }
+
     if (props.status !== 'failed') {
         return null
     }
