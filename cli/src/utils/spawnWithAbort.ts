@@ -130,6 +130,12 @@ export async function spawnWithAbort(options: SpawnWithAbortOptions): Promise<vo
                 resolve();
                 return;
             }
+            // When abort was explicitly requested, treat any exit code as expected
+            if (options.signal.aborted) {
+                logDebug(`Process exited with code=${code ?? 'null'} after abort, treating as expected`);
+                resolve();
+                return;
+            }
             if (signal) {
                 reject(new Error(`Process terminated with signal: ${signal}`));
                 return;
