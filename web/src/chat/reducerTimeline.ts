@@ -221,13 +221,8 @@ export function reduceTimeline(
                 }
 
                 if (c.type === 'sidechain') {
-                    blocks.push({
-                        kind: 'user-text',
-                        id: `${msg.id}:${idx}`,
-                        localId: null,
-                        createdAt: msg.createdAt,
-                        text: c.prompt
-                    })
+                    // Skip - the prompt is already visible in the parent Task tool call's input
+                    continue
                 }
             }
         }
