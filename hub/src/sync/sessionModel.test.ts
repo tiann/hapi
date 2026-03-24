@@ -31,6 +31,25 @@ describe('session model', () => {
 
         expect(session.model).toBe('gpt-5.4')
         expect(toSessionSummary(session).model).toBe('gpt-5.4')
+        expect(toSessionSummary(session).effort).toBeNull()
+    })
+
+    it('includes explicit effort in session summaries', () => {
+        const store = new Store(':memory:')
+        const events: SyncEvent[] = []
+        const cache = new SessionCache(store, createPublisher(events))
+
+        const session = cache.getOrCreateSession(
+            'session-effort-summary',
+            { path: '/tmp/project', host: 'localhost', flavor: 'claude' },
+            null,
+            'default',
+            'sonnet',
+            'high'
+        )
+
+        expect(session.effort).toBe('high')
+        expect(toSessionSummary(session).effort).toBe('high')
     })
 
     it('preserves model from old session when merging into resumed session', async () => {
@@ -104,6 +123,54 @@ describe('session model', () => {
         expect(store.sessions.getSession(session.id)?.model).toBeNull()
     })
 
+    it('persists applied session effort updates, including clear-to-auto', () => {
+        const store = new Store(':memory:')
+        const events: SyncEvent[] = []
+        const cache = new SessionCache(store, createPublisher(events))
+
+        const session = cache.getOrCreateSession(
+            'session-effort-config',
+            { path: '/tmp/project', host: 'localhost', flavor: 'claude' },
+            null,
+            'default',
+            'sonnet',
+            'medium'
+        )
+
+        cache.applySessionConfig(session.id, { effort: 'max' })
+        expect(cache.getSession(session.id)?.effort).toBe('max')
+        expect(store.sessions.getSession(session.id)?.effort).toBe('max')
+
+        cache.applySessionConfig(session.id, { effort: null })
+        expect(cache.getSession(session.id)?.effort).toBeNull()
+        expect(store.sessions.getSession(session.id)?.effort).toBeNull()
+    })
+
+    it('persists keepalive effort changes, including clearing the effort', () => {
+        const store = new Store(':memory:')
+        const events: SyncEvent[] = []
+        const cache = new SessionCache(store, createPublisher(events))
+
+        const session = cache.getOrCreateSession(
+            'session-effort-heartbeat',
+            { path: '/tmp/project', host: 'localhost', flavor: 'claude' },
+            null,
+            'default',
+            'sonnet',
+            'high'
+        )
+
+        cache.handleSessionAlive({
+            sid: session.id,
+            time: Date.now(),
+            thinking: false,
+            effort: null
+        })
+
+        expect(cache.getSession(session.id)?.effort).toBeNull()
+        expect(store.sessions.getSession(session.id)?.effort).toBeNull()
+    })
+
     it('tracks collaboration mode updates in memory from config and keepalive', () => {
         const store = new Store(':memory:')
         const events: SyncEvent[] = []
@@ -161,13 +228,21 @@ describe('session model', () => {
             engine.handleMachineAlive({ machineId: 'machine-1', time: Date.now() })
 
             let capturedModel: string | undefined
+            let capturedEffort: string | undefined
             ;(engine as any).rpcGateway.spawnSession = async (
                 _machineId: string,
                 _directory: string,
                 _agent: string,
-                model?: string
+                model?: string,
+                _modelReasoningEffort?: string,
+                _yolo?: boolean,
+                _sessionType?: string,
+                _worktreeName?: string,
+                _resumeSessionId?: string,
+                effort?: string
             ) => {
                 capturedModel = model
+                capturedEffort = effort
                 return { type: 'success', sessionId: session.id }
             }
             ;(engine as any).waitForSessionActive = async () => true
@@ -176,6 +251,7 @@ describe('session model', () => {
 
             expect(result).toEqual({ type: 'success', sessionId: session.id })
             expect(capturedModel).toBe('gpt-5.4')
+            expect(capturedEffort).toBeUndefined()
         } finally {
             engine.stop()
         }

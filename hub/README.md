@@ -92,6 +92,7 @@ See `src/web/routes/` for all endpoints.
 - `GET /api/sessions/:id/skills` - List skills.
 - `POST /api/sessions/:id/permission-mode` - Set permission mode.
 - `POST /api/sessions/:id/model` - Set model preference.
+- `POST /api/sessions/:id/effort` - Set Claude effort preference.
 
 ### Messages (`src/web/routes/messages.ts`)
 

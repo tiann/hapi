@@ -170,6 +170,7 @@ export interface QueryOptions {
     continue?: boolean
     resume?: string
     model?: string
+    effort?: string
     fallbackModel?: string
     settingsPath?: string
     strictMcpConfig?: boolean

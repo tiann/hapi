@@ -16,6 +16,7 @@ type SessionAlivePayload = {
     mode?: 'local' | 'remote'
     permissionMode?: PermissionMode
     model?: string | null
+    effort?: string | null
     collaborationMode?: CodexCollaborationMode
 }
 

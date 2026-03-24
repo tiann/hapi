@@ -9,12 +9,13 @@ import { useActiveSuggestions, type Suggestion } from '@/hooks/useActiveSuggesti
 import { useDirectorySuggestions } from '@/hooks/useDirectorySuggestions'
 import { useRecentPaths } from '@/hooks/useRecentPaths'
 import { useTranslation } from '@/lib/use-translation'
-import type { AgentType, CodexReasoningEffort, SessionType } from './types'
+import type { AgentType, ClaudeEffort, CodexReasoningEffort, SessionType } from './types'
 import { ActionButtons } from './ActionButtons'
 import { AgentSelector } from './AgentSelector'
 import { DirectorySection } from './DirectorySection'
 import { MachineSelector } from './MachineSelector'
 import { ModelSelector } from './ModelSelector'
+import { ClaudeEffortSelector } from './ClaudeEffortSelector'
 import { ReasoningEffortSelector } from './ReasoningEffortSelector'
 import {
     loadPreferredAgent,
@@ -46,6 +47,7 @@ export function NewSession(props: {
     const [isDirectoryFocused, setIsDirectoryFocused] = useState(false)
     const [agent, setAgent] = useState<AgentType>(loadPreferredAgent)
     const [model, setModel] = useState('auto')
+    const [effort, setEffort] = useState<ClaudeEffort>('auto')
     const [modelReasoningEffort, setModelReasoningEffort] = useState<CodexReasoningEffort>('default')
     const [yoloMode, setYoloMode] = useState(loadPreferredYoloMode)
     const [sessionType, setSessionType] = useState<SessionType>('simple')
@@ -62,6 +64,7 @@ export function NewSession(props: {
 
     useEffect(() => {
         setModel('auto')
+        setEffort('auto')
     }, [agent])
 
     useEffect(() => {
@@ -244,6 +247,7 @@ export function NewSession(props: {
             }
 
             const resolvedModel = model !== 'auto' && agent !== 'opencode' ? model : undefined
+            const resolvedEffort = agent === 'claude' && effort !== 'auto' ? effort : undefined
             const resolvedModelReasoningEffort = agent === 'codex' && modelReasoningEffort !== 'default'
                 ? modelReasoningEffort
                 : undefined
@@ -252,6 +256,7 @@ export function NewSession(props: {
                 directory: trimmedDirectory,
                 agent,
                 model: resolvedModel,
+                effort: resolvedEffort,
                 modelReasoningEffort: resolvedModelReasoningEffort,
                 yolo: yoloMode,
                 sessionType,
@@ -323,6 +328,12 @@ export function NewSession(props: {
                 model={model}
                 isDisabled={isFormDisabled}
                 onModelChange={setModel}
+            />
+            <ClaudeEffortSelector
+                agent={agent}
+                effort={effort}
+                isDisabled={isFormDisabled}
+                onEffortChange={setEffort}
             />
             <ReasoningEffortSelector
                 agent={agent}

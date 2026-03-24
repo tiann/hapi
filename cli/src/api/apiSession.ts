@@ -443,6 +443,7 @@ export class ApiSessionClient extends EventEmitter {
         runtime?: {
             permissionMode?: SessionPermissionMode
             model?: SessionModel
+            effort?: string | null
             collaborationMode?: SessionCollaborationMode
         }
     ): void {

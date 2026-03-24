@@ -1,6 +1,6 @@
 import { ApiClient, ApiSessionClient } from '@/lib';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
-import type { Metadata, SessionCollaborationMode, SessionModel, SessionPermissionMode } from '@/api/types';
+import type { Metadata, SessionCollaborationMode, SessionEffort, SessionModel, SessionPermissionMode } from '@/api/types';
 import { logger } from '@/ui/logger';
 
 export type AgentSessionBaseOptions<Mode> = {
@@ -17,6 +17,7 @@ export type AgentSessionBaseOptions<Mode> = {
     applySessionIdToMetadata: (metadata: Metadata, sessionId: string) => Metadata;
     permissionMode?: SessionPermissionMode;
     model?: SessionModel;
+    effort?: SessionEffort;
     collaborationMode?: SessionCollaborationMode;
 };
 
@@ -39,6 +40,7 @@ export class AgentSessionBase<Mode> {
     private keepAliveInterval: NodeJS.Timeout | null = null;
     protected permissionMode?: SessionPermissionMode;
     protected model?: SessionModel;
+    protected effort?: SessionEffort;
     protected collaborationMode?: SessionCollaborationMode;
 
     constructor(opts: AgentSessionBaseOptions<Mode>) {
@@ -55,6 +57,7 @@ export class AgentSessionBase<Mode> {
         this.mode = opts.mode ?? 'local';
         this.permissionMode = opts.permissionMode;
         this.model = opts.model;
+        this.effort = opts.effort;
         this.collaborationMode = opts.collaborationMode;
 
         this.client.keepAlive(this.thinking, this.mode, this.getKeepAliveRuntime());
@@ -74,10 +77,11 @@ export class AgentSessionBase<Mode> {
         this.client.keepAlive(this.thinking, mode, this.getKeepAliveRuntime());
         const permissionLabel = this.permissionMode ?? 'unset';
         const modelLabel = this.model === undefined ? 'unset' : (this.model ?? 'auto');
+        const effortLabel = this.effort === undefined ? 'unset' : (this.effort ?? 'auto');
         const collaborationLabel = this.collaborationMode ?? 'unset';
         logger.debug(
             `[${this.sessionLabel}] Mode switched to ${mode} ` +
-            `(permissionMode=${permissionLabel}, model=${modelLabel}, collaborationMode=${collaborationLabel})`
+            `(permissionMode=${permissionLabel}, model=${modelLabel}, effort=${effortLabel}, collaborationMode=${collaborationLabel})`
         );
         this._onModeChange(mode);
     };
@@ -111,13 +115,19 @@ export class AgentSessionBase<Mode> {
     };
 
     protected getKeepAliveRuntime():
-        { permissionMode?: SessionPermissionMode; model?: SessionModel; collaborationMode?: SessionCollaborationMode } | undefined {
-        if (this.permissionMode === undefined && this.model === undefined && this.collaborationMode === undefined) {
+        {
+            permissionMode?: SessionPermissionMode
+            model?: SessionModel
+            effort?: SessionEffort
+            collaborationMode?: SessionCollaborationMode
+        } | undefined {
+        if (this.permissionMode === undefined && this.model === undefined && this.effort === undefined && this.collaborationMode === undefined) {
             return undefined;
         }
         return {
             permissionMode: this.permissionMode,
             model: this.model,
+            effort: this.effort,
             collaborationMode: this.collaborationMode
         };
     }
@@ -128,6 +138,10 @@ export class AgentSessionBase<Mode> {
 
     getModel(): SessionModel | undefined {
         return this.model;
+    }
+
+    getEffort(): SessionEffort | undefined {
+        return this.effort;
     }
 
     getCollaborationMode(): SessionCollaborationMode | undefined {

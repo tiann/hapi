@@ -140,6 +140,7 @@ export interface ClientToServerEvents {
         mode?: 'local' | 'remote'
         permissionMode?: PermissionMode
         model?: string | null
+        effort?: string | null
         collaborationMode?: CodexCollaborationMode
     }) => void
     'session-end': (data: { sid: string; time: number }) => void

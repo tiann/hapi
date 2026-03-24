@@ -17,6 +17,7 @@ type DbSessionRow = {
     agent_state: string | null
     agent_state_version: number
     model: string | null
+    effort: string | null
     todos: string | null
     todos_updated_at: number | null
     team_state: string | null
@@ -39,6 +40,7 @@ function toStoredSession(row: DbSessionRow): StoredSession {
         agentState: safeJsonParse(row.agent_state),
         agentStateVersion: row.agent_state_version,
         model: row.model,
+        effort: row.effort,
         todos: safeJsonParse(row.todos),
         todosUpdatedAt: row.todos_updated_at,
         teamState: safeJsonParse(row.team_state),
@@ -55,7 +57,8 @@ export function getOrCreateSession(
     metadata: unknown,
     agentState: unknown,
     namespace: string,
-    model?: string
+    model?: string,
+    effort?: string
 ): StoredSession {
     const existing = db.prepare(
         'SELECT * FROM sessions WHERE tag = ? AND namespace = ? ORDER BY created_at DESC LIMIT 1'
@@ -77,6 +80,7 @@ export function getOrCreateSession(
             metadata, metadata_version,
             agent_state, agent_state_version,
             model,
+            effort,
             todos, todos_updated_at,
             active, active_at, seq
         ) VALUES (
@@ -84,6 +88,7 @@ export function getOrCreateSession(
             @metadata, 1,
             @agent_state, 1,
             @model,
+            @effort,
             NULL, NULL,
             0, NULL, 0
         )
@@ -95,7 +100,8 @@ export function getOrCreateSession(
         updated_at: now,
         metadata: metadataJson,
         agent_state: agentStateJson,
-        model: model ?? null
+        model: model ?? null,
+        effort: effort ?? null
     })
 
     const row = getSession(db, id)
@@ -254,6 +260,39 @@ export function setSessionModel(
             id,
             namespace,
             model,
+            updated_at: now,
+            touch_updated_at: touchUpdatedAt ? 1 : 0
+        })
+
+        return result.changes === 1
+    } catch {
+        return false
+    }
+}
+
+export function setSessionEffort(
+    db: Database,
+    id: string,
+    effort: string | null,
+    namespace: string,
+    options?: { touchUpdatedAt?: boolean }
+): boolean {
+    const now = Date.now()
+    const touchUpdatedAt = options?.touchUpdatedAt === true
+
+    try {
+        const result = db.prepare(`
+            UPDATE sessions
+            SET effort = @effort,
+                updated_at = CASE WHEN @touch_updated_at = 1 THEN @updated_at ELSE updated_at END,
+                seq = seq + 1
+            WHERE id = @id
+              AND namespace = @namespace
+              AND effort IS NOT @effort
+        `).run({
+            id,
+            namespace,
+            effort,
             updated_at: now,
             touch_updated_at: touchUpdatedAt ? 1 : 0
         })

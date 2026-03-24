@@ -18,6 +18,7 @@ export function useSessionActions(
     setPermissionMode: (mode: PermissionMode) => Promise<void>
     setCollaborationMode: (mode: CodexCollaborationMode) => Promise<void>
     setModel: (model: string | null) => Promise<void>
+    setEffort: (effort: string | null) => Promise<void>
     renameSession: (name: string) => Promise<void>
     deleteSession: () => Promise<void>
     isPending: boolean
@@ -99,6 +100,16 @@ export function useSessionActions(
         onSuccess: () => void invalidateSession(),
     })
 
+    const effortMutation = useMutation({
+        mutationFn: async (effort: string | null) => {
+            if (!api || !sessionId) {
+                throw new Error('Session unavailable')
+            }
+            await api.setEffort(sessionId, effort)
+        },
+        onSuccess: () => void invalidateSession(),
+    })
+
     const renameMutation = useMutation({
         mutationFn: async (name: string) => {
             if (!api || !sessionId) {
@@ -131,6 +142,7 @@ export function useSessionActions(
         setPermissionMode: permissionMutation.mutateAsync,
         setCollaborationMode: collaborationMutation.mutateAsync,
         setModel: modelMutation.mutateAsync,
+        setEffort: effortMutation.mutateAsync,
         renameSession: renameMutation.mutateAsync,
         deleteSession: deleteMutation.mutateAsync,
         isPending: abortMutation.isPending
@@ -139,6 +151,7 @@ export function useSessionActions(
             || permissionMutation.isPending
             || collaborationMutation.isPending
             || modelMutation.isPending
+            || effortMutation.isPending
             || renameMutation.isPending
             || deleteMutation.isPending,
     }
