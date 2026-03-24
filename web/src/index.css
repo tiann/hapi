@@ -98,10 +98,20 @@ body {
     height: 100vh;
     height: 100dvh;
     height: var(--tg-viewport-stable-height, 100dvh);
-    overflow: hidden;
     touch-action: pan-x pan-y;
     overscroll-behavior: none;
     -webkit-text-size-adjust: 100%;
+}
+
+html[data-telegram-app="true"],
+html[data-telegram-app="true"] body {
+    overflow: hidden;
+}
+
+html:not([data-telegram-app="true"]),
+html:not([data-telegram-app="true"]) body {
+    overflow-x: hidden;
+    overflow-y: auto;
 }
 
 body {
@@ -112,6 +122,13 @@ body {
 
 #root {
     height: 100%;
+}
+
+.app-scroll-y {
+    overflow-y: auto;
+    overscroll-behavior-y: contain;
+    -webkit-overflow-scrolling: touch;
+    touch-action: pan-y;
 }
 
 @media (hover: hover) and (pointer: fine) {

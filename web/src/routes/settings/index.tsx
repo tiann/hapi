@@ -191,7 +191,7 @@ export default function SettingsPage() {
                 </div>
             </div>
 
-            <div className="flex-1 overflow-y-auto">
+            <div className="app-scroll-y flex-1">
                 <div className="mx-auto w-full max-w-content">
                     {/* Language section */}
                     <div className="border-b border-[var(--app-divider)]">

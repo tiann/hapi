@@ -38,6 +38,7 @@ async function bootstrap() {
 
     // Only load Telegram SDK in Telegram environment (with 3s timeout)
     const isTelegram = isTelegramEnvironment()
+    document.documentElement.dataset.telegramApp = isTelegram ? 'true' : 'false'
     if (isTelegram) {
         await loadTelegramSdk()
     }

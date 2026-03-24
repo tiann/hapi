@@ -249,7 +249,7 @@ export default function FilePage() {
                 </div>
             ) : null}
 
-            <div className="flex-1 overflow-y-auto">
+            <div className="app-scroll-y flex-1">
                 <div className="mx-auto w-full max-w-content p-4">
                     {diffErrorMessage ? (
                         <div className="mb-3 rounded-md bg-amber-500/10 p-2 text-xs text-[var(--app-hint)]">

@@ -390,7 +390,7 @@ export default function FilesPage() {
                 </div>
             ) : null}
 
-            <div className="flex-1 overflow-y-auto">
+            <div className="app-scroll-y flex-1">
                 <div className="mx-auto w-full max-w-content">
                     {showGitErrorBanner && activeTab === 'changes' ? (
                         <div className="border-b border-[var(--app-divider)] bg-amber-500/10 px-3 py-2 text-xs text-[var(--app-hint)]">
