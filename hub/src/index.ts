@@ -13,6 +13,7 @@ import { Store } from './store'
 import { SyncEngine, type SyncEvent } from './sync/syncEngine'
 import { NotificationHub } from './notifications/notificationHub'
 import type { NotificationChannel } from './notifications/notificationTypes'
+import { createBarkNotificationChannel } from './notifications/barkNotificationChannel'
 import { HappyBot } from './telegram/bot'
 import { startWebServer } from './web/server'
 import { getOrCreateJwtSecret } from './config/jwtSecret'
@@ -150,6 +151,12 @@ async function main() {
         console.log(`[Hub] Telegram notifications: ${config.telegramNotification ? 'enabled' : 'disabled'} (${notificationSource})`)
     }
 
+    const barkEnabled = Boolean(config.barkDeviceKey?.trim())
+    const barkDeviceSource = formatSource(config.sources.barkDeviceKey)
+    const barkServerSource = formatSource(config.sources.barkServerUrl)
+    console.log(`[Hub] Bark notifications: ${barkEnabled ? 'enabled' : 'disabled'} (${barkDeviceSource})`)
+    console.log(`[Hub] BARK_SERVER_URL: ${config.barkServerUrl} (${barkServerSource})`)
+
     // Display tunnel status
     if (relayFlag.enabled) {
         console.log(`[Hub] Tunnel: enabled (${relayFlag.source}), API: ${relayApiDomain}`)
@@ -187,6 +194,15 @@ async function main() {
     const notificationChannels: NotificationChannel[] = [
         new PushNotificationChannel(pushService, sseManager, visibilityTracker, config.publicUrl)
     ]
+
+    const barkChannel = createBarkNotificationChannel({
+        deviceKey: config.barkDeviceKey,
+        serverUrl: config.barkServerUrl,
+        publicUrl: config.publicUrl
+    })
+    if (barkChannel) {
+        notificationChannels.push(barkChannel)
+    }
 
     // Initialize Telegram bot (optional)
     if (config.telegramEnabled && config.telegramBotToken) {

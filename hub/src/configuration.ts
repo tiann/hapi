@@ -13,6 +13,8 @@
  * - HAPI_LISTEN_PORT: Port for HTTP service (default: 3006)
  * - HAPI_PUBLIC_URL: Public URL for external access (e.g., Telegram Mini App)
  * - CORS_ORIGINS: Comma-separated CORS origins
+ * - BARK_DEVICE_KEY: Bark target device key (enables Bark notifications)
+ * - BARK_SERVER_URL: Bark server base URL (default: https://api.day.app)
  * - HAPI_RELAY_API: Relay API domain for tunwg (default: relay.hapi.run)
  * - HAPI_RELAY_AUTH: Relay auth key for tunwg (default: hapi)
  * - HAPI_RELAY_FORCE_TCP: Force TCP relay mode when UDP is unavailable (true/1)
@@ -37,6 +39,8 @@ export interface ConfigSources {
     listenPort: ConfigSource
     publicUrl: ConfigSource
     corsOrigins: ConfigSource
+    barkDeviceKey: ConfigSource
+    barkServerUrl: ConfigSource
     cliApiToken: 'env' | 'file' | 'generated'
 }
 
@@ -80,6 +84,12 @@ class Configuration {
     /** Allowed CORS origins for Mini App + Socket.IO (comma-separated env override) */
     public readonly corsOrigins: string[]
 
+    /** Bark device key; Bark notifications enabled when set */
+    public readonly barkDeviceKey: string | null
+
+    /** Bark server base URL */
+    public readonly barkServerUrl: string
+
     /** Sources of each configuration value */
     public readonly sources: ConfigSources
 
@@ -102,6 +112,8 @@ class Configuration {
         this.listenPort = serverSettings.listenPort
         this.publicUrl = serverSettings.publicUrl
         this.corsOrigins = serverSettings.corsOrigins
+        this.barkDeviceKey = serverSettings.barkDeviceKey
+        this.barkServerUrl = serverSettings.barkServerUrl
 
         // CLI API token - will be set by _setCliApiToken() before create() returns
         this.cliApiToken = ''

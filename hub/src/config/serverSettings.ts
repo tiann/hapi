@@ -17,6 +17,8 @@ export interface ServerSettings {
     listenPort: number
     publicUrl: string
     corsOrigins: string[]
+    barkDeviceKey: string | null
+    barkServerUrl: string
 }
 
 export interface ServerSettingsResult {
@@ -28,6 +30,8 @@ export interface ServerSettingsResult {
         listenPort: 'env' | 'file' | 'default'
         publicUrl: 'env' | 'file' | 'default'
         corsOrigins: 'env' | 'file' | 'default'
+        barkDeviceKey: 'env' | 'file' | 'default'
+        barkServerUrl: 'env' | 'file' | 'default'
     }
     savedToFile: boolean
 }
@@ -91,6 +95,8 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
         listenPort: 'default',
         publicUrl: 'default',
         corsOrigins: 'default',
+        barkDeviceKey: 'default',
+        barkServerUrl: 'default',
     }
     // telegramBotToken: env > file > null
     let telegramBotToken: string | null = null
@@ -203,6 +209,34 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
         corsOrigins = deriveCorsOrigins(publicUrl)
     }
 
+    // barkDeviceKey: env > file > null
+    let barkDeviceKey: string | null = null
+    if (process.env.BARK_DEVICE_KEY) {
+        barkDeviceKey = process.env.BARK_DEVICE_KEY
+        sources.barkDeviceKey = 'env'
+        if (settings.barkDeviceKey === undefined) {
+            settings.barkDeviceKey = barkDeviceKey
+            needsSave = true
+        }
+    } else if (settings.barkDeviceKey !== undefined) {
+        barkDeviceKey = settings.barkDeviceKey ?? null
+        sources.barkDeviceKey = 'file'
+    }
+
+    // barkServerUrl: env > file > default
+    let barkServerUrl = 'https://api.day.app'
+    if (process.env.BARK_SERVER_URL) {
+        barkServerUrl = process.env.BARK_SERVER_URL
+        sources.barkServerUrl = 'env'
+        if (settings.barkServerUrl === undefined) {
+            settings.barkServerUrl = barkServerUrl
+            needsSave = true
+        }
+    } else if (settings.barkServerUrl !== undefined) {
+        barkServerUrl = settings.barkServerUrl
+        sources.barkServerUrl = 'file'
+    }
+
     // Save settings if any new values were added
     if (needsSave) {
         await writeSettings(settingsFile, settings)
@@ -216,6 +250,8 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
             listenPort,
             publicUrl,
             corsOrigins,
+            barkDeviceKey,
+            barkServerUrl,
         },
         sources,
         savedToFile: needsSave,

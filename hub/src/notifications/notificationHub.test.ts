@@ -42,6 +42,14 @@ class StubChannel implements NotificationChannel {
     }
 }
 
+class FailingReadyChannel implements NotificationChannel {
+    async sendReady(): Promise<void> {
+        throw new Error('bark failed')
+    }
+
+    async sendPermissionRequest(): Promise<void> {}
+}
+
 function createSession(overrides: Partial<Session> = {}): Session {
     return {
         id: 'session-1',
@@ -152,6 +160,44 @@ describe('NotificationHub', () => {
         await sleep(5)
         expect(channel.readySessions).toHaveLength(2)
 
+        hub.stop()
+    })
+
+    it('keeps notifying other channels when one channel fails', async () => {
+        const engine = new FakeSyncEngine()
+        const failing = new FailingReadyChannel()
+        const healthy = new StubChannel()
+        const hub = new NotificationHub(engine as unknown as SyncEngine, [failing, healthy], {
+            permissionDebounceMs: 1,
+            readyCooldownMs: 1
+        })
+
+        const session = createSession()
+        engine.setSession(session)
+
+        const readyEvent: SyncEvent = {
+            type: 'message-received',
+            sessionId: session.id,
+            message: {
+                id: 'message-1',
+                seq: 1,
+                localId: null,
+                createdAt: 0,
+                content: {
+                    role: 'agent',
+                    content: {
+                        id: 'event-1',
+                        type: 'event',
+                        data: { type: 'ready' }
+                    }
+                }
+            }
+        }
+
+        engine.emit(readyEvent)
+        await sleep(10)
+
+        expect(healthy.readySessions).toHaveLength(1)
         hub.stop()
     })
 })

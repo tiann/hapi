@@ -41,6 +41,8 @@ See `src/configuration.ts` for all options.
 - `HAPI_RELAY_AUTH` - Relay auth key (default: hapi).
 - `HAPI_RELAY_FORCE_TCP` - Force TCP relay mode (true/1).
 - `VAPID_SUBJECT` - Contact email/URL for Web Push.
+- `BARK_DEVICE_KEY` - Bark device key. When set, Bark notifications are enabled.
+- `BARK_SERVER_URL` - Bark server base URL (default: `https://api.day.app`).
 
 ## Running
 

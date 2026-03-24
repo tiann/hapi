@@ -18,6 +18,8 @@ export interface Settings {
     listenPort?: number
     publicUrl?: string
     corsOrigins?: string[]
+    barkDeviceKey?: string
+    barkServerUrl?: string
     // Legacy field names (for migration, read-only)
     webappHost?: string
     webappPort?: number
