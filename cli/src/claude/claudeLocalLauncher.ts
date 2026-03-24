@@ -1,6 +1,7 @@
 import { claudeLocal } from "./claudeLocal";
 import { Session } from "./session";
 import { createSessionScanner } from "./utils/sessionScanner";
+import { isClaudeChatVisibleMessage } from "./utils/chatVisibility";
 import { BaseLocalLauncher } from "@/modules/common/launcher/BaseLocalLauncher";
 
 export async function claudeLocalLauncher(session: Session): Promise<'switch' | 'exit'> {
@@ -9,11 +10,17 @@ export async function claudeLocalLauncher(session: Session): Promise<'switch' | 
     const scanner = await createSessionScanner({
         sessionId: session.sessionId,
         workingDirectory: session.path,
-        onMessage: (message) => { 
+        onMessage: (message) => {
             // Block SDK summary messages - we generate our own
-            if (message.type !== 'summary') {
-                session.client.sendClaudeSessionMessage(message)
+            if (message.type === 'summary') {
+                return
             }
+            // Filter out invisible system messages (e.g. init, stop_hook_summary)
+            // to avoid them showing as raw JSON in the web UI
+            if (!isClaudeChatVisibleMessage(message)) {
+                return
+            }
+            session.client.sendClaudeSessionMessage(message)
         }
     });
 
