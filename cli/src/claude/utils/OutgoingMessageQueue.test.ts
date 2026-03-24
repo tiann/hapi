@@ -1,8 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { OutgoingMessageQueue } from './OutgoingMessageQueue'
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
-
 describe('OutgoingMessageQueue message filtering', () => {
     let sent: Array<Record<string, unknown>>
     let queue: OutgoingMessageQueue
