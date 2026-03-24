@@ -73,7 +73,7 @@ export function HappyUserMessage() {
                             <button
                                 type="button"
                                 title="Copy"
-                                className="opacity-60 sm:opacity-0 sm:group-hover/msg:opacity-100 transition-[opacity,colors] p-0.5 rounded hover:bg-[var(--app-subtle-bg)]"
+                                className="opacity-60 sm:opacity-0 sm:group-hover/msg:opacity-100 transition-[opacity,background-color] p-0.5 rounded hover:bg-[var(--app-subtle-bg)]"
                                 onClick={() => copy(text)}
                             >
                                 {copied
