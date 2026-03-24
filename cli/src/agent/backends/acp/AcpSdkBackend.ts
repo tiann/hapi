@@ -171,6 +171,9 @@ export class AcpSdkBackend implements AgentBackend {
 
             stopReason = isObject(response) ? asString(response.stopReason) : null;
         } finally {
+            // Start the trailing-update quiet window from prompt response completion,
+            // not from the last pre-response update (which could be much earlier).
+            this.lastSessionUpdateAt = Date.now();
             await this.waitForSessionUpdateQuiet(
                 AcpSdkBackend.UPDATE_QUIET_PERIOD_MS,
                 AcpSdkBackend.UPDATE_DRAIN_TIMEOUT_MS
