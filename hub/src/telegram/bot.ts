@@ -72,11 +72,14 @@ export class HappyBot implements NotificationChannel {
         console.log('[HAPIBot] Starting Telegram bot...')
         this.isRunning = true
 
-        // Start polling
+        // Start polling (long-running, resolves when polling stops)
         this.bot.start({
             onStart: (botInfo) => {
                 console.log(`[HAPIBot] Bot @${botInfo.username} started`)
             }
+        }).catch((error) => {
+            this.isRunning = false
+            console.error('[HAPIBot] Telegram bot polling failed:', error instanceof Error ? error.message : error)
         })
     }
 
