@@ -368,7 +368,10 @@ function NewSessionPage() {
                 <div className="flex-1 font-semibold">{t('newSession.title')}</div>
             </div>
 
-            <div className="app-scroll-y flex-1 min-h-0">
+            <div
+                className="app-scroll-y flex-1 min-h-0"
+                style={{ paddingBottom: 'calc(var(--app-floating-bottom-offset, 0px) + env(safe-area-inset-bottom))' }}
+            >
                 {machinesError ? (
                     <div className="p-3 text-sm text-red-600">
                         {machinesError}

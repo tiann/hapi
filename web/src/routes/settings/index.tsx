@@ -177,7 +177,7 @@ export default function SettingsPage() {
     }, [isOpen, isAppearanceOpen, isFontOpen, isTerminalFontOpen, isVoiceOpen])
 
     return (
-        <div className="flex h-full flex-col">
+        <div className="flex h-full min-h-0 flex-col">
             <div className="bg-[var(--app-bg)] pt-[env(safe-area-inset-top)]">
                 <div className="mx-auto w-full max-w-content flex items-center gap-2 p-3 border-b border-[var(--app-border)]">
                     <button
@@ -191,7 +191,7 @@ export default function SettingsPage() {
                 </div>
             </div>
 
-            <div className="app-scroll-y flex-1">
+            <div className="app-scroll-y flex-1 min-h-0">
                 <div className="mx-auto w-full max-w-content">
                     {/* Language section */}
                     <div className="border-b border-[var(--app-divider)]">

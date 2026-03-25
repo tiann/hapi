@@ -409,7 +409,7 @@ export default function TerminalPage() {
           : null
 
     return (
-        <div className="flex h-full flex-col">
+        <div className="flex h-full min-h-0 flex-col">
             <div className="bg-[var(--app-bg)] pt-[env(safe-area-inset-top)]">
                 <div className="mx-auto w-full max-w-content flex items-center gap-2 p-3 border-b border-[var(--app-border)]">
                     <button
@@ -452,7 +452,7 @@ export default function TerminalPage() {
                 </div>
             ) : null}
 
-            <div className="flex-1 overflow-hidden bg-[var(--app-bg)]">
+            <div className="flex-1 min-h-0 overflow-hidden bg-[var(--app-bg)]">
                 <div className="mx-auto h-full w-full max-w-content p-3">
                     {terminalSupported ? (
                         <TerminalView onMount={handleTerminalMount} onResize={handleResize} className="h-full w-full" />
