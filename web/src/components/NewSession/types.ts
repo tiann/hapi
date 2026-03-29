@@ -1,4 +1,4 @@
-export type AgentType = 'claude' | 'codex' | 'cursor' | 'gemini' | 'opencode' | 'opencode-server'
+export type AgentType = 'claude' | 'codex' | 'cursor' | 'gemini' | 'opencode'
 export type SessionType = 'simple' | 'worktree'
 export type CodexReasoningEffort = 'default' | 'low' | 'medium' | 'high' | 'xhigh'
 export type ClaudeEffort = 'auto' | 'medium' | 'high' | 'max'
@@ -31,7 +31,6 @@ export const MODEL_OPTIONS: Record<AgentType, { value: string; label: string }[]
         { value: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash Lite' },
     ],
     opencode: [],
-    'opencode-server': [],
 }
 
 export const CODEX_REASONING_EFFORT_OPTIONS: { value: CodexReasoningEffort; label: string }[] = [
