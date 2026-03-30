@@ -15,6 +15,7 @@ export const geminiCommand: CommandDefinition = {
                 startingMode?: 'local' | 'remote'
                 permissionMode?: GeminiPermissionMode
                 model?: string
+                resumeSessionId?: string
             } = {}
 
             for (let i = 0; i < commandArgs.length; i++) {
@@ -30,6 +31,12 @@ export const geminiCommand: CommandDefinition = {
                     }
                 } else if (arg === '--yolo') {
                     options.permissionMode = 'yolo'
+                } else if (arg === '--resume') {
+                    const sessionId = commandArgs[++i]
+                    if (!sessionId) {
+                        throw new Error('Missing --resume value')
+                    }
+                    options.resumeSessionId = sessionId
                 } else if (arg === '--model') {
                     const model = commandArgs[++i]
                     if (!model) {

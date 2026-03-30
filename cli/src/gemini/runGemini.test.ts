@@ -106,4 +106,26 @@ describe('runGemini', () => {
         expect(harness.bootstrapArgs[0]?.model).toBeUndefined();
         expect(harness.geminiLoopArgs[0]?.model).toBe('gemini-2.5-pro');
     });
+
+    it('passes resumeSessionId through to geminiLoop', async () => {
+        resolveGeminiRuntimeConfigMock.mockReturnValue({
+            model: 'gemini-2.5-pro',
+            modelSource: 'default'
+        });
+
+        await runGemini({ resumeSessionId: 'a6157ffa-f692-4b73-82d5-63d42177f4f9' });
+
+        expect(harness.geminiLoopArgs[0]?.resumeSessionId).toBe('a6157ffa-f692-4b73-82d5-63d42177f4f9');
+    });
+
+    it('does not set resumeSessionId when not provided', async () => {
+        resolveGeminiRuntimeConfigMock.mockReturnValue({
+            model: 'gemini-2.5-pro',
+            modelSource: 'default'
+        });
+
+        await runGemini({});
+
+        expect(harness.geminiLoopArgs[0]?.resumeSessionId).toBeUndefined();
+    });
 });

@@ -21,6 +21,7 @@ export async function runGemini(opts: {
     startingMode?: 'local' | 'remote';
     permissionMode?: PermissionMode;
     model?: string;
+    resumeSessionId?: string;
 } = {}): Promise<void> {
     const workingDirectory = getInvokedCwd();
     const startedBy = opts.startedBy ?? 'terminal';
@@ -149,6 +150,7 @@ export async function runGemini(opts: {
             permissionMode: currentPermissionMode,
             model: resolvedModel,
             hookSettingsPath,
+            resumeSessionId: opts.resumeSessionId,
             onModeChange: createModeChangeHandler(session),
             onSessionReady: (instance) => {
                 sessionWrapperRef.current = instance;

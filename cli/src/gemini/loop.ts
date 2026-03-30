@@ -19,6 +19,7 @@ interface GeminiLoopOptions {
     model?: string;
     hookSettingsPath?: string;
     allowedTools?: string[];
+    resumeSessionId?: string;
     onSessionReady?: (session: GeminiSession) => void;
 }
 
@@ -31,7 +32,7 @@ export async function geminiLoop(opts: GeminiLoopOptions): Promise<void> {
         api: opts.api,
         client: opts.session,
         path: opts.path,
-        sessionId: null,
+        sessionId: opts.resumeSessionId ?? null,
         logPath,
         messageQueue: opts.messageQueue,
         onModeChange: opts.onModeChange,
@@ -40,6 +41,10 @@ export async function geminiLoop(opts: GeminiLoopOptions): Promise<void> {
         startingMode,
         permissionMode: opts.permissionMode ?? 'default'
     });
+
+    if (opts.resumeSessionId) {
+        session.onSessionFound(opts.resumeSessionId);
+    }
 
     await runLocalRemoteSession({
         session,

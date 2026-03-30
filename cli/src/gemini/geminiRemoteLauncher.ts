@@ -54,7 +54,6 @@ class GeminiRemoteLauncher extends RemoteLauncherBase {
         const backend = createGeminiBackend({
             model: runtimeConfig.model,
             token: runtimeConfig.token,
-            resumeSessionId: session.sessionId,
             hookSettingsPath: this.hookSettingsPath,
             cwd: session.path,
             permissionMode: session.getPermissionMode() as string | undefined
@@ -69,10 +68,33 @@ class GeminiRemoteLauncher extends RemoteLauncherBase {
 
         await backend.initialize();
 
-        const acpSessionId = await backend.newSession({
-            cwd: session.path,
-            mcpServers: toAcpMcpServers(mcpServers)
-        });
+        const resumeSessionId = session.sessionId;
+        const acpMcpServers = toAcpMcpServers(mcpServers);
+        let acpSessionId: string;
+        if (resumeSessionId) {
+            try {
+                acpSessionId = await backend.loadSession({
+                    sessionId: resumeSessionId,
+                    cwd: session.path,
+                    mcpServers: acpMcpServers
+                });
+            } catch (error) {
+                logger.warn('[gemini-remote] resume failed, starting new session', error);
+                session.sendSessionEvent({
+                    type: 'message',
+                    message: 'Gemini resume failed; starting a new session.'
+                });
+                acpSessionId = await backend.newSession({
+                    cwd: session.path,
+                    mcpServers: acpMcpServers
+                });
+            }
+        } else {
+            acpSessionId = await backend.newSession({
+                cwd: session.path,
+                mcpServers: acpMcpServers
+            });
+        }
         session.onSessionFound(acpSessionId);
 
         this.permissionHandler = new GeminiPermissionHandler(
