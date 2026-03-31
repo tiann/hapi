@@ -37,6 +37,7 @@ export async function runGemini(opts: {
         controlledByUser: false
     };
 
+    const machineDefault = resolveGeminiRuntimeConfig().model;
     const runtimeConfig = resolveGeminiRuntimeConfig({ model: opts.model });
     const persistedModel = runtimeConfig.modelSource === 'default'
         ? undefined
@@ -63,7 +64,7 @@ export async function runGemini(opts: {
     const sessionWrapperRef: { current: GeminiSession | null } = { current: null };
     let currentPermissionMode: PermissionMode = opts.permissionMode ?? 'default';
     let sessionModel: string | null = persistedModel ?? null;
-    let resolvedModel = sessionModel ?? runtimeConfig.model;
+    let resolvedModel = sessionModel ?? machineDefault;
 
     const hookServer = await startHookServer({
         onSessionHook: (sessionId, data) => {
@@ -151,7 +152,7 @@ export async function runGemini(opts: {
 
         if (config.model !== undefined) {
             sessionModel = resolveModel(config.model);
-            resolvedModel = sessionModel ?? runtimeConfig.model;
+            resolvedModel = sessionModel ?? machineDefault;
             applied.model = sessionModel;
         }
 
