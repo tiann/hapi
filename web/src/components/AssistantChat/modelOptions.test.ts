@@ -4,7 +4,7 @@ import { getModelOptionsForFlavor, getNextModelForFlavor } from './modelOptions'
 describe('getModelOptionsForFlavor', () => {
     it('returns Gemini model options for gemini flavor', () => {
         const options = getModelOptionsForFlavor('gemini')
-        expect(options[0]).toEqual({ value: null, label: 'Default (Gemini 2.5 Pro)' })
+        expect(options[0]).toEqual({ value: null, label: 'Default' })
         expect(options.some((o) => o.value === 'gemini-3-flash-preview')).toBe(true)
         expect(options.some((o) => o.value === 'gemini-2.5-flash')).toBe(true)
     })
