@@ -62,7 +62,8 @@ export async function runGemini(opts: {
 
     const sessionWrapperRef: { current: GeminiSession | null } = { current: null };
     let currentPermissionMode: PermissionMode = opts.permissionMode ?? 'default';
-    let resolvedModel = runtimeConfig.model;
+    let sessionModel: string | null = persistedModel ?? null;
+    let resolvedModel = sessionModel ?? runtimeConfig.model;
 
     const hookServer = await startHookServer({
         onSessionHook: (sessionId, data) => {
@@ -105,7 +106,7 @@ export async function runGemini(opts: {
             return;
         }
         sessionInstance.setPermissionMode(currentPermissionMode);
-        sessionInstance.setModel(resolvedModel);
+        sessionInstance.setModel(sessionModel);
         logger.debug(`[gemini] Synced session config for keepalive: permissionMode=${currentPermissionMode}, model=${resolvedModel}`);
     };
 
@@ -149,9 +150,9 @@ export async function runGemini(opts: {
         }
 
         if (config.model !== undefined) {
-            const newModel = resolveModel(config.model);
-            resolvedModel = newModel ?? runtimeConfig.model;
-            applied.model = newModel;
+            sessionModel = resolveModel(config.model);
+            resolvedModel = sessionModel ?? runtimeConfig.model;
+            applied.model = sessionModel;
         }
 
         syncSessionMode();
