@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { logger } from '@/ui/logger';
+import type { McpServerElicitationRequestParams, McpServerElicitationResponse } from '../appServerTypes';
 import type { CodexPermissionHandler } from './permissionHandler';
 import type { CodexAppServerClient } from '../codexAppServerClient';
 
@@ -38,8 +39,11 @@ export function registerAppServerPermissionHandlers(args: {
     client: CodexAppServerClient;
     permissionHandler: CodexPermissionHandler;
     onUserInputRequest?: (request: unknown) => Promise<Record<string, string[]>>;
+    onMcpElicitationRequest?: (
+        request: McpServerElicitationRequestParams
+    ) => Promise<McpServerElicitationResponse>;
 }): void {
-    const { client, permissionHandler, onUserInputRequest } = args;
+    const { client, permissionHandler, onUserInputRequest, onMcpElicitationRequest } = args;
 
     client.registerRequestHandler('item/commandExecution/requestApproval', async (params) => {
         const record = asRecord(params) ?? {};
@@ -90,5 +94,17 @@ export function registerAppServerPermissionHandlers(args: {
             decision: 'accept',
             answers
         };
+    });
+
+    client.registerRequestHandler('mcpServer/elicitation/request', async (params) => {
+        if (!onMcpElicitationRequest) {
+            logger.debug('[CodexAppServer] No MCP elicitation handler registered; cancelling request');
+            return {
+                action: 'cancel',
+                content: null
+            } satisfies McpServerElicitationResponse;
+        }
+
+        return await onMcpElicitationRequest(params as McpServerElicitationRequestParams);
     });
 }

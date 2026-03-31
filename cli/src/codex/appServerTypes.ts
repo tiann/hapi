@@ -144,3 +144,28 @@ export interface TurnInterruptResponse {
     ok: boolean;
     [key: string]: unknown;
 }
+
+export interface McpElicitationFormRequest {
+    mode: 'form';
+    message: string;
+    requestedSchema: Record<string, unknown>;
+}
+
+export interface McpElicitationUrlRequest {
+    mode: 'url';
+    message: string;
+    url: string;
+    elicitationId: string;
+}
+
+export interface McpServerElicitationRequestParams {
+    threadId: string;
+    turnId: string | null;
+    serverName: string;
+    request: McpElicitationFormRequest | McpElicitationUrlRequest;
+}
+
+export interface McpServerElicitationResponse {
+    action: 'accept' | 'decline' | 'cancel';
+    content: unknown | null;
+}
