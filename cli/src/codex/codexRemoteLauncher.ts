@@ -11,6 +11,7 @@ import { buildHapiMcpBridge } from './utils/buildHapiMcpBridge';
 import { emitReadyIfIdle } from './utils/emitReadyIfIdle';
 import type { CodexSession } from './session';
 import type { EnhancedMode } from './loop';
+import type { McpServerElicitationRequestParams, McpServerElicitationResponse } from './appServerTypes';
 import { hasCodexCliOverrides } from './utils/codexCliOverrides';
 import { AppServerEventConverter } from './utils/appServerEventConverter';
 import { registerAppServerPermissionHandlers } from './utils/appServerPermissionAdapter';
@@ -24,6 +25,14 @@ import {
 
 type HappyServer = Awaited<ReturnType<typeof buildHapiMcpBridge>>['server'];
 type QueuedMessage = { message: string; mode: EnhancedMode; isolate: boolean; hash: string };
+type McpElicitationRpcResponse = {
+    id: string;
+    action: 'accept' | 'decline' | 'cancel';
+    content?: unknown | null;
+};
+type PendingMcpElicitationRequest = {
+    resolve: (response: McpServerElicitationResponse) => void;
+};
 
 class CodexRemoteLauncher extends RemoteLauncherBase {
     private readonly session: CodexSession;
@@ -35,6 +44,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
     private abortController: AbortController = new AbortController();
     private currentThreadId: string | null = null;
     private currentTurnId: string | null = null;
+    private readonly pendingMcpElicitationRequests = new Map<string, PendingMcpElicitationRequest>();
 
     constructor(session: CodexSession) {
         super(process.env.DEBUG ? session.logPath : undefined);
@@ -64,6 +74,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             this.abortController.abort();
             this.session.queue.reset();
             this.permissionHandler?.reset();
+            this.cancelPendingMcpElicitationRequests();
             this.reasoningProcessor?.abort();
             this.diffProcessor?.reset();
             logger.debug('[Codex] Abort completed - session remains active');
@@ -71,6 +82,16 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             logger.debug('[Codex] Error during abort:', error);
         } finally {
             this.abortController = new AbortController();
+        }
+    }
+
+    private cancelPendingMcpElicitationRequests(): void {
+        for (const [requestId, pending] of this.pendingMcpElicitationRequests.entries()) {
+            pending.resolve({
+                action: 'cancel',
+                content: null
+            });
+            this.pendingMcpElicitationRequests.delete(requestId);
         }
     }
 
@@ -228,6 +249,89 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         let clearReadyAfterTurnTimer: (() => void) | null = null;
         let turnInFlight = false;
         let allowAnonymousTerminalEvent = false;
+
+        const toMcpElicitationResponse = (response: McpElicitationRpcResponse): McpServerElicitationResponse => ({
+            action: response.action,
+            content: response.action === 'accept' ? response.content ?? null : null
+        });
+
+        const parseMcpElicitationRequest = (params: McpServerElicitationRequestParams) => {
+            const request = params.request;
+            const requestId = request.mode === 'url' ? request.elicitationId : randomUUID();
+
+            return {
+                requestId,
+                threadId: params.threadId,
+                turnId: params.turnId,
+                serverName: params.serverName,
+                mode: request.mode,
+                message: request.message,
+                requestedSchema: request.mode === 'form' ? request.requestedSchema : undefined,
+                url: request.mode === 'url' ? request.url : undefined,
+                elicitationId: request.mode === 'url' ? request.elicitationId : undefined
+            };
+        };
+
+        const waitForMcpElicitationResponse = async (requestId: string): Promise<McpServerElicitationResponse> => {
+            return await new Promise<McpServerElicitationResponse>((resolve) => {
+                this.pendingMcpElicitationRequests.set(requestId, { resolve });
+            });
+        };
+
+        const handleMcpElicitationResponse = async (response: unknown): Promise<void> => {
+            const record = asRecord(response) ?? {};
+            const requestId = asString(record.id);
+            const action = asString(record.action);
+            if (!requestId || (action !== 'accept' && action !== 'decline' && action !== 'cancel')) {
+                logger.debug('[Codex] Ignoring invalid MCP elicitation response payload', response);
+                return;
+            }
+
+            const pending = this.pendingMcpElicitationRequests.get(requestId);
+            if (!pending) {
+                logger.debug(`[Codex] No pending MCP elicitation request for id ${requestId}`);
+                return;
+            }
+
+            this.pendingMcpElicitationRequests.delete(requestId);
+            pending.resolve(toMcpElicitationResponse({
+                id: requestId,
+                action,
+                content: record.content
+            }));
+        };
+
+        const handleMcpElicitationRequest = async (
+            params: McpServerElicitationRequestParams
+        ): Promise<McpServerElicitationResponse> => {
+            const request = parseMcpElicitationRequest(params);
+
+            logger.debug('[Codex] Bridging MCP elicitation request', {
+                requestId: request.requestId,
+                mode: request.mode,
+                serverName: request.serverName
+            });
+
+            session.sendAgentMessage({
+                type: 'tool-call',
+                name: 'CodexMcpElicitation',
+                callId: request.requestId,
+                input: request,
+                id: randomUUID()
+            });
+
+            const result = await waitForMcpElicitationResponse(request.requestId);
+
+            session.sendAgentMessage({
+                type: 'tool-call-result',
+                callId: request.requestId,
+                output: result,
+                is_error: result.action !== 'accept',
+                id: randomUUID()
+            });
+
+            return result;
+        };
 
         const handleCodexEvent = (msg: Record<string, unknown>) => {
             const msgType = asString(msg.type);
@@ -495,7 +599,8 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
 
         registerAppServerPermissionHandlers({
             client: appServerClient,
-            permissionHandler
+            permissionHandler,
+            onMcpElicitationRequest: handleMcpElicitationRequest
         });
 
         appServerClient.setNotificationHandler((method, params) => {
@@ -513,6 +618,10 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             onAbort: () => this.handleAbort(),
             onSwitch: () => this.handleSwitchRequest()
         });
+        session.client.rpcHandlerManager.registerHandler<McpElicitationRpcResponse, void>(
+            'mcp-elicitation-response',
+            handleMcpElicitationResponse
+        );
 
         function logActiveHandles(tag: string) {
             if (!process.env.DEBUG) return;
@@ -725,6 +834,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         }
 
         this.permissionHandler?.reset();
+        this.cancelPendingMcpElicitationRequests();
         this.reasoningProcessor?.abort();
         this.diffProcessor?.reset();
         this.permissionHandler = null;
