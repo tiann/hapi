@@ -1,5 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+const mockGeminiSession = vi.hoisted(() => ({
+    setModel: vi.fn(),
+    setPermissionMode: vi.fn(),
+    stopKeepAlive: vi.fn()
+}));
+
 const harness = vi.hoisted(() => ({
     bootstrapArgs: [] as Array<Record<string, unknown>>,
     geminiLoopArgs: [] as Array<Record<string, unknown>>,
@@ -24,6 +30,10 @@ vi.mock('@/agent/sessionFactory', () => ({
 vi.mock('./loop', () => ({
     geminiLoop: vi.fn(async (options: Record<string, unknown>) => {
         harness.geminiLoopArgs.push(options);
+        const onSessionReady = options.onSessionReady as ((session: unknown) => void) | undefined;
+        if (onSessionReady) {
+            onSessionReady(mockGeminiSession);
+        }
     })
 }));
 
@@ -78,6 +88,8 @@ describe('runGemini', () => {
     beforeEach(() => {
         harness.bootstrapArgs.length = 0;
         harness.geminiLoopArgs.length = 0;
+        mockGeminiSession.setModel.mockReset();
+        mockGeminiSession.setPermissionMode.mockReset();
         harness.session.onUserMessage.mockReset();
         harness.session.rpcHandlerManager.registerHandler.mockReset();
         resolveGeminiRuntimeConfigMock.mockReset();
@@ -179,6 +191,29 @@ describe('runGemini', () => {
         const applied = result.applied as Record<string, unknown>;
         expect(applied.permissionMode).toBe('default');
         expect(applied).not.toHaveProperty('model');
+    });
+
+    it('stores null model in session on Default selection for keepalive', async () => {
+        resolveGeminiRuntimeConfigMock.mockReturnValue({
+            model: 'gemini-2.5-pro',
+            modelSource: 'default'
+        });
+
+        await runGemini({});
+
+        const registerCalls = harness.session.rpcHandlerManager.registerHandler.mock.calls;
+        const configHandler = registerCalls.find(
+            (call: unknown[]) => call[0] === 'set-session-config'
+        );
+        const handler = configHandler![1] as (payload: unknown) => Promise<unknown>;
+
+        // First set an explicit model
+        await handler({ model: 'gemini-2.5-flash' });
+        expect(mockGeminiSession.setModel).toHaveBeenLastCalledWith('gemini-2.5-flash');
+
+        // Then select Default (null) — session should store null, not concrete model
+        await handler({ model: null });
+        expect(mockGeminiSession.setModel).toHaveBeenLastCalledWith(null);
     });
 
     it('passes resumeSessionId through to geminiLoop', async () => {

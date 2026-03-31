@@ -15,6 +15,17 @@ describe('getModelOptionsForFlavor', () => {
         expect(options.some((o) => o.value === 'sonnet')).toBe(true)
         expect(options.some((o) => o.value === 'opus')).toBe(true)
     })
+
+    it('includes custom Gemini model from env/config in options', () => {
+        const options = getModelOptionsForFlavor('gemini', 'gemini-custom-experiment')
+        expect(options.some((o) => o.value === 'gemini-custom-experiment')).toBe(true)
+    })
+
+    it('does not duplicate a preset Gemini model', () => {
+        const options = getModelOptionsForFlavor('gemini', 'gemini-2.5-flash')
+        const flashCount = options.filter((o) => o.value === 'gemini-2.5-flash').length
+        expect(flashCount).toBe(1)
+    })
 })
 
 describe('getNextModelForFlavor', () => {
