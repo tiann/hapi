@@ -48,6 +48,7 @@ export default {
   'session.item.model': 'model',
   'session.item.worktree': 'worktree',
   'session.item.pending': 'pending',
+  'session.item.unread': 'unread',
   'session.item.thinking': 'thinking',
   'session.time.justNow': 'just now',
   'session.time.minutesAgo': '{n}m ago',
