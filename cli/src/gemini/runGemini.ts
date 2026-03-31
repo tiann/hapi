@@ -169,7 +169,7 @@ export async function runGemini(opts: {
             session,
             api,
             permissionMode: currentPermissionMode,
-            model: resolvedModel,
+            model: machineDefault,
             hookSettingsPath,
             resumeSessionId: opts.resumeSessionId,
             onModeChange: createModeChangeHandler(session),

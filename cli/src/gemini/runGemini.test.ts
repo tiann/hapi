@@ -216,38 +216,19 @@ describe('runGemini', () => {
         expect(mockGeminiSession.setModel).toHaveBeenLastCalledWith(null);
     });
 
-    it('falls back to machine default (not startup model) when Default is selected', async () => {
-        // Session started with explicit model
+    it('passes machine default (not startup model) to geminiLoop for fallback', async () => {
+        // Session started with explicit model, but machine default differs
         resolveGeminiRuntimeConfigMock.mockImplementation((opts?: { model?: string }) => {
             if (opts?.model) {
                 return { model: opts.model, modelSource: 'explicit' };
             }
-            // Machine default (no args) — e.g. from env or hardcoded
             return { model: 'gemini-2.5-pro', modelSource: 'default' };
         });
 
         await runGemini({ model: 'gemini-2.5-flash' });
 
-        const registerCalls = harness.session.rpcHandlerManager.registerHandler.mock.calls;
-        const configHandler = registerCalls.find(
-            (call: unknown[]) => call[0] === 'set-session-config'
-        );
-        const handler = configHandler![1] as (payload: unknown) => Promise<unknown>;
-
-        // Verify session started with explicit model
-        expect(harness.geminiLoopArgs[0]?.model).toBe('gemini-2.5-flash');
-
-        // Select Default (null) — session should store null
-        await handler({ model: null });
-        expect(mockGeminiSession.setModel).toHaveBeenLastCalledWith(null);
-
-        // resolvedModel (used for messageQueue/runtime) should be machine default, not startup model
-        // We verify this indirectly: trigger a user message and check the mode.model in the queue
-        const onUserMessage = harness.session.onUserMessage.mock.calls[0][0];
-        onUserMessage({ content: { text: 'test', attachments: [] } });
-        const lastMode = harness.geminiLoopArgs[0]; // loop was already called
-        // The key assertion: resolveGeminiRuntimeConfig() was called without args to get machine default
-        expect(resolveGeminiRuntimeConfigMock).toHaveBeenCalledWith();
+        // geminiLoop should receive machine default as fallback, not the explicit startup model
+        expect(harness.geminiLoopArgs[0]?.model).toBe('gemini-2.5-pro');
     });
 
     it('passes resumeSessionId through to geminiLoop', async () => {
