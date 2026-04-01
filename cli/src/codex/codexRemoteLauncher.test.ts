@@ -223,14 +223,12 @@ describe('codexRemoteLauncher', () => {
                 threadId: 'thread-anonymous',
                 turnId: 'turn-1',
                 serverName: 'demo-server',
-                request: {
-                    mode: 'form',
-                    message: 'Need MCP input',
-                    requestedSchema: {
-                        type: 'object',
-                        properties: {
-                            token: { type: 'string' }
-                        }
+                mode: 'form',
+                message: 'Need MCP input',
+                requestedSchema: {
+                    type: 'object',
+                    properties: {
+                        token: { type: 'string' }
                     }
                 }
             }));
