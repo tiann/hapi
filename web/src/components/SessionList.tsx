@@ -9,58 +9,9 @@ import { RenameSessionDialog } from '@/components/RenameSessionDialog'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { getSessionModelLabel } from '@/lib/sessionModelLabel'
 import { useTranslation } from '@/lib/use-translation'
-
-type SessionGroup = {
-    directory: string
-    displayName: string
-    sessions: SessionSummary[]
-    latestUpdatedAt: number
-    hasActiveSession: boolean
-}
-
-function getGroupDisplayName(directory: string): string {
-    if (directory === 'Other') return directory
-    const parts = directory.split(/[\\/]+/).filter(Boolean)
-    if (parts.length === 0) return directory
-    if (parts.length === 1) return parts[0]
-    return `${parts[parts.length - 2]}/${parts[parts.length - 1]}`
-}
-
-function groupSessionsByDirectory(sessions: SessionSummary[]): SessionGroup[] {
-    const groups = new Map<string, SessionSummary[]>()
-
-    sessions.forEach(session => {
-        const path = session.metadata?.worktree?.basePath ?? session.metadata?.path ?? 'Other'
-        if (!groups.has(path)) {
-            groups.set(path, [])
-        }
-        groups.get(path)!.push(session)
-    })
-
-    return Array.from(groups.entries())
-        .map(([directory, groupSessions]) => {
-            const sortedSessions = [...groupSessions].sort((a, b) => {
-                const rankA = a.active ? (a.pendingRequestsCount > 0 ? 0 : 1) : 2
-                const rankB = b.active ? (b.pendingRequestsCount > 0 ? 0 : 1) : 2
-                if (rankA !== rankB) return rankA - rankB
-                return b.updatedAt - a.updatedAt
-            })
-            const latestUpdatedAt = groupSessions.reduce(
-                (max, s) => (s.updatedAt > max ? s.updatedAt : max),
-                -Infinity
-            )
-            const hasActiveSession = groupSessions.some(s => s.active)
-            const displayName = getGroupDisplayName(directory)
-
-            return { directory, displayName, sessions: sortedSessions, latestUpdatedAt, hasActiveSession }
-        })
-        .sort((a, b) => {
-            if (a.hasActiveSession !== b.hasActiveSession) {
-                return a.hasActiveSession ? -1 : 1
-            }
-            return b.latestUpdatedAt - a.latestUpdatedAt
-        })
-}
+import { getMachineLabel, groupSessionsByDirectory } from '@/components/sessionListUtils'
+import type { SessionGroup } from '@/components/sessionListUtils'
+import type { Machine } from '@/types/api'
 
 function PlusIcon(props: { className?: string }) {
     return (
@@ -164,13 +115,14 @@ function formatRelativeTime(value: number, t: (key: string, params?: Record<stri
 
 function SessionItem(props: {
     session: SessionSummary
+    machineLabel: string | null
     onSelect: (sessionId: string) => void
     showPath?: boolean
     api: ApiClient | null
     selected?: boolean
 }) {
     const { t } = useTranslation()
-    const { session: s, onSelect, showPath = true, api, selected = false } = props
+    const { session: s, machineLabel, onSelect, showPath = true, api, selected = false } = props
     const { haptic } = usePlatform()
     const [menuOpen, setMenuOpen] = useState(false)
     const [menuAnchorPoint, setMenuAnchorPoint] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
@@ -255,6 +207,9 @@ function SessionItem(props: {
                     </div>
                 ) : null}
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[var(--app-hint)]">
+                    {machineLabel ? (
+                        <span>{t('session.item.machine')}: {machineLabel}</span>
+                    ) : null}
                     <span className="inline-flex items-center gap-2">
                         <span className="flex h-4 w-4 items-center justify-center" aria-hidden="true">
                             ❖
@@ -317,6 +272,7 @@ function SessionItem(props: {
 
 export function SessionList(props: {
     sessions: SessionSummary[]
+    machines?: Machine[]
     onSelect: (sessionId: string) => void
     onNewSession: () => void
     onRefresh: () => void
@@ -326,10 +282,14 @@ export function SessionList(props: {
     selectedSessionId?: string | null
 }) {
     const { t } = useTranslation()
-    const { renderHeader = true, api, selectedSessionId } = props
+    const { renderHeader = true, api, selectedSessionId, machines = [] } = props
+    const machinesById = useMemo(
+        () => new Map(machines.map(machine => [machine.id, machine])),
+        [machines]
+    )
     const groups = useMemo(
-        () => groupSessionsByDirectory(props.sessions),
-        [props.sessions]
+        () => groupSessionsByDirectory(props.sessions, machinesById),
+        [props.sessions, machinesById]
     )
     const [collapseOverrides, setCollapseOverrides] = useState<Map<string, boolean>>(
         () => new Map()
@@ -386,7 +346,7 @@ export function SessionList(props: {
                 {groups.map((group) => {
                     const isCollapsed = isGroupCollapsed(group)
                     return (
-                        <div key={group.directory}>
+                        <div key={group.key}>
                             <button
                                 type="button"
                                 onClick={() => toggleGroup(group.directory, isCollapsed)}
@@ -400,6 +360,11 @@ export function SessionList(props: {
                                     <span className="font-medium text-base break-words" title={group.directory}>
                                         {group.displayName}
                                     </span>
+                                    {group.machineLabel ? (
+                                        <span className="shrink-0 rounded-full border border-[var(--app-divider)] px-2 py-0.5 text-[10px] uppercase tracking-wide text-[var(--app-hint)]">
+                                            {group.machineLabel}
+                                        </span>
+                                    ) : null}
                                     <span className="shrink-0 text-xs text-[var(--app-hint)]">
                                         ({group.sessions.length})
                                     </span>
@@ -411,6 +376,7 @@ export function SessionList(props: {
                                         <SessionItem
                                             key={s.id}
                                             session={s}
+                                            machineLabel={getMachineLabel(s.metadata?.machineId, machinesById)}
                                             onSelect={props.onSelect}
                                             showPath={false}
                                             api={api}

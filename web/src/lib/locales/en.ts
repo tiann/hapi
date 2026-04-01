@@ -44,6 +44,7 @@ export default {
 
   // Session list
   'session.item.path': 'path',
+  'session.item.machine': 'machine',
   'session.item.agent': 'agent',
   'session.item.model': 'model',
   'session.item.worktree': 'worktree',
