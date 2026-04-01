@@ -6,6 +6,7 @@ import { convertCodexEvent } from './utils/codexEventConverter';
 import { buildHapiMcpBridge } from './utils/buildHapiMcpBridge';
 import { stripCodexCliOverrides } from './utils/codexCliOverrides';
 import { buildCodexPermissionModeCliArgs } from './utils/permissionModeConfig';
+import { resolveCodexSessionFile } from './utils/resolveCodexSessionFile';
 import { BaseLocalLauncher } from '@/modules/common/launcher/BaseLocalLauncher';
 
 export async function codexLocalLauncher(session: CodexSession): Promise<'switch' | 'exit'> {
@@ -30,6 +31,9 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
         session.onSessionFound(sessionId);
         scanner?.onNewSession(sessionId);
     };
+
+    const resolvedSessionFile = resumeSessionId ? await resolveCodexSessionFile(resumeSessionId) : null;
+    const isExplicitResumeResolutionFailure = resumeSessionId !== null && resolvedSessionFile?.status !== 'found';
 
     const launcher = new BaseLocalLauncher({
         label: 'codex-local',
@@ -60,9 +64,12 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
 
     const handleSessionMatchFailed = (message: string) => {
         logger.warn(`[codex-local]: ${message}`);
+        const syncStatusMessage = isExplicitResumeResolutionFailure
+            ? 'remote transcript sync is unavailable for this launch.'
+            : 'remote transcript sync may be unavailable for this launch.';
         session.sendSessionEvent({
             type: 'message',
-            message: `${message} Keeping local Codex running; remote transcript sync may be unavailable for this launch.`
+            message: `${message} Keeping local Codex running; ${syncStatusMessage}`
         });
     };
 
@@ -74,6 +81,7 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
         onSessionFound: (sessionId) => {
             session.onSessionFound(sessionId);
         },
+        resolvedSessionFile,
         onEvent: (event) => {
             const converted = convertCodexEvent(event);
             if (converted?.sessionId) {
