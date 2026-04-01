@@ -26,7 +26,7 @@ export { SessionSortPreferenceStore } from './sessionSortPreferenceStore'
 export { SessionStore } from './sessionStore'
 export { UserStore } from './userStore'
 
-const SCHEMA_VERSION: number = 5
+const SCHEMA_VERSION: number = 7
 const REQUIRED_TABLES = [
     'sessions',
     'machines',
@@ -95,78 +95,36 @@ export class Store {
         if (currentVersion === 0) {
             if (this.hasAnyUserTables()) {
                 this.migrateLegacySchemaIfNeeded()
-                this.createSchema()
-                this.setUserVersion(SCHEMA_VERSION)
-                return
             }
-
             this.createSchema()
             this.setUserVersion(SCHEMA_VERSION)
             return
         }
 
-        if (currentVersion === 1 && SCHEMA_VERSION >= 2) {
-            this.migrateFromV1ToV2()
-            if (SCHEMA_VERSION === 2) {
-                this.setUserVersion(SCHEMA_VERSION)
-                return
-            }
-
-            this.migrateFromV2ToV3()
-            if (SCHEMA_VERSION === 3) {
-                this.setUserVersion(SCHEMA_VERSION)
-                return
-            }
-
-            this.migrateFromV3ToV4()
-            if (SCHEMA_VERSION === 4) {
-                this.setUserVersion(SCHEMA_VERSION)
-                return
-            }
-
-            this.migrateFromV4ToV5()
-            this.setUserVersion(SCHEMA_VERSION)
-            return
-        }
-
-        if (currentVersion === 2 && SCHEMA_VERSION >= 3) {
-            this.migrateFromV2ToV3()
-            if (SCHEMA_VERSION === 3) {
-                this.setUserVersion(SCHEMA_VERSION)
-                return
-            }
-
-            this.migrateFromV3ToV4()
-            if (SCHEMA_VERSION === 4) {
-                this.setUserVersion(SCHEMA_VERSION)
-                return
-            }
-
-            this.migrateFromV4ToV5()
-            this.setUserVersion(SCHEMA_VERSION)
-            return
-        }
-
-        if (currentVersion === 3 && SCHEMA_VERSION >= 4) {
-            this.migrateFromV3ToV4()
-            if (SCHEMA_VERSION === 4) {
-                this.setUserVersion(SCHEMA_VERSION)
-                return
-            }
-
-            this.migrateFromV4ToV5()
-            this.setUserVersion(SCHEMA_VERSION)
-            return
-        }
-
-        if (currentVersion === 4 && SCHEMA_VERSION >= 5) {
-            this.migrateFromV4ToV5()
-            this.setUserVersion(SCHEMA_VERSION)
-            return
-        }
-
-        if (currentVersion !== SCHEMA_VERSION) {
+        if (currentVersion > SCHEMA_VERSION) {
             throw this.buildSchemaMismatchError(currentVersion)
+        }
+
+        let version = currentVersion
+        while (version < SCHEMA_VERSION) {
+            if (version === 1) {
+                this.migrateFromV1ToV2()
+            } else if (version === 2) {
+                this.migrateFromV2ToV3()
+            } else if (version === 3) {
+                this.migrateFromV3ToV4()
+            } else if (version === 4) {
+                this.migrateFromV4ToV5()
+            } else if (version === 5) {
+                this.migrateFromV5ToV6()
+            } else if (version === 6) {
+                this.migrateFromV6ToV7()
+            } else {
+                throw this.buildSchemaMismatchError(version)
+            }
+
+            version += 1
+            this.setUserVersion(version)
         }
 
         this.assertRequiredTablesPresent()
@@ -185,6 +143,8 @@ export class Store {
                 metadata_version INTEGER DEFAULT 1,
                 agent_state TEXT,
                 agent_state_version INTEGER DEFAULT 1,
+                model TEXT,
+                effort TEXT,
                 todos TEXT,
                 todos_updated_at INTEGER,
                 team_state TEXT,
@@ -244,7 +204,13 @@ export class Store {
                 UNIQUE(namespace, endpoint)
             );
             CREATE INDEX IF NOT EXISTS idx_push_subscriptions_namespace ON push_subscriptions(namespace);
+        `)
 
+        this.createSessionSortPreferencesTable()
+    }
+
+    private createSessionSortPreferencesTable(): void {
+        this.db.exec(`
             CREATE TABLE IF NOT EXISTS session_sort_preferences (
                 user_id INTEGER NOT NULL,
                 namespace TEXT NOT NULL,
@@ -301,7 +267,7 @@ export class Store {
             this.db.exec('ALTER TABLE machines RENAME COLUMN daemon_state_version TO runner_state_version')
             this.db.exec('COMMIT')
             return
-        } catch (error) {
+        } catch {
             this.db.exec('ROLLBACK')
         }
 
@@ -351,20 +317,7 @@ export class Store {
     }
 
     private migrateFromV3ToV4(): void {
-        this.db.exec(`
-            CREATE TABLE IF NOT EXISTS session_sort_preferences (
-                user_id INTEGER NOT NULL,
-                namespace TEXT NOT NULL,
-                sort_mode TEXT NOT NULL DEFAULT 'auto',
-                manual_order TEXT NOT NULL DEFAULT '{"groupOrder":[],"sessionOrder":{}}',
-                version INTEGER NOT NULL DEFAULT 1,
-                created_at INTEGER NOT NULL,
-                updated_at INTEGER NOT NULL,
-                PRIMARY KEY (user_id, namespace)
-            );
-            CREATE INDEX IF NOT EXISTS idx_session_sort_preferences_namespace
-                ON session_sort_preferences(namespace);
-        `)
+        this.createSessionSortPreferencesTable()
     }
 
     private migrateFromV4ToV5(): void {
@@ -375,6 +328,21 @@ export class Store {
         if (!columns.has('team_state_updated_at')) {
             this.db.exec('ALTER TABLE sessions ADD COLUMN team_state_updated_at INTEGER')
         }
+    }
+
+    private migrateFromV5ToV6(): void {
+        const columns = this.getSessionColumnNames()
+        if (!columns.has('model')) {
+            this.db.exec('ALTER TABLE sessions ADD COLUMN model TEXT')
+        }
+    }
+
+    private migrateFromV6ToV7(): void {
+        const columns = this.getSessionColumnNames()
+        if (!columns.has('effort')) {
+            this.db.exec('ALTER TABLE sessions ADD COLUMN effort TEXT')
+        }
+        this.createSessionSortPreferencesTable()
     }
 
     private getSessionColumnNames(): Set<string> {

@@ -303,6 +303,7 @@ export function ComposerButtons(props: {
     onSettingsToggle: () => void
     showTerminalButton: boolean
     terminalDisabled: boolean
+    terminalLabel: string
     onTerminal: () => void
     showAbortButton: boolean
     abortDisabled: boolean
@@ -350,8 +351,8 @@ export function ComposerButtons(props: {
                 {props.showTerminalButton ? (
                     <button
                         type="button"
-                        aria-label={t('composer.terminal')}
-                        title={t('composer.terminal')}
+                        aria-label={props.terminalLabel}
+                        title={props.terminalLabel}
                         className="flex h-8 w-8 items-center justify-center rounded-full text-[var(--app-fg)]/60 transition-colors hover:bg-[var(--app-bg)] hover:text-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
                         onClick={props.onTerminal}
                         disabled={props.terminalDisabled}

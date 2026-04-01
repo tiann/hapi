@@ -54,9 +54,9 @@ class GeminiRemoteLauncher extends RemoteLauncherBase {
         const backend = createGeminiBackend({
             model: runtimeConfig.model,
             token: runtimeConfig.token,
-            resumeSessionId: session.sessionId,
             hookSettingsPath: this.hookSettingsPath,
-            cwd: session.path
+            cwd: session.path,
+            permissionMode: session.getPermissionMode() as string | undefined
         });
         this.backend = backend;
 
@@ -68,10 +68,33 @@ class GeminiRemoteLauncher extends RemoteLauncherBase {
 
         await backend.initialize();
 
-        const acpSessionId = await backend.newSession({
-            cwd: session.path,
-            mcpServers: toAcpMcpServers(mcpServers)
-        });
+        const resumeSessionId = session.sessionId;
+        const acpMcpServers = toAcpMcpServers(mcpServers);
+        let acpSessionId: string;
+        if (resumeSessionId) {
+            try {
+                acpSessionId = await backend.loadSession({
+                    sessionId: resumeSessionId,
+                    cwd: session.path,
+                    mcpServers: acpMcpServers
+                });
+            } catch (error) {
+                logger.warn('[gemini-remote] resume failed, starting new session', error);
+                session.sendSessionEvent({
+                    type: 'message',
+                    message: 'Gemini resume failed; starting a new session.'
+                });
+                acpSessionId = await backend.newSession({
+                    cwd: session.path,
+                    mcpServers: acpMcpServers
+                });
+            }
+        } else {
+            acpSessionId = await backend.newSession({
+                cwd: session.path,
+                mcpServers: acpMcpServers
+            });
+        }
         session.onSessionFound(acpSessionId);
 
         this.permissionHandler = new GeminiPermissionHandler(
@@ -114,12 +137,13 @@ class GeminiRemoteLauncher extends RemoteLauncherBase {
                     this.handleAgentMessage(message);
                 });
             } catch (error) {
-                logger.warn('[gemini-remote] prompt failed', error);
+                const errorMessage = error instanceof Error ? error.message : String(error);
+                logger.warn('[gemini-remote] prompt failed', { message: errorMessage });
                 session.sendSessionEvent({
                     type: 'message',
-                    message: 'Gemini prompt failed. Check logs for details.'
+                    message: `Gemini prompt failed: ${errorMessage}`
                 });
-                messageBuffer.addMessage('Gemini prompt failed', 'status');
+                messageBuffer.addMessage(`Gemini prompt failed: ${errorMessage}`, 'status');
             } finally {
                 session.onThinkingChange(false);
                 await this.permissionHandler?.cancelAll('Prompt finished');
@@ -152,7 +176,7 @@ class GeminiRemoteLauncher extends RemoteLauncherBase {
     private handleAgentMessage(message: AgentMessage): void {
         const converted = convertAgentMessage(message);
         if (converted) {
-            this.session.sendCodexMessage(converted);
+            this.session.sendAgentMessage(converted);
         }
 
         switch (message.type) {
@@ -198,6 +222,7 @@ class GeminiRemoteLauncher extends RemoteLauncherBase {
             await backend.cancelPrompt(this.session.sessionId);
         }
         await this.permissionHandler?.cancelAll('User aborted');
+        this.session.sendSessionEvent({ type: 'message', message: 'Session aborted' });
         this.session.queue.reset();
         this.session.onThinkingChange(false);
         this.abortController.abort();

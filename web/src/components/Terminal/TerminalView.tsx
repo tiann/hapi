@@ -5,6 +5,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import { CanvasAddon } from '@xterm/addon-canvas'
 import '@xterm/xterm/css/xterm.css'
 import { ensureBuiltinFontLoaded, getFontProvider } from '@/lib/terminalFont'
+import { getInitialTerminalFontSize } from '@/hooks/useTerminalFontSize'
 
 function resolveThemeColors(): { background: string; foreground: string; selectionBackground: string } {
     const styles = getComputedStyle(document.documentElement)
@@ -38,11 +39,12 @@ export function TerminalView(props: {
         const abortController = new AbortController()
 
         const fontProvider = getFontProvider()
+        const fontSize = getInitialTerminalFontSize()
         const { background, foreground, selectionBackground } = resolveThemeColors()
         const terminal = new Terminal({
             cursorBlink: true,
             fontFamily: fontProvider.getFontFamily(),
-            fontSize: 13,
+            fontSize,
             theme: {
                 background,
                 foreground,

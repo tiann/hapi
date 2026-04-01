@@ -121,7 +121,7 @@ export class OutgoingMessageQueue {
             
             // Send if not already sent
             if (!item.sent) {
-                if (item.logMessage.type !== 'system') {
+                if (item.logMessage.type !== 'system' && !item.logMessage.isMeta && !item.logMessage.isCompactSummary) {
                     this.sendFunction(item.logMessage);
                 }
                 item.sent = true;

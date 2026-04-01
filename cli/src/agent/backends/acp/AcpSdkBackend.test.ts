@@ -30,6 +30,46 @@ afterEach(() => {
 });
 
 describe('AcpSdkBackend', () => {
+    it('allows the permission handler to resolve requests immediately', async () => {
+        const backend = new AcpSdkBackend({ command: 'opencode' });
+        let capturedRequestId: string | null = null;
+
+        backend.onPermissionRequest((request) => {
+            capturedRequestId = request.id;
+            void backend.respondToPermission(request.sessionId, request, {
+                outcome: 'selected',
+                optionId: 'allow-once'
+            });
+        });
+
+        const backendInternal = backend as unknown as {
+            handlePermissionRequest: (params: unknown, requestId: string | number | null) => Promise<unknown>;
+        };
+
+        await expect(backendInternal.handlePermissionRequest({
+            sessionId: 'session-1',
+            toolCall: {
+                toolCallId: 'tool-approve',
+                title: 'hapi_change_title',
+                rawInput: { title: 'Rename chat' }
+            },
+            options: [
+                {
+                    optionId: 'allow-once',
+                    name: 'Allow once',
+                    kind: 'allow_once'
+                }
+            ]
+        }, null)).resolves.toEqual({
+            outcome: {
+                outcome: 'selected',
+                optionId: 'allow-once'
+            }
+        });
+
+        expect(capturedRequestId).toBe('tool-approve');
+    });
+
     it('emits turn_complete after trailing tool updates from the same turn', async () => {
         backendStatics.UPDATE_QUIET_PERIOD_MS = 8;
         backendStatics.UPDATE_DRAIN_TIMEOUT_MS = 200;

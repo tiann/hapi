@@ -152,8 +152,9 @@ export function useShikiHighlighter(
             setHighlighted(rendered as ReactNode)
         }
 
-        // Debounce highlighting
-        const timer = setTimeout(highlight, 50)
+        // Debounce highlighting — 150ms reduces CPU pressure on Windows during
+        // streaming where code blocks update rapidly (see #310)
+        const timer = setTimeout(highlight, 150)
         return () => {
             cancelled = true
             clearTimeout(timer)

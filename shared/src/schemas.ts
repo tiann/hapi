@@ -1,8 +1,9 @@
 import { z } from 'zod'
-import { MODEL_MODES, PERMISSION_MODES } from './modes'
+import { CODEX_COLLABORATION_MODES, MODEL_MODES, PERMISSION_MODES } from './modes'
 
 export const PermissionModeSchema = z.enum(PERMISSION_MODES)
 export const ModelModeSchema = z.enum(MODEL_MODES)
+export const CodexCollaborationModeSchema = z.enum(CODEX_COLLABORATION_MODES)
 export const SessionSortModeSchema = z.enum(['auto', 'manual'])
 
 export type SessionSortMode = z.infer<typeof SessionSortModeSchema>
@@ -193,8 +194,11 @@ export const SessionSchema = z.object({
     thinkingAt: z.number(),
     todos: TodosSchema.optional(),
     teamState: TeamStateSchema.optional(),
+    model: z.string().nullable(),
+    effort: z.string().nullable(),
     permissionMode: PermissionModeSchema.optional(),
-    modelMode: ModelModeSchema.optional()
+    modelMode: ModelModeSchema.optional(),
+    collaborationMode: CodexCollaborationModeSchema.optional()
 })
 
 export type Session = z.infer<typeof SessionSchema>

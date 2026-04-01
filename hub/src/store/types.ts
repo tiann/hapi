@@ -11,6 +11,8 @@ export type StoredSession = {
     metadataVersion: number
     agentState: unknown | null
     agentStateVersion: number
+    model: string | null
+    effort: string | null
     todos: unknown | null
     todosUpdatedAt: number | null
     teamState: unknown | null

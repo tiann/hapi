@@ -1,4 +1,4 @@
-import type { ModelMode } from '@/types/api'
+import { isClaudeModelPreset } from '@hapi/protocol'
 
 /**
  * Context windows vary by model/provider and may change over time.
@@ -11,17 +11,30 @@ import type { ModelMode } from '@/types/api'
  * and use this only as a fallback.
  */
 const CONTEXT_HEADROOM_TOKENS = 10_000
+const DEFAULT_CLAUDE_CONTEXT_WINDOW_TOKENS = 200_000
+const LARGE_CLAUDE_CONTEXT_WINDOW_TOKENS = 1_000_000
 
-const MODEL_CONTEXT_WINDOWS: Record<ModelMode, number> = {
-    // Claude Code modes used in this app; currently treated as ~200k context.
-    default: 200_000,
-    sonnet: 200_000,
-    opus: 200_000
-}
+export function getContextBudgetTokens(model: string | null | undefined, flavor?: string | null): number | null {
+    if (flavor !== 'claude') {
+        return null
+    }
 
-export function getContextBudgetTokens(modelMode: ModelMode | undefined): number | null {
-    const mode: ModelMode = modelMode ?? 'default'
-    const windowTokens = MODEL_CONTEXT_WINDOWS[mode]
+    const trimmedModel = model?.trim()
+    const windowTokens = (() => {
+        if (!trimmedModel) {
+            return DEFAULT_CLAUDE_CONTEXT_WINDOW_TOKENS
+        }
+        if (isClaudeModelPreset(trimmedModel)) {
+            return trimmedModel.endsWith('[1m]')
+                ? LARGE_CLAUDE_CONTEXT_WINDOW_TOKENS
+                : DEFAULT_CLAUDE_CONTEXT_WINDOW_TOKENS
+        }
+        if (trimmedModel.startsWith('claude-')) {
+            return DEFAULT_CLAUDE_CONTEXT_WINDOW_TOKENS
+        }
+        return null
+    })()
+
     if (!windowTokens) return null
     return Math.max(1, windowTokens - CONTEXT_HEADROOM_TOKENS)
 }

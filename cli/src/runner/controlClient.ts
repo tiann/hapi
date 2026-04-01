@@ -4,13 +4,15 @@
  */
 
 import { logger } from '@/ui/logger';
-import { clearRunnerState, readRunnerState } from '@/persistence';
+import { clearRunnerState, readRunnerState, readSettings } from '@/persistence';
 import { Metadata } from '@/api/types';
 import packageJson from '../../package.json';
 import { existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { isBunCompiled, projectPath } from '@/projectPath';
 import { isProcessAlive, killProcess } from '@/utils/process';
+import { configuration } from '@/configuration';
+import { hashRunnerCliApiToken, isRunnerStateCompatibleWithIdentity } from './runnerIdentity';
 
 export function getInstalledCliMtimeMs(): number | undefined {
   if (isBunCompiled()) {
@@ -171,17 +173,44 @@ export async function isRunnerRunningCurrentlyInstalledHappyVersion(): Promise<b
     logger.debug('[RUNNER CONTROL] No runner state found, returning false');
     return false;
   }
+
+  const settings = await readSettings();
+  const currentApiUrl = process.env.HAPI_API_URL
+    || settings.apiUrl
+    || settings.serverUrl
+    || configuration.apiUrl;
+  const currentCliApiToken = process.env.CLI_API_TOKEN
+    || settings.cliApiToken
+    || configuration.cliApiToken;
+  const currentMachineId = settings.machineId;
   
   try {
     const currentCliMtimeMs = getInstalledCliMtimeMs();
     if (typeof currentCliMtimeMs === 'number' && typeof state.startedWithCliMtimeMs === 'number') {
       logger.debug(`[RUNNER CONTROL] Current CLI mtime: ${currentCliMtimeMs}, Runner started with mtime: ${state.startedWithCliMtimeMs}`);
-      return currentCliMtimeMs === state.startedWithCliMtimeMs;
+      if (currentCliMtimeMs !== state.startedWithCliMtimeMs) {
+        return false;
+      }
+    } else {
+      const currentCliVersion = packageJson.version;
+      logger.debug(`[RUNNER CONTROL] Current CLI version: ${currentCliVersion}, Runner started with version: ${state.startedWithCliVersion}`);
+      if (currentCliVersion !== state.startedWithCliVersion) {
+        return false;
+      }
     }
 
-    const currentCliVersion = packageJson.version;
-    logger.debug(`[RUNNER CONTROL] Current CLI version: ${currentCliVersion}, Runner started with version: ${state.startedWithCliVersion}`);
-    return currentCliVersion === state.startedWithCliVersion;
+    const currentIdentityMatches = isRunnerStateCompatibleWithIdentity(state, {
+      apiUrl: currentApiUrl,
+      machineId: currentMachineId,
+      cliApiTokenHash: hashRunnerCliApiToken(currentCliApiToken)
+    });
+    logger.debug(`[RUNNER CONTROL] Runner identity match: ${currentIdentityMatches}`, {
+      currentApiUrl,
+      currentMachineId,
+      runnerStartedWithApiUrl: state.startedWithApiUrl,
+      runnerStartedWithMachineId: state.startedWithMachineId
+    });
+    return currentIdentityMatches;
     
     // PREVIOUS IMPLEMENTATION - Keeping this commented in case we need it
     // Kirill does not understand how the upgrade of npm packages happen and whether 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseCodexCliOverrides } from './codexCliOverrides';
+import { parseCodexCliOverrides, stripCodexCliOverrides } from './codexCliOverrides';
 
 describe('parseCodexCliOverrides', () => {
     it('parses sandbox and approval flags', () => {
@@ -49,5 +49,26 @@ describe('parseCodexCliOverrides', () => {
         expect(parseCodexCliOverrides(['-s', 'read-only', '--', '-a', 'never'])).toEqual({
             sandbox: 'read-only'
         });
+    });
+
+    it('strips approval and sandbox overrides while keeping unrelated args', () => {
+        expect(stripCodexCliOverrides([
+            '--sandbox',
+            'read-only',
+            '--ask-for-approval=never',
+            '--model',
+            'o3',
+            '--full-auto',
+            '--dangerously-bypass-approvals-and-sandbox',
+            '--',
+            '--sandbox',
+            'danger-full-access'
+        ])).toEqual([
+            '--model',
+            'o3',
+            '--',
+            '--sandbox',
+            'danger-full-access'
+        ]);
     });
 });

@@ -10,6 +10,7 @@ import { readSettings } from '@/persistence'
 import { configuration } from '@/configuration'
 import { logger } from '@/ui/logger'
 import { runtimePath } from '@/projectPath'
+import { getInvokedCwd } from '@/utils/invokedCwd'
 import { readWorktreeEnv } from '@/utils/worktreeEnv'
 import packageJson from '../../package.json'
 
@@ -21,6 +22,9 @@ export type SessionBootstrapOptions = {
     workingDirectory?: string
     tag?: string
     agentState?: AgentState | null
+    model?: string
+    effort?: string
+    metadataOverrides?: Partial<Metadata>
 }
 
 export type SessionBootstrapResult = {
@@ -50,6 +54,7 @@ export function buildSessionMetadata(options: {
     workingDirectory: string
     machineId: string
     now?: number
+    metadataOverrides?: Partial<Metadata>
 }): Metadata {
     const happyLibDir = runtimePath()
     const worktreeInfo = readWorktreeEnv()
@@ -71,7 +76,8 @@ export function buildSessionMetadata(options: {
         lifecycleState: 'running',
         lifecycleStateSince: now,
         flavor: options.flavor,
-        worktree: worktreeInfo ?? undefined
+        worktree: worktreeInfo ?? undefined,
+        ...options.metadataOverrides
     }
 }
 
@@ -101,7 +107,7 @@ async function reportSessionStarted(sessionId: string, metadata: Metadata): Prom
 }
 
 export async function bootstrapSession(options: SessionBootstrapOptions): Promise<SessionBootstrapResult> {
-    const workingDirectory = options.workingDirectory ?? process.cwd()
+    const workingDirectory = options.workingDirectory ?? getInvokedCwd()
     const startedBy = options.startedBy ?? 'terminal'
     const sessionTag = options.tag ?? randomUUID()
     const agentState = options.agentState === undefined ? {} : options.agentState
@@ -118,13 +124,16 @@ export async function bootstrapSession(options: SessionBootstrapOptions): Promis
         flavor: options.flavor,
         startedBy,
         workingDirectory,
-        machineId
+        machineId,
+        metadataOverrides: options.metadataOverrides
     })
 
     const sessionInfo = await api.getOrCreateSession({
         tag: sessionTag,
         metadata,
-        state: agentState
+        state: agentState,
+        model: options.model,
+        effort: options.effort
     })
 
     const session = api.sessionSyncClient(sessionInfo)

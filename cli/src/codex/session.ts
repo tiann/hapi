@@ -4,6 +4,7 @@ import { AgentSessionBase } from '@/agent/sessionBase';
 import type { EnhancedMode, PermissionMode } from './loop';
 import type { CodexCliOverrides } from './utils/codexCliOverrides';
 import type { LocalLaunchExitReason } from '@/agent/localLaunchPolicy';
+import type { SessionModel } from '@/api/types';
 
 type LocalLaunchFailure = {
     message: string;
@@ -31,6 +32,8 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
         codexArgs?: string[];
         codexCliOverrides?: CodexCliOverrides;
         permissionMode?: PermissionMode;
+        model?: SessionModel;
+        collaborationMode?: EnhancedMode['collaborationMode'];
     }) {
         super({
             api: opts.api,
@@ -47,7 +50,9 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
                 ...metadata,
                 codexSessionId: sessionId
             }),
-            permissionMode: opts.permissionMode
+            permissionMode: opts.permissionMode,
+            model: opts.model,
+            collaborationMode: opts.collaborationMode
         });
 
         this.codexArgs = opts.codexArgs;
@@ -55,18 +60,28 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
         this.startedBy = opts.startedBy;
         this.startingMode = opts.startingMode;
         this.permissionMode = opts.permissionMode;
+        this.model = opts.model;
+        this.collaborationMode = opts.collaborationMode;
     }
 
     setPermissionMode = (mode: PermissionMode): void => {
         this.permissionMode = mode;
     };
 
+    setModel = (model: SessionModel): void => {
+        this.model = model;
+    };
+
+    setCollaborationMode = (mode: EnhancedMode['collaborationMode']): void => {
+        this.collaborationMode = mode;
+    };
+
     recordLocalLaunchFailure = (message: string, exitReason: LocalLaunchExitReason): void => {
         this.localLaunchFailure = { message, exitReason };
     };
 
-    sendCodexMessage = (message: unknown): void => {
-        this.client.sendCodexMessage(message);
+    sendAgentMessage = (message: unknown): void => {
+        this.client.sendAgentMessage(message);
     };
 
     sendUserMessage = (text: string): void => {

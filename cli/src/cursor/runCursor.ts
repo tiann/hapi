@@ -10,6 +10,7 @@ import { createModeChangeHandler, createRunnerLifecycle, setControlledByUser } f
 import { isPermissionModeAllowedForFlavor } from '@hapi/protocol';
 import { PermissionModeSchema } from '@hapi/protocol/schemas';
 import { formatMessageWithAttachments } from '@/utils/attachmentFormatter';
+import { getInvokedCwd } from '@/utils/invokedCwd';
 
 const formatFailureReason = (message: string): string => {
     const maxLength = 200;
@@ -26,7 +27,7 @@ export async function runCursor(opts: {
     resumeSessionId?: string;
     model?: string;
 }): Promise<void> {
-    const workingDirectory = process.cwd();
+    const workingDirectory = getInvokedCwd();
     const startedBy = opts.startedBy ?? 'terminal';
 
     logger.debug(`[cursor] Starting with options: startedBy=${startedBy}`);
@@ -38,7 +39,8 @@ export async function runCursor(opts: {
         flavor: 'cursor',
         startedBy,
         workingDirectory,
-        agentState: state
+        agentState: state,
+        model: opts.model
     });
 
     const startingMode: 'local' | 'remote' = startedBy === 'runner' ? 'remote' : 'local';

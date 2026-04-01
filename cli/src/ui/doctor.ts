@@ -15,6 +15,7 @@ import { existsSync, readdirSync, statSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { isBunCompiled, projectPath, runtimePath } from '@/projectPath'
+import { getInvokedCwd } from '@/utils/invokedCwd'
 import packageJson from '../../package.json'
 
 /**
@@ -30,7 +31,7 @@ export function getEnvironmentInfo(): Record<string, any> {
         DANGEROUSLY_LOG_TO_SERVER_FOR_AI_AUTO_DEBUGGING: process.env.DANGEROUSLY_LOG_TO_SERVER_FOR_AI_AUTO_DEBUGGING,
         NODE_ENV: process.env.NODE_ENV,
         DEBUG: process.env.DEBUG,
-        workingDirectory: process.cwd(),
+        workingDirectory: getInvokedCwd(),
         processArgv: process.argv,
         happyDir: configuration?.happyHomeDir,
         apiUrl: configuration?.apiUrl,

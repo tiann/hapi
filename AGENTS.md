@@ -52,6 +52,8 @@ Bun workspaces; `shared` consumed by cli, hub, web.
 ## Shared rules
 
 - No backward compatibility: breaking old formats freely
+- Prioritize Pragmatism, and Avoid Overengineering.
+- Write necessary tests ONLY.
 - TypeScript strict; no untyped code
 - Bun workspaces; run `bun` commands from repo root
 - Path alias `@/*` maps to `./src/*` per package

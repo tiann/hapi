@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { usePWAInstall } from '@/hooks/usePWAInstall'
 import { usePlatform } from '@/hooks/usePlatform'
 import { CloseIcon, ShareIcon, PlusCircleIcon } from '@/components/icons'
@@ -9,6 +9,22 @@ export function InstallPrompt() {
     const { canInstall, canInstallIOS, promptInstall, dismissInstall, isStandalone } = usePWAInstall()
     const { isTelegram, haptic } = usePlatform()
     const [showIOSGuide, setShowIOSGuide] = useState(false)
+    const showFloatingPrompt = !isTelegram && !isStandalone && ((canInstallIOS && !showIOSGuide) || canInstall)
+
+    useEffect(() => {
+        const root = document.documentElement
+        if (!root) return
+
+        if (showFloatingPrompt) {
+            root.style.setProperty('--app-floating-bottom-offset', '112px')
+        } else {
+            root.style.removeProperty('--app-floating-bottom-offset')
+        }
+
+        return () => {
+            root.style.removeProperty('--app-floating-bottom-offset')
+        }
+    }, [showFloatingPrompt])
 
     if (isTelegram || isStandalone) {
         return null

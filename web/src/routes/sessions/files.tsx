@@ -306,7 +306,7 @@ export default function FilesPage() {
     }, [navigate, sessionId])
 
     return (
-        <div className="flex h-full flex-col">
+        <div className="flex h-full min-h-0 flex-col">
             <div className="bg-[var(--app-bg)] pt-[env(safe-area-inset-top)]">
                 <div className="mx-auto w-full max-w-content flex items-center gap-2 p-3 border-b border-[var(--app-border)]">
                     <button
@@ -390,7 +390,7 @@ export default function FilesPage() {
                 </div>
             ) : null}
 
-            <div className="flex-1 overflow-y-auto">
+            <div className="app-scroll-y flex-1 min-h-0">
                 <div className="mx-auto w-full max-w-content">
                     {showGitErrorBanner && activeTab === 'changes' ? (
                         <div className="border-b border-[var(--app-divider)] bg-amber-500/10 px-3 py-2 text-xs text-[var(--app-hint)]">

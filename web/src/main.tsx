@@ -11,6 +11,7 @@ import { getTelegramWebApp, isTelegramEnvironment, loadTelegramSdk } from './hoo
 import { queryClient } from './lib/query-client'
 import { createAppRouter } from './router'
 import { I18nProvider } from './lib/i18n-context'
+import { restoreSpaRedirect } from './lib/spaRedirect'
 
 function getStartParam(): string | null {
     const query = new URLSearchParams(window.location.search)
@@ -39,8 +40,16 @@ async function bootstrap() {
 
     // Only load Telegram SDK in Telegram environment (with 3s timeout)
     const isTelegram = isTelegramEnvironment()
+    document.documentElement.dataset.telegramApp = isTelegram ? 'true' : 'false'
     if (isTelegram) {
         await loadTelegramSdk()
+    }
+
+    // Handle GitHub Pages 404 redirect for SPA routing
+    // When GitHub Pages can't find a path (e.g. /sessions/xxx), it serves 404.html
+    // which stores the path in sessionStorage and redirects to /
+    if (!isTelegram) {
+        restoreSpaRedirect()
     }
 
     const updateSW = registerSW({

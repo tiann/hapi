@@ -6,13 +6,14 @@ export function ActionButtons(props: {
     isPending: boolean
     canCreate: boolean
     isDisabled: boolean
+    createLabel?: string
     onCancel: () => void
     onCreate: () => void
 }) {
     const { t } = useTranslation()
 
     return (
-        <div className="flex gap-2 px-3 py-3">
+        <div className="flex gap-2 px-3 pt-3 pb-[calc(env(safe-area-inset-bottom)+1rem)]">
             <Button
                 variant="secondary"
                 onClick={props.onCancel}
@@ -32,7 +33,7 @@ export function ActionButtons(props: {
                         {t('newSession.creating')}
                     </>
                 ) : (
-                    t('newSession.create')
+                    (props.createLabel ?? t('newSession.create'))
                 )}
             </Button>
         </div>

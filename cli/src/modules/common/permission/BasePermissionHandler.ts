@@ -10,7 +10,7 @@ type RpcHandlerManagerLike = {
 
 export type AutoApprovalDecision = 'approved' | 'approved_for_session';
 
-type AutoApprovalRuleSet = {
+export type AutoApprovalRuleSet = {
     alwaysToolNameHints?: string[];
     alwaysToolIdHints?: string[];
     writeToolNameHints?: string[];
@@ -27,6 +27,46 @@ const AUTO_APPROVE_TOOL_NAME_HINTS = [
 ];
 const AUTO_APPROVE_TOOL_ID_HINTS = ['change_title', 'save_memory'];
 const AUTO_APPROVE_WRITE_TOOL_HINTS = ['write', 'edit', 'create', 'delete', 'patch', 'fs-edit'];
+
+export function resolveToolAutoApprovalDecision(
+    mode: PermissionMode | undefined,
+    toolName: string,
+    toolCallId: string,
+    ruleOverrides?: AutoApprovalRuleSet
+): AutoApprovalDecision | null {
+    const rules = {
+        alwaysToolNameHints: ruleOverrides?.alwaysToolNameHints ?? AUTO_APPROVE_TOOL_NAME_HINTS,
+        alwaysToolIdHints: ruleOverrides?.alwaysToolIdHints ?? AUTO_APPROVE_TOOL_ID_HINTS,
+        writeToolNameHints: ruleOverrides?.writeToolNameHints ?? AUTO_APPROVE_WRITE_TOOL_HINTS
+    };
+
+    const lowerTool = toolName.toLowerCase();
+    const lowerId = toolCallId.toLowerCase();
+    const decisionForMode: AutoApprovalDecision = mode === 'yolo' ? 'approved_for_session' : 'approved';
+
+    if (rules.alwaysToolNameHints.some((name) => lowerTool.includes(name))) {
+        return decisionForMode;
+    }
+
+    if (rules.alwaysToolIdHints.some((name) => lowerId.includes(name))) {
+        return decisionForMode;
+    }
+
+    if (mode === 'yolo') {
+        return 'approved_for_session';
+    }
+
+    if (mode === 'safe-yolo') {
+        return 'approved';
+    }
+
+    if (mode === 'read-only') {
+        const isWriteTool = rules.writeToolNameHints.some((name) => lowerTool.includes(name));
+        return isWriteTool ? null : 'approved';
+    }
+
+    return null;
+}
 
 export type PermissionHandlerClient = {
     rpcHandlerManager: RpcHandlerManagerLike;
@@ -83,38 +123,7 @@ export abstract class BasePermissionHandler<TResponse extends { id: string }, TR
         toolCallId: string,
         ruleOverrides?: AutoApprovalRuleSet
     ): AutoApprovalDecision | null {
-        const rules = {
-            alwaysToolNameHints: ruleOverrides?.alwaysToolNameHints ?? AUTO_APPROVE_TOOL_NAME_HINTS,
-            alwaysToolIdHints: ruleOverrides?.alwaysToolIdHints ?? AUTO_APPROVE_TOOL_ID_HINTS,
-            writeToolNameHints: ruleOverrides?.writeToolNameHints ?? AUTO_APPROVE_WRITE_TOOL_HINTS
-        };
-
-        const lowerTool = toolName.toLowerCase();
-        const lowerId = toolCallId.toLowerCase();
-        const decisionForMode: AutoApprovalDecision = mode === 'yolo' ? 'approved_for_session' : 'approved';
-
-        if (rules.alwaysToolNameHints.some((name) => lowerTool.includes(name))) {
-            return decisionForMode;
-        }
-
-        if (rules.alwaysToolIdHints.some((name) => lowerId.includes(name))) {
-            return decisionForMode;
-        }
-
-        if (mode === 'yolo') {
-            return 'approved_for_session';
-        }
-
-        if (mode === 'safe-yolo') {
-            return 'approved';
-        }
-
-        if (mode === 'read-only') {
-            const isWriteTool = rules.writeToolNameHints.some((name) => lowerTool.includes(name));
-            return isWriteTool ? null : 'approved';
-        }
-
-        return null;
+        return resolveToolAutoApprovalDecision(mode, toolName, toolCallId, ruleOverrides);
     }
 
     protected addPendingRequest(

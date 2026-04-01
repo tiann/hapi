@@ -30,7 +30,7 @@ const RECONNECT_MAX_DELAY_MS = 30_000
 const RECONNECT_JITTER_MS = 500
 const INVALIDATION_BATCH_MS = 16
 
-type SessionPatch = Partial<Pick<Session, 'active' | 'thinking' | 'activeAt' | 'updatedAt' | 'permissionMode' | 'modelMode'>>
+type SessionPatch = Partial<Pick<Session, 'active' | 'thinking' | 'activeAt' | 'updatedAt' | 'model' | 'effort' | 'permissionMode' | 'collaborationMode'>>
 
 function sortSessionSummaries(left: SessionSummary, right: SessionSummary): number {
     if (left.active !== right.active) {
@@ -81,12 +81,20 @@ function getSessionPatch(value: unknown): SessionPatch | null {
         patch.updatedAt = value.updatedAt
         hasKnownPatch = true
     }
+    if (value.model === null || typeof value.model === 'string') {
+        patch.model = value.model
+        hasKnownPatch = true
+    }
+    if (value.effort === null || typeof value.effort === 'string') {
+        patch.effort = value.effort
+        hasKnownPatch = true
+    }
     if (typeof value.permissionMode === 'string') {
         patch.permissionMode = value.permissionMode as Session['permissionMode']
         hasKnownPatch = true
     }
-    if (typeof value.modelMode === 'string') {
-        patch.modelMode = value.modelMode as Session['modelMode']
+    if (typeof value.collaborationMode === 'string') {
+        patch.collaborationMode = value.collaborationMode as Session['collaborationMode']
         hasKnownPatch = true
     }
 
@@ -97,7 +105,7 @@ function hasUnknownSessionPatchKeys(value: unknown): boolean {
     if (!hasRecordShape(value)) {
         return false
     }
-    const knownKeys = new Set(['active', 'thinking', 'activeAt', 'updatedAt', 'permissionMode', 'modelMode'])
+    const knownKeys = new Set(['active', 'thinking', 'activeAt', 'updatedAt', 'model', 'effort', 'permissionMode', 'collaborationMode'])
     return Object.keys(value).some((key) => !knownKeys.has(key))
 }
 
@@ -382,7 +390,8 @@ export function useSSE(options: {
                     thinking: patch.thinking ?? current.thinking,
                     activeAt: patch.activeAt ?? current.activeAt,
                     updatedAt: patch.updatedAt ?? current.updatedAt,
-                    modelMode: patch.modelMode ?? current.modelMode
+                    model: Object.prototype.hasOwnProperty.call(patch, 'model') ? patch.model ?? null : current.model,
+                    effort: Object.prototype.hasOwnProperty.call(patch, 'effort') ? patch.effort ?? null : current.effort
                 }
 
                 patched = true

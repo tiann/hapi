@@ -37,6 +37,8 @@ For local network access:
 http://<your-computer-ip>:3006
 ```
 
+If your phone cannot connect, make sure the hub is not only listening on `127.0.0.1`. For LAN access, set `listenHost` to `0.0.0.0` in `~/.hapi/settings.json` or set `HAPI_LISTEN_HOST=0.0.0.0`, then restart `hapi hub`.
+
 For internet access:
 - If the hub has a public IP, access it directly (use HTTPS via reverse proxy for production)
 - If behind NAT, set up a tunnel (Cloudflare Tunnel, Tailscale, or ngrok)
@@ -95,7 +97,9 @@ Yes. Open any session and use the chat interface to send messages directly to th
 
 ### Can I access a terminal remotely?
 
-Yes. Open a session in the web app and tap the Terminal tab for a remote shell.
+Yes, on Linux and macOS hosts. Open a session in the web app and tap the Terminal tab for a remote shell.
+
+Windows hosts do not support the remote Terminal yet because the Bun PTY API used by HAPI is currently POSIX-only.
 
 ### How do I use voice control?
 
@@ -128,6 +132,30 @@ Only if they have your access token. For additional security:
 - Ensure hub is running: `hapi hub`
 - Check firewall allows port 3006
 - Verify `HAPI_API_URL` is correct
+
+### My phone cannot access HAPI on the local network
+
+If HAPI works on your computer but not from another device on the same LAN, check the hub bind address first. By default, HAPI listens on `127.0.0.1`, which only accepts localhost connections.
+
+Use one of these:
+
+```json
+{
+  "listenHost": "0.0.0.0"
+}
+```
+
+```bash
+export HAPI_LISTEN_HOST=0.0.0.0
+```
+
+Then restart `hapi hub` and open:
+
+```bash
+http://<your-computer-ip>:3006
+```
+
+Also verify your OS firewall allows inbound connections on port `3006`.
 
 ### "Invalid token" error
 

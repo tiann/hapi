@@ -329,10 +329,20 @@ body {
     height: 100vh;
     height: 100dvh;
     height: var(--tg-viewport-stable-height, 100dvh);
-    overflow: hidden;
     touch-action: pan-x pan-y;
     overscroll-behavior: none;
     -webkit-text-size-adjust: 100%;
+}
+
+html[data-telegram-app="true"],
+html[data-telegram-app="true"] body {
+    overflow: hidden;
+}
+
+html:not([data-telegram-app="true"]),
+html:not([data-telegram-app="true"]) body {
+    overflow-x: hidden;
+    overflow-y: auto;
 }
 
 body {
@@ -343,6 +353,13 @@ body {
 
 #root {
     height: 100%;
+}
+
+.app-scroll-y {
+    overflow-y: auto;
+    overscroll-behavior-y: contain;
+    -webkit-overflow-scrolling: touch;
+    touch-action: pan-y;
 }
 
 @media (hover: hover) and (pointer: fine) {
@@ -361,6 +378,16 @@ body {
     .desktop-scrollbar-left > * {
         direction: ltr;
     }
+}
+
+/*
+ * content-visibility: auto lets the browser skip layout/paint for messages
+ * scrolled out of the viewport. Big win on Windows with long conversations (#310).
+ * contain-intrinsic-size gives a rough height hint so scrollbar doesn't jump.
+ */
+.happy-thread-messages > * {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 80px;
 }
 
 /* Markdown styles */

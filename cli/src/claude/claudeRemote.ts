@@ -37,6 +37,7 @@ export async function claudeRemote(opts: {
     onCompletionEvent?: (message: string) => void,
     onSessionReset?: () => void
 }) {
+    const debugPrefix = '[claudeRemote][async-debug]';
 
     // Check if session is valid
     let startFrom = opts.sessionId;
@@ -79,10 +80,21 @@ export async function claudeRemote(opts: {
     process.env.DISABLE_AUTOUPDATER = '1';
 
     // Get initial message
-    const initial = await opts.nextMessage();
+    let initial;
+    try {
+        initial = await opts.nextMessage();
+    } catch (e) {
+        if (e instanceof AbortError) {
+            logger.debug(`[claudeRemote] Aborted during initial message`);
+            return;
+        }
+        throw e;
+    }
     if (!initial) { // No initial message - exit
+        logger.debug(`${debugPrefix} initial nextMessage returned null; exiting`);
         return;
     }
+    logger.debug(`${debugPrefix} initial message acquired`);
 
     // Handle special commands
     const specialCommand = parseSpecialCommand(initial.message);
@@ -116,6 +128,7 @@ export async function claudeRemote(opts: {
         mcpServers: opts.mcpServers,
         permissionMode: initial.mode.permissionMode,
         model: initial.mode.model,
+        effort: initial.mode.effort,
         fallbackModel: initial.mode.fallbackModel,
         customSystemPrompt: initial.mode.customSystemPrompt ? initial.mode.customSystemPrompt + '\n\n' + systemPrompt : undefined,
         appendSystemPrompt: initial.mode.appendSystemPrompt ? initial.mode.appendSystemPrompt + '\n\n' + systemPrompt : systemPrompt,
@@ -156,11 +169,68 @@ export async function claudeRemote(opts: {
         options: sdkOptions,
     });
 
+    let nextMessageFetchInFlight = false;
+    let inputEnded = false;
+    let nextMessageFetchSeq = 0;
+    let streamMessageSeq = 0;
+    let resultSeq = 0;
+
+    const scheduleNextMessage = () => {
+        if (nextMessageFetchInFlight || inputEnded) {
+            logger.debug(
+                `${debugPrefix} scheduleNextMessage skipped ` +
+                `(inFlight=${nextMessageFetchInFlight}, inputEnded=${inputEnded})`
+            );
+            return;
+        }
+
+        const fetchId = ++nextMessageFetchSeq;
+        const startedAt = Date.now();
+        nextMessageFetchInFlight = true;
+        logger.debug(`${debugPrefix} scheduleNextMessage start fetchId=${fetchId}`);
+        void (async () => {
+            try {
+                const next = await opts.nextMessage();
+                if (!next) {
+                    inputEnded = true;
+                    messages.end();
+                    logger.debug(
+                        `${debugPrefix} nextMessage resolved null fetchId=${fetchId} elapsedMs=${Date.now() - startedAt}; input ended`
+                    );
+                    return;
+                }
+                mode = next.mode;
+                messages.push({ type: 'user', message: { role: 'user', content: next.message } });
+                logger.debug(
+                    `${debugPrefix} nextMessage resolved fetchId=${fetchId} elapsedMs=${Date.now() - startedAt} ` +
+                    `messageLength=${next.message.length} permissionMode=${next.mode.permissionMode}`
+                );
+            } catch (e) {
+                inputEnded = true;
+                if (e instanceof AbortError) {
+                    messages.end();
+                    logger.debug(`${debugPrefix} nextMessage aborted fetchId=${fetchId}`);
+                    return;
+                }
+                messages.setError(e instanceof Error ? e : new Error(String(e)));
+                logger.debug(`${debugPrefix} nextMessage error fetchId=${fetchId}`, e);
+            } finally {
+                nextMessageFetchInFlight = false;
+                logger.debug(`${debugPrefix} scheduleNextMessage done fetchId=${fetchId}`);
+            }
+        })();
+    };
+
     updateThinking(true);
     try {
         logger.debug(`[claudeRemote] Starting to iterate over response`);
 
         for await (const message of response) {
+            streamMessageSeq += 1;
+            logger.debug(
+                `${debugPrefix} stream message #${streamMessageSeq} type=${message.type} ` +
+                `subtype=${'subtype' in message ? String((message as any).subtype) : 'n/a'}`
+            );
             logger.debugLargeJson(`[claudeRemote] Message ${message.type}`, message);
 
             // Handle messages
@@ -186,8 +256,12 @@ export async function claudeRemote(opts: {
 
             // Handle result messages
             if (message.type === 'result') {
+                resultSeq += 1;
                 updateThinking(false);
-                logger.debug('[claudeRemote] Result received, exiting claudeRemote');
+                logger.debug(
+                    `${debugPrefix} result #${resultSeq} received; scheduling next user message ` +
+                    `(nextInFlight=${nextMessageFetchInFlight}, inputEnded=${inputEnded})`
+                );
 
                 // Send completion messages
                 if (isCompactCommand) {
@@ -200,15 +274,12 @@ export async function claudeRemote(opts: {
 
                 // Send ready event
                 opts.onReady();
+                logger.debug(`${debugPrefix} onReady emitted for result #${resultSeq}`);
 
-                // Push next message
-                const next = await opts.nextMessage();
-                if (!next) {
-                    messages.end();
-                    return;
-                }
-                mode = next.mode;
-                messages.push({ type: 'user', message: { role: 'user', content: next.message } });
+                // Pull next user message without blocking response stream processing.
+                // Claude may emit autonomous async messages (e.g. scheduled tasks) after a result,
+                // and we must keep consuming those messages immediately.
+                scheduleNextMessage();
             }
 
             // Handle tool result
@@ -218,20 +289,27 @@ export async function claudeRemote(opts: {
                     for (let c of msg.message.content) {
                         if (c.type === 'tool_result' && c.tool_use_id && opts.isAborted(c.tool_use_id)) {
                             logger.debug('[claudeRemote] Tool aborted, exiting claudeRemote');
+                            logger.debug(`${debugPrefix} tool aborted via tool_result; exiting stream loop`);
                             return;
                         }
                     }
                 }
             }
         }
+        logger.debug(`${debugPrefix} response stream exhausted`);
     } catch (e) {
         if (e instanceof AbortError) {
             logger.debug(`[claudeRemote] Aborted`);
             // Ignore
         } else {
+            logger.debug(`${debugPrefix} response stream error`, e);
             throw e;
         }
     } finally {
+        logger.debug(
+            `${debugPrefix} finally ` +
+            `(streamMessages=${streamMessageSeq}, results=${resultSeq}, nextFetches=${nextMessageFetchSeq}, inputEnded=${inputEnded})`
+        );
         updateThinking(false);
     }
 }

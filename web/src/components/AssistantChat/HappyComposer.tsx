@@ -1,4 +1,4 @@
-import { getPermissionModeOptionsForFlavor, MODEL_MODE_LABELS, MODEL_MODES } from '@hapi/protocol'
+import { getCodexCollaborationModeOptions, getPermissionModeOptionsForFlavor } from '@hapi/protocol'
 import { ComposerPrimitive, useAssistantApi, useAssistantState } from '@assistant-ui/react'
 import {
     type ChangeEvent as ReactChangeEvent,
@@ -12,7 +12,7 @@ import {
     useRef,
     useState
 } from 'react'
-import type { AgentState, ModelMode, PermissionMode } from '@/types/api'
+import type { AgentState, CodexCollaborationMode, PermissionMode } from '@/types/api'
 import type { Suggestion } from '@/hooks/useActiveSuggestions'
 import type { ConversationStatus } from '@/realtime/types'
 import { useActiveWord } from '@/hooks/useActiveWord'
@@ -20,7 +20,7 @@ import { useActiveSuggestions } from '@/hooks/useActiveSuggestions'
 import { applySuggestion } from '@/utils/applySuggestion'
 import { usePlatform } from '@/hooks/usePlatform'
 import { usePWAInstall } from '@/hooks/usePWAInstall'
-import { isClaudeFlavor } from '@/lib/agentFlavorUtils'
+import { isClaudeFlavor, supportsModelChange } from '@/lib/agentFlavorUtils'
 import { markSkillUsed } from '@/lib/recent-skills'
 import { FloatingOverlay } from '@/components/ChatInput/FloatingOverlay'
 import { Autocomplete } from '@/components/ChatInput/Autocomplete'
@@ -28,6 +28,8 @@ import { StatusBar } from '@/components/AssistantChat/StatusBar'
 import { ComposerButtons } from '@/components/AssistantChat/ComposerButtons'
 import { AttachmentItem } from '@/components/AssistantChat/AttachmentItem'
 import { useTranslation } from '@/lib/use-translation'
+import { getModelOptionsForFlavor, getNextModelForFlavor } from './modelOptions'
+import { getClaudeComposerEffortOptions } from './claudeEffortOptions'
 
 export interface TextInputState {
     text: string
@@ -39,7 +41,9 @@ const defaultSuggestionHandler = async (): Promise<Suggestion[]> => []
 export function HappyComposer(props: {
     disabled?: boolean
     permissionMode?: PermissionMode
-    modelMode?: ModelMode
+    collaborationMode?: CodexCollaborationMode
+    model?: string | null
+    effort?: string | null
     active?: boolean
     allowSendWhenInactive?: boolean
     thinking?: boolean
@@ -47,10 +51,13 @@ export function HappyComposer(props: {
     contextSize?: number
     controlledByUser?: boolean
     agentFlavor?: string | null
+    onCollaborationModeChange?: (mode: CodexCollaborationMode) => void
     onPermissionModeChange?: (mode: PermissionMode) => void
-    onModelModeChange?: (mode: ModelMode) => void
+    onModelChange?: (model: string | null) => void
+    onEffortChange?: (effort: string | null) => void
     onSwitchToRemote?: () => void
     onTerminal?: () => void
+    terminalUnsupported?: boolean
     autocompletePrefixes?: string[]
     autocompleteSuggestions?: (query: string) => Promise<Suggestion[]>
     // Voice assistant props
@@ -63,7 +70,9 @@ export function HappyComposer(props: {
     const {
         disabled = false,
         permissionMode: rawPermissionMode,
-        modelMode: rawModelMode,
+        collaborationMode: rawCollaborationMode,
+        model: rawModel,
+        effort: rawEffort,
         active = true,
         allowSendWhenInactive = false,
         thinking = false,
@@ -71,10 +80,13 @@ export function HappyComposer(props: {
         contextSize,
         controlledByUser = false,
         agentFlavor,
+        onCollaborationModeChange,
         onPermissionModeChange,
-        onModelModeChange,
+        onModelChange,
+        onEffortChange,
         onSwitchToRemote,
         onTerminal,
+        terminalUnsupported = false,
         autocompletePrefixes = ['@', '/', '$'],
         autocompleteSuggestions = defaultSuggestionHandler,
         voiceStatus = 'disconnected',
@@ -85,7 +97,9 @@ export function HappyComposer(props: {
 
     // Use ?? so missing values fall back to default (destructuring defaults only handle undefined)
     const permissionMode = rawPermissionMode ?? 'default'
-    const modelMode = rawModelMode ?? 'default'
+    const collaborationMode = rawCollaborationMode ?? 'default'
+    const model = rawModel ?? null
+    const effort = rawEffort ?? null
 
     const api = useAssistantApi()
     const composerText = useAssistantState(({ composer }) => composer.text)
@@ -173,7 +187,7 @@ export function HappyComposer(props: {
         // For Codex user prompts with content, expand the content instead of command name
         let textToInsert = suggestion.text
         let addSpace = true
-        if (agentFlavor === 'codex' && suggestion.source === 'user' && suggestion.content) {
+        if (agentFlavor === 'codex' && suggestion.source !== 'builtin' && suggestion.content) {
             textToInsert = suggestion.content
             addSpace = false
         }
@@ -209,7 +223,9 @@ export function HappyComposer(props: {
     const abortDisabled = controlsDisabled || isAborting || !threadIsRunning
     const switchDisabled = controlsDisabled || isSwitching || !controlledByUser
     const showSwitchButton = Boolean(controlledByUser && onSwitchToRemote)
-    const showTerminalButton = Boolean(onTerminal)
+    const showTerminalButton = Boolean(onTerminal || terminalUnsupported)
+    const terminalDisabled = controlsDisabled || terminalUnsupported
+    const terminalLabel = terminalUnsupported ? t('terminal.unsupportedWindows') : t('composer.terminal')
 
     useEffect(() => {
         if (!isAborting) return
@@ -244,6 +260,18 @@ export function HappyComposer(props: {
     const permissionModeOptions = useMemo(
         () => getPermissionModeOptionsForFlavor(agentFlavor),
         [agentFlavor]
+    )
+    const collaborationModeOptions = useMemo(
+        () => agentFlavor === 'codex' ? getCodexCollaborationModeOptions() : [],
+        [agentFlavor]
+    )
+    const claudeModelOptions = useMemo(
+        () => getModelOptionsForFlavor(agentFlavor, model),
+        [agentFlavor, model]
+    )
+    const claudeEffortOptions = useMemo(
+        () => getClaudeComposerEffortOptions(effort),
+        [effort]
     )
     const permissionModes = useMemo(
         () => permissionModeOptions.map((option) => option.mode),
@@ -324,18 +352,16 @@ export function HappyComposer(props: {
 
     useEffect(() => {
         const handleGlobalKeyDown = (e: globalThis.KeyboardEvent) => {
-            if (e.key === 'm' && (e.metaKey || e.ctrlKey) && onModelModeChange && isClaudeFlavor(agentFlavor)) {
+            if (e.key === 'm' && (e.metaKey || e.ctrlKey) && onModelChange && supportsModelChange(agentFlavor)) {
                 e.preventDefault()
-                const currentIndex = MODEL_MODES.indexOf(modelMode as typeof MODEL_MODES[number])
-                const nextIndex = (currentIndex + 1) % MODEL_MODES.length
-                onModelModeChange(MODEL_MODES[nextIndex])
+                onModelChange(getNextModelForFlavor(agentFlavor, model))
                 haptic('light')
             }
         }
 
         window.addEventListener('keydown', handleGlobalKeyDown)
         return () => window.removeEventListener('keydown', handleGlobalKeyDown)
-    }, [modelMode, onModelModeChange, haptic, agentFlavor])
+    }, [model, onModelChange, haptic, agentFlavor])
 
     const handleChange = useCallback((e: ReactChangeEvent<HTMLTextAreaElement>) => {
         const selection = {
@@ -390,16 +416,32 @@ export function HappyComposer(props: {
         haptic('light')
     }, [onPermissionModeChange, controlsDisabled, haptic])
 
-    const handleModelChange = useCallback((mode: ModelMode) => {
-        if (!onModelModeChange || controlsDisabled) return
-        onModelModeChange(mode)
+    const handleCollaborationChange = useCallback((mode: CodexCollaborationMode) => {
+        if (!onCollaborationModeChange || controlsDisabled) return
+        onCollaborationModeChange(mode)
         setShowSettings(false)
         haptic('light')
-    }, [onModelModeChange, controlsDisabled, haptic])
+    }, [onCollaborationModeChange, controlsDisabled, haptic])
 
+    const handleModelChange = useCallback((nextModel: string | null) => {
+        if (!onModelChange || controlsDisabled) return
+        onModelChange(nextModel)
+        setShowSettings(false)
+        haptic('light')
+    }, [onModelChange, controlsDisabled, haptic])
+
+    const handleEffortChange = useCallback((nextEffort: string | null) => {
+        if (!onEffortChange || controlsDisabled) return
+        onEffortChange(nextEffort)
+        setShowSettings(false)
+        haptic('light')
+    }, [onEffortChange, controlsDisabled, haptic])
+
+    const showCollaborationSettings = Boolean(onCollaborationModeChange && collaborationModeOptions.length > 0)
     const showPermissionSettings = Boolean(onPermissionModeChange && permissionModeOptions.length > 0)
-    const showModelSettings = Boolean(onModelModeChange && isClaudeFlavor(agentFlavor))
-    const showSettingsButton = Boolean(showPermissionSettings || showModelSettings)
+    const showModelSettings = Boolean(onModelChange && supportsModelChange(agentFlavor))
+    const showEffortSettings = Boolean(onEffortChange && isClaudeFlavor(agentFlavor))
+    const showSettingsButton = Boolean(showCollaborationSettings || showPermissionSettings || showModelSettings || showEffortSettings)
     const showAbortButton = true
     const voiceEnabled = Boolean(onVoiceToggle)
 
@@ -408,10 +450,51 @@ export function HappyComposer(props: {
     }, [api])
 
     const overlays = useMemo(() => {
-        if (showSettings && (showPermissionSettings || showModelSettings)) {
+        if (showSettings && (showCollaborationSettings || showPermissionSettings || showModelSettings || showEffortSettings)) {
             return (
                 <div className="absolute bottom-[100%] mb-2 w-full">
                     <FloatingOverlay maxHeight={320}>
+                        {showCollaborationSettings ? (
+                            <div className="py-2">
+                                <div className="px-3 pb-1 text-xs font-semibold text-[var(--app-hint)]">
+                                    {t('misc.collaborationMode')}
+                                </div>
+                                {collaborationModeOptions.map((option) => (
+                                    <button
+                                        key={option.mode}
+                                        type="button"
+                                        disabled={controlsDisabled}
+                                        className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
+                                            controlsDisabled
+                                                ? 'cursor-not-allowed opacity-50'
+                                                : 'cursor-pointer hover:bg-[var(--app-secondary-bg)]'
+                                        }`}
+                                        onClick={() => handleCollaborationChange(option.mode)}
+                                        onMouseDown={(e) => e.preventDefault()}
+                                    >
+                                        <div
+                                            className={`flex h-4 w-4 items-center justify-center rounded-full border-2 ${
+                                                collaborationMode === option.mode
+                                                    ? 'border-[var(--app-link)]'
+                                                    : 'border-[var(--app-hint)]'
+                                            }`}
+                                        >
+                                            {collaborationMode === option.mode && (
+                                                <div className="h-2 w-2 rounded-full bg-[var(--app-link)]" />
+                                            )}
+                                        </div>
+                                        <span className={collaborationMode === option.mode ? 'text-[var(--app-link)]' : ''}>
+                                            {option.label}
+                                        </span>
+                                    </button>
+                                ))}
+                            </div>
+                        ) : null}
+
+                        {showCollaborationSettings && (showPermissionSettings || showModelSettings || showEffortSettings) ? (
+                            <div className="mx-3 h-px bg-[var(--app-divider)]" />
+                        ) : null}
+
                         {showPermissionSettings ? (
                             <div className="py-2">
                                 <div className="px-3 pb-1 text-xs font-semibold text-[var(--app-hint)]">
@@ -449,7 +532,7 @@ export function HappyComposer(props: {
                             </div>
                         ) : null}
 
-                        {showPermissionSettings && showModelSettings ? (
+                        {(showCollaborationSettings || showPermissionSettings) && (showModelSettings || showEffortSettings) ? (
                             <div className="mx-3 h-px bg-[var(--app-divider)]" />
                         ) : null}
 
@@ -458,9 +541,9 @@ export function HappyComposer(props: {
                                 <div className="px-3 pb-1 text-xs font-semibold text-[var(--app-hint)]">
                                     {t('misc.model')}
                                 </div>
-                                {MODEL_MODES.map((mode) => (
+                                {claudeModelOptions.map((option) => (
                                     <button
-                                        key={mode}
+                                        key={option.value ?? 'auto'}
                                         type="button"
                                         disabled={controlsDisabled}
                                         className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
@@ -468,22 +551,63 @@ export function HappyComposer(props: {
                                                 ? 'cursor-not-allowed opacity-50'
                                                 : 'cursor-pointer hover:bg-[var(--app-secondary-bg)]'
                                         }`}
-                                        onClick={() => handleModelChange(mode)}
+                                        onClick={() => handleModelChange(option.value)}
                                         onMouseDown={(e) => e.preventDefault()}
                                     >
                                         <div
                                             className={`flex h-4 w-4 items-center justify-center rounded-full border-2 ${
-                                                modelMode === mode
+                                                model === option.value
                                                     ? 'border-[var(--app-link)]'
                                                     : 'border-[var(--app-hint)]'
                                             }`}
                                         >
-                                            {modelMode === mode && (
+                                            {model === option.value && (
                                                 <div className="h-2 w-2 rounded-full bg-[var(--app-link)]" />
                                             )}
                                         </div>
-                                        <span className={modelMode === mode ? 'text-[var(--app-link)]' : ''}>
-                                            {MODEL_MODE_LABELS[mode]}
+                                        <span className={model === option.value ? 'text-[var(--app-link)]' : ''}>
+                                            {option.label}
+                                        </span>
+                                    </button>
+                                ))}
+                            </div>
+                        ) : null}
+
+                        {showModelSettings && showEffortSettings ? (
+                            <div className="mx-3 h-px bg-[var(--app-divider)]" />
+                        ) : null}
+
+                        {showEffortSettings ? (
+                            <div className="py-2">
+                                <div className="px-3 pb-1 text-xs font-semibold text-[var(--app-hint)]">
+                                    {t('misc.effort')}
+                                </div>
+                                {claudeEffortOptions.map((option) => (
+                                    <button
+                                        key={option.value ?? 'auto'}
+                                        type="button"
+                                        disabled={controlsDisabled}
+                                        className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
+                                            controlsDisabled
+                                                ? 'cursor-not-allowed opacity-50'
+                                                : 'cursor-pointer hover:bg-[var(--app-secondary-bg)]'
+                                        }`}
+                                        onClick={() => handleEffortChange(option.value)}
+                                        onMouseDown={(e) => e.preventDefault()}
+                                    >
+                                        <div
+                                            className={`flex h-4 w-4 items-center justify-center rounded-full border-2 ${
+                                                effort === option.value
+                                                    ? 'border-[var(--app-link)]'
+                                                    : 'border-[var(--app-hint)]'
+                                            }`}
+                                        >
+                                            {effort === option.value && (
+                                                <div className="h-2 w-2 rounded-full bg-[var(--app-link)]" />
+                                            )}
+                                        </div>
+                                        <span className={effort === option.value ? 'text-[var(--app-link)]' : ''}>
+                                            {option.label}
                                         </span>
                                     </button>
                                 ))}
@@ -511,17 +635,27 @@ export function HappyComposer(props: {
         return null
     }, [
         showSettings,
+        showCollaborationSettings,
         showPermissionSettings,
         showModelSettings,
+        showEffortSettings,
+        claudeModelOptions,
+        claudeEffortOptions,
         suggestions,
         selectedIndex,
         controlsDisabled,
+        collaborationMode,
         permissionMode,
-        modelMode,
+        model,
+        effort,
+        collaborationModeOptions,
         permissionModeOptions,
+        handleCollaborationChange,
         handlePermissionChange,
         handleModelChange,
-        handleSuggestionSelect
+        handleEffortChange,
+        handleSuggestionSelect,
+        t
     ])
 
     return (
@@ -535,8 +669,9 @@ export function HappyComposer(props: {
                         thinking={thinking}
                         agentState={agentState}
                         contextSize={contextSize}
-                        modelMode={modelMode}
+                        model={model}
                         permissionMode={permissionMode}
+                        collaborationMode={collaborationMode}
                         agentFlavor={agentFlavor}
                         voiceStatus={voiceStatus}
                     />
@@ -571,7 +706,8 @@ export function HappyComposer(props: {
                             showSettingsButton={showSettingsButton}
                             onSettingsToggle={handleSettingsToggle}
                             showTerminalButton={showTerminalButton}
-                            terminalDisabled={controlsDisabled}
+                            terminalDisabled={terminalDisabled}
+                            terminalLabel={terminalLabel}
                             onTerminal={onTerminal ?? (() => {})}
                             showAbortButton={showAbortButton}
                             abortDisabled={abortDisabled}

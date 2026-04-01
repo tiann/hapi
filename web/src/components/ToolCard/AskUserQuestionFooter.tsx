@@ -3,6 +3,7 @@ import type { ApiClient } from '@/api/client'
 import type { ChatToolCall } from '@/chat/types'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { MarkdownRenderer } from '@/components/MarkdownRenderer'
 import { isAskUserQuestionToolName, parseAskUserQuestionInput, type AskUserQuestionQuestion } from '@/components/ToolCard/askUserQuestion'
 import { cn } from '@/lib/utils'
 import { usePlatform } from '@/hooks/usePlatform'
@@ -40,10 +41,12 @@ function OptionRow(props: {
         >
             <SelectionMark checked={props.checked} mode={props.mode} />
             <span className="min-w-0 flex-1">
-                <div className="font-medium text-[var(--app-fg)] break-words">{props.title}</div>
+                <div className="[&_.aui-md]:font-medium [&_.aui-md]:text-sm [&_.aui-md]:text-[var(--app-fg)]">
+                    <MarkdownRenderer content={props.title} />
+                </div>
                 {props.description ? (
-                    <div className="mt-0.5 text-xs text-[var(--app-hint)] break-words">
-                        {props.description}
+                    <div className="mt-0.5 [&_.aui-md]:text-xs [&_.aui-md]:text-[var(--app-hint)]">
+                        <MarkdownRenderer content={props.description} />
                     </div>
                 ) : null}
             </span>
@@ -303,11 +306,8 @@ export function AskUserQuestionFooter(props: {
                                 </div>
                             ) : null}
                             {questions[clampedStep]?.question ? (
-                                <div className={cn(
-                                    "text-sm text-[var(--app-fg)] break-words",
-                                    questions[clampedStep]?.header ? "mt-2" : ""
-                                )}>
-                                    {questions[clampedStep].question}
+                                <div className={cn(questions[clampedStep]?.header ? "mt-2" : "")}>
+                                    <MarkdownRenderer content={questions[clampedStep].question} />
                                 </div>
                             ) : null}
                         </div>

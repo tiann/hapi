@@ -59,7 +59,7 @@ export async function geminiLocalLauncher(
             return;
         }
         if (message.type === 'gemini' && typeof message.content === 'string') {
-            session.sendCodexMessage({
+            session.sendAgentMessage({
                 type: 'message',
                 message: message.content,
                 id: randomUUID()

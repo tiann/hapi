@@ -7,6 +7,9 @@
 
 import { existsSync, mkdirSync, writeFileSync, chmodSync } from 'node:fs';
 import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const isWindows = process.platform === 'win32';
 
 const TUNWG_RELEASES: Record<string, string> = {
     'x64-linux': 'https://github.com/tiann/tunwg/releases/latest/download/tunwg',
@@ -27,14 +30,22 @@ async function downloadFile(url: string, destPath: string): Promise<void> {
     }
 
     const buffer = await response.arrayBuffer();
-    mkdirSync(dirname(destPath), { recursive: true });
+	const dirName = dirname(destPath);
+	console.log(`  ->mkdirDir ${dirName}`);
+    mkdirSync(dirName, { recursive: true });
     writeFileSync(destPath, Buffer.from(buffer));
 
     console.log(`  -> ${destPath} (${(buffer.byteLength / 1024 / 1024).toFixed(2)} MB)`);
 }
 
 async function main(): Promise<void> {
-    const scriptDir = dirname(new URL(import.meta.url).pathname);
+    let scriptDir: string;
+    if (isWindows) {
+        const __filename = fileURLToPath(import.meta.url);
+        scriptDir = dirname(__filename);
+    } else {
+        scriptDir = dirname(new URL(import.meta.url).pathname);
+    }
     const toolsDir = join(scriptDir, '..', 'tools', 'tunwg');
 
     console.log('Downloading tunwg binaries...\n');

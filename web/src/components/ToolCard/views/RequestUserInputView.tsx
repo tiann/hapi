@@ -3,6 +3,7 @@ import {
     parseRequestUserInputInput,
     parseRequestUserInputAnswers
 } from '@/components/ToolCard/requestUserInput'
+import { MarkdownRenderer } from '@/components/MarkdownRenderer'
 import { cn } from '@/lib/utils'
 
 function getSelectionMark(isSelected: boolean): string {
@@ -42,8 +43,8 @@ export function RequestUserInputView(props: ToolViewProps) {
                 return (
                     <div key={q.id} className="rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] p-3">
                         {q.question ? (
-                            <div className="text-sm text-[var(--app-fg)] break-words">
-                                {q.question}
+                            <div>
+                                <MarkdownRenderer content={q.question} />
                             </div>
                         ) : null}
 
@@ -92,16 +93,16 @@ export function RequestUserInputView(props: ToolViewProps) {
                                                 )}
                                                 <div className="min-w-0 flex-1">
                                                     <div className={cn(
-                                                        "text-sm break-words",
+                                                        "[&_.aui-md]:text-sm",
                                                         isSelected
-                                                            ? "text-emerald-700 dark:text-emerald-300 font-medium"
-                                                            : "text-[var(--app-fg)]"
+                                                            ? "[&_.aui-md]:text-emerald-700 dark:[&_.aui-md]:text-emerald-300 [&_.aui-md]:font-medium"
+                                                            : "[&_.aui-md]:text-[var(--app-fg)]"
                                                     )}>
-                                                        {opt.label}
+                                                        <MarkdownRenderer content={opt.label} />
                                                     </div>
                                                     {opt.description ? (
-                                                        <div className="mt-0.5 text-xs text-[var(--app-hint)] break-words">
-                                                            {opt.description}
+                                                        <div className="mt-0.5 [&_.aui-md]:text-xs [&_.aui-md]:text-[var(--app-hint)]">
+                                                            <MarkdownRenderer content={opt.description} />
                                                         </div>
                                                     ) : null}
                                                 </div>

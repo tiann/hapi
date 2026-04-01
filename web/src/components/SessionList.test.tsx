@@ -73,6 +73,8 @@ function makeSession(overrides: Partial<SessionSummary>): SessionSummary {
         },
         todoProgress: overrides.todoProgress ?? null,
         pendingRequestsCount: overrides.pendingRequestsCount ?? 0,
+        model: overrides.model ?? null,
+        effort: overrides.effort ?? null,
         permissionMode: overrides.permissionMode,
         modelMode: overrides.modelMode
     }

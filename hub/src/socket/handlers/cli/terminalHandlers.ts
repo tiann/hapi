@@ -93,7 +93,22 @@ export function registerTerminalHandlers(socket: CliSocketWithData, deps: Termin
         if (!parsed.success) {
             return
         }
-        forwardTerminalEvent('terminal:error', parsed.data)
+
+        const entry = terminalRegistry.get(parsed.data.terminalId)
+        if (!entry || entry.sessionId !== parsed.data.sessionId || entry.cliSocketId !== socket.id) {
+            return
+        }
+
+        const sessionAccess = resolveSessionAccess(parsed.data.sessionId)
+        if (!sessionAccess.ok) {
+            terminalRegistry.remove(parsed.data.terminalId)
+            emitAccessError('session', parsed.data.sessionId, sessionAccess.reason)
+            return
+        }
+
+        const terminalSocket = terminalNamespace.sockets.get(entry.socketId)
+        terminalRegistry.remove(parsed.data.terminalId)
+        terminalSocket?.emit('terminal:error', parsed.data)
     })
 }
 

@@ -1,8 +1,18 @@
+/**
+ * @description The legacy payload type identifier used for all generic agent messages.
+ * Changing this value will affect the communication schema between CLI, Hub, and Web.
+ * A migration plan is required if this literal is ever modified.
+ */
+export const AGENT_MESSAGE_PAYLOAD_TYPE = 'codex' as const
+
 export const CLAUDE_PERMISSION_MODES = ['default', 'acceptEdits', 'bypassPermissions', 'plan'] as const
 export type ClaudePermissionMode = typeof CLAUDE_PERMISSION_MODES[number]
 
 export const CODEX_PERMISSION_MODES = ['default', 'read-only', 'safe-yolo', 'yolo'] as const
 export type CodexPermissionMode = typeof CODEX_PERMISSION_MODES[number]
+
+export const CODEX_COLLABORATION_MODES = ['default', 'plan'] as const
+export type CodexCollaborationMode = typeof CODEX_COLLABORATION_MODES[number]
 
 export const GEMINI_PERMISSION_MODES = ['default', 'read-only', 'safe-yolo', 'yolo'] as const
 export type GeminiPermissionMode = typeof GEMINI_PERMISSION_MODES[number]
@@ -28,7 +38,22 @@ export type PermissionMode = typeof PERMISSION_MODES[number]
 export const MODEL_MODES = ['default', 'sonnet', 'opus'] as const
 export type ModelMode = typeof MODEL_MODES[number]
 
+export const CLAUDE_MODEL_PRESETS = ['sonnet', 'sonnet[1m]', 'opus', 'opus[1m]'] as const
+export type ClaudeModelPreset = typeof CLAUDE_MODEL_PRESETS[number]
+
 export type AgentFlavor = 'claude' | 'codex' | 'gemini' | 'opencode' | 'cursor'
+
+export const GEMINI_MODEL_LABELS = {
+    'gemini-3.1-pro-preview': 'Gemini 3.1 Pro Preview',
+    'gemini-3-flash-preview': 'Gemini 3 Flash Preview',
+    'gemini-2.5-pro': 'Gemini 2.5 Pro',
+    'gemini-2.5-flash': 'Gemini 2.5 Flash',
+    'gemini-2.5-flash-lite': 'Gemini 2.5 Flash Lite',
+} as const
+
+export type GeminiModelPreset = keyof typeof GEMINI_MODEL_LABELS
+export const GEMINI_MODEL_PRESETS = Object.keys(GEMINI_MODEL_LABELS) as GeminiModelPreset[]
+export const DEFAULT_GEMINI_MODEL: GeminiModelPreset = 'gemini-2.5-pro'
 
 export const PERMISSION_MODE_LABELS: Record<PermissionMode, string> = {
     default: 'Default',
@@ -60,10 +85,45 @@ export type PermissionModeOption = {
     tone: PermissionModeTone
 }
 
+export type ModelModeOption = {
+    mode: ModelMode
+    label: string
+}
+
+export type CodexCollaborationModeOption = {
+    mode: CodexCollaborationMode
+    label: string
+}
+
+export const CLAUDE_MODEL_LABELS: Record<ClaudeModelPreset, string> = {
+    sonnet: 'Sonnet',
+    'sonnet[1m]': 'Sonnet 1M',
+    opus: 'Opus',
+    'opus[1m]': 'Opus 1M'
+}
+
 export const MODEL_MODE_LABELS: Record<ModelMode, string> = {
     default: 'Default',
     sonnet: 'Sonnet',
     opus: 'Opus'
+}
+
+export const CODEX_COLLABORATION_MODE_LABELS: Record<CodexCollaborationMode, string> = {
+    default: 'Default',
+    plan: 'Plan'
+}
+
+export function isClaudeModelPreset(model: string | null | undefined): model is ClaudeModelPreset {
+    return typeof model === 'string' && CLAUDE_MODEL_PRESETS.includes(model as ClaudeModelPreset)
+}
+
+export function getClaudeModelLabel(model: string): string | null {
+    const trimmedModel = model.trim()
+    if (!trimmedModel) {
+        return null
+    }
+
+    return CLAUDE_MODEL_LABELS[trimmedModel as ClaudeModelPreset] ?? null
 }
 
 export function getPermissionModeLabel(mode: PermissionMode): string {
@@ -72,6 +132,10 @@ export function getPermissionModeLabel(mode: PermissionMode): string {
 
 export function getPermissionModeTone(mode: PermissionMode): PermissionModeTone {
     return PERMISSION_MODE_TONES[mode]
+}
+
+export function getCodexCollaborationModeLabel(mode: CodexCollaborationMode): string {
+    return CODEX_COLLABORATION_MODE_LABELS[mode]
 }
 
 export function getPermissionModesForFlavor(flavor?: string | null): readonly PermissionMode[] {
@@ -111,4 +175,22 @@ export function getModelModesForFlavor(flavor?: string | null): readonly ModelMo
 
 export function isModelModeAllowedForFlavor(mode: ModelMode, flavor?: string | null): boolean {
     return getModelModesForFlavor(flavor).includes(mode)
+}
+
+export function getModelModeLabel(mode: ModelMode): string {
+    return MODEL_MODE_LABELS[mode]
+}
+
+export function getModelModeOptionsForFlavor(flavor?: string | null): ModelModeOption[] {
+    return getModelModesForFlavor(flavor).map((mode) => ({
+        mode,
+        label: getModelModeLabel(mode)
+    }))
+}
+
+export function getCodexCollaborationModeOptions(): CodexCollaborationModeOption[] {
+    return CODEX_COLLABORATION_MODES.map((mode) => ({
+        mode,
+        label: getCodexCollaborationModeLabel(mode)
+    }))
 }

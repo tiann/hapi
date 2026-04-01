@@ -11,6 +11,7 @@ import { useTranslation } from '@/lib/use-translation'
 import { TerminalView } from '@/components/Terminal/TerminalView'
 import { LoadingState } from '@/components/LoadingState'
 import { Button } from '@/components/ui/button'
+import { isRemoteTerminalSupported } from '@/utils/terminalSupport'
 import {
     Dialog,
     DialogContent,
@@ -184,6 +185,7 @@ export default function TerminalPage() {
     const { api, token, baseUrl } = useAppContext()
     const goBack = useAppGoBack()
     const { session } = useSession(api, sessionId)
+    const terminalSupported = isRemoteTerminalSupported(session?.metadata)
     const terminalId = useMemo(() => {
         if (typeof crypto?.randomUUID === 'function') {
             return crypto.randomUUID()
@@ -226,7 +228,6 @@ export default function TerminalPage() {
         onExit((code, signal) => {
             setExitInfo({ code, signal })
             terminalRef.current?.write(`\r\n[process exited${code !== null ? ` with code ${code}` : ''}]`)
-            connectOnceRef.current = false
         })
     }, [onExit])
 
@@ -264,7 +265,7 @@ export default function TerminalPage() {
     const handleResize = useCallback(
         (cols: number, rows: number) => {
             lastSizeRef.current = { cols, rows }
-            if (!session?.active) {
+            if (!session?.active || !terminalSupported) {
                 return
             }
             if (!connectOnceRef.current) {
@@ -274,11 +275,11 @@ export default function TerminalPage() {
                 resize(cols, rows)
             }
         },
-        [session?.active, connect, resize]
+        [session?.active, terminalSupported, connect, resize]
     )
 
     useEffect(() => {
-        if (!session?.active) {
+        if (!session?.active || !terminalSupported) {
             return
         }
         if (connectOnceRef.current) {
@@ -290,7 +291,7 @@ export default function TerminalPage() {
         }
         connectOnceRef.current = true
         connect(size.cols, size.rows)
-    }, [session?.active, connect])
+    }, [session?.active, terminalSupported, connect])
 
     useEffect(() => {
         connectOnceRef.current = false
@@ -307,17 +308,13 @@ export default function TerminalPage() {
     }, [disconnect])
 
     useEffect(() => {
-        if (session?.active === false) {
+        if (session?.active === false || !terminalSupported) {
             disconnect()
             connectOnceRef.current = false
         }
-    }, [session?.active, disconnect])
+    }, [session?.active, terminalSupported, disconnect])
 
     useEffect(() => {
-        if (terminalState.status === 'error') {
-            connectOnceRef.current = false
-            return
-        }
         if (terminalState.status === 'connecting' || terminalState.status === 'connected') {
             setExitInfo(null)
         }
@@ -405,10 +402,14 @@ export default function TerminalPage() {
 
     const subtitle = session.metadata?.path ?? sessionId
     const status = terminalState.status
-    const errorMessage = terminalState.status === 'error' ? terminalState.error : null
+    const errorMessage = !terminalSupported
+        ? t('terminal.unsupportedWindows')
+        : terminalState.status === 'error'
+          ? terminalState.error
+          : null
 
     return (
-        <div className="flex h-full flex-col">
+        <div className="flex h-full min-h-0 flex-col">
             <div className="bg-[var(--app-bg)] pt-[env(safe-area-inset-top)]">
                 <div className="mx-auto w-full max-w-content flex items-center gap-2 p-3 border-b border-[var(--app-border)]">
                     <button
@@ -451,9 +452,15 @@ export default function TerminalPage() {
                 </div>
             ) : null}
 
-            <div className="flex-1 overflow-hidden bg-[var(--app-bg)]">
+            <div className="flex-1 min-h-0 overflow-hidden bg-[var(--app-bg)]">
                 <div className="mx-auto h-full w-full max-w-content p-3">
-                    <TerminalView onMount={handleTerminalMount} onResize={handleResize} className="h-full w-full" />
+                    {terminalSupported ? (
+                        <TerminalView onMount={handleTerminalMount} onResize={handleResize} className="h-full w-full" />
+                    ) : (
+                        <div className="flex h-full items-center justify-center rounded-md border border-[var(--app-border)] bg-[var(--app-subtle-bg)] p-4 text-sm text-[var(--app-hint)]">
+                            {t('terminal.unsupportedWindows')}
+                        </div>
+                    )}
                 </div>
             </div>
 

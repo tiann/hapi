@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { logger } from '@/ui/logger';
 import { killProcessByChildProcess } from '@/utils/process';
+import { GEMINI_MODEL_PRESETS } from '@hapi/protocol';
 
 interface JsonRpcRequest {
     jsonrpc: '2.0';
@@ -303,7 +304,7 @@ export class AcpStdioTransport {
         if (lowerText.includes('status 404') || lowerText.includes('model not found') || lowerText.includes('not_found')) {
             this.stderrErrorHandler({
                 type: 'model_not_found',
-                message: 'Model not found. Available models: gemini-2.5-pro, gemini-2.5-flash, gemini-2.0-flash',
+                message: `Model not found. Available models: ${GEMINI_MODEL_PRESETS.join(', ')}`,
                 raw: text
             });
             return;

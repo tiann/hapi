@@ -86,3 +86,38 @@ export function parseCodexCliOverrides(args?: string[]): CodexCliOverrides {
 export function hasCodexCliOverrides(overrides?: CodexCliOverrides): boolean {
     return Boolean(overrides?.sandbox || overrides?.approvalPolicy);
 }
+
+export function stripCodexCliOverrides(args?: string[]): string[] {
+    if (!args || args.length === 0) {
+        return [];
+    }
+
+    const filtered: string[] = [];
+
+    for (let i = 0; i < args.length; i++) {
+        const arg = args[i];
+        if (arg === '--') {
+            filtered.push(...args.slice(i));
+            break;
+        }
+
+        if (
+            arg === '--full-auto'
+            || arg === '--yolo'
+            || arg === '--dangerously-bypass-approvals-and-sandbox'
+            || arg.startsWith('--sandbox=')
+            || arg.startsWith('--ask-for-approval=')
+        ) {
+            continue;
+        }
+
+        if (arg === '-s' || arg === '--sandbox' || arg === '-a' || arg === '--ask-for-approval') {
+            i += 1;
+            continue;
+        }
+
+        filtered.push(arg);
+    }
+
+    return filtered;
+}

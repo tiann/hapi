@@ -124,7 +124,7 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
                         if (agentMsg) {
                             const codexMsg = convertAgentMessage(agentMsg);
                             if (codexMsg) {
-                                session.sendCodexMessage(codexMsg);
+                                session.sendAgentMessage(codexMsg);
                             }
                             switch (agentMsg.type) {
                                 case 'text':

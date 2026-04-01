@@ -171,7 +171,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     private handleAgentMessage(message: AgentMessage): void {
         const converted = convertAgentMessage(message);
         if (converted) {
-            this.session.sendCodexMessage(converted);
+            this.session.sendAgentMessage(converted);
         }
 
         switch (message.type) {

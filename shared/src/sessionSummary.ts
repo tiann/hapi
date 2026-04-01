@@ -19,6 +19,8 @@ export type SessionSummary = {
     metadata: SessionSummaryMetadata | null
     todoProgress: { completed: number; total: number } | null
     pendingRequestsCount: number
+    model: string | null
+    effort: string | null
     permissionMode?: PermissionMode
     modelMode?: ModelMode
 }
@@ -49,6 +51,8 @@ export function toSessionSummary(session: Session): SessionSummary {
         metadata,
         todoProgress,
         pendingRequestsCount,
+        model: session.model,
+        effort: session.effort,
         permissionMode: session.permissionMode,
         modelMode: session.modelMode
     }

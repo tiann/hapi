@@ -1,4 +1,5 @@
 import { logger } from '@/ui/logger'
+import { getInvokedCwd } from '@/utils/invokedCwd'
 import type {
     TerminalErrorPayload,
     TerminalExitPayload,
@@ -96,7 +97,7 @@ export class TerminalManager {
 
     create(terminalId: string, cols: number, rows: number): void {
         if (process.platform === 'win32') {
-            this.emitError(terminalId, 'Terminal is not supported on Windows.')
+            this.emitError(terminalId, 'Remote terminal is not supported on Windows yet.')
             return
         }
 
@@ -120,7 +121,7 @@ export class TerminalManager {
             return
         }
 
-        const sessionPath = this.getSessionPath() ?? process.cwd()
+        const sessionPath = this.getSessionPath() ?? getInvokedCwd()
         const shell = resolveShell()
         const decoder = new TextDecoder()
 

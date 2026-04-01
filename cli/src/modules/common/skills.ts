@@ -21,16 +21,23 @@ function getHomeDirectory(): string {
     return process.env.HOME ?? process.env.USERPROFILE ?? homedir();
 }
 
-function getUserSkillsRoot(): string {
-    return join(getHomeDirectory(), '.agents', 'skills');
+function getUserSkillsRoots(): string[] {
+    const home = getHomeDirectory();
+    return [
+        join(home, '.agents', 'skills'),
+        join(home, '.claude', 'skills'),
+    ];
 }
 
 function getAdminSkillsRoot(): string {
     return join('/etc', 'codex', 'skills');
 }
 
-function getProjectSkillsRoot(directory: string): string {
-    return join(directory, '.agents', 'skills');
+function getProjectSkillsRoots(directory: string): string[] {
+    return [
+        join(directory, '.agents', 'skills'),
+        join(directory, '.claude', 'skills'),
+    ];
 }
 
 async function pathExists(path: string): Promise<boolean> {
@@ -53,12 +60,12 @@ async function listProjectSkillsRoots(workingDirectory?: string): Promise<string
 
     while (true) {
         if (await pathExists(join(currentDirectory, '.git'))) {
-            return directories.map(getProjectSkillsRoot);
+            return directories.flatMap(getProjectSkillsRoots);
         }
 
         const parentDirectory = dirname(currentDirectory);
         if (parentDirectory === currentDirectory) {
-            return [getProjectSkillsRoot(resolvedWorkingDirectory)];
+            return getProjectSkillsRoots(resolvedWorkingDirectory);
         }
 
         currentDirectory = parentDirectory;
@@ -134,7 +141,7 @@ export async function listSkills(workingDirectory?: string): Promise<SkillSummar
     const projectRoots = await listProjectSkillsRoots(workingDirectory);
     const [projectSkillDirs, userSkillDirs, adminSkillDirs] = await Promise.all([
         Promise.all(projectRoots.map(async (root) => await listTopLevelSkillDirs(root))).then((dirs) => dirs.flat()),
-        listTopLevelSkillDirs(getUserSkillsRoot()),
+        Promise.all(getUserSkillsRoots().map(async (root) => await listTopLevelSkillDirs(root))).then((dirs) => dirs.flat()),
         listTopLevelSkillDirs(getAdminSkillsRoot()),
     ]);
 

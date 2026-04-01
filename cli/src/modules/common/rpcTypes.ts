@@ -6,6 +6,8 @@ export interface SpawnSessionOptions {
     approvedNewDirectoryCreation?: boolean
     agent?: 'claude' | 'codex' | 'cursor' | 'gemini' | 'opencode'
     model?: string
+    effort?: string
+    modelReasoningEffort?: string
     yolo?: boolean
     token?: string
     sessionType?: 'simple' | 'worktree'

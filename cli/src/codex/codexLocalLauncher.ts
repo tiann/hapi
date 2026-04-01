@@ -4,11 +4,23 @@ import { CodexSession } from './session';
 import { createCodexSessionScanner } from './utils/codexSessionScanner';
 import { convertCodexEvent } from './utils/codexEventConverter';
 import { buildHapiMcpBridge } from './utils/buildHapiMcpBridge';
+import { stripCodexCliOverrides } from './utils/codexCliOverrides';
+import { buildCodexPermissionModeCliArgs } from './utils/permissionModeConfig';
 import { BaseLocalLauncher } from '@/modules/common/launcher/BaseLocalLauncher';
 
 export async function codexLocalLauncher(session: CodexSession): Promise<'switch' | 'exit'> {
     const resumeSessionId = session.sessionId;
     let scanner: Awaited<ReturnType<typeof createCodexSessionScanner>> | null = null;
+    const permissionMode = session.getPermissionMode();
+    const managedPermissionMode = permissionMode === 'read-only' || permissionMode === 'safe-yolo' || permissionMode === 'yolo'
+        ? permissionMode
+        : null;
+    const codexArgs = managedPermissionMode
+        ? [
+            ...buildCodexPermissionModeCliArgs(managedPermissionMode),
+            ...stripCodexCliOverrides(session.codexArgs)
+        ]
+        : session.codexArgs;
 
     // Start hapi hub for MCP bridge (same as remote mode)
     const { server: happyServer, mcpServers } = await buildHapiMcpBridge(session.client);
@@ -32,7 +44,7 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
                 sessionId: resumeSessionId,
                 onSessionFound: handleSessionFound,
                 abort: abortSignal,
-                codexArgs: session.codexArgs,
+                codexArgs,
                 mcpServers
             });
         },
@@ -48,8 +60,10 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
 
     const handleSessionMatchFailed = (message: string) => {
         logger.warn(`[codex-local]: ${message}`);
-        session.sendSessionEvent({ type: 'message', message });
-        launcher.control.requestExit();
+        session.sendSessionEvent({
+            type: 'message',
+            message: `${message} Keeping local Codex running; remote transcript sync may be unavailable for this launch.`
+        });
     };
 
     scanner = await createCodexSessionScanner({
@@ -70,7 +84,7 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
                 session.sendUserMessage(converted.userMessage);
             }
             if (converted?.message) {
-                session.sendCodexMessage(converted.message);
+                session.sendAgentMessage(converted.message);
             }
         }
     });

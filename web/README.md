@@ -48,7 +48,7 @@ See `src/router.tsx` for route definitions.
 - Message thread with infinite scroll.
 - Composer for sending messages.
 - Permission mode toggle (default/acceptEdits/bypassPermissions/plan).
-- Model selection (default/sonnet/opus).
+- Model selection (default/sonnet/sonnet[1m]/opus/opus[1m]).
 - Session abort and mode switch controls.
 - Context size display.
 

@@ -35,6 +35,9 @@ export interface RunnerLocallyPersistedState {
   startTime: string;
   startedWithCliVersion: string;
   startedWithCliMtimeMs?: number;
+  startedWithApiUrl?: string;
+  startedWithMachineId?: string;
+  startedWithCliApiTokenHash?: string;
   lastHeartbeat?: string;
   runnerLogPath?: string;
 }

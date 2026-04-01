@@ -4,7 +4,8 @@ import type { EnhancedMode } from './loop';
 
 const harness = vi.hoisted(() => ({
     notifications: [] as Array<{ method: string; params: unknown }>,
-    registerRequestCalls: [] as string[]
+    registerRequestCalls: [] as string[],
+    initializeCalls: [] as unknown[]
 }));
 
 vi.mock('./codexAppServerClient', () => {
@@ -13,7 +14,8 @@ vi.mock('./codexAppServerClient', () => {
 
         async connect(): Promise<void> {}
 
-        async initialize(): Promise<{ protocolVersion: number }> {
+        async initialize(params: unknown): Promise<{ protocolVersion: number }> {
+            harness.initializeCalls.push(params);
             return { protocolVersion: 1 };
         }
 
@@ -25,12 +27,12 @@ vi.mock('./codexAppServerClient', () => {
             harness.registerRequestCalls.push(method);
         }
 
-        async startThread(): Promise<{ thread: { id: string } }> {
-            return { thread: { id: 'thread-anonymous' } };
+        async startThread(): Promise<{ thread: { id: string }; model: string }> {
+            return { thread: { id: 'thread-anonymous' }, model: 'gpt-5.4' };
         }
 
-        async resumeThread(): Promise<{ thread: { id: string } }> {
-            return { thread: { id: 'thread-anonymous' } };
+        async resumeThread(): Promise<{ thread: { id: string }; model: string }> {
+            return { thread: { id: 'thread-anonymous' }, model: 'gpt-5.4' };
         }
 
         async startTurn(): Promise<{ turn: Record<string, never> }> {
@@ -73,7 +75,8 @@ type FakeAgentState = {
 
 function createMode(): EnhancedMode {
     return {
-        permissionMode: 'default'
+        permissionMode: 'default',
+        collaborationMode: 'default'
     };
 }
 
@@ -86,6 +89,7 @@ function createSessionStub() {
     const codexMessages: unknown[] = [];
     const thinkingChanges: boolean[] = [];
     const foundSessionIds: string[] = [];
+    let currentModel: string | null | undefined;
     let agentState: FakeAgentState = {
         requests: {},
         completedRequests: {}
@@ -101,7 +105,7 @@ function createSessionStub() {
         updateAgentState(handler: (state: FakeAgentState) => FakeAgentState) {
             agentState = handler(agentState);
         },
-        sendCodexMessage(message: unknown) {
+        sendAgentMessage(message: unknown) {
             codexMessages.push(message);
         },
         sendUserMessage(_text: string) {},
@@ -119,6 +123,15 @@ function createSessionStub() {
         codexCliOverrides: undefined,
         sessionId: null as string | null,
         thinking: false,
+        getPermissionMode() {
+            return 'default' as const;
+        },
+        setModel(nextModel: string | null) {
+            currentModel = nextModel;
+        },
+        getModel() {
+            return currentModel;
+        },
         onThinkingChange(nextThinking: boolean) {
             session.thinking = nextThinking;
             thinkingChanges.push(nextThinking);
@@ -127,8 +140,8 @@ function createSessionStub() {
             session.sessionId = id;
             foundSessionIds.push(id);
         },
-        sendCodexMessage(message: unknown) {
-            client.sendCodexMessage(message);
+        sendAgentMessage(message: unknown) {
+            client.sendAgentMessage(message);
         },
         sendSessionEvent(event: { type: string; [key: string]: unknown }) {
             client.sendSessionEvent(event);
@@ -145,6 +158,7 @@ function createSessionStub() {
         thinkingChanges,
         foundSessionIds,
         rpcHandlers,
+        getModel: () => currentModel,
         getAgentState: () => agentState
     };
 }
@@ -153,22 +167,32 @@ describe('codexRemoteLauncher', () => {
     afterEach(() => {
         harness.notifications = [];
         harness.registerRequestCalls = [];
-        delete process.env.CODEX_USE_MCP_SERVER;
+        harness.initializeCalls = [];
     });
 
     it('finishes a turn and emits ready when task lifecycle events omit turn_id', async () => {
-        delete process.env.CODEX_USE_MCP_SERVER;
         const {
             session,
             sessionEvents,
             thinkingChanges,
-            foundSessionIds
+            foundSessionIds,
+            getModel
         } = createSessionStub();
 
         const exitReason = await codexRemoteLauncher(session as never);
 
         expect(exitReason).toBe('exit');
         expect(foundSessionIds).toContain('thread-anonymous');
+        expect(getModel()).toBe('gpt-5.4');
+        expect(harness.initializeCalls).toEqual([{
+            clientInfo: {
+                name: 'hapi-codex-client',
+                version: '1.0.0'
+            },
+            capabilities: {
+                experimentalApi: true
+            }
+        }]);
         expect(harness.notifications.map((entry) => entry.method)).toEqual(['turn/started', 'turn/completed']);
         expect(sessionEvents.filter((event) => event.type === 'ready').length).toBeGreaterThanOrEqual(1);
         expect(thinkingChanges).toContain(true);

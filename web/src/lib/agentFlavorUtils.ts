@@ -91,3 +91,7 @@ export function getFlavorDotClass(flavor?: string | null): string {
         default: return 'bg-[var(--app-hint)]'
     }
 }
+
+export function supportsModelChange(flavor?: string | null): boolean {
+    return flavor === 'claude' || flavor === 'gemini'
+}

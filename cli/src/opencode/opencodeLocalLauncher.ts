@@ -392,7 +392,7 @@ export async function opencodeLocalLauncher(
                     if (role === 'user') {
                         session.sendUserMessage(text);
                     } else {
-                        session.sendCodexMessage({ type: 'message', message: text });
+                        session.sendAgentMessage({ type: 'message', message: text });
                     }
                     if (partId) {
                         sentTextParts.add(partId);
@@ -407,7 +407,7 @@ export async function opencodeLocalLauncher(
             const toolCall = parseToolCall(part);
             if (toolCall && !sentToolCalls.has(toolCall.callId)) {
                 sentToolCalls.add(toolCall.callId);
-                session.sendCodexMessage({
+                session.sendAgentMessage({
                     type: 'tool-call',
                     name: toolCall.name,
                     callId: toolCall.callId,
@@ -418,7 +418,7 @@ export async function opencodeLocalLauncher(
             const toolResult = parseToolResult(part);
             if (toolResult && !sentToolResults.has(toolResult.callId)) {
                 sentToolResults.add(toolResult.callId);
-                session.sendCodexMessage({
+                session.sendAgentMessage({
                     type: 'tool-call-result',
                     callId: toolResult.callId,
                     output: toolResult.output
@@ -467,7 +467,7 @@ export async function opencodeLocalLauncher(
             }
             if (eventType === 'tool.execute.before' && !sentToolCalls.has(callId)) {
                 sentToolCalls.add(callId);
-                session.sendCodexMessage({
+                session.sendAgentMessage({
                     type: 'tool-call',
                     name,
                     callId,
@@ -477,7 +477,7 @@ export async function opencodeLocalLauncher(
             }
             if (eventType === 'tool.execute.after' && !sentToolResults.has(callId)) {
                 sentToolResults.add(callId);
-                session.sendCodexMessage({
+                session.sendAgentMessage({
                     type: 'tool-call-result',
                     callId,
                     output: {

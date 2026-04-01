@@ -30,6 +30,8 @@ import type { Writable } from 'node:stream'
 import { logger } from '@/ui/logger'
 import { appendMcpConfigArg } from '../utils/mcpConfig'
 
+const DEFAULT_PROMPT_FAILURE_CLEANUP_TIMEOUT_MS = 3_000
+
 /**
  * Query class manages Claude Code process interaction
  */
@@ -39,6 +41,7 @@ export class Query implements AsyncIterableIterator<SDKMessage> {
     private sdkMessages: AsyncIterableIterator<SDKMessage>
     private inputStream = new Stream<SDKMessage>()
     private canCallTool?: CanCallToolCallback
+    private promptFailure: Error | null = null
 
     constructor(
         private childStdin: Writable | null,
@@ -56,6 +59,19 @@ export class Query implements AsyncIterableIterator<SDKMessage> {
      */
     setError(error: Error): void {
         this.inputStream.error(error)
+    }
+
+    registerPromptFailure(error: Error): boolean {
+        if (this.promptFailure) {
+            return false
+        }
+        this.promptFailure = error
+        this.cleanupControllers()
+        return true
+    }
+
+    getPromptFailure(): Error | null {
+        return this.promptFailure
     }
 
     /**
@@ -88,12 +104,21 @@ export class Query implements AsyncIterableIterator<SDKMessage> {
      */
     private async readMessages(): Promise<void> {
         const rl = createInterface({ input: this.childStdout })
+        let hadError = false
 
         try {
             for await (const line of rl) {
+                if (this.promptFailure) {
+                    break
+                }
+
                 if (line.trim()) {
                     try {
                         const message = JSON.parse(line) as SDKMessage | SDKControlResponse
+
+                        if (this.promptFailure) {
+                            break
+                        }
 
                         if (message.type === 'control_response') {
                             const controlResponse = message as SDKControlResponse
@@ -118,9 +143,14 @@ export class Query implements AsyncIterableIterator<SDKMessage> {
             }
             await this.processExitPromise
         } catch (error) {
+            hadError = true
             this.inputStream.error(error as Error)
         } finally {
-            this.inputStream.done()
+            // Only call done() on clean exit - calling done() after error()
+            // would mask the error since Stream.next() checks isDone before hasError
+            if (!hadError && !this.inputStream.hasTerminalError) {
+                this.inputStream.done()
+            }
             this.cleanupControllers()
             rl.close()
         }
@@ -187,6 +217,9 @@ export class Query implements AsyncIterableIterator<SDKMessage> {
 
         try {
             const response = await this.processControlRequest(request, controller.signal)
+            if (this.promptFailure || controller.signal.aborted || !this.childStdin?.writable) {
+                return
+            }
             const controlResponse: CanUseToolControlResponse = {
                 type: 'control_response',
                 response: {
@@ -197,6 +230,9 @@ export class Query implements AsyncIterableIterator<SDKMessage> {
             }
             this.childStdin.write(JSON.stringify(controlResponse) + '\n')
         } catch (error) {
+            if (this.promptFailure || controller.signal.aborted || !this.childStdin?.writable) {
+                return
+            }
             const controlErrorResponse: CanUseToolControlResponse = {
                 type: 'control_response',
                 response: {
@@ -274,10 +310,12 @@ export function query(config: {
             continue: continueConversation,
             resume,
             model,
+            effort,
             fallbackModel,
             settingsPath,
             strictMcpConfig,
-            canCallTool
+            canCallTool,
+            promptFailureCleanupTimeoutMs = DEFAULT_PROMPT_FAILURE_CLEANUP_TIMEOUT_MS
         } = {}
     } = config
 
@@ -294,6 +332,7 @@ export function query(config: {
     if (appendSystemPrompt) args.push('--append-system-prompt', stripNewlinesForWindowsShellArg(appendSystemPrompt))
     if (maxTurns) args.push('--max-turns', maxTurns.toString())
     if (model) args.push('--model', model)
+    if (effort) args.push('--effort', effort)
     if (canCallTool) {
         if (typeof prompt === 'string') {
             throw new Error('canCallTool callback requires --input-format stream-json. Please set prompt as an AsyncIterable.')
@@ -354,12 +393,19 @@ export function query(config: {
         windowsHide: process.platform === 'win32'
     }) as ChildProcessWithoutNullStreams
 
+    // Handle process exit
+    let resolveExit: () => void
+    let rejectExit: (error: Error) => void
+    const processExitPromise = new Promise<void>((resolve, reject) => {
+        resolveExit = resolve
+        rejectExit = reject
+    })
+
     // Handle stdin
     let childStdin: Writable | null = null
     if (typeof prompt === 'string') {
         child.stdin.end()
     } else {
-        streamToStdin(prompt, child.stdin, config.options?.abort)
         childStdin = child.stdin
     }
 
@@ -371,46 +417,88 @@ export function query(config: {
     }
 
     // Setup cleanup
-    const cleanup = () => {
-        if (!child.killed) {
-            void killProcessByChildProcess(child)
+    let cleanupPromise: Promise<void> | null = null
+    const cleanup = (): Promise<void> => {
+        if (cleanupPromise) {
+            return cleanupPromise
         }
+        cleanupPromise = (async () => {
+            await killProcessByChildProcess(child)
+            child.stdin.destroy()
+            child.stdout.destroy()
+            child.stderr.destroy()
+        })()
+        return cleanupPromise
     }
 
-    config.options?.abort?.addEventListener('abort', cleanup)
-    process.on('exit', cleanup)
+    const handleAbort = () => {
+        void cleanup()
+    }
+    const handleProcessExit = () => {
+        void cleanup()
+    }
+    config.options?.abort?.addEventListener('abort', handleAbort)
+    process.on('exit', handleProcessExit)
 
-    // Handle process exit
-    const processExitPromise = new Promise<void>((resolve) => {
-        child.on('close', (code) => {
-            if (config.options?.abort?.aborted) {
-                query.setError(new AbortError('Claude Code process aborted by user'))
-            }
-            if (code !== 0) {
-                query.setError(new Error(`Claude Code process exited with code ${code}`))
-            } else {
-                resolve()
-            }
-        })
-    })
-
-    // Create query instance
+    // Create query instance BEFORE registering close handler
+    // to avoid temporal dependency on `query` variable
     const query = new Query(childStdin, child.stdout, processExitPromise, canCallTool)
+
+    if (typeof prompt !== 'string') {
+        void streamToStdin(prompt, child.stdin, config.options?.abort).catch(async (error) => {
+            const err = error instanceof Error ? error : new Error(String(error))
+            if (!query.registerPromptFailure(err)) {
+                return
+            }
+            await Promise.race([
+                cleanup(),
+                new Promise<void>((resolve) => setTimeout(resolve, promptFailureCleanupTimeoutMs))
+            ])
+            query.setError(err)
+            rejectExit(err)
+        })
+    }
+
+    // Register close handler - query is safely defined now
+    child.on('close', (code) => {
+        const promptFailure = query.getPromptFailure()
+        if (promptFailure) {
+            rejectExit(promptFailure)
+        } else if (config.options?.abort?.aborted) {
+            const err = new AbortError('Claude Code process aborted by user')
+            query.setError(err)
+            rejectExit(err)
+        } else if (code !== 0) {
+            const err = new Error(`Claude Code process exited with code ${code}`)
+            query.setError(err)
+            rejectExit(err)
+        } else {
+            resolveExit()
+        }
+    })
 
     // Handle process errors
     child.on('error', (error) => {
         cleanupMcpConfig?.()
-        if (config.options?.abort?.aborted) {
-            query.setError(new AbortError('Claude Code process aborted by user'))
+        const promptFailure = query.getPromptFailure()
+        if (promptFailure) {
+            rejectExit(promptFailure)
+        } else if (config.options?.abort?.aborted) {
+            const err = new AbortError('Claude Code process aborted by user')
+            query.setError(err)
+            rejectExit(err)
         } else {
-            query.setError(new Error(`Failed to spawn Claude Code process: ${error.message}`))
+            const err = new Error(`Failed to spawn Claude Code process: ${error.message}`)
+            query.setError(err)
+            rejectExit(err)
         }
     })
 
-    // Cleanup on exit
-    processExitPromise.finally(() => {
-        cleanup()
-        config.options?.abort?.removeEventListener('abort', cleanup)
+    // Cleanup on exit (catch rejection to avoid unhandled promise warning)
+    processExitPromise.catch(() => {}).finally(() => {
+        void cleanup()
+        process.removeListener('exit', handleProcessExit)
+        config.options?.abort?.removeEventListener('abort', handleAbort)
         if (process.env.CLAUDE_SDK_MCP_SERVERS) {
             delete process.env.CLAUDE_SDK_MCP_SERVERS
         }

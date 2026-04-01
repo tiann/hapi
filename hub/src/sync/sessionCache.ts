@@ -1,5 +1,5 @@
 import { AgentStateSchema, MetadataSchema, TeamStateSchema } from '@hapi/protocol/schemas'
-import type { ModelMode, PermissionMode, Session } from '@hapi/protocol/types'
+import type { CodexCollaborationMode, PermissionMode, Session } from '@hapi/protocol/types'
 import type { Store } from '../store'
 import { clampAliveTime } from './aliveTime'
 import { EventPublisher } from './eventPublisher'
@@ -55,8 +55,15 @@ export class SessionCache {
         return this.getSessions().filter((session) => session.active)
     }
 
-    getOrCreateSession(tag: string, metadata: unknown, agentState: unknown, namespace: string): Session {
-        const stored = this.store.sessions.getOrCreateSession(tag, metadata, agentState, namespace)
+    getOrCreateSession(
+        tag: string,
+        metadata: unknown,
+        agentState: unknown,
+        namespace: string,
+        model?: string,
+        effort?: string
+    ): Session {
+        const stored = this.store.sessions.getOrCreateSession(tag, metadata, agentState, namespace, model, effort)
         return this.refreshSession(stored.id) ?? (() => { throw new Error('Failed to load session') })()
     }
 
@@ -126,7 +133,10 @@ export class SessionCache {
             thinkingAt: existing?.thinkingAt ?? 0,
             todos,
             teamState,
+            model: stored.model,
+            effort: stored.effort,
             permissionMode: existing?.permissionMode,
+            collaborationMode: existing?.collaborationMode,
             modelMode: existing?.modelMode
         }
 
@@ -148,7 +158,10 @@ export class SessionCache {
         thinking?: boolean
         mode?: 'local' | 'remote'
         permissionMode?: PermissionMode
-        modelMode?: ModelMode
+        model?: string | null
+        effort?: string | null
+        collaborationMode?: CodexCollaborationMode
+        modelMode?: Session['modelMode']
     }): void {
         const t = clampAliveTime(payload.time)
         if (!t) return
@@ -159,6 +172,9 @@ export class SessionCache {
         const wasActive = session.active
         const wasThinking = session.thinking
         const previousPermissionMode = session.permissionMode
+        const previousModel = session.model
+        const previousEffort = session.effort
+        const previousCollaborationMode = session.collaborationMode
         const previousModelMode = session.modelMode
 
         session.active = true
@@ -168,13 +184,36 @@ export class SessionCache {
         if (payload.permissionMode !== undefined) {
             session.permissionMode = payload.permissionMode
         }
+        if (payload.model !== undefined) {
+            if (payload.model !== session.model) {
+                this.store.sessions.setSessionModel(payload.sid, payload.model, session.namespace, {
+                    touchUpdatedAt: false
+                })
+            }
+            session.model = payload.model
+        }
+        if (payload.effort !== undefined) {
+            if (payload.effort !== session.effort) {
+                this.store.sessions.setSessionEffort(payload.sid, payload.effort, session.namespace, {
+                    touchUpdatedAt: false
+                })
+            }
+            session.effort = payload.effort
+        }
+        if (payload.collaborationMode !== undefined) {
+            session.collaborationMode = payload.collaborationMode
+        }
         if (payload.modelMode !== undefined) {
             session.modelMode = payload.modelMode
         }
 
         const now = Date.now()
         const lastBroadcastAt = this.lastBroadcastAtBySessionId.get(session.id) ?? 0
-        const modeChanged = previousPermissionMode !== session.permissionMode || previousModelMode !== session.modelMode
+        const modeChanged = previousPermissionMode !== session.permissionMode
+            || previousModel !== session.model
+            || previousEffort !== session.effort
+            || previousCollaborationMode !== session.collaborationMode
+            || previousModelMode !== session.modelMode
         const shouldBroadcast = (!wasActive && session.active)
             || (wasThinking !== session.thinking)
             || modeChanged
@@ -190,6 +229,9 @@ export class SessionCache {
                     activeAt: session.activeAt,
                     thinking: session.thinking,
                     permissionMode: session.permissionMode,
+                    model: session.model,
+                    effort: session.effort,
+                    collaborationMode: session.collaborationMode,
                     modelMode: session.modelMode
                 }
             })
@@ -225,7 +267,16 @@ export class SessionCache {
         }
     }
 
-    applySessionConfig(sessionId: string, config: { permissionMode?: PermissionMode; modelMode?: ModelMode }): void {
+    applySessionConfig(
+        sessionId: string,
+        config: {
+            permissionMode?: PermissionMode
+            model?: string | null
+            effort?: string | null
+            collaborationMode?: CodexCollaborationMode
+            modelMode?: Session['modelMode']
+        }
+    ): void {
         const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
         if (!session) {
             return
@@ -233,6 +284,31 @@ export class SessionCache {
 
         if (config.permissionMode !== undefined) {
             session.permissionMode = config.permissionMode
+        }
+        if (config.model !== undefined) {
+            if (config.model !== session.model) {
+                const updated = this.store.sessions.setSessionModel(sessionId, config.model, session.namespace, {
+                    touchUpdatedAt: false
+                })
+                if (!updated) {
+                    throw new Error('Failed to update session model')
+                }
+            }
+            session.model = config.model
+        }
+        if (config.effort !== undefined) {
+            if (config.effort !== session.effort) {
+                const updated = this.store.sessions.setSessionEffort(sessionId, config.effort, session.namespace, {
+                    touchUpdatedAt: false
+                })
+                if (!updated) {
+                    throw new Error('Failed to update session effort')
+                }
+            }
+            session.effort = config.effort
+        }
+        if (config.collaborationMode !== undefined) {
+            session.collaborationMode = config.collaborationMode
         }
         if (config.modelMode !== undefined) {
             session.modelMode = config.modelMode
@@ -322,6 +398,24 @@ export class SessionCache {
                 if (result.result === 'error') {
                     break
                 }
+            }
+        }
+
+        if (newStored.model === null && oldStored.model !== null) {
+            const updated = this.store.sessions.setSessionModel(newSessionId, oldStored.model, namespace, {
+                touchUpdatedAt: false
+            })
+            if (!updated) {
+                throw new Error('Failed to preserve session model during merge')
+            }
+        }
+
+        if (newStored.effort === null && oldStored.effort !== null) {
+            const updated = this.store.sessions.setSessionEffort(newSessionId, oldStored.effort, namespace, {
+                touchUpdatedAt: false
+            })
+            if (!updated) {
+                throw new Error('Failed to preserve session effort during merge')
             }
         }
 

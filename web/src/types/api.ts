@@ -12,7 +12,7 @@ import type {
 export type {
     AgentState,
     AttachmentMetadata,
-    ModelMode,
+    CodexCollaborationMode,
     PermissionMode,
     SessionManualOrder,
     SessionSortMode,

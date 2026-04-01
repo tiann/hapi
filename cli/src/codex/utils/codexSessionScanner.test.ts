@@ -148,4 +148,132 @@ describe('codexSessionScanner', () => {
         await wait(200);
         expect(events).toHaveLength(0);
     });
+
+    it('adopts a reused older session file when fresh matching activity appears after startup', async () => {
+        const reusedSessionId = 'session-reused-old-file';
+        const targetCwd = '/data/github/happy/hapi';
+        const startupTimestampMs = Date.now();
+        const now = new Date(startupTimestampMs);
+        const currentSessionsDir = join(
+            testDir,
+            'sessions',
+            String(now.getFullYear()),
+            String(now.getMonth() + 1).padStart(2, '0'),
+            String(now.getDate()).padStart(2, '0')
+        );
+        await mkdir(currentSessionsDir, { recursive: true });
+        sessionFile = join(currentSessionsDir, `codex-${reusedSessionId}.jsonl`);
+
+        await writeFile(
+            sessionFile,
+            JSON.stringify({
+                type: 'session_meta',
+                payload: {
+                    id: reusedSessionId,
+                    cwd: targetCwd,
+                    timestamp: new Date(startupTimestampMs - 10 * 60 * 1000).toISOString()
+                }
+            }) + '\n'
+        );
+
+        let matchedSessionId: string | null = null;
+        scanner = await createCodexSessionScanner({
+            sessionId: null,
+            cwd: targetCwd,
+            startupTimestampMs,
+            onEvent: (event) => events.push(event),
+            onSessionFound: (sessionId) => {
+                matchedSessionId = sessionId;
+            }
+        });
+
+        await wait(150);
+        expect(events).toHaveLength(0);
+        expect(matchedSessionId).toBeNull();
+
+        const newLine = JSON.stringify({
+            type: 'response_item',
+            payload: { type: 'function_call', name: 'Tool', call_id: 'call-reused', arguments: '{}' }
+        });
+        await appendFile(sessionFile, newLine + '\n');
+
+        await wait(2300);
+        expect(matchedSessionId).toBe(reusedSessionId);
+        expect(events).toHaveLength(1);
+        expect(events[0].type).toBe('response_item');
+    });
+
+    it('does not adopt a reused session when first fresh matching activity is ambiguous', async () => {
+        const targetCwd = '/data/github/happy/hapi';
+        const startupTimestampMs = Date.now();
+        const now = new Date(startupTimestampMs);
+        const currentSessionsDir = join(
+            testDir,
+            'sessions',
+            String(now.getFullYear()),
+            String(now.getMonth() + 1).padStart(2, '0'),
+            String(now.getDate()).padStart(2, '0')
+        );
+        await mkdir(currentSessionsDir, { recursive: true });
+
+        const firstSessionId = 'session-reused-a';
+        const secondSessionId = 'session-reused-b';
+        const firstFile = join(currentSessionsDir, `codex-${firstSessionId}.jsonl`);
+        const secondFile = join(currentSessionsDir, `codex-${secondSessionId}.jsonl`);
+        const oldTimestamp = new Date(startupTimestampMs - 10 * 60 * 1000).toISOString();
+
+        await writeFile(
+            firstFile,
+            JSON.stringify({
+                type: 'session_meta',
+                payload: { id: firstSessionId, cwd: targetCwd, timestamp: oldTimestamp }
+            }) + '\n'
+        );
+        await writeFile(
+            secondFile,
+            JSON.stringify({
+                type: 'session_meta',
+                payload: { id: secondSessionId, cwd: targetCwd, timestamp: oldTimestamp }
+            }) + '\n'
+        );
+
+        let matchedSessionId: string | null = null;
+        scanner = await createCodexSessionScanner({
+            sessionId: null,
+            cwd: targetCwd,
+            startupTimestampMs,
+            onEvent: (event) => events.push(event),
+            onSessionFound: (sessionId) => {
+                matchedSessionId = sessionId;
+            }
+        });
+
+        await wait(150);
+        expect(matchedSessionId).toBeNull();
+
+        const firstNewLine = JSON.stringify({
+            type: 'response_item',
+            payload: { type: 'function_call', name: 'Tool', call_id: 'call-reused-a-1', arguments: '{}' }
+        });
+        const secondNewLine = JSON.stringify({
+            type: 'response_item',
+            payload: { type: 'function_call', name: 'Tool', call_id: 'call-reused-b-1', arguments: '{}' }
+        });
+        await appendFile(firstFile, firstNewLine + '\n');
+        await appendFile(secondFile, secondNewLine + '\n');
+
+        await wait(2300);
+        expect(matchedSessionId).toBeNull();
+        expect(events).toHaveLength(0);
+
+        const laterUniqueLine = JSON.stringify({
+            type: 'response_item',
+            payload: { type: 'function_call', name: 'Tool', call_id: 'call-reused-a-2', arguments: '{}' }
+        });
+        await appendFile(firstFile, laterUniqueLine + '\n');
+
+        await wait(2300);
+        expect(matchedSessionId).toBeNull();
+        expect(events).toHaveLength(0);
+    });
 });

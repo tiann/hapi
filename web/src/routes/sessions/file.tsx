@@ -196,7 +196,7 @@ export default function FilePage() {
     const diffErrorMessage = diffError ? `Diff unavailable: ${diffError}` : null
 
     return (
-        <div className="flex h-full flex-col">
+        <div className="flex h-full min-h-0 flex-col">
             <div className="bg-[var(--app-bg)] pt-[env(safe-area-inset-top)]">
                 <div className="mx-auto w-full max-w-content flex items-center gap-2 p-3 border-b border-[var(--app-border)]">
                     <button
@@ -249,7 +249,7 @@ export default function FilePage() {
                 </div>
             ) : null}
 
-            <div className="flex-1 overflow-y-auto">
+            <div className="app-scroll-y flex-1 min-h-0">
                 <div className="mx-auto w-full max-w-content p-4">
                     {diffErrorMessage ? (
                         <div className="mb-3 rounded-md bg-amber-500/10 p-2 text-xs text-[var(--app-hint)]">

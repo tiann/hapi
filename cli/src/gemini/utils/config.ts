@@ -2,16 +2,19 @@ import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { logger } from '@/ui/logger';
+import { DEFAULT_GEMINI_MODEL } from '@hapi/protocol';
 
 export const GEMINI_API_KEY_ENV = 'GEMINI_API_KEY';
 export const GOOGLE_API_KEY_ENV = 'GOOGLE_API_KEY';
 export const GEMINI_MODEL_ENV = 'GEMINI_MODEL';
-export const DEFAULT_GEMINI_MODEL = 'gemini-2.5-pro';
+export { DEFAULT_GEMINI_MODEL };
 
 export type GeminiLocalConfig = {
     token?: string;
     model?: string;
 };
+
+export type GeminiModelSource = 'explicit' | 'env' | 'local' | 'default';
 
 const GEMINI_DIR = join(homedir(), '.gemini');
 const SETTINGS_PATH = join(GEMINI_DIR, 'settings.json');
@@ -85,20 +88,29 @@ export function readGeminiLocalConfig(): GeminiLocalConfig {
 export function resolveGeminiRuntimeConfig(opts: {
     model?: string;
     token?: string;
-} = {}): { model: string; token?: string } {
+} = {}): { model: string; token?: string; modelSource: GeminiModelSource } {
     const local = readGeminiLocalConfig();
 
-    const model = opts.model
-        ?? process.env[GEMINI_MODEL_ENV]
-        ?? local.model
-        ?? DEFAULT_GEMINI_MODEL;
+    let modelSource: GeminiModelSource = 'default';
+    let model: string = DEFAULT_GEMINI_MODEL;
+
+    if (opts.model) {
+        model = opts.model;
+        modelSource = 'explicit';
+    } else if (process.env[GEMINI_MODEL_ENV]) {
+        model = process.env[GEMINI_MODEL_ENV]!;
+        modelSource = 'env';
+    } else if (local.model) {
+        model = local.model;
+        modelSource = 'local';
+    }
 
     const token = opts.token
         ?? process.env[GEMINI_API_KEY_ENV]
         ?? process.env[GOOGLE_API_KEY_ENV]
         ?? local.token;
 
-    return { model, token };
+    return { model, token, modelSource };
 }
 
 export function buildGeminiEnv(opts: {

@@ -8,8 +8,8 @@
  */
 
 import type {
+    CodexCollaborationMode,
     DecryptedMessage,
-    ModelMode,
     PermissionMode,
     Session,
     SessionManualOrder,
@@ -260,7 +260,10 @@ export class SyncEngine {
         thinking?: boolean
         mode?: 'local' | 'remote'
         permissionMode?: PermissionMode
-        modelMode?: ModelMode
+        model?: string | null
+        effort?: string | null
+        collaborationMode?: CodexCollaborationMode
+        modelMode?: Session['modelMode']
     }): void {
         this.sessionCache.handleSessionAlive(payload)
     }
@@ -283,8 +286,15 @@ export class SyncEngine {
         this.machineCache.reloadAll()
     }
 
-    getOrCreateSession(tag: string, metadata: unknown, agentState: unknown, namespace: string): Session {
-        return this.sessionCache.getOrCreateSession(tag, metadata, agentState, namespace)
+    getOrCreateSession(
+        tag: string,
+        metadata: unknown,
+        agentState: unknown,
+        namespace: string,
+        model?: string,
+        effort?: string
+    ): Session {
+        return this.sessionCache.getOrCreateSession(tag, metadata, agentState, namespace, model, effort)
     }
 
     getOrCreateMachine(id: string, metadata: unknown, runnerState: unknown, namespace: string): Machine {
@@ -354,20 +364,39 @@ export class SyncEngine {
         sessionId: string,
         config: {
             permissionMode?: PermissionMode
-            modelMode?: ModelMode
+            model?: string | null
+            effort?: string | null
+            collaborationMode?: CodexCollaborationMode
+            modelMode?: Session['modelMode']
         }
     ): Promise<void> {
-        const result = await this.rpcGateway.requestSessionConfig(sessionId, config)
+        const rpcConfig = {
+            permissionMode: config.permissionMode,
+            model: config.model,
+            effort: config.effort,
+            collaborationMode: config.collaborationMode
+        }
+        const result = await this.rpcGateway.requestSessionConfig(sessionId, rpcConfig)
         if (!result || typeof result !== 'object') {
             throw new Error('Invalid response from session config RPC')
         }
-        const obj = result as { applied?: { permissionMode?: Session['permissionMode']; modelMode?: Session['modelMode'] } }
+        const obj = result as {
+            applied?: {
+                permissionMode?: Session['permissionMode']
+                model?: Session['model']
+                effort?: Session['effort']
+                collaborationMode?: Session['collaborationMode']
+            }
+        }
         const applied = obj.applied
         if (!applied || typeof applied !== 'object') {
             throw new Error('Missing applied session config')
         }
 
-        this.sessionCache.applySessionConfig(sessionId, applied)
+        this.sessionCache.applySessionConfig(sessionId, {
+            ...applied,
+            modelMode: config.modelMode
+        })
     }
 
     async spawnSession(
@@ -375,12 +404,25 @@ export class SyncEngine {
         directory: string,
         agent: 'claude' | 'codex' | 'cursor' | 'gemini' | 'opencode' = 'claude',
         model?: string,
+        modelReasoningEffort?: string,
         yolo?: boolean,
         sessionType?: 'simple' | 'worktree',
         worktreeName?: string,
-        resumeSessionId?: string
+        resumeSessionId?: string,
+        effort?: string
     ): Promise<{ type: 'success'; sessionId: string } | { type: 'error'; message: string }> {
-        return await this.rpcGateway.spawnSession(machineId, directory, agent, model, yolo, sessionType, worktreeName, resumeSessionId)
+        return await this.rpcGateway.spawnSession(
+            machineId,
+            directory,
+            agent,
+            model,
+            modelReasoningEffort,
+            yolo,
+            sessionType,
+            worktreeName,
+            resumeSessionId,
+            effort
+        )
     }
 
     async resumeSession(sessionId: string, namespace: string): Promise<ResumeSessionResult> {
@@ -445,11 +487,13 @@ export class SyncEngine {
             targetMachine.id,
             metadata.path,
             flavor,
+            session.model ?? undefined,
             undefined,
             undefined,
             undefined,
             undefined,
-            resumeToken
+            resumeToken,
+            session.effort ?? undefined
         )
 
         if (spawnResult.type !== 'success') {

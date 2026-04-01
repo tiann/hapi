@@ -27,7 +27,7 @@ function extractTextFromContentBlock(block: unknown): string | null {
     return null
 }
 
-function extractTextFromResult(result: unknown, depth: number = 0): string | null {
+export function extractTextFromResult(result: unknown, depth: number = 0): string | null {
     if (depth > 2) return null
     if (result === null || result === undefined) return null
     if (typeof result === 'string') {
@@ -103,6 +103,12 @@ function parseCodexBashOutput(text: string): CodexBashOutput | null {
         wallTime: wallMatch ? wallMatch[1].trim() : null,
         output: outputMatch ? outputMatch[1] : text
     }
+}
+
+export function getMutationResultRenderMode(text: string, state: string): { mode: 'code' | 'auto'; language?: string } {
+    const isMultiline = text.split('\n').length > 3
+    const mode = state === 'error' || isMultiline ? 'code' as const : 'auto' as const
+    return { mode, language: mode === 'code' ? 'text' : undefined }
 }
 
 function looksLikeHtml(text: string): boolean {
@@ -394,10 +400,11 @@ const MutationResultView: ToolViewComponent = (props: ToolViewProps) => {
     const text = extractTextFromResult(result)
     if (typeof text === 'string' && text.trim().length > 0) {
         const className = state === 'error' ? 'text-red-600' : 'text-[var(--app-fg)]'
+        const { mode, language } = getMutationResultRenderMode(text, state)
         return (
             <>
                 <div className={`text-sm ${className}`}>
-                    {renderText(text, { mode: state === 'error' ? 'code' : 'auto' })}
+                    {renderText(text, { mode, language })}
                 </div>
                 <RawJsonDevOnly value={result} />
             </>

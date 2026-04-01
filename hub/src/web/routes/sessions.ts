@@ -1,5 +1,5 @@
-import { getPermissionModesForFlavor, isModelModeAllowedForFlavor, isPermissionModeAllowedForFlavor, toSessionSummary } from '@hapi/protocol'
-import { ModelModeSchema, PermissionModeSchema } from '@hapi/protocol/schemas'
+import { getPermissionModesForFlavor, isPermissionModeAllowedForFlavor, toSessionSummary } from '@hapi/protocol'
+import { CodexCollaborationModeSchema, PermissionModeSchema } from '@hapi/protocol/schemas'
 import { Hono } from 'hono'
 import { z } from 'zod'
 import type { SyncEngine, Session } from '../../sync/syncEngine'
@@ -10,8 +10,16 @@ const permissionModeSchema = z.object({
     mode: PermissionModeSchema
 })
 
-const modelModeSchema = z.object({
-    model: ModelModeSchema
+const collaborationModeSchema = z.object({
+    mode: CodexCollaborationModeSchema
+})
+
+const modelSchema = z.object({
+    model: z.string().trim().min(1).nullable()
+})
+
+const effortSchema = z.object({
+    effort: z.string().trim().min(1).nullable()
 })
 
 const renameSessionSchema = z.object({
@@ -256,6 +264,40 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
     })
 
+    app.post('/sessions/:id/collaboration-mode', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
+        if (flavor !== 'codex') {
+            return c.json({ error: 'Collaboration mode is only supported for Codex sessions' }, 400)
+        }
+        if (sessionResult.session.agentState?.controlledByUser === true) {
+            return c.json({ error: 'Collaboration mode can only be changed for remote Codex sessions' }, 409)
+        }
+
+        const body = await c.req.json().catch(() => null)
+        const parsed = collaborationModeSchema.safeParse(body)
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid body' }, 400)
+        }
+
+        try {
+            await engine.applySessionConfig(sessionResult.sessionId, { collaborationMode: parsed.data.mode })
+            return c.json({ ok: true })
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Failed to apply collaboration mode'
+            return c.json({ error: message }, 409)
+        }
+    })
+
     app.post('/sessions/:id/model', async (c) => {
         const engine = requireSyncEngine(c, getSyncEngine)
         if (engine instanceof Response) {
@@ -268,21 +310,52 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
 
         const body = await c.req.json().catch(() => null)
-        const parsed = modelModeSchema.safeParse(body)
+        const parsed = modelSchema.safeParse(body)
         if (!parsed.success) {
             return c.json({ error: 'Invalid body' }, 400)
         }
 
         const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
-        if (!isModelModeAllowedForFlavor(parsed.data.model, flavor)) {
-            return c.json({ error: 'Model mode is only supported for Claude sessions' }, 400)
+        if (flavor !== 'claude' && flavor !== 'gemini') {
+            return c.json({ error: 'Model selection is only supported for Claude and Gemini sessions' }, 400)
         }
 
         try {
-            await engine.applySessionConfig(sessionResult.sessionId, { modelMode: parsed.data.model })
+            await engine.applySessionConfig(sessionResult.sessionId, { model: parsed.data.model })
             return c.json({ ok: true })
         } catch (error) {
-            const message = error instanceof Error ? error.message : 'Failed to apply model mode'
+            const message = error instanceof Error ? error.message : 'Failed to apply model'
+            return c.json({ error: message }, 409)
+        }
+    })
+
+    app.post('/sessions/:id/effort', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const body = await c.req.json().catch(() => null)
+        const parsed = effortSchema.safeParse(body)
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid body' }, 400)
+        }
+
+        const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
+        if (flavor !== 'claude') {
+            return c.json({ error: 'Effort selection is only supported for Claude sessions' }, 400)
+        }
+
+        try {
+            await engine.applySessionConfig(sessionResult.sessionId, { effort: parsed.data.effort })
+            return c.json({ ok: true })
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Failed to apply effort'
             return c.json({ error: message }, 409)
         }
     })

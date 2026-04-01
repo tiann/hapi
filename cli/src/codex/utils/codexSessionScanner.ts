@@ -79,6 +79,10 @@ class CodexSessionScannerImpl extends BaseSessionScanner<CodexSessionEvent> {
     private reportedSessionId: string | null;
     private matchFailed = false;
     private bestWithinWindow: Candidate | null = null;
+    private readonly recentActivitySessionIds = new Set<string>();
+    private firstRecentActivityCandidateResolved = false;
+    private readonly firstRecentActivitySessionIds = new Set<string>();
+    private loggedAmbiguousRecentActivity = false;
 
     constructor(opts: CodexSessionScannerOptions, targetCwd: string | null) {
         super({ intervalMs: 2000 });
@@ -140,6 +144,7 @@ class CodexSessionScannerImpl extends BaseSessionScanner<CodexSessionEvent> {
 
     protected async beforeScan(): Promise<void> {
         this.bestWithinWindow = null;
+        this.recentActivitySessionIds.clear();
     }
 
     protected async findSessionFiles(): Promise<string[]> {
@@ -172,6 +177,10 @@ class CodexSessionScannerImpl extends BaseSessionScanner<CodexSessionEvent> {
                     this.bestWithinWindow = candidate;
                 }
             }
+            const recentActivityCandidate = this.getRecentActivityCandidateForFile(filePath, stats.newCount);
+            if (recentActivityCandidate) {
+                this.recentActivitySessionIds.add(recentActivityCandidate.sessionId);
+            }
             if (stats.newCount > 0) {
                 logger.debug(`[CODEX_SESSION_SCANNER] Buffered ${stats.newCount} pending events from ${filePath}`);
             }
@@ -189,15 +198,47 @@ class CodexSessionScannerImpl extends BaseSessionScanner<CodexSessionEvent> {
             if (this.bestWithinWindow) {
                 logger.debug(`[CODEX_SESSION_SCANNER] Selected session ${this.bestWithinWindow.sessionId} within start window`);
                 this.setActiveSessionId(this.bestWithinWindow.sessionId);
-            } else if (Date.now() > this.matchDeadlineMs) {
-                this.matchFailed = true;
-                this.pendingEventsByFile.clear();
-                const message = `No Codex session found within ${this.sessionStartWindowMs}ms for cwd ${this.targetCwd}; refusing fallback.`;
-                logger.warn(`[CODEX_SESSION_SCANNER] ${message}`);
-                this.onSessionMatchFailed?.(message);
-            } else if (this.pendingEventsByFile.size > 0) {
-                logger.debug('[CODEX_SESSION_SCANNER] No session candidate matched yet; pending events buffered');
+            } else {
+                this.captureFirstRecentActivityCandidate();
+
+                if (this.firstRecentActivitySessionIds.size === 1) {
+                    const [sessionId] = this.firstRecentActivitySessionIds;
+                    if (sessionId) {
+                        logger.debug(`[CODEX_SESSION_SCANNER] Selected session ${sessionId} from first unique matching activity after startup`);
+                        this.setActiveSessionId(sessionId);
+                    }
+                } else if (
+                    !this.loggedAmbiguousRecentActivity
+                    && this.firstRecentActivityCandidateResolved
+                    && this.firstRecentActivitySessionIds.size > 1
+                ) {
+                    this.loggedAmbiguousRecentActivity = true;
+                    logger.debug('[CODEX_SESSION_SCANNER] First matching activity after startup was ambiguous; refusing reused-session adoption');
+                }
+
+                if (!this.activeSessionId) {
+                    if (Date.now() > this.matchDeadlineMs) {
+                        this.matchFailed = true;
+                        this.pendingEventsByFile.clear();
+                        const message = `No Codex session found within ${this.sessionStartWindowMs}ms for cwd ${this.targetCwd}; refusing fallback.`;
+                        logger.warn(`[CODEX_SESSION_SCANNER] ${message}`);
+                        this.onSessionMatchFailed?.(message);
+                    } else if (this.pendingEventsByFile.size > 0) {
+                        logger.debug('[CODEX_SESSION_SCANNER] No session candidate matched yet; pending events buffered');
+                    }
+                }
             }
+        }
+    }
+
+    private captureFirstRecentActivityCandidate(): void {
+        if (this.firstRecentActivityCandidateResolved || this.recentActivitySessionIds.size === 0) {
+            return;
+        }
+
+        this.firstRecentActivityCandidateResolved = true;
+        for (const sessionId of this.recentActivitySessionIds) {
+            this.firstRecentActivitySessionIds.add(sessionId);
         }
     }
 
@@ -348,6 +389,27 @@ class CodexSessionScannerImpl extends BaseSessionScanner<CodexSessionEvent> {
         return {
             sessionId,
             score: diff
+        };
+    }
+
+    private getRecentActivityCandidateForFile(filePath: string, newCount: number): Candidate | null {
+        if (newCount <= 0) {
+            return null;
+        }
+
+        const sessionId = this.sessionIdByFile.get(filePath);
+        if (!sessionId) {
+            return null;
+        }
+
+        const fileCwd = this.sessionCwdByFile.get(filePath);
+        if (this.targetCwd && fileCwd !== this.targetCwd) {
+            return null;
+        }
+
+        return {
+            sessionId,
+            score: 0
         };
     }
 

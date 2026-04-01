@@ -7,8 +7,10 @@
 
 import { logger } from "@/ui/logger";
 import { ApiSessionClient } from "@/api/apiSession";
+import type { CodexPermissionMode } from "@hapi/protocol/types";
 import {
     BasePermissionHandler,
+    type AutoApprovalDecision,
     type PendingPermissionRequest,
     type PermissionCompletion
 } from "@/modules/common/permission/BasePermissionHandler";
@@ -38,12 +40,53 @@ type CodexPermissionHandlerOptions = {
 };
 
 export class CodexPermissionHandler extends BasePermissionHandler<PermissionResponse, PermissionResult> {
-    constructor(session: ApiSessionClient, private readonly options?: CodexPermissionHandlerOptions) {
+    constructor(
+        session: ApiSessionClient,
+        private readonly getPermissionMode: () => CodexPermissionMode | undefined,
+        private readonly options?: CodexPermissionHandlerOptions
+    ) {
         super(session);
     }
 
     protected override onRequestRegistered(id: string, toolName: string, input: unknown): void {
         this.options?.onRequest?.({ id, toolName, input });
+    }
+
+    private completeAutoApproval(
+        id: string,
+        toolName: string,
+        input: unknown,
+        decision: AutoApprovalDecision
+    ): PermissionResult {
+        const timestamp = Date.now();
+
+        this.options?.onRequest?.({ id, toolName, input });
+        this.options?.onComplete?.({
+            id,
+            toolName,
+            input,
+            approved: true,
+            decision
+        });
+
+        this.client.updateAgentState((currentState) => ({
+            ...currentState,
+            completedRequests: {
+                ...currentState.completedRequests,
+                [id]: {
+                    tool: toolName,
+                    arguments: input,
+                    createdAt: timestamp,
+                    completedAt: timestamp,
+                    status: 'approved',
+                    decision
+                }
+            }
+        }));
+
+        logger.debug(`[Codex] Auto-approved ${toolName} (${id}) with decision=${decision}`);
+
+        return { decision };
     }
 
     /**
@@ -58,6 +101,12 @@ export class CodexPermissionHandler extends BasePermissionHandler<PermissionResp
         toolName: string,
         input: unknown
     ): Promise<PermissionResult> {
+        const mode = this.getPermissionMode() ?? 'default';
+        const autoDecision = this.resolveAutoApprovalDecision(mode, toolName, toolCallId);
+        if (autoDecision) {
+            return Promise.resolve(this.completeAutoApproval(toolCallId, toolName, input, autoDecision));
+        }
+
         return new Promise<PermissionResult>((resolve, reject) => {
             // Store the pending request
             this.addPendingRequest(toolCallId, toolName, input, { resolve, reject });

@@ -73,9 +73,28 @@ export function reduceTimeline(
         }
 
         if (msg.role === 'agent') {
+            // When the message contains a Task tool_use, Claude often writes the
+            // prompt as a text block before the tool_use block.  We only want to
+            // suppress that exact prompt text — not every text block in the message.
+            const taskToolCall = msg.content.find(
+                (c) => c.type === 'tool-call' && c.name === 'Task'
+            )
+            const taskPromptText: string | null = (() => {
+                if (!taskToolCall || taskToolCall.type !== 'tool-call') return null
+                const input = taskToolCall.input
+                if (typeof input === 'object' && input !== null && 'prompt' in input) {
+                    const p = (input as { prompt: unknown }).prompt
+                    if (typeof p === 'string') return p
+                }
+                return null
+            })()
+
             for (let idx = 0; idx < msg.content.length; idx += 1) {
                 const c = msg.content[idx]
                 if (c.type === 'text') {
+                    // Skip text blocks that are just the Task tool prompt (already shown in tool card)
+                    if (taskPromptText && c.text.trim() === taskPromptText.trim()) continue
+
                     if (isCliOutputText(c.text, msg.meta)) {
                         blocks.push(createCliOutputBlock({
                             id: `${msg.id}:${idx}`,
@@ -221,13 +240,8 @@ export function reduceTimeline(
                 }
 
                 if (c.type === 'sidechain') {
-                    blocks.push({
-                        kind: 'user-text',
-                        id: `${msg.id}:${idx}`,
-                        localId: null,
-                        createdAt: msg.createdAt,
-                        text: c.prompt
-                    })
+                    // Skip - the prompt is already visible in the parent Task tool call's input
+                    continue
                 }
             }
         }

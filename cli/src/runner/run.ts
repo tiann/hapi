@@ -7,6 +7,7 @@ import { RunnerState, Metadata } from '@/api/types';
 import { SpawnSessionOptions, SpawnSessionResult } from '@/modules/common/rpcTypes';
 import { logger } from '@/ui/logger';
 import { authAndSetupMachineIfNeeded } from '@/ui/auth';
+import { configuration } from '@/configuration';
 import packageJson from '../../package.json';
 import { getEnvironmentInfo } from '@/ui/doctor';
 import { spawnHappyCLI } from '@/utils/spawnHappyCLI';
@@ -20,6 +21,7 @@ import { startRunnerControlServer } from './controlServer';
 import { createWorktree, removeWorktree, type WorktreeInfo } from './worktree';
 import { join } from 'path';
 import { buildMachineMetadata } from '@/agent/sessionFactory';
+import { hashRunnerCliApiToken } from './runnerIdentity';
 
 export async function startRunner(): Promise<void> {
   // We don't have cleanup function at the time of server construction
@@ -361,6 +363,12 @@ export async function startRunner(): Promise<void> {
         if (options.model && agent !== 'opencode') {
           args.push('--model', options.model);
         }
+        if (options.effort && agent === 'claude') {
+          args.push('--effort', options.effort);
+        }
+        if (options.modelReasoningEffort && agent === 'codex') {
+          args.push('--model-reasoning-effort', options.modelReasoningEffort);
+        }
         if (yolo) {
           args.push('--yolo');
         }
@@ -626,6 +634,9 @@ export async function startRunner(): Promise<void> {
       startTime: new Date().toLocaleString(),
       startedWithCliVersion: packageJson.version,
       startedWithCliMtimeMs,
+      startedWithApiUrl: configuration.apiUrl,
+      startedWithMachineId: machineId,
+      startedWithCliApiTokenHash: hashRunnerCliApiToken(configuration.cliApiToken),
       runnerLogPath: logger.logFilePath
     };
     writeRunnerState(fileState);
@@ -785,6 +796,9 @@ export async function startRunner(): Promise<void> {
           startTime: fileState.startTime,
           startedWithCliVersion: packageJson.version,
           startedWithCliMtimeMs,
+          startedWithApiUrl: fileState.startedWithApiUrl,
+          startedWithMachineId: fileState.startedWithMachineId,
+          startedWithCliApiTokenHash: fileState.startedWithCliApiTokenHash,
           lastHeartbeat: new Date().toLocaleString(),
           runnerLogPath: fileState.runnerLogPath
         };
