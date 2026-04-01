@@ -28,13 +28,15 @@ function getGroupDisplayName(directory: string): string {
     return `${parts[parts.length - 2]}/${parts[parts.length - 1]}`
 }
 
+export const UNKNOWN_MACHINE_ID = '__unknown__'
+
 function groupSessionsByDirectory(sessions: SessionSummary[]): SessionGroup[] {
     const groups = new Map<string, { directory: string; machineId: string | null; sessions: SessionSummary[] }>()
 
     sessions.forEach(session => {
         const path = session.metadata?.worktree?.basePath ?? session.metadata?.path ?? 'Other'
         const machineId = session.metadata?.machineId ?? null
-        const key = `${machineId ?? '__unknown__'}::${path}`
+        const key = `${machineId ?? UNKNOWN_MACHINE_ID}::${path}`
         if (!groups.has(key)) {
             groups.set(key, {
                 directory: path,
@@ -240,6 +242,7 @@ function SessionItem(props: {
     const statusDotClass = s.active
         ? (s.thinking ? 'bg-[#007AFF]' : 'bg-[var(--app-badge-success-text)]')
         : 'bg-[var(--app-hint)]'
+    const todoProgress = getTodoProgress(s)
     return (
         <>
             <button
@@ -266,16 +269,12 @@ function SessionItem(props: {
                                 {t('session.item.thinking')}
                             </span>
                         ) : null}
-                        {(() => {
-                            const progress = getTodoProgress(s)
-                            if (!progress) return null
-                            return (
-                                <span className="flex items-center gap-1 text-[var(--app-hint)]">
-                                    <BulbIcon className="h-3 w-3" />
-                                    {progress.completed}/{progress.total}
-                                </span>
-                            )
-                        })()}
+                        {todoProgress ? (
+                            <span className="flex items-center gap-1 text-[var(--app-hint)]">
+                                <BulbIcon className="h-3 w-3" />
+                                {todoProgress.completed}/{todoProgress.total}
+                            </span>
+                        ) : null}
                         {s.pendingRequestsCount > 0 ? (
                             <span className="text-[var(--app-badge-warning-text)]">
                                 {t('session.item.pending')} {s.pendingRequestsCount}
@@ -398,6 +397,19 @@ export function SessionList(props: {
         }
         return t('machine.unknown')
     }
+
+    useEffect(() => {
+        if (!selectedSessionId) return
+        setCollapseOverrides(prev => {
+            const group = groups.find(g =>
+                g.sessions.some(s => s.id === selectedSessionId)
+            )
+            if (!group || !prev.has(group.key) || !prev.get(group.key)) return prev
+            const next = new Map(prev)
+            next.delete(group.key)
+            return next
+        })
+    }, [selectedSessionId, groups])
 
     useEffect(() => {
         setCollapseOverrides(prev => {

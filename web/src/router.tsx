@@ -114,11 +114,9 @@ function SessionsPage() {
         void refetch()
     }, [refetch])
 
-    const projectCount = new Set(sessions.map(s => {
-        const path = s.metadata?.worktree?.basePath ?? s.metadata?.path ?? 'Other'
-        const machineId = s.metadata?.machineId ?? '__unknown__'
-        return `${machineId}::${path}`
-    })).size
+    const projectCount = useMemo(() => new Set(sessions.map(s =>
+        s.metadata?.worktree?.basePath ?? s.metadata?.path ?? 'Other'
+    )).size, [sessions])
     const machineLabelsById = useMemo(() => {
         const labels: Record<string, string> = {}
         for (const machine of machines) {
