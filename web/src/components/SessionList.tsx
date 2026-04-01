@@ -375,7 +375,10 @@ export function SessionList(props: {
     const isGroupCollapsed = (group: SessionGroup): boolean => {
         const override = collapseOverrides.get(group.key)
         if (override !== undefined) return override
-        return !group.hasActiveSession
+        const hasSelectedSession = selectedSessionId
+            ? group.sessions.some(session => session.id === selectedSessionId)
+            : false
+        return !group.hasActiveSession && !hasSelectedSession
     }
 
     const toggleGroup = (groupKey: string, isCollapsed: boolean) => {
