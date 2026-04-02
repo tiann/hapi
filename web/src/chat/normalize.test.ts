@@ -13,6 +13,108 @@ function makeMessage(content: unknown): DecryptedMessage {
 }
 
 describe('normalizeDecryptedMessage', () => {
+    it('maps Codex parentToolCallId to sidechainKey on sidechain agent payloads', () => {
+        const message = makeMessage({
+            role: 'agent',
+            content: {
+                type: 'codex',
+                data: {
+                    type: 'tool-call',
+                    callId: 'tool-call-1',
+                    id: 'tool-use-1',
+                    name: 'spawn',
+                    input: { prompt: 'hi' },
+                    isSidechain: true,
+                    parentToolCallId: 'spawn-1'
+                }
+            }
+        })
+
+        expect(normalizeDecryptedMessage(message)).toMatchObject({
+            id: 'msg-1',
+            role: 'agent',
+            isSidechain: true,
+            sidechainKey: 'spawn-1',
+            content: [
+                {
+                    type: 'tool-call',
+                    id: 'tool-call-1'
+                }
+            ]
+        })
+    })
+
+    it('keeps normal Codex payloads root-level when parentToolCallId is absent', () => {
+        const message = makeMessage({
+            role: 'agent',
+            content: {
+                type: 'codex',
+                data: {
+                    type: 'tool-call',
+                    callId: 'tool-call-1',
+                    id: 'tool-use-1',
+                    name: 'spawn',
+                    input: { prompt: 'hi' }
+                }
+            }
+        })
+
+        expect(normalizeDecryptedMessage(message)).toMatchObject({
+            id: 'msg-1',
+            role: 'agent',
+            isSidechain: false
+        })
+        expect(normalizeDecryptedMessage(message)?.sidechainKey).toBeUndefined()
+    })
+
+    it('keeps Codex payloads root-level when parentToolCallId is present without isSidechain', () => {
+        const message = makeMessage({
+            role: 'agent',
+            content: {
+                type: 'codex',
+                data: {
+                    type: 'tool-call',
+                    callId: 'tool-call-1',
+                    id: 'tool-use-1',
+                    name: 'spawn',
+                    input: { prompt: 'hi' },
+                    parentToolCallId: 'spawn-1'
+                }
+            }
+        })
+
+        expect(normalizeDecryptedMessage(message)).toMatchObject({
+            id: 'msg-1',
+            role: 'agent',
+            isSidechain: false
+        })
+        expect(normalizeDecryptedMessage(message)?.sidechainKey).toBeUndefined()
+    })
+    it('preserves user sidechain metadata from record meta', () => {
+        const message = makeMessage({
+            role: 'user',
+            content: {
+                type: 'text',
+                text: 'child transcript prompt'
+            },
+            meta: {
+                isSidechain: true,
+                sidechainKey: 'spawn-1'
+            }
+        })
+
+        expect(normalizeDecryptedMessage(message)).toMatchObject({
+            id: 'msg-1',
+            role: 'user',
+            isSidechain: true,
+            sidechainKey: 'spawn-1',
+            content: {
+                type: 'text',
+                text: 'child transcript prompt'
+            }
+        })
+    })
+
     it('drops unsupported Claude system output records', () => {
         const message = makeMessage({
             role: 'agent',

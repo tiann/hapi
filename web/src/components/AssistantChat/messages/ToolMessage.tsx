@@ -1,12 +1,14 @@
 import type { ToolCallMessagePartProps } from '@assistant-ui/react'
 import type { ChatBlock } from '@/chat/types'
 import type { ToolCallBlock } from '@/chat/types'
+import type { ReactNode } from 'react'
 import { isObject, safeStringify } from '@hapi/protocol'
 import { getEventPresentation } from '@/chat/presentation'
 import { CodeBlock } from '@/components/CodeBlock'
 import { MarkdownRenderer } from '@/components/MarkdownRenderer'
 import { LazyRainbowText } from '@/components/LazyRainbowText'
 import { MessageStatusIndicator } from '@/components/AssistantChat/messages/MessageStatusIndicator'
+import { CodexSubagentPreviewCard } from '@/components/AssistantChat/messages/CodexSubagentPreviewCard'
 import { ToolCard } from '@/components/ToolCard/ToolCard'
 import { useHappyChatContext } from '@/components/AssistantChat/context'
 import { CliOutputBlock } from '@/components/CliOutputBlock'
@@ -109,50 +111,87 @@ function HappyNestedBlockList(props: {
                 }
 
                 if (block.kind === 'tool-call') {
-                    const isTask = block.tool.name === 'Task'
-                    const taskChildren = isTask ? splitTaskChildren(block) : null
-
                     return (
                         <div key={`tool:${block.id}`} className="py-1">
-                            <ToolCard
-                                api={ctx.api}
-                                sessionId={ctx.sessionId}
-                                metadata={ctx.metadata}
-                                disabled={ctx.disabled}
-                                onDone={ctx.onRefresh}
-                                block={block}
-                            />
-                            {block.children.length > 0 ? (
-                                isTask ? (
-                                    <>
-                                        {taskChildren && taskChildren.pending.length > 0 ? (
-                                            <div className="mt-2 pl-3">
-                                                <HappyNestedBlockList blocks={taskChildren.pending} />
-                                            </div>
-                                        ) : null}
-                                        {taskChildren && taskChildren.rest.length > 0 ? (
-                                            <details className="mt-2">
-                                                <summary className="cursor-pointer text-xs text-[var(--app-hint)]">
-                                                    Task details ({taskChildren.rest.length})
-                                                </summary>
-                                                <div className="mt-2 pl-3">
-                                                    <HappyNestedBlockList blocks={taskChildren.rest} />
-                                                </div>
-                                            </details>
-                                        ) : null}
-                                    </>
-                                ) : (
-                                    <div className="mt-2 pl-3">
-                                        <HappyNestedBlockList blocks={block.children} />
-                                    </div>
-                                )
-                            ) : null}
+                            {renderToolBlock(block, ctx)}
                         </div>
                     )
                 }
 
                 return null
             })}
+        </div>
+    )
+}
+
+export function getToolChildRenderMode(block: ToolCallBlock): 'none' | 'task' | 'codex-subagent-preview' | 'inline' {
+    if (block.children.length === 0) return 'none'
+    if (block.tool.name === 'Task') return 'task'
+    if (block.tool.name === 'CodexSpawnAgent') return 'codex-subagent-preview'
+    return 'inline'
+}
+
+function renderToolBlock(
+    block: ToolCallBlock,
+    ctx: ReturnType<typeof useHappyChatContext>
+): ReactNode {
+    if (block.tool.name === 'CodexSpawnAgent') {
+        return <CodexSubagentPreviewCard block={block} />
+    }
+
+    return (
+        <>
+            <ToolCard
+                api={ctx.api}
+                sessionId={ctx.sessionId}
+                metadata={ctx.metadata}
+                disabled={ctx.disabled}
+                onDone={ctx.onRefresh}
+                block={block}
+            />
+            {renderToolChildren(block)}
+        </>
+    )
+}
+
+function renderToolChildren(block: ToolCallBlock): ReactNode | null {
+    const mode = getToolChildRenderMode(block)
+    if (mode === 'none') return null
+
+    if (mode === 'task') {
+        const taskChildren = splitTaskChildren(block)
+        return (
+            <>
+                {taskChildren.pending.length > 0 ? (
+                    <div className="mt-2 pl-3">
+                        <HappyNestedBlockList blocks={taskChildren.pending} />
+                    </div>
+                ) : null}
+                {taskChildren.rest.length > 0 ? (
+                    <details className="mt-2">
+                        <summary className="cursor-pointer text-xs text-[var(--app-hint)]">
+                            Task details ({taskChildren.rest.length})
+                        </summary>
+                        <div className="mt-2 pl-3">
+                            <HappyNestedBlockList blocks={taskChildren.rest} />
+                        </div>
+                    </details>
+                ) : null}
+            </>
+        )
+    }
+
+    if (mode === 'codex-subagent-preview') {
+        return (
+            <div className="mt-2">
+                <CodexSubagentPreviewCard block={block} />
+            </div>
+        )
+    }
+
+    return (
+        <div className="mt-2 pl-3">
+            <HappyNestedBlockList blocks={block.children} />
         </div>
     )
 }
@@ -199,44 +238,10 @@ export function HappyToolMessage(props: ToolCallMessagePartProps) {
     }
 
     const block = artifact
-    const isTask = block.tool.name === 'Task'
-    const taskChildren = isTask ? splitTaskChildren(block) : null
 
     return (
         <div className="py-1 min-w-0 max-w-full overflow-x-hidden">
-            <ToolCard
-                api={ctx.api}
-                sessionId={ctx.sessionId}
-                metadata={ctx.metadata}
-                disabled={ctx.disabled}
-                onDone={ctx.onRefresh}
-                block={block}
-            />
-            {block.children.length > 0 ? (
-                isTask ? (
-                    <>
-                        {taskChildren && taskChildren.pending.length > 0 ? (
-                            <div className="mt-2 pl-3">
-                                <HappyNestedBlockList blocks={taskChildren.pending} />
-                            </div>
-                        ) : null}
-                        {taskChildren && taskChildren.rest.length > 0 ? (
-                            <details className="mt-2">
-                                <summary className="cursor-pointer text-xs text-[var(--app-hint)]">
-                                    Task details ({taskChildren.rest.length})
-                                </summary>
-                                <div className="mt-2 pl-3">
-                                    <HappyNestedBlockList blocks={taskChildren.rest} />
-                                </div>
-                            </details>
-                        ) : null}
-                    </>
-                ) : (
-                    <div className="mt-2 pl-3">
-                        <HappyNestedBlockList blocks={block.children} />
-                    </div>
-                )
-            ) : null}
+            {renderToolBlock(block, ctx)}
         </div>
     )
 }

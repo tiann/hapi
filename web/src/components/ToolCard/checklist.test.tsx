@@ -133,6 +133,22 @@ describe('update_plan tool presentation', () => {
     })
 })
 
+describe('Codex tool presentation', () => {
+    it('shows CodexWaitAgent target details in presentation', () => {
+        const presentation = getToolPresentation({
+            toolName: 'CodexWaitAgent',
+            input: { targets: ['agent-1'], timeout_ms: 30000 },
+            result: undefined,
+            childrenCount: 0,
+            description: null,
+            metadata: null
+        })
+
+        expect(presentation.title).toBe('Wait for agent')
+        expect(presentation.subtitle).toContain('agent-1')
+    })
+})
+
 describe('UpdatePlanView', () => {
     it('renders checklist rows with status styling', () => {
         render(

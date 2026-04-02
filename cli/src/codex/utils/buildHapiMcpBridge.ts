@@ -43,7 +43,9 @@ export interface HapiMcpBridge {
  * used by both local and remote launchers.
  */
 export async function buildHapiMcpBridge(client: ApiSessionClient): Promise<HapiMcpBridge> {
-    const happyServer = await startHappyServer(client);
+    const happyServer = await startHappyServer(client, {
+        emitSummaryMessage: false
+    });
     const bridgeCommand = getHappyCliCommand(['mcp', '--url', happyServer.url]);
 
     return {

@@ -1,8 +1,16 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { ResolveCodexSessionFileResult } from './utils/resolveCodexSessionFile';
 
 const harness = vi.hoisted(() => ({
     launches: [] as Array<Record<string, unknown>>,
     sessionScannerCalls: [] as Array<Record<string, unknown>>,
+    resolverCalls: [] as Array<string>,
+    resolverResult: {
+        status: 'found' as const,
+        filePath: '/tmp/codex-session-resume.jsonl',
+        cwd: '/tmp/worktree',
+        timestamp: 1234567890
+    } as ResolveCodexSessionFileResult,
     scannerFailureMessage: 'No Codex session found within 120000ms for cwd c:\\workspace\\project; refusing fallback.'
 }));
 
@@ -20,6 +28,13 @@ vi.mock('./utils/buildHapiMcpBridge', () => ({
         },
         mcpServers: {}
     })
+}));
+
+vi.mock('./utils/resolveCodexSessionFile', () => ({
+    resolveCodexSessionFile: async (sessionId: string) => {
+        harness.resolverCalls.push(sessionId);
+        return harness.resolverResult;
+    }
 }));
 
 vi.mock('./utils/codexSessionScanner', () => ({
@@ -62,13 +77,18 @@ function createQueueStub() {
     };
 }
 
-function createSessionStub(permissionMode: 'default' | 'read-only' | 'safe-yolo' | 'yolo', codexArgs?: string[], path = '/tmp/worktree') {
+function createSessionStub(
+    permissionMode: 'default' | 'read-only' | 'safe-yolo' | 'yolo',
+    codexArgs?: string[],
+    path = '/tmp/worktree',
+    sessionId: string | null = null
+) {
     const sessionEvents: Array<{ type: string; message?: string }> = [];
     let localLaunchFailure: { message: string; exitReason: 'switch' | 'exit' } | null = null;
 
     return {
         session: {
-            sessionId: null,
+            sessionId,
             path,
             startedBy: 'terminal' as const,
             startingMode: 'local' as const,
@@ -99,6 +119,55 @@ describe('codexLocalLauncher', () => {
     afterEach(() => {
         harness.launches = [];
         harness.sessionScannerCalls = [];
+        harness.resolverCalls = [];
+        harness.resolverResult = {
+            status: 'found',
+            filePath: '/tmp/codex-session-resume.jsonl',
+            cwd: '/tmp/worktree',
+            timestamp: 1234567890
+        };
+    });
+
+    it('resolves the resume transcript before creating the scanner', async () => {
+        const { session } = createSessionStub('default', undefined, '/tmp/worktree', 'session-resume');
+
+        await codexLocalLauncher(session as never);
+
+        expect(harness.resolverCalls).toEqual(['session-resume']);
+        expect(harness.sessionScannerCalls).toHaveLength(1);
+        expect(harness.sessionScannerCalls[0]?.resolvedSessionFile).toEqual({
+            status: 'found',
+            filePath: '/tmp/codex-session-resume.jsonl',
+            cwd: '/tmp/worktree',
+            timestamp: 1234567890
+        });
+    });
+
+    it('uses an accurate warning when explicit resume resolution failed before launch', async () => {
+        harness.resolverResult = {
+            status: 'not_found'
+        };
+        const { session, sessionEvents } = createSessionStub('default', undefined, '/tmp/worktree', 'session-resume');
+
+        await codexLocalLauncher(session as never);
+
+        const scannerCall = harness.sessionScannerCalls[0] as { onSessionMatchFailed?: (message: string) => void } | undefined;
+        scannerCall?.onSessionMatchFailed?.('Explicit Codex session resolution failed with status not_found; refusing fallback.');
+
+        expect(harness.resolverCalls).toEqual(['session-resume']);
+        expect(sessionEvents).toContainEqual({
+            type: 'message',
+            message: 'Explicit Codex session resolution failed with status not_found; refusing fallback. Keeping local Codex running; remote transcript sync is unavailable for this launch.'
+        });
+    });
+
+    it('does not call the resolver for fresh launches without a session id', async () => {
+        const { session } = createSessionStub('default');
+
+        await codexLocalLauncher(session as never);
+
+        expect(harness.resolverCalls).toEqual([]);
+        expect(harness.sessionScannerCalls[0]?.resolvedSessionFile).toBeNull();
     });
 
     it('rebuilds approval and sandbox args from yolo mode', async () => {

@@ -5,43 +5,66 @@ import { logger } from '@/ui/logger';
 const CodexSessionEventSchema = z.object({
     timestamp: z.string().optional(),
     type: z.string(),
-    payload: z.unknown().optional()
+    payload: z.unknown().optional(),
+    hapiSidechain: z.object({
+        parentToolCallId: z.string()
+    }).optional()
 });
 
 export type CodexSessionEvent = z.infer<typeof CodexSessionEventSchema>;
+
+type CodexSidechainMeta = {
+    parentToolCallId: string;
+};
 
 export type CodexMessage = {
     type: 'message';
     message: string;
     id: string;
+    isSidechain?: true;
+    parentToolCallId?: string;
 } | {
     type: 'reasoning';
     message: string;
     id: string;
+    isSidechain?: true;
+    parentToolCallId?: string;
 } | {
     type: 'reasoning-delta';
     delta: string;
+    isSidechain?: true;
+    parentToolCallId?: string;
 } | {
     type: 'token_count';
     info: Record<string, unknown>;
     id: string;
+    isSidechain?: true;
+    parentToolCallId?: string;
 } | {
     type: 'tool-call';
     name: string;
     callId: string;
     input: unknown;
     id: string;
+    isSidechain?: true;
+    parentToolCallId?: string;
 } | {
     type: 'tool-call-result';
     callId: string;
     output: unknown;
     id: string;
+    isSidechain?: true;
+    parentToolCallId?: string;
 };
 
 export type CodexConversionResult = {
     sessionId?: string;
     message?: CodexMessage;
     userMessage?: string;
+    userMessageMeta?: {
+        isSidechain: true;
+        sidechainKey: string;
+    };
 };
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -72,6 +95,44 @@ function parseArguments(value: unknown): unknown {
     return value;
 }
 
+function getSidechainMeta(rawEvent: z.infer<typeof CodexSessionEventSchema>): CodexSidechainMeta | null {
+    return rawEvent.hapiSidechain ?? null;
+}
+
+function applySidechainMeta<T extends CodexMessage>(
+    message: T,
+    sidechainMeta: CodexSidechainMeta | null
+): T {
+    if (!sidechainMeta) {
+        return message;
+    }
+
+    return {
+        ...message,
+        isSidechain: true,
+        parentToolCallId: sidechainMeta.parentToolCallId
+    };
+}
+
+function normalizeCodexToolName(name: string): string {
+    switch (name) {
+        case 'exec_command':
+            return 'CodexBash';
+        case 'write_stdin':
+            return 'CodexWriteStdin';
+        case 'spawn_agent':
+            return 'CodexSpawnAgent';
+        case 'wait_agent':
+            return 'CodexWaitAgent';
+        case 'send_input':
+            return 'CodexSendInput';
+        case 'close_agent':
+            return 'CodexCloseAgent';
+        default:
+            return name;
+    }
+}
+
 function extractCallId(payload: Record<string, unknown>): string | null {
     const candidates = [
         'call_id',
@@ -99,6 +160,7 @@ export function convertCodexEvent(rawEvent: unknown): CodexConversionResult | nu
 
     const { type, payload } = parsed.data;
     const payloadRecord = asRecord(payload);
+    const sidechainMeta = getSidechainMeta(parsed.data);
 
     if (type === 'session_meta') {
         const sessionId = payloadRecord ? asString(payloadRecord.id) : null;
@@ -125,9 +187,16 @@ export function convertCodexEvent(rawEvent: unknown): CodexConversionResult | nu
             if (!message) {
                 return null;
             }
-            return {
+            const result: CodexConversionResult = {
                 userMessage: message
             };
+            if (sidechainMeta) {
+                result.userMessageMeta = {
+                    isSidechain: true,
+                    sidechainKey: sidechainMeta.parentToolCallId
+                };
+            }
+            return result;
         }
 
         if (eventType === 'agent_message') {
@@ -136,11 +205,11 @@ export function convertCodexEvent(rawEvent: unknown): CodexConversionResult | nu
                 return null;
             }
             return {
-                message: {
+                message: applySidechainMeta({
                     type: 'message',
                     message,
                     id: randomUUID()
-                }
+                }, sidechainMeta)
             };
         }
 
@@ -150,11 +219,11 @@ export function convertCodexEvent(rawEvent: unknown): CodexConversionResult | nu
                 return null;
             }
             return {
-                message: {
+                message: applySidechainMeta({
                     type: 'reasoning',
                     message,
                     id: randomUUID()
-                }
+                }, sidechainMeta)
             };
         }
 
@@ -164,10 +233,10 @@ export function convertCodexEvent(rawEvent: unknown): CodexConversionResult | nu
                 return null;
             }
             return {
-                message: {
+                message: applySidechainMeta({
                     type: 'reasoning-delta',
                     delta
-                }
+                }, sidechainMeta)
             };
         }
 
@@ -177,11 +246,11 @@ export function convertCodexEvent(rawEvent: unknown): CodexConversionResult | nu
                 return null;
             }
             return {
-                message: {
+                message: applySidechainMeta({
                     type: 'token_count',
                     info,
                     id: randomUUID()
-                }
+                }, sidechainMeta)
             };
         }
 
@@ -201,13 +270,13 @@ export function convertCodexEvent(rawEvent: unknown): CodexConversionResult | nu
                 return null;
             }
             return {
-                message: {
+                message: applySidechainMeta({
                     type: 'tool-call',
-                    name,
+                    name: normalizeCodexToolName(name),
                     callId,
                     input: parseArguments(payloadRecord.arguments),
                     id: randomUUID()
-                }
+                }, sidechainMeta)
             };
         }
 
@@ -217,12 +286,12 @@ export function convertCodexEvent(rawEvent: unknown): CodexConversionResult | nu
                 return null;
             }
             return {
-                message: {
+                message: applySidechainMeta({
                     type: 'tool-call-result',
                     callId,
                     output: payloadRecord.output,
                     id: randomUUID()
-                }
+                }, sidechainMeta)
             };
         }
 

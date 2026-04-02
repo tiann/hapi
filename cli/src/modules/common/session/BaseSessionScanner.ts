@@ -13,6 +13,7 @@ export type SessionFileScanResult<TEvent> = {
 
 export type SessionFileScanStats<TEvent> = {
     filePath: string;
+    entries: SessionFileScanEntry<TEvent>[];
     events: TEvent[];
     parsedCount: number;
     newCount: number;
@@ -156,6 +157,7 @@ export abstract class BaseSessionScanner<TEvent> {
             const cursor = this.getCursor(filePath);
             const { events, nextCursor } = await this.parseSessionFile(filePath, cursor);
             const newEvents: TEvent[] = [];
+            const newEntries: SessionFileScanEntry<TEvent>[] = [];
             const newKeys: string[] = [];
             for (const entry of events) {
                 const key = this.generateEventKey(entry.event, { filePath, lineIndex: entry.lineIndex });
@@ -165,9 +167,11 @@ export abstract class BaseSessionScanner<TEvent> {
                 }
                 newKeys.push(key);
                 newEvents.push(entry.event);
+                newEntries.push(entry);
             }
             await this.handleFileScan({
                 filePath,
+                entries: newEntries,
                 events: newEvents,
                 parsedCount: events.length,
                 newCount: newEvents.length,

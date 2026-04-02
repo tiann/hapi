@@ -17,6 +17,8 @@ export const TITLE_INSTRUCTION = trimIdent(`
     Prefer calling functions.hapi__change_title.
     If that exact tool name is unavailable, call an equivalent alias such as hapi__change_title, mcp__hapi__change_title, or hapi_change_title.
     If the task focus changes significantly later, call the title tool again with a better title.
+    If you are a spawned subagent, delegated agent, or child task working inside another conversation, do NOT call the title tool.
+    Never rename the parent conversation from a subagent.
 `);
 
 /**

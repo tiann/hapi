@@ -131,7 +131,9 @@ export const MessageMetaSchema = z.object({
     customSystemPrompt: z.string().nullable().optional(),
     appendSystemPrompt: z.string().nullable().optional(),
     allowedTools: z.array(z.string()).nullable().optional(),
-    disallowedTools: z.array(z.string()).nullable().optional()
+    disallowedTools: z.array(z.string()).nullable().optional(),
+    isSidechain: z.boolean().optional(),
+    sidechainKey: z.string().optional()
 })
 
 export type MessageMeta = z.infer<typeof MessageMetaSchema>

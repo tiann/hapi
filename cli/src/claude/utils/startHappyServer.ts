@@ -12,17 +12,32 @@ import { logger } from "@/ui/logger";
 import { ApiSessionClient } from "@/api/apiSession";
 import { randomUUID } from "node:crypto";
 
-export async function startHappyServer(client: ApiSessionClient) {
+export async function startHappyServer(
+    client: ApiSessionClient,
+    options?: {
+        emitSummaryMessage?: boolean;
+    }
+) {
+    const emitSummaryMessage = options?.emitSummaryMessage ?? true;
     // Handler that sends title updates via the client
     const handler = async (title: string) => {
         logger.debug('[hapiMCP] Changing title to:', title);
         try {
-            // Send title as a summary message, similar to title generator
-            client.sendClaudeSessionMessage({
-                type: 'summary',
-                summary: title,
-                leafUuid: randomUUID()
-            });
+            if (emitSummaryMessage) {
+                client.sendClaudeSessionMessage({
+                    type: 'summary',
+                    summary: title,
+                    leafUuid: randomUUID()
+                });
+            } else {
+                client.updateMetadata((metadata) => ({
+                    ...metadata,
+                    summary: {
+                        text: title,
+                        updatedAt: Date.now()
+                    }
+                }));
+            }
             
             return { success: true };
         } catch (error) {
