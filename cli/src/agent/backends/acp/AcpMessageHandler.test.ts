@@ -308,6 +308,36 @@ describe('AcpMessageHandler', () => {
         expect(messages).toEqual([{ type: 'text', text: 'hello' }]);
     });
 
+    it('does not split text buffer when suppressing allowed event mid-stream', () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message));
+
+        // text → allowed → text → flush should produce ONE merged text message
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+            content: { type: 'text', text: 'part one ' }
+        });
+
+        const allowedJson = JSON.stringify({
+            type: 'rate_limit_event',
+            rate_limit_info: { status: 'allowed', resetsAt: 1774278000 },
+        });
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+            content: { type: 'text', text: allowedJson }
+        });
+
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+            content: { type: 'text', text: 'part two' }
+        });
+
+        handler.flushText();
+
+        // Must be a single text message, not split into two
+        expect(messages).toEqual([{ type: 'text', text: 'part one part two' }]);
+    });
+
     it('allows kind fallback to replace placeholder tool name', () => {
         const messages: AgentMessage[] = [];
         const handler = new AcpMessageHandler((message) => messages.push(message));

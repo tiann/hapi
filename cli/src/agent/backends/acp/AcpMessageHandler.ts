@@ -160,10 +160,11 @@ export class AcpMessageHandler {
             if (text) {
                 const rateLimit = parseRateLimitText(text);
                 if (rateLimit) {
-                    this.flushText();
-                    if (!rateLimit.suppress) {
-                        this.onMessage(rateLimit.message);
+                    if (rateLimit.suppress) {
+                        return;
                     }
+                    this.flushText();
+                    this.onMessage(rateLimit.message);
                     return;
                 }
                 this.appendTextChunk(text);
