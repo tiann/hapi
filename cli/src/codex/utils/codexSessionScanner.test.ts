@@ -75,6 +75,131 @@ describe('codexSessionScanner', () => {
         expect(events[0].type).toBe('response_item');
     });
 
+    it('enriches child transcript events and trims the copied parent prefix', async () => {
+        const parentSessionId = 'parent-session-1';
+        const parentToolCallId = 'spawn-call-1';
+        const childSessionId = 'child-session-1';
+        const parentFile = join(sessionsDir, `codex-${parentSessionId}.jsonl`);
+        const childFile = join(sessionsDir, `codex-${childSessionId}.jsonl`);
+        const resolvedResult: ResolveCodexSessionFileResult = {
+            status: 'found',
+            filePath: parentFile,
+            cwd: '/data/github/happy/hapi',
+            timestamp: Date.parse('2025-12-22T00:00:00.000Z')
+        };
+
+        await writeFile(
+            parentFile,
+            [
+                JSON.stringify({ type: 'session_meta', payload: { id: parentSessionId } }),
+                JSON.stringify({
+                    type: 'response_item',
+                    payload: { type: 'function_call', name: 'spawn_agent', call_id: parentToolCallId, arguments: '{"message":"delegate"}' }
+                })
+            ].join('\n') + '\n'
+        );
+
+        scanner = await createCodexSessionScanner({
+            sessionId: parentSessionId,
+            resolvedSessionFile: resolvedResult,
+            onEvent: (event) => events.push(event)
+        });
+
+        await wait(200);
+        expect(events).toHaveLength(2);
+        expect(events[0].type).toBe('session_meta');
+        expect((events[0].payload as Record<string, unknown>).id).toBe(parentSessionId);
+        expect(events[1].type).toBe('response_item');
+        expect((events[1].payload as Record<string, unknown>).call_id).toBe(parentToolCallId);
+
+        await appendFile(
+            parentFile,
+            [
+                JSON.stringify({
+                    type: 'response_item',
+                    payload: {
+                        type: 'function_call_output',
+                        call_id: parentToolCallId,
+                        output: JSON.stringify({ agent_id: childSessionId, nickname: 'child' })
+                    }
+                }),
+                JSON.stringify({
+                    type: 'response_item',
+                    payload: { type: 'function_call', name: 'wait_agent', call_id: 'wait-call-1', arguments: JSON.stringify({ targets: [childSessionId], timeout_ms: 30000 }) }
+                }),
+                JSON.stringify({
+                    type: 'response_item',
+                    payload: {
+                        type: 'function_call_output',
+                        call_id: 'wait-call-1',
+                        output: { status: { [childSessionId]: { completed: 'done' } } }
+                    }
+                }),
+                JSON.stringify({
+                    type: 'event_msg',
+                    payload: { type: 'user_message', message: '<subagent_notification>child done</subagent_notification>' }
+                })
+            ].join('\n') + '\n'
+        );
+
+        await wait(2300);
+        expect(events.some((event) => event.type === 'response_item' && (event.payload as Record<string, unknown>).call_id === parentToolCallId)).toBe(true);
+        expect(events.some((event) => event.type === 'response_item' && (event.payload as Record<string, unknown>).call_id === 'wait-call-1')).toBe(true);
+        expect(events.some((event) => event.type === 'event_msg' && (event.payload as Record<string, unknown>).message === '<subagent_notification>child done</subagent_notification>')).toBe(true);
+
+        for (const event of events) {
+            expect((event as Record<string, unknown>).hapiSidechain).toBeUndefined();
+        }
+
+        await writeFile(
+            childFile,
+            [
+                JSON.stringify({ type: 'session_meta', payload: { id: childSessionId } }),
+                JSON.stringify({ type: 'event_msg', payload: { type: 'user_message', message: 'copied parent prompt' } })
+            ].join('\n') + '\n'
+        );
+
+        await wait(2300);
+
+        expect(events.find((event) => (event.payload as Record<string, unknown>)?.message === 'copied parent prompt')).toBeUndefined();
+
+        await appendFile(
+            childFile,
+            [
+                JSON.stringify({
+                    type: 'response_item',
+                    payload: {
+                        type: 'function_call_output',
+                        call_id: 'bootstrap-call-1',
+                        output: 'You are the newly spawned agent. The prior conversation history was forked from your parent agent. Treat the next user message as your new task, and use the forked history only as background context.'
+                    }
+                }),
+                JSON.stringify({ type: 'event_msg', payload: { type: 'task_started', turn_id: 'child-turn-1' } }),
+                JSON.stringify({ type: 'event_msg', payload: { type: 'user_message', message: 'child prompt' } }),
+                JSON.stringify({ type: 'event_msg', payload: { type: 'agent_message', message: 'child answer' } })
+            ].join('\n') + '\n'
+        );
+
+        await wait(2300);
+
+        const copiedPrefixEvent = events.find((event) => (event.payload as Record<string, unknown>)?.message === 'copied parent prompt');
+        expect(copiedPrefixEvent).toBeUndefined();
+
+        const childUserEvent = events.find((event) => (event.payload as Record<string, unknown>)?.message === 'child prompt');
+        expect(childUserEvent).toBeDefined();
+        expect((childUserEvent as Record<string, unknown>).hapiSidechain).toEqual({ parentToolCallId });
+
+        const childAnswerEvent = events.find((event) => (event.payload as Record<string, unknown>)?.message === 'child answer');
+        expect(childAnswerEvent).toBeDefined();
+        expect((childAnswerEvent as Record<string, unknown>).hapiSidechain).toEqual({ parentToolCallId });
+
+        const childSessionMetaEvent = events.find((event) => event.type === 'session_meta' && (event.payload as Record<string, unknown>).id === childSessionId);
+        expect(childSessionMetaEvent).toBeUndefined();
+
+        const parentWaitEvent = events.find((event) => event.type === 'response_item' && (event.payload as Record<string, unknown>).call_id === 'wait-call-1');
+        expect((parentWaitEvent as Record<string, unknown>).hapiSidechain).toBeUndefined();
+    }, 10000);
+
     it('limits session scan to dates within the start window', async () => {
         const referenceTimestampMs = Date.parse('2025-12-22T00:00:00.000Z');
         const windowMs = 2 * 60 * 1000;

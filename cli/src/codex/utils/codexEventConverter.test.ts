@@ -120,4 +120,100 @@ describe('convertCodexEvent', () => {
             output: { ok: true }
         });
     });
+
+    it('preserves sidechain metadata on user and agent/tool messages', () => {
+        const userResult = convertCodexEvent({
+            type: 'event_msg',
+            payload: {
+                type: 'user_message',
+                message: 'child prompt'
+            },
+            hapiSidechain: {
+                parentToolCallId: 'spawn-call-1'
+            }
+        });
+
+        expect(userResult).toEqual({
+            userMessage: 'child prompt',
+            userMessageMeta: {
+                isSidechain: true,
+                sidechainKey: 'spawn-call-1'
+            }
+        });
+
+        const agentResult = convertCodexEvent({
+            type: 'event_msg',
+            payload: {
+                type: 'agent_message',
+                message: 'child answer'
+            },
+            hapiSidechain: {
+                parentToolCallId: 'spawn-call-1'
+            }
+        });
+
+        expect(agentResult?.message).toMatchObject({
+            type: 'message',
+            message: 'child answer',
+            isSidechain: true,
+            parentToolCallId: 'spawn-call-1'
+        });
+
+        const reasoningResult = convertCodexEvent({
+            type: 'event_msg',
+            payload: {
+                type: 'agent_reasoning',
+                text: 'thinking'
+            },
+            hapiSidechain: {
+                parentToolCallId: 'spawn-call-1'
+            }
+        });
+
+        expect(reasoningResult?.message).toMatchObject({
+            type: 'reasoning',
+            message: 'thinking',
+            isSidechain: true,
+            parentToolCallId: 'spawn-call-1'
+        });
+
+        const tokenCountResult = convertCodexEvent({
+            type: 'event_msg',
+            payload: {
+                type: 'token_count',
+                info: { input_tokens: 1 }
+            },
+            hapiSidechain: {
+                parentToolCallId: 'spawn-call-1'
+            }
+        });
+
+        expect(tokenCountResult?.message).toMatchObject({
+            type: 'token_count',
+            info: { input_tokens: 1 },
+            isSidechain: true,
+            parentToolCallId: 'spawn-call-1'
+        });
+
+        const toolResult = convertCodexEvent({
+            type: 'response_item',
+            payload: {
+                type: 'function_call',
+                name: 'spawn_agent',
+                call_id: 'call-1',
+                arguments: '{}'
+            },
+            hapiSidechain: {
+                parentToolCallId: 'spawn-call-1'
+            }
+        });
+
+        expect(toolResult?.message).toMatchObject({
+            type: 'tool-call',
+            name: 'CodexSpawnAgent',
+            callId: 'call-1',
+            isSidechain: true,
+            parentToolCallId: 'spawn-call-1'
+        });
+    });
 });

@@ -99,6 +99,13 @@ class CodexSessionScannerImpl extends BaseSessionScanner<CodexSessionEvent> {
     private readonly pendingEventsByFile = new Map<string, PendingEvents>();
     private readonly sessionMetaParsed = new Set<string>();
     private readonly fileEpochByPath = new Map<string, number>();
+    private readonly toolNameByCallId = new Map<string, string>();
+    private readonly linkedChildFilePaths = new Set<string>();
+    private readonly linkedChildParentCallIdByFile = new Map<string, string>();
+    private readonly childTranscriptStartLineByFile = new Map<string, number>();
+    private readonly childBootstrapSeenByFile = new Set<string>();
+    private readonly childFallbackTaskStartedLineByFile = new Map<string, number>();
+    private readonly pendingChildSessionIdToParentCallId = new Map<string, string>();
     private readonly targetCwd: string | null;
     private readonly referenceTimestampMs: number;
     private readonly sessionStartWindowMs: number;
@@ -156,7 +163,8 @@ class CodexSessionScannerImpl extends BaseSessionScanner<CodexSessionEvent> {
 
     protected shouldWatchFile(filePath: string): boolean {
         if (this.explicitResolvedFilePath) {
-            return normalizePath(filePath) === this.explicitResolvedFilePath;
+            const normalizedFilePath = normalizePath(filePath);
+            return normalizedFilePath === this.explicitResolvedFilePath || this.linkedChildFilePaths.has(normalizedFilePath);
         }
         if (!this.activeSessionId) {
             if (!this.targetCwd) {
@@ -219,6 +227,10 @@ class CodexSessionScannerImpl extends BaseSessionScanner<CodexSessionEvent> {
 
         if (this.explicitResolvedFilePath) {
             const emittedForFile = this.emitEvents(filePath, stats.entries, fileSessionId);
+            if (normalizePath(filePath) === this.explicitResolvedFilePath) {
+                await this.linkChildTranscriptsFromParentEntries(stats.entries);
+                await this.linkPendingChildTranscripts();
+            }
             if (emittedForFile > 0) {
                 logger.debug(`[CODEX_SESSION_SCANNER] Emitted ${emittedForFile} new events from ${filePath}`);
             }
@@ -303,7 +315,8 @@ class CodexSessionScannerImpl extends BaseSessionScanner<CodexSessionEvent> {
 
     private shouldSkipFile(filePath: string): boolean {
         if (this.explicitResolvedFilePath) {
-            return normalizePath(filePath) !== this.explicitResolvedFilePath;
+            const normalizedFilePath = normalizePath(filePath);
+            return normalizedFilePath !== this.explicitResolvedFilePath && !this.linkedChildFilePaths.has(normalizedFilePath);
         }
         if (!this.activeSessionId) {
             return false;
@@ -366,7 +379,7 @@ class CodexSessionScannerImpl extends BaseSessionScanner<CodexSessionEvent> {
 
     private async getSessionFilesForScan(): Promise<string[]> {
         if (this.explicitResolvedFilePath) {
-            return [this.explicitResolvedFilePath];
+            return [this.explicitResolvedFilePath, ...this.linkedChildFilePaths];
         }
         return this.listSessionFiles(this.sessionsRoot);
     }
@@ -552,7 +565,18 @@ class CodexSessionScannerImpl extends BaseSessionScanner<CodexSessionEvent> {
     ): number {
         let emittedForFile = 0;
         const eventOwnerByLine = this.eventOwnerSessionIdByFile.get(filePath);
+        const normalizedFilePath = normalizePath(filePath);
+        const linkedParentToolCallId = this.linkedChildParentCallIdByFile.get(normalizedFilePath) ?? null;
+        const childStartLine = linkedParentToolCallId
+            ? this.updateChildTranscriptBoundary(normalizedFilePath, entries)
+            : null;
+        if (linkedParentToolCallId && childStartLine === null) {
+            return 0;
+        }
         for (const entry of entries) {
+            if (childStartLine !== null && entry.lineIndex !== undefined && entry.lineIndex < childStartLine) {
+                continue;
+            }
             const event = entry.event;
             const payload = asRecord(event.payload);
             const payloadSessionId = payload ? asString(payload.id) : null;
@@ -561,14 +585,169 @@ class CodexSessionScannerImpl extends BaseSessionScanner<CodexSessionEvent> {
                 : null;
             const eventSessionId = payloadSessionId ?? lineOwner ?? fileSessionId ?? null;
 
-            if (this.activeSessionId && eventSessionId && eventSessionId !== this.activeSessionId) {
+            if (this.activeSessionId && eventSessionId && eventSessionId !== this.activeSessionId && !linkedParentToolCallId) {
                 continue;
             }
 
-            this.onEvent(event);
+            const emittedEvent = linkedParentToolCallId
+                ? {
+                    ...event,
+                    hapiSidechain: {
+                        parentToolCallId: linkedParentToolCallId
+                    }
+                }
+                : event;
+            this.onEvent(emittedEvent);
             emittedForFile += 1;
         }
         return emittedForFile;
+    }
+
+    private async linkChildTranscriptsFromParentEntries(entries: SessionFileScanEntry<CodexSessionEvent>[]): Promise<void> {
+        for (const entry of entries) {
+            const event = entry.event;
+            if (event.type !== 'response_item') {
+                continue;
+            }
+
+            const payload = asRecord(event.payload);
+            if (!payload) {
+                continue;
+            }
+
+            const itemType = asString(payload.type);
+            const callId = extractCallId(payload);
+            if (!callId) {
+                continue;
+            }
+
+            if (itemType === 'function_call') {
+                const toolName = asString(payload.name);
+                if (toolName) {
+                    this.toolNameByCallId.set(callId, toolName);
+                }
+                continue;
+            }
+
+            if (itemType !== 'function_call_output' || this.toolNameByCallId.get(callId) !== 'spawn_agent') {
+                continue;
+            }
+
+            const childSessionId = extractAgentIdFromOutput(payload.output);
+            if (!childSessionId) {
+                continue;
+            }
+
+            this.pendingChildSessionIdToParentCallId.set(childSessionId, callId);
+        }
+    }
+
+    private async linkPendingChildTranscripts(): Promise<void> {
+        if (this.pendingChildSessionIdToParentCallId.size === 0) {
+            return;
+        }
+
+        for (const [childSessionId, parentToolCallId] of [...this.pendingChildSessionIdToParentCallId.entries()]) {
+            const linked = await this.linkChildTranscript(childSessionId, parentToolCallId);
+            if (linked) {
+                this.pendingChildSessionIdToParentCallId.delete(childSessionId);
+            }
+        }
+    }
+
+    private async linkChildTranscript(childSessionId: string, parentToolCallId: string): Promise<boolean> {
+        const childFilePath = await this.resolveChildTranscriptFilePath(childSessionId);
+        if (!childFilePath) {
+            return false;
+        }
+
+        const normalizedChildFilePath = normalizePath(childFilePath);
+        if (this.linkedChildFilePaths.has(normalizedChildFilePath)) {
+            return true;
+        }
+
+        this.linkedChildFilePaths.add(normalizedChildFilePath);
+        this.linkedChildParentCallIdByFile.set(normalizedChildFilePath, parentToolCallId);
+        this.ensureWatcher(childFilePath);
+
+        const { events, nextCursor } = await this.readSessionFile(childFilePath, 0);
+        const startLine = this.updateChildTranscriptBoundary(normalizedChildFilePath, events);
+        if (startLine === null) {
+            this.setCursor(childFilePath, nextCursor);
+            return true;
+        }
+
+        this.childTranscriptStartLineByFile.set(normalizedChildFilePath, startLine);
+        const childEntries = events.filter((entry) => entry.lineIndex !== undefined && entry.lineIndex >= startLine);
+        const processedKeys = childEntries.map((entry) => this.generateEventKey(entry.event, {
+            filePath: childFilePath,
+            lineIndex: entry.lineIndex
+        }));
+
+        this.emitEvents(childFilePath, childEntries, childSessionId);
+        this.setCursor(childFilePath, nextCursor);
+        this.seedProcessedKeys(processedKeys);
+        return true;
+    }
+
+    private updateChildTranscriptBoundary(
+        normalizedFilePath: string,
+        entries: SessionFileScanEntry<CodexSessionEvent>[]
+    ): number | null {
+        const existingStartLine = this.childTranscriptStartLineByFile.get(normalizedFilePath);
+        if (existingStartLine !== undefined) {
+            return existingStartLine;
+        }
+
+        let sawBootstrapMarker = this.childBootstrapSeenByFile.has(normalizedFilePath);
+        let fallbackTaskStartedLine = this.childFallbackTaskStartedLineByFile.get(normalizedFilePath) ?? null;
+
+        for (const entry of entries) {
+            const payload = asRecord(entry.event.payload);
+            if (!payload || entry.lineIndex === undefined) {
+                continue;
+            }
+
+            if (entry.event.type === 'response_item' && asString(payload.type) === 'function_call_output') {
+                if (stringifyOutput(payload.output).startsWith('You are the newly spawned agent.')) {
+                    sawBootstrapMarker = true;
+                    this.childBootstrapSeenByFile.add(normalizedFilePath);
+                }
+                continue;
+            }
+
+            if (!sawBootstrapMarker) {
+                continue;
+            }
+
+            if (
+                fallbackTaskStartedLine === null
+                && entry.event.type === 'event_msg'
+                && asString(payload.type) === 'task_started'
+            ) {
+                fallbackTaskStartedLine = entry.lineIndex;
+                this.childFallbackTaskStartedLineByFile.set(normalizedFilePath, entry.lineIndex);
+            }
+
+            if (entry.event.type === 'event_msg' && asString(payload.type) === 'user_message') {
+                this.childTranscriptStartLineByFile.set(normalizedFilePath, entry.lineIndex);
+                this.childFallbackTaskStartedLineByFile.delete(normalizedFilePath);
+                return entry.lineIndex;
+            }
+        }
+
+        return null;
+    }
+
+    private async resolveChildTranscriptFilePath(childSessionId: string): Promise<string | null> {
+        const files = await this.listSessionFiles(this.sessionsRoot);
+        const suffix = `-${childSessionId}.jsonl`;
+        const matches = files.filter((filePath) => filePath.endsWith(suffix));
+        if (matches.length === 0) {
+            return null;
+        }
+        matches.sort((left, right) => left.localeCompare(right));
+        return matches[0] ?? null;
     }
 
     private flushPendingEventsForSession(sessionId: string): void {
@@ -626,6 +805,54 @@ function parseTimestamp(value: unknown): number | null {
         return Number.isNaN(parsed) ? null : parsed;
     }
     return null;
+}
+
+function extractCallId(payload: Record<string, unknown>): string | null {
+    const candidates = ['call_id', 'callId', 'tool_call_id', 'toolCallId', 'id'];
+    for (const key of candidates) {
+        const value = payload[key];
+        if (typeof value === 'string' && value.length > 0) {
+            return value;
+        }
+    }
+    return null;
+}
+
+function extractAgentIdFromOutput(output: unknown): string | null {
+    if (output && typeof output === 'object') {
+        return asString((output as Record<string, unknown>).agent_id);
+    }
+
+    if (typeof output === 'string') {
+        const trimmed = output.trim();
+        if (!trimmed) {
+            return null;
+        }
+        try {
+            const parsed = JSON.parse(trimmed) as unknown;
+            if (parsed && typeof parsed === 'object') {
+                return asString((parsed as Record<string, unknown>).agent_id);
+            }
+        } catch {
+            return null;
+        }
+    }
+
+    return null;
+}
+
+function stringifyOutput(output: unknown): string {
+    if (typeof output === 'string') {
+        return output;
+    }
+    if (output === null || output === undefined) {
+        return '';
+    }
+    try {
+        return JSON.stringify(output);
+    } catch {
+        return String(output);
+    }
 }
 
 function normalizePath(value: string): string {
