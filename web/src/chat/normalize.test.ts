@@ -67,7 +67,6 @@ describe('normalizeDecryptedMessage', () => {
         expect(normalizeDecryptedMessage(message)?.sidechainKey).toBeUndefined()
     })
 
-<<<<<<< HEAD
     it('keeps Codex payloads root-level when parentToolCallId is present without isSidechain', () => {
         const message = makeMessage({
             role: 'agent',
@@ -91,9 +90,6 @@ describe('normalizeDecryptedMessage', () => {
         })
         expect(normalizeDecryptedMessage(message)?.sidechainKey).toBeUndefined()
     })
-
-=======
->>>>>>> b5eb089 (Add Codex sidechain normalization)
     it('preserves user sidechain metadata from record meta', () => {
         const message = makeMessage({
             role: 'user',

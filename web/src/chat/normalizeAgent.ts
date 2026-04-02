@@ -315,11 +315,7 @@ export function normalizeAgentRecord(
         const data = isObject(content.data) ? content.data : null
         if (!data || typeof data.type !== 'string') return null
         const isSidechain = Boolean(data.isSidechain)
-<<<<<<< HEAD
         const sidechainKey = isSidechain ? asString(data.parentToolCallId) ?? undefined : undefined
-=======
-        const sidechainKey = asString(data.parentToolCallId) ?? undefined
->>>>>>> b5eb089 (Add Codex sidechain normalization)
 
         if (data.type === 'message' && typeof data.message === 'string') {
             return {
