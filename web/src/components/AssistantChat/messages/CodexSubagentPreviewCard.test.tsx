@@ -129,7 +129,7 @@ describe('CodexSubagentPreviewCard', () => {
         fireEvent.click(screen.getByRole('button', { name: /Subagent conversation — Pauli · agent-1/i }))
 
         expect(screen.getByRole('link', { name: 'repo' })).toHaveAttribute('href', 'https://github.com/example/repo')
-        expect(screen.getByRole('button', { name: 'Close' })).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: 'Close dialog' })).toBeInTheDocument()
     })
 
     it('renders HappyToolMessage as the lifecycle card for CodexSpawnAgent', () => {
@@ -156,19 +156,6 @@ describe('CodexSubagentPreviewCard', () => {
 
         expect(screen.queryByText('Search GitHub trending repositories for React state tooling')).not.toBeInTheDocument()
         expect(screen.getByRole('link', { name: 'repo' })).toBeInTheDocument()
-    })
-
-    it('closes the dialog via the explicit close button', () => {
-        const block = makeSpawnBlock()
-
-        renderWithProviders(<CodexSubagentPreviewCard block={block} />)
-
-        fireEvent.click(screen.getByRole('button', { name: /Subagent conversation — Pauli · agent-1/i }))
-        expect(screen.getByRole('link', { name: 'repo' })).toBeInTheDocument()
-
-        fireEvent.click(screen.getByRole('button', { name: 'Close' }))
-
-        expect(screen.queryByRole('link', { name: 'repo' })).not.toBeInTheDocument()
     })
 
     it('closes the dialog via the top close icon button', () => {

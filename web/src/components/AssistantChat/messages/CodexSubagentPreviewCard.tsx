@@ -8,7 +8,6 @@ import { getEventPresentation } from '@/chat/presentation'
 import { MarkdownRenderer } from '@/components/MarkdownRenderer'
 import { ToolCard } from '@/components/ToolCard/ToolCard'
 import { useHappyChatContext } from '@/components/AssistantChat/context'
-import { Button } from '@/components/ui/button'
 import { getInputStringAny, truncate } from '@/lib/toolInputUtils'
 
 function getSpawnSummary(block: ToolCallBlock): {
@@ -347,13 +346,6 @@ export function CodexSubagentPreviewCard(props: { block: ToolCallBlock }) {
                                 ) : null}
                             </div>
                             <SubagentBlockList blocks={dialogBlocks} />
-                        </div>
-                    </div>
-                    <div className="sticky bottom-0 border-t border-[var(--app-border)] bg-[var(--app-secondary-bg)]/95 px-4 py-3">
-                        <div className="flex justify-end">
-                            <Button type="button" variant="outline" onClick={() => setOpen(false)}>
-                                Close
-                            </Button>
                         </div>
                     </div>
                 </div>
