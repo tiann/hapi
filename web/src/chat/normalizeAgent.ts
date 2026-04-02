@@ -314,6 +314,8 @@ export function normalizeAgentRecord(
     if (content.type === AGENT_MESSAGE_PAYLOAD_TYPE) {
         const data = isObject(content.data) ? content.data : null
         if (!data || typeof data.type !== 'string') return null
+        const isSidechain = Boolean(data.isSidechain)
+        const sidechainKey = asString(data.parentToolCallId) ?? undefined
 
         if (data.type === 'message' && typeof data.message === 'string') {
             return {
@@ -321,7 +323,8 @@ export function normalizeAgentRecord(
                 localId,
                 createdAt,
                 role: 'agent',
-                isSidechain: false,
+                isSidechain,
+                ...(sidechainKey ? { sidechainKey } : {}),
                 content: [{ type: 'text', text: data.message, uuid: messageId, parentUUID: null }],
                 meta
             }
@@ -333,7 +336,8 @@ export function normalizeAgentRecord(
                 localId,
                 createdAt,
                 role: 'agent',
-                isSidechain: false,
+                isSidechain,
+                ...(sidechainKey ? { sidechainKey } : {}),
                 content: [{ type: 'reasoning', text: data.message, uuid: messageId, parentUUID: null }],
                 meta
             }
@@ -346,7 +350,8 @@ export function normalizeAgentRecord(
                 localId,
                 createdAt,
                 role: 'agent',
-                isSidechain: false,
+                isSidechain,
+                ...(sidechainKey ? { sidechainKey } : {}),
                 content: [{
                     type: 'tool-call',
                     id: data.callId,
@@ -367,7 +372,8 @@ export function normalizeAgentRecord(
                 localId,
                 createdAt,
                 role: 'agent',
-                isSidechain: false,
+                isSidechain,
+                ...(sidechainKey ? { sidechainKey } : {}),
                 content: [{
                     type: 'tool-result',
                     tool_use_id: data.callId,

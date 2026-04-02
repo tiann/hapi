@@ -2,6 +2,15 @@ import type { NormalizedMessage } from '@/chat/types'
 import type { AttachmentMetadata } from '@/types/api'
 import { isObject } from '@hapi/protocol'
 
+function normalizeSidechainMeta(meta: unknown): Pick<NormalizedMessage, 'isSidechain' | 'sidechainKey'> | null {
+    if (!isObject(meta)) return null
+    if (meta.isSidechain !== true || typeof meta.sidechainKey !== 'string') return null
+    return {
+        isSidechain: true,
+        sidechainKey: meta.sidechainKey
+    }
+}
+
 function parseAttachments(raw: unknown): AttachmentMetadata[] | undefined {
     if (!Array.isArray(raw)) return undefined
     const attachments: AttachmentMetadata[] = []
@@ -35,26 +44,30 @@ export function normalizeUserRecord(
     meta?: unknown
 ): NormalizedMessage | null {
     if (typeof content === 'string') {
+        const sidechain = normalizeSidechainMeta(meta)
         return {
             id: messageId,
             localId,
             createdAt,
             role: 'user',
             content: { type: 'text', text: content },
-            isSidechain: false,
+            isSidechain: sidechain?.isSidechain ?? false,
+            ...(sidechain ? { sidechainKey: sidechain.sidechainKey } : {}),
             meta
         }
     }
 
     if (isObject(content) && content.type === 'text' && typeof content.text === 'string') {
         const attachments = parseAttachments(content.attachments)
+        const sidechain = normalizeSidechainMeta(meta)
         return {
             id: messageId,
             localId,
             createdAt,
             role: 'user',
             content: { type: 'text', text: content.text, attachments },
-            isSidechain: false,
+            isSidechain: sidechain?.isSidechain ?? false,
+            ...(sidechain ? { sidechainKey: sidechain.sidechainKey } : {}),
             meta
         }
     }
