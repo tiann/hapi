@@ -1,5 +1,50 @@
 import { describe, expect, it } from 'vitest'
-import { extractTextFromResult, getMutationResultRenderMode, getToolResultViewComponent } from '@/components/ToolCard/views/_results'
+import { render, screen } from '@testing-library/react'
+import type { ToolCallBlock } from '@/chat/types'
+import { extractTextFromResult, getMutationResultRenderMode, getToolResultViewComponent, toolResultViewRegistry } from '@/components/ToolCard/views/_results'
+import { I18nProvider } from '@/lib/i18n-context'
+
+function makeToolBlock(name: string, result: unknown, input: unknown = {}): ToolCallBlock {
+    return {
+        kind: 'tool-call',
+        id: `${name}-block`,
+        localId: null,
+        createdAt: 0,
+        tool: {
+            id: `${name}-tool`,
+            name,
+            state: 'completed',
+            input,
+            createdAt: 0,
+            startedAt: 0,
+            completedAt: 0,
+            description: null,
+            result
+        },
+        children: []
+    }
+}
+
+function renderWithProviders(ui: React.ReactElement) {
+    if (typeof window !== 'undefined' && !window.matchMedia) {
+        window.matchMedia = () => ({
+            matches: false,
+            media: '',
+            onchange: null,
+            addListener: () => {},
+            removeListener: () => {},
+            addEventListener: () => {},
+            removeEventListener: () => {},
+            dispatchEvent: () => false
+        })
+    }
+
+    return render(
+        <I18nProvider>
+            {ui}
+        </I18nProvider>
+    )
+}
 
 describe('extractTextFromResult', () => {
     it('returns string directly', () => {
@@ -95,5 +140,57 @@ describe('getToolResultViewComponent registry', () => {
         const unknownView = getToolResultViewComponent('SomeUnknownTool')
         // Both should fall back to GenericResultView
         expect(mcpView).toBe(unknownView)
+    })
+
+    it('routes Codex aliases to dedicated result views', () => {
+        expect(toolResultViewRegistry.CodexBash).toBeDefined()
+        expect(toolResultViewRegistry.CodexWriteStdin).toBeDefined()
+        expect(toolResultViewRegistry.CodexSpawnAgent).toBeDefined()
+        expect(toolResultViewRegistry.CodexWaitAgent).toBeDefined()
+        expect(toolResultViewRegistry.CodexSendInput).toBeDefined()
+        expect(toolResultViewRegistry.CodexCloseAgent).toBeDefined()
+    })
+
+    it('routes Claude parity tool names to expected result views', () => {
+        expect(getToolResultViewComponent('BashOutput')).toBe(getToolResultViewComponent('Bash'))
+        expect(getToolResultViewComponent('KillBash')).toBe(getToolResultViewComponent('SomeUnknownTool'))
+        expect(getToolResultViewComponent('TodoRead')).toBe(getToolResultViewComponent('TodoWrite'))
+        expect(getToolResultViewComponent('EnterWorktree')).toBe(getToolResultViewComponent('SomeUnknownTool'))
+    })
+})
+
+describe('Codex alias result rendering', () => {
+    it('renders CodexBash object stdout and stderr output', () => {
+        const View = getToolResultViewComponent('CodexBash')
+
+        renderWithProviders(
+            <View
+                block={makeToolBlock('CodexBash', {
+                    stdout: 'command ok',
+                    stderr: 'warning output'
+                })}
+                metadata={null}
+            />
+        )
+
+        expect(screen.getByText('command ok')).toBeInTheDocument()
+        expect(screen.getByText('warning output')).toBeInTheDocument()
+    })
+
+    it('renders TodoRead checklist entries through parity routing', () => {
+        const View = getToolResultViewComponent('TodoRead')
+
+        renderWithProviders(
+            <View
+                block={makeToolBlock('TodoRead', {
+                    newTodos: [
+                        { id: 'todo-1', content: 'Ship web parity', status: 'completed' }
+                    ]
+                })}
+                metadata={null}
+            />
+        )
+
+        expect(screen.getByText(/Ship web parity/)).toBeInTheDocument()
     })
 })
