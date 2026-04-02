@@ -1,6 +1,7 @@
 import type { AgentMessage, PlanItem } from '@/agent/types';
 import { asString, isObject } from '@hapi/protocol';
 import { deriveToolNameWithSource, isPlaceholderToolName } from '@/agent/utils';
+import { parseRateLimitText } from '@/agent/rateLimitParser';
 import { ACP_SESSION_UPDATE_TYPES } from './constants';
 
 function normalizeStatus(status: unknown): 'pending' | 'in_progress' | 'completed' | 'failed' {
@@ -108,8 +109,16 @@ export class AcpMessageHandler {
         if (!this.bufferedText) {
             return;
         }
-        this.onMessage({ type: 'text', text: this.bufferedText });
+        const text = this.bufferedText;
         this.bufferedText = '';
+        const rateLimitResult = parseRateLimitText(text);
+        if (rateLimitResult) {
+            if (!rateLimitResult.suppress) {
+                this.onMessage(rateLimitResult.message);
+            }
+            return;
+        }
+        this.onMessage({ type: 'text', text });
     }
 
     private appendTextChunk(text: string): void {
