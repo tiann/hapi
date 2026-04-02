@@ -107,6 +107,11 @@ export function annotateCodexSidechains(messages: NormalizedMessage[]): Normaliz
     const result: NormalizedMessage[] = []
 
     for (const message of messages) {
+        if (message.isSidechain === true && typeof message.sidechainKey === 'string' && message.sidechainKey.length > 0) {
+            result.push({ ...message })
+            continue
+        }
+
         let hasCodexSpawnToolCall = false
         for (const toolCall of getToolCallBlocks(message)) {
             if (toolCall.name === 'CodexSpawnAgent' && validSpawnToolUseIds.has(toolCall.id)) {

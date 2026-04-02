@@ -206,4 +206,40 @@ describe('annotateCodexSidechains', () => {
         expect(result[2]).toMatchObject({ isSidechain: false })
         expect(result[3]).toMatchObject({ isSidechain: false })
     })
+
+    it('preserves explicit sidechain keys for parallel live child streams', () => {
+        const messages: NormalizedMessage[] = [
+            agentToolCall('spawn-1', 'CodexSpawnAgent', { message: 'First child' }, 1),
+            agentToolResult('spawn-1', { agent_id: 'agent-1' }, 2),
+            agentToolCall('spawn-2', 'CodexSpawnAgent', { message: 'Second child' }, 3),
+            agentToolResult('spawn-2', { agent_id: 'agent-2' }, 4),
+            {
+                ...userText('child-1-user', 'first child prompt', 5),
+                isSidechain: true,
+                sidechainKey: 'spawn-1'
+            },
+            {
+                ...userText('child-2-user', 'second child prompt', 6),
+                isSidechain: true,
+                sidechainKey: 'spawn-2'
+            },
+            {
+                ...agentText('child-1-agent', 'first child answer', 7),
+                isSidechain: true,
+                sidechainKey: 'spawn-1'
+            },
+            {
+                ...agentText('child-2-agent', 'second child answer', 8),
+                isSidechain: true,
+                sidechainKey: 'spawn-2'
+            }
+        ]
+
+        const result = annotateCodexSidechains(messages)
+
+        expect(result[4]).toMatchObject({ isSidechain: true, sidechainKey: 'spawn-1' })
+        expect(result[5]).toMatchObject({ isSidechain: true, sidechainKey: 'spawn-2' })
+        expect(result[6]).toMatchObject({ isSidechain: true, sidechainKey: 'spawn-1' })
+        expect(result[7]).toMatchObject({ isSidechain: true, sidechainKey: 'spawn-2' })
+    })
 })
