@@ -1,0 +1,185 @@
+import type { ReactNode } from 'react'
+import type { ToolCallBlock } from '@/chat/types'
+import { isObject } from '@hapi/protocol'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
+import { CliOutputBlock } from '@/components/CliOutputBlock'
+import { getEventPresentation } from '@/chat/presentation'
+import { ToolCard } from '@/components/ToolCard/ToolCard'
+import { useHappyChatContext } from '@/components/AssistantChat/context'
+import { getInputStringAny, truncate } from '@/lib/toolInputUtils'
+
+function getSpawnSummary(block: ToolCallBlock): {
+    title: string
+    subtitle: string | null
+    detail: string
+    prompt: string | null
+} {
+    const input = isObject(block.tool.input) ? block.tool.input : null
+    const result = isObject(block.tool.result) ? block.tool.result : null
+
+    const nickname = result && typeof result.nickname === 'string' && result.nickname.length > 0
+        ? result.nickname
+        : getInputStringAny(input, ['nickname', 'name', 'agent_name'])
+    const agentId = result && typeof result.agent_id === 'string' && result.agent_id.length > 0
+        ? result.agent_id
+        : null
+    const prompt = getInputStringAny(input, ['message', 'messagePreview', 'prompt', 'description'])
+
+    const subtitleParts = [nickname, agentId].filter((part): part is string => Boolean(part && part.length > 0))
+    const subtitle = subtitleParts.length > 0 ? subtitleParts.join(' · ') : null
+    const countLabel = `${block.children.length} nested block${block.children.length === 1 ? '' : 's'}`
+
+    return {
+        title: 'Subagent conversation',
+        subtitle,
+        detail: countLabel,
+        prompt: prompt ? truncate(prompt, 120) : null
+    }
+}
+
+function OpenIcon() {
+    return (
+        <svg className="h-4 w-4" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path d="M6 3l5 5-5 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+    )
+}
+
+function SubagentBlockList(props: { blocks: ToolCallBlock['children'] }) {
+    const ctx = useHappyChatContext()
+
+    return (
+        <div className="flex flex-col gap-3">
+            {props.blocks.map((block) => {
+                if (block.kind === 'user-text') {
+                    return (
+                        <div key={`user:${block.id}`} className="w-fit max-w-[92%] ml-auto rounded-xl bg-[var(--app-secondary-bg)] px-3 py-2 text-[var(--app-fg)] shadow-sm">
+                            <div className="whitespace-pre-wrap break-words">{block.text}</div>
+                        </div>
+                    )
+                }
+
+                if (block.kind === 'agent-text' || block.kind === 'agent-reasoning') {
+                    return (
+                        <div key={`${block.kind}:${block.id}`} className="px-1 whitespace-pre-wrap break-words">
+                            {block.text}
+                        </div>
+                    )
+                }
+
+                if (block.kind === 'cli-output') {
+                    const alignClass = block.source === 'user' ? 'ml-auto w-full max-w-[92%]' : ''
+                    return (
+                        <div key={`cli:${block.id}`} className="px-1 min-w-0 max-w-full overflow-x-hidden">
+                            <div className={alignClass}>
+                                <CliOutputBlock text={block.text} />
+                            </div>
+                        </div>
+                    )
+                }
+
+                if (block.kind === 'agent-event') {
+                    const presentation = getEventPresentation(block.event)
+                    return (
+                        <div key={`event:${block.id}`} className="py-1">
+                            <div className="mx-auto w-fit max-w-[92%] px-2 text-center text-xs text-[var(--app-hint)] opacity-80">
+                                <span className="inline-flex items-center gap-1">
+                                    {presentation.icon ? <span aria-hidden="true">{presentation.icon}</span> : null}
+                                    <span>{presentation.text}</span>
+                                </span>
+                            </div>
+                        </div>
+                    )
+                }
+
+                if (block.kind === 'tool-call') {
+                    return (
+                        <div key={`tool:${block.id}`} className="py-1">
+                            <ToolCard
+                                api={ctx.api}
+                                sessionId={ctx.sessionId}
+                                metadata={ctx.metadata}
+                                disabled={ctx.disabled}
+                                onDone={ctx.onRefresh}
+                                block={block}
+                            />
+                            {block.children.length > 0 ? (
+                                <div className="mt-2 pl-3">
+                                    <SubagentBlockList blocks={block.children} />
+                                </div>
+                            ) : null}
+                        </div>
+                    )
+                }
+
+                return null
+            })}
+        </div>
+    )
+}
+
+export function CodexSubagentPreviewCard(props: { block: ToolCallBlock }) {
+    const summary = getSpawnSummary(props.block)
+    const dialogTitle = summary.subtitle ? `${summary.title} — ${summary.subtitle}` : summary.title
+
+    return (
+        <Dialog>
+            <DialogTrigger asChild>
+                <button
+                    type="button"
+                    className="w-full text-left rounded-xl focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]"
+                    aria-label={dialogTitle}
+                >
+                    <Card className="overflow-hidden border-dashed bg-[var(--app-secondary-bg)]/50 shadow-sm transition-colors hover:border-[var(--app-link)]">
+                        <CardHeader className="p-3 pb-2">
+                            <div className="flex items-start justify-between gap-3">
+                                <div className="min-w-0">
+                                    <CardTitle className="text-sm font-medium leading-tight">
+                                        {summary.title}
+                                    </CardTitle>
+                                    {summary.subtitle ? (
+                                        <CardDescription className="mt-1 font-mono text-xs text-[var(--app-hint)] break-all">
+                                            {summary.subtitle}
+                                        </CardDescription>
+                                    ) : null}
+                                </div>
+                                <div className="shrink-0 text-[var(--app-hint)]">
+                                    <OpenIcon />
+                                </div>
+                            </div>
+                        </CardHeader>
+                        <CardContent className="p-3 pt-0">
+                            <div className="flex flex-col gap-2">
+                                {summary.prompt ? (
+                                    <div className="rounded-lg border border-[var(--app-border)]/70 bg-[var(--app-bg)]/80 px-3 py-2 text-sm text-[var(--app-fg)]">
+                                        {summary.prompt}
+                                    </div>
+                                ) : null}
+                                <div className="text-xs text-[var(--app-hint)] break-words">
+                                    View nested transcript · {summary.detail}
+                                </div>
+                            </div>
+                        </CardContent>
+                    </Card>
+                </button>
+            </DialogTrigger>
+            <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
+                <DialogHeader>
+                    <DialogTitle>{dialogTitle}</DialogTitle>
+                    <DialogDescription>
+                        Nested child transcript for this Codex subagent run.
+                    </DialogDescription>
+                </DialogHeader>
+                <div className="flex flex-col gap-3 pr-1">
+                    {summary.prompt ? (
+                        <div className="rounded-lg border border-[var(--app-border)] bg-[var(--app-secondary-bg)]/40 px-3 py-2 text-sm">
+                            {summary.prompt}
+                        </div>
+                    ) : null}
+                    <SubagentBlockList blocks={props.block.children} />
+                </div>
+            </DialogContent>
+        </Dialog>
+    )
+}
