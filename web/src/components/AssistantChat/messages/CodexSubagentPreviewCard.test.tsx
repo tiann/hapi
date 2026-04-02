@@ -120,17 +120,17 @@ describe('CodexSubagentPreviewCard', () => {
             />
         )
 
-        expect(screen.getByText('Pauli')).toBeInTheDocument()
+        expect(screen.getByText('Subagent conversation')).toBeInTheDocument()
         expect(screen.getByText('Waiting')).toBeInTheDocument()
+        expect(screen.getByText(/Pauli/)).toBeInTheDocument()
         expect(screen.queryByText(/agent-1/i)).not.toBeInTheDocument()
         expect(screen.getByText(/Waiting for child agent to finish/)).toBeInTheDocument()
         expect(screen.queryByText('See [repo](https://github.com/example/repo)')).not.toBeInTheDocument()
-        expect(screen.queryByText('Subagent conversation')).not.toBeInTheDocument()
 
-        fireEvent.click(screen.getByRole('button', { name: /Pauli/i }))
+        fireEvent.click(screen.getByRole('button', { name: /Subagent conversation — Pauli/i }))
 
         expect(screen.getByRole('link', { name: 'repo' })).toHaveAttribute('href', 'https://github.com/example/repo')
-        expect(screen.queryByRole('button', { name: 'Close dialog' })).not.toBeInTheDocument()
+        expect(screen.getByRole('button', { name: 'Close dialog' })).toBeInTheDocument()
     })
 
     it('renders HappyToolMessage as the lifecycle card for CodexSpawnAgent', () => {
@@ -148,27 +148,28 @@ describe('CodexSubagentPreviewCard', () => {
             <HappyToolMessage {...props} />
         )
 
-        expect(screen.getByText('Pauli')).toBeInTheDocument()
+        expect(screen.getByText('Subagent conversation')).toBeInTheDocument()
         expect(screen.getByText('Waiting')).toBeInTheDocument()
         expect(screen.queryByRole('link', { name: 'repo' })).not.toBeInTheDocument()
         expect(screen.queryByText('Search GitHub trending repositories for React state tooling')).not.toBeInTheDocument()
-        expect(screen.queryByText('Subagent conversation')).not.toBeInTheDocument()
 
-        fireEvent.click(screen.getByRole('button', { name: /Pauli/i }))
+        fireEvent.click(screen.getByRole('button', { name: /Subagent conversation — Pauli/i }))
 
         expect(screen.queryByText('Search GitHub trending repositories for React state tooling')).not.toBeInTheDocument()
         expect(screen.getByRole('link', { name: 'repo' })).toBeInTheDocument()
     })
 
-    it('uses the nickname as the dialog title and does not render an explicit close icon', () => {
+    it('closes the dialog via the top close icon button', () => {
         const block = makeSpawnBlock()
 
         renderWithProviders(<CodexSubagentPreviewCard block={block} />)
 
-        fireEvent.click(screen.getByRole('button', { name: /Pauli/i }))
+        fireEvent.click(screen.getByRole('button', { name: /Subagent conversation — Pauli/i }))
         expect(screen.getByRole('link', { name: 'repo' })).toBeInTheDocument()
-        expect(screen.getByRole('heading', { name: 'Pauli' })).toBeInTheDocument()
-        expect(screen.queryByRole('button', { name: 'Close dialog' })).not.toBeInTheDocument()
+
+        fireEvent.click(screen.getByRole('button', { name: 'Close dialog' }))
+
+        expect(screen.queryByRole('link', { name: 'repo' })).not.toBeInTheDocument()
     })
 
     it('marks CodexSpawnAgent children for preview rendering instead of inline expansion', () => {
