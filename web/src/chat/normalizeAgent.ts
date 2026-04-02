@@ -132,15 +132,37 @@ function normalizeUserOutput(
         }
     }
 
+    // Handle system-injected messages that arrive as type:'user' through
+    // the agent output path. Real user text goes through normalizeUserRecord.
     if (typeof messageContent === 'string') {
+        // Convert <task-notification> to a visible event
+        const trimmed = messageContent.trimStart()
+        if (trimmed.startsWith('<task-notification>')) {
+            const summary = trimmed.match(/<summary>([\s\S]*?)<\/summary>/)?.[1]?.trim()
+            if (summary) {
+                return {
+                    id: messageId,
+                    localId,
+                    createdAt,
+                    role: 'event',
+                    content: { type: 'message', message: summary },
+                    isSidechain: false,
+                    meta
+                }
+            }
+        }
+
+        // All other string-content user messages in this path are
+        // system-injected (subagent prompts, system reminders, etc.).
+        // Treat as sidechain so the tracer can match it to a parent Task
+        // tool call; unmatched ones are harmlessly skipped by the reducer.
         return {
             id: messageId,
             localId,
             createdAt,
-            role: 'user',
-            isSidechain: false,
-            content: { type: 'text', text: messageContent },
-            meta
+            role: 'agent',
+            isSidechain: true,
+            content: [{ type: 'sidechain', uuid, prompt: messageContent }]
         }
     }
 
