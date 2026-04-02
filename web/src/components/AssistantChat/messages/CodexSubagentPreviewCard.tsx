@@ -38,6 +38,89 @@ function getSpawnSummary(block: ToolCallBlock): {
     }
 }
 
+type LifecycleAction = {
+    type?: string
+    createdAt?: number
+    summary?: string
+}
+
+type LifecycleSnapshot = {
+    status: 'running' | 'waiting' | 'completed' | 'error' | 'closed'
+    latestText: string | null
+    agentId: string | null
+    nickname: string | null
+    actions: LifecycleAction[]
+}
+
+function isLifecycleStatus(value: unknown): value is LifecycleSnapshot['status'] {
+    return value === 'running' || value === 'waiting' || value === 'completed' || value === 'error' || value === 'closed'
+}
+
+function getLifecycleCandidate(block: ToolCallBlock): unknown {
+    if (isObject(block.lifecycle)) return block.lifecycle
+    const meta = block.meta
+    if (!isObject(meta)) return null
+    if (isObject(meta.codexLifecycle)) return meta.codexLifecycle
+    if (isObject(meta.lifecycle)) return meta.lifecycle
+    if (isObject(meta.codexAgentLifecycle)) return meta.codexAgentLifecycle
+    return meta
+}
+
+function getLifecycleSnapshot(block: ToolCallBlock): LifecycleSnapshot {
+    const meta = getLifecycleCandidate(block)
+    const agentIdFromMeta = isObject(meta) && typeof meta.agentId === 'string' ? meta.agentId : null
+    const nicknameFromMeta = isObject(meta) && typeof meta.nickname === 'string' ? meta.nickname : null
+    const statusFromMeta = isObject(meta) && isLifecycleStatus(meta.status) ? meta.status : null
+    const latestTextFromMeta = isObject(meta) && typeof meta.latestText === 'string'
+        ? meta.latestText
+        : isObject(meta) && typeof meta.latest === 'string'
+            ? meta.latest
+            : isObject(meta) && typeof meta.message === 'string'
+                ? meta.message
+                : null
+    const actionsFromMeta = isObject(meta) && Array.isArray(meta.actions) ? meta.actions : []
+    const prompt = getInputStringAny(isObject(block.tool.input) ? block.tool.input : null, ['message', 'messagePreview', 'prompt', 'description'])
+    const result = isObject(block.tool.result) ? block.tool.result : null
+    const agentIdFromResult = result && typeof result.agent_id === 'string' ? result.agent_id : null
+    const nicknameFromResult = result && typeof result.nickname === 'string' ? result.nickname : null
+
+    const status: LifecycleSnapshot['status'] = statusFromMeta ?? (
+        block.tool.state === 'completed'
+            ? 'completed'
+            : block.tool.state === 'error'
+                ? 'error'
+                : block.tool.state === 'pending'
+                    ? 'waiting'
+                    : 'running'
+    )
+
+    const latestText = latestTextFromMeta ?? (prompt ? truncate(prompt, 120) : null)
+
+    return {
+        status,
+        latestText,
+        agentId: agentIdFromMeta ?? agentIdFromResult,
+        nickname: nicknameFromMeta ?? nicknameFromResult,
+        actions: actionsFromMeta.filter((action): action is LifecycleAction => isObject(action))
+    }
+}
+
+function getLifecycleStatusLabel(status: LifecycleSnapshot['status']): string {
+    if (status === 'waiting') return 'Waiting'
+    if (status === 'completed') return 'Completed'
+    if (status === 'error') return 'Error'
+    if (status === 'closed') return 'Closed'
+    return 'Running'
+}
+
+function getLifecycleStatusClass(status: LifecycleSnapshot['status']): string {
+    if (status === 'completed') return 'bg-emerald-100 text-emerald-700 border-emerald-200'
+    if (status === 'error') return 'bg-red-100 text-red-700 border-red-200'
+    if (status === 'closed') return 'bg-slate-100 text-slate-700 border-slate-200'
+    if (status === 'waiting') return 'bg-amber-100 text-amber-700 border-amber-200'
+    return 'bg-blue-100 text-blue-700 border-blue-200'
+}
+
 function OpenIcon() {
     return (
         <svg className="h-4 w-4" viewBox="0 0 16 16" fill="none" aria-hidden="true">
@@ -121,7 +204,9 @@ function SubagentBlockList(props: { blocks: ToolCallBlock['children'] }) {
 
 export function CodexSubagentPreviewCard(props: { block: ToolCallBlock }) {
     const summary = getSpawnSummary(props.block)
+    const lifecycle = getLifecycleSnapshot(props.block)
     const dialogTitle = summary.subtitle ? `${summary.title} — ${summary.subtitle}` : summary.title
+    const actionCount = lifecycle.actions.length
 
     return (
         <Dialog>
@@ -135,9 +220,14 @@ export function CodexSubagentPreviewCard(props: { block: ToolCallBlock }) {
                         <CardHeader className="p-3 pb-2">
                             <div className="flex items-start justify-between gap-3">
                                 <div className="min-w-0">
-                                    <CardTitle className="text-sm font-medium leading-tight">
-                                        {summary.title}
-                                    </CardTitle>
+                                    <div className="flex items-center gap-2">
+                                        <CardTitle className="text-sm font-medium leading-tight">
+                                            {summary.title}
+                                        </CardTitle>
+                                        <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium ${getLifecycleStatusClass(lifecycle.status)}`}>
+                                            {getLifecycleStatusLabel(lifecycle.status)}
+                                        </span>
+                                    </div>
                                     {summary.subtitle ? (
                                         <CardDescription className="mt-1 font-mono text-xs text-[var(--app-hint)] break-all">
                                             {summary.subtitle}
@@ -151,13 +241,25 @@ export function CodexSubagentPreviewCard(props: { block: ToolCallBlock }) {
                         </CardHeader>
                         <CardContent className="p-3 pt-0">
                             <div className="flex flex-col gap-2">
-                                {summary.prompt ? (
+                                {lifecycle.latestText ? (
+                                    <div className="rounded-lg border border-[var(--app-border)]/70 bg-[var(--app-bg)]/80 px-3 py-2 text-sm text-[var(--app-fg)]">
+                                        {lifecycle.latestText}
+                                    </div>
+                                ) : summary.prompt ? (
                                     <div className="rounded-lg border border-[var(--app-border)]/70 bg-[var(--app-bg)]/80 px-3 py-2 text-sm text-[var(--app-fg)]">
                                         {summary.prompt}
                                     </div>
                                 ) : null}
-                                <div className="text-xs text-[var(--app-hint)] break-words">
-                                    View nested transcript · {summary.detail}
+                                <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--app-hint)] break-words">
+                                    <span>View transcript</span>
+                                    <span>·</span>
+                                    <span>{summary.detail}</span>
+                                    {actionCount > 0 ? (
+                                        <>
+                                            <span>·</span>
+                                            <span>{actionCount} action{actionCount === 1 ? '' : 's'}</span>
+                                        </>
+                                    ) : null}
                                 </div>
                             </div>
                         </CardContent>
@@ -172,11 +274,24 @@ export function CodexSubagentPreviewCard(props: { block: ToolCallBlock }) {
                     </DialogDescription>
                 </DialogHeader>
                 <div className="flex flex-col gap-3 pr-1">
-                    {summary.prompt ? (
-                        <div className="rounded-lg border border-[var(--app-border)] bg-[var(--app-secondary-bg)]/40 px-3 py-2 text-sm">
-                            {summary.prompt}
+                    <div className="rounded-lg border border-[var(--app-border)] bg-[var(--app-secondary-bg)]/40 px-3 py-2 text-sm">
+                        <div className="flex flex-wrap items-center gap-2">
+                            <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium ${getLifecycleStatusClass(lifecycle.status)}`}>
+                                {getLifecycleStatusLabel(lifecycle.status)}
+                            </span>
+                            {lifecycle.agentId ? <span className="font-mono text-xs text-[var(--app-hint)]">Agent ID: {lifecycle.agentId}</span> : null}
+                            {actionCount > 0 ? <span className="font-mono text-xs text-[var(--app-hint)]">{actionCount} actions</span> : null}
                         </div>
-                    ) : null}
+                        {lifecycle.latestText ? (
+                            <div className="mt-2 whitespace-pre-wrap break-words text-sm">
+                                {lifecycle.latestText}
+                            </div>
+                        ) : summary.prompt ? (
+                            <div className="mt-2 whitespace-pre-wrap break-words text-sm">
+                                {summary.prompt}
+                            </div>
+                        ) : null}
+                    </div>
                     <SubagentBlockList blocks={props.block.children} />
                 </div>
             </DialogContent>

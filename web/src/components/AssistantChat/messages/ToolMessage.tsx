@@ -113,15 +113,7 @@ function HappyNestedBlockList(props: {
                 if (block.kind === 'tool-call') {
                     return (
                         <div key={`tool:${block.id}`} className="py-1">
-                            <ToolCard
-                                api={ctx.api}
-                                sessionId={ctx.sessionId}
-                                metadata={ctx.metadata}
-                                disabled={ctx.disabled}
-                                onDone={ctx.onRefresh}
-                                block={block}
-                            />
-                            {renderToolChildren(block)}
+                            {renderToolBlock(block, ctx)}
                         </div>
                     )
                 }
@@ -137,6 +129,29 @@ export function getToolChildRenderMode(block: ToolCallBlock): 'none' | 'task' | 
     if (block.tool.name === 'Task') return 'task'
     if (block.tool.name === 'CodexSpawnAgent') return 'codex-subagent-preview'
     return 'inline'
+}
+
+function renderToolBlock(
+    block: ToolCallBlock,
+    ctx: ReturnType<typeof useHappyChatContext>
+): ReactNode {
+    if (block.tool.name === 'CodexSpawnAgent') {
+        return <CodexSubagentPreviewCard block={block} />
+    }
+
+    return (
+        <>
+            <ToolCard
+                api={ctx.api}
+                sessionId={ctx.sessionId}
+                metadata={ctx.metadata}
+                disabled={ctx.disabled}
+                onDone={ctx.onRefresh}
+                block={block}
+            />
+            {renderToolChildren(block)}
+        </>
+    )
 }
 
 function renderToolChildren(block: ToolCallBlock): ReactNode | null {
@@ -226,15 +241,7 @@ export function HappyToolMessage(props: ToolCallMessagePartProps) {
 
     return (
         <div className="py-1 min-w-0 max-w-full overflow-x-hidden">
-            <ToolCard
-                api={ctx.api}
-                sessionId={ctx.sessionId}
-                metadata={ctx.metadata}
-                disabled={ctx.disabled}
-                onDone={ctx.onRefresh}
-                block={block}
-            />
-            {renderToolChildren(block)}
+            {renderToolBlock(block, ctx)}
         </div>
     )
 }

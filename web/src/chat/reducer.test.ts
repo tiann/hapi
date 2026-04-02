@@ -78,14 +78,19 @@ function agentText(id: string, text: string, createdAt: number): NormalizedMessa
 }
 
 describe('reduceChatBlocks', () => {
-    it('groups Codex child messages under the matching spawn tool block', () => {
+    it('groups Codex child messages under the matching spawn tool block and folds lifecycle controls into it', () => {
         const messages: NormalizedMessage[] = [
             agentToolCall('msg-spawn-call', 'spawn-1', 'CodexSpawnAgent', { message: 'Search GitHub trending' }, 1),
             agentToolResult('msg-spawn-result', 'spawn-1', { agent_id: 'agent-1', nickname: 'Pauli' }, 2),
             userText('child-user', 'child prompt', 3),
             agentText('child-agent', 'child answer', 4),
             userText('notification', '<subagent_notification> child update', 5),
-            agentToolCall('msg-wait-call', 'wait-1', 'CodexWaitAgent', { targets: ['agent-1'], timeout_ms: 120000 }, 6)
+            agentToolCall('msg-wait-call', 'wait-1', 'CodexWaitAgent', { targets: ['agent-1'], timeout_ms: 120000 }, 6),
+            agentToolResult('msg-wait-result', 'wait-1', { status: 'completed', text: 'agent finished' }, 7),
+            agentToolCall('msg-send-call', 'send-1', 'CodexSendInput', { target: 'agent-1', message: 'continue', interrupt: true }, 8),
+            agentToolResult('msg-send-result', 'send-1', { ok: true }, 9),
+            agentToolCall('msg-close-call', 'close-1', 'CodexCloseAgent', { target: 'agent-1' }, 10),
+            agentToolResult('msg-close-result', 'close-1', { status: 'closed' }, 11)
         ]
 
         const reduced = reduceChatBlocks(messages, null)
@@ -101,16 +106,37 @@ describe('reduceChatBlocks', () => {
                 expect.objectContaining({ kind: 'agent-text', text: 'child answer' })
             ])
         )
-        expect(reduced.blocks).not.toEqual(
-            expect.arrayContaining([
-                expect.objectContaining({ kind: 'user-text', text: 'child prompt' }),
-                expect.objectContaining({ kind: 'agent-text', text: 'child answer' })
-            ])
+        expect(spawnBlock?.lifecycle).toEqual(
+            expect.objectContaining({
+                kind: 'codex-agent-lifecycle',
+                agentId: 'agent-1',
+                nickname: 'Pauli',
+                status: 'completed'
+            })
         )
+        expect(spawnBlock?.lifecycle?.actions.map((action) => action.type)).toEqual(['wait', 'send', 'close'])
+        expect(spawnBlock?.lifecycle?.actions.map((action) => action.summary)).toEqual([
+            'agent finished',
+            'Sent input to agent-1',
+            'Closed agent-1'
+        ])
+        expect(spawnBlock?.lifecycle?.hiddenToolIds).toEqual(expect.arrayContaining(['wait-1', 'send-1', 'close-1']))
+        expect(
+            reduced.blocks.some((block) => block.kind === 'user-text' && block.text === 'child prompt')
+        ).toBe(false)
+        expect(
+            reduced.blocks.some((block) => block.kind === 'agent-text' && block.text === 'child answer')
+        ).toBe(false)
+        expect(
+            reduced.blocks.some((block) =>
+                block.kind === 'tool-call'
+                && ['CodexWaitAgent', 'CodexSendInput', 'CodexCloseAgent'].includes(block.tool.name)
+            )
+        ).toBe(false)
         expect(reduced.blocks).toEqual(
             expect.arrayContaining([
                 expect.objectContaining({ kind: 'user-text', text: '<subagent_notification> child update' }),
-                expect.objectContaining({ kind: 'tool-call', tool: expect.objectContaining({ name: 'CodexWaitAgent' }) })
+                expect.objectContaining({ kind: 'tool-call', tool: expect.objectContaining({ name: 'CodexSpawnAgent' }) })
             ])
         )
     })

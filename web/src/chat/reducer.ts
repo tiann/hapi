@@ -1,6 +1,7 @@
 import type { AgentState } from '@/types/api'
 import type { ChatBlock, NormalizedMessage, UsageData } from '@/chat/types'
 import { annotateCodexSidechains } from '@/chat/codexSidechain'
+import { applyCodexLifecycleAggregation } from '@/chat/codexLifecycle'
 import { traceMessages, type TracedMessage } from '@/chat/tracer'
 import { dedupeAgentEvents, foldApiErrorEvents } from '@/chat/reducerEvents'
 import { collectTitleChanges, collectToolIdsFromMessages, ensureToolBlock, getPermissions } from '@/chat/reducerTools'
@@ -146,5 +147,7 @@ export function reduceChatBlocks(
         }
     }
 
-    return { blocks: dedupeAgentEvents(foldApiErrorEvents(rootResult.blocks)), hasReadyEvent, latestUsage }
+    const mergedBlocks = applyCodexLifecycleAggregation(dedupeAgentEvents(foldApiErrorEvents(rootResult.blocks)))
+
+    return { blocks: mergedBlocks, hasReadyEvent, latestUsage }
 }

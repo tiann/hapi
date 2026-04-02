@@ -4,6 +4,7 @@ import type { ReactElement } from 'react'
 import type { ToolCallBlock } from '@/chat/types'
 import { CodexSubagentPreviewCard } from '@/components/AssistantChat/messages/CodexSubagentPreviewCard'
 import { getToolChildRenderMode } from '@/components/AssistantChat/messages/ToolMessage'
+import { HappyToolMessage } from '@/components/AssistantChat/messages/ToolMessage'
 import { HappyChatProvider } from '@/components/AssistantChat/context'
 import { I18nProvider } from '@/lib/i18n-context'
 
@@ -29,6 +30,17 @@ function makeSpawnBlock(): ToolCallBlock {
                 agent_id: 'agent-1',
                 nickname: 'Pauli'
             }
+        },
+        lifecycle: {
+            kind: 'codex-agent-lifecycle',
+            agentId: 'agent-1',
+            nickname: 'Pauli',
+            status: 'waiting',
+            latestText: 'Waiting for child agent to finish',
+            hiddenToolIds: ['wait-1'],
+            actions: [
+                { type: 'wait', createdAt: 4, summary: 'Waiting for child agent to finish' }
+            ]
         },
         children: [
             {
@@ -97,10 +109,36 @@ describe('CodexSubagentPreviewCard', () => {
         )
 
         expect(screen.getByText('Subagent conversation')).toBeInTheDocument()
+        expect(screen.getByText('Waiting')).toBeInTheDocument()
         expect(screen.getByText(/Pauli/)).toBeInTheDocument()
-        expect(screen.getByText(/Search GitHub trending repositories/)).toBeInTheDocument()
+        expect(screen.getByText(/Waiting for child agent to finish/)).toBeInTheDocument()
         expect(screen.queryByText('child prompt')).not.toBeInTheDocument()
         expect(screen.queryByText('child answer')).not.toBeInTheDocument()
+
+        fireEvent.click(screen.getByRole('button', { name: /Subagent conversation — Pauli · agent-1/i }))
+
+        expect(screen.getByText('child prompt')).toBeInTheDocument()
+        expect(screen.getByText('child answer')).toBeInTheDocument()
+    })
+
+    it('renders HappyToolMessage as the lifecycle card for CodexSpawnAgent', () => {
+        const block = makeSpawnBlock()
+        const props: any = {
+            artifact: block,
+            toolName: 'CodexSpawnAgent',
+            argsText: '{}',
+            result: block.tool.result,
+            isError: false,
+            status: { type: 'complete' }
+        }
+
+        renderWithProviders(
+            <HappyToolMessage {...props} />
+        )
+
+        expect(screen.getByText('Subagent conversation')).toBeInTheDocument()
+        expect(screen.getByText('Waiting')).toBeInTheDocument()
+        expect(screen.queryByText('child prompt')).not.toBeInTheDocument()
 
         fireEvent.click(screen.getByRole('button', { name: /Subagent conversation — Pauli · agent-1/i }))
 
