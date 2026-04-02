@@ -80,6 +80,7 @@ export type NormalizedMessage = ({
     localId: string | null
     createdAt: number
     isSidechain: boolean
+    sidechainKey?: string
     meta?: unknown
     usage?: UsageData
     status?: MessageStatus
