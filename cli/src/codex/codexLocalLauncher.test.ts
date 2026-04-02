@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { ResolveCodexSessionFileResult } from './utils/resolveCodexSessionFile';
 
 const harness = vi.hoisted(() => ({
     launches: [] as Array<Record<string, unknown>>,
@@ -9,7 +10,7 @@ const harness = vi.hoisted(() => ({
         filePath: '/tmp/codex-session-resume.jsonl',
         cwd: '/tmp/worktree',
         timestamp: 1234567890
-    },
+    } as ResolveCodexSessionFileResult,
     scannerFailureMessage: 'No Codex session found within 120000ms for cwd c:\\workspace\\project; refusing fallback.'
 }));
 
