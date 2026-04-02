@@ -16,6 +16,7 @@
     },
     "dependencies": {
         "@hapi/protocol": "workspace:*",
+        "@larksuiteoapi/node-sdk": "^1.59.0",
         "@socket.io/bun-engine": "^0.1.0",
         "grammy": "^1.38.4",
         "hono": "^4.11.2",
