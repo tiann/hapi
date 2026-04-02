@@ -106,7 +106,7 @@ export function ExitPlanModeFooter(props: {
     const deny = async () => {
         if (loading || props.disabled) return
         setLoading('deny')
-        await run(() => props.api.denyPermission(props.sessionId, permission.id), 'success')
+        await run(() => props.api.denyPermission(props.sessionId, permission.id), 'error')
         setLoading(null)
     }
 

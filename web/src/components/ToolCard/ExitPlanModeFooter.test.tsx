@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { I18nProvider } from '@/lib/i18n-context'
 import { ExitPlanModeFooter } from '@/components/ToolCard/ExitPlanModeFooter'
 
@@ -118,5 +118,6 @@ describe('ExitPlanModeFooter', () => {
         fireEvent.click(screen.getByRole('button', { name: 'Deny' }))
 
         expect(api.denyPermission).toHaveBeenCalledWith('session-1', 'request-1')
+        await waitFor(() => expect(haptic.notification).toHaveBeenCalledWith('error'))
     })
 })

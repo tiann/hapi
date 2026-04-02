@@ -46,7 +46,23 @@ function ElapsedView(props: { from: number; active: boolean }) {
     )
 }
 
-function formatTaskChildLabel(child: ToolCallBlock, metadata: SessionMetadataSummary | null): string {
+function getLocalizedToolTitle(
+    toolName: string,
+    fallbackTitle: string,
+    t: (key: string) => string
+): string {
+    if (isExitPlanModeToolName(toolName)) {
+        return t('tool.exitPlanMode.title')
+    }
+
+    return fallbackTitle
+}
+
+function formatTaskChildLabel(
+    child: ToolCallBlock,
+    metadata: SessionMetadataSummary | null,
+    t: (key: string) => string
+): string {
     const presentation = getToolPresentation({
         toolName: child.tool.name,
         input: child.tool.input,
@@ -55,12 +71,13 @@ function formatTaskChildLabel(child: ToolCallBlock, metadata: SessionMetadataSum
         description: child.tool.description,
         metadata
     })
+    const title = getLocalizedToolTitle(child.tool.name, presentation.title, t)
 
     if (presentation.subtitle) {
-        return truncate(`${presentation.title}: ${presentation.subtitle}`, 140)
+        return truncate(`${title}: ${presentation.subtitle}`, 140)
     }
 
-    return presentation.title
+    return title
 }
 
 function TaskStateIcon(props: { state: ToolCallBlock['tool']['state'] }) {
@@ -89,7 +106,11 @@ function getTaskSummaryChildren(block: ToolCallBlock): { visible: ToolCallBlock[
     return { visible, remaining: children.length - visible.length }
 }
 
-function renderTaskSummary(block: ToolCallBlock, metadata: SessionMetadataSummary | null): ReactNode | null {
+function renderTaskSummary(
+    block: ToolCallBlock,
+    metadata: SessionMetadataSummary | null,
+    t: (key: string) => string
+): ReactNode | null {
     const summary = getTaskSummaryChildren(block)
     if (!summary) return null
 
@@ -106,7 +127,7 @@ function renderTaskSummary(block: ToolCallBlock, metadata: SessionMetadataSummar
                                 <TaskStateIcon state={child.tool.state} />
                             </span>
                             <span className="align-middle break-all">
-                                {formatTaskChildLabel(child, metadata)}
+                                {formatTaskChildLabel(child, metadata, t)}
                             </span>
                         </div>
                     </div>
@@ -305,9 +326,9 @@ function ToolCardInner(props: ToolCardProps) {
 
     const toolName = props.block.tool.name
     const isExitPlanMode = isExitPlanModeToolName(toolName)
-    const toolTitle = isExitPlanMode ? t('tool.exitPlanMode.title') : presentation.title
+    const toolTitle = getLocalizedToolTitle(toolName, presentation.title, t)
     const subtitle = presentation.subtitle ?? props.block.tool.description
-    const taskSummary = renderTaskSummary(props.block, props.metadata)
+    const taskSummary = renderTaskSummary(props.block, props.metadata, t)
     const runningFrom = props.block.tool.startedAt ?? props.block.tool.createdAt
     const showInline = !presentation.minimal && toolName !== 'Task'
     const CompactToolView = showInline ? getToolViewComponent(toolName) : null
@@ -316,11 +337,6 @@ function ToolCardInner(props: ToolCardProps) {
     const permission = props.block.tool.permission
     const isAskUserQuestion = isAskUserQuestionToolName(toolName)
     const isRequestUserInput = isRequestUserInputToolName(toolName)
-    const isExitPlanModeWithChoice = isExitPlanMode
-        && (permission?.implementationMode !== undefined
-            || permission?.status === 'approved'
-            || permission?.status === 'denied'
-            || permission?.status === 'canceled')
     const isQuestionTool = isAskUserQuestion || isRequestUserInput
     const showsPermissionFooter = Boolean(permission && (
         permission.status === 'pending'
@@ -379,7 +395,7 @@ function ToolCardInner(props: ToolCardProps) {
                             {header}
                         </button>
                     </DialogTrigger>
-                    <DialogContent className="max-w-2xl">
+                    <DialogContent className="max-w-2xl" aria-describedby={undefined}>
                         <DialogHeader>
                             <DialogTitle>{toolTitle}</DialogTitle>
                         </DialogHeader>
@@ -387,7 +403,7 @@ function ToolCardInner(props: ToolCardProps) {
                             const isQuestionToolWithAnswers = isQuestionTool
                                 && permission?.answers
                                 && Object.keys(permission.answers).length > 0
-                            const hideResult = isQuestionToolWithAnswers || isExitPlanModeWithChoice
+                            const hideResult = isQuestionToolWithAnswers || isExitPlanMode
 
                             return (
                                 <div className="mt-3 flex max-h-[75vh] flex-col gap-4 overflow-auto">
