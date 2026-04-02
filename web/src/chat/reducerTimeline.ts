@@ -4,31 +4,6 @@ import { createCliOutputBlock, isCliOutputText, mergeCliOutputBlocks } from '@/c
 import { parseMessageAsEvent } from '@/chat/reducerEvents'
 import { ensureToolBlock, extractTitleFromChangeTitleInput, isChangeTitleToolName, type PermissionEntry } from '@/chat/reducerTools'
 
-/**
- * XML tags that Claude Code injects as user-role messages.
- * These must be filtered out or converted before rendering in the web UI.
- * Mirrors SYSTEM_INJECTION_PREFIXES in cli/src/api/apiSession.ts.
- */
-const SYSTEM_INJECTION_PREFIXES = [
-    '<task-notification>',
-    '<command-name>',
-    '<local-command-caveat>',
-    '<system-reminder>',
-]
-
-function isSystemInjectedMessage(text: string): boolean {
-    const trimmed = text.trimStart()
-    return SYSTEM_INJECTION_PREFIXES.some(p => trimmed.startsWith(p))
-}
-
-function parseTaskNotificationSummary(text: string): string | null {
-    const trimmed = text.trimStart()
-    if (!trimmed.startsWith('<task-notification>')) return null
-    const summary = trimmed.match(/<summary>([\s\S]*?)<\/summary>/)?.[1]?.trim()
-    // Return null for missing/empty summary so isSystemInjectedMessage silently drops it
-    return summary || null
-}
-
 export function reduceTimeline(
     messages: TracedMessage[],
     context: {
@@ -37,7 +12,6 @@ export function reduceTimeline(
         consumedGroupIds: Set<string>
         titleChangesByToolUseId: Map<string, string>
         emittedTitleChangeToolUseIds: Set<string>
-        isClaudeSession?: boolean
     }
 ): { blocks: ChatBlock[]; toolBlocksById: Map<string, ToolCallBlock>; hasReadyEvent: boolean } {
     const blocks: ChatBlock[] = []
@@ -73,22 +47,6 @@ export function reduceTimeline(
         }
 
         if (msg.role === 'user') {
-            if (context.isClaudeSession) {
-                const taskSummary = parseTaskNotificationSummary(msg.content.text)
-                if (taskSummary) {
-                    blocks.push({
-                        kind: 'agent-event',
-                        id: msg.id,
-                        createdAt: msg.createdAt,
-                        event: { type: 'message', message: taskSummary },
-                        meta: msg.meta
-                    })
-                    continue
-                }
-                if (isSystemInjectedMessage(msg.content.text)) {
-                    continue
-                }
-            }
             if (isCliOutputText(msg.content.text, msg.meta)) {
                 blocks.push(createCliOutputBlock({
                     id: msg.id,
