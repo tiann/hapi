@@ -155,4 +155,24 @@ describe('annotateCodexSidechains', () => {
         expect(result[4]).toMatchObject({ isSidechain: false })
         expect(result[9]).toMatchObject({ isSidechain: false })
     })
+
+    it('keeps earlier spawned agents active when a newer spawn closes first', () => {
+        const messages: NormalizedMessage[] = [
+            agentToolCall('spawn-1', 'CodexSpawnAgent', { message: 'First' }, 1),
+            agentToolResult('spawn-1', { agent_id: 'agent-1' }, 2),
+            agentToolCall('spawn-2', 'CodexSpawnAgent', { message: 'Second' }, 3),
+            agentToolResult('spawn-2', { agent_id: 'agent-2' }, 4),
+            agentToolCall('wait-2', 'CodexWaitAgent', { targets: ['agent-2'] }, 5),
+            userText('child-1-user', 'first child prompt resumes', 6),
+            agentText('child-1-agent', 'first child answer resumes', 7),
+            agentToolCall('wait-1', 'CodexWaitAgent', { targets: ['agent-1'] }, 8)
+        ]
+
+        const result = annotateCodexSidechains(messages)
+
+        expect(result[4]).toMatchObject({ isSidechain: false })
+        expect(result[5]).toMatchObject({ isSidechain: true, sidechainKey: 'spawn-1' })
+        expect(result[6]).toMatchObject({ isSidechain: true, sidechainKey: 'spawn-1' })
+        expect(result[7]).toMatchObject({ isSidechain: false })
+    })
 })

@@ -1,5 +1,6 @@
 import type { AgentState } from '@/types/api'
 import type { ChatBlock, NormalizedMessage, UsageData } from '@/chat/types'
+import { annotateCodexSidechains } from '@/chat/codexSidechain'
 import { traceMessages, type TracedMessage } from '@/chat/tracer'
 import { dedupeAgentEvents, foldApiErrorEvents } from '@/chat/reducerEvents'
 import { collectTitleChanges, collectToolIdsFromMessages, ensureToolBlock, getPermissions } from '@/chat/reducerTools'
@@ -8,6 +9,45 @@ import { reduceTimeline } from '@/chat/reducerTimeline'
 // Calculate context size from usage data
 function calculateContextSize(usage: UsageData): number {
     return (usage.cache_creation_input_tokens || 0) + (usage.cache_read_input_tokens || 0) + usage.input_tokens
+}
+
+function groupMessagesBySidechain(messages: TracedMessage[]): { groups: Map<string, TracedMessage[]>; root: TracedMessage[] } {
+    const groups = new Map<string, TracedMessage[]>()
+    const root: TracedMessage[] = []
+
+    for (const msg of messages) {
+        const groupId = msg.sidechainId ?? msg.sidechainKey
+        if (groupId) {
+            const existing = groups.get(groupId) ?? []
+            existing.push(msg)
+            groups.set(groupId, existing)
+            continue
+        }
+
+        root.push(msg)
+    }
+
+    return { groups, root }
+}
+
+function attachCodexSpawnChildren(
+    blocks: ChatBlock[],
+    groups: Map<string, TracedMessage[]>,
+    consumedGroupIds: Set<string>,
+    reduceGroup: (groupId: string) => ChatBlock[]
+): void {
+    for (const block of blocks) {
+        if (block.kind !== 'tool-call') continue
+
+        if (block.tool.name === 'CodexSpawnAgent' && groups.has(block.tool.id) && !consumedGroupIds.has(block.tool.id)) {
+            consumedGroupIds.add(block.tool.id)
+            block.children = reduceGroup(block.tool.id)
+        }
+
+        if (block.children.length > 0) {
+            attachCodexSpawnChildren(block.children, groups, consumedGroupIds, reduceGroup)
+        }
+    }
 }
 
 export type LatestUsage = {
@@ -28,24 +68,23 @@ export function reduceChatBlocks(
     const titleChangesByToolUseId = collectTitleChanges(normalized)
 
     const traced = traceMessages(normalized)
-    const groups = new Map<string, TracedMessage[]>()
-    const root: TracedMessage[] = []
-
-    for (const msg of traced) {
-        if (msg.sidechainId) {
-            const existing = groups.get(msg.sidechainId) ?? []
-            existing.push(msg)
-            groups.set(msg.sidechainId, existing)
-        } else {
-            root.push(msg)
-        }
-    }
+    const annotated = annotateCodexSidechains(traced)
+    const { groups, root } = groupMessagesBySidechain(annotated)
 
     const consumedGroupIds = new Set<string>()
     const emittedTitleChangeToolUseIds = new Set<string>()
     const reducerContext = { permissionsById, groups, consumedGroupIds, titleChangesByToolUseId, emittedTitleChangeToolUseIds }
     const rootResult = reduceTimeline(root, reducerContext)
     let hasReadyEvent = rootResult.hasReadyEvent
+
+    const reduceGroup = (groupId: string): ChatBlock[] => {
+        const sidechain = groups.get(groupId) ?? []
+        const child = reduceTimeline(sidechain, reducerContext)
+        hasReadyEvent = hasReadyEvent || child.hasReadyEvent
+        return child.blocks
+    }
+
+    attachCodexSpawnChildren(rootResult.blocks, groups, consumedGroupIds, reduceGroup)
 
     // Only create permission-only tool cards when there is no tool call/result in the transcript.
     // Also skip if the permission is older than the oldest message in the current view,

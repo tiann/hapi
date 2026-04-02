@@ -68,10 +68,16 @@ function messageLooksLikeInlineChildConversation(message: NormalizedMessage): bo
     return sawNestableContent
 }
 
+function removeActiveAgents(activeAgentIds: string[], targets: string[]): string[] {
+    if (targets.length === 0) return activeAgentIds
+    const closed = new Set(targets)
+    return activeAgentIds.filter((agentId) => !closed.has(agentId))
+}
+
 export function annotateCodexSidechains(messages: NormalizedMessage[]): NormalizedMessage[] {
     const toolNameByToolUseId = new Map<string, string>()
-    let activeSpawnToolUseId: string | null = null
-    let activeAgentId: string | null = null
+    const agentIdToSpawnToolUseId = new Map<string, string>()
+    let activeAgentIds: string[] = []
 
     const result: NormalizedMessage[] = []
 
@@ -82,20 +88,22 @@ export function annotateCodexSidechains(messages: NormalizedMessage[]): Normaliz
 
         const spawn = extractSpawnAgentId(message, toolNameByToolUseId)
         if (spawn) {
-            activeSpawnToolUseId = spawn.spawnToolUseId
-            activeAgentId = spawn.agentId
+            agentIdToSpawnToolUseId.set(spawn.agentId, spawn.spawnToolUseId)
+            activeAgentIds = removeActiveAgents(activeAgentIds, [spawn.agentId])
+            activeAgentIds.push(spawn.agentId)
             result.push({ ...message })
             continue
         }
 
-        const waitTargets: string[] = activeAgentId !== null ? extractWaitTargets(message) : []
-        if (activeSpawnToolUseId !== null && activeAgentId !== null && waitTargets.includes(activeAgentId)) {
-            activeSpawnToolUseId = null
-            activeAgentId = null
+        const waitTargets = extractWaitTargets(message)
+        if (waitTargets.length > 0) {
+            activeAgentIds = removeActiveAgents(activeAgentIds, waitTargets)
             result.push({ ...message })
             continue
         }
 
+        const activeAgentId = activeAgentIds.at(-1) ?? null
+        const activeSpawnToolUseId = activeAgentId ? agentIdToSpawnToolUseId.get(activeAgentId) ?? null : null
         if (activeSpawnToolUseId !== null && messageLooksLikeInlineChildConversation(message)) {
             result.push({
                 ...message,
