@@ -212,6 +212,81 @@ describe('codexSessionScanner', () => {
         expect((events[2].payload as Record<string, unknown>).call_id).toBe('call-resolved');
     });
 
+    it('explicit resume replays a leading lineage block for the requested session', async () => {
+        const targetCwd = '/data/github/happy/hapi';
+        const requestedSessionId = 'session-explicit-current';
+        const ancestorSessionId = 'session-explicit-ancestor';
+        const resolvedFile = join(sessionsDir, `codex-${requestedSessionId}.jsonl`);
+        const resolvedResult: ResolveCodexSessionFileResult = {
+            status: 'found',
+            filePath: resolvedFile,
+            cwd: targetCwd,
+            timestamp: Date.parse('2025-12-22T00:00:00.000Z')
+        };
+
+        await writeFile(
+            resolvedFile,
+            [
+                JSON.stringify({ type: 'session_meta', payload: { id: requestedSessionId, cwd: targetCwd, timestamp: '2025-12-22T00:00:00.000Z' } }),
+                JSON.stringify({ type: 'session_meta', payload: { id: ancestorSessionId, cwd: targetCwd, timestamp: '2025-12-21T23:00:00.000Z' } }),
+                JSON.stringify({ type: 'event_msg', payload: { type: 'agent_message', message: 'current-segment-message' } }),
+                JSON.stringify({ type: 'response_item', payload: { type: 'function_call', name: 'Tool', call_id: 'call-current', arguments: '{}' } })
+            ].join('\n') + '\n'
+        );
+
+        scanner = await createCodexSessionScanner({
+            sessionId: requestedSessionId,
+            cwd: targetCwd,
+            resolvedSessionFile: resolvedResult,
+            onEvent: (event) => events.push(event)
+        });
+
+        await wait(200);
+        expect(events).toHaveLength(3);
+        expect(events.map((event) => event.type)).toEqual(['session_meta', 'event_msg', 'response_item']);
+        expect((events[0].payload as Record<string, unknown>).id).toBe(requestedSessionId);
+        expect((events[1].payload as Record<string, unknown>).message).toBe('current-segment-message');
+        expect((events[2].payload as Record<string, unknown>).call_id).toBe('call-current');
+    });
+
+    it('explicit resume emits only the matching segment when a later segment starts a new session', async () => {
+        const targetCwd = '/data/github/happy/hapi';
+        const firstSessionId = 'session-explicit-first';
+        const secondSessionId = 'session-explicit-second';
+        const resolvedFile = join(sessionsDir, `codex-${secondSessionId}.jsonl`);
+        const resolvedResult: ResolveCodexSessionFileResult = {
+            status: 'found',
+            filePath: resolvedFile,
+            cwd: targetCwd,
+            timestamp: Date.parse('2025-12-22T01:00:00.000Z')
+        };
+
+        await writeFile(
+            resolvedFile,
+            [
+                JSON.stringify({ type: 'session_meta', payload: { id: firstSessionId, cwd: targetCwd, timestamp: '2025-12-22T00:00:00.000Z' } }),
+                JSON.stringify({ type: 'event_msg', payload: { type: 'agent_message', message: 'first-segment-message' } }),
+                JSON.stringify({ type: 'session_meta', payload: { id: secondSessionId, cwd: targetCwd, timestamp: '2025-12-22T01:00:00.000Z' } }),
+                JSON.stringify({ type: 'event_msg', payload: { type: 'agent_message', message: 'second-segment-message' } }),
+                JSON.stringify({ type: 'response_item', payload: { type: 'function_call', name: 'Tool', call_id: 'call-second', arguments: '{}' } })
+            ].join('\n') + '\n'
+        );
+
+        scanner = await createCodexSessionScanner({
+            sessionId: secondSessionId,
+            cwd: targetCwd,
+            resolvedSessionFile: resolvedResult,
+            onEvent: (event) => events.push(event)
+        });
+
+        await wait(200);
+        expect(events).toHaveLength(3);
+        expect(events.map((event) => event.type)).toEqual(['session_meta', 'event_msg', 'response_item']);
+        expect((events[0].payload as Record<string, unknown>).id).toBe(secondSessionId);
+        expect((events[1].payload as Record<string, unknown>).message).toBe('second-segment-message');
+        expect((events[2].payload as Record<string, unknown>).call_id).toBe('call-second');
+    });
+
     it('explicit resume failure does not adopt another session', async () => {
         const targetCwd = '/data/github/happy/hapi';
         const requestedSessionId = 'session-explicit-missing';

@@ -23,7 +23,7 @@ interface CodexSessionScanner {
 }
 
 type PendingEvents = {
-    events: CodexSessionEvent[];
+    entries: SessionFileScanEntry<CodexSessionEvent>[];
     fileSessionId: string | null;
 };
 
@@ -93,6 +93,9 @@ class CodexSessionScannerImpl extends BaseSessionScanner<CodexSessionEvent> {
     private readonly sessionIdByFile = new Map<string, string>();
     private readonly sessionCwdByFile = new Map<string, string>();
     private readonly sessionTimestampByFile = new Map<string, number>();
+    private readonly eventOwnerSessionIdByFile = new Map<string, Map<number, string | null>>();
+    private readonly currentSegmentOwnerByFile = new Map<string, string | null>();
+    private readonly inSessionMetaBlockByFile = new Map<string, boolean>();
     private readonly pendingEventsByFile = new Map<string, PendingEvents>();
     private readonly sessionMetaParsed = new Set<string>();
     private readonly fileEpochByPath = new Map<string, number>();
@@ -215,7 +218,7 @@ class CodexSessionScannerImpl extends BaseSessionScanner<CodexSessionEvent> {
         const fileSessionId = this.sessionIdByFile.get(filePath) ?? null;
 
         if (this.explicitResolvedFilePath) {
-            const emittedForFile = this.emitEvents(stats.events, fileSessionId);
+            const emittedForFile = this.emitEvents(filePath, stats.entries, fileSessionId);
             if (emittedForFile > 0) {
                 logger.debug(`[CODEX_SESSION_SCANNER] Emitted ${emittedForFile} new events from ${filePath}`);
             }
@@ -223,7 +226,7 @@ class CodexSessionScannerImpl extends BaseSessionScanner<CodexSessionEvent> {
         }
 
         if (!this.activeSessionId && this.targetCwd) {
-            this.appendPendingEvents(filePath, stats.events, fileSessionId);
+            this.appendPendingEvents(filePath, stats.entries, fileSessionId);
             const candidate = this.getCandidateForFile(filePath);
             if (candidate) {
                 if (!this.bestWithinWindow || candidate.score < this.bestWithinWindow.score) {
@@ -240,7 +243,7 @@ class CodexSessionScannerImpl extends BaseSessionScanner<CodexSessionEvent> {
             return;
         }
 
-        const emittedForFile = this.emitEvents(stats.events, fileSessionId);
+        const emittedForFile = this.emitEvents(filePath, stats.entries, fileSessionId);
         if (emittedForFile > 0) {
             logger.debug(`[CODEX_SESSION_SCANNER] Emitted ${emittedForFile} new events from ${filePath}`);
         }
@@ -387,8 +390,24 @@ class CodexSessionScannerImpl extends BaseSessionScanner<CodexSessionEvent> {
             this.fileEpochByPath.set(filePath, nextEpoch);
         }
 
+        if (effectiveStartLine === 0) {
+            this.sessionIdByFile.delete(filePath);
+            this.sessionCwdByFile.delete(filePath);
+            this.sessionTimestampByFile.delete(filePath);
+            this.currentSegmentOwnerByFile.delete(filePath);
+            this.inSessionMetaBlockByFile.delete(filePath);
+            this.eventOwnerSessionIdByFile.set(filePath, new Map());
+        }
+
         const hasSessionMeta = this.sessionMetaParsed.has(filePath);
         const parseFrom = hasSessionMeta ? effectiveStartLine : 0;
+        let currentSegmentOwner = this.currentSegmentOwnerByFile.get(filePath) ?? null;
+        let inSessionMetaBlock = this.inSessionMetaBlockByFile.get(filePath) ?? false;
+        let eventOwnerByLine = this.eventOwnerSessionIdByFile.get(filePath);
+        if (!eventOwnerByLine) {
+            eventOwnerByLine = new Map();
+            this.eventOwnerSessionIdByFile.set(filePath, eventOwnerByLine);
+        }
 
         for (let index = parseFrom; index < lines.length; index += 1) {
             const trimmed = lines[index].trim();
@@ -400,21 +419,29 @@ class CodexSessionScannerImpl extends BaseSessionScanner<CodexSessionEvent> {
                 if (parsed?.type === 'session_meta') {
                     const payload = asRecord(parsed.payload);
                     const sessionId = payload ? asString(payload.id) : null;
-                    if (sessionId) {
+                    if (sessionId && !this.sessionIdByFile.has(filePath)) {
                         this.sessionIdByFile.set(filePath, sessionId);
                     }
                     const sessionCwd = payload ? asString(payload.cwd) : null;
                     const normalizedCwd = sessionCwd ? normalizePath(sessionCwd) : null;
-                    if (normalizedCwd) {
+                    if (normalizedCwd && !this.sessionCwdByFile.has(filePath)) {
                         this.sessionCwdByFile.set(filePath, normalizedCwd);
                     }
                     const rawTimestamp = payload ? payload.timestamp : null;
                     const sessionTimestamp = payload ? parseTimestamp(payload.timestamp) : null;
-                    if (sessionTimestamp !== null) {
+                    if (sessionTimestamp !== null && !this.sessionTimestampByFile.has(filePath)) {
                         this.sessionTimestampByFile.set(filePath, sessionTimestamp);
                     }
+                    if (!inSessionMetaBlock && sessionId) {
+                        currentSegmentOwner = sessionId;
+                    }
+                    inSessionMetaBlock = true;
+                    eventOwnerByLine.set(index, sessionId);
                     logger.debug(`[CODEX_SESSION_SCANNER] Session meta: file=${filePath} cwd=${sessionCwd ?? 'none'} normalizedCwd=${normalizedCwd ?? 'none'} timestamp=${rawTimestamp ?? 'none'} parsedTs=${sessionTimestamp ?? 'none'}`);
                     this.sessionMetaParsed.add(filePath);
+                } else {
+                    inSessionMetaBlock = false;
+                    eventOwnerByLine.set(index, currentSegmentOwner);
                 }
                 if (index >= effectiveStartLine) {
                     events.push({ event: parsed, lineIndex: index });
@@ -423,6 +450,9 @@ class CodexSessionScannerImpl extends BaseSessionScanner<CodexSessionEvent> {
                 logger.debug(`[CODEX_SESSION_SCANNER] Failed to parse line: ${error}`);
             }
         }
+
+        this.currentSegmentOwnerByFile.set(filePath, currentSegmentOwner);
+        this.inSessionMetaBlockByFile.set(filePath, inSessionMetaBlock);
 
         return { events, nextCursor: totalLines };
     }
@@ -493,30 +523,43 @@ class CodexSessionScannerImpl extends BaseSessionScanner<CodexSessionEvent> {
         return this.getWatchedFiles().filter((filePath) => filePath.endsWith(suffix));
     }
 
-    private appendPendingEvents(filePath: string, events: CodexSessionEvent[], fileSessionId: string | null): void {
-        if (events.length === 0) {
+    private appendPendingEvents(
+        filePath: string,
+        entries: SessionFileScanEntry<CodexSessionEvent>[],
+        fileSessionId: string | null
+    ): void {
+        if (entries.length === 0) {
             return;
         }
         const existing = this.pendingEventsByFile.get(filePath);
         if (existing) {
-            existing.events.push(...events);
+            existing.entries.push(...entries);
             if (!existing.fileSessionId && fileSessionId) {
                 existing.fileSessionId = fileSessionId;
             }
             return;
         }
         this.pendingEventsByFile.set(filePath, {
-            events: [...events],
+            entries: [...entries],
             fileSessionId
         });
     }
 
-    private emitEvents(events: CodexSessionEvent[], fileSessionId: string | null): number {
+    private emitEvents(
+        filePath: string,
+        entries: SessionFileScanEntry<CodexSessionEvent>[],
+        fileSessionId: string | null
+    ): number {
         let emittedForFile = 0;
-        for (const event of events) {
+        const eventOwnerByLine = this.eventOwnerSessionIdByFile.get(filePath);
+        for (const entry of entries) {
+            const event = entry.event;
             const payload = asRecord(event.payload);
             const payloadSessionId = payload ? asString(payload.id) : null;
-            const eventSessionId = payloadSessionId ?? fileSessionId ?? null;
+            const lineOwner = entry.lineIndex !== undefined
+                ? (eventOwnerByLine?.get(entry.lineIndex) ?? null)
+                : null;
+            const eventSessionId = payloadSessionId ?? lineOwner ?? fileSessionId ?? null;
 
             if (this.activeSessionId && eventSessionId && eventSessionId !== this.activeSessionId) {
                 continue;
@@ -539,7 +582,7 @@ class CodexSessionScannerImpl extends BaseSessionScanner<CodexSessionEvent> {
             if (!matches) {
                 continue;
             }
-            emitted += this.emitEvents(pending.events, pending.fileSessionId);
+            emitted += this.emitEvents(filePath, pending.entries, pending.fileSessionId);
         }
         this.pendingEventsByFile.clear();
         if (emitted > 0) {
