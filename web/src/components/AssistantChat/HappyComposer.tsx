@@ -20,7 +20,7 @@ import { useActiveSuggestions } from '@/hooks/useActiveSuggestions'
 import { applySuggestion } from '@/utils/applySuggestion'
 import { usePlatform } from '@/hooks/usePlatform'
 import { usePWAInstall } from '@/hooks/usePWAInstall'
-import { isClaudeFlavor, supportsModelChange } from '@/lib/agentFlavorUtils'
+import { supportsEffort, supportsModelChange } from '@hapi/protocol'
 import { markSkillUsed } from '@/lib/recent-skills'
 import { FloatingOverlay } from '@/components/ChatInput/FloatingOverlay'
 import { Autocomplete } from '@/components/ChatInput/Autocomplete'
@@ -440,7 +440,7 @@ export function HappyComposer(props: {
     const showCollaborationSettings = Boolean(onCollaborationModeChange && collaborationModeOptions.length > 0)
     const showPermissionSettings = Boolean(onPermissionModeChange && permissionModeOptions.length > 0)
     const showModelSettings = Boolean(onModelChange && supportsModelChange(agentFlavor))
-    const showEffortSettings = Boolean(onEffortChange && isClaudeFlavor(agentFlavor))
+    const showEffortSettings = Boolean(onEffortChange && supportsEffort(agentFlavor))
     const showSettingsButton = Boolean(showCollaborationSettings || showPermissionSettings || showModelSettings || showEffortSettings)
     const showAbortButton = true
     const voiceEnabled = Boolean(onVoiceToggle)

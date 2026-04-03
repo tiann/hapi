@@ -32,4 +32,4 @@ export type {
     PermissionModeTone
 } from './modes'
 
-export type { ClaudeModelPreset } from './models'
+export type { ClaudeModelPreset, GeminiModelPreset } from './models'
