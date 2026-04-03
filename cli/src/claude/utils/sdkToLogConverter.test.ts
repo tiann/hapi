@@ -6,6 +6,7 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import { SDKToLogConverter, convertSDKToLog } from './sdkToLogConverter'
 import type { SDKMessage, SDKUserMessage, SDKAssistantMessage, SDKSystemMessage, SDKResultMessage } from '@/claude/sdk'
 import type { ClaudePermissionMode } from '@hapi/protocol/types'
+import { extractClaudeSubagentMeta, resetClaudeSubagentAdapterState } from './claudeSubagentAdapter'
 
 describe('SDKToLogConverter', () => {
     let converter: SDKToLogConverter
@@ -17,6 +18,7 @@ describe('SDKToLogConverter', () => {
     }
 
     beforeEach(() => {
+        resetClaudeSubagentAdapterState()
         converter = new SDKToLogConverter(context)
     })
 
@@ -159,7 +161,20 @@ describe('SDKToLogConverter', () => {
     })
 
     describe('Result messages', () => {
-        it('should not convert result messages', () => {
+        it('should convert result messages into replay-safe subagent meta logs', () => {
+            converter.convert({
+                type: 'assistant',
+                message: {
+                    role: 'assistant',
+                    content: [{
+                        type: 'tool_use',
+                        id: 'task-1',
+                        name: 'Task',
+                        input: { prompt: 'Investigate test failure' }
+                    }]
+                }
+            } as SDKAssistantMessage)
+
             const sdkMessage: SDKResultMessage = {
                 type: 'result',
                 subtype: 'success',
@@ -178,10 +193,69 @@ describe('SDKToLogConverter', () => {
 
             const logMessage = converter.convert(sdkMessage)
 
-            expect(logMessage).toBeNull()
+            expect(logMessage).toEqual(expect.objectContaining({
+                type: 'system',
+                subtype: 'subagent_meta',
+                isMeta: true,
+                meta: expect.objectContaining({
+                    subagent: expect.arrayContaining([
+                        expect.objectContaining({
+                            kind: 'status',
+                            sidechainKey: 'result-session',
+                            status: 'completed'
+                        }),
+                        expect.objectContaining({
+                            kind: 'title',
+                            sidechainKey: 'result-session',
+                            title: 'result-session'
+                        })
+                    ])
+                })
+            }))
         })
 
-        it('should not convert error results', () => {
+        it('should retain the Task prompt in persisted result meta when available', () => {
+            const taskSpawnMessage = {
+                type: 'assistant',
+                message: {
+                    role: 'assistant',
+                    content: [{
+                        type: 'tool_use',
+                        id: 'task-2',
+                        name: 'Task',
+                        input: { prompt: 'Investigate test failure' }
+                    }]
+                }
+            } as SDKAssistantMessage
+
+            extractClaudeSubagentMeta(taskSpawnMessage)
+            converter.convert(taskSpawnMessage)
+
+            const logMessage = converter.convert({
+                type: 'result',
+                subtype: 'success',
+                num_turns: 1,
+                total_cost_usd: 0.1,
+                duration_ms: 1,
+                duration_api_ms: 1,
+                is_error: false,
+                session_id: 'task-2'
+            } as SDKResultMessage)
+
+            expect(logMessage).toEqual(expect.objectContaining({
+                meta: expect.objectContaining({
+                    subagent: expect.arrayContaining([
+                        expect.objectContaining({
+                            kind: 'title',
+                            sidechainKey: 'task-2',
+                            title: 'Investigate test failure'
+                        })
+                    ])
+                })
+            }))
+        })
+
+        it('should convert error results into replay-safe subagent meta logs', () => {
             const sdkMessage: SDKResultMessage = {
                 type: 'result',
                 subtype: 'error_max_turns',
@@ -195,8 +269,25 @@ describe('SDKToLogConverter', () => {
 
             const logMessage = converter.convert(sdkMessage)
 
-            // Error results are not converted to summaries
-            expect(logMessage).toBeFalsy()
+            expect(logMessage).toEqual(expect.objectContaining({
+                type: 'system',
+                subtype: 'subagent_meta',
+                isMeta: true,
+                meta: expect.objectContaining({
+                    subagent: expect.arrayContaining([
+                        expect.objectContaining({
+                            kind: 'status',
+                            sidechainKey: 'error-session',
+                            status: 'error'
+                        }),
+                        expect.objectContaining({
+                            kind: 'title',
+                            sidechainKey: 'error-session',
+                            title: 'error-session'
+                        })
+                    ])
+                })
+            }))
         })
     })
 
