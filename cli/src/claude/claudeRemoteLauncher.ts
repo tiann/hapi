@@ -13,7 +13,7 @@ import { EnhancedMode } from "./loop";
 import { OutgoingMessageQueue } from "./utils/OutgoingMessageQueue";
 import { createSessionScanner } from "./utils/sessionScanner";
 import { isClaudeChatVisibleMessage } from "./utils/chatVisibility";
-import { extractClaudeSubagentMeta, resetClaudeSubagentAdapterState } from "./utils/claudeSubagentAdapter";
+import { createClaudeSubagentAdapter } from "./utils/claudeSubagentAdapter";
 import type { ClaudePermissionMode } from "@hapi/protocol/types";
 import {
     RemoteLauncherBase,
@@ -86,24 +86,22 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
     private forwardSubagentMeta(meta: NormalizedSubagentMeta[]): void {
         for (const item of meta) {
             if (item.kind === 'spawn') {
-                this.session.client.updateMetadata((metadata) => ({
-                    ...metadata,
-                    summary: {
-                        text: item.prompt ?? item.sidechainKey,
-                        updatedAt: Date.now()
-                    }
-                }));
+                if (item.prompt) {
+                    this.session.client.sendSessionEvent({
+                        type: 'subagent_title_change',
+                        sidechainKey: item.sidechainKey,
+                        title: item.prompt
+                    } as any);
+                }
                 continue;
             }
 
             if (item.kind === 'title') {
-                this.session.client.updateMetadata((metadata) => ({
-                    ...metadata,
-                    summary: {
-                        text: item.title ?? item.sidechainKey,
-                        updatedAt: Date.now()
-                    }
-                }));
+                this.session.client.sendSessionEvent({
+                    type: 'subagent_title_change',
+                    sidechainKey: item.sidechainKey,
+                    title: item.title ?? item.sidechainKey
+                } as any);
                 continue;
             }
 
@@ -140,11 +138,14 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
             messageQueue.releaseToolCall(toolCallId);
         });
 
+        const subagentAdapter = createClaudeSubagentAdapter();
+        const replaySubagentAdapter = createClaudeSubagentAdapter();
+
         const sdkToLogConverter = new SDKToLogConverter({
             sessionId: session.sessionId || 'unknown',
             cwd: session.path,
             version: process.env.npm_package_version
-        }, permissionHandler.getResponses());
+        }, permissionHandler.getResponses(), subagentAdapter);
 
         const forwardSubagentMeta = (meta: NormalizedSubagentMeta[]): void => {
             this.forwardSubagentMeta(meta);
@@ -175,6 +176,8 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             : [subagentMeta.subagent]);
                     }
 
+                    forwardSubagentMeta(replaySubagentAdapter.extract(message as SDKMessage));
+
                     if (message.type === 'summary' || message.isMeta || message.isCompactSummary) {
                         return;
                     }
@@ -200,7 +203,8 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
         function onMessage(message: SDKMessage) {
             formatClaudeMessageForInk(message, messageBuffer);
             permissionHandler.onMessage(message);
-            forwardSubagentMeta(extractClaudeSubagentMeta(message));
+            const subagentMeta = subagentAdapter.extract(message);
+            forwardSubagentMeta(subagentMeta);
 
             if (message.type === 'assistant') {
                 let umessage = message as SDKAssistantMessage;
@@ -268,7 +272,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                 }
             }
 
-            const logMessage = sdkToLogConverter.convert(msg);
+            const logMessage = sdkToLogConverter.convert(msg, subagentMeta);
             if (logMessage) {
                 if (logMessage.isMeta === true) {
                     session.client.sendClaudeSessionMessage(logMessage);
@@ -362,7 +366,8 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
             while (!this.exitReason) {
                 logger.debug('[remote]: launch');
                 messageBuffer.addMessage('═'.repeat(40), 'status');
-                resetClaudeSubagentAdapterState();
+                subagentAdapter.reset();
+                replaySubagentAdapter.reset();
 
                 await replayExplicitResumeTranscript();
 

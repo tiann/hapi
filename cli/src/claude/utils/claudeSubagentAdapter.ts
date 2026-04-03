@@ -2,8 +2,6 @@ import { createSpawnMeta, createStatusMeta } from '@/subagents/normalize'
 import type { NormalizedSubagentMeta } from '@/subagents/types'
 import type { SDKAssistantMessage, SDKMessage } from '@/claude/sdk'
 
-const promptBySidechainKey = new Map<string, string>()
-
 function asRecord(value: unknown): Record<string, unknown> | null {
     return value && typeof value === 'object' ? value as Record<string, unknown> : null
 }
@@ -26,90 +24,75 @@ function extractPrompt(input: unknown): string | undefined {
         ?? undefined
 }
 
-function getSidechainKey(message: SDKMessage): string | null {
+function getParentToolUseId(message: SDKMessage): string | null {
     return asString((message as SDKAssistantMessage).parent_tool_use_id)
         ?? asString((message as Record<string, unknown>).parentToolUseId)
         ?? null
 }
 
-function extractTitle(message: SDKMessage): string | null {
-    const explicitTitle = asString((message as Record<string, unknown>).title)
-    if (explicitTitle) {
-        return explicitTitle
+export class ClaudeSubagentAdapter {
+    private readonly promptBySidechainKey = new Map<string, string>()
+    private readonly activeTaskSidechainKeys = new Set<string>()
+
+    reset(): void {
+        this.promptBySidechainKey.clear()
+        this.activeTaskSidechainKeys.clear()
     }
 
-    const fallbackPrompt = asString((message as Record<string, unknown>).prompt)
-    if (fallbackPrompt) {
-        return fallbackPrompt
-    }
+    extract(message: SDKMessage): NormalizedSubagentMeta[] {
+        const metas: NormalizedSubagentMeta[] = []
 
-    return asString((message as Record<string, unknown>).session_id)
-        ?? asString((message as Record<string, unknown>).sessionId)
-        ?? null
-}
+        if (message.type === 'assistant') {
+            const assistantMessage = message as SDKAssistantMessage
+            const content = assistantMessage.message.content
 
-function rememberPrompt(sidechainKey: string, prompt: string | undefined): void {
-    if (!prompt) {
-        return
-    }
+            if (Array.isArray(content)) {
+                for (const block of content) {
+                    if (block.type !== 'tool_use' || block.name !== 'Task' || !block.id) {
+                        continue
+                    }
 
-    promptBySidechainKey.set(sidechainKey, prompt)
-}
-
-export function resetClaudeSubagentAdapterState(): void {
-    promptBySidechainKey.clear()
-}
-
-export function extractClaudeSubagentMeta(message: SDKMessage): NormalizedSubagentMeta[] {
-    const metas: NormalizedSubagentMeta[] = []
-
-    if (message.type === 'assistant') {
-        const assistantMessage = message as SDKAssistantMessage
-        const content = assistantMessage.message.content
-
-        if (Array.isArray(content)) {
-            for (const block of content) {
-                if (block.type !== 'tool_use' || block.name !== 'Task' || !block.id) {
-                    continue
+                    const prompt = extractPrompt(block.input)
+                    if (prompt) {
+                        this.promptBySidechainKey.set(block.id, prompt)
+                    }
+                    this.activeTaskSidechainKeys.add(block.id)
+                    metas.push(createSpawnMeta({
+                        sidechainKey: block.id,
+                        prompt
+                    }))
                 }
-
-                const prompt = extractPrompt(block.input)
-                rememberPrompt(block.id, prompt)
-                metas.push(createSpawnMeta({
-                    sidechainKey: block.id,
-                    prompt
-                }))
             }
+
+            const sidechainKey = getParentToolUseId(message)
+            if (sidechainKey) {
+                metas.push({
+                    kind: 'message',
+                    sidechainKey
+                })
+            }
+
+            return metas
         }
 
-        const sidechainKey = getSidechainKey(message)
-        if (sidechainKey) {
-            metas.push({
-                kind: 'message',
-                sidechainKey
-            })
+        if (message.type === 'user') {
+            const sidechainKey = getParentToolUseId(message)
+            if (sidechainKey) {
+                metas.push({
+                    kind: 'message',
+                    sidechainKey
+                })
+            }
+
+            return metas
         }
 
-        return metas
-    }
-
-    if (message.type === 'user') {
-        const sidechainKey = getSidechainKey(message)
-        if (sidechainKey) {
-            metas.push({
-                kind: 'message',
-                sidechainKey
-            })
+        if (message.type !== 'result') {
+            return metas
         }
 
-        return metas
-    }
-
-    if (message.type === 'result') {
-        const sidechainKey = asString((message as Record<string, unknown>).parent_tool_use_id)
-            ?? asString((message as Record<string, unknown>).session_id)
-            ?? asString((message as Record<string, unknown>).sessionId)
-
+        const explicitParentToolUseId = getParentToolUseId(message)
+        const sidechainKey = explicitParentToolUseId ?? this.getSafeImplicitResultSidechainKey()
         if (!sidechainKey) {
             return metas
         }
@@ -119,7 +102,10 @@ export function extractClaudeSubagentMeta(message: SDKMessage): NormalizedSubage
             status: message.subtype === 'success' ? 'completed' : 'error'
         }))
 
-        const title = promptBySidechainKey.get(sidechainKey) ?? extractTitle(message)
+        const title = this.promptBySidechainKey.get(sidechainKey)
+            ?? asString((message as Record<string, unknown>).session_id)
+            ?? asString((message as Record<string, unknown>).sessionId)
+
         if (title) {
             metas.push({
                 kind: 'title',
@@ -127,7 +113,21 @@ export function extractClaudeSubagentMeta(message: SDKMessage): NormalizedSubage
                 title
             })
         }
+
+        this.activeTaskSidechainKeys.delete(sidechainKey)
+
+        return metas
     }
 
-    return metas
+    private getSafeImplicitResultSidechainKey(): string | null {
+        if (this.activeTaskSidechainKeys.size !== 1) {
+            return null
+        }
+
+        return this.activeTaskSidechainKeys.values().next().value ?? null
+    }
+}
+
+export function createClaudeSubagentAdapter(): ClaudeSubagentAdapter {
+    return new ClaudeSubagentAdapter()
 }

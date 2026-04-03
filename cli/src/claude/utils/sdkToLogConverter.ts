@@ -15,7 +15,7 @@ import type {
 import type { RawJSONLines } from '@/claude/types'
 import type { NormalizedSubagentMeta } from '@/subagents/types'
 import type { ClaudePermissionMode } from '@hapi/protocol/types'
-import { extractClaudeSubagentMeta } from './claudeSubagentAdapter'
+import { createClaudeSubagentAdapter, type ClaudeSubagentAdapter } from './claudeSubagentAdapter'
 
 /**
  * Context for converting SDK messages to log format
@@ -65,10 +65,12 @@ export class SDKToLogConverter {
     private context: ConversionContext
     private responses?: Map<string, PermissionResponse>
     private sidechainLastUUID = new Map<string, string>();
+    private readonly subagentAdapter: ClaudeSubagentAdapter
 
     constructor(
         context: Omit<ConversionContext, 'parentUuid'>,
-        responses?: Map<string, PermissionResponse>
+        responses?: Map<string, PermissionResponse>,
+        subagentAdapter: ClaudeSubagentAdapter = createClaudeSubagentAdapter()
     ) {
         this.context = {
             ...context,
@@ -77,6 +79,7 @@ export class SDKToLogConverter {
             parentUuid: null
         }
         this.responses = responses
+        this.subagentAdapter = subagentAdapter
     }
 
     /**
@@ -97,12 +100,17 @@ export class SDKToLogConverter {
     /**
      * Convert SDK message to log format
      */
-    convert(sdkMessage: SDKMessage): RawJSONLines | null {
+    convert(sdkMessage: SDKMessage, subagentMeta?: NormalizedSubagentMeta[]): RawJSONLines | null {
         const uuid = randomUUID()
         const timestamp = new Date().toISOString()
         let parentUuid = this.lastUuid;
         let isSidechain = false;
-        const subagentKey = (sdkMessage as SDKAssistantMessage).parent_tool_use_id ?? (sdkMessage as any).parentToolUseId;
+        const resolvedSubagentMeta = subagentMeta ?? this.subagentAdapter.extract(sdkMessage)
+        const messageMeta = resolvedSubagentMeta.find((meta) => meta.kind === 'message')
+        const persistedResultMeta = resolvedSubagentMeta.filter((meta) => meta.kind === 'status' || meta.kind === 'title')
+        const subagentKey = messageMeta?.sidechainKey
+            ?? (sdkMessage as SDKAssistantMessage).parent_tool_use_id
+            ?? (sdkMessage as any).parentToolUseId;
         if (sdkMessage.parent_tool_use_id) {
             isSidechain = true;
             parentUuid = this.sidechainLastUUID.get((sdkMessage as any).parent_tool_use_id) ?? null;
@@ -197,10 +205,7 @@ export class SDKToLogConverter {
             }
 
             case 'result': {
-                const subagentMeta = extractClaudeSubagentMeta(sdkMessage)
-                    .filter((meta) => meta.kind === 'status' || meta.kind === 'title')
-
-                if (subagentMeta.length === 0) {
+                if (persistedResultMeta.length === 0) {
                     break
                 }
 
@@ -216,7 +221,7 @@ export class SDKToLogConverter {
                     gitBranch: this.context.gitBranch,
                     timestamp,
                     meta: {
-                        subagent: subagentMeta
+                        subagent: persistedResultMeta
                     }
                 } as LogMessageWithSubagentMeta
                 break

@@ -310,6 +310,20 @@ describe('claudeRemoteLauncher', () => {
 
         await claudeRemoteLauncher(session as never)
 
+        expect(harness.metadataUpdates).toEqual([])
+        expect(harness.sessionEvents).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                type: 'subagent_title_change',
+                sidechainKey: 'task-1',
+                title: 'Investigate test failure'
+            }),
+            expect.objectContaining({
+                type: 'subagent_status_change',
+                sidechainKey: 'task-1',
+                status: 'completed'
+            })
+        ]))
+
         const persistedReplayMeta = sentClaudeMessages.find((message) => {
             if (message.type !== 'system' || message.isMeta !== true) {
                 return false
@@ -346,19 +360,19 @@ describe('claudeRemoteLauncher', () => {
 
         await claudeRemoteLauncher(replaySession as never)
 
-        expect(harness.metadataUpdates).toEqual([
+        expect(harness.metadataUpdates).toEqual([])
+        expect(harness.sessionEvents).toEqual([
             expect.objectContaining({
-                summary: expect.objectContaining({
-                    text: 'Investigate test failure'
-                })
+                type: 'subagent_status_change',
+                sidechainKey: 'task-1',
+                status: 'completed'
+            }),
+            expect.objectContaining({
+                type: 'subagent_title_change',
+                sidechainKey: 'task-1',
+                title: 'Investigate test failure'
             })
         ])
-
-        expect(harness.sessionEvents).toContainEqual({
-            type: 'subagent_status_change',
-            sidechainKey: 'task-1',
-            status: 'completed'
-        })
         expect(replaySentClaudeMessages.some((message) => message.type === 'system' && message.isMeta === true)).toBe(false)
 
         expect(sentClaudeMessages).toEqual(expect.arrayContaining([
