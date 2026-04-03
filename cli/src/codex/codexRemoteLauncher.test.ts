@@ -7,6 +7,9 @@ const harness = vi.hoisted(() => ({
     extraNotifications: [] as Array<{ method: string; params: unknown }>,
     registerRequestCalls: [] as string[],
     initializeCalls: [] as unknown[],
+    resolveSessionFileCalls: [] as string[],
+    sessionScannerCalls: [] as Array<Record<string, unknown>>,
+    replayEvents: [] as unknown[],
     startThreadCalls: [] as unknown[],
     resumeThreadCalls: [] as unknown[],
     startTurnCalls: [] as unknown[],
@@ -92,6 +95,33 @@ vi.mock('./utils/buildHapiMcpBridge', () => ({
     })
 }));
 
+vi.mock('./utils/resolveCodexSessionFile', () => ({
+    resolveCodexSessionFile: async (sessionId: string) => {
+        harness.resolveSessionFileCalls.push(sessionId);
+        return {
+            status: 'found',
+            filePath: `/tmp/${sessionId}.jsonl`,
+            cwd: '/tmp/hapi-update',
+            timestamp: 1234567890
+        };
+    }
+}));
+
+vi.mock('./utils/codexSessionScanner', () => ({
+    createCodexSessionScanner: async (opts: {
+        onEvent: (event: unknown) => void;
+    }) => {
+        harness.sessionScannerCalls.push(opts as Record<string, unknown>);
+        for (const event of harness.replayEvents) {
+            opts.onEvent(event);
+        }
+        return {
+            cleanup: async () => {},
+            onNewSession: () => {}
+        };
+    }
+}));
+
 import { codexRemoteLauncher } from './codexRemoteLauncher';
 
 type FakeAgentState = {
@@ -113,6 +143,7 @@ function createSessionStub(overrides?: { sessionId?: string | null }) {
 
     const sessionEvents: Array<{ type: string; [key: string]: unknown }> = [];
     const codexMessages: unknown[] = [];
+    const userMessages: Array<{ text: string; meta?: unknown }> = [];
     const thinkingChanges: boolean[] = [];
     const foundSessionIds: string[] = [];
     let currentModel: string | null | undefined;
@@ -134,7 +165,9 @@ function createSessionStub(overrides?: { sessionId?: string | null }) {
         sendAgentMessage(message: unknown) {
             codexMessages.push(message);
         },
-        sendUserMessage(_text: string) {},
+        sendUserMessage(text: string, meta?: unknown) {
+            userMessages.push({ text, meta });
+        },
         sendSessionEvent(event: { type: string; [key: string]: unknown }) {
             sessionEvents.push(event);
         }
@@ -172,8 +205,8 @@ function createSessionStub(overrides?: { sessionId?: string | null }) {
         sendSessionEvent(event: { type: string; [key: string]: unknown }) {
             client.sendSessionEvent(event);
         },
-        sendUserMessage(text: string) {
-            client.sendUserMessage(text);
+        sendUserMessage(text: string, meta?: unknown) {
+            client.sendUserMessage(text, meta);
         }
     };
 
@@ -181,6 +214,7 @@ function createSessionStub(overrides?: { sessionId?: string | null }) {
         session,
         sessionEvents,
         codexMessages,
+        userMessages,
         thinkingChanges,
         foundSessionIds,
         rpcHandlers,
@@ -195,6 +229,9 @@ describe('codexRemoteLauncher', () => {
         harness.extraNotifications = [];
         harness.registerRequestCalls = [];
         harness.initializeCalls = [];
+        harness.resolveSessionFileCalls = [];
+        harness.sessionScannerCalls = [];
+        harness.replayEvents = [];
         harness.startThreadCalls = [];
         harness.resumeThreadCalls = [];
         harness.startTurnCalls = [];
@@ -226,6 +263,28 @@ describe('codexRemoteLauncher', () => {
         expect(sessionEvents.filter((event) => event.type === 'ready').length).toBeGreaterThanOrEqual(1);
         expect(thinkingChanges).toContain(true);
         expect(session.thinking).toBe(false);
+    });
+
+    it('replays transcript history during explicit remote resume before live turns', async () => {
+        harness.replayEvents = [
+            { type: 'event_msg', payload: { type: 'user_message', message: 'existing user prompt' } },
+            { type: 'event_msg', payload: { type: 'agent_message', message: 'existing assistant reply' } }
+        ];
+        const {
+            session,
+            codexMessages,
+            userMessages
+        } = createSessionStub({ sessionId: 'resume-thread-123' });
+
+        await codexRemoteLauncher(session as never);
+
+        expect(harness.resolveSessionFileCalls).toEqual(['resume-thread-123']);
+        expect(harness.sessionScannerCalls).toHaveLength(1);
+        expect(userMessages).toContainEqual({ text: 'existing user prompt', meta: undefined });
+        expect(codexMessages).toContainEqual(expect.objectContaining({
+            type: 'message',
+            message: 'existing assistant reply'
+        }));
     });
 
     it('does not report explicit resume failure when resume succeeds but turn startup fails', async () => {

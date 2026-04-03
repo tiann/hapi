@@ -3,10 +3,12 @@ import type {
     AuthResponse,
     CodexCollaborationMode,
     DeleteUploadResponse,
+    ExternalSessionActionResponse,
     ListDirectoryResponse,
     FileReadResponse,
     FileSearchResponse,
     GitCommandResponse,
+    ImportableSessionsResponse,
     MachinePathsExistsResponse,
     MachinesResponse,
     MessagesResponse,
@@ -158,6 +160,25 @@ export class ApiClient {
 
     async getSessions(): Promise<SessionsResponse> {
         return await this.request<SessionsResponse>('/api/sessions')
+    }
+
+    async listImportableSessions(agent: 'codex'): Promise<ImportableSessionsResponse> {
+        const params = new URLSearchParams({ agent })
+        return await this.request<ImportableSessionsResponse>(`/api/importable-sessions?${params.toString()}`)
+    }
+
+    async importExternalSession(agent: 'codex', externalSessionId: string): Promise<ExternalSessionActionResponse> {
+        return await this.request<ExternalSessionActionResponse>(
+            `/api/importable-sessions/${agent}/${encodeURIComponent(externalSessionId)}/import`,
+            { method: 'POST' }
+        )
+    }
+
+    async refreshExternalSession(agent: 'codex', externalSessionId: string): Promise<ExternalSessionActionResponse> {
+        return await this.request<ExternalSessionActionResponse>(
+            `/api/importable-sessions/${agent}/${encodeURIComponent(externalSessionId)}/refresh`,
+            { method: 'POST' }
+        )
     }
 
     async getPushVapidPublicKey(): Promise<PushVapidPublicKeyResponse> {

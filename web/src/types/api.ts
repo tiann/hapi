@@ -95,6 +95,27 @@ export type MessagesResponse = {
 export type MachinesResponse = { machines: Machine[] }
 export type MachinePathsExistsResponse = { exists: Record<string, boolean> }
 
+export type ImportableSessionView = {
+    agent: 'codex'
+    externalSessionId: string
+    cwd: string | null
+    timestamp: number | null
+    transcriptPath: string
+    previewTitle: string | null
+    previewPrompt: string | null
+    alreadyImported: boolean
+    importedHapiSessionId: string | null
+}
+
+export type ImportableSessionsResponse = {
+    sessions: ImportableSessionView[]
+}
+
+export type ExternalSessionActionResponse = {
+    type: 'success'
+    sessionId: string
+}
+
 export type SpawnResponse =
     | { type: 'success'; sessionId: string }
     | { type: 'error'; message: string }

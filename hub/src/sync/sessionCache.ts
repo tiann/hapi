@@ -36,6 +36,21 @@ export class SessionCache {
         return session
     }
 
+    findSessionByExternalCodexSessionId(namespace: string, externalSessionId: string): { sessionId: string } | null {
+        for (const stored of this.store.sessions.getSessionsByNamespace(namespace)) {
+            const metadata = MetadataSchema.safeParse(stored.metadata)
+            if (!metadata.success) {
+                continue
+            }
+
+            if (metadata.data.codexSessionId === externalSessionId) {
+                return { sessionId: stored.id }
+            }
+        }
+
+        return null
+    }
+
     resolveSessionAccess(
         sessionId: string,
         namespace: string
@@ -360,75 +375,77 @@ export class SessionCache {
             return
         }
 
-        const oldStored = this.store.sessions.getSessionByNamespace(oldSessionId, namespace)
-        const newStored = this.store.sessions.getSessionByNamespace(newSessionId, namespace)
-        if (!oldStored || !newStored) {
-            throw new Error('Session not found for merge')
-        }
+        this.store.runInTransaction(() => {
+            const oldStored = this.store.sessions.getSessionByNamespace(oldSessionId, namespace)
+            const newStored = this.store.sessions.getSessionByNamespace(newSessionId, namespace)
+            if (!oldStored || !newStored) {
+                throw new Error('Session not found for merge')
+            }
 
-        this.store.messages.mergeSessionMessages(oldSessionId, newSessionId)
+            this.store.messages.mergeSessionMessages(oldSessionId, newSessionId)
 
-        const mergedMetadata = this.mergeSessionMetadata(oldStored.metadata, newStored.metadata)
-        if (mergedMetadata !== null && mergedMetadata !== newStored.metadata) {
-            for (let attempt = 0; attempt < 2; attempt += 1) {
-                const latest = this.store.sessions.getSessionByNamespace(newSessionId, namespace)
-                if (!latest) break
-                const result = this.store.sessions.updateSessionMetadata(
+            const mergedMetadata = this.mergeSessionMetadata(oldStored.metadata, newStored.metadata)
+            if (mergedMetadata !== null && mergedMetadata !== newStored.metadata) {
+                for (let attempt = 0; attempt < 2; attempt += 1) {
+                    const latest = this.store.sessions.getSessionByNamespace(newSessionId, namespace)
+                    if (!latest) break
+                    const result = this.store.sessions.updateSessionMetadata(
+                        newSessionId,
+                        mergedMetadata,
+                        latest.metadataVersion,
+                        namespace,
+                        { touchUpdatedAt: false }
+                    )
+                    if (result.result === 'success') {
+                        break
+                    }
+                    if (result.result === 'error') {
+                        break
+                    }
+                }
+            }
+
+            if (newStored.model === null && oldStored.model !== null) {
+                const updated = this.store.sessions.setSessionModel(newSessionId, oldStored.model, namespace, {
+                    touchUpdatedAt: false
+                })
+                if (!updated) {
+                    throw new Error('Failed to preserve session model during merge')
+                }
+            }
+
+            if (newStored.effort === null && oldStored.effort !== null) {
+                const updated = this.store.sessions.setSessionEffort(newSessionId, oldStored.effort, namespace, {
+                    touchUpdatedAt: false
+                })
+                if (!updated) {
+                    throw new Error('Failed to preserve session effort during merge')
+                }
+            }
+
+            if (oldStored.todos !== null && oldStored.todosUpdatedAt !== null) {
+                this.store.sessions.setSessionTodos(
                     newSessionId,
-                    mergedMetadata,
-                    latest.metadataVersion,
-                    namespace,
-                    { touchUpdatedAt: false }
+                    oldStored.todos,
+                    oldStored.todosUpdatedAt,
+                    namespace
                 )
-                if (result.result === 'success') {
-                    break
-                }
-                if (result.result === 'error') {
-                    break
-                }
             }
-        }
 
-        if (newStored.model === null && oldStored.model !== null) {
-            const updated = this.store.sessions.setSessionModel(newSessionId, oldStored.model, namespace, {
-                touchUpdatedAt: false
-            })
-            if (!updated) {
-                throw new Error('Failed to preserve session model during merge')
+            if (oldStored.teamState !== null && oldStored.teamStateUpdatedAt !== null) {
+                this.store.sessions.setSessionTeamState(
+                    newSessionId,
+                    oldStored.teamState,
+                    oldStored.teamStateUpdatedAt,
+                    namespace
+                )
             }
-        }
 
-        if (newStored.effort === null && oldStored.effort !== null) {
-            const updated = this.store.sessions.setSessionEffort(newSessionId, oldStored.effort, namespace, {
-                touchUpdatedAt: false
-            })
-            if (!updated) {
-                throw new Error('Failed to preserve session effort during merge')
+            const deleted = this.store.sessions.deleteSession(oldSessionId, namespace)
+            if (!deleted) {
+                throw new Error('Failed to delete old session during merge')
             }
-        }
-
-        if (oldStored.todos !== null && oldStored.todosUpdatedAt !== null) {
-            this.store.sessions.setSessionTodos(
-                newSessionId,
-                oldStored.todos,
-                oldStored.todosUpdatedAt,
-                namespace
-            )
-        }
-
-        if (oldStored.teamState !== null && oldStored.teamStateUpdatedAt !== null) {
-            this.store.sessions.setSessionTeamState(
-                newSessionId,
-                oldStored.teamState,
-                oldStored.teamStateUpdatedAt,
-                namespace
-            )
-        }
-
-        const deleted = this.store.sessions.deleteSession(oldSessionId, namespace)
-        if (!deleted) {
-            throw new Error('Failed to delete old session during merge')
-        }
+        })
 
         const existed = this.sessions.delete(oldSessionId)
         if (existed) {
