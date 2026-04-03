@@ -2,6 +2,26 @@ import type { CodexCollaborationMode, PermissionMode } from '@hapi/protocol/type
 import type { Server } from 'socket.io'
 import type { RpcRegistry } from '../socket/rpcRegistry'
 
+export type ImportableSessionAgent = 'codex'
+
+export type ImportableCodexSessionSummary = {
+    agent: 'codex'
+    externalSessionId: string
+    cwd: string | null
+    timestamp: number | null
+    transcriptPath: string
+    previewTitle: string | null
+    previewPrompt: string | null
+}
+
+export type RpcListImportableSessionsRequest = {
+    agent: ImportableSessionAgent
+}
+
+export type RpcListImportableSessionsResponse = {
+    sessions: ImportableCodexSessionSummary[]
+}
+
 export type RpcCommandResponse = {
     success: boolean
     stdout?: string
@@ -228,6 +248,13 @@ export class RpcGateway {
             skills?: Array<{ name: string; description?: string }>
             error?: string
         }
+    }
+
+    async listImportableSessions(
+        machineId: string,
+        request: RpcListImportableSessionsRequest
+    ): Promise<RpcListImportableSessionsResponse> {
+        return await this.machineRpc(machineId, 'list-importable-sessions', request) as RpcListImportableSessionsResponse
     }
 
     private async sessionRpc(sessionId: string, method: string, params: unknown): Promise<unknown> {
