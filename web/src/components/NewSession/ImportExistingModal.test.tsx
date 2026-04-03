@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { I18nProvider } from '@/lib/i18n-context'
@@ -189,5 +190,87 @@ describe('ImportExistingModal', () => {
 
         fireEvent.click(screen.getByRole('button', { name: 'Refresh from source' }))
         expect(refreshSession).toHaveBeenCalledWith('claude-external-1')
+    })
+
+    it('does not leak Codex action state into the Claude tab', () => {
+        useImportableSessionsMock.mockImplementation((_api: unknown, agent: 'codex' | 'claude') => ({
+            sessions: [{
+                agent,
+                externalSessionId: `${agent}-external-1`,
+                cwd: `/tmp/${agent}-project`,
+                timestamp: 111,
+                transcriptPath: `/tmp/${agent}-project/session.jsonl`,
+                previewTitle: `${agent} title`,
+                previewPrompt: `${agent} prompt`,
+                alreadyImported: false,
+                importedHapiSessionId: null,
+            }],
+            isLoading: false,
+            error: null,
+            refetch: vi.fn(),
+        }))
+        useImportableSessionActionsMock.mockImplementation((_api: unknown, agent: 'codex' | 'claude') => {
+            const [error] = useState<string | null>(agent === 'codex' ? 'Codex failed' : null)
+            return {
+                importSession: vi.fn(),
+                refreshSession: vi.fn(),
+                importingSessionId: null,
+                refreshingSessionId: null,
+                error,
+            }
+        })
+
+        renderModal()
+
+        expect(screen.getByText('Codex failed')).toBeInTheDocument()
+
+        fireEvent.click(screen.getByRole('button', { name: 'Claude' }))
+
+        expect(screen.queryByText('Codex failed')).not.toBeInTheDocument()
+        expect(screen.getByRole('button', { name: 'Import into HAPI' })).toBeInTheDocument()
+    })
+
+    it('imports a Claude session and opens it immediately after success', async () => {
+        const onOpenSession = vi.fn()
+        const importSession = vi.fn().mockResolvedValue({
+            type: 'success',
+            sessionId: 'hapi-claude-imported-1',
+        })
+
+        useImportableSessionsMock.mockImplementation((_api: unknown, agent: 'codex' | 'claude') => ({
+            sessions: agent === 'claude'
+                ? [{
+                    agent: 'claude',
+                    externalSessionId: 'claude-external-2',
+                    cwd: '/tmp/claude-project-2',
+                    timestamp: 654,
+                    transcriptPath: '/tmp/claude-project-2/session.jsonl',
+                    previewTitle: 'Claude import later',
+                    previewPrompt: 'Claude prompt preview',
+                    alreadyImported: false,
+                    importedHapiSessionId: null,
+                }]
+                : [],
+            isLoading: false,
+            error: null,
+            refetch: vi.fn(),
+        }))
+        useImportableSessionActionsMock.mockImplementation((_api: unknown, agent: 'codex' | 'claude') => ({
+            importSession: agent === 'claude' ? importSession : vi.fn(),
+            refreshSession: vi.fn(),
+            importingSessionId: null,
+            refreshingSessionId: null,
+            error: null,
+        }))
+
+        renderModal({ onOpenSession })
+        fireEvent.click(screen.getByRole('button', { name: 'Claude' }))
+        fireEvent.click(screen.getByRole('button', { name: 'Import into HAPI' }))
+
+        expect(importSession).toHaveBeenCalledWith('claude-external-2')
+
+        await vi.waitFor(() => {
+            expect(onOpenSession).toHaveBeenCalledWith('hapi-claude-imported-1')
+        })
     })
 })

@@ -14,7 +14,7 @@ export function useImportableSessions(
     refetch: () => Promise<unknown>
 } {
     const query = useQuery({
-        queryKey: ['importable-sessions', agent] as const,
+        queryKey: queryKeys.importableSessions(agent),
         queryFn: async () => {
             if (!api) {
                 throw new Error('API unavailable')

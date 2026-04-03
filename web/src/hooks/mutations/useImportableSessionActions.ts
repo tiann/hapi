@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ApiClient } from '@/api/client'
 import type { ExternalSessionActionResponse, ImportableSessionAgent } from '@/types/api'
@@ -15,7 +16,7 @@ export function useImportableSessionActions(api: ApiClient | null, agent: Import
     const invalidate = async () => {
         await Promise.all([
             queryClient.invalidateQueries({ queryKey: queryKeys.sessions }),
-            queryClient.invalidateQueries({ queryKey: ['importable-sessions', agent] as const }),
+            queryClient.invalidateQueries({ queryKey: queryKeys.importableSessions(agent) }),
         ])
     }
 
@@ -38,6 +39,11 @@ export function useImportableSessionActions(api: ApiClient | null, agent: Import
         },
         onSuccess: invalidate,
     })
+
+    useEffect(() => {
+        importMutation.reset()
+        refreshMutation.reset()
+    }, [agent])
 
     return {
         importSession: importMutation.mutateAsync,

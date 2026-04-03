@@ -1,9 +1,11 @@
+import type { ImportableSessionAgent } from '@/types/api'
+
 export const queryKeys = {
     sessions: ['sessions'] as const,
     session: (sessionId: string) => ['session', sessionId] as const,
     messages: (sessionId: string) => ['messages', sessionId] as const,
     machines: ['machines'] as const,
-    importableSessions: (agent: 'codex') => ['importable-sessions', agent] as const,
+    importableSessions: (agent: ImportableSessionAgent) => ['importable-sessions', agent] as const,
     gitStatus: (sessionId: string) => ['git-status', sessionId] as const,
     sessionFiles: (sessionId: string, query: string) => ['session-files', sessionId, query] as const,
     sessionDirectory: (sessionId: string, path: string) => ['session-directory', sessionId, path] as const,

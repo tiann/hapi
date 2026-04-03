@@ -8,28 +8,26 @@ import type { ImportableSessionAgent } from '@/types/api'
 import { useTranslation } from '@/lib/use-translation'
 import { ImportableSessionList } from './ImportableSessionList'
 
-export function ImportExistingModal(props: {
+function ImportExistingAgentPanel(props: {
     api: ApiClient
+    agent: ImportableSessionAgent
     open: boolean
-    onOpenChange: (open: boolean) => void
+    search: string
     onOpenSession: (sessionId: string) => void
 }) {
     const { t } = useTranslation()
-    const [activeTab, setActiveTab] = useState<ImportableSessionAgent>('codex')
-    const [search, setSearch] = useState('')
-    const activeAgent = activeTab
-    const { sessions, isLoading, error, refetch } = useImportableSessions(props.api, activeAgent, props.open)
+    const { sessions, isLoading, error, refetch } = useImportableSessions(props.api, props.agent, props.open)
     const {
         importSession,
         refreshSession,
         importingSessionId,
         refreshingSessionId,
         error: actionError,
-    } = useImportableSessionActions(props.api, activeAgent)
+    } = useImportableSessionActions(props.api, props.agent)
     const [selectedExternalSessionId, setSelectedExternalSessionId] = useState<string | null>(null)
 
     const filteredSessions = useMemo(() => {
-        const query = search.trim().toLowerCase()
+        const query = props.search.trim().toLowerCase()
         if (!query) {
             return sessions
         }
@@ -43,13 +41,11 @@ export function ImportExistingModal(props: {
             ]
             return haystacks.some((value) => value?.toLowerCase().includes(query))
         })
-    }, [search, sessions])
+    }, [props.search, sessions])
 
     useEffect(() => {
         if (!props.open) {
-            setSearch('')
             setSelectedExternalSessionId(null)
-            setActiveTab('codex')
             return
         }
 
@@ -62,6 +58,70 @@ export function ImportExistingModal(props: {
         const result = await importSession(externalSessionId)
         props.onOpenSession(result.sessionId)
     }
+
+    return (
+        <div className="space-y-4">
+            <div className="flex justify-end">
+                <Button type="button" variant="secondary" onClick={() => void refetch()} className="sm:self-auto">
+                    {t('newSession.import.refreshList')}
+                </Button>
+            </div>
+
+            {isLoading ? (
+                <div className="rounded-lg border border-[var(--app-divider)] px-4 py-10 text-center text-sm text-[var(--app-hint)]">
+                    {t('newSession.import.loading')}
+                </div>
+            ) : error ? (
+                <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-6 text-sm text-red-700">
+                    <div className="mb-3">{error}</div>
+                    <Button type="button" variant="secondary" onClick={() => void refetch()}>
+                        {t('newSession.import.retry')}
+                    </Button>
+                </div>
+            ) : filteredSessions.length === 0 ? (
+                <div className="rounded-lg border border-dashed border-[var(--app-divider)] px-4 py-10 text-center text-sm text-[var(--app-hint)]">
+                    {sessions.length === 0
+                        ? t('newSession.import.empty')
+                        : t('newSession.import.emptySearch')}
+                </div>
+            ) : (
+                <ImportableSessionList
+                    sessions={filteredSessions}
+                    selectedExternalSessionId={selectedExternalSessionId}
+                    importingSessionId={importingSessionId}
+                    refreshingSessionId={refreshingSessionId}
+                    onSelect={setSelectedExternalSessionId}
+                    onImport={(externalSessionId) => void handleImport(externalSessionId)}
+                    onRefresh={(externalSessionId) => void refreshSession(externalSessionId)}
+                    onOpen={props.onOpenSession}
+                />
+            )}
+
+            {actionError ? (
+                <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                    {actionError}
+                </div>
+            ) : null}
+        </div>
+    )
+}
+
+export function ImportExistingModal(props: {
+    api: ApiClient
+    open: boolean
+    onOpenChange: (open: boolean) => void
+    onOpenSession: (sessionId: string) => void
+}) {
+    const { t } = useTranslation()
+    const [activeTab, setActiveTab] = useState<ImportableSessionAgent>('codex')
+    const [search, setSearch] = useState('')
+
+    useEffect(() => {
+        if (!props.open) {
+            setSearch('')
+            setActiveTab('codex')
+        }
+    }, [props.open])
 
     return (
         <Dialog open={props.open} onOpenChange={props.onOpenChange}>
@@ -102,56 +162,23 @@ export function ImportExistingModal(props: {
                     </div>
 
                     <div className="min-h-0 overflow-y-auto overflow-x-hidden px-3 py-4 sm:px-5">
-                        <div className="space-y-4">
-                            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                                <input
-                                    type="text"
-                                    value={search}
-                                    onChange={(event) => setSearch(event.target.value)}
-                                    placeholder={t('newSession.import.searchPlaceholder')}
-                                    className="w-full rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[var(--app-link)]"
-                                />
-                                <Button type="button" variant="secondary" onClick={() => void refetch()} className="sm:self-auto">
-                                    {t('newSession.import.refreshList')}
-                                </Button>
-                            </div>
-
-                            {isLoading ? (
-                                <div className="rounded-lg border border-[var(--app-divider)] px-4 py-10 text-center text-sm text-[var(--app-hint)]">
-                                    {t('newSession.import.loading')}
-                                </div>
-                            ) : error ? (
-                                <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-6 text-sm text-red-700">
-                                    <div className="mb-3">{error}</div>
-                                    <Button type="button" variant="secondary" onClick={() => void refetch()}>
-                                        {t('newSession.import.retry')}
-                                    </Button>
-                                </div>
-                            ) : filteredSessions.length === 0 ? (
-                                <div className="rounded-lg border border-dashed border-[var(--app-divider)] px-4 py-10 text-center text-sm text-[var(--app-hint)]">
-                                    {sessions.length === 0
-                                        ? t('newSession.import.empty')
-                                        : t('newSession.import.emptySearch')}
-                                </div>
-                            ) : (
-                                <ImportableSessionList
-                                    sessions={filteredSessions}
-                                    selectedExternalSessionId={selectedExternalSessionId}
-                                    importingSessionId={importingSessionId}
-                                    refreshingSessionId={refreshingSessionId}
-                                    onSelect={setSelectedExternalSessionId}
-                                    onImport={(externalSessionId) => void handleImport(externalSessionId)}
-                                    onRefresh={(externalSessionId) => void refreshSession(externalSessionId)}
-                                    onOpen={props.onOpenSession}
-                                />
-                            )}
-
-                            {actionError ? (
-                                <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-                                    {actionError}
-                                </div>
-                            ) : null}
+                        <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center">
+                            <input
+                                type="text"
+                                value={search}
+                                onChange={(event) => setSearch(event.target.value)}
+                                placeholder={t('newSession.import.searchPlaceholder')}
+                                className="w-full rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[var(--app-link)]"
+                            />
                         </div>
+                        <ImportExistingAgentPanel
+                            key={activeTab}
+                            api={props.api}
+                            agent={activeTab}
+                            open={props.open}
+                            search={search}
+                            onOpenSession={props.onOpenSession}
+                        />
                     </div>
                 </div>
             </DialogContent>
