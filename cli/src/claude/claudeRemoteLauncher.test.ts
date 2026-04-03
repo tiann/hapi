@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { RawJSONLinesSchema } from './types'
 
 const harness = vi.hoisted(() => ({
     replayMessages: [] as Array<Record<string, unknown>>,
@@ -42,7 +43,11 @@ vi.mock('./utils/sessionScanner', () => ({
         expect(opts.sessionId).toBe(harness.expectedReplaySessionId)
         expect(opts.replayExistingMessages).toBe(true)
         for (const message of harness.replayMessages) {
-            opts.onMessage(message)
+            const parsed = RawJSONLinesSchema.safeParse(message)
+            expect(parsed.success).toBe(true)
+            if (parsed.success) {
+                opts.onMessage(parsed.data)
+            }
         }
         return {
             cleanup: async () => {},

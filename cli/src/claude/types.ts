@@ -32,6 +32,9 @@ const RawJSONLinesBaseSchema = z.object({
   version: z.string().optional(),
   gitBranch: z.string().optional(),
   timestamp: z.string().optional(),
+  meta: z.object({
+    subagent: z.unknown().optional(),
+  }).passthrough().optional(),
 });
 
 // Main schema with validation for the fields used in the app
