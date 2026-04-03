@@ -256,12 +256,12 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         });
 
         const parseMcpElicitationRequest = (params: McpServerElicitationRequestParams) => {
-            const paramsRecord = asRecord(params) ?? {};
-            const mode = asString(paramsRecord.mode);
-            const message = asString(paramsRecord.message) ?? '';
-            const requestedSchema = asRecord(paramsRecord.requestedSchema);
-            const url = asString(paramsRecord.url);
-            const elicitationId = asString(paramsRecord.elicitationId);
+            const requestRecord = asRecord(params.request) ?? {};
+            const mode = asString(requestRecord.mode);
+            const message = asString(requestRecord.message) ?? '';
+            const requestedSchema = asRecord(requestRecord.requestedSchema);
+            const url = asString(requestRecord.url);
+            const elicitationId = asString(requestRecord.elicitationId);
 
             if (mode !== 'form' && mode !== 'url') {
                 throw new Error('Invalid MCP elicitation request: missing mode');

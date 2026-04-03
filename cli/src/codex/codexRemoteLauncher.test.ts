@@ -223,12 +223,14 @@ describe('codexRemoteLauncher', () => {
                 threadId: 'thread-anonymous',
                 turnId: 'turn-1',
                 serverName: 'demo-server',
-                mode: 'form',
-                message: 'Need MCP input',
-                requestedSchema: {
-                    type: 'object',
-                    properties: {
-                        token: { type: 'string' }
+                request: {
+                    mode: 'form',
+                    message: 'Need MCP input',
+                    requestedSchema: {
+                        type: 'object',
+                        properties: {
+                            token: { type: 'string' }
+                        }
                     }
                 }
             }));
@@ -287,5 +289,90 @@ describe('codexRemoteLauncher', () => {
             },
             is_error: false
         });
+    });
+
+    it('bridges nested MCP URL elicitation requests and preserves URL metadata', async () => {
+        const {
+            session,
+            codexMessages,
+            rpcHandlers
+        } = createSessionStub();
+
+        harness.startTurnHook = async () => {
+            const elicitationHandler = harness.requestHandlers.get('mcpServer/elicitation/request');
+            expect(elicitationHandler).toBeTypeOf('function');
+
+            const elicitationResult = Promise.resolve(elicitationHandler?.({
+                threadId: 'thread-anonymous',
+                turnId: 'turn-2',
+                serverName: 'github-auth',
+                request: {
+                    mode: 'url',
+                    message: 'Sign in to continue',
+                    url: 'https://example.com/auth',
+                    elicitationId: 'elicitation-123'
+                }
+            }));
+
+            await Promise.resolve();
+
+            const requestMessage = codexMessages.find((message: any) => message?.name === 'CodexMcpElicitation') as any;
+            expect(requestMessage).toBeTruthy();
+            expect(requestMessage.input).toMatchObject({
+                threadId: 'thread-anonymous',
+                turnId: 'turn-2',
+                serverName: 'github-auth',
+                mode: 'url',
+                message: 'Sign in to continue',
+                url: 'https://example.com/auth',
+                elicitationId: 'elicitation-123'
+            });
+
+            const rpcHandler = rpcHandlers.get('mcp-elicitation-response');
+            expect(rpcHandler).toBeTypeOf('function');
+
+            await rpcHandler?.({
+                id: requestMessage.callId,
+                action: 'accept',
+                content: null
+            });
+
+            await expect(elicitationResult).resolves.toEqual({
+                action: 'accept',
+                content: null
+            });
+        };
+
+        const exitReason = await codexRemoteLauncher(session as never);
+
+        expect(exitReason).toBe('exit');
+        expect(harness.registerRequestCalls).toContain('mcpServer/elicitation/request');
+    });
+
+    it('rejects malformed nested MCP elicitation payloads before bridging to the UI', async () => {
+        const {
+            session,
+            codexMessages
+        } = createSessionStub();
+
+        harness.startTurnHook = async () => {
+            const elicitationHandler = harness.requestHandlers.get('mcpServer/elicitation/request');
+            expect(elicitationHandler).toBeTypeOf('function');
+
+            await expect(Promise.resolve(elicitationHandler?.({
+                threadId: 'thread-anonymous',
+                turnId: 'turn-3',
+                serverName: 'broken-server',
+                request: {
+                    message: 'Missing mode'
+                }
+            }))).rejects.toThrow('Invalid MCP elicitation request: missing mode');
+
+            expect(codexMessages.find((message: any) => message?.name === 'CodexMcpElicitation')).toBeUndefined();
+        };
+
+        const exitReason = await codexRemoteLauncher(session as never);
+
+        expect(exitReason).toBe('exit');
     });
 });
