@@ -6,6 +6,32 @@ import { join } from 'node:path'
 import { tmpdir, homedir } from 'node:os'
 import { existsSync } from 'node:fs'
 
+function getMessageText(message: RawJSONLines): string | null {
+  if (message.type === 'summary') {
+    return message.summary
+  }
+
+  if (!message.message) {
+    return null
+  }
+
+  const content = message.message.content
+  if (typeof content === 'string') {
+    return content
+  }
+
+  if (!Array.isArray(content)) {
+    return null
+  }
+
+  return content
+    .map((block) => block && typeof block === 'object' && 'text' in block && typeof block.text === 'string'
+      ? block.text
+      : null)
+    .filter((value): value is string => value !== null)
+    .join(' ')
+}
+
 describe('sessionScanner', () => {
   let testDir: string
   let projectDir: string
@@ -37,6 +63,13 @@ describe('sessionScanner', () => {
       await rm(projectDir, { recursive: true, force: true })
     }
   })
+
+  async function writeSessionLog(sessionId: string, messages: Array<Record<string, unknown>>): Promise<void> {
+    await writeFile(
+      join(projectDir, `${sessionId}.jsonl`),
+      `${messages.map((message) => JSON.stringify(message)).join('\n')}\n`
+    )
+  }
   
   it('should process initial session and resumed session correctly', async () => {
     // TEST SCENARIO:
@@ -143,5 +176,234 @@ describe('sessionScanner', () => {
       expect(content).toContain('0-say-lol-session.jsonl')
       expect(content).toContain('readme.md')
     }
+  })
+
+  it('links child Claude transcript messages to the parent Task sidechain', async () => {
+    await writeSessionLog('parent-session', [
+      {
+        type: 'assistant',
+        uuid: 'parent-task-call',
+        parentUuid: null,
+        sessionId: 'parent-session',
+        timestamp: '2026-04-04T00:00:00.000Z',
+        message: {
+          role: 'assistant',
+          content: [{
+            type: 'tool_use',
+            id: 'task-1',
+            name: 'Task',
+            input: {
+              prompt: 'Investigate flaky test'
+            }
+          }]
+        }
+      }
+    ])
+
+    await writeSessionLog('child-session', [
+      {
+        type: 'user',
+        uuid: 'child-user-1',
+        parentUuid: null,
+        sessionId: 'child-session',
+        timestamp: '2026-04-04T00:00:01.000Z',
+        message: {
+          role: 'user',
+          content: 'Investigate flaky test'
+        }
+      },
+      {
+        type: 'assistant',
+        uuid: 'child-assistant-1',
+        parentUuid: 'child-user-1',
+        sessionId: 'child-session',
+        timestamp: '2026-04-04T00:00:02.000Z',
+        message: {
+          role: 'assistant',
+          content: [{
+            type: 'text',
+            text: 'Root cause is a stale retry cache key.'
+          }]
+        }
+      }
+    ])
+
+    scanner = await createSessionScanner({
+      sessionId: 'parent-session',
+      workingDirectory: testDir,
+      onMessage: (message) => collectedMessages.push(message),
+      replayExistingMessages: true
+    })
+
+    await scanner.cleanup()
+    scanner = null
+
+    const linkedMessages = collectedMessages.filter((message) => {
+      const subagent = message.meta?.subagent as Record<string, unknown> | undefined
+      return subagent?.sidechainKey === 'task-1'
+    })
+
+    expect(linkedMessages).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'user',
+        sessionId: 'child-session',
+        isSidechain: true,
+        meta: expect.objectContaining({
+          subagent: expect.objectContaining({
+            kind: 'message',
+            sidechainKey: 'task-1'
+          })
+        })
+      }),
+      expect.objectContaining({
+        type: 'assistant',
+        sessionId: 'child-session',
+        isSidechain: true,
+        meta: expect.objectContaining({
+          subagent: expect.objectContaining({
+            kind: 'message',
+            sidechainKey: 'task-1'
+          })
+        })
+      })
+    ]))
+  })
+
+  it('dedupes replayed linked child transcript messages that were already materialized in the parent transcript', async () => {
+    await writeSessionLog('parent-session', [
+      {
+        type: 'assistant',
+        uuid: 'parent-task-call',
+        parentUuid: null,
+        sessionId: 'parent-session',
+        timestamp: '2026-04-04T00:00:00.000Z',
+        message: {
+          role: 'assistant',
+          content: [{
+            type: 'tool_use',
+            id: 'task-1',
+            name: 'Task',
+            input: {
+              prompt: 'Investigate flaky test'
+            }
+          }]
+        }
+      },
+      {
+        type: 'user',
+        uuid: 'materialized-child-user',
+        parentUuid: null,
+        sessionId: 'parent-session',
+        isSidechain: true,
+        timestamp: '2026-04-04T00:00:01.000Z',
+        meta: {
+          subagent: {
+            kind: 'message',
+            sidechainKey: 'task-1'
+          }
+        },
+        message: {
+          role: 'user',
+          content: 'Investigate flaky test'
+        }
+      },
+      {
+        type: 'assistant',
+        uuid: 'materialized-child-assistant',
+        parentUuid: 'materialized-child-user',
+        sessionId: 'parent-session',
+        isSidechain: true,
+        timestamp: '2026-04-04T00:00:02.000Z',
+        meta: {
+          subagent: {
+            kind: 'message',
+            sidechainKey: 'task-1'
+          }
+        },
+        message: {
+          role: 'assistant',
+          content: [{
+            type: 'text',
+            text: 'Working on it now.'
+          }]
+        }
+      }
+    ])
+
+    await writeSessionLog('child-session', [
+      {
+        type: 'user',
+        uuid: 'child-user-1',
+        parentUuid: null,
+        sessionId: 'child-session',
+        timestamp: '2026-04-04T00:00:03.000Z',
+        message: {
+          role: 'user',
+          content: 'Investigate flaky test'
+        }
+      },
+      {
+        type: 'assistant',
+        uuid: 'child-assistant-1',
+        parentUuid: 'child-user-1',
+        sessionId: 'child-session',
+        timestamp: '2026-04-04T00:00:04.000Z',
+        message: {
+          role: 'assistant',
+          content: [{
+            type: 'text',
+            text: 'Working on it now.'
+          }]
+        }
+      },
+      {
+        type: 'assistant',
+        uuid: 'child-assistant-2',
+        parentUuid: 'child-assistant-1',
+        sessionId: 'child-session',
+        timestamp: '2026-04-04T00:00:05.000Z',
+        message: {
+          role: 'assistant',
+          content: [{
+            type: 'text',
+            text: 'Found the failing fixture.'
+          }]
+        }
+      }
+    ])
+
+    scanner = await createSessionScanner({
+      sessionId: 'parent-session',
+      workingDirectory: testDir,
+      onMessage: (message) => collectedMessages.push(message),
+      replayExistingMessages: true
+    })
+
+    await scanner.cleanup()
+    scanner = null
+
+    const taskMessages = collectedMessages.filter((message) => {
+      const subagent = message.meta?.subagent as Record<string, unknown> | undefined
+      return subagent?.sidechainKey === 'task-1'
+    })
+
+    expect(taskMessages.filter((message) => getMessageText(message) === 'Investigate flaky test')).toHaveLength(1)
+    expect(taskMessages.filter((message) => getMessageText(message) === 'Working on it now.')).toHaveLength(1)
+    expect(taskMessages).toContainEqual(expect.objectContaining({
+      type: 'assistant',
+      sessionId: 'child-session',
+      isSidechain: true,
+      meta: expect.objectContaining({
+        subagent: expect.objectContaining({
+          sidechainKey: 'task-1'
+        })
+      }),
+      message: expect.objectContaining({
+        content: [{
+          type: 'text',
+          text: 'Found the failing fixture.'
+        }]
+      })
+    }))
   })
 })

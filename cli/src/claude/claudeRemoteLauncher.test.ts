@@ -221,7 +221,22 @@ describe('claudeRemoteLauncher', () => {
     it('replays transcript history before live remote Claude messages', async () => {
         harness.replayMessages = [
             { type: 'user', uuid: 'u1', message: { content: 'existing user prompt' } },
-            { type: 'assistant', uuid: 'a1', message: { content: [{ type: 'text', text: 'existing assistant reply' }] } }
+            { type: 'assistant', uuid: 'a1', message: { content: [{ type: 'text', text: 'existing assistant reply' }] } },
+            {
+                type: 'assistant',
+                uuid: 'child-a1',
+                isSidechain: true,
+                sessionId: 'child-session-1',
+                meta: {
+                    subagent: {
+                        kind: 'message',
+                        sidechainKey: 'task-1'
+                    }
+                },
+                message: {
+                    content: [{ type: 'text', text: 'linked child replay reply' }]
+                }
+            }
         ]
 
         const { session: liveSession, sentClaudeMessages } = createSessionStub()
@@ -234,7 +249,7 @@ describe('claudeRemoteLauncher', () => {
                 replayExistingMessages: true
             })
         ])
-        expect(sentClaudeMessages.slice(0, 3)).toEqual([
+        expect(sentClaudeMessages.slice(0, 4)).toEqual([
             expect.objectContaining({
                 type: 'user',
                 message: expect.objectContaining({ content: 'existing user prompt' })
@@ -243,6 +258,20 @@ describe('claudeRemoteLauncher', () => {
                 type: 'assistant',
                 message: expect.objectContaining({
                     content: [{ type: 'text', text: 'existing assistant reply' }]
+                })
+            }),
+            expect.objectContaining({
+                type: 'assistant',
+                isSidechain: true,
+                sessionId: 'child-session-1',
+                meta: expect.objectContaining({
+                    subagent: expect.objectContaining({
+                        kind: 'message',
+                        sidechainKey: 'task-1'
+                    })
+                }),
+                message: expect.objectContaining({
+                    content: [{ type: 'text', text: 'linked child replay reply' }]
                 })
             }),
             expect.objectContaining({
