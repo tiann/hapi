@@ -13,7 +13,7 @@ import { EnhancedMode } from "./loop";
 import { OutgoingMessageQueue } from "./utils/OutgoingMessageQueue";
 import { createSessionScanner } from "./utils/sessionScanner";
 import { isClaudeChatVisibleMessage } from "./utils/chatVisibility";
-import { extractClaudeSubagentMeta } from "./utils/claudeSubagentAdapter";
+import { extractClaudeSubagentMeta, resetClaudeSubagentAdapterState } from "./utils/claudeSubagentAdapter";
 import type { ClaudePermissionMode } from "@hapi/protocol/types";
 import {
     RemoteLauncherBase,
@@ -357,6 +357,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
             while (!this.exitReason) {
                 logger.debug('[remote]: launch');
                 messageBuffer.addMessage('═'.repeat(40), 'status');
+                resetClaudeSubagentAdapterState();
 
                 await replayExplicitResumeTranscript();
 

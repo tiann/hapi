@@ -334,7 +334,7 @@ describe('claudeRemoteLauncher', () => {
             }),
             expect.objectContaining({
                 summary: expect.objectContaining({
-                    text: 'done'
+                    text: 'Investigate test failure'
                 })
             })
         ])

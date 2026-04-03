@@ -2,6 +2,8 @@ import { createSpawnMeta, createStatusMeta } from '@/subagents/normalize'
 import type { NormalizedSubagentMeta } from '@/subagents/types'
 import type { SDKAssistantMessage, SDKMessage } from '@/claude/sdk'
 
+const promptBySidechainKey = new Map<string, string>()
+
 function asRecord(value: unknown): Record<string, unknown> | null {
     return value && typeof value === 'object' ? value as Record<string, unknown> : null
 }
@@ -41,14 +43,21 @@ function extractTitle(message: SDKMessage): string | null {
         return fallbackPrompt
     }
 
-    const resultText = asString((message as Record<string, unknown>).result)
-    if (resultText) {
-        return resultText
-    }
-
     return asString((message as Record<string, unknown>).session_id)
         ?? asString((message as Record<string, unknown>).sessionId)
         ?? null
+}
+
+function rememberPrompt(sidechainKey: string, prompt: string | undefined): void {
+    if (!prompt) {
+        return
+    }
+
+    promptBySidechainKey.set(sidechainKey, prompt)
+}
+
+export function resetClaudeSubagentAdapterState(): void {
+    promptBySidechainKey.clear()
 }
 
 export function extractClaudeSubagentMeta(message: SDKMessage): NormalizedSubagentMeta[] {
@@ -64,9 +73,11 @@ export function extractClaudeSubagentMeta(message: SDKMessage): NormalizedSubage
                     continue
                 }
 
+                const prompt = extractPrompt(block.input)
+                rememberPrompt(block.id, prompt)
                 metas.push(createSpawnMeta({
                     sidechainKey: block.id,
-                    prompt: extractPrompt(block.input)
+                    prompt
                 }))
             }
         }
@@ -108,7 +119,7 @@ export function extractClaudeSubagentMeta(message: SDKMessage): NormalizedSubage
             status: message.subtype === 'success' ? 'completed' : 'error'
         }))
 
-        const title = extractTitle(message)
+        const title = promptBySidechainKey.get(sidechainKey) ?? extractTitle(message)
         if (title) {
             metas.push({
                 kind: 'title',
