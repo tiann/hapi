@@ -6,6 +6,7 @@ import type { SessionEffort, SessionModel } from '@/api/types';
 import type { EnhancedMode } from './loop';
 import type { PermissionMode } from './loop';
 import type { LocalLaunchExitReason } from '@/agent/localLaunchPolicy';
+import { extractExplicitResumeSessionId, isExplicitResumeSessionId } from './utils/explicitResume';
 
 type LocalLaunchFailure = {
     message: string;
@@ -147,29 +148,4 @@ export class Session extends AgentSessionBase<EnhancedMode> {
         this.claudeArgs = filteredArgs.length > 0 ? filteredArgs : undefined;
         logger.debug(`[Session] Consumed one-time flags, remaining args:`, this.claudeArgs);
     };
-}
-
-function extractExplicitResumeSessionId(args?: string[]): string | null {
-    if (!args) {
-        return null;
-    }
-
-    for (let i = 0; i < args.length; i++) {
-        if (args[i] !== '--resume') {
-            continue;
-        }
-
-        if (i + 1 >= args.length) {
-            return null;
-        }
-
-        const nextArg = args[i + 1];
-        return isExplicitResumeSessionId(nextArg) ? nextArg : null;
-    }
-
-    return null;
-}
-
-function isExplicitResumeSessionId(value: string): boolean {
-    return !value.startsWith('-') && value.includes('-');
 }

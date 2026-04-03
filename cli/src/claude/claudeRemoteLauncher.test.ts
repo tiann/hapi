@@ -5,6 +5,7 @@ const harness = vi.hoisted(() => ({
     scannerCalls: [] as Array<Record<string, unknown>>,
     remoteCalls: [] as Array<Record<string, unknown>>,
     rpcHandlers: new Map<string, (params?: unknown) => Promise<unknown> | unknown>(),
+    expectedReplaySessionId: 'resume-session-123',
 }))
 
 vi.mock('./claudeRemote', () => ({
@@ -25,9 +26,13 @@ vi.mock('./claudeRemote', () => ({
 
 vi.mock('./utils/sessionScanner', () => ({
     createSessionScanner: async (opts: {
+        sessionId: string | null;
+        replayExistingMessages?: boolean;
         onMessage: (message: Record<string, unknown>) => void
     }) => {
         harness.scannerCalls.push(opts as Record<string, unknown>)
+        expect(opts.sessionId).toBe(harness.expectedReplaySessionId)
+        expect(opts.replayExistingMessages).toBe(true)
         for (const message of harness.replayMessages) {
             opts.onMessage(message)
         }
@@ -118,7 +123,7 @@ function createSessionStub() {
         consumeExplicitRemoteResumeReplaySessionId: () => string | null;
         consumeOneTimeFlags: () => void;
     } = {
-        sessionId: 'resume-session-123',
+        sessionId: null,
         path: '/tmp/hapi-update',
         logPath: '/tmp/hapi-update/test.log',
         startedBy: 'runner' as const,
@@ -166,7 +171,7 @@ function createSessionStub() {
                 return null
             }
             explicitResumeReplayConsumed = true
-            return 'resume-session-123'
+            return session.claudeArgs[1] ?? null
         },
         consumeOneTimeFlags: () => {},
     }
@@ -184,6 +189,7 @@ describe('claudeRemoteLauncher', () => {
         harness.scannerCalls = []
         harness.remoteCalls = []
         harness.rpcHandlers = new Map()
+        harness.expectedReplaySessionId = 'resume-session-123'
     })
 
     it('replays transcript history before live remote Claude messages', async () => {
@@ -196,6 +202,12 @@ describe('claudeRemoteLauncher', () => {
 
         await claudeRemoteLauncher(session as never)
 
+        expect(harness.scannerCalls).toEqual([
+            expect.objectContaining({
+                sessionId: 'resume-session-123',
+                replayExistingMessages: true
+            })
+        ])
         expect(sentClaudeMessages.slice(0, 3)).toEqual([
             expect.objectContaining({
                 type: 'user',
