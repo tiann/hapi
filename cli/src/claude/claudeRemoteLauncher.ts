@@ -33,7 +33,6 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
     private abortFuture: Future<void> | null = null;
     private permissionHandler: PermissionHandler | null = null;
     private handleSessionFound: ((sessionId: string) => void) | null = null;
-    private didReplayExplicitResumeTranscript = false;
 
     constructor(session: Session) {
         super(process.env.DEBUG ? session.logPath : undefined);
@@ -112,16 +111,14 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
         }, permissionHandler.getResponses());
 
         const replayExplicitResumeTranscript = async (): Promise<void> => {
-            if (this.didReplayExplicitResumeTranscript || session.startingMode !== 'remote') {
+            if (session.startingMode !== 'remote') {
                 return;
             }
 
-            const resumeSessionId = session.sessionId;
+            const resumeSessionId = session.consumeExplicitRemoteResumeReplaySessionId();
             if (!resumeSessionId) {
                 return;
             }
-
-            this.didReplayExplicitResumeTranscript = true;
 
             const scanner = await createSessionScanner({
                 sessionId: resumeSessionId,

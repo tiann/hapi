@@ -86,6 +86,7 @@ function createSessionStub() {
     const sentClaudeMessages: Array<Record<string, unknown>> = []
     const sessionEvents: Array<Record<string, unknown>> = []
     const sessionFoundCallbacks = new Set<(sessionId: string) => void>()
+    let explicitResumeReplayConsumed = false
 
     const session: {
         sessionId: string | null;
@@ -114,6 +115,7 @@ function createSessionStub() {
         onSessionFound: (sessionId: string) => void;
         onThinkingChange: () => void;
         clearSessionId: () => void;
+        consumeExplicitRemoteResumeReplaySessionId: () => string | null;
         consumeOneTimeFlags: () => void;
     } = {
         sessionId: 'resume-session-123',
@@ -159,6 +161,13 @@ function createSessionStub() {
         clearSessionId: () => {
             session.sessionId = null
         },
+        consumeExplicitRemoteResumeReplaySessionId: () => {
+            if (explicitResumeReplayConsumed) {
+                return null
+            }
+            explicitResumeReplayConsumed = true
+            return 'resume-session-123'
+        },
         consumeOneTimeFlags: () => {},
     }
 
@@ -177,7 +186,7 @@ describe('claudeRemoteLauncher', () => {
         harness.rpcHandlers = new Map()
     })
 
-    it('replays transcript history during explicit Claude remote resume', async () => {
+    it('replays transcript history before live remote Claude messages', async () => {
         harness.replayMessages = [
             { type: 'user', uuid: 'u1', message: { content: 'existing user prompt' } },
             { type: 'assistant', uuid: 'a1', message: { content: [{ type: 'text', text: 'existing assistant reply' }] } }
@@ -187,7 +196,47 @@ describe('claudeRemoteLauncher', () => {
 
         await claudeRemoteLauncher(session as never)
 
-        expect(sentClaudeMessages).toContainEqual(expect.objectContaining({ type: 'user' }))
-        expect(sentClaudeMessages).toContainEqual(expect.objectContaining({ type: 'assistant' }))
+        expect(sentClaudeMessages.slice(0, 3)).toEqual([
+            expect.objectContaining({
+                type: 'user',
+                message: expect.objectContaining({ content: 'existing user prompt' })
+            }),
+            expect.objectContaining({
+                type: 'assistant',
+                message: expect.objectContaining({
+                    content: [{ type: 'text', text: 'existing assistant reply' }]
+                })
+            }),
+            expect.objectContaining({
+                type: 'assistant',
+                message: expect.objectContaining({
+                    content: [{ type: 'text', text: 'live assistant reply' }]
+                })
+            })
+        ])
+    })
+
+    it('replays transcript history only once for an explicit Claude remote resume session', async () => {
+        harness.replayMessages = [
+            { type: 'user', uuid: 'u1', message: { content: 'existing user prompt' } },
+            { type: 'assistant', uuid: 'a1', message: { content: [{ type: 'text', text: 'existing assistant reply' }] } }
+        ]
+
+        const { session, sentClaudeMessages } = createSessionStub()
+
+        await claudeRemoteLauncher(session as never)
+        const firstLaunchCount = sentClaudeMessages.length
+
+        await claudeRemoteLauncher(session as never)
+
+        expect(harness.scannerCalls).toHaveLength(1)
+        expect(sentClaudeMessages.slice(firstLaunchCount)).toEqual([
+            expect.objectContaining({
+                type: 'assistant',
+                message: expect.objectContaining({
+                    content: [{ type: 'text', text: 'live assistant reply' }]
+                })
+            })
+        ])
     })
 })
