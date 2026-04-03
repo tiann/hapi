@@ -1,6 +1,39 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+type FakeSocket = {
+    handlers: Map<string, (...args: any[]) => void>
+    emitted: Array<{ event: string, payload: unknown }>
+    on: (event: string, handler: (...args: any[]) => void) => FakeSocket
+    emit: (event: string, payload: unknown) => void
+    emitWithAck: (event: string, payload: unknown) => Promise<unknown>
+    close: () => void
+}
+
 const listImportableCodexSessionsMock = vi.hoisted(() => vi.fn())
+const fakeSocket = vi.hoisted<FakeSocket>(() => ({
+    handlers: new Map(),
+    emitted: [],
+    on(event, handler) {
+        this.handlers.set(event, handler)
+        return this
+    },
+    emit(event, payload) {
+        this.emitted.push({ event, payload })
+    },
+    emitWithAck: vi.fn(async (event: string) => {
+        if (event === 'machine-update-state') {
+            return { result: 'success', version: 1, runnerState: null }
+        }
+
+        if (event === 'machine-update-metadata') {
+            return { result: 'success', version: 1, metadata: null }
+        }
+
+        return { result: 'success', version: 1 }
+    }),
+    close() {}
+}))
+
 const importableSessionsResponse = {
     sessions: [
         {
@@ -14,6 +47,10 @@ const importableSessionsResponse = {
         }
     ]
 }
+
+vi.mock('socket.io-client', () => ({
+    io: vi.fn(() => fakeSocket)
+}))
 
 vi.mock('@/codex/utils/listImportableCodexSessions', () => ({
     listImportableCodexSessions: listImportableCodexSessionsMock
@@ -37,11 +74,14 @@ import { ApiMachineClient } from './apiMachine'
 
 describe('ApiMachineClient list-importable-sessions RPC', () => {
     beforeEach(() => {
+        fakeSocket.handlers.clear()
+        fakeSocket.emitted.length = 0
+        vi.mocked(fakeSocket.emitWithAck).mockClear()
         listImportableCodexSessionsMock.mockReset()
         listImportableCodexSessionsMock.mockResolvedValue(importableSessionsResponse)
     })
 
-    it('registers the RPC and returns codex scanner results only for codex', async () => {
+    it('registers the RPC during connect and returns codex scanner results only for codex', async () => {
         const machine = {
             id: 'machine-1',
             metadata: null,
@@ -51,35 +91,53 @@ describe('ApiMachineClient list-importable-sessions RPC', () => {
         } as never
 
         const client = new ApiMachineClient('token', machine)
-        client.setRPCHandlers({
-            spawnSession: vi.fn(),
-            stopSession: vi.fn(),
-            requestShutdown: vi.fn()
+        client.connect()
+
+        const connectHandler = fakeSocket.handlers.get('connect')
+        expect(connectHandler).toBeTypeOf('function')
+        connectHandler?.()
+
+        expect(fakeSocket.emitted).toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({
+                    event: 'rpc-register',
+                    payload: { method: 'machine-1:path-exists' }
+                }),
+                expect.objectContaining({
+                    event: 'rpc-register',
+                    payload: { method: 'machine-1:list-importable-sessions' }
+                })
+            ])
+        )
+
+        const rpcRequestHandler = fakeSocket.handlers.get('rpc-request')
+        expect(rpcRequestHandler).toBeTypeOf('function')
+
+        const codexResponse = await new Promise<string>((resolve) => {
+            rpcRequestHandler?.(
+                {
+                    method: 'machine-1:list-importable-sessions',
+                    params: JSON.stringify({ agent: 'codex' })
+                },
+                resolve
+            )
         })
 
-        const rpcManager = client as unknown as {
-            rpcHandlerManager: {
-                hasHandler: (method: string) => boolean
-                handleRequest: (request: { method: string; params: string }) => Promise<string>
-            }
-        }
+        expect(codexResponse).toBe(JSON.stringify(importableSessionsResponse))
 
-        expect(rpcManager.rpcHandlerManager.hasHandler('list-importable-sessions')).toBe(true)
+        const missingAgentResponse = await new Promise<string>((resolve) => {
+            rpcRequestHandler?.(
+                {
+                    method: 'machine-1:list-importable-sessions',
+                    params: JSON.stringify({})
+                },
+                resolve
+            )
+        })
 
-        await expect(
-            rpcManager.rpcHandlerManager.handleRequest({
-                method: 'machine-1:list-importable-sessions',
-                params: JSON.stringify({ agent: 'codex' })
-            })
-        ).resolves.toBe(JSON.stringify(importableSessionsResponse))
-
-        await expect(
-            rpcManager.rpcHandlerManager.handleRequest({
-                method: 'machine-1:list-importable-sessions',
-                params: JSON.stringify({ agent: 'claude' })
-            })
-        ).resolves.toBe(JSON.stringify({ sessions: [] }))
-
+        expect(missingAgentResponse).toBe(JSON.stringify({ sessions: [] }))
         expect(listImportableCodexSessionsMock).toHaveBeenCalledTimes(1)
+
+        client.shutdown()
     })
 })
