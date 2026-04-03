@@ -67,7 +67,7 @@ export function CodexMcpElicitationFooter(props: {
         setLoading(null)
         setError(null)
         setFormState(formSchema ? createCodexMcpElicitationFormState(formSchema) : {})
-    }, [props.tool.id, formSchema])
+    }, [props.tool.id])
 
     if (!isCodexMcpElicitationToolName(props.tool.name)) return null
     if (!parsed) return null
@@ -113,6 +113,9 @@ export function CodexMcpElicitationFooter(props: {
             }
 
             content = submission.content
+        }
+        if (parsed.mode === 'url') {
+            window.open(parsed.url, '_blank', 'noopener,noreferrer')
         }
 
         setLoading('accept')

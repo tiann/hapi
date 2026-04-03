@@ -76,6 +76,16 @@ const formInput = {
     }
 }
 
+const urlInput = {
+    requestId: 'request-url-1',
+    threadId: 'thread-1',
+    turnId: 'turn-2',
+    serverName: 'auth-server',
+    mode: 'url' as const,
+    message: 'Open the login page',
+    url: 'https://example.com/login'
+}
+
 describe('normalizeCodexMcpElicitationFormSchema', () => {
     afterEach(() => {
         vi.clearAllMocks()
@@ -198,6 +208,74 @@ describe('CodexMcpElicitationFooter', () => {
                         theme: 'dark'
                     }
                 }
+            })
+        })
+        expect(onDone).toHaveBeenCalled()
+    })
+
+    it('preserves in-progress form values across rerenders for the same tool id', () => {
+        const api = {
+            respondToMcpElicitation: vi.fn().mockResolvedValue(undefined)
+        } as unknown as ApiClient
+
+        const rendered = render(
+            <CodexMcpElicitationFooter
+                api={api}
+                sessionId="session-1"
+                tool={makeTool(formInput)}
+                disabled={false}
+                onDone={() => {}}
+            />
+        )
+
+        fireEvent.change(screen.getByLabelText(/Access token/i), { target: { value: 'draft-token' } })
+
+        rendered.rerender(
+            <CodexMcpElicitationFooter
+                api={api}
+                sessionId="session-1"
+                tool={makeTool({
+                    ...formInput,
+                    requestedSchema: {
+                        ...formInput.requestedSchema,
+                        properties: {
+                            ...formInput.requestedSchema.properties
+                        }
+                    }
+                })}
+                disabled={false}
+                onDone={() => {}}
+            />
+        )
+
+        expect(screen.getByLabelText(/Access token/i)).toHaveValue('draft-token')
+    })
+
+    it('opens the URL before accepting URL-mode elicitations', async () => {
+        const respondToMcpElicitation = vi.fn().mockResolvedValue(undefined)
+        const onDone = vi.fn()
+        const api = {
+            respondToMcpElicitation
+        } as unknown as ApiClient
+        const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null)
+
+        render(
+            <CodexMcpElicitationFooter
+                api={api}
+                sessionId="session-1"
+                tool={makeTool(urlInput)}
+                disabled={false}
+                onDone={onDone}
+            />
+        )
+
+        fireEvent.click(screen.getByRole('button', { name: 'Open and continue' }))
+
+        await waitFor(() => {
+            expect(openSpy).toHaveBeenCalledWith('https://example.com/login', '_blank', 'noopener,noreferrer')
+            expect(respondToMcpElicitation).toHaveBeenCalledWith('session-1', 'request-url-1', {
+                action: 'accept',
+                content: null
             })
         })
         expect(onDone).toHaveBeenCalled()
