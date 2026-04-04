@@ -8,7 +8,7 @@ import { CodeBlock } from '@/components/CodeBlock'
 import { MarkdownRenderer } from '@/components/MarkdownRenderer'
 import { LazyRainbowText } from '@/components/LazyRainbowText'
 import { MessageStatusIndicator } from '@/components/AssistantChat/messages/MessageStatusIndicator'
-import { CodexSubagentPreviewCard } from '@/components/AssistantChat/messages/CodexSubagentPreviewCard'
+import { SubagentPreviewCard } from '@/components/AssistantChat/messages/SubagentPreviewCard'
 import { ToolCard } from '@/components/ToolCard/ToolCard'
 import { useHappyChatContext } from '@/components/AssistantChat/context'
 import { CliOutputBlock } from '@/components/CliOutputBlock'
@@ -126,8 +126,7 @@ function HappyNestedBlockList(props: {
 
 export function getToolChildRenderMode(block: ToolCallBlock): 'none' | 'task' | 'codex-subagent-preview' | 'inline' {
     if (block.children.length === 0) return 'none'
-    if (block.tool.name === 'Task') return 'task'
-    if (block.tool.name === 'CodexSpawnAgent') return 'codex-subagent-preview'
+    if (block.tool.name === 'Task' || block.tool.name === 'CodexSpawnAgent') return 'codex-subagent-preview'
     return 'inline'
 }
 
@@ -135,8 +134,8 @@ function renderToolBlock(
     block: ToolCallBlock,
     ctx: ReturnType<typeof useHappyChatContext>
 ): ReactNode {
-    if (block.tool.name === 'CodexSpawnAgent') {
-        return <CodexSubagentPreviewCard block={block} />
+    if (block.tool.name === 'Task' || block.tool.name === 'CodexSpawnAgent') {
+        return <SubagentPreviewCard block={block} />
     }
 
     return (
@@ -184,7 +183,7 @@ function renderToolChildren(block: ToolCallBlock): ReactNode | null {
     if (mode === 'codex-subagent-preview') {
         return (
             <div className="mt-2">
-                <CodexSubagentPreviewCard block={block} />
+                <SubagentPreviewCard block={block} />
             </div>
         )
     }

@@ -75,6 +75,54 @@ function makeSpawnBlock(): ToolCallBlock {
     }
 }
 
+function makeTaskBlock(): ToolCallBlock {
+    const delegatedPrompt = 'Investigate flaky Task sidechain rendering'
+
+    return {
+        kind: 'tool-call',
+        id: 'task-block-1',
+        localId: null,
+        createdAt: 1,
+        tool: {
+            id: 'task-1',
+            name: 'Task',
+            state: 'completed',
+            input: {
+                prompt: delegatedPrompt
+            },
+            createdAt: 1,
+            startedAt: 1,
+            completedAt: 2,
+            description: null
+        },
+        meta: {
+            subagent: {
+                kind: 'spawn',
+                sidechainKey: 'task-1',
+                prompt: delegatedPrompt
+            }
+        },
+        children: [
+            {
+                kind: 'user-text',
+                id: 'task-child-user-1',
+                localId: null,
+                createdAt: 2,
+                text: delegatedPrompt,
+                meta: undefined
+            },
+            {
+                kind: 'agent-text',
+                id: 'task-child-agent-1',
+                localId: null,
+                createdAt: 3,
+                text: 'Task child answer',
+                meta: undefined
+            }
+        ]
+    }
+}
+
 function renderWithProviders(ui: ReactElement) {
     if (typeof window !== 'undefined' && !window.matchMedia) {
         window.matchMedia = () => ({
@@ -160,6 +208,32 @@ describe('CodexSubagentPreviewCard', () => {
         expect(screen.getByRole('link', { name: 'repo' })).toBeInTheDocument()
     })
 
+    it('renders HappyToolMessage as the lifecycle card for Claude Task sidechains', () => {
+        const block = makeTaskBlock()
+        const props: any = {
+            artifact: block,
+            toolName: 'Task',
+            argsText: '{}',
+            result: undefined,
+            isError: false,
+            status: { type: 'complete' }
+        }
+
+        renderWithProviders(
+            <HappyToolMessage {...props} />
+        )
+
+        expect(screen.getByText('Subagent conversation')).toBeInTheDocument()
+        expect(screen.getByText('Completed')).toBeInTheDocument()
+        expect(screen.getByText('Investigate flaky Task sidechain rendering')).toBeInTheDocument()
+        expect(screen.queryByText('Task child answer')).not.toBeInTheDocument()
+
+        fireEvent.click(screen.getByRole('button', { name: /Subagent conversation/i }))
+
+        expect(screen.getByText('Task child answer')).toBeInTheDocument()
+        expect(screen.getAllByText('Investigate flaky Task sidechain rendering').length).toBeGreaterThan(0)
+    })
+
     it('closes the dialog via the top close icon button', () => {
         const block = makeSpawnBlock()
 
@@ -175,6 +249,11 @@ describe('CodexSubagentPreviewCard', () => {
 
     it('marks CodexSpawnAgent children for preview rendering instead of inline expansion', () => {
         const block = makeSpawnBlock()
+        expect(getToolChildRenderMode(block)).toBe('codex-subagent-preview')
+    })
+
+    it('marks Task children for preview rendering instead of inline expansion', () => {
+        const block = makeTaskBlock()
         expect(getToolChildRenderMode(block)).toBe('codex-subagent-preview')
     })
 })
