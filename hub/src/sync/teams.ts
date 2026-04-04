@@ -4,6 +4,21 @@ import { unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
 import type { TeamState } from '@hapi/protocol/types'
 
 type TeamStateDelta = Partial<TeamState> & { _action?: 'create' | 'delete' | 'update' }
+type NormalizedTeamSignal =
+    | { kind: 'spawn'; sidechainKey: string; prompt?: string }
+    | { kind: 'status'; sidechainKey: string; status: 'waiting' | 'running' | 'completed' | 'error' | 'closed' }
+    | { kind: 'title'; sidechainKey: string; title: string }
+    | { kind: 'message'; sidechainKey: string }
+
+const SPAWN_TOOL_NAMES = new Set(['Task', 'CodexSpawnAgent'])
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+    return isObject(value) ? value as Record<string, unknown> : null
+}
+
+function isSupportedSpawnToolName(name: string): boolean {
+    return SPAWN_TOOL_NAMES.has(name)
+}
 
 function extractToolBlocks(content: Record<string, unknown>): Array<{ name: string; input: Record<string, unknown> }> {
     const blocks: Array<{ name: string; input: Record<string, unknown> }> = []
@@ -41,6 +56,154 @@ function extractToolBlocks(content: Record<string, unknown>): Array<{ name: stri
     }
 
     return blocks
+}
+
+function dedupeNormalizedSignals(signals: NormalizedTeamSignal[]): NormalizedTeamSignal[] {
+    const seen = new Set<string>()
+    const deduped: NormalizedTeamSignal[] = []
+
+    for (const signal of signals) {
+        const key = signal.kind === 'spawn'
+            ? `${signal.kind}:${signal.sidechainKey}:${signal.prompt ?? ''}`
+            : signal.kind === 'status'
+                ? `${signal.kind}:${signal.sidechainKey}:${signal.status}`
+                : signal.kind === 'title'
+                    ? `${signal.kind}:${signal.sidechainKey}:${signal.title}`
+                    : `${signal.kind}:${signal.sidechainKey}`
+        if (seen.has(key)) continue
+        seen.add(key)
+        deduped.push(signal)
+    }
+
+    return deduped
+}
+
+function readNormalizedSubagentSignal(subagent: unknown): NormalizedTeamSignal[] {
+    const signals: NormalizedTeamSignal[] = []
+    const items = Array.isArray(subagent) ? subagent : [subagent]
+
+    for (const item of items) {
+        if (!isObject(item)) continue
+
+        const kind = typeof item.kind === 'string' ? item.kind : null
+        const sidechainKey = typeof item.sidechainKey === 'string' ? item.sidechainKey : null
+        if (!kind || !sidechainKey) continue
+
+        if (kind === 'spawn') {
+            const prompt = typeof item.prompt === 'string' ? item.prompt : undefined
+            signals.push({ kind, sidechainKey, ...(prompt ? { prompt } : {}) })
+            continue
+        }
+
+        if (kind === 'status') {
+            const status = typeof item.status === 'string' ? item.status : null
+            if (status === 'waiting' || status === 'running' || status === 'completed' || status === 'error' || status === 'closed') {
+                signals.push({ kind, sidechainKey, status })
+            }
+            continue
+        }
+
+        if (kind === 'title') {
+            const title = typeof item.title === 'string' ? item.title : null
+            if (title) {
+                signals.push({ kind, sidechainKey, title })
+            }
+            continue
+        }
+
+        if (kind === 'message') {
+            signals.push({ kind, sidechainKey })
+        }
+    }
+
+    return signals
+}
+
+function collectNormalizedSubagentMeta(value: unknown, signals: NormalizedTeamSignal[], seen: Set<object>): void {
+    if (!isObject(value)) return
+
+    const record = value as Record<string, unknown>
+    if (seen.has(record)) return
+    seen.add(record)
+
+    const meta = asRecord(record.meta)
+    if (meta && 'subagent' in meta) {
+        signals.push(...readNormalizedSubagentSignal(meta.subagent))
+    }
+
+    for (const nested of Object.values(record)) {
+        if (Array.isArray(nested)) {
+            for (const item of nested) {
+                collectNormalizedSubagentMeta(item, signals, seen)
+            }
+            continue
+        }
+
+        collectNormalizedSubagentMeta(nested, signals, seen)
+    }
+}
+
+function extractNormalizedSubagentMeta(content: Record<string, unknown>): NormalizedTeamSignal[] {
+    const signals: NormalizedTeamSignal[] = []
+    collectNormalizedSubagentMeta(content, signals, new Set<object>())
+    return dedupeNormalizedSignals(signals)
+}
+
+function processSpawnSignal(
+    input: Record<string, unknown>,
+    signal: Extract<NormalizedTeamSignal, { kind: 'spawn' }>
+): TeamStateDelta | null {
+    const name = typeof input.name === 'string' ? input.name : null
+    if (!name) return null
+
+    const agentType = typeof input.subagent_type === 'string' ? input.subagent_type : undefined
+    const description = typeof input.description === 'string'
+        ? input.description
+        : signal.prompt ?? null
+
+    const delta: TeamStateDelta = {
+        _action: 'update',
+        members: [{ name, agentType, status: 'active' }],
+        updatedAt: Date.now()
+    }
+
+    if (description) {
+        delta.tasks = [{
+            id: `agent:${name}`,
+            title: description,
+            status: 'in_progress',
+            owner: name
+        }]
+    }
+
+    return delta
+}
+
+function extractNormalizedTeamDelta(
+    blocks: Array<{ name: string; input: Record<string, unknown> }>,
+    signals: NormalizedTeamSignal[]
+): TeamStateDelta | null {
+    const spawnSignals = signals.filter((signal): signal is Extract<NormalizedTeamSignal, { kind: 'spawn' }> => signal.kind === 'spawn')
+    if (spawnSignals.length === 0) {
+        return null
+    }
+
+    const spawnBlocks = blocks.filter((block) => isSupportedSpawnToolName(block.name))
+    if (spawnBlocks.length === 0) {
+        return null
+    }
+
+    let result: TeamStateDelta | null = null
+    const count = Math.min(spawnSignals.length, spawnBlocks.length)
+
+    for (let index = 0; index < count; index += 1) {
+        const delta = processSpawnSignal(spawnBlocks[index].input, spawnSignals[index])
+        if (delta) {
+            result = result ? mergeDelta(result, delta) : delta
+        }
+    }
+
+    return result
 }
 
 function processTeamCreate(input: Record<string, unknown>): TeamStateDelta | null {
@@ -170,8 +333,16 @@ export function extractTeamStateFromMessageContent(messageContent: unknown): Tea
     if (record.role !== 'agent' && record.role !== 'assistant') return null
     if (!isObject(record.content) || typeof record.content.type !== 'string') return null
 
+    const normalizedSignals = extractNormalizedSubagentMeta(record as Record<string, unknown>)
     const blocks = extractToolBlocks(record.content)
     if (blocks.length === 0) return null
+
+    if (normalizedSignals.length > 0) {
+        const normalizedDelta = extractNormalizedTeamDelta(blocks, normalizedSignals)
+        if (normalizedDelta) {
+            return normalizedDelta
+        }
+    }
 
     let result: TeamStateDelta | null = null
 

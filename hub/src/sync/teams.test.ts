@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test'
-import { applyTeamStateDelta } from './teams'
+import { applyTeamStateDelta, extractTeamStateFromMessageContent } from './teams'
 import type { TeamState, TeamTask } from '@hapi/protocol/types'
 
 const baseTeamState: TeamState = {
@@ -69,5 +69,65 @@ describe('applyTeamStateDelta - orphan TaskUpdate', () => {
         const tasks = getTasks(result)
         expect(tasks).toHaveLength(1)
         expect(tasks[0]).toMatchObject({ id: 'task-1', status: 'in_progress' })
+    })
+})
+
+describe('extractTeamStateFromMessageContent - normalized subagent metadata', () => {
+    test('derives team task/member updates from normalized Codex subagent metadata', () => {
+        const delta = extractTeamStateFromMessageContent({
+            role: 'agent',
+            content: {
+                type: 'codex',
+                data: {
+                    type: 'tool-call',
+                    name: 'CodexSpawnAgent',
+                    input: { name: 'worker-1' },
+                    meta: {
+                        subagent: {
+                            kind: 'spawn',
+                            sidechainKey: 'task-1',
+                            prompt: 'Investigate flaky test'
+                        }
+                    }
+                }
+            }
+        })
+
+        expect(delta).toMatchObject({
+            members: [{ name: 'worker-1', status: 'active' }],
+            tasks: [{ title: 'Investigate flaky test', status: 'in_progress', owner: 'worker-1' }]
+        })
+    })
+
+    test('derives team task/member updates from normalized Claude subagent metadata', () => {
+        const delta = extractTeamStateFromMessageContent({
+            role: 'assistant',
+            meta: {
+                subagent: {
+                    kind: 'spawn',
+                    sidechainKey: 'task-2',
+                    prompt: 'Investigate flaky test'
+                }
+            },
+            content: {
+                type: 'output',
+                data: {
+                    type: 'assistant',
+                    message: {
+                        content: [{
+                            type: 'tool_use',
+                            id: 'task-2',
+                            name: 'Task',
+                            input: { name: 'worker-1' }
+                        }]
+                    }
+                }
+            }
+        })
+
+        expect(delta).toMatchObject({
+            members: [{ name: 'worker-1', status: 'active' }],
+            tasks: [{ title: 'Investigate flaky test', status: 'in_progress', owner: 'worker-1' }]
+        })
     })
 })
