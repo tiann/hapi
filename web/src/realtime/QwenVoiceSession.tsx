@@ -17,8 +17,7 @@ import type { Session } from '@/types/api'
 
 const DEBUG = import.meta.env.DEV
 
-// DashScope Realtime WebSocket endpoint
-const DEFAULT_QWEN_WS_BASE = 'wss://dashscope.aliyuncs.com/api-ws/v1/realtime'
+// Qwen WebSocket connects via Hub proxy (browser can't set Authorization header)
 
 interface QwenState {
     ws: WebSocket | null
@@ -101,12 +100,12 @@ class QwenVoiceSessionImpl implements VoiceSession {
             permissionStream?.getTracks().forEach((t) => t.stop())
         }
 
-        // Connect WebSocket
-        // DashScope uses Authorization header, but browser WebSocket doesn't support custom headers.
-        // Use URL query param for API key (DashScope also supports this).
-        const wsBase = state.wsBaseUrl || DEFAULT_QWEN_WS_BASE
+        // Connect via Hub WebSocket proxy (DashScope requires Authorization header,
+        // which browser WebSocket API doesn't support)
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+        const proxyBase = state.wsBaseUrl || `${protocol}//${window.location.host}`
         const model = QWEN_REALTIME_MODEL
-        const wsUrl = `${wsBase}?model=${encodeURIComponent(model)}&api-key=${encodeURIComponent(state.apiKey)}`
+        const wsUrl = `${proxyBase}/api/voice/qwen-ws?model=${encodeURIComponent(model)}`
         const ws = new WebSocket(wsUrl)
         state.ws = ws
 
