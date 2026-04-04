@@ -673,7 +673,12 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     allowAnonymousTerminalEvent = true;
                 }
             } catch (error) {
-                logger.warn('Error in codex session:', error);
+                const errorMessage = error instanceof Error
+                    ? error.message
+                    : typeof error === 'string'
+                        ? error
+                        : JSON.stringify(error);
+                logger.warn(`[Codex] Error in codex session: ${errorMessage}`);
                 const isAbortError = error instanceof Error && error.name === 'AbortError';
                 turnInFlight = false;
                 allowAnonymousTerminalEvent = false;
@@ -683,8 +688,11 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     messageBuffer.addMessage('Aborted by user', 'status');
                     session.sendSessionEvent({ type: 'message', message: 'Aborted by user' });
                 } else {
-                    messageBuffer.addMessage('Process exited unexpectedly', 'status');
-                    session.sendSessionEvent({ type: 'message', message: 'Process exited unexpectedly' });
+                    const sessionErrorMessage = errorMessage
+                        ? `Codex error: ${errorMessage}`
+                        : 'Process exited unexpectedly';
+                    messageBuffer.addMessage(sessionErrorMessage, 'status');
+                    session.sendSessionEvent({ type: 'message', message: sessionErrorMessage });
                     this.currentTurnId = null;
                     this.currentThreadId = null;
                     hasThread = false;

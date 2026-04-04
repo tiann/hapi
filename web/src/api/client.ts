@@ -389,6 +389,7 @@ export class ApiClient {
         agent?: 'claude' | 'codex' | 'cursor' | 'gemini' | 'opencode',
         model?: string,
         modelReasoningEffort?: string,
+        serviceTier?: string,
         yolo?: boolean,
         sessionType?: 'simple' | 'worktree',
         worktreeName?: string,
@@ -396,7 +397,7 @@ export class ApiClient {
     ): Promise<SpawnResponse> {
         return await this.request<SpawnResponse>(`/api/machines/${encodeURIComponent(machineId)}/spawn`, {
             method: 'POST',
-            body: JSON.stringify({ directory, agent, model, modelReasoningEffort, yolo, sessionType, worktreeName, effort })
+            body: JSON.stringify({ directory, agent, model, modelReasoningEffort, serviceTier, yolo, sessionType, worktreeName, effort })
         })
     }
 

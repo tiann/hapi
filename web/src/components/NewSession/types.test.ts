@@ -1,6 +1,6 @@
 import { CLAUDE_MODEL_PRESETS, getClaudeModelLabel } from '@hapi/protocol'
 import { describe, expect, it } from 'vitest'
-import { CLAUDE_EFFORT_OPTIONS, MODEL_OPTIONS } from './types'
+import { CLAUDE_EFFORT_OPTIONS, CODEX_FAST_SERVICE_TIER, CODEX_REASONING_EFFORT_OPTIONS, MODEL_OPTIONS } from './types'
 
 describe('Claude model options', () => {
     it('includes 1m model options in the expected order', () => {
@@ -28,5 +28,23 @@ describe('Claude effort options', () => {
             { value: 'high', label: 'High' },
             { value: 'max', label: 'Max' },
         ])
+    })
+})
+
+describe('Codex reasoning effort options', () => {
+    it('exposes the full supported effort range in expected order', () => {
+        expect(CODEX_REASONING_EFFORT_OPTIONS).toEqual([
+            { value: 'default', label: 'Default' },
+            { value: 'none', label: 'None' },
+            { value: 'minimal', label: 'Minimal' },
+            { value: 'low', label: 'Low' },
+            { value: 'medium', label: 'Medium' },
+            { value: 'high', label: 'High' },
+            { value: 'xhigh', label: 'XHigh' },
+        ])
+    })
+
+    it('maps fast mode to the fast service tier', () => {
+        expect(CODEX_FAST_SERVICE_TIER).toBe('fast')
     })
 })

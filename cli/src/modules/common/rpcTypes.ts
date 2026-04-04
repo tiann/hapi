@@ -8,6 +8,7 @@ export interface SpawnSessionOptions {
     model?: string
     effort?: string
     modelReasoningEffort?: string
+    serviceTier?: string
     yolo?: boolean
     token?: string
     sessionType?: 'simple' | 'worktree'

@@ -369,6 +369,9 @@ export async function startRunner(): Promise<void> {
         if (options.modelReasoningEffort && agent === 'codex') {
           args.push('--model-reasoning-effort', options.modelReasoningEffort);
         }
+        if (options.serviceTier && agent === 'codex') {
+          args.push('--service-tier', options.serviceTier);
+        }
         if (yolo) {
           args.push('--yolo');
         }

@@ -12,7 +12,7 @@ import { isPermissionModeAllowedForFlavor } from '@hapi/protocol';
 import { CodexCollaborationModeSchema, PermissionModeSchema } from '@hapi/protocol/schemas';
 import { formatMessageWithAttachments } from '@/utils/attachmentFormatter';
 import { getInvokedCwd } from '@/utils/invokedCwd';
-import type { ReasoningEffort } from './appServerTypes';
+import type { ReasoningEffort, ServiceTier } from './appServerTypes';
 
 export { emitReadyIfIdle } from './utils/emitReadyIfIdle';
 
@@ -23,6 +23,7 @@ export async function runCodex(opts: {
     resumeSessionId?: string;
     model?: string;
     modelReasoningEffort?: ReasoningEffort;
+    serviceTier?: ServiceTier;
 }): Promise<void> {
     const workingDirectory = getInvokedCwd();
     const startedBy = opts.startedBy ?? 'terminal';
@@ -48,6 +49,7 @@ export async function runCodex(opts: {
         permissionMode: mode.permissionMode,
         model: mode.model,
         modelReasoningEffort: mode.modelReasoningEffort,
+        serviceTier: mode.serviceTier,
         collaborationMode: mode.collaborationMode
     }));
 
@@ -57,6 +59,7 @@ export async function runCodex(opts: {
     let currentPermissionMode: PermissionMode = opts.permissionMode ?? 'default';
     let currentModel = opts.model;
     const currentModelReasoningEffort = opts.modelReasoningEffort;
+    const currentServiceTier = opts.serviceTier;
     let currentCollaborationMode: EnhancedMode['collaborationMode'] = 'default';
 
     const lifecycle = createRunnerLifecycle({
@@ -83,7 +86,8 @@ export async function runCodex(opts: {
         logger.debug(
             `[Codex] Synced session config for keepalive: ` +
             `permissionMode=${currentPermissionMode}, model=${currentModel ?? 'auto'}, ` +
-            `modelReasoningEffort=${currentModelReasoningEffort ?? 'default'}, collaborationMode=${currentCollaborationMode}`
+            `modelReasoningEffort=${currentModelReasoningEffort ?? 'default'}, ` +
+            `serviceTier=${currentServiceTier ?? 'default'}, collaborationMode=${currentCollaborationMode}`
         );
     };
 
@@ -105,6 +109,7 @@ export async function runCodex(opts: {
         logger.debug(
             `[Codex] User message received with permission mode: ${currentPermissionMode}, ` +
             `model: ${currentModel ?? 'auto'}, modelReasoningEffort: ${currentModelReasoningEffort ?? 'default'}, ` +
+            `serviceTier: ${currentServiceTier ?? 'default'}, ` +
             `collaborationMode: ${currentCollaborationMode}`
         );
 
@@ -112,6 +117,7 @@ export async function runCodex(opts: {
             permissionMode: messagePermissionMode ?? 'default',
             model: currentModel,
             modelReasoningEffort: currentModelReasoningEffort,
+            serviceTier: currentServiceTier,
             collaborationMode: currentCollaborationMode
         };
         const formattedText = formatMessageWithAttachments(message.content.text, message.content.attachments);
