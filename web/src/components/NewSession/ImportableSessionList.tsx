@@ -24,10 +24,10 @@ export function ImportableSessionList(props: {
     sessions: ImportableSessionView[]
     selectedExternalSessionId: string | null
     importingSessionId: string | null
-    refreshingSessionId: string | null
+    reimportingSessionId: string | null
     onSelect: (externalSessionId: string) => void
     onImport: (externalSessionId: string) => void
-    onRefresh: (externalSessionId: string) => void
+    onReimport: (externalSessionId: string) => void
     onOpen: (sessionId: string) => void
 }) {
     const { t } = useTranslation()
@@ -108,12 +108,12 @@ export function ImportableSessionList(props: {
                                         type="button"
                                         variant="secondary"
                                         className="w-full sm:w-auto"
-                                        onClick={() => props.onRefresh(selectedSession.externalSessionId)}
-                                        disabled={props.refreshingSessionId === selectedSession.externalSessionId}
+                                        onClick={() => props.onReimport(selectedSession.externalSessionId)}
+                                        disabled={props.reimportingSessionId === selectedSession.externalSessionId}
                                     >
-                                        {props.refreshingSessionId === selectedSession.externalSessionId
-                                            ? t('newSession.import.refreshing')
-                                            : t('newSession.import.refresh')}
+                                        {props.reimportingSessionId === selectedSession.externalSessionId
+                                            ? t('newSession.import.reimporting')
+                                            : t('newSession.import.reimport')}
                                     </Button>
                                 </>
                             ) : (

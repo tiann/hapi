@@ -39,9 +39,9 @@ describe('ImportExistingModal', () => {
         })
         useImportableSessionActionsMock.mockReturnValue({
             importSession: vi.fn(),
-            refreshSession: vi.fn(),
+            reimportSession: vi.fn(),
             importingSessionId: null,
-            refreshingSessionId: null,
+            reimportingSessionId: null,
             error: null,
         })
     })
@@ -67,7 +67,7 @@ describe('ImportExistingModal', () => {
         renderModal()
 
         expect(screen.getByRole('button', { name: 'Open in HAPI' })).toBeInTheDocument()
-        expect(screen.getByRole('button', { name: 'Refresh from source' })).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: 'Re-import from source' })).toBeInTheDocument()
         expect(useImportableSessionsMock).toHaveBeenCalledWith(expect.anything(), 'codex', true)
         expect(useImportableSessionActionsMock).toHaveBeenCalledWith(expect.anything(), 'codex')
     })
@@ -95,9 +95,9 @@ describe('ImportExistingModal', () => {
         })
         useImportableSessionActionsMock.mockReturnValue({
             importSession,
-            refreshSession: vi.fn(),
+            reimportSession: vi.fn(),
             importingSessionId: null,
-            refreshingSessionId: null,
+            reimportingSessionId: null,
             error: null,
         })
 
@@ -132,9 +132,9 @@ describe('ImportExistingModal', () => {
         })
         useImportableSessionActionsMock.mockReturnValue({
             importSession,
-            refreshSession: vi.fn(),
+            reimportSession: vi.fn(),
             importingSessionId: null,
-            refreshingSessionId: null,
+            reimportingSessionId: null,
             error: null,
         })
 
@@ -146,8 +146,11 @@ describe('ImportExistingModal', () => {
         })
     })
 
-    it('switches to the Claude tab and loads Claude sessions with the same action model', () => {
-        const refreshSession = vi.fn()
+    it('switches to the Claude tab and loads Claude sessions with the same action model', async () => {
+        const reimportSession = vi.fn().mockResolvedValue({
+            type: 'success',
+            sessionId: 'hapi-claude-2',
+        })
         const onOpenSession = vi.fn()
 
         useImportableSessionsMock.mockImplementation((_api: unknown, agent: 'codex' | 'claude') => ({
@@ -170,9 +173,9 @@ describe('ImportExistingModal', () => {
         }))
         useImportableSessionActionsMock.mockImplementation((_api: unknown, agent: 'codex' | 'claude') => ({
             importSession: vi.fn(),
-            refreshSession: agent === 'claude' ? refreshSession : vi.fn(),
+            reimportSession: agent === 'claude' ? reimportSession : vi.fn(),
             importingSessionId: null,
-            refreshingSessionId: null,
+            reimportingSessionId: null,
             error: null,
         }))
 
@@ -183,13 +186,16 @@ describe('ImportExistingModal', () => {
         expect(useImportableSessionsMock).toHaveBeenLastCalledWith(expect.anything(), 'claude', true)
         expect(useImportableSessionActionsMock).toHaveBeenLastCalledWith(expect.anything(), 'claude')
         expect(screen.getByRole('button', { name: 'Open in HAPI' })).toBeInTheDocument()
-        expect(screen.getByRole('button', { name: 'Refresh from source' })).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: 'Re-import from source' })).toBeInTheDocument()
 
         fireEvent.click(screen.getByRole('button', { name: 'Open in HAPI' }))
         expect(onOpenSession).toHaveBeenCalledWith('hapi-claude-1')
 
-        fireEvent.click(screen.getByRole('button', { name: 'Refresh from source' }))
-        expect(refreshSession).toHaveBeenCalledWith('claude-external-1')
+        fireEvent.click(screen.getByRole('button', { name: 'Re-import from source' }))
+        expect(reimportSession).toHaveBeenCalledWith('claude-external-1')
+        await vi.waitFor(() => {
+            expect(onOpenSession).toHaveBeenCalledWith('hapi-claude-2')
+        })
     })
 
     it('does not leak Codex action state into the Claude tab', () => {
@@ -213,9 +219,9 @@ describe('ImportExistingModal', () => {
             const [error] = useState<string | null>(agent === 'codex' ? 'Codex failed' : null)
             return {
                 importSession: vi.fn(),
-                refreshSession: vi.fn(),
+                reimportSession: vi.fn(),
                 importingSessionId: null,
-                refreshingSessionId: null,
+                reimportingSessionId: null,
                 error,
             }
         })
@@ -257,9 +263,9 @@ describe('ImportExistingModal', () => {
         }))
         useImportableSessionActionsMock.mockImplementation((_api: unknown, agent: 'codex' | 'claude') => ({
             importSession: agent === 'claude' ? importSession : vi.fn(),
-            refreshSession: vi.fn(),
+            reimportSession: vi.fn(),
             importingSessionId: null,
-            refreshingSessionId: null,
+            reimportingSessionId: null,
             error: null,
         }))
 

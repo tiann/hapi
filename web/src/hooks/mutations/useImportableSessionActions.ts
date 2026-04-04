@@ -3,21 +3,31 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ApiClient } from '@/api/client'
 import type { ExternalSessionActionResponse, ImportableSessionAgent } from '@/types/api'
 import { queryKeys } from '@/lib/query-keys'
+import { fetchLatestMessages } from '@/lib/message-window-store'
 
 export function useImportableSessionActions(api: ApiClient | null, agent: ImportableSessionAgent): {
     importSession: (externalSessionId: string) => Promise<ExternalSessionActionResponse>
-    refreshSession: (externalSessionId: string) => Promise<ExternalSessionActionResponse>
+    reimportSession: (externalSessionId: string) => Promise<ExternalSessionActionResponse>
     importingSessionId: string | null
-    refreshingSessionId: string | null
+    reimportingSessionId: string | null
     error: string | null
 } {
     const queryClient = useQueryClient()
 
-    const invalidate = async () => {
-        await Promise.all([
+    const invalidate = async (result?: ExternalSessionActionResponse) => {
+        const tasks: Array<Promise<unknown>> = [
             queryClient.invalidateQueries({ queryKey: queryKeys.sessions }),
             queryClient.invalidateQueries({ queryKey: queryKeys.importableSessions(agent) }),
-        ])
+        ]
+
+        if (result?.sessionId) {
+            tasks.push(queryClient.invalidateQueries({ queryKey: queryKeys.session(result.sessionId) }))
+            if (api) {
+                tasks.push(fetchLatestMessages(api, result.sessionId))
+            }
+        }
+
+        await Promise.all(tasks)
     }
 
     const importMutation = useMutation({
@@ -30,7 +40,7 @@ export function useImportableSessionActions(api: ApiClient | null, agent: Import
         onSuccess: invalidate,
     })
 
-    const refreshMutation = useMutation({
+    const reimportMutation = useMutation({
         mutationFn: async (externalSessionId: string) => {
             if (!api) {
                 throw new Error('API unavailable')
@@ -42,19 +52,19 @@ export function useImportableSessionActions(api: ApiClient | null, agent: Import
 
     useEffect(() => {
         importMutation.reset()
-        refreshMutation.reset()
+        reimportMutation.reset()
     }, [agent])
 
     return {
         importSession: importMutation.mutateAsync,
-        refreshSession: refreshMutation.mutateAsync,
+        reimportSession: reimportMutation.mutateAsync,
         importingSessionId: importMutation.isPending ? importMutation.variables ?? null : null,
-        refreshingSessionId: refreshMutation.isPending ? refreshMutation.variables ?? null : null,
+        reimportingSessionId: reimportMutation.isPending ? reimportMutation.variables ?? null : null,
         error: importMutation.error instanceof Error
             ? importMutation.error.message
-            : refreshMutation.error instanceof Error
-                ? refreshMutation.error.message
-                : importMutation.error || refreshMutation.error
+            : reimportMutation.error instanceof Error
+                ? reimportMutation.error.message
+                : importMutation.error || reimportMutation.error
                     ? 'Failed to update importable session'
                     : null,
     }

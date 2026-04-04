@@ -446,8 +446,8 @@ export class SyncEngine {
             return { type: 'error', message: spawnResult.message, code: 'resume_failed' }
         }
 
-        const becameActive = await this.waitForSessionActive(spawnResult.sessionId)
-        if (!becameActive) {
+        const becameReady = await this.waitForSessionSettled(spawnResult.sessionId)
+        if (!becameReady) {
             return { type: 'error', message: 'Session failed to become active', code: 'resume_failed' }
         }
 
@@ -480,6 +480,41 @@ export class SyncEngine {
             }
             await new Promise((resolve) => setTimeout(resolve, 250))
         }
+        return false
+    }
+
+    async waitForSessionSettled(
+        sessionId: string,
+        timeoutMs: number = 15_000,
+        stableMs: number = 800
+    ): Promise<boolean> {
+        const start = Date.now()
+        let lastSeq = -1
+        let lastThinking: boolean | null = null
+        let lastChangeAt = Date.now()
+
+        while (Date.now() - start < timeoutMs) {
+            const session = this.getSession(sessionId)
+            if (!session?.active) {
+                await new Promise((resolve) => setTimeout(resolve, 250))
+                continue
+            }
+
+            const latestMessage = this.store.messages.getMessages(sessionId, 1).at(-1)
+            const latestSeq = latestMessage?.seq ?? 0
+            if (latestSeq !== lastSeq || session.thinking !== lastThinking) {
+                lastSeq = latestSeq
+                lastThinking = session.thinking
+                lastChangeAt = Date.now()
+            }
+
+            if (!session.thinking && Date.now() - lastChangeAt >= stableMs) {
+                return true
+            }
+
+            await new Promise((resolve) => setTimeout(resolve, 250))
+        }
+
         return false
     }
 
@@ -548,7 +583,7 @@ export class SyncEngine {
             }
         }
 
-        if (!(await this.waitForSessionActive(spawnResult.sessionId))) {
+        if (!(await this.waitForSessionSettled(spawnResult.sessionId))) {
             this.discardSpawnedSession(spawnResult.sessionId, namespace)
             return {
                 type: 'error',
@@ -587,27 +622,29 @@ export class SyncEngine {
         }
 
         const session = access.session
-        const metadata = session.metadata
-        if (!metadata || typeof metadata.path !== 'string') {
+        const sourceResult = await this.findImportableSessionSource(namespace, externalSessionId, agent)
+        if (sourceResult.type === 'error') {
             return {
                 type: 'error',
-                message: 'Session metadata missing path',
-                code: 'resume_unavailable'
+                message: sourceResult.message,
+                code: sourceResult.code === 'no_machine_online' || sourceResult.code === 'session_not_found'
+                    ? sourceResult.code
+                    : 'refresh_failed'
             }
         }
 
-        const targetMachine = this.selectOnlineMachine(namespace, metadata)
-        if (!targetMachine) {
+        const cwd = sourceResult.session.cwd
+        if (typeof cwd !== 'string' || cwd.length === 0) {
             return {
                 type: 'error',
-                message: 'No machine online',
-                code: 'no_machine_online'
+                message: `Importable ${this.getImportableAgentLabel(agent)} session is missing cwd`,
+                code: 'refresh_failed'
             }
         }
 
         const spawnResult = await this.rpcGateway.spawnSession(
-            targetMachine.id,
-            metadata.path,
+            sourceResult.machineId,
+            cwd,
             agent,
             session.model ?? undefined,
             undefined,
@@ -626,7 +663,7 @@ export class SyncEngine {
             }
         }
 
-        if (!(await this.waitForSessionActive(spawnResult.sessionId))) {
+        if (!(await this.waitForSessionSettled(spawnResult.sessionId))) {
             this.discardSpawnedSession(spawnResult.sessionId, namespace)
             return {
                 type: 'error',
@@ -635,23 +672,23 @@ export class SyncEngine {
             }
         }
 
-        const importedTitle = await this.resolveImportableSessionTitle(namespace, externalSessionId, agent)
+        const importedTitle = this.getBestImportableSessionTitle(sourceResult.session)
         await this.applyImportableSessionTitle(spawnResult.sessionId, importedTitle)
 
         if (spawnResult.sessionId !== access.sessionId) {
             try {
-                await this.sessionCache.mergeSessions(spawnResult.sessionId, access.sessionId, namespace)
+                this.detachExternalSessionMapping(access.sessionId, namespace, agent)
             } catch (error) {
                 this.discardSpawnedSession(spawnResult.sessionId, namespace)
                 return {
                     type: 'error',
-                    message: error instanceof Error ? error.message : 'Failed to refresh imported session',
+                    message: error instanceof Error ? error.message : 'Failed to replace imported session',
                     code: 'refresh_failed'
                 }
             }
         }
 
-        return { type: 'success', sessionId: access.sessionId }
+        return { type: 'success', sessionId: spawnResult.sessionId }
     }
 
     private async listImportableSessionsByAgent(
@@ -802,6 +839,44 @@ export class SyncEngine {
         } catch {
             // Best effort. Import/refresh must not fail just because the title write raced.
         }
+    }
+
+    private detachExternalSessionMapping(
+        sessionId: string,
+        namespace: string,
+        agent: 'codex' | 'claude'
+    ): void {
+        const session = this.getSessionByNamespace(sessionId, namespace)
+        if (!session?.metadata) {
+            return
+        }
+
+        const nextMetadata = { ...session.metadata }
+        if (agent === 'codex') {
+            delete nextMetadata.codexSessionId
+        } else {
+            delete nextMetadata.claudeSessionId
+        }
+
+        const update = (metadataVersion: number): boolean => {
+            const result = this.store.sessions.updateSessionMetadata(
+                sessionId,
+                nextMetadata,
+                metadataVersion,
+                namespace,
+                { touchUpdatedAt: false }
+            )
+            return result.result === 'success'
+        }
+
+        if (!update(session.metadataVersion)) {
+            const refreshed = this.sessionCache.refreshSession(sessionId)
+            if (!refreshed || !update(refreshed.metadataVersion)) {
+                throw new Error('Failed to detach old imported session mapping')
+            }
+        }
+
+        this.sessionCache.refreshSession(sessionId)
     }
 
     private discardSpawnedSession(sessionId: string, namespace: string): void {

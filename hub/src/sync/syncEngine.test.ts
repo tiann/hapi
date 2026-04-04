@@ -76,7 +76,7 @@ describe('SyncEngine codex import orchestration', () => {
                 capturedSpawnArgs = args
                 return { type: 'success', sessionId: 'spawned-session' }
             }
-            ;(engine as any).waitForSessionActive = async () => true
+            ;(engine as any).waitForSessionSettled = async () => true
 
             const result = await engine.importExternalCodexSession('codex-thread-1', 'default')
 
@@ -154,13 +154,13 @@ describe('SyncEngine codex import orchestration', () => {
                 )
                 return { type: 'success', sessionId: imported.id }
             }
-            ;(engine as any).waitForSessionActive = async () => true
+            ;(engine as any).waitForSessionSettled = async () => true
 
             const result = await engine.importExternalCodexSession('codex-thread-1', 'default')
 
             expect(result.type).toBe('success')
             if (result.type !== 'success') {
-                throw new Error(result.message)
+                throw new Error('expected success result')
             }
             const imported = engine.getSession(result.sessionId)
             expect(imported?.metadata?.name).toBe('Useful imported title')
@@ -215,7 +215,7 @@ describe('SyncEngine codex import orchestration', () => {
                 )
                 return { type: 'success', sessionId: spawned.id }
             }
-            ;(engine as any).waitForSessionActive = async () => false
+            ;(engine as any).waitForSessionSettled = async () => false
 
             const result = await engine.importExternalCodexSession('codex-thread-1', 'default')
 
@@ -263,7 +263,7 @@ describe('SyncEngine codex import orchestration', () => {
         }
     })
 
-    it('refreshes an imported codex session in place', async () => {
+    it('re-imports an imported codex session into a new HAPI session', async () => {
         const store = new Store(':memory:')
         const engine = new SyncEngine(
             store,
@@ -295,22 +295,43 @@ describe('SyncEngine codex import orchestration', () => {
             )
 
             let capturedSpawnArgs: unknown[] | null = null
-            let capturedMergeArgs: unknown[] | null = null
+            ;(engine as any).rpcGateway.listImportableSessions = async () => ({
+                sessions: [
+                    {
+                        agent: 'codex',
+                        externalSessionId: 'codex-thread-1',
+                        cwd: '/tmp/project',
+                        timestamp: 123,
+                        transcriptPath: '/tmp/project/.codex/sessions/codex-thread-1.jsonl',
+                        previewTitle: 'Imported title',
+                        previewPrompt: 'Imported prompt'
+                    }
+                ]
+            })
             ;(engine as any).rpcGateway.spawnSession = async (...args: unknown[]) => {
                 capturedSpawnArgs = args
-                return { type: 'success', sessionId: 'spawned-codex-session' }
+                const spawned = engine.getOrCreateSession(
+                    'spawned-codex-session',
+                    {
+                        path: '/tmp/project',
+                        host: 'localhost',
+                        machineId: 'machine-1',
+                        flavor: 'codex',
+                        codexSessionId: 'codex-thread-1'
+                    },
+                    null,
+                    'default'
+                )
+                return { type: 'success', sessionId: spawned.id }
             }
-            ;(engine as any).waitForSessionActive = async () => true
-            ;(engine as any).sessionCache.mergeSessions = async (...args: unknown[]) => {
-                capturedMergeArgs = args
-            }
+            ;(engine as any).waitForSessionSettled = async () => true
 
             const result = await engine.refreshExternalCodexSession('codex-thread-1', 'default')
 
-            expect(result).toEqual({
-                type: 'success',
-                sessionId: imported.id
-            })
+            expect(result.type).toBe('success')
+            if (result.type !== 'success') {
+                throw new Error('expected success result')
+            }
             if (capturedSpawnArgs === null) {
                 throw new Error('spawn args were not captured')
             }
@@ -330,26 +351,11 @@ describe('SyncEngine codex import orchestration', () => {
             if (refreshSpawnArgs[8] !== 'codex-thread-1') {
                 throw new Error(`unexpected resume session id: ${String(refreshSpawnArgs[8])}`)
             }
-            if (capturedMergeArgs === null) {
-                throw new Error('merge args were not captured')
-            }
-            const refreshMergeArgs = capturedMergeArgs as unknown[]
-            if (refreshMergeArgs.length !== 3) {
-                throw new Error(`unexpected merge args length: ${refreshMergeArgs.length}`)
-            }
-            if (refreshMergeArgs[0] !== 'spawned-codex-session') {
-                throw new Error(`unexpected merge old session id: ${String(refreshMergeArgs[0])}`)
-            }
-            if (refreshMergeArgs[1] !== imported.id) {
-                throw new Error(`unexpected merge new session id: ${String(refreshMergeArgs[1])}`)
-            }
-            if (refreshMergeArgs[2] !== 'default') {
-                throw new Error(`unexpected merge namespace: ${String(refreshMergeArgs[2])}`)
-            }
             expect(engine.findSessionByExternalCodexSessionId('default', 'codex-thread-1')).toEqual({
-                sessionId: imported.id
+                sessionId: result.sessionId
             })
             expect(engine.getSession(imported.id)).toBeDefined()
+            expect(engine.getSession(imported.id)?.metadata?.codexSessionId).toBeUndefined()
         } finally {
             engine.stop()
         }
@@ -414,21 +420,22 @@ describe('SyncEngine codex import orchestration', () => {
                 )
                 return { type: 'success', sessionId: spawned.id }
             }
-            ;(engine as any).waitForSessionActive = async () => true
+            ;(engine as any).waitForSessionSettled = async () => true
 
             const result = await engine.refreshExternalCodexSession('codex-thread-1', 'default')
 
-            expect(result).toEqual({
-                type: 'success',
-                sessionId: imported.id
-            })
-            expect(engine.getSession(imported.id)?.metadata?.name).toBe('Prompt fallback title')
+            expect(result.type).toBe('success')
+            if (result.type !== 'success') {
+                throw new Error('expected success result')
+            }
+            expect(engine.getSession(result.sessionId)?.metadata?.name).toBe('Prompt fallback title')
+            expect(engine.getSession(imported.id)?.metadata?.codexSessionId).toBeUndefined()
         } finally {
             engine.stop()
         }
     })
 
-    it('keeps the existing imported mapping when refresh merge fails', async () => {
+    it('keeps the existing imported mapping when re-import replacement fails', async () => {
         const store = new Store(':memory:')
         const engine = new SyncEngine(
             store,
@@ -474,90 +481,33 @@ describe('SyncEngine codex import orchestration', () => {
                 )
                 return { type: 'success', sessionId: spawned.id }
             }
-            ;(engine as any).waitForSessionActive = async () => true
-            ;(engine as any).sessionCache.mergeSessions = async () => {
-                throw new Error('merge failed')
-            }
+            ;(engine as any).waitForSessionSettled = async () => true
+            ;(engine as any).rpcGateway.listImportableSessions = async () => ({
+                sessions: [
+                    {
+                        agent: 'codex',
+                        externalSessionId: 'codex-thread-1',
+                        cwd: '/tmp/project',
+                        timestamp: 123,
+                        transcriptPath: '/tmp/project/.codex/sessions/codex-thread-1.jsonl',
+                        previewTitle: 'Imported title',
+                        previewPrompt: 'Imported prompt'
+                    }
+                ]
+            })
+            ;(engine as any).store.sessions.updateSessionMetadata = () => ({ result: 'error' })
 
             const result = await engine.refreshExternalCodexSession('codex-thread-1', 'default')
 
             expect(result).toEqual({
                 type: 'error',
-                message: 'merge failed',
+                message: 'Failed to detach old imported session mapping',
                 code: 'refresh_failed'
             })
             expect(engine.findSessionByExternalCodexSessionId('default', 'codex-thread-1')).toEqual({
                 sessionId: imported.id
             })
             expect(engine.getSessionsByNamespace('default')).toHaveLength(1)
-        } finally {
-            engine.stop()
-        }
-    })
-
-    it('rolls back partial merge work when refresh merge fails mid-transaction', async () => {
-        const store = new Store(':memory:')
-        const engine = new SyncEngine(
-            store,
-            {} as never,
-            new RpcRegistry(),
-            { broadcast() {} } as never
-        )
-
-        try {
-            const machine = engine.getOrCreateMachine(
-                'machine-1',
-                { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
-                null,
-                'default'
-            )
-            engine.handleMachineAlive({ machineId: machine.id, time: Date.now() })
-
-            const imported = engine.getOrCreateSession(
-                'imported-codex-session',
-                {
-                    path: '/tmp/project',
-                    host: 'localhost',
-                    machineId: 'machine-1',
-                    flavor: 'codex',
-                    codexSessionId: 'codex-thread-1'
-                },
-                null,
-                'default',
-                'gpt-5.4'
-            )
-            store.messages.addMessage(imported.id, { text: 'existing message' })
-
-            const originalDeleteSession = store.sessions.deleteSession.bind(store.sessions)
-            ;(engine as any).rpcGateway.spawnSession = async () => {
-                const spawned = engine.getOrCreateSession(
-                    'spawned-codex-session',
-                    {
-                        path: '/tmp/project',
-                        host: 'localhost',
-                        machineId: 'machine-1',
-                        flavor: 'codex',
-                        codexSessionId: 'codex-thread-1'
-                    },
-                    null,
-                    'default'
-                )
-                store.messages.addMessage(spawned.id, { text: 'new message' })
-                return { type: 'success', sessionId: spawned.id }
-            }
-            ;(engine as any).waitForSessionActive = async () => true
-            store.sessions.deleteSession = () => false
-
-            const result = await engine.refreshExternalCodexSession('codex-thread-1', 'default')
-
-            expect(result).toEqual({
-                type: 'error',
-                message: 'Failed to delete old session during merge',
-                code: 'refresh_failed'
-            })
-            expect(engine.getMessagesPage(imported.id, { limit: 10, beforeSeq: null }).messages).toHaveLength(1)
-
-            store.sessions.deleteSession = originalDeleteSession
         } finally {
             engine.stop()
         }
@@ -649,13 +599,13 @@ describe('SyncEngine claude import orchestration', () => {
                 )
                 return { type: 'success', sessionId: imported.id }
             }
-            ;(engine as any).waitForSessionActive = async () => true
+            ;(engine as any).waitForSessionSettled = async () => true
 
             const result = await engine.importExternalClaudeSession('claude-thread-1', 'default')
 
             expect(result.type).toBe('success')
             if (result.type !== 'success') {
-                throw new Error(result.message)
+                throw new Error('expected success result')
             }
             if (capturedSpawnArgs === null) {
                 throw new Error('spawn args were not captured')
@@ -682,7 +632,7 @@ describe('SyncEngine claude import orchestration', () => {
         }
     })
 
-    it('refreshes an imported claude session in place', async () => {
+    it('re-imports an imported claude session into a new HAPI session', async () => {
         const store = new Store(':memory:')
         const engine = new SyncEngine(
             store,
@@ -746,14 +696,14 @@ describe('SyncEngine claude import orchestration', () => {
                 )
                 return { type: 'success', sessionId: spawned.id }
             }
-            ;(engine as any).waitForSessionActive = async () => true
+            ;(engine as any).waitForSessionSettled = async () => true
 
             const result = await engine.refreshExternalClaudeSession('claude-thread-1', 'default')
 
-            expect(result).toEqual({
-                type: 'success',
-                sessionId: imported.id
-            })
+            expect(result.type).toBe('success')
+            if (result.type !== 'success') {
+                throw new Error('expected success result')
+            }
             if (capturedSpawnArgs === null) {
                 throw new Error('spawn args were not captured')
             }
@@ -774,9 +724,10 @@ describe('SyncEngine claude import orchestration', () => {
                 throw new Error(`unexpected resume session id: ${String(refreshSpawnArgs[8])}`)
             }
             expect(engine.findSessionByExternalClaudeSessionId('default', 'claude-thread-1')).toEqual({
-                sessionId: imported.id
+                sessionId: result.sessionId
             })
-            expect(engine.getSession(imported.id)?.metadata?.name).toBe('Prompt fallback title')
+            expect(engine.getSession(imported.id)?.metadata?.claudeSessionId).toBeUndefined()
+            expect(engine.getSession(result.sessionId)?.metadata?.name).toBe('Prompt fallback title')
         } finally {
             engine.stop()
         }

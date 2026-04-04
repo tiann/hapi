@@ -175,7 +175,7 @@ describe('importable sessions routes', () => {
         ])
     })
 
-    it('refreshes an external codex session in place', async () => {
+    it('re-imports an external codex session', async () => {
         const captured: Array<{ externalSessionId: string; namespace: string }> = []
         const engine = {
             refreshExternalCodexSession: async (externalSessionId: string, namespace: string) => {
@@ -237,7 +237,7 @@ describe('importable sessions routes', () => {
         ])
     })
 
-    it('refreshes an external claude session in place', async () => {
+    it('re-imports an external claude session', async () => {
         const captured: Array<{ externalSessionId: string; namespace: string }> = []
         const engine = {
             refreshExternalClaudeSession: async (externalSessionId: string, namespace: string) => {

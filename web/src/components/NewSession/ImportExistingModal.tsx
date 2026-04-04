@@ -19,9 +19,9 @@ function ImportExistingAgentPanel(props: {
     const { sessions, isLoading, error, refetch } = useImportableSessions(props.api, props.agent, props.open)
     const {
         importSession,
-        refreshSession,
+        reimportSession,
         importingSessionId,
-        refreshingSessionId,
+        reimportingSessionId,
         error: actionError,
     } = useImportableSessionActions(props.api, props.agent)
     const [selectedExternalSessionId, setSelectedExternalSessionId] = useState<string | null>(null)
@@ -59,6 +59,11 @@ function ImportExistingAgentPanel(props: {
         props.onOpenSession(result.sessionId)
     }
 
+    const handleReimport = async (externalSessionId: string) => {
+        const result = await reimportSession(externalSessionId)
+        props.onOpenSession(result.sessionId)
+    }
+
     return (
         <div className="space-y-4">
             <div className="flex justify-end">
@@ -89,10 +94,10 @@ function ImportExistingAgentPanel(props: {
                     sessions={filteredSessions}
                     selectedExternalSessionId={selectedExternalSessionId}
                     importingSessionId={importingSessionId}
-                    refreshingSessionId={refreshingSessionId}
+                    reimportingSessionId={reimportingSessionId}
                     onSelect={setSelectedExternalSessionId}
                     onImport={(externalSessionId) => void handleImport(externalSessionId)}
-                    onRefresh={(externalSessionId) => void refreshSession(externalSessionId)}
+                    onReimport={(externalSessionId) => void handleReimport(externalSessionId)}
                     onOpen={props.onOpenSession}
                 />
             )}
