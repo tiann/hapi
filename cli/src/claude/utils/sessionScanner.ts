@@ -48,6 +48,13 @@ type ClaudeLinkedChild = {
     sidechainKey: string
 }
 
+type ClaudeTaskCandidate = {
+    sidechainKey: string
+    prompt: string
+    sessionId: string | undefined
+    timestampMs: number
+}
+
 class ClaudeSessionScanner extends BaseSessionScanner<RawJSONLines> {
     private readonly projectDir: string;
     private readonly onMessage: (message: RawJSONLines) => void;
@@ -57,8 +64,9 @@ class ClaudeSessionScanner extends BaseSessionScanner<RawJSONLines> {
     private readonly scannedSessions = new Set<string>();
     private readonly replayExistingMessages: boolean;
     private readonly linkedChildSessions = new Map<string, ClaudeLinkedChild>();
-    private readonly sidechainKeyByPrompt = new Map<string, string>();
+    private readonly taskCandidateBySidechainKey = new Map<string, ClaudeTaskCandidate>();
     private readonly knownEventKeys = new Set<string>();
+    private readonly sidechainSyntheticReplayBudget = new Map<string, number>();
 
     constructor(opts: {
         sessionId: string | null;
@@ -161,15 +169,34 @@ class ClaudeSessionScanner extends BaseSessionScanner<RawJSONLines> {
             filePath: stats.filePath,
             lineIndex: entry.lineIndex
         })));
-        for (const message of stats.events) {
+        const sessionId = sessionIdFromPath(stats.filePath);
+        const linkedChild = sessionId ? this.linkedChildSessions.get(sessionId) : undefined;
+        const emittedMessages = linkedChild
+            ? stats.events.filter((message) => !this.consumeSyntheticReplayBudget(message, linkedChild.sidechainKey))
+            : stats.events;
+
+        if (!linkedChild) {
+            for (const message of stats.events) {
+                const sidechainKey = extractSidechainKey(message);
+                if (!sidechainKey || message.isSidechain !== true) {
+                    continue;
+                }
+                const aliasKey = sidechainSyntheticKey(message, sidechainKey);
+                if (!aliasKey) {
+                    continue;
+                }
+                this.sidechainSyntheticReplayBudget.set(aliasKey, (this.sidechainSyntheticReplayBudget.get(aliasKey) ?? 0) + 1);
+            }
+        }
+
+        for (const message of emittedMessages) {
             const id = message.type === 'summary' ? message.leafUuid : message.uuid;
             logger.debug(`[SESSION_SCANNER] Sending new message: type=${message.type}, uuid=${id}`);
             this.onMessage(message);
         }
         await this.linkChildSessionsFromPrompts();
         if (stats.parsedCount > 0) {
-            const sessionId = sessionIdFromPath(stats.filePath) ?? 'unknown';
-            logger.debug(`[SESSION_SCANNER] Session ${sessionId}: found=${stats.parsedCount}, skipped=${stats.skippedCount}, sent=${stats.newCount}`);
+            logger.debug(`[SESSION_SCANNER] Session ${sessionId ?? 'unknown'}: found=${stats.parsedCount}, skipped=${stats.skippedCount}, sent=${emittedMessages.length}`);
         }
     }
 
@@ -212,15 +239,33 @@ class ClaudeSessionScanner extends BaseSessionScanner<RawJSONLines> {
                     continue;
                 }
 
-                this.sidechainKeyByPrompt.set(normalizePrompt(prompt), block.id);
+                if (this.taskCandidateBySidechainKey.has(block.id)) {
+                    continue;
+                }
+
+                this.taskCandidateBySidechainKey.set(block.id, {
+                    sidechainKey: block.id,
+                    prompt: normalizePrompt(prompt),
+                    sessionId: message.sessionId,
+                    timestampMs: timestampMs(message.timestamp)
+                });
             }
         }
     }
 
     private async linkChildSessionsFromPrompts(): Promise<void> {
-        if (this.sidechainKeyByPrompt.size === 0) {
+        if (this.taskCandidateBySidechainKey.size === 0) {
             return;
         }
+
+        const childCandidateIdsByPrompt = new Map<string, string[]>();
+        const childCandidatesBySessionId = new Map<string, {
+            sessionId: string
+            sidechainKey: string
+            filePath: string
+            events: SessionFileScanEntry<RawJSONLines>[]
+            totalLines: number
+        }>();
 
         const projectEntries = await readdir(this.projectDir, { withFileTypes: true }).catch(() => []);
         for (const entry of projectEntries) {
@@ -246,28 +291,49 @@ class ClaudeSessionScanner extends BaseSessionScanner<RawJSONLines> {
                 continue;
             }
 
-            const sidechainKey = this.sidechainKeyByPrompt.get(normalizePrompt(prompt));
-            if (!sidechainKey) {
+            const taskCandidate = this.getUniqueTaskCandidateForPrompt(normalizePrompt(prompt), timestampFromEntries(events));
+            if (!taskCandidate) {
+                continue;
+            }
+
+            const candidateIds = childCandidateIdsByPrompt.get(taskCandidate.prompt) ?? [];
+            candidateIds.push(childSessionId);
+            childCandidateIdsByPrompt.set(taskCandidate.prompt, candidateIds);
+            childCandidatesBySessionId.set(childSessionId, {
+                sessionId: childSessionId,
+                sidechainKey: taskCandidate.sidechainKey,
+                filePath: childFilePath,
+                events,
+                totalLines
+            });
+        }
+
+        for (const childCandidate of childCandidatesBySessionId.values()) {
+            const taskCandidate = this.taskCandidateBySidechainKey.get(childCandidate.sidechainKey);
+            if (!taskCandidate) {
+                continue;
+            }
+            if ((childCandidateIdsByPrompt.get(taskCandidate.prompt) ?? []).length !== 1) {
                 continue;
             }
 
             const linkedChild: ClaudeLinkedChild = {
-                sessionId: childSessionId,
-                sidechainKey
+                sessionId: childCandidate.sessionId,
+                sidechainKey: childCandidate.sidechainKey
             };
-            this.linkedChildSessions.set(childSessionId, linkedChild);
-            this.ensureWatcher(childFilePath);
+            this.linkedChildSessions.set(childCandidate.sessionId, linkedChild);
+            this.ensureWatcher(childCandidate.filePath);
 
-            const decoratedEntries = events.map((scanEntry) => ({
+            const decoratedEntries = childCandidate.events.map((scanEntry) => ({
                 ...scanEntry,
-                event: linkChildMessage(scanEntry.event, sidechainKey)
+                event: linkChildMessage(scanEntry.event, childCandidate.sidechainKey)
             }));
 
             const newMessages: RawJSONLines[] = [];
             const newKeys: string[] = [];
             for (const decoratedEntry of decoratedEntries) {
                 const key = this.generateEventKey(decoratedEntry.event, {
-                    filePath: childFilePath,
+                    filePath: childCandidate.filePath,
                     lineIndex: decoratedEntry.lineIndex
                 });
                 if (this.knownEventKeys.has(key)) {
@@ -275,18 +341,46 @@ class ClaudeSessionScanner extends BaseSessionScanner<RawJSONLines> {
                 }
                 this.knownEventKeys.add(key);
                 newKeys.push(key);
+                if (this.consumeSyntheticReplayBudget(decoratedEntry.event, childCandidate.sidechainKey)) {
+                    continue;
+                }
                 newMessages.push(decoratedEntry.event);
             }
 
             for (const message of newMessages) {
                 const id = message.type === 'summary' ? message.leafUuid : message.uuid;
-                logger.debug(`[SESSION_SCANNER] Sending linked child message: type=${message.type}, uuid=${id}, sidechain=${sidechainKey}`);
+                logger.debug(`[SESSION_SCANNER] Sending linked child message: type=${message.type}, uuid=${id}, sidechain=${childCandidate.sidechainKey}`);
                 this.onMessage(message);
             }
 
             this.seedProcessedKeys(newKeys);
-            this.setCursor(childFilePath, totalLines);
+            this.setCursor(childCandidate.filePath, childCandidate.totalLines);
         }
+    }
+
+    private getUniqueTaskCandidateForPrompt(prompt: string, childTimestampMs: number): ClaudeTaskCandidate | null {
+        const matches = [...this.taskCandidateBySidechainKey.values()].filter((candidate) => (
+            candidate.prompt === prompt
+            && childTimestampMs >= candidate.timestampMs
+        ));
+        return matches.length === 1 ? matches[0] : null;
+    }
+
+    private consumeSyntheticReplayBudget(message: RawJSONLines, sidechainKey: string): boolean {
+        const aliasKey = sidechainSyntheticKey(message, sidechainKey);
+        if (!aliasKey) {
+            return false;
+        }
+        const remaining = this.sidechainSyntheticReplayBudget.get(aliasKey) ?? 0;
+        if (remaining <= 0) {
+            return false;
+        }
+        if (remaining === 1) {
+            this.sidechainSyntheticReplayBudget.delete(aliasKey);
+        } else {
+            this.sidechainSyntheticReplayBudget.set(aliasKey, remaining - 1);
+        }
+        return true;
     }
 }
 
@@ -297,7 +391,11 @@ class ClaudeSessionScanner extends BaseSessionScanner<RawJSONLines> {
 function messageKey(message: RawJSONLines, linkedSidechainKey: string | null = null): string {
     const sidechainKey = linkedSidechainKey ?? extractSidechainKey(message);
     if (sidechainKey) {
-        return `sidechain:${sidechainKey}:${stableStringify(sidechainMessageFingerprint(message))}`;
+        const uuidKey = sidechainUuidKey(message, sidechainKey);
+        if (uuidKey) {
+            return uuidKey;
+        }
+        return sidechainSyntheticKey(message, sidechainKey) ?? `sidechain:${sidechainKey}:missing`;
     }
     if (message.type === 'user') {
         return message.uuid;
@@ -417,6 +515,16 @@ function extractFirstUserPrompt(messages: RawJSONLines[]): string | null {
     return null;
 }
 
+function timestampFromEntries(entries: SessionFileScanEntry<RawJSONLines>[]): number {
+    for (const entry of entries) {
+        const value = timestampMs(entry.event.timestamp);
+        if (value > 0) {
+            return value;
+        }
+    }
+    return 0;
+}
+
 function normalizePrompt(prompt: string): string {
     return prompt.trim().replace(/\s+/g, ' ');
 }
@@ -427,11 +535,37 @@ function linkChildMessage(message: RawJSONLines, sidechainKey: string): RawJSONL
         isSidechain: true,
         meta: {
             ...(message.meta ?? {}),
-            subagent: {
-                kind: 'message',
-                sidechainKey
-            }
+            subagent: mergeSubagentMeta(message.meta?.subagent, sidechainKey)
         }
+    };
+}
+
+function mergeSubagentMeta(
+    subagent: RawJSONLines['meta'] extends { subagent?: infer T } ? T : unknown,
+    sidechainKey: string
+): unknown {
+    if (Array.isArray(subagent)) {
+        if (subagent.some((item) => item && typeof item === 'object' && (item as { sidechainKey?: unknown }).sidechainKey === sidechainKey)) {
+            return subagent;
+        }
+        return [{
+            kind: 'message',
+            sidechainKey
+        }, ...subagent];
+    }
+
+    if (subagent && typeof subagent === 'object') {
+        return {
+            ...(subagent as Record<string, unknown>),
+            sidechainKey: typeof (subagent as { sidechainKey?: unknown }).sidechainKey === 'string'
+                ? (subagent as { sidechainKey: string }).sidechainKey
+                : sidechainKey
+        };
+    }
+
+    return {
+        kind: 'message',
+        sidechainKey
     };
 }
 
@@ -478,6 +612,25 @@ function sidechainMessageFingerprint(message: RawJSONLines): Record<string, unkn
         content: message.message.content,
         toolUseResult: message.type === 'user' ? message.toolUseResult ?? null : null
     };
+}
+
+function sidechainUuidKey(message: RawJSONLines, sidechainKey: string): string | null {
+    if ('uuid' in message && typeof message.uuid === 'string' && message.uuid.length > 0) {
+        return `sidechain:${sidechainKey}:uuid:${message.uuid}`;
+    }
+    return null;
+}
+
+function sidechainSyntheticKey(message: RawJSONLines, sidechainKey: string): string | null {
+    return `sidechain:${sidechainKey}:synthetic:${stableStringify(sidechainMessageFingerprint(message))}`;
+}
+
+function timestampMs(timestamp: string | undefined): number {
+    if (!timestamp) {
+        return 0;
+    }
+    const value = Date.parse(timestamp);
+    return Number.isFinite(value) ? value : 0;
 }
 
 function stableStringify(value: unknown): string {

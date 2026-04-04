@@ -406,4 +406,198 @@ describe('sessionScanner', () => {
       })
     }))
   })
+
+  it('does not guess a child link when repeated Task prompts are ambiguous', async () => {
+    await writeSessionLog('parent-session', [
+      {
+        type: 'assistant',
+        uuid: 'parent-task-call-1',
+        parentUuid: null,
+        sessionId: 'parent-session',
+        timestamp: '2026-04-04T00:00:00.000Z',
+        message: {
+          role: 'assistant',
+          content: [{
+            type: 'tool_use',
+            id: 'task-1',
+            name: 'Task',
+            input: {
+              prompt: 'Investigate flaky test'
+            }
+          }]
+        }
+      },
+      {
+        type: 'assistant',
+        uuid: 'parent-task-call-2',
+        parentUuid: 'parent-task-call-1',
+        sessionId: 'parent-session',
+        timestamp: '2026-04-04T00:00:01.000Z',
+        message: {
+          role: 'assistant',
+          content: [{
+            type: 'tool_use',
+            id: 'task-2',
+            name: 'Task',
+            input: {
+              prompt: 'Investigate flaky test'
+            }
+          }]
+        }
+      }
+    ])
+
+    await writeSessionLog('child-session', [
+      {
+        type: 'user',
+        uuid: 'child-user-1',
+        parentUuid: null,
+        sessionId: 'child-session',
+        timestamp: '2026-04-04T00:00:02.000Z',
+        message: {
+          role: 'user',
+          content: 'Investigate flaky test'
+        }
+      },
+      {
+        type: 'assistant',
+        uuid: 'child-assistant-1',
+        parentUuid: 'child-user-1',
+        sessionId: 'child-session',
+        timestamp: '2026-04-04T00:00:03.000Z',
+        message: {
+          role: 'assistant',
+          content: [{
+            type: 'text',
+            text: 'Potentially unrelated child transcript.'
+          }]
+        }
+      }
+    ])
+
+    scanner = await createSessionScanner({
+      sessionId: 'parent-session',
+      workingDirectory: testDir,
+      onMessage: (message) => collectedMessages.push(message),
+      replayExistingMessages: true
+    })
+
+    await scanner.cleanup()
+    scanner = null
+
+    expect(collectedMessages.some((message) => message.sessionId === 'child-session')).toBe(false)
+    expect(collectedMessages.some((message) => {
+      const subagent = message.meta?.subagent as Record<string, unknown> | undefined
+      return subagent?.sidechainKey === 'task-1' || subagent?.sidechainKey === 'task-2'
+    })).toBe(false)
+  })
+
+  it('keeps repeated identical linked child transcript messages when they are distinct events', async () => {
+    await writeSessionLog('parent-session', [
+      {
+        type: 'assistant',
+        uuid: 'parent-task-call',
+        parentUuid: null,
+        sessionId: 'parent-session',
+        timestamp: '2026-04-04T00:00:00.000Z',
+        message: {
+          role: 'assistant',
+          content: [{
+            type: 'tool_use',
+            id: 'task-1',
+            name: 'Task',
+            input: {
+              prompt: 'Investigate flaky test'
+            }
+          }]
+        }
+      }
+    ])
+
+    await writeSessionLog('child-session', [
+      {
+        type: 'user',
+        uuid: 'child-user-1',
+        parentUuid: null,
+        sessionId: 'child-session',
+        timestamp: '2026-04-04T00:00:01.000Z',
+        message: {
+          role: 'user',
+          content: 'Investigate flaky test'
+        }
+      },
+      {
+        type: 'assistant',
+        uuid: 'child-assistant-1',
+        parentUuid: 'child-user-1',
+        sessionId: 'child-session',
+        timestamp: '2026-04-04T00:00:02.000Z',
+        message: {
+          role: 'assistant',
+          content: [{
+            type: 'text',
+            text: 'Still investigating.'
+          }]
+        }
+      },
+      {
+        type: 'assistant',
+        uuid: 'child-assistant-2',
+        parentUuid: 'child-assistant-1',
+        sessionId: 'child-session',
+        timestamp: '2026-04-04T00:00:03.000Z',
+        meta: {
+          subagent: {
+            kind: 'status',
+            status: 'running'
+          }
+        },
+        message: {
+          role: 'assistant',
+          content: [{
+            type: 'text',
+            text: 'Still investigating.'
+          }]
+        }
+      }
+    ])
+
+    scanner = await createSessionScanner({
+      sessionId: 'parent-session',
+      workingDirectory: testDir,
+      onMessage: (message) => collectedMessages.push(message),
+      replayExistingMessages: true
+    })
+
+    await scanner.cleanup()
+    scanner = null
+
+    const repeatedMessages = collectedMessages.filter((message) => (
+      message.sessionId === 'child-session'
+      && getMessageText(message) === 'Still investigating.'
+    ))
+
+    expect(repeatedMessages).toHaveLength(2)
+    expect(repeatedMessages).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        uuid: 'child-assistant-1',
+        meta: expect.objectContaining({
+          subagent: expect.objectContaining({
+            kind: 'message',
+            sidechainKey: 'task-1'
+          })
+        })
+      }),
+      expect.objectContaining({
+        uuid: 'child-assistant-2',
+        meta: expect.objectContaining({
+          subagent: expect.objectContaining({
+            kind: 'status',
+            status: 'running',
+            sidechainKey: 'task-1'
+          })
+        })
+      })
+    ]))
+  })
 })
