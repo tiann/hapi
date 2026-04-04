@@ -268,7 +268,7 @@ export type VoiceBackendType = 'elevenlabs' | 'gemini-live'
 
 export const DEFAULT_VOICE_BACKEND: VoiceBackendType = 'elevenlabs'
 
-export const GEMINI_LIVE_MODEL = 'gemini-3.1-flash-live-preview'
+export const GEMINI_LIVE_MODEL = 'gemini-2.5-flash-native-audio-latest'
 
 export interface VoiceToolDefinition {
     name: string
