@@ -329,4 +329,44 @@ describe('reduceChatBlocks', () => {
         )
         expect(otherBlock?.children).toHaveLength(0)
     })
+
+    it('keeps explicit sidechain transcripts visible when the parent card is missing from the current slice', () => {
+        const messages: NormalizedMessage[] = [
+            {
+                ...userText('child-user', 'root prompt', 1),
+                isSidechain: true,
+                sidechainKey: 'task-missing',
+                meta: {
+                    subagent: {
+                        kind: 'message',
+                        sidechainKey: 'task-missing'
+                    }
+                }
+            },
+            {
+                ...agentText('child-agent', 'child reply', 2),
+                isSidechain: true,
+                sidechainKey: 'task-missing',
+                meta: {
+                    subagent: {
+                        kind: 'message',
+                        sidechainKey: 'task-missing'
+                    }
+                }
+            }
+        ]
+
+        const reduced = reduceChatBlocks(messages, null)
+        const parentBlock = reduced.blocks.find(
+            (block): block is ToolCallBlock => block.kind === 'tool-call' && block.tool.id === 'task-missing'
+        )
+
+        expect(parentBlock).toBeUndefined()
+        expect(reduced.blocks).toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({ kind: 'user-text', text: 'root prompt' }),
+                expect.objectContaining({ kind: 'agent-text', text: 'child reply' })
+            ])
+        )
+    })
 })

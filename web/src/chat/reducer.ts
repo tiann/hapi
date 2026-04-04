@@ -52,6 +52,21 @@ function attachCodexSpawnChildren(
     }
 }
 
+function appendUnconsumedSidechainGroups(
+    blocks: ChatBlock[],
+    groups: Map<string, TracedMessage[]>,
+    consumedGroupIds: Set<string>,
+    reduceGroup: (groupId: string) => ChatBlock[]
+): void {
+    for (const [groupId, sidechain] of groups) {
+        if (consumedGroupIds.has(groupId) || sidechain.length === 0) {
+            continue
+        }
+
+        blocks.push(...reduceGroup(groupId))
+    }
+}
+
 function extractSpawnAgentId(block: ToolCallBlock): string | null {
     const result = isObject(block.tool.result) ? block.tool.result : null
     return result && typeof result.agent_id === 'string' && result.agent_id.length > 0
@@ -136,6 +151,7 @@ export function reduceChatBlocks(
 
     attachCodexSpawnChildren(rootResult.blocks, groups, consumedGroupIds, reduceGroup)
     reattachWaitBackfilledChildReplies(rootResult.blocks)
+    appendUnconsumedSidechainGroups(rootResult.blocks, groups, consumedGroupIds, reduceGroup)
 
     // Only create permission-only tool cards when there is no tool call/result in the transcript.
     // Also skip if the permission is older than the oldest message in the current view,
