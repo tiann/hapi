@@ -73,8 +73,8 @@ describe('applyTeamStateDelta - orphan TaskUpdate', () => {
 })
 
 describe('extractTeamStateFromMessageContent - normalized subagent metadata', () => {
-    test('derives team task/member updates from normalized Codex subagent metadata', () => {
-        const delta = extractTeamStateFromMessageContent({
+    test('derives the same normalized delta shape for Claude and Codex subagent metadata', () => {
+        const codexDelta = extractTeamStateFromMessageContent({
             role: 'agent',
             content: {
                 type: 'codex',
@@ -93,14 +93,7 @@ describe('extractTeamStateFromMessageContent - normalized subagent metadata', ()
             }
         })
 
-        expect(delta).toMatchObject({
-            members: [{ name: 'worker-1', status: 'active' }],
-            tasks: [{ title: 'Investigate flaky test', status: 'in_progress', owner: 'worker-1' }]
-        })
-    })
-
-    test('derives team task/member updates from normalized Claude subagent metadata', () => {
-        const delta = extractTeamStateFromMessageContent({
+        const claudeDelta = extractTeamStateFromMessageContent({
             role: 'assistant',
             meta: {
                 subagent: {
@@ -125,9 +118,31 @@ describe('extractTeamStateFromMessageContent - normalized subagent metadata', ()
             }
         })
 
-        expect(delta).toMatchObject({
-            members: [{ name: 'worker-1', status: 'active' }],
-            tasks: [{ title: 'Investigate flaky test', status: 'in_progress', owner: 'worker-1' }]
+        const normalizeDeltaShape = (delta: NonNullable<typeof codexDelta>) => ({
+            _action: delta._action,
+            members: delta.members?.map(({ name, agentType, status }) => ({ name, agentType, status })),
+            tasks: delta.tasks?.map(({ id, title, description, status, owner }) => ({ id, title, description, status, owner })),
+            messages: delta.messages,
+            description: delta.description,
+            teamName: delta.teamName
+        })
+
+        expect(codexDelta).toBeTruthy()
+        expect(claudeDelta).toBeTruthy()
+        expect(normalizeDeltaShape(codexDelta!)).toEqual(normalizeDeltaShape(claudeDelta!))
+        expect(normalizeDeltaShape(codexDelta!)).toEqual({
+            _action: 'update',
+            members: [{ name: 'worker-1', agentType: undefined, status: 'active' }],
+            tasks: [{
+                id: 'agent:worker-1',
+                title: 'Investigate flaky test',
+                description: undefined,
+                status: 'in_progress',
+                owner: 'worker-1'
+            }],
+            messages: undefined,
+            description: undefined,
+            teamName: undefined
         })
     })
 })
