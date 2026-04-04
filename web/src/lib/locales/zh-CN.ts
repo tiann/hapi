@@ -59,10 +59,20 @@ export default {
   'session.more': '更多操作',
 
   // Session actions
+  'session.action.info': '会话详情',
   'session.action.rename': '重命名',
   'session.action.archive': '归档',
   'session.action.delete': '删除',
   'session.action.copy': '复制',
+
+  // Session info
+  'session.info.title': '会话详情',
+  'session.info.description': '查看当前会话的只读标识和来源信息。',
+  'session.info.agent': '代理',
+  'session.info.workingDirectory': '工作目录',
+  'session.info.hapiSessionId': 'HAPI 会话 ID',
+  'session.info.sourceSessionId': '源会话 ID',
+  'session.info.notAvailable': '不可用',
 
   // Dialogs
   'dialog.rename.title': '重命名会话',

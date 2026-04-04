@@ -13,6 +13,7 @@ type SessionActionMenuProps = {
     isOpen: boolean
     onClose: () => void
     sessionActive: boolean
+    onShowInfo?: () => void
     onRename: () => void
     onArchive: () => void
     onDelete: () => void
@@ -84,6 +85,27 @@ function TrashIcon(props: { className?: string }) {
     )
 }
 
+function InfoIcon(props: { className?: string }) {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={props.className}
+        >
+            <circle cx="12" cy="12" r="10" />
+            <path d="M12 16v-4" />
+            <path d="M12 8h.01" />
+        </svg>
+    )
+}
+
 type MenuPosition = {
     top: number
     left: number
@@ -96,6 +118,7 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
         isOpen,
         onClose,
         sessionActive,
+        onShowInfo,
         onRename,
         onArchive,
         onDelete,
@@ -111,6 +134,11 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
     const handleRename = () => {
         onClose()
         onRename()
+    }
+
+    const handleShowInfo = () => {
+        onClose()
+        onShowInfo?.()
     }
 
     const handleArchive = () => {
@@ -229,6 +257,18 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
                 aria-labelledby={headingId}
                 className="flex flex-col gap-1"
             >
+                {onShowInfo ? (
+                    <button
+                        type="button"
+                        role="menuitem"
+                        className={`${baseItemClassName} hover:bg-[var(--app-subtle-bg)]`}
+                        onClick={handleShowInfo}
+                    >
+                        <InfoIcon className="text-[var(--app-hint)]" />
+                        {t('session.action.info')}
+                    </button>
+                ) : null}
+
                 <button
                     type="button"
                     role="menuitem"

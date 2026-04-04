@@ -59,10 +59,20 @@ export default {
   'session.more': 'More actions',
 
   // Session actions
+  'session.action.info': 'Session Info',
   'session.action.rename': 'Rename',
   'session.action.archive': 'Archive',
   'session.action.delete': 'Delete',
   'session.action.copy': 'Copy',
+
+  // Session info
+  'session.info.title': 'Session Info',
+  'session.info.description': 'Read-only identifiers and source details for this session.',
+  'session.info.agent': 'Agent',
+  'session.info.workingDirectory': 'Working directory',
+  'session.info.hapiSessionId': 'HAPI session id',
+  'session.info.sourceSessionId': 'Source session id',
+  'session.info.notAvailable': 'Not available',
 
   // Dialogs
   'dialog.rename.title': 'Rename Session',

@@ -4,6 +4,7 @@ import type { ApiClient } from '@/api/client'
 import { isTelegramApp } from '@/hooks/useTelegram'
 import { useSessionActions } from '@/hooks/mutations/useSessionActions'
 import { SessionActionMenu } from '@/components/SessionActionMenu'
+import { SessionInfoDialog } from '@/components/SessionInfoDialog'
 import { RenameSessionDialog } from '@/components/RenameSessionDialog'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { getSessionModelLabel } from '@/lib/sessionModelLabel'
@@ -78,6 +79,7 @@ export function SessionHeader(props: {
     const menuId = useId()
     const menuAnchorRef = useRef<HTMLButtonElement | null>(null)
     const [renameOpen, setRenameOpen] = useState(false)
+    const [infoOpen, setInfoOpen] = useState(false)
     const [archiveOpen, setArchiveOpen] = useState(false)
     const [deleteOpen, setDeleteOpen] = useState(false)
 
@@ -182,11 +184,18 @@ export function SessionHeader(props: {
                 isOpen={menuOpen}
                 onClose={() => setMenuOpen(false)}
                 sessionActive={session.active}
+                onShowInfo={() => setInfoOpen(true)}
                 onRename={() => setRenameOpen(true)}
                 onArchive={() => setArchiveOpen(true)}
                 onDelete={() => setDeleteOpen(true)}
                 anchorPoint={menuAnchorPoint}
                 menuId={menuId}
+            />
+
+            <SessionInfoDialog
+                session={session}
+                open={infoOpen}
+                onClose={() => setInfoOpen(false)}
             />
 
             <RenameSessionDialog
