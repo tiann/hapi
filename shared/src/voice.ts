@@ -136,9 +136,17 @@ For builds, tests, or large file operations:
 - Treat garbled input as phonetic hints and ask for clarification
 - Correct yourself immediately if you realize you made an error
 - Keep conversations forward-moving with fresh insights
-- Assume a technical software developer audience`
+- Assume a technical software developer audience
 
-export const VOICE_FIRST_MESSAGE = "Hey! Hapi here."
+# Language
+
+IMPORTANT: Always respond in Chinese (Mandarin). Use natural spoken Chinese.
+- Greet users in Chinese
+- Summarize technical content in Chinese
+- Use English only for proper nouns, tool names, and code identifiers
+- Keep the same warm, concise conversational style in Chinese`
+
+export const VOICE_FIRST_MESSAGE = "嗨！我是 Hapi 语音助手，有什么可以帮你的？"
 
 export const VOICE_TOOLS = [
     {
@@ -223,7 +231,7 @@ export function buildVoiceAgentConfig(): VoiceAgentConfig {
         conversation_config: {
             agent: {
                 first_message: VOICE_FIRST_MESSAGE,
-                language: 'en',
+                language: 'zh',
                 prompt: {
                     prompt: VOICE_SYSTEM_PROMPT,
                     llm: 'gemini-2.5-flash',
