@@ -49,6 +49,24 @@ function processOrphans(state: TracerState, parentUuid: string, sidechainId: str
     return results
 }
 
+function flushOrphansAsRoot(state: TracerState, parentUuid: string): TracedMessage[] {
+    const results: TracedMessage[] = []
+    const orphans = state.orphanMessages.get(parentUuid)
+    if (!orphans) return results
+    state.orphanMessages.delete(parentUuid)
+
+    for (const orphan of orphans) {
+        results.push({ ...orphan })
+
+        const uuid = getMessageUuid(orphan)
+        if (uuid) {
+            results.push(...flushOrphansAsRoot(state, uuid))
+        }
+    }
+
+    return results
+}
+
 function addPromptTaskId(state: TracerState, prompt: string, taskId: string): void {
     const existing = state.promptToTaskIds.get(prompt)
     if (existing) {
@@ -143,6 +161,10 @@ export function traceMessages(messages: NormalizedMessage[]): TracedMessage[] {
         }
 
         results.push({ ...message })
+    }
+
+    for (const [parentUuid] of state.orphanMessages) {
+        results.push(...flushOrphansAsRoot(state, parentUuid))
     }
 
     return results
