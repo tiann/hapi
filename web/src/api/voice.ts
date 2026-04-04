@@ -164,6 +164,27 @@ export async function createOrUpdateHapiAgent(apiKey: string): Promise<CreateAge
 
 // --- Pluggable voice backend API ---
 
+export interface QwenTokenResponse {
+    allowed: boolean
+    apiKey?: string
+    wsUrl?: string
+    error?: string
+}
+
+/**
+ * Fetch a DashScope API key from the hub for Qwen Realtime voice sessions.
+ */
+export async function fetchQwenToken(api: ApiClient): Promise<QwenTokenResponse> {
+    try {
+        return await api.fetchQwenToken()
+    } catch (error) {
+        return {
+            allowed: false,
+            error: error instanceof Error ? error.message : 'Network error'
+        }
+    }
+}
+
 export interface VoiceBackendResponse {
     backend: VoiceBackendType
 }
@@ -182,7 +203,9 @@ export interface GeminiTokenResponse {
 export async function fetchVoiceBackend(api: ApiClient): Promise<VoiceBackendResponse> {
     try {
         const result = await api.fetchVoiceBackend()
-        const backend = result.backend === 'gemini-live' ? 'gemini-live' : 'elevenlabs'
+        const backend = result.backend === 'gemini-live' ? 'gemini-live'
+            : result.backend === 'qwen-realtime' ? 'qwen-realtime'
+            : 'elevenlabs'
         return { backend } as VoiceBackendResponse
     } catch {
         return { backend: 'elevenlabs' }

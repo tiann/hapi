@@ -122,7 +122,9 @@ export function createVoiceRoutes(): Hono<WebAppEnv> {
     app.get('/voice/backend', (c) => {
         const raw = process.env.VOICE_BACKEND
         const backend: VoiceBackendType =
-            raw === 'gemini-live' ? 'gemini-live' : DEFAULT_VOICE_BACKEND
+            raw === 'gemini-live' ? 'gemini-live'
+            : raw === 'qwen-realtime' ? 'qwen-realtime'
+            : DEFAULT_VOICE_BACKEND
         return c.json({ backend })
     })
 
@@ -144,6 +146,23 @@ export function createVoiceRoutes(): Hono<WebAppEnv> {
             // Optional overrides for proxy/relay setups
             wsUrl: process.env.GEMINI_LIVE_WS_URL || undefined,
             baseUrl: process.env.GEMINI_API_BASE || undefined
+        })
+    })
+
+    // Get Qwen (DashScope) API key for Qwen Realtime voice sessions
+    app.post('/voice/qwen-token', async (c) => {
+        const apiKey = process.env.DASHSCOPE_API_KEY || process.env.QWEN_API_KEY
+        if (!apiKey) {
+            return c.json({
+                allowed: false,
+                error: 'DashScope API key not configured (set DASHSCOPE_API_KEY or QWEN_API_KEY)'
+            }, 400)
+        }
+
+        return c.json({
+            allowed: true,
+            apiKey,
+            wsUrl: process.env.QWEN_REALTIME_WS_URL || undefined
         })
     })
 

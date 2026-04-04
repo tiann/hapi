@@ -1,14 +1,16 @@
 import { lazy, Suspense, useEffect, useState } from 'react'
 import { RealtimeVoiceSession } from './RealtimeVoiceSession'
 import type { RealtimeVoiceSessionProps } from './RealtimeVoiceSession'
-import type { GeminiLiveVoiceSessionProps } from './GeminiLiveVoiceSession'
 import { fetchVoiceBackend } from '@/api/voice'
 import type { ApiClient } from '@/api/client'
 import type { VoiceBackendType } from '@hapi/protocol/voice'
 
-// Lazy-load Gemini session to avoid bundling @google/genai when using ElevenLabs
+// Lazy-load alternative backends to avoid bundling when using ElevenLabs
 const GeminiLiveVoiceSession = lazy(() =>
     import('./GeminiLiveVoiceSession').then((m) => ({ default: m.GeminiLiveVoiceSession }))
+)
+const QwenVoiceSession = lazy(() =>
+    import('./QwenVoiceSession').then((m) => ({ default: m.QwenVoiceSession }))
 )
 
 export type VoiceBackendSessionProps = RealtimeVoiceSessionProps & {
@@ -36,6 +38,14 @@ export function VoiceBackendSession(props: VoiceBackendSessionProps) {
         return (
             <Suspense fallback={null}>
                 <GeminiLiveVoiceSession {...props} />
+            </Suspense>
+        )
+    }
+
+    if (backend === 'qwen-realtime') {
+        return (
+            <Suspense fallback={null}>
+                <QwenVoiceSession {...props} />
             </Suspense>
         )
     }

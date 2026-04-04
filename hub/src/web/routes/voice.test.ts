@@ -38,6 +38,15 @@ describe('GET /api/voice/backend', () => {
         expect(body.backend).toBe('gemini-live')
     })
 
+    test('returns qwen-realtime when configured', async () => {
+        process.env.VOICE_BACKEND = 'qwen-realtime'
+        const app = createApp()
+        const res = await app.request('/api/voice/backend')
+        expect(res.status).toBe(200)
+        const body = await res.json() as { backend: string }
+        expect(body.backend).toBe('qwen-realtime')
+    })
+
     test('falls back to elevenlabs for unknown values', async () => {
         process.env.VOICE_BACKEND = 'unknown-backend'
         const app = createApp()
@@ -90,5 +99,50 @@ describe('POST /api/voice/gemini-token', () => {
         const body = await res.json() as { allowed: boolean; apiKey: string }
         expect(body.allowed).toBe(true)
         expect(body.apiKey).toBe('test-google-key')
+    })
+})
+
+describe('POST /api/voice/qwen-token', () => {
+    const origDash = process.env.DASHSCOPE_API_KEY
+    const origQwen = process.env.QWEN_API_KEY
+
+    afterEach(() => {
+        if (origDash === undefined) delete process.env.DASHSCOPE_API_KEY
+        else process.env.DASHSCOPE_API_KEY = origDash
+        if (origQwen === undefined) delete process.env.QWEN_API_KEY
+        else process.env.QWEN_API_KEY = origQwen
+    })
+
+    test('returns 400 when no API key configured', async () => {
+        delete process.env.DASHSCOPE_API_KEY
+        delete process.env.QWEN_API_KEY
+        const app = createApp()
+        const res = await app.request('/api/voice/qwen-token', { method: 'POST' })
+        expect(res.status).toBe(400)
+        const body = await res.json() as { allowed: boolean; error: string }
+        expect(body.allowed).toBe(false)
+        expect(body.error).toContain('not configured')
+    })
+
+    test('returns DASHSCOPE_API_KEY when set', async () => {
+        process.env.DASHSCOPE_API_KEY = 'test-dash-key'
+        delete process.env.QWEN_API_KEY
+        const app = createApp()
+        const res = await app.request('/api/voice/qwen-token', { method: 'POST' })
+        expect(res.status).toBe(200)
+        const body = await res.json() as { allowed: boolean; apiKey: string }
+        expect(body.allowed).toBe(true)
+        expect(body.apiKey).toBe('test-dash-key')
+    })
+
+    test('falls back to QWEN_API_KEY', async () => {
+        delete process.env.DASHSCOPE_API_KEY
+        process.env.QWEN_API_KEY = 'test-qwen-key'
+        const app = createApp()
+        const res = await app.request('/api/voice/qwen-token', { method: 'POST' })
+        expect(res.status).toBe(200)
+        const body = await res.json() as { allowed: boolean; apiKey: string }
+        expect(body.allowed).toBe(true)
+        expect(body.apiKey).toBe('test-qwen-key')
     })
 })
