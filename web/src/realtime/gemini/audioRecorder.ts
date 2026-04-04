@@ -1,5 +1,36 @@
-import workletUrl from './pcm-recorder.worklet.ts?url';
 import { float32ToPcm16, arrayBufferToBase64 } from './pcmUtils';
+
+// Inline worklet source to avoid Vite bundling issues with ?url imports.
+// AudioWorklet.addModule() requires a URL to valid JS, so we create a Blob URL.
+const WORKLET_SOURCE = `
+class PcmRecorderProcessor extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this.buffer = new Float32Array(4096);
+    this.idx = 0;
+  }
+  process(inputs) {
+    const input = inputs[0];
+    if (input && input.length > 0) {
+      const channel = input[0];
+      for (let i = 0; i < channel.length; i++) {
+        this.buffer[this.idx++] = channel[i];
+        if (this.idx >= 4096) {
+          this.port.postMessage({ samples: this.buffer.slice() });
+          this.idx = 0;
+        }
+      }
+    }
+    return true;
+  }
+}
+registerProcessor('pcm-recorder-processor', PcmRecorderProcessor);
+`;
+
+function createWorkletUrl(): string {
+  const blob = new Blob([WORKLET_SOURCE], { type: 'application/javascript' });
+  return URL.createObjectURL(blob);
+}
 
 export class GeminiAudioRecorder {
   private audioContext: AudioContext | null = null;
@@ -28,7 +59,10 @@ export class GeminiAudioRecorder {
       this.sourceNode = this.audioContext.createMediaStreamSource(this.mediaStream);
 
       try {
+        const workletUrl = createWorkletUrl();
         await this.audioContext.audioWorklet.addModule(workletUrl);
+        URL.revokeObjectURL(workletUrl);
+
         this.workletNode = new AudioWorkletNode(this.audioContext, 'pcm-recorder-processor');
         this.workletNode.port.onmessage = (event) => {
           const pcm16 = float32ToPcm16(event.data.samples);
@@ -37,7 +71,7 @@ export class GeminiAudioRecorder {
         };
         this.sourceNode.connect(this.workletNode);
       } catch (e) {
-        console.warn('AudioWorklet failed, falling back to ScriptProcessorNode', e);
+        console.warn('[GeminiLive] AudioWorklet failed, falling back to ScriptProcessorNode', e);
         this.scriptNode = this.audioContext.createScriptProcessor(4096, 1, 1);
         this.scriptNode.onaudioprocess = (event) => {
           const inputData = event.inputBuffer.getChannelData(0);
