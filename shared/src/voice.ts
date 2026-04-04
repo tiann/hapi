@@ -255,3 +255,75 @@ export function buildVoiceAgentConfig(): VoiceAgentConfig {
         }
     }
 }
+
+export type VoiceBackendType = 'elevenlabs' | 'gemini-live'
+
+export const DEFAULT_VOICE_BACKEND: VoiceBackendType = 'elevenlabs'
+
+export const GEMINI_LIVE_MODEL = 'gemini-3.1-flash-live-preview'
+
+export interface VoiceToolDefinition {
+    name: string
+    description: string
+    parameters: {
+        type: 'object'
+        required: string[]
+        properties: Record<string, {
+            type: string
+            description: string
+        }>
+    }
+}
+
+type VoiceToolSource = Pick<(typeof VOICE_TOOLS)[number], 'name' | 'description' | 'parameters'>
+
+function cloneVoiceToolDefinition(tool: VoiceToolSource): VoiceToolDefinition {
+    const properties: VoiceToolDefinition['parameters']['properties'] = {}
+
+    for (const [key, value] of Object.entries(tool.parameters.properties)) {
+        properties[key] = {
+            type: value.type,
+            description: value.description
+        }
+    }
+
+    return {
+        name: tool.name,
+        description: tool.description,
+        parameters: {
+            type: 'object',
+            required: [...tool.parameters.required],
+            properties
+        }
+    }
+}
+
+export const VOICE_TOOL_DEFINITIONS: VoiceToolDefinition[] = VOICE_TOOLS.map(cloneVoiceToolDefinition)
+
+export type GeminiLiveFunctionDeclaration = VoiceToolDefinition
+
+export interface GeminiLiveConfig {
+    model: string
+    systemInstruction: string
+    tools: Array<{
+        functionDeclarations: GeminiLiveFunctionDeclaration[]
+    }>
+    responseModalities: ['AUDIO']
+}
+
+export function buildGeminiLiveFunctionDeclarations(): GeminiLiveFunctionDeclaration[] {
+    return VOICE_TOOLS.map(cloneVoiceToolDefinition)
+}
+
+export function buildGeminiLiveConfig(): GeminiLiveConfig {
+    return {
+        model: GEMINI_LIVE_MODEL,
+        systemInstruction: VOICE_SYSTEM_PROMPT,
+        tools: [
+            {
+                functionDeclarations: buildGeminiLiveFunctionDeclarations()
+            }
+        ],
+        responseModalities: ['AUDIO']
+    }
+}

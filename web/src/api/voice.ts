@@ -15,6 +15,7 @@ import {
     VOICE_AGENT_NAME,
     buildVoiceAgentConfig
 } from '@hapi/protocol/voice'
+import type { VoiceBackendType } from '@hapi/protocol/voice'
 
 export interface VoiceTokenResponse {
     allowed: boolean
@@ -158,5 +159,46 @@ export async function createOrUpdateHapiAgent(apiKey: string): Promise<CreateAge
         return { success: true, agentId, created }
     } catch (e) {
         return { success: false, error: e instanceof Error ? e.message : 'Network error' }
+    }
+}
+
+// --- Pluggable voice backend API ---
+
+export interface VoiceBackendResponse {
+    backend: VoiceBackendType
+}
+
+export interface GeminiTokenResponse {
+    allowed: boolean
+    apiKey?: string
+    wsUrl?: string
+    baseUrl?: string
+    error?: string
+}
+
+/**
+ * Discover which voice backend the hub is configured to use.
+ */
+export async function fetchVoiceBackend(api: ApiClient): Promise<VoiceBackendResponse> {
+    try {
+        const result = await api.fetchVoiceBackend()
+        const backend = result.backend === 'gemini-live' ? 'gemini-live' : 'elevenlabs'
+        return { backend } as VoiceBackendResponse
+    } catch {
+        return { backend: 'elevenlabs' }
+    }
+}
+
+/**
+ * Fetch a Gemini API key from the hub for Gemini Live voice sessions.
+ */
+export async function fetchGeminiToken(api: ApiClient): Promise<GeminiTokenResponse> {
+    try {
+        return await api.fetchGeminiToken()
+    } catch (error) {
+        return {
+            allowed: false,
+            error: error instanceof Error ? error.message : 'Network error'
+        }
     }
 }

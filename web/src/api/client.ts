@@ -443,4 +443,21 @@ export class ApiClient {
             body: JSON.stringify(options || {})
         })
     }
+
+    async fetchVoiceBackend(): Promise<{ backend: string }> {
+        return await this.request('/api/voice/backend')
+    }
+
+    async fetchGeminiToken(): Promise<{
+        allowed: boolean
+        apiKey?: string
+        wsUrl?: string
+        baseUrl?: string
+        error?: string
+    }> {
+        return await this.request('/api/voice/gemini-token', {
+            method: 'POST',
+            body: JSON.stringify({})
+        })
+    }
 }
