@@ -177,6 +177,17 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 : undefined;
         }, {
             onRequest: ({ id, toolName, input }) => {
+                if (toolName === 'request_user_input') {
+                    session.sendAgentMessage({
+                        type: 'tool-call',
+                        name: 'request_user_input',
+                        callId: id,
+                        input,
+                        id: randomUUID()
+                    });
+                    return;
+                }
+
                 const inputRecord = input && typeof input === 'object' ? input as Record<string, unknown> : {};
                 const message = typeof inputRecord.message === 'string' ? inputRecord.message : undefined;
                 const rawCommand = inputRecord.command;
@@ -201,14 +212,16 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     id: randomUUID()
                 });
             },
-            onComplete: ({ id, decision, reason, approved }) => {
+            onComplete: ({ id, toolName, decision, reason, approved, answers }) => {
                 session.sendAgentMessage({
                     type: 'tool-call-result',
                     callId: id,
-                    output: {
-                        decision,
-                        reason
-                    },
+                    output: toolName === 'request_user_input'
+                        ? { answers }
+                        : {
+                            decision,
+                            reason
+                        },
                     is_error: !approved,
                     id: randomUUID()
                 });
@@ -495,7 +508,22 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
 
         registerAppServerPermissionHandlers({
             client: appServerClient,
-            permissionHandler
+            permissionHandler,
+            onUserInputRequest: async ({ id, input }) => {
+                try {
+                    const answers = await permissionHandler.handleUserInputRequest(id, input);
+                    return {
+                        decision: 'accept',
+                        answers
+                    };
+                } catch (error) {
+                    const message = error instanceof Error ? error.message : String(error);
+                    logger.debug(`[Codex] request_user_input failed: ${message}`);
+                    return {
+                        decision: 'cancel'
+                    };
+                }
+            }
         });
 
         appServerClient.setNotificationHandler((method, params) => {

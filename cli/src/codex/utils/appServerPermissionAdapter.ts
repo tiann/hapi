@@ -37,7 +37,10 @@ function mapDecision(decision: PermissionDecision): { decision: string } {
 export function registerAppServerPermissionHandlers(args: {
     client: CodexAppServerClient;
     permissionHandler: CodexPermissionHandler;
-    onUserInputRequest?: (request: unknown) => Promise<Record<string, string[]>>;
+    onUserInputRequest?: (request: { id: string; input: unknown }) => Promise<
+        | { decision: 'accept'; answers: Record<string, string[]> | Record<string, { answers: string[] }> }
+        | { decision: 'decline' | 'cancel' }
+    >;
 }): void {
     const { client, permissionHandler, onUserInputRequest } = args;
 
@@ -80,15 +83,23 @@ export function registerAppServerPermissionHandlers(args: {
     });
 
     client.registerRequestHandler('item/tool/requestUserInput', async (params) => {
+        const record = asRecord(params) ?? {};
+        const requestId = asString(record.itemId) ?? randomUUID();
+
         if (!onUserInputRequest) {
             logger.debug('[CodexAppServer] No user-input handler registered; cancelling request');
             return { decision: 'cancel' };
         }
 
-        const answers = await onUserInputRequest(params);
-        return {
-            decision: 'accept',
-            answers
-        };
+        const result = await onUserInputRequest({
+            id: requestId,
+            input: params
+        });
+
+        if (result.decision !== 'accept') {
+            return { decision: result.decision };
+        }
+
+        return result;
     });
 }
