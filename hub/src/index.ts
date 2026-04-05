@@ -24,6 +24,7 @@ import { PushNotificationChannel } from './push/pushNotificationChannel'
 import { VisibilityTracker } from './visibility/visibilityTracker'
 import { TunnelManager } from './tunnel'
 import { waitForTunnelTlsReady } from './tunnel/tlsGate'
+import { buildRelayDirectAccessUrl, buildTokenizedUrl } from './utils/directAccess'
 import QRCode from 'qrcode'
 import type { Server as BunServer } from 'bun'
 import type { WebSocketData } from '@socket.io/bun-engine'
@@ -113,6 +114,8 @@ async function main() {
     const relayFlag = resolveRelayFlag(process.argv)
     const officialWebUrl = process.env.HAPI_OFFICIAL_WEB_URL || 'https://app.hapi.run'
     const config = await createConfiguration()
+    const localUrl = `http://localhost:${config.listenPort}`
+    const localDirectAccessUrl = buildTokenizedUrl(localUrl, config.cliApiToken)
     const baseCorsOrigins = normalizeOrigins(config.corsOrigins)
     const relayCorsOrigin = normalizeOrigin(officialWebUrl)
     const corsOrigins = relayFlag.enabled
@@ -225,7 +228,8 @@ async function main() {
 
     console.log('')
     console.log('[Web] Hub listening on :' + config.listenPort)
-    console.log('[Web] Local:  http://localhost:' + config.listenPort)
+    console.log('[Web] Local:  ' + localUrl)
+    console.log('[Web] Login:  ' + localDirectAccessUrl)
 
     // Initialize tunnel AFTER web service is ready
     let tunnelUrl: string | null = null
@@ -257,12 +261,7 @@ async function main() {
 
             console.log('[Web] Public: ' + tunnelUrl)
 
-            // Generate direct access link with hub and token
-            const params = new URLSearchParams({
-                hub: tunnelUrl,
-                token: config.cliApiToken
-            })
-            const directAccessUrl = `${officialWebUrl}/?${params.toString()}`
+            const directAccessUrl = buildRelayDirectAccessUrl(officialWebUrl, tunnelUrl, config.cliApiToken)
 
             console.log('')
             console.log('Open in browser:')
