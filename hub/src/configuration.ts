@@ -9,6 +9,12 @@
  * - CLI_API_TOKEN: Shared secret for hapi CLI authentication (auto-generated if not set)
  * - TELEGRAM_BOT_TOKEN: Telegram Bot API token from @BotFather
  * - TELEGRAM_NOTIFICATION: Enable/disable Telegram notifications (default: true)
+ * - FEISHU_APP_ID: Feishu/Lark app ID
+ * - FEISHU_APP_SECRET: Feishu/Lark app secret
+ * - FEISHU_ENCRYPT_KEY: Feishu/Lark message encryption key (optional)
+ * - FEISHU_VERIFICATION_TOKEN: Feishu/Lark verification token (optional)
+ * - FEISHU_ENABLED: Enable/disable Feishu integration (default: true if credentials present)
+ * - FEISHU_NOTIFICATION: Enable/disable Feishu notifications (default: true)
  * - HAPI_LISTEN_HOST: Host/IP to bind the HTTP service (default: 127.0.0.1)
  * - HAPI_LISTEN_PORT: Port for HTTP service (default: 3006)
  * - HAPI_PUBLIC_URL: Public URL for external access (e.g., Telegram Mini App)
@@ -33,6 +39,13 @@ export type ConfigSource = 'env' | 'file' | 'default'
 export interface ConfigSources {
     telegramBotToken: ConfigSource
     telegramNotification: ConfigSource
+    feishuAppId: ConfigSource
+    feishuAppSecret: ConfigSource
+    feishuEncryptKey: ConfigSource
+    feishuVerificationToken: ConfigSource
+    feishuEnabled: ConfigSource
+    feishuNotification: ConfigSource
+    feishuBaseUrl: ConfigSource
     listenHost: ConfigSource
     listenPort: ConfigSource
     publicUrl: ConfigSource
@@ -49,6 +62,27 @@ class Configuration {
 
     /** Telegram notifications enabled */
     public readonly telegramNotification: boolean
+
+    /** Feishu App ID */
+    public readonly feishuAppId: string | null
+
+    /** Feishu App Secret */
+    public readonly feishuAppSecret: string | null
+
+    /** Feishu message encryption key */
+    public readonly feishuEncryptKey: string | null
+
+    /** Feishu verification token */
+    public readonly feishuVerificationToken: string | null
+
+    /** Feishu integration enabled */
+    public readonly feishuEnabled: boolean
+
+    /** Feishu notifications enabled */
+    public readonly feishuNotification: boolean
+
+    /** Feishu API base URL */
+    public readonly feishuBaseUrl: string
 
     /** CLI auth token (shared secret) */
     public cliApiToken: string
@@ -98,6 +132,13 @@ class Configuration {
         this.telegramBotToken = serverSettings.telegramBotToken
         this.telegramEnabled = Boolean(this.telegramBotToken)
         this.telegramNotification = serverSettings.telegramNotification
+        this.feishuAppId = serverSettings.feishuAppId
+        this.feishuAppSecret = serverSettings.feishuAppSecret
+        this.feishuEncryptKey = serverSettings.feishuEncryptKey
+        this.feishuVerificationToken = serverSettings.feishuVerificationToken
+        this.feishuEnabled = serverSettings.feishuEnabled && Boolean(this.feishuAppId && this.feishuAppSecret)
+        this.feishuNotification = serverSettings.feishuNotification
+        this.feishuBaseUrl = serverSettings.feishuBaseUrl
         this.listenHost = serverSettings.listenHost
         this.listenPort = serverSettings.listenPort
         this.publicUrl = serverSettings.publicUrl
