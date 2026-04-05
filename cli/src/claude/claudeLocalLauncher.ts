@@ -26,6 +26,12 @@ export async function claudeLocalLauncher(session: Session): Promise<'switch' | 
                 return
             }
             session.client.sendClaudeSessionMessage(message)
+        },
+        onTitleChange: (title) => {
+            session.client.updateMetadata((metadata) => ({
+                ...metadata,
+                name: title
+            }))
         }
     });
 
