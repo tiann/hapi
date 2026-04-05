@@ -239,6 +239,7 @@ export default {
   'reconnecting.reason.error': '流连接错误',
   'reconnecting.reason.closed': '流连接已关闭',
   'reconnecting.reason.heartbeatTimeout': '心跳超时',
+  'reconnecting.reason.visibilityRecovery': '后台恢复中',
 
   // Send blocked
   'send.blocked.title': '无法发送消息',

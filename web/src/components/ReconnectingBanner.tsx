@@ -5,6 +5,9 @@ function getReasonLabel(reason: string, t: (key: string) => string): string {
     if (reason === 'heartbeat-timeout') {
         return t('reconnecting.reason.heartbeatTimeout')
     }
+    if (reason === 'visibility-recovery') {
+        return t('reconnecting.reason.visibilityRecovery')
+    }
     if (reason === 'closed') {
         return t('reconnecting.reason.closed')
     }
