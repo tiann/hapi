@@ -50,22 +50,11 @@ function normalizeAssistantOutput(
     const blocks: NormalizedAgentContent[] = []
 
     if (typeof modelContent === 'string') {
-        // Skip "No response requested." — Claude's auto-response to system-injected
-        // messages (task notifications, system reminders). We keep the message
-        // structure (uuid, parentUUID, usage) intact so the sidechain UUID chain
-        // is not broken; only the text block is suppressed.
-        const trimmed = modelContent.trim()
-        if (trimmed !== 'No response requested.' && trimmed !== 'No response requested') {
-            blocks.push({ type: 'text', text: modelContent, uuid, parentUUID })
-        }
+        blocks.push({ type: 'text', text: modelContent, uuid, parentUUID })
     } else if (Array.isArray(modelContent)) {
         for (const block of modelContent) {
             if (!isObject(block) || typeof block.type !== 'string') continue
             if (block.type === 'text' && typeof block.text === 'string') {
-                const trimmed = block.text.trim()
-                if (trimmed === 'No response requested.' || trimmed === 'No response requested') {
-                    continue
-                }
                 blocks.push({ type: 'text', text: block.text, uuid, parentUUID })
                 continue
             }

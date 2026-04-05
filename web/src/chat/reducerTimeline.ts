@@ -92,6 +92,14 @@ export function reduceTimeline(
             for (let idx = 0; idx < msg.content.length; idx += 1) {
                 const c = msg.content[idx]
                 if (c.type === 'text') {
+                    // Skip "No response requested." — Claude's auto-response to
+                    // system-injected messages. Filtered here (not in normalizer)
+                    // so the tracer's uuid/parentUUID chain stays intact.
+                    const trimmedText = c.text.trim()
+                    if (trimmedText === 'No response requested.' || trimmedText === 'No response requested') {
+                        continue
+                    }
+
                     // Skip text blocks that are just the Task tool prompt (already shown in tool card)
                     if (taskPromptText && c.text.trim() === taskPromptText.trim()) continue
 

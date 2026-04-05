@@ -196,7 +196,7 @@ describe('normalizeDecryptedMessage', () => {
         })
     })
 
-    it('suppresses "No response requested." text but keeps the message record', () => {
+    it('keeps "No response requested." text in normalized output (filtered later by reducer)', () => {
         const message = makeMessage({
             role: 'agent',
             content: {
@@ -210,12 +210,13 @@ describe('normalizeDecryptedMessage', () => {
         })
 
         const normalized = normalizeDecryptedMessage(message)
-        // Message is kept (uuid chain intact) but text content is filtered out
+        // Normalizer preserves the text (uuid/parentUUID needed by tracer);
+        // the reducer is responsible for suppressing it during rendering.
         expect(normalized).not.toBeNull()
         expect(normalized?.role).toBe('agent')
         if (normalized?.role === 'agent') {
-            const textBlocks = normalized.content.filter(b => b.type === 'text')
-            expect(textBlocks).toHaveLength(0)
+            expect(normalized.content).toHaveLength(1)
+            expect(normalized.content[0]).toMatchObject({ type: 'text', text: 'No response requested.' })
         }
     })
 
