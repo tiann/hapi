@@ -21,9 +21,61 @@ import { createPushRoutes } from './routes/push'
 import { createVoiceRoutes } from './routes/voice'
 import type { SSEManager } from '../sse/sseManager'
 import type { VisibilityTracker } from '../visibility/visibilityTracker'
-import type { Server as BunServer } from 'bun'
+import type { Server as BunServer, ServerWebSocket } from 'bun'
 import type { Server as SocketEngine } from '@socket.io/bun-engine'
 import type { WebSocketData } from '@socket.io/bun-engine'
+
+// Qwen Realtime WebSocket proxy — bridges browser (no custom headers) to DashScope (requires Authorization header)
+function createQwenProxyWebSocketHandler() {
+    const QWEN_WS_BASE = 'wss://dashscope.aliyuncs.com/api-ws/v1/realtime'
+    // Map browser WS → upstream WS
+    const upstreamMap = new WeakMap<ServerWebSocket<unknown>, WebSocket>()
+
+    return {
+        open(clientWs: ServerWebSocket<unknown>) {
+            const data = clientWs.data as { apiKey: string; model: string }
+            const upstreamUrl = `${process.env.QWEN_REALTIME_WS_URL || QWEN_WS_BASE}?model=${encodeURIComponent(data.model)}`
+
+            const upstream = new WebSocket(upstreamUrl, {
+                headers: { 'Authorization': `Bearer ${data.apiKey}` }
+            } as unknown as string[])
+
+            upstreamMap.set(clientWs, upstream)
+
+            upstream.onopen = () => {
+                // Connection ready — upstream will send session.created
+            }
+            upstream.onmessage = (event) => {
+                // Forward upstream → client
+                try {
+                    if (clientWs.readyState === 1) {
+                        clientWs.send(typeof event.data === 'string' ? event.data : new Uint8Array(event.data as ArrayBuffer))
+                    }
+                } catch { /* client gone */ }
+            }
+            upstream.onerror = () => {
+                try { clientWs.close(1011, 'Upstream error') } catch { /* */ }
+            }
+            upstream.onclose = (event) => {
+                try { clientWs.close(event.code, event.reason) } catch { /* */ }
+                upstreamMap.delete(clientWs)
+            }
+        },
+        message(clientWs: ServerWebSocket<unknown>, message: string | ArrayBuffer | Uint8Array) {
+            const upstream = upstreamMap.get(clientWs)
+            if (upstream?.readyState === WebSocket.OPEN) {
+                upstream.send(typeof message === 'string' ? message : message)
+            }
+        },
+        close(clientWs: ServerWebSocket<unknown>, code: number, reason: string) {
+            const upstream = upstreamMap.get(clientWs)
+            if (upstream) {
+                try { upstream.close(code, reason) } catch { /* */ }
+                upstreamMap.delete(clientWs)
+            }
+        }
+    }
+}
 import { loadEmbeddedAssetMap, type EmbeddedWebAsset } from './embeddedAssets'
 import { isBunCompiled } from '../utils/bunCompiled'
 import type { Store } from '../store'
@@ -230,16 +282,62 @@ export async function startWebServer(options: {
 
     const socketHandler = options.socketEngine.handler()
 
-    const server = Bun.serve({
+    // Wrap socket.io websocket handler to also support Qwen Realtime proxy
+    const originalWsHandler = socketHandler.websocket
+    const qwenProxyHandler = createQwenProxyWebSocketHandler()
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const server = (Bun.serve as any)({
         hostname: configuration.listenHost,
         port: configuration.listenPort,
         idleTimeout: Math.max(30, socketHandler.idleTimeout),
         maxRequestBodySize: Math.max(socketHandler.maxRequestBodySize, 68 * 1024 * 1024),
-        websocket: socketHandler.websocket,
-        fetch: (req, server) => {
+        websocket: {
+            ...originalWsHandler,
+            open(ws: unknown) {
+                const wsAny = ws as ServerWebSocket<{ _qwenProxy?: boolean }>
+                if (wsAny.data?._qwenProxy) {
+                    qwenProxyHandler.open(wsAny)
+                } else {
+                    originalWsHandler.open?.(ws as never)
+                }
+            },
+            message(ws: unknown, message: unknown) {
+                const wsAny = ws as ServerWebSocket<{ _qwenProxy?: boolean }>
+                if (wsAny.data?._qwenProxy) {
+                    qwenProxyHandler.message(wsAny, message as string)
+                } else {
+                    originalWsHandler.message?.(ws as never, message as never)
+                }
+            },
+            close(ws: unknown, code: number, reason: string) {
+                const wsAny = ws as ServerWebSocket<{ _qwenProxy?: boolean }>
+                if (wsAny.data?._qwenProxy) {
+                    qwenProxyHandler.close(wsAny, code, reason)
+                } else {
+                    originalWsHandler.close?.(ws as never, code as never, reason as never)
+                }
+            }
+        },
+        fetch: (req: Request, server: { upgrade: (req: Request, opts?: unknown) => boolean }) => {
             const url = new URL(req.url)
             if (url.pathname.startsWith('/socket.io/')) {
-                return socketHandler.fetch(req, server)
+                return socketHandler.fetch(req, server as never)
+            }
+            // Qwen Realtime WebSocket proxy
+            if (url.pathname === '/api/voice/qwen-ws') {
+                const apiKey = process.env.DASHSCOPE_API_KEY || process.env.QWEN_API_KEY
+                const model = url.searchParams.get('model') || 'qwen3.5-omni-plus-realtime'
+                if (!apiKey) {
+                    return new Response('DashScope API key not configured', { status: 400 })
+                }
+                const upgraded = server.upgrade(req, {
+                    data: { _qwenProxy: true, apiKey, model }
+                })
+                if (!upgraded) {
+                    return new Response('WebSocket upgrade failed', { status: 500 })
+                }
+                return undefined as unknown as Response
             }
             return app.fetch(req)
         }

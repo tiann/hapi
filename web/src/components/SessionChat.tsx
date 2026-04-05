@@ -27,7 +27,7 @@ import { TeamPanel } from '@/components/TeamPanel'
 import { usePlatform } from '@/hooks/usePlatform'
 import { useSessionActions } from '@/hooks/mutations/useSessionActions'
 import { useVoiceOptional } from '@/lib/voice-context'
-import { RealtimeVoiceSession, registerSessionStore, registerVoiceHooksStore, voiceHooks } from '@/realtime'
+import { VoiceBackendSession, registerSessionStore, registerVoiceHooksStore, voiceHooks } from '@/realtime'
 import { isRemoteTerminalSupported } from '@/utils/terminalSupport'
 
 export function SessionChat(props: {
@@ -401,9 +401,9 @@ export function SessionChat(props: {
                 </div>
             </AssistantRuntimeProvider>
 
-            {/* Voice session component - renders nothing but initializes ElevenLabs */}
+            {/* Voice session component - renders nothing but initializes voice backend */}
             {voice && (
-                <RealtimeVoiceSession
+                <VoiceBackendSession
                     api={props.api}
                     micMuted={voice.micMuted}
                     onStatusChange={voice.setStatus}

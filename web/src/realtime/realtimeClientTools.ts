@@ -45,10 +45,8 @@ export const realtimeClientTools = {
             return 'error (session store not available)'
         }
 
-        if (VOICE_CONFIG.ENABLE_DEBUG_LOGGING) {
-            console.log('[Voice] messageCodingAgent called with:', message)
-            console.log('[Voice] Sending message to session:', sessionId)
-        }
+        console.log('[Voice] messageCodingAgent called with:', message)
+        console.log('[Voice] Sending message to session:', sessionId)
 
         sessionStore.sendMessage(sessionId, message)
         return "sent [DO NOT say anything else, simply say 'sent']"
