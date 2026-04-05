@@ -234,7 +234,7 @@ export async function startWebServer(options: {
         hostname: configuration.listenHost,
         port: configuration.listenPort,
         idleTimeout: Math.max(30, socketHandler.idleTimeout),
-        maxRequestBodySize: Math.max(socketHandler.maxRequestBodySize, 10 * 1024 * 1024),
+        maxRequestBodySize: Math.max(socketHandler.maxRequestBodySize, 68 * 1024 * 1024),
         websocket: socketHandler.websocket,
         fetch: (req, server) => {
             const url = new URL(req.url)

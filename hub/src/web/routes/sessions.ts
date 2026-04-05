@@ -36,7 +36,7 @@ const uploadDeleteSchema = z.object({
     path: z.string().min(1)
 })
 
-const MAX_UPLOAD_BYTES = 5 * 1024 * 1024
+const MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 
 function estimateBase64Bytes(base64: string): number {
     const len = base64.length
@@ -134,7 +134,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
 
         const estimatedBytes = estimateBase64Bytes(parsed.data.content)
         if (estimatedBytes > MAX_UPLOAD_BYTES) {
-            return c.json({ success: false, error: 'File too large (max 5MB)' }, 413)
+            return c.json({ success: false, error: 'File too large (max 50MB)' }, 413)
         }
 
         try {
