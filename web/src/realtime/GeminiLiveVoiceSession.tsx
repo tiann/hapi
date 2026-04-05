@@ -23,6 +23,7 @@ interface GeminiLiveState {
     statusCallback: StatusCallback | null
     apiKey: string | null
     wsBaseUrl: string | null
+    modelSpeaking: boolean
 }
 
 const state: GeminiLiveState = {
@@ -31,7 +32,8 @@ const state: GeminiLiveState = {
     player: null,
     statusCallback: null,
     apiKey: null,
-    wsBaseUrl: null
+    wsBaseUrl: null,
+    modelSpeaking: false
 }
 
 function cleanup() {
@@ -137,6 +139,12 @@ class GeminiLiveVoiceSessionImpl implements VoiceSession {
                     return
                 }
 
+                // Log all message types for debugging
+                const msgKeys = Object.keys(data).filter(k => k !== 'serverContent' || !('modelTurn' in (data.serverContent as Record<string, unknown> || {})))
+                if (!data.serverContent) {
+                    console.log('[GeminiLive] Message:', msgKeys.join(', '), JSON.stringify(data).slice(0, 200))
+                }
+
                 // Setup complete
                 if (data.setupComplete && !setupDone) {
                     setupDone = true
@@ -146,10 +154,10 @@ class GeminiLiveVoiceSessionImpl implements VoiceSession {
                     // Start audio capture
                     startAudioCapture()
 
-                    // Send initial context + first message prompt
-                    sendClientContent(config.initialContext
-                        ? `[Context] ${config.initialContext}\n\nPlease greet the user briefly.`
-                        : 'Please greet the user briefly.')
+                    // Send initial context if available (no greeting to preserve tool call ability)
+                    if (config.initialContext) {
+                        sendClientContent(`[Context] ${config.initialContext}`)
+                    }
 
                     resolve()
                     return
@@ -163,17 +171,25 @@ class GeminiLiveVoiceSessionImpl implements VoiceSession {
 
                 if (serverContent) {
                     if (serverContent.modelTurn?.parts) {
+                        // Model is generating — mute mic to prevent barge-in from noise
+                        if (!state.modelSpeaking) {
+                            state.modelSpeaking = true
+                            state.recorder?.setMuted(true)
+                        }
                         for (const part of serverContent.modelTurn.parts) {
                             if (part.inlineData?.data) {
                                 state.player?.enqueue(part.inlineData.data)
                             }
-                            if (part.text && DEBUG) {
+                            if (part.text) {
                                 console.log('[GeminiLive] Text:', part.text)
                             }
                         }
                     }
-                    if (serverContent.turnComplete && DEBUG) {
+                    if (serverContent.turnComplete) {
                         console.log('[GeminiLive] Turn complete')
+                        // Model done — unmute mic for next user turn
+                        state.modelSpeaking = false
+                        state.recorder?.setMuted(false)
                     }
                 }
 
@@ -183,7 +199,7 @@ class GeminiLiveVoiceSessionImpl implements VoiceSession {
                 } | undefined
 
                 if (toolCall?.functionCalls && toolCall.functionCalls.length > 0) {
-                    if (DEBUG) console.log('[GeminiLive] Tool calls:', toolCall.functionCalls.map((c) => c.name))
+                    console.log('[GeminiLive] Tool calls:', toolCall.functionCalls.map((c) => c.name))
 
                     const responses = await handleGeminiFunctionCalls(
                         toolCall.functionCalls as GeminiFunctionCall[]
@@ -249,6 +265,8 @@ function sendClientContent(text: string): void {
 
 function sendAudioChunk(base64Pcm: string): void {
     if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return
+    // Don't send audio while model is speaking
+    if (state.modelSpeaking) return
     state.ws.send(JSON.stringify({
         realtimeInput: {
             mediaChunks: [{

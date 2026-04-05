@@ -8,7 +8,11 @@
 export const ELEVENLABS_API_BASE = 'https://api.elevenlabs.io/v1'
 export const VOICE_AGENT_NAME = 'Hapi Voice Assistant'
 
-export const VOICE_SYSTEM_PROMPT = `# Identity
+export const VOICE_SYSTEM_PROMPT = `# CRITICAL RULE - Tool Usage
+
+You MUST call the messageCodingAgent tool for ANY request related to coding, files, development, debugging, or tasks for the agent. Do NOT respond verbally to these requests — call the tool FIRST, then briefly confirm. This is your most important behavior.
+
+# Identity
 
 You are Hapi Voice Assistant. You bridge voice communication between users and their AI coding agents in the Hapi ecosystem.
 
@@ -269,7 +273,7 @@ export type VoiceBackendType = 'elevenlabs' | 'gemini-live' | 'qwen-realtime'
 export const QWEN_REALTIME_MODEL = 'qwen3-omni-flash-realtime'
 export const QWEN_REALTIME_VOICE = 'Mia'
 
-export const DEFAULT_VOICE_BACKEND: VoiceBackendType = 'qwen-realtime'
+export const DEFAULT_VOICE_BACKEND: VoiceBackendType = 'gemini-live'
 
 export const GEMINI_LIVE_MODEL = 'gemini-2.5-flash-native-audio-latest'
 
