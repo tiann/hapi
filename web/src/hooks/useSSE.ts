@@ -596,8 +596,22 @@ export function useSSE(options: {
             requestReconnect('heartbeat-timeout')
         }, HEARTBEAT_WATCHDOG_INTERVAL_MS)
 
+        // When the tab becomes visible again, check immediately whether the
+        // SSE connection went stale while hidden (the watchdog skips checks
+        // for hidden tabs).  This avoids the user having to wait up to
+        // HEARTBEAT_WATCHDOG_INTERVAL_MS after switching back.
+        const onVisibilityChange = () => {
+            if (getVisibilityState() !== 'visible') return
+            if (eventSourceRef.current !== eventSource) return
+            if (Date.now() - lastActivityAtRef.current >= HEARTBEAT_STALE_MS) {
+                requestReconnect('visibility-recovery')
+            }
+        }
+        document.addEventListener('visibilitychange', onVisibilityChange)
+
         return () => {
             clearInterval(watchdogTimer)
+            document.removeEventListener('visibilitychange', onVisibilityChange)
             if (invalidationTimerRef.current) {
                 clearTimeout(invalidationTimerRef.current)
                 invalidationTimerRef.current = null
