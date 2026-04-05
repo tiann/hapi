@@ -14,6 +14,13 @@ export interface Settings {
     // Server configuration (persisted from environment variables)
     telegramBotToken?: string
     telegramNotification?: boolean
+    feishuAppId?: string
+    feishuAppSecret?: string
+    feishuEncryptKey?: string
+    feishuVerificationToken?: string
+    feishuEnabled?: boolean
+    feishuNotification?: boolean
+    feishuBaseUrl?: string  // 'https://open.feishu.cn' or 'https://open.larksuite.com'
     listenHost?: string
     listenPort?: number
     publicUrl?: string

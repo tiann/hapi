@@ -52,12 +52,15 @@ export function addUser(
     namespace: string
 ): StoredUser {
     const now = Date.now()
+    // Use INSERT OR REPLACE to update existing user
     db.prepare(`
-        INSERT OR IGNORE INTO users (
+        INSERT INTO users (
             platform, platform_user_id, namespace, created_at
         ) VALUES (
             @platform, @platform_user_id, @namespace, @created_at
         )
+        ON CONFLICT(platform, platform_user_id) DO UPDATE SET
+            namespace = @namespace
     `).run({
         platform,
         platform_user_id: platformUserId,
