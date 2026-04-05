@@ -22,6 +22,7 @@ export interface InitializeResponse {
 export interface ThreadStartParams {
     model?: string;
     modelProvider?: string;
+    serviceTier?: ServiceTier;
     cwd?: string;
     approvalPolicy?: ApprovalPolicy;
     sandbox?: SandboxMode;
@@ -49,6 +50,7 @@ export interface ThreadResumeParams {
     path?: string;
     model?: string;
     modelProvider?: string;
+    serviceTier?: ServiceTier;
     cwd?: string;
     approvalPolicy?: ApprovalPolicy;
     sandbox?: SandboxMode;
@@ -103,6 +105,7 @@ export type SandboxPolicy =
 
 export type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
 export type ReasoningSummary = 'auto' | 'none' | 'brief' | 'detailed';
+export type ServiceTier = 'fast' | 'flex';
 
 export type CollaborationMode = {
     mode: 'plan' | 'default';
@@ -120,6 +123,7 @@ export interface TurnStartParams {
     approvalPolicy?: ApprovalPolicy;
     sandboxPolicy?: SandboxPolicy;
     model?: string;
+    serviceTier?: ServiceTier;
     effort?: ReasoningEffort;
     summary?: ReasoningSummary;
     personality?: string;

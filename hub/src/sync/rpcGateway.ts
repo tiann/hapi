@@ -111,6 +111,7 @@ export class RpcGateway {
         agent: 'claude' | 'codex' | 'cursor' | 'gemini' | 'opencode' = 'claude',
         model?: string,
         modelReasoningEffort?: string,
+        serviceTier?: string,
         yolo?: boolean,
         sessionType?: 'simple' | 'worktree',
         worktreeName?: string,
@@ -121,7 +122,7 @@ export class RpcGateway {
             const result = await this.machineRpc(
                 machineId,
                 'spawn-happy-session',
-                { type: 'spawn-in-directory', directory, agent, model, modelReasoningEffort, yolo, sessionType, worktreeName, resumeSessionId, effort }
+                { type: 'spawn-in-directory', directory, agent, model, modelReasoningEffort, serviceTier, yolo, sessionType, worktreeName, resumeSessionId, effort }
             )
             if (result && typeof result === 'object') {
                 const obj = result as Record<string, unknown>

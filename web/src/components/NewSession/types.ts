@@ -2,7 +2,8 @@ import { GEMINI_MODEL_PRESETS, GEMINI_MODEL_LABELS } from '@hapi/protocol'
 
 export type AgentType = 'claude' | 'codex' | 'cursor' | 'gemini' | 'opencode'
 export type SessionType = 'simple' | 'worktree'
-export type CodexReasoningEffort = 'default' | 'low' | 'medium' | 'high' | 'xhigh'
+export type CodexReasoningEffort = 'default' | 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
+export type CodexServiceTier = 'default' | 'fast'
 export type ClaudeEffort = 'auto' | 'medium' | 'high' | 'max'
 
 export const MODEL_OPTIONS: Record<AgentType, { value: string; label: string }[]> = {
@@ -31,8 +32,12 @@ export const MODEL_OPTIONS: Record<AgentType, { value: string; label: string }[]
     opencode: [],
 }
 
+export const CODEX_FAST_SERVICE_TIER: CodexServiceTier = 'fast'
+
 export const CODEX_REASONING_EFFORT_OPTIONS: { value: CodexReasoningEffort; label: string }[] = [
     { value: 'default', label: 'Default' },
+    { value: 'none', label: 'None' },
+    { value: 'minimal', label: 'Minimal' },
     { value: 'low', label: 'Low' },
     { value: 'medium', label: 'Medium' },
     { value: 'high', label: 'High' },

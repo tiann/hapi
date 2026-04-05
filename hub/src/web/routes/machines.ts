@@ -10,6 +10,7 @@ const spawnBodySchema = z.object({
     model: z.string().optional(),
     effort: z.string().optional(),
     modelReasoningEffort: z.string().optional(),
+    serviceTier: z.string().optional(),
     yolo: z.boolean().optional(),
     sessionType: z.enum(['simple', 'worktree']).optional(),
     worktreeName: z.string().optional()
@@ -57,6 +58,7 @@ export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Ho
             parsed.data.agent,
             parsed.data.model,
             parsed.data.modelReasoningEffort,
+            parsed.data.serviceTier,
             parsed.data.yolo,
             parsed.data.sessionType,
             parsed.data.worktreeName,

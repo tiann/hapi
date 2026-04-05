@@ -95,6 +95,7 @@ export function buildThreadStartParams(args: {
         sandbox: resolvedSandbox,
         baseInstructions,
         developerInstructions: resolvedDeveloperInstructions,
+        ...(args.mode.serviceTier ? { serviceTier: args.mode.serviceTier } : {}),
         ...(Object.keys(configWithInstructions).length > 0 ? { config: configWithInstructions } : {})
     };
 
@@ -158,6 +159,9 @@ export function buildTurnStartParams(args: {
         };
     } else if (model) {
         params.model = model;
+    }
+    if (args.mode?.serviceTier) {
+        params.serviceTier = args.mode.serviceTier;
     }
 
     return params;

@@ -9,10 +9,11 @@ import { useActiveSuggestions, type Suggestion } from '@/hooks/useActiveSuggesti
 import { useDirectorySuggestions } from '@/hooks/useDirectorySuggestions'
 import { useRecentPaths } from '@/hooks/useRecentPaths'
 import { useTranslation } from '@/lib/use-translation'
-import type { AgentType, ClaudeEffort, CodexReasoningEffort, SessionType } from './types'
+import type { AgentType, ClaudeEffort, CodexReasoningEffort, CodexServiceTier, SessionType } from './types'
 import { ActionButtons } from './ActionButtons'
 import { AgentSelector } from './AgentSelector'
 import { DirectorySection } from './DirectorySection'
+import { FastModeToggle } from './FastModeToggle'
 import { MachineSelector } from './MachineSelector'
 import { ModelSelector } from './ModelSelector'
 import { ClaudeEffortSelector } from './ClaudeEffortSelector'
@@ -49,6 +50,7 @@ export function NewSession(props: {
     const [model, setModel] = useState('auto')
     const [effort, setEffort] = useState<ClaudeEffort>('auto')
     const [modelReasoningEffort, setModelReasoningEffort] = useState<CodexReasoningEffort>('default')
+    const [serviceTier, setServiceTier] = useState<CodexServiceTier>('default')
     const [yoloMode, setYoloMode] = useState(loadPreferredYoloMode)
     const [sessionType, setSessionType] = useState<SessionType>('simple')
     const [worktreeName, setWorktreeName] = useState('')
@@ -251,6 +253,9 @@ export function NewSession(props: {
             const resolvedModelReasoningEffort = agent === 'codex' && modelReasoningEffort !== 'default'
                 ? modelReasoningEffort
                 : undefined
+            const resolvedServiceTier = agent === 'codex' && serviceTier !== 'default'
+                ? serviceTier
+                : undefined
             const result = await spawnSession({
                 machineId,
                 directory: trimmedDirectory,
@@ -258,6 +263,7 @@ export function NewSession(props: {
                 model: resolvedModel,
                 effort: resolvedEffort,
                 modelReasoningEffort: resolvedModelReasoningEffort,
+                serviceTier: resolvedServiceTier,
                 yolo: yoloMode,
                 sessionType,
                 worktreeName: sessionType === 'worktree' ? (worktreeName.trim() || undefined) : undefined
@@ -340,6 +346,12 @@ export function NewSession(props: {
                 value={modelReasoningEffort}
                 isDisabled={isFormDisabled}
                 onChange={setModelReasoningEffort}
+            />
+            <FastModeToggle
+                agent={agent}
+                serviceTier={serviceTier}
+                isDisabled={isFormDisabled}
+                onToggle={setServiceTier}
             />
             <YoloToggle
                 yoloMode={yoloMode}

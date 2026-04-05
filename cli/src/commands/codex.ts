@@ -4,7 +4,7 @@ import { initializeToken } from '@/ui/tokenInit'
 import { maybeAutoStartServer } from '@/utils/autoStartServer'
 import type { CommandDefinition } from './types'
 import type { CodexPermissionMode } from '@hapi/protocol/types'
-import type { ReasoningEffort } from '@/codex/appServerTypes'
+import type { ReasoningEffort, ServiceTier } from '@/codex/appServerTypes'
 
 function parseReasoningEffort(value: string): ReasoningEffort {
     switch (value) {
@@ -17,6 +17,17 @@ function parseReasoningEffort(value: string): ReasoningEffort {
             return value
         default:
             throw new Error('Invalid --model-reasoning-effort value')
+    }
+}
+
+function parseServiceTier(value: string): ServiceTier {
+    switch (value) {
+        case 'fast':
+            return 'fast'
+        case 'flex':
+            return 'flex'
+        default:
+            throw new Error('Invalid --service-tier value')
     }
 }
 
@@ -34,6 +45,7 @@ export const codexCommand: CommandDefinition = {
                 resumeSessionId?: string
                 model?: string
                 modelReasoningEffort?: ReasoningEffort
+                serviceTier?: ServiceTier
             } = {}
             const unknownArgs: string[] = []
 
@@ -66,6 +78,12 @@ export const codexCommand: CommandDefinition = {
                         throw new Error('Missing --model-reasoning-effort value')
                     }
                     options.modelReasoningEffort = parseReasoningEffort(effort)
+                } else if (arg === '--service-tier') {
+                    const serviceTier = commandArgs[++i]
+                    if (!serviceTier) {
+                        throw new Error('Missing --service-tier value')
+                    }
+                    options.serviceTier = parseServiceTier(serviceTier)
                 } else {
                     unknownArgs.push(arg)
                 }
