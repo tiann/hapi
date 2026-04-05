@@ -152,14 +152,6 @@ function renderToolBlock(
 
         return (
             <>
-                <ToolCard
-                    api={ctx.api}
-                    sessionId={ctx.sessionId}
-                    metadata={ctx.metadata}
-                    disabled={ctx.disabled}
-                    onDone={ctx.onRefresh}
-                    block={block}
-                />
                 {taskChildren.pending.length > 0 ? (
                     <div className="mt-2 pl-3">
                         <HappyNestedBlockList blocks={taskChildren.pending} />

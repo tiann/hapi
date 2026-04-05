@@ -11,6 +11,10 @@ function getMessageText(message: RawJSONLines): string | null {
     return message.summary
   }
 
+  if (message.type === 'system') {
+    return null
+  }
+
   if (!message.message) {
     return null
   }

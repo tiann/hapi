@@ -76,12 +76,14 @@ async function bootstrap() {
         : undefined
     const router = createAppRouter(history)
 
+    const showQueryDevtools = import.meta.env.DEV && import.meta.env.VITE_SHOW_QUERY_DEVTOOLS === 'true'
+
     ReactDOM.createRoot(document.getElementById('root')!).render(
         <React.StrictMode>
             <I18nProvider>
                 <QueryClientProvider client={queryClient}>
                     <RouterProvider router={router} />
-                    {import.meta.env.DEV ? <ReactQueryDevtools initialIsOpen={false} /> : null}
+                    {showQueryDevtools ? <ReactQueryDevtools initialIsOpen={false} /> : null}
                 </QueryClientProvider>
             </I18nProvider>
         </React.StrictMode>

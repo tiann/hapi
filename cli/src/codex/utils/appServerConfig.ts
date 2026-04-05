@@ -2,12 +2,14 @@ import type { EnhancedMode } from '../loop';
 import type { CodexCliOverrides } from './codexCliOverrides';
 import type { McpServersConfig } from './buildHapiMcpBridge';
 import { codexSystemPrompt } from './systemPrompt';
+import type { AttachmentMetadata } from '@/api/types';
 import type {
     ApprovalPolicy,
     SandboxMode,
     SandboxPolicy,
     ThreadStartParams,
-    TurnStartParams
+    TurnStartParams,
+    UserInput
 } from '../appServerTypes';
 import { resolveCodexPermissionModeConfig } from './permissionModeConfig';
 
@@ -108,6 +110,7 @@ export function buildThreadStartParams(args: {
 export function buildTurnStartParams(args: {
     threadId: string;
     message: string;
+    attachments?: AttachmentMetadata[];
     cwd: string;
     mode?: EnhancedMode;
     cliOverrides?: CodexCliOverrides;
@@ -119,10 +122,26 @@ export function buildTurnStartParams(args: {
         model?: string;
     };
 }): TurnStartParams {
+    const inputs: UserInput[] = [];
+    const fileAttachments: string[] = [];
+
+    for (const attachment of args.attachments ?? []) {
+        if (attachment.mimeType.startsWith('image/')) {
+            inputs.push({ type: 'localImage', path: attachment.path });
+            continue;
+        }
+        fileAttachments.push(`@${attachment.path}`);
+    }
+
+    const textParts = [fileAttachments.join(' '), args.message].filter((part) => part.length > 0);
+    if (textParts.length > 0) {
+        inputs.push({ type: 'text', text: textParts.join('\n\n') });
+    }
+
     const params: TurnStartParams = {
         threadId: args.threadId,
         cwd: args.cwd,
-        input: [{ type: 'text', text: args.message }]
+        input: inputs
     };
 
     const allowCliOverrides = args.mode?.permissionMode === 'default';

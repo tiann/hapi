@@ -3,13 +3,13 @@ import { MessageQueue2 } from '@/utils/MessageQueue2';
 import type { Metadata, SessionCollaborationMode, SessionEffort, SessionModel, SessionPermissionMode } from '@/api/types';
 import { logger } from '@/ui/logger';
 
-export type AgentSessionBaseOptions<Mode> = {
+export type AgentSessionBaseOptions<Mode, Message = string> = {
     api: ApiClient;
     client: ApiSessionClient;
     path: string;
     logPath: string;
     sessionId: string | null;
-    messageQueue: MessageQueue2<Mode>;
+    messageQueue: MessageQueue2<Mode, Message>;
     onModeChange: (mode: 'local' | 'remote') => void;
     mode?: 'local' | 'remote';
     sessionLabel: string;
@@ -21,12 +21,12 @@ export type AgentSessionBaseOptions<Mode> = {
     collaborationMode?: SessionCollaborationMode;
 };
 
-export class AgentSessionBase<Mode> {
+export class AgentSessionBase<Mode, Message = string> {
     readonly path: string;
     readonly logPath: string;
     readonly api: ApiClient;
     readonly client: ApiSessionClient;
-    readonly queue: MessageQueue2<Mode>;
+    readonly queue: MessageQueue2<Mode, Message>;
     protected readonly _onModeChange: (mode: 'local' | 'remote') => void;
 
     sessionId: string | null;
@@ -43,7 +43,7 @@ export class AgentSessionBase<Mode> {
     protected effort?: SessionEffort;
     protected collaborationMode?: SessionCollaborationMode;
 
-    constructor(opts: AgentSessionBaseOptions<Mode>) {
+    constructor(opts: AgentSessionBaseOptions<Mode, Message>) {
         this.path = opts.path;
         this.api = opts.api;
         this.client = opts.client;

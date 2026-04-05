@@ -1,7 +1,7 @@
 import { ApiClient, ApiSessionClient } from '@/lib';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { AgentSessionBase } from '@/agent/sessionBase';
-import type { EnhancedMode, PermissionMode } from './loop';
+import type { CodexQueuedMessage, EnhancedMode, PermissionMode } from './loop';
 import type { CodexCliOverrides } from './utils/codexCliOverrides';
 import type { LocalLaunchExitReason } from '@/agent/localLaunchPolicy';
 import type { SessionModel } from '@/api/types';
@@ -11,7 +11,7 @@ type LocalLaunchFailure = {
     exitReason: LocalLaunchExitReason;
 };
 
-export class CodexSession extends AgentSessionBase<EnhancedMode> {
+export class CodexSession extends AgentSessionBase<EnhancedMode, CodexQueuedMessage> {
     readonly codexArgs?: string[];
     readonly codexCliOverrides?: CodexCliOverrides;
     readonly startedBy: 'runner' | 'terminal';
@@ -24,7 +24,7 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
         path: string;
         logPath: string;
         sessionId: string | null;
-        messageQueue: MessageQueue2<EnhancedMode>;
+        messageQueue: MessageQueue2<EnhancedMode, CodexQueuedMessage>;
         onModeChange: (mode: 'local' | 'remote') => void;
         mode?: 'local' | 'remote';
         startedBy: 'runner' | 'terminal';

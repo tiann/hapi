@@ -3,6 +3,7 @@ import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 import { resolve } from 'node:path'
 import { createRequire } from 'node:module'
+import { getAllowedHosts } from './src/lib/viteAllowedHosts'
 
 const require = createRequire(import.meta.url)
 const base = process.env.VITE_BASE_URL || '/'
@@ -38,7 +39,7 @@ export default defineConfig({
     },
     server: {
         host: true,
-        allowedHosts: ['hapidev.weishu.me'],
+        allowedHosts: getAllowedHosts(process.env.VITE_ALLOWED_HOSTS ?? ''),
         proxy: {
             '/api': {
                 target: hubTarget,

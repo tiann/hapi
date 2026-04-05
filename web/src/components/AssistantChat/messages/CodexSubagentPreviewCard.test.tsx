@@ -288,7 +288,7 @@ describe('CodexSubagentPreviewCard', () => {
 
         expect(screen.getByText('Subagent conversation')).toBeInTheDocument()
         expect(screen.getByText('Completed')).toBeInTheDocument()
-        expect(screen.getAllByText('Investigate flaky Task sidechain rendering').length).toBeGreaterThan(0)
+        expect(screen.getAllByText('Investigate flaky Task sidechain rendering')).toHaveLength(1)
         expect(screen.getByText('Waiting for approval…')).toBeInTheDocument()
         expect(screen.queryByText('Task child answer')).not.toBeInTheDocument()
 

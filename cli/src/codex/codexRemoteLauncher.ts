@@ -10,7 +10,7 @@ import { CodexDisplay } from '@/ui/ink/CodexDisplay';
 import { buildHapiMcpBridge } from './utils/buildHapiMcpBridge';
 import { emitReadyIfIdle } from './utils/emitReadyIfIdle';
 import type { CodexSession } from './session';
-import type { EnhancedMode } from './loop';
+import type { CodexQueuedMessage, EnhancedMode } from './loop';
 import { hasCodexCliOverrides } from './utils/codexCliOverrides';
 import { AppServerEventConverter } from './utils/appServerEventConverter';
 import { registerAppServerPermissionHandlers } from './utils/appServerPermissionAdapter';
@@ -26,7 +26,7 @@ import {
 } from '@/modules/common/remote/RemoteLauncherBase';
 
 type HappyServer = Awaited<ReturnType<typeof buildHapiMcpBridge>>['server'];
-type QueuedMessage = { message: string; mode: EnhancedMode; isolate: boolean; hash: string };
+type QueuedMessage = { message: CodexQueuedMessage; mode: EnhancedMode; isolate: boolean; hash: string };
 
 class CodexRemoteLauncher extends RemoteLauncherBase {
     private readonly session: CodexSession;
@@ -744,7 +744,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 break;
             }
 
-            messageBuffer.addMessage(message.message, 'user');
+            messageBuffer.addMessage(message.message.text, 'user');
 
             try {
                 if (!hasThread) {
@@ -802,7 +802,8 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
 
                 const turnParams = buildTurnStartParams({
                     threadId: this.currentThreadId,
-                    message: message.message,
+                    message: message.message.text,
+                    attachments: message.message.attachments,
                     cwd: session.path,
                     mode: {
                         ...message.mode,

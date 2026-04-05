@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
-import type { EnhancedMode } from './loop';
+import type { CodexQueuedMessage, EnhancedMode } from './loop';
 
 const harness = vi.hoisted(() => ({
     notifications: [] as Array<{ method: string; params: unknown }>,
@@ -137,8 +137,15 @@ function createMode(): EnhancedMode {
 }
 
 function createSessionStub(overrides?: { sessionId?: string | null }) {
-    const queue = new MessageQueue2<EnhancedMode>((mode) => JSON.stringify(mode));
-    queue.push('hello from launcher test', createMode());
+    const queue = new MessageQueue2<EnhancedMode, CodexQueuedMessage>(
+        (mode) => JSON.stringify(mode),
+        null,
+        (messages) => ({
+            text: messages.map((message) => message.text).filter((text) => text.length > 0).join('\n'),
+            attachments: messages.flatMap((message) => message.attachments ?? [])
+        })
+    );
+    queue.push({ text: 'hello from launcher test' }, createMode());
     queue.close();
 
     const sessionEvents: Array<{ type: string; [key: string]: unknown }> = [];
@@ -221,6 +228,17 @@ function createSessionStub(overrides?: { sessionId?: string | null }) {
         getModel: () => currentModel,
         getAgentState: () => agentState
     };
+}
+
+function createSessionStubWithQueuedMessage(
+    queuedMessage: CodexQueuedMessage,
+    overrides?: { sessionId?: string | null }
+) {
+    const stub = createSessionStub(overrides);
+    stub.session.queue.reset();
+    stub.session.queue.push(queuedMessage, createMode());
+    stub.session.queue.close();
+    return stub;
 }
 
 describe('codexRemoteLauncher', () => {
@@ -368,6 +386,32 @@ describe('codexRemoteLauncher', () => {
         expect(sessionEvents.filter((event) => event.type === 'ready').length).toBeGreaterThanOrEqual(1);
         expect(thinkingChanges).toContain(true);
         expect(session.thinking).toBe(false);
+    });
+
+    it('passes image attachments to Codex turn/start as localImage inputs', async () => {
+        const {
+            session
+        } = createSessionStubWithQueuedMessage({
+            text: 'describe this image',
+            attachments: [{
+                id: 'att-1',
+                filename: 'photo.jpg',
+                mimeType: 'image/jpeg',
+                size: 1234,
+                path: '/tmp/hapi/photo.jpg'
+            }]
+        });
+
+        const exitReason = await codexRemoteLauncher(session as never);
+
+        expect(exitReason).toBe('exit');
+        expect(harness.startTurnCalls).toHaveLength(1);
+        expect(harness.startTurnCalls[0]).toMatchObject({
+            input: [
+                { type: 'localImage', path: '/tmp/hapi/photo.jpg' },
+                { type: 'text', text: 'describe this image' }
+            ]
+        });
     });
 
     it('promotes nested parent_tool_call_id from exec command payloads into top-level sidechain metadata', async () => {

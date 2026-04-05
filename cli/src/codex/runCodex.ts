@@ -10,9 +10,9 @@ import { bootstrapSession } from '@/agent/sessionFactory';
 import { createModeChangeHandler, createRunnerLifecycle, setControlledByUser } from '@/agent/runnerLifecycle';
 import { isPermissionModeAllowedForFlavor } from '@hapi/protocol';
 import { CodexCollaborationModeSchema, PermissionModeSchema } from '@hapi/protocol/schemas';
-import { formatMessageWithAttachments } from '@/utils/attachmentFormatter';
 import { getInvokedCwd } from '@/utils/invokedCwd';
 import type { ReasoningEffort } from './appServerTypes';
+import type { CodexQueuedMessage } from './loop';
 
 export { emitReadyIfIdle } from './utils/emitReadyIfIdle';
 
@@ -44,12 +44,19 @@ export async function runCodex(opts: {
 
     setControlledByUser(session, startingMode);
 
-    const messageQueue = new MessageQueue2<EnhancedMode>((mode) => hashObject({
-        permissionMode: mode.permissionMode,
-        model: mode.model,
-        modelReasoningEffort: mode.modelReasoningEffort,
-        collaborationMode: mode.collaborationMode
-    }));
+    const messageQueue = new MessageQueue2<EnhancedMode, CodexQueuedMessage>(
+        (mode) => hashObject({
+            permissionMode: mode.permissionMode,
+            model: mode.model,
+            modelReasoningEffort: mode.modelReasoningEffort,
+            collaborationMode: mode.collaborationMode
+        }),
+        null,
+        (messages) => ({
+            text: messages.map((message) => message.text).filter((text) => text.length > 0).join('\n'),
+            attachments: messages.flatMap((message) => message.attachments ?? [])
+        })
+    );
 
     const codexCliOverrides = parseCodexCliOverrides(opts.codexArgs);
     const sessionWrapperRef: { current: CodexSession | null } = { current: null };
@@ -114,8 +121,10 @@ export async function runCodex(opts: {
             modelReasoningEffort: currentModelReasoningEffort,
             collaborationMode: currentCollaborationMode
         };
-        const formattedText = formatMessageWithAttachments(message.content.text, message.content.attachments);
-        messageQueue.push(formattedText, enhancedMode);
+        messageQueue.push({
+            text: message.content.text,
+            attachments: message.content.attachments
+        }, enhancedMode);
     });
 
     const formatFailureReason = (message: string): string => {

@@ -8,6 +8,7 @@ import { ApiClient, ApiSessionClient } from '@/lib';
 import type { CodexCliOverrides } from './utils/codexCliOverrides';
 import type { ReasoningEffort } from './appServerTypes';
 import type { CodexCollaborationMode, CodexPermissionMode } from '@hapi/protocol/types';
+import type { AttachmentMetadata } from '@/api/types';
 
 export type PermissionMode = CodexPermissionMode;
 
@@ -18,12 +19,17 @@ export interface EnhancedMode {
     modelReasoningEffort?: ReasoningEffort;
 }
 
+export interface CodexQueuedMessage {
+    text: string;
+    attachments?: AttachmentMetadata[];
+}
+
 interface LoopOptions {
     path: string;
     startingMode?: 'local' | 'remote';
     startedBy?: 'runner' | 'terminal';
     onModeChange: (mode: 'local' | 'remote') => void;
-    messageQueue: MessageQueue2<EnhancedMode>;
+    messageQueue: MessageQueue2<EnhancedMode, CodexQueuedMessage>;
     session: ApiSessionClient;
     api: ApiClient;
     codexArgs?: string[];

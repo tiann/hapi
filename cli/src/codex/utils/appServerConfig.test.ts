@@ -126,6 +126,31 @@ describe('appServerConfig', () => {
         expect(params.model).toBeUndefined();
     });
 
+    it('maps image attachments to localImage inputs for Codex turns', () => {
+        const params = buildTurnStartParams({
+            threadId: 'thread-1',
+            message: 'describe this image',
+            cwd: '/workspace/project',
+            mode: {
+                permissionMode: 'default',
+                model: 'o3',
+                collaborationMode: 'default'
+            },
+            attachments: [{
+                id: 'att-1',
+                filename: 'photo.jpg',
+                mimeType: 'image/jpeg',
+                size: 1234,
+                path: '/tmp/hapi/photo.jpg'
+            }] as any
+        } as any);
+
+        expect(params.input).toEqual([
+            { type: 'localImage', path: '/tmp/hapi/photo.jpg' },
+            { type: 'text', text: 'describe this image' }
+        ]);
+    });
+
     it('puts collaboration mode in turn params with model settings', () => {
         const params = buildTurnStartParams({
             threadId: 'thread-1',

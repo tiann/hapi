@@ -609,7 +609,7 @@ function sidechainMessageFingerprint(message: RawJSONLines): Record<string, unkn
 
     return {
         type: message.type,
-        content: message.message.content,
+        content: message.message?.content ?? null,
         toolUseResult: message.type === 'user' ? message.toolUseResult ?? null : null
     };
 }
