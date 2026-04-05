@@ -154,7 +154,7 @@ class GeminiLiveVoiceSessionImpl implements VoiceSession {
                     // Start audio capture
                     startAudioCapture()
 
-                    // Send initial context if available (no greeting to preserve tool call ability)
+                    // Send initial context if available (no clientContent greeting — it breaks tool calls)
                     if (config.initialContext) {
                         sendClientContent(`[Context] ${config.initialContext}`)
                     }
