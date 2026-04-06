@@ -42,7 +42,18 @@ export function parseRateLimitText(text: string): RateLimitResult {
     if (typeof info !== 'object' || info === null) return null;
 
     const { status, resetsAt, utilization, rateLimitType } = info as Record<string, unknown>;
-    if (typeof resetsAt !== 'number') return null;
+
+    // Suppress early for statuses that never need display,
+    // before checking resetsAt — malformed payloads should not leak.
+    if (status === 'allowed') {
+        return { suppress: true };
+    }
+
+    if (typeof resetsAt !== 'number') {
+        // Malformed rate_limit_event (missing resetsAt) — suppress to prevent
+        // raw JSON from leaking into chat.
+        return { suppress: true };
+    }
 
     if (status === 'allowed_warning') {
         const pct = typeof utilization === 'number' ? Math.round(utilization * 100) : 0;
@@ -65,10 +76,6 @@ export function parseRateLimitText(text: string): RateLimitResult {
                 text: `Claude AI usage limit reached|${resetsAt}|${limitType}`,
             },
         };
-    }
-
-    if (status === 'allowed') {
-        return { suppress: true };
     }
 
     // Unknown status — suppress to prevent raw JSON from leaking into chat.
