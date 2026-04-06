@@ -170,7 +170,12 @@ export class AcpMessageHandler {
                 }
                 // Drop internal event JSON (e.g. { type: "output", data: { ... } })
                 // that should never appear as visible text.
+                // Also clear buffered text if it is a prefix of the leaked JSON
+                // (cumulative streaming: earlier chunk was an incomplete prefix).
                 if (isInternalEventJson(text)) {
+                    if (this.bufferedText && text.startsWith(this.bufferedText)) {
+                        this.bufferedText = '';
+                    }
                     return;
                 }
                 this.appendTextChunk(text);

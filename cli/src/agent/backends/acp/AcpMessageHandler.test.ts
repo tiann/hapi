@@ -416,4 +416,34 @@ describe('AcpMessageHandler', () => {
 
         expect(messages).toEqual([]);
     });
+
+    it('clears buffered prefix when cumulative metadata chunk arrives', () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message));
+
+        // First chunk: incomplete JSON prefix
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+            content: { type: 'text', text: '{"type":"ou' }
+        });
+
+        // Second chunk: full cumulative metadata JSON (starts with buffered prefix)
+        const metadataJson = JSON.stringify({
+            type: 'output',
+            data: {
+                parentUuid: 'abc-123',
+                sessionId: 'session-456',
+                userType: 'external',
+            },
+        });
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+            content: { type: 'text', text: metadataJson }
+        });
+
+        handler.flushText();
+
+        // Both the prefix and the full chunk should be gone
+        expect(messages).toEqual([]);
+    });
 });
