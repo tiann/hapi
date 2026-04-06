@@ -55,6 +55,9 @@ export function parseRateLimitText(text: string): RateLimitResult {
         return { suppress: true };
     }
 
+    // Ensure integer for the pipe-delimited format (web regex uses \d+)
+    const resetsAtInt = Math.round(resetsAt);
+
     if (status === 'allowed_warning') {
         const pct = typeof utilization === 'number' ? Math.round(utilization * 100) : 0;
         const limitType = typeof rateLimitType === 'string' ? rateLimitType : '';
@@ -62,7 +65,7 @@ export function parseRateLimitText(text: string): RateLimitResult {
             suppress: false,
             message: {
                 type: 'text',
-                text: `Claude AI usage limit warning|${resetsAt}|${pct}|${limitType}`,
+                text: `Claude AI usage limit warning|${resetsAtInt}|${pct}|${limitType}`,
             },
         };
     }
@@ -73,7 +76,7 @@ export function parseRateLimitText(text: string): RateLimitResult {
             suppress: false,
             message: {
                 type: 'text',
-                text: `Claude AI usage limit reached|${resetsAt}|${limitType}`,
+                text: `Claude AI usage limit reached|${resetsAtInt}|${limitType}`,
             },
         };
     }
