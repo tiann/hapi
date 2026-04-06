@@ -364,4 +364,56 @@ describe('AcpMessageHandler', () => {
         expect(calls[0].name).toBe('Tool');
         expect(calls[1].name).toBe('search');
     });
+
+    it('drops leaked session metadata envelope from text buffer', () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message));
+
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+            content: { type: 'text', text: 'real answer' }
+        });
+
+        // Leaked metadata envelope with parentUuid string
+        const metadataJson = JSON.stringify({
+            type: 'output',
+            data: {
+                parentUuid: 'abc-123',
+                isSidechain: false,
+                userType: 'external',
+                sessionId: 'session-456',
+                version: '0.0.0',
+            },
+        });
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+            content: { type: 'text', text: metadataJson }
+        });
+
+        handler.flushText();
+
+        expect(messages).toEqual([{ type: 'text', text: 'real answer' }]);
+    });
+
+    it('drops leaked root metadata envelope with parentUuid: null', () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message));
+
+        const metadataJson = JSON.stringify({
+            type: 'output',
+            data: {
+                parentUuid: null,
+                sessionId: 'session-789',
+                userType: 'external',
+            },
+        });
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+            content: { type: 'text', text: metadataJson }
+        });
+
+        handler.flushText();
+
+        expect(messages).toEqual([]);
+    });
 });
