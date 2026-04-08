@@ -39,3 +39,31 @@ export function getExitPlanImplementationModeDescription(
 export function getExitPlanImplementationModes(): ExitPlanImplementationMode[] {
     return ['keep_context', 'clear_context']
 }
+
+type ExitPlanPermissionMode = 'default' | 'acceptEdits' | 'bypassPermissions'
+
+export function getExitPlanPermissionModes(): ExitPlanPermissionMode[] {
+    return ['default', 'acceptEdits', 'bypassPermissions']
+}
+
+export function getExitPlanPermissionModeLabel(
+    mode: ExitPlanPermissionMode,
+    t: (key: string) => string
+): string {
+    switch (mode) {
+        case 'default': return t('tool.exitPlanMode.permissionMode.default.title')
+        case 'acceptEdits': return t('tool.exitPlanMode.permissionMode.acceptEdits.title')
+        case 'bypassPermissions': return t('tool.exitPlanMode.permissionMode.bypassPermissions.title')
+    }
+}
+
+export function getExitPlanPermissionModeDescription(
+    mode: ExitPlanPermissionMode,
+    t: (key: string) => string
+): string {
+    switch (mode) {
+        case 'default': return t('tool.exitPlanMode.permissionMode.default.description')
+        case 'acceptEdits': return t('tool.exitPlanMode.permissionMode.acceptEdits.description')
+        case 'bypassPermissions': return t('tool.exitPlanMode.permissionMode.bypassPermissions.description')
+    }
+}

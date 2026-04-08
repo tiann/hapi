@@ -12,8 +12,13 @@ import {
     getExitPlanImplementationModeDescription,
     getExitPlanImplementationModeLabel,
     getExitPlanImplementationModes,
+    getExitPlanPermissionModes,
+    getExitPlanPermissionModeLabel,
+    getExitPlanPermissionModeDescription,
     isExitPlanModeToolName
 } from '@/components/ToolCard/exitPlanMode'
+
+type ExitPlanPermissionMode = 'default' | 'acceptEdits' | 'bypassPermissions'
 
 function SelectionMark(props: { checked: boolean }) {
     return (
@@ -64,11 +69,13 @@ export function ExitPlanModeFooter(props: {
     const { haptic } = usePlatform()
     const permission = props.tool.permission
     const [selectedMode, setSelectedMode] = useState<ExitPlanImplementationMode | null>(null)
+    const [selectedPermissionMode, setSelectedPermissionMode] = useState<ExitPlanPermissionMode>('default')
     const [loading, setLoading] = useState<'approve' | 'deny' | null>(null)
     const [error, setError] = useState<string | null>(null)
 
     useEffect(() => {
         setSelectedMode(null)
+        setSelectedPermissionMode('default')
         setLoading(null)
         setError(null)
     }, [props.tool.id])
@@ -98,7 +105,7 @@ export function ExitPlanModeFooter(props: {
 
         setLoading('approve')
         await run(() => props.api.approvePermission(props.sessionId, permission.id, {
-            mode: selectedMode === 'clear_context' ? 'acceptEdits' : 'default',
+            mode: selectedPermissionMode,
             implementationMode: selectedMode
         }), 'success')
         setLoading(null)
@@ -143,6 +150,27 @@ export function ExitPlanModeFooter(props: {
                         onClick={() => {
                             haptic.selection()
                             setSelectedMode(mode)
+                            setError(null)
+                        }}
+                    />
+                ))}
+            </div>
+
+            <div className="mt-2 text-sm text-[var(--app-fg)]">
+                {t('tool.exitPlanMode.permissionMode.prompt')}
+            </div>
+
+            <div className="mt-2 flex flex-col gap-1">
+                {getExitPlanPermissionModes().map((mode) => (
+                    <OptionRow
+                        key={mode}
+                        checked={selectedPermissionMode === mode}
+                        disabled={props.disabled || loading !== null}
+                        title={getExitPlanPermissionModeLabel(mode, t)}
+                        description={getExitPlanPermissionModeDescription(mode, t)}
+                        onClick={() => {
+                            haptic.selection()
+                            setSelectedPermissionMode(mode)
                             setError(null)
                         }}
                     />
