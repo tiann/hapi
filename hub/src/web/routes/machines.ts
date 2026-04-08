@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
+import { MachineSessionProfilesSchema } from '@hapi/protocol'
 import type { SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 import { requireMachine } from './guards'
@@ -10,7 +11,9 @@ const spawnBodySchema = z.object({
     model: z.string().optional(),
     effort: z.string().optional(),
     modelReasoningEffort: z.string().optional(),
+    permissionMode: z.enum(['default', 'read-only', 'safe-yolo', 'yolo']).optional(),
     yolo: z.boolean().optional(),
+    profileId: z.string().nullable().optional(),
     sessionType: z.enum(['simple', 'worktree']).optional(),
     worktreeName: z.string().optional()
 })
@@ -57,12 +60,52 @@ export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Ho
             parsed.data.agent,
             parsed.data.model,
             parsed.data.modelReasoningEffort,
-            parsed.data.yolo,
+            parsed.data.permissionMode,
             parsed.data.sessionType,
             parsed.data.worktreeName,
             undefined,
-            parsed.data.effort
+            parsed.data.effort,
+            parsed.data.profileId,
+            parsed.data.yolo
         )
+        return c.json(result)
+    })
+
+    app.get('/machines/:id/session-profiles', async (c) => {
+        const engine = getSyncEngine()
+        if (!engine) {
+            return c.json({ error: 'Not connected' }, 503)
+        }
+
+        const machineId = c.req.param('id')
+        const machine = requireMachine(c, engine, machineId)
+        if (machine instanceof Response) {
+            return machine
+        }
+
+        const result = await engine.getMachineSessionProfiles(machineId)
+        return c.json(result)
+    })
+
+    app.put('/machines/:id/session-profiles', async (c) => {
+        const engine = getSyncEngine()
+        if (!engine) {
+            return c.json({ error: 'Not connected' }, 503)
+        }
+
+        const machineId = c.req.param('id')
+        const machine = requireMachine(c, engine, machineId)
+        if (machine instanceof Response) {
+            return machine
+        }
+
+        const body = await c.req.json().catch(() => null)
+        const parsed = MachineSessionProfilesSchema.safeParse(body)
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid body' }, 400)
+        }
+
+        const result = await engine.updateMachineSessionProfiles(machineId, parsed.data)
         return c.json(result)
     })
 

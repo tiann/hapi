@@ -1,4 +1,5 @@
 import type { CodexCollaborationMode, PermissionMode } from '@hapi/protocol/types'
+import type { MachineSessionProfiles } from '@hapi/protocol'
 import type { Server } from 'socket.io'
 import type { RpcRegistry } from '../socket/rpcRegistry'
 
@@ -111,17 +112,32 @@ export class RpcGateway {
         agent: 'claude' | 'codex' | 'cursor' | 'gemini' | 'opencode' = 'claude',
         model?: string,
         modelReasoningEffort?: string,
-        yolo?: boolean,
+        permissionMode?: PermissionMode,
         sessionType?: 'simple' | 'worktree',
         worktreeName?: string,
         resumeSessionId?: string,
-        effort?: string
+        effort?: string,
+        profileId?: string | null,
+        yolo?: boolean
     ): Promise<{ type: 'success'; sessionId: string } | { type: 'error'; message: string }> {
         try {
             const result = await this.machineRpc(
                 machineId,
                 'spawn-happy-session',
-                { type: 'spawn-in-directory', directory, agent, model, modelReasoningEffort, yolo, sessionType, worktreeName, resumeSessionId, effort }
+                {
+                    type: 'spawn-in-directory',
+                    directory,
+                    agent,
+                    model,
+                    modelReasoningEffort,
+                    permissionMode,
+                    sessionType,
+                    worktreeName,
+                    resumeSessionId,
+                    effort,
+                    profileId,
+                    yolo
+                }
             )
             if (result && typeof result === 'object') {
                 const obj = result as Record<string, unknown>
@@ -154,6 +170,14 @@ export class RpcGateway {
         } catch (error) {
             return { type: 'error', message: error instanceof Error ? error.message : String(error) }
         }
+    }
+
+    async getMachineSessionProfiles(machineId: string): Promise<MachineSessionProfiles> {
+        return await this.machineRpc(machineId, 'session-profiles:get', {}) as MachineSessionProfiles
+    }
+
+    async updateMachineSessionProfiles(machineId: string, payload: MachineSessionProfiles): Promise<MachineSessionProfiles> {
+        return await this.machineRpc(machineId, 'session-profiles:update', payload) as MachineSessionProfiles
     }
 
     async checkPathsExist(machineId: string, paths: string[]): Promise<Record<string, boolean>> {

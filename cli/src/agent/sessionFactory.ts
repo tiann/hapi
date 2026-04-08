@@ -111,6 +111,7 @@ export async function bootstrapSession(options: SessionBootstrapOptions): Promis
     const startedBy = options.startedBy ?? 'terminal'
     const sessionTag = options.tag ?? randomUUID()
     const agentState = options.agentState === undefined ? {} : options.agentState
+    const profileIdFromEnv = process.env.HAPI_SESSION_PROFILE_ID?.trim() || undefined
 
     const api = await ApiClient.create()
 
@@ -125,7 +126,10 @@ export async function bootstrapSession(options: SessionBootstrapOptions): Promis
         startedBy,
         workingDirectory,
         machineId,
-        metadataOverrides: options.metadataOverrides
+        metadataOverrides: {
+            ...(profileIdFromEnv ? { profileId: profileIdFromEnv } : {}),
+            ...options.metadataOverrides
+        }
     })
 
     const sessionInfo = await api.getOrCreateSession({

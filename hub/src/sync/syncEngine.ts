@@ -8,6 +8,7 @@
  */
 
 import type { CodexCollaborationMode, DecryptedMessage, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
+import type { MachineSessionProfiles } from '@hapi/protocol'
 import type { Server } from 'socket.io'
 import type { Store } from '../store'
 import type { RpcRegistry } from '../socket/rpcRegistry'
@@ -321,11 +322,13 @@ export class SyncEngine {
         agent: 'claude' | 'codex' | 'cursor' | 'gemini' | 'opencode' = 'claude',
         model?: string,
         modelReasoningEffort?: string,
-        yolo?: boolean,
+        permissionMode?: PermissionMode,
         sessionType?: 'simple' | 'worktree',
         worktreeName?: string,
         resumeSessionId?: string,
-        effort?: string
+        effort?: string,
+        profileId?: string | null,
+        yolo?: boolean
     ): Promise<{ type: 'success'; sessionId: string } | { type: 'error'; message: string }> {
         return await this.rpcGateway.spawnSession(
             machineId,
@@ -333,12 +336,22 @@ export class SyncEngine {
             agent,
             model,
             modelReasoningEffort,
-            yolo,
+            permissionMode,
             sessionType,
             worktreeName,
             resumeSessionId,
-            effort
+            effort,
+            profileId,
+            yolo
         )
+    }
+
+    async getMachineSessionProfiles(machineId: string): Promise<MachineSessionProfiles> {
+        return await this.rpcGateway.getMachineSessionProfiles(machineId)
+    }
+
+    async updateMachineSessionProfiles(machineId: string, payload: MachineSessionProfiles): Promise<MachineSessionProfiles> {
+        return await this.rpcGateway.updateMachineSessionProfiles(machineId, payload)
     }
 
     async resumeSession(sessionId: string, namespace: string): Promise<ResumeSessionResult> {

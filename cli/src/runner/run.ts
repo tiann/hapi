@@ -22,6 +22,12 @@ import { createWorktree, removeWorktree, type WorktreeInfo } from './worktree';
 import { join } from 'path';
 import { buildMachineMetadata } from '@/agent/sessionFactory';
 import { hashRunnerCliApiToken } from './runnerIdentity';
+import {
+  assertKnownSpawnProfile,
+  buildCodexSpawnModeEnv,
+  buildSpawnProfileEnv,
+  resolveSpawnPermissionMode
+} from './sessionProfiles';
 
 export async function startRunner(): Promise<void> {
   // We don't have cleanup function at the time of server construction
@@ -197,12 +203,15 @@ export async function startRunner(): Promise<void> {
       const { directory, sessionId, machineId, approvedNewDirectoryCreation = true } = options;
       const agent = options.agent ?? 'claude';
       const yolo = options.yolo === true;
+      const permissionMode = resolveSpawnPermissionMode(options);
       const sessionType = options.sessionType ?? 'simple';
       const worktreeName = options.worktreeName;
       let directoryCreated = false;
       let spawnDirectory = directory;
       let worktreeInfo: WorktreeInfo | null = null;
       let happyProcess: ReturnType<typeof spawnHappyCLI> | null = null;
+
+      await assertKnownSpawnProfile(agent, options.profileId);
 
       if (sessionType === 'simple') {
         try {
@@ -339,6 +348,18 @@ export async function startRunner(): Promise<void> {
           };
         }
 
+        extraEnv = {
+          ...extraEnv,
+          ...buildSpawnProfileEnv(options.profileId)
+        };
+
+        if (agent === 'codex') {
+          extraEnv = {
+            ...extraEnv,
+            ...buildCodexSpawnModeEnv(permissionMode)
+          };
+        }
+
         // Construct arguments for the CLI
         const agentCommand = agent === 'codex'
           ? 'codex'
@@ -369,7 +390,7 @@ export async function startRunner(): Promise<void> {
         if (options.modelReasoningEffort && agent === 'codex') {
           args.push('--model-reasoning-effort', options.modelReasoningEffort);
         }
-        if (yolo) {
+        if (yolo && agent !== 'codex') {
           args.push('--yolo');
         }
 
