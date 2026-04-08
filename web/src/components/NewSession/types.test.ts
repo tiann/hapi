@@ -1,6 +1,6 @@
-import { CLAUDE_MODEL_PRESETS, getClaudeModelLabel } from '@hapi/protocol'
+import { CLAUDE_MODEL_PRESETS, SESSION_PROFILE_REASONING_EFFORT_VALUES, getClaudeModelLabel } from '@hapi/protocol'
 import { describe, expect, it } from 'vitest'
-import { CLAUDE_EFFORT_OPTIONS, MODEL_OPTIONS } from './types'
+import { CLAUDE_EFFORT_OPTIONS, CODEX_REASONING_EFFORT_OPTIONS, MODEL_OPTIONS } from './types'
 
 describe('Claude model options', () => {
     it('includes 1m model options in the expected order', () => {
@@ -28,5 +28,15 @@ describe('Claude effort options', () => {
             { value: 'high', label: 'High' },
             { value: 'max', label: 'Max' },
         ])
+    })
+})
+
+describe('Codex reasoning effort options', () => {
+    it('stay aligned with the shared session profile effort values', () => {
+        const normalizedValues = CODEX_REASONING_EFFORT_OPTIONS.map((option) => (
+            option.value === 'default' ? 'minimal' : option.value
+        ))
+
+        expect(normalizedValues).toEqual(SESSION_PROFILE_REASONING_EFFORT_VALUES)
     })
 })
