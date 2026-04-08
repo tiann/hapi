@@ -53,7 +53,7 @@ describe('ExitPlanModeFooter', () => {
         Object.defineProperty(window, 'localStorage', { value: localStorageMock, configurable: true })
     })
 
-    it('submits the selected implementationMode', async () => {
+    it('submits the selected implementationMode with correct permission mode', async () => {
         const api = {
             approvePermission: vi.fn(async () => {}),
             denyPermission: vi.fn(async () => {})
@@ -73,7 +73,33 @@ describe('ExitPlanModeFooter', () => {
         fireEvent.click(screen.getByRole('button', { name: 'Start implementation' }))
 
         expect(api.approvePermission).toHaveBeenCalledWith('session-1', 'request-1', {
+            mode: 'acceptEdits',
             implementationMode: 'clear_context'
+        })
+    })
+
+    it('sends default permission mode for keep_context', async () => {
+        const api = {
+            approvePermission: vi.fn(async () => {}),
+            denyPermission: vi.fn(async () => {})
+        }
+
+        renderWithProviders(
+            <ExitPlanModeFooter
+                api={api as never}
+                sessionId="session-1"
+                tool={createTool() as never}
+                disabled={false}
+                onDone={vi.fn()}
+            />
+        )
+
+        fireEvent.click(screen.getByText('Keep context'))
+        fireEvent.click(screen.getByRole('button', { name: 'Start implementation' }))
+
+        expect(api.approvePermission).toHaveBeenCalledWith('session-1', 'request-1', {
+            mode: 'default',
+            implementationMode: 'keep_context'
         })
     })
 

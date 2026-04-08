@@ -98,6 +98,7 @@ export function ExitPlanModeFooter(props: {
 
         setLoading('approve')
         await run(() => props.api.approvePermission(props.sessionId, permission.id, {
+            mode: selectedMode === 'clear_context' ? 'acceptEdits' : 'default',
             implementationMode: selectedMode
         }), 'success')
         setLoading(null)
