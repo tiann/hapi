@@ -9,7 +9,14 @@ import { useActiveSuggestions, type Suggestion } from '@/hooks/useActiveSuggesti
 import { useDirectorySuggestions } from '@/hooks/useDirectorySuggestions'
 import { useRecentPaths } from '@/hooks/useRecentPaths'
 import { useTranslation } from '@/lib/use-translation'
-import type { AgentType, ClaudeEffort, CodexReasoningEffort, SessionType } from './types'
+import type {
+    AgentType,
+    ClaudeEffort,
+    CodexCollaborationMode,
+    CodexPermissionMode,
+    CodexReasoningEffort,
+    SessionType
+} from './types'
 import { ActionButtons } from './ActionButtons'
 import { AgentSelector } from './AgentSelector'
 import { DirectorySection } from './DirectorySection'
@@ -26,6 +33,10 @@ import {
 import { SessionTypeSelector } from './SessionTypeSelector'
 import { YoloToggle } from './YoloToggle'
 import { formatRunnerSpawnError } from '../../utils/formatRunnerSpawnError'
+import { ProfileSelector } from './ProfileSelector'
+import { PermissionModeSelector } from './PermissionModeSelector'
+import { applyCodexProfile, getBaseCodexLaunchState } from './codexProfileState'
+import { useMachineSessionProfiles } from '@/hooks/queries/useMachineSessionProfiles'
 
 export function NewSession(props: {
     api: ApiClient
@@ -49,12 +60,24 @@ export function NewSession(props: {
     const [model, setModel] = useState('auto')
     const [effort, setEffort] = useState<ClaudeEffort>('auto')
     const [modelReasoningEffort, setModelReasoningEffort] = useState<CodexReasoningEffort>('default')
+    const [permissionMode, setPermissionMode] = useState<CodexPermissionMode>('default')
+    const [collaborationMode, setCollaborationMode] = useState<CodexCollaborationMode>('default')
+    const [profileId, setProfileId] = useState<string | null>(null)
     const [yoloMode, setYoloMode] = useState(loadPreferredYoloMode)
     const [sessionType, setSessionType] = useState<SessionType>('simple')
     const [worktreeName, setWorktreeName] = useState('')
     const [directoryCreationConfirmed, setDirectoryCreationConfirmed] = useState(false)
     const [error, setError] = useState<string | null>(null)
     const worktreeInputRef = useRef<HTMLInputElement>(null)
+    const { profiles: codexProfiles, defaults: codexProfileDefaults } = useMachineSessionProfiles(props.api, machineId)
+    const codexProfileDefaultsSignature = useMemo(
+        () => JSON.stringify({
+            machineId,
+            defaultProfileId: codexProfileDefaults.codexProfileId ?? null,
+            profiles: codexProfiles
+        }),
+        [machineId, codexProfiles, codexProfileDefaults.codexProfileId]
+    )
 
     useEffect(() => {
         if (sessionType === 'worktree') {
@@ -66,6 +89,21 @@ export function NewSession(props: {
         setModel('auto')
         setEffort('auto')
     }, [agent])
+
+    useEffect(() => {
+        if (agent !== 'codex') {
+            return
+        }
+
+        const defaultProfile = codexProfiles.find((profile) => profile.id === codexProfileDefaults.codexProfileId) ?? null
+        const next = applyCodexProfile(getBaseCodexLaunchState(), defaultProfile)
+        setProfileId(defaultProfile?.id ?? null)
+        setModel(next.model)
+        setModelReasoningEffort(next.modelReasoningEffort)
+        setPermissionMode(next.permissionMode)
+        setCollaborationMode(next.collaborationMode)
+        setSessionType(next.sessionType)
+    }, [agent, codexProfileDefaultsSignature])
 
     useEffect(() => {
         savePreferredAgent(agent)
@@ -175,6 +213,17 @@ export function NewSession(props: {
         }
     }, [getRecentPaths])
 
+    const handleProfileChange = useCallback((nextProfileId: string | null) => {
+        const selectedProfile = codexProfiles.find((profile) => profile.id === nextProfileId) ?? null
+        const next = applyCodexProfile(getBaseCodexLaunchState(), selectedProfile)
+        setProfileId(selectedProfile?.id ?? null)
+        setModel(next.model)
+        setModelReasoningEffort(next.modelReasoningEffort)
+        setPermissionMode(next.permissionMode)
+        setCollaborationMode(next.collaborationMode)
+        setSessionType(next.sessionType)
+    }, [codexProfiles])
+
     const handlePathClick = useCallback((path: string) => {
         setDirectory(path)
     }, [])
@@ -251,6 +300,9 @@ export function NewSession(props: {
             const resolvedModelReasoningEffort = agent === 'codex' && modelReasoningEffort !== 'default'
                 ? modelReasoningEffort
                 : undefined
+            const resolvedPermissionMode = agent === 'codex' ? permissionMode : undefined
+            const resolvedCollaborationMode = agent === 'codex' ? collaborationMode : undefined
+            const resolvedProfileId = agent === 'codex' ? profileId : undefined
             const result = await spawnSession({
                 machineId,
                 directory: trimmedDirectory,
@@ -258,7 +310,10 @@ export function NewSession(props: {
                 model: resolvedModel,
                 effort: resolvedEffort,
                 modelReasoningEffort: resolvedModelReasoningEffort,
-                yolo: yoloMode,
+                permissionMode: resolvedPermissionMode,
+                collaborationMode: resolvedCollaborationMode,
+                yolo: agent === 'codex' ? undefined : yoloMode,
+                profileId: resolvedProfileId,
                 sessionType,
                 worktreeName: sessionType === 'worktree' ? (worktreeName.trim() || undefined) : undefined
             })
@@ -323,6 +378,13 @@ export function NewSession(props: {
                 isDisabled={isFormDisabled}
                 onAgentChange={setAgent}
             />
+            <ProfileSelector
+                agent={agent}
+                profileId={profileId}
+                profiles={codexProfiles}
+                isDisabled={isFormDisabled}
+                onProfileChange={handleProfileChange}
+            />
             <ModelSelector
                 agent={agent}
                 model={model}
@@ -341,11 +403,19 @@ export function NewSession(props: {
                 isDisabled={isFormDisabled}
                 onChange={setModelReasoningEffort}
             />
-            <YoloToggle
-                yoloMode={yoloMode}
+            <PermissionModeSelector
+                agent={agent}
+                value={permissionMode}
                 isDisabled={isFormDisabled}
-                onToggle={setYoloMode}
+                onChange={setPermissionMode}
             />
+            {agent !== 'codex' ? (
+                <YoloToggle
+                    yoloMode={yoloMode}
+                    isDisabled={isFormDisabled}
+                    onToggle={setYoloMode}
+                />
+            ) : null}
 
             {(error ?? spawnError) ? (
                 <div className="px-3 py-2 text-sm text-red-600">

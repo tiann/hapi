@@ -3,6 +3,7 @@ export const queryKeys = {
     session: (sessionId: string) => ['session', sessionId] as const,
     messages: (sessionId: string) => ['messages', sessionId] as const,
     machines: ['machines'] as const,
+    machineSessionProfiles: (machineId: string) => ['machine-session-profiles', machineId] as const,
     gitStatus: (sessionId: string) => ['git-status', sessionId] as const,
     sessionFiles: (sessionId: string, query: string) => ['session-files', sessionId, query] as const,
     sessionDirectory: (sessionId: string, path: string) => ['session-directory', sessionId, path] as const,

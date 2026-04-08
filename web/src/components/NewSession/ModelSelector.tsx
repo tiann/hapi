@@ -10,17 +10,21 @@ export function ModelSelector(props: {
 }) {
     const { t } = useTranslation()
     const options = MODEL_OPTIONS[props.agent]
+    const selectId = 'new-session-model'
+
     if (options.length === 0) {
         return null
     }
 
     return (
         <div className="flex flex-col gap-1.5 px-3 py-3">
-            <label className="text-xs font-medium text-[var(--app-hint)]">
+            <label htmlFor={selectId} className="text-xs font-medium text-[var(--app-hint)]">
                 {t('newSession.model')}{' '}
                 <span className="font-normal">({t('newSession.model.optional')})</span>
             </label>
             <select
+                id={selectId}
+                aria-label={t('newSession.model')}
                 value={props.model}
                 onChange={(e) => props.onModelChange(e.target.value)}
                 disabled={props.isDisabled}

@@ -9,6 +9,7 @@ export function ReasoningEffortSelector(props: {
     onChange: (value: CodexReasoningEffort) => void
 }) {
     const { t } = useTranslation()
+    const selectId = 'new-session-reasoning-effort'
 
     if (props.agent !== 'codex') {
         return null
@@ -16,11 +17,13 @@ export function ReasoningEffortSelector(props: {
 
     return (
         <div className="flex flex-col gap-1.5 px-3 py-3">
-            <label className="text-xs font-medium text-[var(--app-hint)]">
+            <label htmlFor={selectId} className="text-xs font-medium text-[var(--app-hint)]">
                 {t('newSession.reasoningEffort')}{' '}
                 <span className="font-normal">({t('newSession.model.optional')})</span>
             </label>
             <select
+                id={selectId}
+                aria-label={t('newSession.reasoningEffort')}
                 value={props.value}
                 onChange={(e) => props.onChange(e.target.value as CodexReasoningEffort)}
                 disabled={props.isDisabled}

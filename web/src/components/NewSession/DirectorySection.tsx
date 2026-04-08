@@ -20,15 +20,18 @@ export function DirectorySection(props: {
     onPathClick: (path: string) => void
 }) {
     const { t } = useTranslation()
+    const inputId = 'new-session-directory'
 
     return (
         <div className="flex flex-col gap-1.5 px-3 py-3">
-            <label className="text-xs font-medium text-[var(--app-hint)]">
+            <label htmlFor={inputId} className="text-xs font-medium text-[var(--app-hint)]">
                 {t('newSession.directory')}
             </label>
             <div className="relative">
                 <input
+                    id={inputId}
                     type="text"
+                    aria-label={t('newSession.directory')}
                     placeholder={t('newSession.placeholder')}
                     value={props.directory}
                     onChange={(event) => props.onDirectoryChange(event.target.value)}

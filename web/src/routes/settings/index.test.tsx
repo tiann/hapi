@@ -1,22 +1,39 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { I18nContext, I18nProvider } from '@/lib/i18n-context'
 import { en } from '@/lib/locales'
 import { PROTOCOL_VERSION } from '@hapi/protocol'
 import SettingsPage from './index'
 
-vi.mock('@hapi/protocol', () => ({
-    PROTOCOL_VERSION: 1,
+const updateMachineSessionProfilesMock = vi.fn()
+const useMachinesMock = vi.fn()
+const useMachineSessionProfilesMock = vi.fn()
+
+vi.mock('@hapi/protocol', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@hapi/protocol')>()
+    return {
+        ...actual,
+        PROTOCOL_VERSION: 1,
+    }
+})
+
+vi.mock('@/lib/app-context', () => ({
+    useAppContext: () => ({
+        api: {} as never,
+        token: 'token',
+        baseUrl: 'http://localhost'
+    })
 }))
 
-// Mock the router hooks
 vi.mock('@tanstack/react-router', () => ({
     useNavigate: () => vi.fn(),
     useRouter: () => ({ history: { back: vi.fn() } }),
-    useLocation: () => '/settings',
+    useLocation: ({ select }: { select?: (location: { pathname: string; search: object }) => unknown } = {}) => {
+        const location = { pathname: '/settings', search: {} }
+        return select ? select(location) : location
+    },
 }))
 
-// Mock useFontScale hook
 vi.mock('@/hooks/useFontScale', () => ({
     useFontScale: () => ({ fontScale: 1, setFontScale: vi.fn() }),
     getFontScaleOptions: () => [
@@ -35,7 +52,6 @@ vi.mock('@/hooks/useTerminalFontSize', () => ({
     ],
 }))
 
-// Mock useTheme hook
 vi.mock('@/hooks/useTheme', () => ({
     useAppearance: () => ({ appearance: 'system', setAppearance: vi.fn() }),
     getAppearanceOptions: () => [
@@ -45,7 +61,6 @@ vi.mock('@/hooks/useTheme', () => ({
     ],
 }))
 
-// Mock languages
 vi.mock('@/lib/languages', () => ({
     getElevenLabsSupportedLanguages: () => [
         { code: null, name: 'Auto-detect' },
@@ -53,6 +68,48 @@ vi.mock('@/lib/languages', () => ({
     ],
     getLanguageDisplayName: (lang: { code: string | null; name: string }) => lang.name,
 }))
+
+vi.mock('@/hooks/queries/useMachines', () => ({
+    useMachines: (...args: unknown[]) => useMachinesMock(...args)
+}))
+
+vi.mock('@/hooks/queries/useMachineSessionProfiles', () => ({
+    useMachineSessionProfiles: (...args: unknown[]) => useMachineSessionProfilesMock(...args)
+}))
+
+vi.mock('@/hooks/mutations/useUpdateMachineSessionProfiles', () => ({
+    useUpdateMachineSessionProfiles: () => ({
+        updateMachineSessionProfiles: updateMachineSessionProfilesMock,
+        isPending: false,
+        error: null
+    })
+}))
+
+const machineSessionProfiles = {
+    profiles: [
+        {
+            id: 'ice',
+            label: 'Ice',
+            agent: 'codex' as const,
+            defaults: {
+                model: 'gpt-5.4',
+                permissionMode: 'safe-yolo' as const
+            }
+        },
+        {
+            id: 'focus',
+            label: 'Focus',
+            agent: 'codex' as const,
+            defaults: {
+                modelReasoningEffort: 'high' as const,
+                sessionType: 'worktree' as const
+            }
+        }
+    ],
+    defaults: {
+        codexProfileId: 'ice'
+    }
+}
 
 function renderWithProviders(ui: React.ReactElement) {
     return render(
@@ -76,18 +133,96 @@ function renderWithSpyT(ui: React.ReactElement) {
 describe('SettingsPage', () => {
     beforeEach(() => {
         vi.clearAllMocks()
-        // Mock localStorage
+
         const localStorageMock = {
             getItem: vi.fn(() => 'en'),
             setItem: vi.fn(),
             removeItem: vi.fn(),
         }
         Object.defineProperty(window, 'localStorage', { value: localStorageMock })
+
+        useMachinesMock.mockReturnValue({
+            machines: [
+                {
+                    id: 'machine-1',
+                    active: true,
+                    metadata: {
+                        host: 'localhost',
+                        platform: 'darwin',
+                        happyCliVersion: '0.1.0'
+                    }
+                }
+            ],
+            isLoading: false,
+            error: null,
+            refetch: vi.fn()
+        })
+
+        useMachineSessionProfilesMock.mockReturnValue({
+            ...machineSessionProfiles,
+            isLoading: false,
+            error: null,
+            refetch: vi.fn()
+        })
+
+        updateMachineSessionProfilesMock.mockResolvedValue(machineSessionProfiles)
     })
 
     it('renders the About section', () => {
         renderWithProviders(<SettingsPage />)
         expect(screen.getByText('About')).toBeInTheDocument()
+    })
+
+    it('renders the Codex Profiles section', async () => {
+        renderWithProviders(<SettingsPage />)
+
+        await waitFor(() => {
+            expect(screen.getByText('Codex Profiles')).toBeInTheDocument()
+        })
+
+        expect(screen.getByLabelText('Default profile')).toHaveValue('ice')
+        expect(screen.getAllByText('Ice').length).toBeGreaterThanOrEqual(1)
+    })
+
+    it('saves the selected default profile for the chosen machine', async () => {
+        renderWithProviders(<SettingsPage />)
+
+        fireEvent.change(screen.getByLabelText('Default profile'), {
+            target: { value: 'focus' }
+        })
+
+        await waitFor(() => {
+            expect(updateMachineSessionProfilesMock).toHaveBeenCalledWith(expect.objectContaining({
+                machineId: 'machine-1',
+                payload: expect.objectContaining({
+                    defaults: { codexProfileId: 'focus' }
+                })
+            }))
+        })
+    })
+
+    it('saves edited Codex profile fields', async () => {
+        renderWithProviders(<SettingsPage />)
+
+        fireEvent.click(screen.getAllByRole('button', { name: 'Edit' })[0])
+        fireEvent.change(screen.getByLabelText('Label'), {
+            target: { value: 'Ice Updated' }
+        })
+        fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+
+        await waitFor(() => {
+            expect(updateMachineSessionProfilesMock).toHaveBeenCalledWith(expect.objectContaining({
+                machineId: 'machine-1',
+                payload: expect.objectContaining({
+                    profiles: expect.arrayContaining([
+                        expect.objectContaining({
+                            id: 'ice',
+                            label: 'Ice Updated'
+                        })
+                    ])
+                })
+            }))
+        })
     })
 
     it('displays the App Version with correct value', () => {
@@ -113,13 +248,15 @@ describe('SettingsPage', () => {
         expect(link).toHaveAttribute('rel', 'noopener noreferrer')
     })
 
-    it('uses correct i18n keys for About section', () => {
+    it('uses correct i18n keys for About and Codex profiles sections', () => {
         const spyT = renderWithSpyT(<SettingsPage />)
         const calledKeys = spyT.mock.calls.map((call) => call[0])
         expect(calledKeys).toContain('settings.about.title')
         expect(calledKeys).toContain('settings.about.website')
         expect(calledKeys).toContain('settings.about.appVersion')
         expect(calledKeys).toContain('settings.about.protocolVersion')
+        expect(calledKeys).toContain('settings.codexProfiles.title')
+        expect(calledKeys).toContain('settings.codexProfiles.default')
     })
 
     it('renders the Appearance setting', () => {

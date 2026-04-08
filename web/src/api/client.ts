@@ -2,6 +2,7 @@ import type {
     AttachmentMetadata,
     AuthResponse,
     CodexCollaborationMode,
+    MachineSessionProfilesResponse,
     DeleteUploadResponse,
     ListDirectoryResponse,
     FileReadResponse,
@@ -389,15 +390,49 @@ export class ApiClient {
         agent?: 'claude' | 'codex' | 'cursor' | 'gemini' | 'opencode',
         model?: string,
         modelReasoningEffort?: string,
+        permissionMode?: string,
+        collaborationMode?: CodexCollaborationMode,
         yolo?: boolean,
+        profileId?: string | null,
         sessionType?: 'simple' | 'worktree',
         worktreeName?: string,
         effort?: string
     ): Promise<SpawnResponse> {
         return await this.request<SpawnResponse>(`/api/machines/${encodeURIComponent(machineId)}/spawn`, {
             method: 'POST',
-            body: JSON.stringify({ directory, agent, model, modelReasoningEffort, yolo, sessionType, worktreeName, effort })
+            body: JSON.stringify({
+                directory,
+                agent,
+                model,
+                modelReasoningEffort,
+                permissionMode,
+                collaborationMode,
+                yolo,
+                profileId,
+                sessionType,
+                worktreeName,
+                effort
+            })
         })
+    }
+
+    async getMachineSessionProfiles(machineId: string): Promise<MachineSessionProfilesResponse> {
+        return await this.request<MachineSessionProfilesResponse>(
+            `/api/machines/${encodeURIComponent(machineId)}/session-profiles`
+        )
+    }
+
+    async updateMachineSessionProfiles(
+        machineId: string,
+        payload: MachineSessionProfilesResponse
+    ): Promise<MachineSessionProfilesResponse> {
+        return await this.request<MachineSessionProfilesResponse>(
+            `/api/machines/${encodeURIComponent(machineId)}/session-profiles`,
+            {
+                method: 'PUT',
+                body: JSON.stringify(payload)
+            }
+        )
     }
 
     async getSlashCommands(sessionId: string): Promise<SlashCommandsResponse> {

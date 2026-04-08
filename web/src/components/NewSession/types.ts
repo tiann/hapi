@@ -1,9 +1,15 @@
-import { GEMINI_MODEL_PRESETS, GEMINI_MODEL_LABELS } from '@hapi/protocol'
+import {
+    GEMINI_MODEL_PRESETS,
+    GEMINI_MODEL_LABELS,
+    type CodexCollaborationMode,
+    type CodexPermissionMode
+} from '@hapi/protocol'
 
 export type AgentType = 'claude' | 'codex' | 'cursor' | 'gemini' | 'opencode'
 export type SessionType = 'simple' | 'worktree'
 export type CodexReasoningEffort = 'default' | 'low' | 'medium' | 'high' | 'xhigh'
 export type ClaudeEffort = 'auto' | 'medium' | 'high' | 'max'
+export type { CodexPermissionMode, CodexCollaborationMode }
 
 export const MODEL_OPTIONS: Record<AgentType, { value: string; label: string }[]> = {
     claude: [

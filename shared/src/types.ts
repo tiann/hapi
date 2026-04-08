@@ -22,6 +22,7 @@ export type {
     SessionProfile,
     SessionProfileAgent,
     SessionProfileDefaults,
+    SessionProfilePermissionMode,
     SessionProfileReasoningEffort
 } from './sessionProfiles'
 export { AGENT_MESSAGE_PAYLOAD_TYPE } from './modes'

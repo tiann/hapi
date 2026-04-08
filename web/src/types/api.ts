@@ -1,5 +1,6 @@
 import type {
     DecryptedMessage as ProtocolDecryptedMessage,
+    MachineSessionProfiles,
     Session,
     SessionSummary,
     SyncEvent as ProtocolSyncEvent,
@@ -94,6 +95,7 @@ export type MessagesResponse = {
 
 export type MachinesResponse = { machines: Machine[] }
 export type MachinePathsExistsResponse = { exists: Record<string, boolean> }
+export type MachineSessionProfilesResponse = MachineSessionProfiles
 
 export type SpawnResponse =
     | { type: 'success'; sessionId: string }

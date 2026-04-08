@@ -10,7 +10,10 @@ type SpawnInput = {
     model?: string
     effort?: string
     modelReasoningEffort?: string
+    permissionMode?: string
+    collaborationMode?: 'default' | 'plan'
     yolo?: boolean
+    profileId?: string | null
     sessionType?: 'simple' | 'worktree'
     worktreeName?: string
 }
@@ -33,7 +36,10 @@ export function useSpawnSession(api: ApiClient | null): {
                 input.agent,
                 input.model,
                 input.modelReasoningEffort,
+                input.permissionMode,
+                input.collaborationMode,
                 input.yolo,
+                input.profileId,
                 input.sessionType,
                 input.worktreeName,
                 input.effort
