@@ -79,6 +79,7 @@ export default {
   'dialog.fork.successTitle': 'Fork 成功',
   'dialog.fork.successDescription': '已从 "{name}" 创建新会话。',
   'dialog.fork.failedTitle': 'Fork 失败',
+  'dialog.fork.failedDescription': '无法 Fork 会话，请重试。',
   'toast.action.openSession': '点击前往新会话',
 
   'dialog.delete.title': '删除会话',

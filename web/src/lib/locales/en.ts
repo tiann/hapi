@@ -78,6 +78,7 @@ export default {
   'dialog.fork.successTitle': 'Fork created',
   'dialog.fork.successDescription': 'Created a new session from "{name}".',
   'dialog.fork.failedTitle': 'Fork failed',
+  'dialog.fork.failedDescription': 'Unable to fork session. Please try again.',
   'toast.action.openSession': 'Open new session',
   'dialog.delete.title': 'Delete Session',
   'dialog.delete.description': 'Are you sure you want to delete "{name}"? This action cannot be undone.',

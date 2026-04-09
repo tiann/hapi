@@ -9,7 +9,7 @@ import { RenameSessionDialog } from '@/components/RenameSessionDialog'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { getSessionModelLabel } from '@/lib/sessionModelLabel'
 import { useTranslation } from '@/lib/use-translation'
-import { useToast } from '@/lib/toast-context'
+import { useForkWithFeedback } from '@/hooks/mutations/useForkWithFeedback'
 
 type SessionGroup = {
     directory: string
@@ -171,7 +171,6 @@ function SessionItem(props: {
     selected?: boolean
 }) {
     const { t } = useTranslation()
-    const { addToast } = useToast()
     const { session: s, onSelect, showPath = true, api, selected = false } = props
     const { haptic } = usePlatform()
     const [menuOpen, setMenuOpen] = useState(false)
@@ -181,6 +180,7 @@ function SessionItem(props: {
     const [deleteOpen, setDeleteOpen] = useState(false)
 
     const canFork = s.metadata?.flavor === 'codex'
+    const sessionName = getSessionTitle(s)
 
     const { archiveSession, forkSession, renameSession, deleteSession, isPending } = useSessionActions(
         api,
@@ -188,28 +188,7 @@ function SessionItem(props: {
         s.metadata?.flavor ?? null
     )
 
-    const handleFork = async () => {
-        try {
-            const newSessionId = await forkSession()
-            addToast({
-                title: t('dialog.fork.successTitle'),
-                body: t('dialog.fork.successDescription', { name: sessionName }),
-                sessionId: newSessionId,
-                url: `/sessions/${newSessionId}`,
-                variant: 'success',
-                actionLabel: t('toast.action.openSession')
-            })
-            onSelect(newSessionId)
-        } catch (error) {
-            const message = error instanceof Error ? error.message : 'Fork failed'
-            addToast({
-                title: t('dialog.fork.failedTitle'),
-                body: message,
-                sessionId: s.id,
-                url: `/sessions/${s.id}`
-            })
-        }
-    }
+    const handleFork = useForkWithFeedback(forkSession, s.id, sessionName)
 
     const longPressHandlers = useLongPress({
         onLongPress: (point) => {
@@ -225,7 +204,6 @@ function SessionItem(props: {
         threshold: 500
     })
 
-    const sessionName = getSessionTitle(s)
     const modelLabel = getSessionModelLabel(s)
     const statusDotClass = s.active
         ? (s.thinking ? 'bg-[#007AFF]' : 'bg-[var(--app-badge-success-text)]')
@@ -303,7 +281,7 @@ function SessionItem(props: {
                 sessionActive={s.active}
                 canFork={canFork}
                 onRename={() => setRenameOpen(true)}
-                onFork={handleFork}
+                onFork={() => handleFork(onSelect)}
                 onArchive={() => setArchiveOpen(true)}
                 onDelete={() => setDeleteOpen(true)}
                 anchorPoint={menuAnchorPoint}
