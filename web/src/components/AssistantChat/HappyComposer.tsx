@@ -48,6 +48,7 @@ export function HappyComposer(props: {
     allowSendWhenInactive?: boolean
     thinking?: boolean
     agentState?: AgentState | null
+    backgroundTaskCount?: number
     contextSize?: number
     controlledByUser?: boolean
     agentFlavor?: string | null
@@ -77,6 +78,7 @@ export function HappyComposer(props: {
         allowSendWhenInactive = false,
         thinking = false,
         agentState,
+        backgroundTaskCount,
         contextSize,
         controlledByUser = false,
         agentFlavor,
@@ -668,6 +670,7 @@ export function HappyComposer(props: {
                         active={active}
                         thinking={thinking}
                         agentState={agentState}
+                        backgroundTaskCount={backgroundTaskCount}
                         contextSize={contextSize}
                         model={model}
                         permissionMode={permissionMode}

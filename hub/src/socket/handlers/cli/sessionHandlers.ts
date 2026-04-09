@@ -6,6 +6,7 @@ import type { Store, StoredSession } from '../../../store'
 import type { SyncEvent } from '../../../sync/syncEngine'
 import { extractTodoWriteTodosFromMessageContent } from '../../../sync/todos'
 import { extractTeamStateFromMessageContent, applyTeamStateDelta } from '../../../sync/teams'
+import { extractBackgroundTaskDelta } from '../../../sync/backgroundTasks'
 import type { CliSocketWithData } from '../../socketTypes'
 import type { AccessErrorReason, AccessResult } from './types'
 
@@ -57,10 +58,11 @@ export type SessionHandlersDeps = {
     onSessionAlive?: (payload: SessionAlivePayload) => void
     onSessionEnd?: (payload: SessionEndPayload) => void
     onWebappEvent?: (event: SyncEvent) => void
+    onBackgroundTaskDelta?: (sessionId: string, delta: { started: number; completed: number }) => void
 }
 
 export function registerSessionHandlers(socket: CliSocketWithData, deps: SessionHandlersDeps): void {
-    const { store, resolveSessionAccess, emitAccessError, onSessionAlive, onSessionEnd, onWebappEvent } = deps
+    const { store, resolveSessionAccess, emitAccessError, onSessionAlive, onSessionEnd, onWebappEvent, onBackgroundTaskDelta } = deps
 
     socket.on('message', (data: unknown) => {
         const parsed = messageSchema.safeParse(data)
@@ -107,6 +109,11 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             if (updated) {
                 onWebappEvent?.({ type: 'session-updated', sessionId: sid, data: { sid } })
             }
+        }
+
+        const bgDelta = extractBackgroundTaskDelta(content)
+        if (bgDelta) {
+            onBackgroundTaskDelta?.(sid, bgDelta)
         }
 
         const update = {

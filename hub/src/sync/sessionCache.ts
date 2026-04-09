@@ -4,6 +4,7 @@ import type { Store } from '../store'
 import { clampAliveTime } from './aliveTime'
 import { EventPublisher } from './eventPublisher'
 import { extractTodoWriteTodosFromMessageContent, TodosSchema } from './todos'
+import { extractBackgroundTaskDelta } from './backgroundTasks'
 
 export class SessionCache {
     private readonly sessions: Map<string, Session> = new Map()
@@ -131,6 +132,7 @@ export class SessionCache {
             agentStateVersion: stored.agentStateVersion,
             thinking: existing?.thinking ?? false,
             thinkingAt: existing?.thinkingAt ?? 0,
+            backgroundTaskCount: existing?.backgroundTaskCount ?? 0,
             todos,
             teamState,
             model: stored.model,
@@ -230,6 +232,22 @@ export class SessionCache {
         }
     }
 
+    applyBackgroundTaskDelta(sessionId: string, delta: { started: number; completed: number }): void {
+        const session = this.sessions.get(sessionId)
+        if (!session) return
+
+        const prev = session.backgroundTaskCount ?? 0
+        const next = Math.max(0, prev + delta.started - delta.completed)
+        if (next === prev) return
+
+        session.backgroundTaskCount = next
+        this.publisher.emit({
+            type: 'session-updated',
+            sessionId,
+            data: { backgroundTaskCount: next }
+        })
+    }
+
     handleSessionEnd(payload: { sid: string; time: number }): void {
         const t = clampAliveTime(payload.time) ?? Date.now()
 
@@ -243,8 +261,9 @@ export class SessionCache {
         session.active = false
         session.thinking = false
         session.thinkingAt = t
+        session.backgroundTaskCount = 0
 
-        this.publisher.emit({ type: 'session-updated', sessionId: session.id, data: { active: false, thinking: false } })
+        this.publisher.emit({ type: 'session-updated', sessionId: session.id, data: { active: false, thinking: false, backgroundTaskCount: 0 } })
     }
 
     expireInactive(now: number = Date.now()): void {

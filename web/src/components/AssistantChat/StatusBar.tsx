@@ -42,6 +42,7 @@ function getConnectionStatus(
     thinking: boolean,
     agentState: AgentState | null | undefined,
     voiceStatus: ConversationStatus | undefined,
+    backgroundTaskCount: number,
     t: (key: string) => string
 ): { text: string; color: string; dotColor: string; isPulsing: boolean } {
     const hasPermissions = agentState?.requests && Object.keys(agentState.requests).length > 0
@@ -84,6 +85,15 @@ function getConnectionStatus(
         }
     }
 
+    if (backgroundTaskCount > 0) {
+        return {
+            text: `${backgroundTaskCount} background task${backgroundTaskCount > 1 ? 's' : ''} running`,
+            color: 'text-[#007AFF]',
+            dotColor: 'bg-[#007AFF]',
+            isPulsing: true
+        }
+    }
+
     return {
         text: t('misc.online'),
         color: 'text-[#34C759]',
@@ -110,6 +120,7 @@ export function StatusBar(props: {
     active: boolean
     thinking: boolean
     agentState: AgentState | null | undefined
+    backgroundTaskCount?: number
     contextSize?: number
     model?: string | null
     permissionMode?: PermissionMode
@@ -119,8 +130,8 @@ export function StatusBar(props: {
 }) {
     const { t } = useTranslation()
     const connectionStatus = useMemo(
-        () => getConnectionStatus(props.active, props.thinking, props.agentState, props.voiceStatus, t),
-        [props.active, props.thinking, props.agentState, props.voiceStatus, t]
+        () => getConnectionStatus(props.active, props.thinking, props.agentState, props.voiceStatus, props.backgroundTaskCount ?? 0, t),
+        [props.active, props.thinking, props.agentState, props.voiceStatus, props.backgroundTaskCount, t]
     )
 
     const contextWarning = useMemo(

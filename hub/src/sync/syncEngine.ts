@@ -198,6 +198,10 @@ export class SyncEngine {
         this.sessionCache.handleSessionEnd(payload)
     }
 
+    handleBackgroundTaskDelta(sessionId: string, delta: { started: number; completed: number }): void {
+        this.sessionCache.applyBackgroundTaskDelta(sessionId, delta)
+    }
+
     handleMachineAlive(payload: { machineId: string; time: number }): void {
         this.machineCache.handleMachineAlive(payload)
     }

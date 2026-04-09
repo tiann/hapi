@@ -379,6 +379,7 @@ export function SessionChat(props: {
                         allowSendWhenInactive
                         thinking={props.session.thinking}
                         agentState={props.session.agentState}
+                        backgroundTaskCount={props.session.backgroundTaskCount}
                         contextSize={reduced.latestUsage?.contextSize}
                         controlledByUser={controlledByUser}
                         onCollaborationModeChange={
