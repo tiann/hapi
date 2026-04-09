@@ -1143,4 +1143,68 @@ describe('session model', () => {
             engine.stop()
         }
     })
+
+    it('preserves custom session title when forking', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            const session = engine.getOrCreateSession(
+                'session-codex-fork-title',
+                {
+                    path: '/tmp/project',
+                    host: 'localhost',
+                    machineId: 'machine-1',
+                    flavor: 'codex',
+                    codexSessionId: 'codex-thread-1',
+                    name: '我的自定义标题'
+                },
+                null,
+                'default',
+                'gpt-5.4'
+            )
+            engine.getOrCreateMachine(
+                'machine-1',
+                { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
+                null,
+                'default'
+            )
+            engine.handleMachineAlive({ machineId: 'machine-1', time: Date.now() })
+
+            let forkedSessionId = ''
+            ;(engine as any).rpcGateway.spawnSession = async () => {
+                const forkedSession = engine.getOrCreateSession(
+                    'forked-session-title',
+                    {
+                        path: '/tmp/project',
+                        host: 'localhost',
+                        machineId: 'machine-1',
+                        flavor: 'codex',
+                        codexSessionId: 'codex-thread-2'
+                    },
+                    null,
+                    'default',
+                    'gpt-5.4'
+                )
+                forkedSessionId = forkedSession.id
+                return { type: 'success', sessionId: forkedSessionId }
+            }
+            ;(engine as any).waitForSessionActive = async () => true
+
+            const result = await engine.forkSession(session.id, 'default')
+
+            expect(result).toEqual({ type: 'success', sessionId: forkedSessionId })
+            expect(engine.getSession(forkedSessionId)?.metadata?.name).toBe('我的自定义标题')
+            expect(store.sessions.getSession(forkedSessionId)?.metadata).toMatchObject({
+                name: '我的自定义标题'
+            })
+        } finally {
+            engine.stop()
+        }
+    })
 })

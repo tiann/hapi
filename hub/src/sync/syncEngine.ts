@@ -620,6 +620,9 @@ export class SyncEngine {
         }
 
         this.store.messages.cloneSessionMessages(sessionId, spawnResult.sessionId)
+        if (typeof session.metadata?.name === 'string' && session.metadata.name.length > 0) {
+            await this.sessionCache.renameSession(spawnResult.sessionId, session.metadata.name)
+        }
 
         return { type: 'success', sessionId: spawnResult.sessionId }
     }
