@@ -39,6 +39,10 @@ export function isClaudeChatVisibleSystemSubtype(subtype: unknown): subtype is s
 }
 
 export function isClaudeChatVisibleMessage(message: { type: unknown; subtype?: unknown }): boolean {
+    if (message.type === 'rate_limit_event') {
+        return false
+    }
+
     if (message.type !== 'system') {
         return true
     }

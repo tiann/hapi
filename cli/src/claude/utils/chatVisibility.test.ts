@@ -20,4 +20,8 @@ describe('isClaudeChatVisibleMessage', () => {
         expect(isClaudeChatVisibleMessage({ type: 'assistant' })).toBe(true)
         expect(isClaudeChatVisibleMessage({ type: 'summary' })).toBe(true)
     })
+
+    it('hides rate_limit_event messages from chat delivery', () => {
+        expect(isClaudeChatVisibleMessage({ type: 'rate_limit_event' } as any)).toBe(false)
+    })
 })
