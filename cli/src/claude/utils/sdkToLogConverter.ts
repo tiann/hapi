@@ -87,10 +87,62 @@ export class SDKToLogConverter {
     }
 
     /**
+     * Convert rate_limit_event to pipe-delimited text matching the ACP path format,
+     * or suppress if the status does not need display (e.g. 'allowed').
+     * Must not mutate converter state (UUID chain) so dropped events are invisible.
+     */
+    private convertRateLimitEvent(sdkMessage: SDKMessage): RawJSONLines | null {
+        const info = (sdkMessage as any).rate_limit_info
+        if (typeof info !== 'object' || info === null) return null
+
+        const { status, resetsAt, utilization, rateLimitType } = info
+
+        if (status === 'allowed') return null
+        if (typeof resetsAt !== 'number') return null
+
+        const resetsAtInt = Math.round(resetsAt)
+        let text: string
+
+        if (status === 'allowed_warning') {
+            const pct = typeof utilization === 'number' ? Math.round(utilization * 100) : 0
+            const limitType = typeof rateLimitType === 'string' ? rateLimitType : ''
+            text = `Claude AI usage limit warning|${resetsAtInt}|${pct}|${limitType}`
+        } else if (status === 'rejected') {
+            const limitType = typeof rateLimitType === 'string' ? rateLimitType : ''
+            text = `Claude AI usage limit reached|${resetsAtInt}|${limitType}`
+        } else {
+            return null
+        }
+
+        const uuid = randomUUID()
+        const timestamp = new Date().toISOString()
+        this.lastUuid = uuid
+
+        return {
+            parentUuid: this.lastUuid,
+            isSidechain: false,
+            userType: 'external' as const,
+            cwd: this.context.cwd,
+            sessionId: this.context.sessionId,
+            version: this.context.version,
+            gitBranch: this.context.gitBranch,
+            uuid,
+            timestamp,
+            type: 'assistant',
+            message: {
+                role: 'assistant',
+                content: [{ type: 'text', text }]
+            }
+        } as RawJSONLines
+    }
+
+    /**
      * Convert SDK message to log format
      */
     convert(sdkMessage: SDKMessage): RawJSONLines | null {
-        if (sdkMessage.type === 'rate_limit_event') return null
+        if (sdkMessage.type === 'rate_limit_event') {
+            return this.convertRateLimitEvent(sdkMessage)
+        }
 
         const uuid = randomUUID()
         const timestamp = new Date().toISOString()
