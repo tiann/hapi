@@ -1067,4 +1067,80 @@ describe('session model', () => {
             expect(state.completedRequests?.['req-1']).toBeDefined()
         })
     })
+
+    it('clones existing messages into the forked session', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            const session = engine.getOrCreateSession(
+                'session-codex-fork-history',
+                {
+                    path: '/tmp/project',
+                    host: 'localhost',
+                    machineId: 'machine-1',
+                    flavor: 'codex',
+                    codexSessionId: 'codex-thread-1'
+                },
+                null,
+                'default',
+                'gpt-5.4'
+            )
+            engine.getOrCreateMachine(
+                'machine-1',
+                { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
+                null,
+                'default'
+            )
+            engine.handleMachineAlive({ machineId: 'machine-1', time: Date.now() })
+
+            store.messages.addMessage(session.id, {
+                role: 'user',
+                content: { type: 'text', text: 'old user message' }
+            })
+            store.messages.addMessage(session.id, {
+                role: 'assistant',
+                content: { type: 'text', text: 'old assistant message' }
+            })
+
+            let forkedSessionId = ''
+            ;(engine as any).rpcGateway.spawnSession = async () => {
+                const forkedSession = engine.getOrCreateSession(
+                    'forked-session-history',
+                    {
+                        path: '/tmp/project',
+                        host: 'localhost',
+                        machineId: 'machine-1',
+                        flavor: 'codex',
+                        codexSessionId: 'codex-thread-2'
+                    },
+                    null,
+                    'default',
+                    'gpt-5.4'
+                )
+                forkedSessionId = forkedSession.id
+                return { type: 'success', sessionId: forkedSessionId }
+            }
+            ;(engine as any).waitForSessionActive = async () => true
+
+            const result = await engine.forkSession(session.id, 'default')
+
+            expect(result).toEqual({ type: 'success', sessionId: forkedSessionId })
+            expect(store.messages.getMessages(forkedSessionId, 10).map((message) => message.content)).toEqual([
+                { role: 'user', content: { type: 'text', text: 'old user message' } },
+                { role: 'assistant', content: { type: 'text', text: 'old assistant message' } }
+            ])
+            expect(store.messages.getMessages(session.id, 10).map((message) => message.content)).toEqual([
+                { role: 'user', content: { type: 'text', text: 'old user message' } },
+                { role: 'assistant', content: { type: 'text', text: 'old assistant message' } }
+            ])
+        } finally {
+            engine.stop()
+        }
+    })
 })

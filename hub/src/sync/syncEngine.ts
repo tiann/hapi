@@ -55,6 +55,7 @@ export type ForkSessionResult =
     | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'no_machine_online' | 'fork_unavailable' | 'fork_failed' }
 
 export class SyncEngine {
+    private readonly store: Store
     private readonly eventPublisher: EventPublisher
     private readonly sessionCache: SessionCache
     private readonly machineCache: MachineCache
@@ -68,6 +69,7 @@ export class SyncEngine {
         rpcRegistry: RpcRegistry,
         sseManager: SSEManager
     ) {
+        this.store = store
         this.eventPublisher = new EventPublisher(sseManager, (event) => this.resolveNamespace(event))
         this.sessionCache = new SessionCache(store, this.eventPublisher)
         this.machineCache = new MachineCache(store, this.eventPublisher)
@@ -616,6 +618,8 @@ export class SyncEngine {
         if (!becameActive) {
             return { type: 'error', message: 'Session failed to become active', code: 'fork_failed' }
         }
+
+        this.store.messages.cloneSessionMessages(sessionId, spawnResult.sessionId)
 
         return { type: 'success', sessionId: spawnResult.sessionId }
     }

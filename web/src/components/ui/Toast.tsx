@@ -3,12 +3,12 @@ import { cva, type VariantProps } from 'class-variance-authority'
 import { cn } from '@/lib/utils'
 
 const toastVariants = cva(
-    'pointer-events-auto w-full max-w-sm rounded-lg border text-[var(--app-fg)] shadow-lg transition-all',
+    'pointer-events-auto w-full max-w-sm rounded-xl border text-[var(--app-fg)] shadow-lg transition-all',
     {
         variants: {
             variant: {
                 default: 'border-[var(--app-border)] bg-[var(--app-bg)]',
-                success: 'border-emerald-500/30 bg-emerald-500/10 shadow-emerald-500/10 ring-1 ring-emerald-500/20'
+                success: 'border-emerald-500/35 bg-emerald-50 text-emerald-950 shadow-emerald-500/10 ring-1 ring-emerald-500/15 dark:bg-emerald-950 dark:text-emerald-50'
             }
         },
         defaultVariants: {
@@ -53,12 +53,12 @@ export function Toast({ title, body, actionLabel, onClose, className, variant, .
 
     return (
         <div className={cn(toastVariants({ variant }), className)} role="status" {...props}>
-            <div className="flex items-start gap-3 p-3">
-                <div className="min-w-0 flex-1">
+            <div className="relative p-3 pr-10">
+                <div className="min-w-0">
                     <div className="text-sm font-semibold leading-5">{title}</div>
-                    <div className="mt-1 text-xs text-[var(--app-hint)]">{body}</div>
+                    <div className="mt-1 text-xs leading-5 text-[var(--app-hint)]">{body}</div>
                     {actionLabel ? (
-                        <div className="mt-2 inline-flex items-center gap-1 rounded-full bg-[var(--app-bg)]/80 px-2.5 py-1 text-[11px] font-medium text-emerald-700 ring-1 ring-emerald-500/20 dark:text-emerald-300">
+                        <div className="mt-2 inline-flex w-fit items-center gap-1 rounded-full bg-white/90 px-2.5 py-1 text-[11px] font-medium text-emerald-700 ring-1 ring-emerald-500/20 dark:bg-emerald-900/80 dark:text-emerald-200">
                             <span>{actionLabel}</span>
                             <ArrowRightIcon className="h-3.5 w-3.5" />
                         </div>
@@ -67,7 +67,7 @@ export function Toast({ title, body, actionLabel, onClose, className, variant, .
                 {onClose ? (
                     <button
                         type="button"
-                        className="text-xs text-[var(--app-hint)] hover:text-[var(--app-fg)]"
+                        className="absolute right-3 top-3 text-xs text-[var(--app-hint)] hover:text-[var(--app-fg)]"
                         onClick={handleClose}
                         aria-label="Dismiss"
                     >

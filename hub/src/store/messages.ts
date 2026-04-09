@@ -241,3 +241,71 @@ export function mergeSessionMessages(
         throw error
     }
 }
+
+export function cloneSessionMessages(
+    db: Database,
+    fromSessionId: string,
+    toSessionId: string
+): { cloned: number; sourceMaxSeq: number; targetMaxSeq: number } {
+    if (fromSessionId === toSessionId) {
+        return { cloned: 0, sourceMaxSeq: 0, targetMaxSeq: getMaxSeq(db, toSessionId) }
+    }
+
+    const sourceRows = db.prepare(
+        'SELECT * FROM messages WHERE session_id = ? ORDER BY seq ASC'
+    ).all(fromSessionId) as DbMessageRow[]
+
+    if (sourceRows.length === 0) {
+        return { cloned: 0, sourceMaxSeq: 0, targetMaxSeq: getMaxSeq(db, toSessionId) }
+    }
+
+    const sourceMaxSeq = sourceRows[sourceRows.length - 1]?.seq ?? 0
+
+    try {
+        db.exec('BEGIN')
+
+        const targetMaxSeq = getMaxSeq(db, toSessionId)
+        const existingLocalIds = new Set<string>(
+            (db.prepare(
+                'SELECT local_id FROM messages WHERE session_id = ? AND local_id IS NOT NULL'
+            ).all(toSessionId) as Array<{ local_id: string }>).map((row) => row.local_id)
+        )
+
+        const insert = db.prepare(`
+            INSERT INTO messages (
+                id, session_id, content, created_at, seq, local_id
+            ) VALUES (
+                @id, @session_id, @content, @created_at, @seq, @local_id
+            )
+        `)
+
+        for (const row of sourceRows) {
+            const localId = row.local_id && !existingLocalIds.has(row.local_id)
+                ? row.local_id
+                : null
+
+            if (localId) {
+                existingLocalIds.add(localId)
+            }
+
+            insert.run({
+                id: randomUUID(),
+                session_id: toSessionId,
+                content: row.content,
+                created_at: row.created_at,
+                seq: targetMaxSeq + row.seq,
+                local_id: localId
+            })
+        }
+
+        db.exec('COMMIT')
+        return {
+            cloned: sourceRows.length,
+            sourceMaxSeq,
+            targetMaxSeq: targetMaxSeq + sourceMaxSeq
+        }
+    } catch (error) {
+        db.exec('ROLLBACK')
+        throw error
+    }
+}
