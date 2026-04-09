@@ -17,6 +17,21 @@ const toastVariants = cva(
     }
 )
 
+const toastActionVariants = cva(
+    'mt-2 inline-flex w-fit items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-medium ring-1',
+    {
+        variants: {
+            variant: {
+                default: 'bg-[var(--app-secondary-bg)] text-[var(--app-fg)] ring-[var(--app-border)]',
+                success: 'bg-white/90 text-emerald-700 ring-emerald-500/20 dark:bg-emerald-900/80 dark:text-emerald-200'
+            }
+        },
+        defaultVariants: {
+            variant: 'default'
+        }
+    }
+)
+
 export type ToastProps = React.HTMLAttributes<HTMLDivElement> &
     VariantProps<typeof toastVariants> & {
     title: string
@@ -58,7 +73,7 @@ export function Toast({ title, body, actionLabel, onClose, className, variant, .
                     <div className="text-sm font-semibold leading-5">{title}</div>
                     <div className="mt-1 text-xs leading-5 text-[var(--app-hint)]">{body}</div>
                     {actionLabel ? (
-                        <div className="mt-2 inline-flex w-fit items-center gap-1 rounded-full bg-white/90 px-2.5 py-1 text-[11px] font-medium text-emerald-700 ring-1 ring-emerald-500/20 dark:bg-emerald-900/80 dark:text-emerald-200">
+                        <div className={toastActionVariants({ variant })}>
                             <span>{actionLabel}</span>
                             <ArrowRightIcon className="h-3.5 w-3.5" />
                         </div>
