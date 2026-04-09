@@ -458,6 +458,37 @@ export class SessionCache {
         this.refreshSession(sessionId)
     }
 
+    async inheritSessionMetadata(sourceSessionId: string, targetSessionId: string): Promise<void> {
+        const source = this.sessions.get(sourceSessionId) ?? this.refreshSession(sourceSessionId)
+        const target = this.sessions.get(targetSessionId) ?? this.refreshSession(targetSessionId)
+        if (!source || !target) {
+            throw new Error('Session not found')
+        }
+
+        const mergedMetadata = this.mergeSessionMetadata(source.metadata ?? null, target.metadata ?? null)
+        if (mergedMetadata === target.metadata) {
+            return
+        }
+
+        const result = this.store.sessions.updateSessionMetadata(
+            targetSessionId,
+            mergedMetadata,
+            target.metadataVersion,
+            target.namespace,
+            { touchUpdatedAt: false }
+        )
+
+        if (result.result === 'error') {
+            throw new Error('Failed to inherit session metadata')
+        }
+
+        if (result.result === 'version-mismatch') {
+            throw new Error('Session was modified concurrently. Please try again.')
+        }
+
+        this.refreshSession(targetSessionId)
+    }
+
     async deleteSession(sessionId: string): Promise<void> {
         const session = this.sessions.get(sessionId)
         if (!session) {

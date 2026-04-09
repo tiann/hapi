@@ -721,13 +721,26 @@ describe('session model', () => {
             ) => {
                 capturedModel = model
                 capturedForkSessionId = forkSessionId
-                return { type: 'success', sessionId: 'forked-session' }
+                const forkedSession = engine.getOrCreateSession(
+                    'forked-session',
+                    {
+                        path: '/tmp/project',
+                        host: 'localhost',
+                        machineId: 'machine-1',
+                        flavor: 'codex',
+                        codexSessionId: 'codex-thread-2'
+                    },
+                    null,
+                    'default',
+                    model
+                )
+                return { type: 'success', sessionId: forkedSession.id }
             }
             ;(engine as any).waitForSessionActive = async () => true
 
             const result = await engine.forkSession(session.id, 'default')
 
-            expect(result).toEqual({ type: 'success', sessionId: 'forked-session' })
+            expect(result.type).toBe('success')
             expect(capturedForkSessionId).toBe('codex-thread-1')
             expect(capturedModel).toBe('gpt-5.4')
         } finally {
@@ -1202,6 +1215,76 @@ describe('session model', () => {
             expect(engine.getSession(forkedSessionId)?.metadata?.name).toBe('我的自定义标题')
             expect(store.sessions.getSession(forkedSessionId)?.metadata).toMatchObject({
                 name: '我的自定义标题'
+            })
+        } finally {
+            engine.stop()
+        }
+    })
+
+    it('preserves summary title when forking', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            const session = engine.getOrCreateSession(
+                'session-codex-fork-summary',
+                {
+                    path: '/tmp/project',
+                    host: 'localhost',
+                    machineId: 'machine-1',
+                    flavor: 'codex',
+                    codexSessionId: 'codex-thread-1',
+                    summary: {
+                        text: '自动标题',
+                        updatedAt: 123456
+                    }
+                },
+                null,
+                'default',
+                'gpt-5.4'
+            )
+            engine.getOrCreateMachine(
+                'machine-1',
+                { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
+                null,
+                'default'
+            )
+            engine.handleMachineAlive({ machineId: 'machine-1', time: Date.now() })
+
+            let forkedSessionId = ''
+            ;(engine as any).rpcGateway.spawnSession = async () => {
+                const forkedSession = engine.getOrCreateSession(
+                    'forked-session-summary',
+                    {
+                        path: '/tmp/project',
+                        host: 'localhost',
+                        machineId: 'machine-1',
+                        flavor: 'codex',
+                        codexSessionId: 'codex-thread-2'
+                    },
+                    null,
+                    'default',
+                    'gpt-5.4'
+                )
+                forkedSessionId = forkedSession.id
+                return { type: 'success', sessionId: forkedSessionId }
+            }
+            ;(engine as any).waitForSessionActive = async () => true
+
+            const result = await engine.forkSession(session.id, 'default')
+
+            expect(result).toEqual({ type: 'success', sessionId: forkedSessionId })
+            expect(engine.getSession(forkedSessionId)?.metadata?.summary?.text).toBe('自动标题')
+            expect(store.sessions.getSession(forkedSessionId)?.metadata).toMatchObject({
+                summary: {
+                    text: '自动标题',
+                    updatedAt: 123456
+                }
             })
         } finally {
             engine.stop()
