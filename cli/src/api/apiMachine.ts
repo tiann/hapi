@@ -15,6 +15,7 @@ import { RpcHandlerManager } from './rpc/RpcHandlerManager'
 import { registerCommonHandlers } from '../modules/common/registerCommonHandlers'
 import type { SpawnSessionOptions, SpawnSessionResult } from '../modules/common/rpcTypes'
 import { applyVersionedAck } from './versionedUpdate'
+import { buildSocketIoExtraHeaderOptions } from './hubExtraHeaders'
 
 interface ServerToRunnerEvents {
     update: (data: Update) => void
@@ -231,7 +232,8 @@ export class ApiMachineClient {
             path: '/socket.io/',
             reconnection: true,
             reconnectionDelay: 1000,
-            reconnectionDelayMax: 5000
+            reconnectionDelayMax: 5000,
+            ...buildSocketIoExtraHeaderOptions()
         })
 
         this.socket.on('connect', () => {

@@ -34,6 +34,7 @@ import { registerCommonHandlers } from '../modules/common/registerCommonHandlers
 import { cleanupUploadDir } from '../modules/common/handlers/uploads'
 import { TerminalManager } from '@/terminal/TerminalManager'
 import { applyVersionedAck } from './versionedUpdate'
+import { buildHubRequestHeaders, buildSocketIoExtraHeaderOptions } from './hubExtraHeaders'
 
 /**
  * XML tags that Claude Code injects as `type:'user'` messages.
@@ -118,7 +119,8 @@ export class ApiSessionClient extends EventEmitter {
             reconnectionDelay: 1000,
             reconnectionDelayMax: 5000,
             transports: ['websocket'],
-            autoConnect: false
+            autoConnect: false,
+            ...buildSocketIoExtraHeaderOptions()
         })
 
         this.terminalManager = new TerminalManager({
@@ -308,10 +310,10 @@ export class ApiSessionClient extends EventEmitter {
                     `${configuration.apiUrl}/cli/sessions/${encodeURIComponent(this.sessionId)}/messages`,
                     {
                         params: { afterSeq: cursor, limit },
-                        headers: {
+                        headers: buildHubRequestHeaders({
                             Authorization: `Bearer ${this.token}`,
                             'Content-Type': 'application/json'
-                        },
+                        }),
                         timeout: 15_000
                     }
                 )

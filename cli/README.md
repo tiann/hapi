@@ -80,6 +80,7 @@ See `src/configuration.ts` for all options.
 
 - `HAPI_HOME` - Config/data directory (default: ~/.hapi).
 - `HAPI_EXPERIMENTAL` - Enable experimental features (true/1/yes).
+- `HAPI_EXTRA_HEADERS_JSON` - JSON object of extra headers to send on CLI → hub requests, e.g. `{"Cookie":"CF_Authorization=..."}`.
 - `HAPI_CLAUDE_PATH` - Path to a specific `claude` executable.
 - `HAPI_HTTP_MCP_URL` - Default MCP target for `hapi mcp`.
 

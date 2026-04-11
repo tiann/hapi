@@ -177,6 +177,7 @@ On first run, HAPI:
 |----------|---------|---------------|-------------|
 | `CLI_API_TOKEN` | Auto-generated | `cliApiToken` | Shared secret for authentication |
 | `HAPI_API_URL` | `http://localhost:3006` | `apiUrl` | Hub URL for CLI connections |
+| `HAPI_EXTRA_HEADERS_JSON` | - | - | JSON object of extra outbound headers for CLI → hub HTTP/WebSocket requests |
 | `HAPI_LISTEN_HOST` | `127.0.0.1` | `listenHost` | Hub HTTP bind address |
 | `HAPI_LISTEN_PORT` | `3006` | `listenPort` | Hub HTTP port |
 | `HAPI_PUBLIC_URL` | - | `publicUrl` | Public URL for external access |
@@ -217,6 +218,7 @@ If the hub is not on localhost, set these before running `hapi`:
 ```bash
 export HAPI_API_URL="http://your-hub:3006"
 export CLI_API_TOKEN="your-token-here"
+export HAPI_EXTRA_HEADERS_JSON='{"Cookie":"CF_Authorization=..."}'
 ```
 
 Or use interactive login:

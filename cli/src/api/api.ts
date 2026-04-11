@@ -6,6 +6,7 @@ import { getAuthToken } from '@/api/auth'
 import { apiValidationError } from '@/utils/errorUtils'
 import { ApiMachineClient } from './apiMachine'
 import { ApiSessionClient } from './apiSession'
+import { buildHubRequestHeaders } from './hubExtraHeaders'
 
 export class ApiClient {
     static async create(): Promise<ApiClient> {
@@ -33,10 +34,10 @@ export class ApiClient {
                 effort: opts.effort
             },
             {
-                headers: {
+                headers: buildHubRequestHeaders({
                     Authorization: `Bearer ${this.token}`,
                     'Content-Type': 'application/json'
-                },
+                }),
                 timeout: 60_000
             }
         )
@@ -96,10 +97,10 @@ export class ApiClient {
                 runnerState: opts.runnerState ?? null
             },
             {
-                headers: {
+                headers: buildHubRequestHeaders({
                     Authorization: `Bearer ${this.token}`,
                     'Content-Type': 'application/json'
-                },
+                }),
                 timeout: 60_000
             }
         )
