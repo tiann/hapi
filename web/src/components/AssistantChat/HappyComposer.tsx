@@ -298,15 +298,15 @@ export function HappyComposer(props: {
             return
         }
 
-        // Modifier+Enter inserts a newline (Shift, Ctrl, Alt, Cmd)
-        if (key === 'Enter' && (e.shiftKey || e.ctrlKey || e.altKey || e.metaKey)) {
+        // Shift+Enter inserts a newline (standard behavior)
+        if (key === 'Enter' && e.shiftKey) {
             return // let default textarea behavior handle newline
         }
 
-        // Plain Enter: send or no-op (never insert newline)
-        if (key === 'Enter' && suggestions.length === 0) {
+        // Only plain Enter (no modifiers) sends; other modifier combos are ignored
+        if (key === 'Enter') {
             e.preventDefault()
-            if (canSend) {
+            if (!e.ctrlKey && !e.altKey && !e.metaKey && canSend && suggestions.length === 0) {
                 api.composer().send()
                 setShowContinueHint(false)
             }
