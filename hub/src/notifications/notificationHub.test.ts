@@ -58,6 +58,7 @@ function createSession(overrides: Partial<Session> = {}): Session {
         thinking: false,
         thinkingAt: 0,
         model: null,
+        modelReasoningEffort: null,
         effort: null,
         ...overrides
     }

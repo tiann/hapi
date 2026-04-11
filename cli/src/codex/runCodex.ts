@@ -82,7 +82,7 @@ export async function runCodex(opts: {
         }
         const sessionModelReasoningEffort = sessionInstance.getModelReasoningEffort();
         if (sessionModelReasoningEffort !== undefined) {
-            currentModelReasoningEffort = sessionModelReasoningEffort ?? undefined;
+            currentModelReasoningEffort = (sessionModelReasoningEffort ?? undefined) as ReasoningEffort | undefined;
         }
         sessionInstance.setPermissionMode(currentPermissionMode);
         sessionInstance.setModel(currentModel ?? null);
@@ -106,7 +106,7 @@ export async function runCodex(opts: {
         }
         const sessionModelReasoningEffort = sessionWrapperRef.current?.getModelReasoningEffort();
         if (sessionModelReasoningEffort !== undefined) {
-            currentModelReasoningEffort = sessionModelReasoningEffort ?? undefined;
+            currentModelReasoningEffort = (sessionModelReasoningEffort ?? undefined) as ReasoningEffort | undefined;
         }
         const sessionCollaborationMode = sessionWrapperRef.current?.getCollaborationMode();
         if (sessionCollaborationMode) {
