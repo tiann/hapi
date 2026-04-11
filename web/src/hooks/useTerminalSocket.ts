@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { io, type Socket } from 'socket.io-client'
+import { Manager, type Socket } from 'socket.io-client'
 
 type TerminalConnectionState =
     | { status: 'idle' }
@@ -116,8 +116,7 @@ export function useTerminalSocket(options: UseTerminalSocketOptions): {
             return
         }
 
-        const socket = io(`${baseUrlRef.current}/terminal`, {
-            auth: { token },
+        const manager = new Manager(baseUrlRef.current, {
             path: '/socket.io/',
             reconnection: true,
             reconnectionAttempts: Infinity,
@@ -125,6 +124,9 @@ export function useTerminalSocket(options: UseTerminalSocketOptions): {
             reconnectionDelayMax: 5000,
             transports: ['polling', 'websocket'],
             autoConnect: false
+        })
+        const socket = manager.socket('/terminal', {
+            auth: { token }
         })
 
         socketRef.current = socket
