@@ -24,6 +24,7 @@ type UseSendMessageOptions = {
     resolveSessionId?: (sessionId: string) => Promise<string>
     onSessionResolved?: (sessionId: string) => void
     onBlocked?: (reason: BlockedReason) => void
+    onSuccess?: () => void
 }
 
 function findMessageByLocalId(
@@ -83,6 +84,7 @@ export function useSendMessage(
         onSuccess: (_, input) => {
             updateMessageStatus(input.sessionId, input.localId, 'sent')
             haptic.notification('success')
+            options?.onSuccess?.()
         },
         onError: (_, input) => {
             updateMessageStatus(input.sessionId, input.localId, 'failed')
