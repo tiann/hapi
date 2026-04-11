@@ -22,6 +22,7 @@ import { usePlatform } from '@/hooks/usePlatform'
 import { usePWAInstall } from '@/hooks/usePWAInstall'
 import { supportsEffort, supportsModelChange } from '@hapi/protocol'
 import { markSkillUsed } from '@/lib/recent-skills'
+import { getDraft, saveDraft, clearDraft } from '@/lib/composer-drafts'
 import { FloatingOverlay } from '@/components/ChatInput/FloatingOverlay'
 import { Autocomplete } from '@/components/ChatInput/Autocomplete'
 import { StatusBar } from '@/components/AssistantChat/StatusBar'
@@ -40,6 +41,7 @@ export interface TextInputState {
 const defaultSuggestionHandler = async (): Promise<Suggestion[]> => []
 
 export function HappyComposer(props: {
+    sessionId?: string
     disabled?: boolean
     permissionMode?: PermissionMode
     collaborationMode?: CodexCollaborationMode
@@ -72,6 +74,7 @@ export function HappyComposer(props: {
 }) {
     const { t } = useTranslation()
     const {
+        sessionId,
         disabled = false,
         permissionMode: rawPermissionMode,
         collaborationMode: rawCollaborationMode,
@@ -141,6 +144,9 @@ export function HappyComposer(props: {
     const [showContinueHint, setShowContinueHint] = useState(false)
 
     const textareaRef = useRef<HTMLTextAreaElement>(null)
+    const draftReadyRef = useRef(false)
+    const composerTextRef = useRef(composerText)
+    composerTextRef.current = composerText
     const prevControlledByUser = useRef(controlledByUser)
 
     useEffect(() => {
@@ -152,6 +158,30 @@ export function HappyComposer(props: {
             return { text: composerText, selection: { start: newPos, end: newPos } }
         })
     }, [composerText])
+
+    // Restore draft on mount, save draft on unmount
+    useEffect(() => {
+        if (!sessionId) return
+
+        // Defer restoration so the runtime has settled after mount
+        const frame = requestAnimationFrame(() => {
+            const draft = getDraft(sessionId)
+            // Only restore if the user has not started typing yet
+            if (draft && !composerTextRef.current) {
+                api.composer().setText(draft)
+            }
+            draftReadyRef.current = true
+        })
+
+        return () => {
+            cancelAnimationFrame(frame)
+            // Save current text as draft on unmount
+            if (draftReadyRef.current) {
+                saveDraft(sessionId, composerTextRef.current)
+            }
+            draftReadyRef.current = false
+        }
+    }, [sessionId]) // eslint-disable-line react-hooks/exhaustive-deps
 
     // Track one-time "continue" hint after switching from local to remote.
     useEffect(() => {
@@ -316,6 +346,7 @@ export function HappyComposer(props: {
             e.preventDefault()
             if (!e.ctrlKey && !e.altKey && !e.metaKey && canSend) {
                 api.composer().send()
+                if (sessionId) clearDraft(sessionId)
                 setShowContinueHint(false)
             }
             return
@@ -373,6 +404,7 @@ export function HappyComposer(props: {
         permissionModes,
         canSend,
         api,
+        sessionId,
         haptic
     ])
 
@@ -487,7 +519,8 @@ export function HappyComposer(props: {
 
     const handleSend = useCallback(() => {
         api.composer().send()
-    }, [api])
+        if (sessionId) clearDraft(sessionId)
+    }, [api, sessionId])
 
     const overlays = useMemo(() => {
         if (showSettings && (showCollaborationSettings || showPermissionSettings || showModelSettings || showModelReasoningEffortSettings || showEffortSettings)) {
