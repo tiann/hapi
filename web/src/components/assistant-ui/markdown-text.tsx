@@ -16,7 +16,7 @@ import { CopyIcon, CheckIcon } from '@/components/icons'
 
 import type { MarkdownTextPrimitiveProps } from '@assistant-ui/react-markdown'
 
-export const MARKDOWN_PLUGINS = [remarkGfm, [remarkMath, { singleDollarTextMath: false }], remarkDisableIndentedCode] satisfies NonNullable<MarkdownTextPrimitiveProps['remarkPlugins']>
+export const MARKDOWN_PLUGINS = [remarkGfm, remarkMath, remarkDisableIndentedCode] satisfies NonNullable<MarkdownTextPrimitiveProps['remarkPlugins']>
 export const MARKDOWN_REHYPE_PLUGINS = [rehypeKatex] satisfies NonNullable<MarkdownTextPrimitiveProps['rehypePlugins']>
 
 function CodeHeader(props: CodeHeaderProps) {
