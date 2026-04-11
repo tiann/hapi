@@ -22,7 +22,7 @@ import { usePlatform } from '@/hooks/usePlatform'
 import { usePWAInstall } from '@/hooks/usePWAInstall'
 import { supportsEffort, supportsModelChange } from '@hapi/protocol'
 import { markSkillUsed } from '@/lib/recent-skills'
-import { getDraft, saveDraft, clearDraft } from '@/lib/composer-drafts'
+import { getDraft, saveDraft } from '@/lib/composer-drafts'
 import { FloatingOverlay } from '@/components/ChatInput/FloatingOverlay'
 import { Autocomplete } from '@/components/ChatInput/Autocomplete'
 import { StatusBar } from '@/components/AssistantChat/StatusBar'
@@ -346,7 +346,6 @@ export function HappyComposer(props: {
             e.preventDefault()
             if (!e.ctrlKey && !e.altKey && !e.metaKey && canSend) {
                 api.composer().send()
-                if (sessionId) clearDraft(sessionId)
                 setShowContinueHint(false)
             }
             return
@@ -404,7 +403,6 @@ export function HappyComposer(props: {
         permissionModes,
         canSend,
         api,
-        sessionId,
         haptic
     ])
 
@@ -519,8 +517,7 @@ export function HappyComposer(props: {
 
     const handleSend = useCallback(() => {
         api.composer().send()
-        if (sessionId) clearDraft(sessionId)
-    }, [api, sessionId])
+    }, [api])
 
     const overlays = useMemo(() => {
         if (showSettings && (showCollaborationSettings || showPermissionSettings || showModelSettings || showModelReasoningEffortSettings || showEffortSettings)) {

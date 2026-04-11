@@ -20,6 +20,7 @@ import { HappyThread } from '@/components/AssistantChat/HappyThread'
 import { useHappyRuntime } from '@/lib/assistant-runtime'
 import { createAttachmentAdapter } from '@/lib/attachmentAdapter'
 import { findUnsupportedCodexBuiltinSlashCommand } from '@/lib/codexSlashCommands'
+import { clearDraft } from '@/lib/composer-drafts'
 import { useToast } from '@/lib/toast-context'
 import { useTranslation } from '@/lib/use-translation'
 import { SessionHeader } from '@/components/SessionHeader'
@@ -321,6 +322,7 @@ export function SessionChat(props: {
         }
 
         props.onSend(text, attachments)
+        clearDraft(props.session.id)
         setForceScrollToken((token) => token + 1)
     }, [agentFlavor, props.availableSlashCommands, props.onSend, props.session.id, addToast, haptic, t])
 
