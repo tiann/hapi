@@ -238,10 +238,8 @@ function SessionPage() {
         retryMessage,
         isSending,
     } = useSendMessage(api, sessionId, {
-        onSuccess: () => {
-            if (sessionId) {
-                clearDraft(sessionId)
-            }
+        onSuccess: (sentSessionId) => {
+            clearDraft(sentSessionId)
         },
         resolveSessionId: async (currentSessionId) => {
             if (!api || !session || session.active) {
