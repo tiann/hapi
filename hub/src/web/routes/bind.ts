@@ -51,7 +51,7 @@ export function createBindRoutes(jwtSecret: Uint8Array, store: Store): Hono<WebA
         const token = await new SignJWT({ uid: userId, ns: namespace })
             .setProtectedHeader({ alg: 'HS256' })
             .setIssuedAt()
-            .setExpirationTime('15m')
+            .setExpirationTime('4h')
             .sign(jwtSecret)
 
         return c.json({

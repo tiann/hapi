@@ -267,7 +267,7 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
         }
 
         const handleActive = () => {
-            void refreshAuth({ minTtlMs: 60_000 })
+            void refreshAuth({ force: true })
         }
 
         const handleVisibilityChange = () => {
