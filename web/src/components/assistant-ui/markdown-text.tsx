@@ -14,8 +14,10 @@ import { SyntaxHighlighter } from '@/components/assistant-ui/shiki-highlighter'
 import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
 import { CopyIcon, CheckIcon } from '@/components/icons'
 
-export const MARKDOWN_PLUGINS = [remarkGfm, remarkMath, remarkDisableIndentedCode]
-export const MARKDOWN_REHYPE_PLUGINS = [rehypeKatex]
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export const MARKDOWN_PLUGINS: any[] = [remarkGfm, [remarkMath, { singleDollarTextMath: false }], remarkDisableIndentedCode]
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export const MARKDOWN_REHYPE_PLUGINS: any[] = [rehypeKatex]
 
 function CodeHeader(props: CodeHeaderProps) {
     const { copied, copy } = useCopyToClipboard()
