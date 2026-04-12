@@ -31,7 +31,7 @@ import { queryKeys } from '@/lib/query-keys'
 import { useToast } from '@/lib/toast-context'
 import { useTranslation } from '@/lib/use-translation'
 import { fetchLatestMessages, seedMessageWindowFromSession } from '@/lib/message-window-store'
-import { clearDraft } from '@/lib/composer-drafts'
+import { clearDraftsAfterSend } from '@/lib/clearDraftsAfterSend'
 import type { Machine } from '@/types/api'
 import FilesPage from '@/routes/sessions/files'
 import FilePage from '@/routes/sessions/file'
@@ -239,7 +239,7 @@ function SessionPage() {
         isSending,
     } = useSendMessage(api, sessionId, {
         onSuccess: (sentSessionId) => {
-            clearDraft(sentSessionId)
+            clearDraftsAfterSend(sentSessionId, sessionId)
         },
         resolveSessionId: async (currentSessionId) => {
             if (!api || !session || session.active) {
