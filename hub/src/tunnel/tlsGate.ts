@@ -58,16 +58,18 @@ function hostMatchesCertificate(host: string, cert: PeerCertificate): boolean {
         return altNames.some(name => name.type === 'DNS' && dnsNameMatchesHost(host, name.value))
     }
 
-    const commonName = cert.subject?.CN
-    if (!commonName) {
+    const commonNames = Array.isArray(cert.subject?.CN)
+        ? cert.subject.CN
+        : cert.subject?.CN ? [cert.subject.CN] : []
+    if (commonNames.length === 0) {
         return false
     }
 
     if (hostIsIp) {
-        return commonName === host
+        return commonNames.includes(host)
     }
 
-    return dnsNameMatchesHost(host, commonName)
+    return commonNames.some(commonName => dnsNameMatchesHost(host, commonName))
 }
 
 function parseCertDate(value: string | undefined): Date | null {

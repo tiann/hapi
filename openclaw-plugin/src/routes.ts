@@ -141,6 +141,11 @@ export function createPluginApp(deps: RouteDeps): Hono {
             return c.json({ error: 'OpenClaw approval bridge is not implemented yet' }, 501)
         }
 
+        const requestId = c.req.param('requestId')
+        if (!requestId) {
+            return c.json({ error: 'Missing route parameter: requestId' }, 400)
+        }
+
         const idempotencyKey = c.req.header('idempotency-key')
         if (!idempotencyKey) {
             return c.json({ error: 'Missing idempotency-key' }, 400)
@@ -168,7 +173,7 @@ export function createPluginApp(deps: RouteDeps): Hono {
             void deps.runtime.approve({
                 kind: 'approve',
                 conversationId: body.conversationId!,
-                requestId: c.req.param('requestId')
+                requestId
             }).then(async (events) => {
                 await dispatchMaybeEvents(deps.callbackClient, events)
             }).catch(() => {})
@@ -180,6 +185,11 @@ export function createPluginApp(deps: RouteDeps): Hono {
     const denyHandler = async (c: Context) => {
         if (!deps.runtime.supportsApprovals) {
             return c.json({ error: 'OpenClaw approval bridge is not implemented yet' }, 501)
+        }
+
+        const requestId = c.req.param('requestId')
+        if (!requestId) {
+            return c.json({ error: 'Missing route parameter: requestId' }, 400)
         }
 
         const idempotencyKey = c.req.header('idempotency-key')
@@ -209,7 +219,7 @@ export function createPluginApp(deps: RouteDeps): Hono {
             void deps.runtime.deny({
                 kind: 'deny',
                 conversationId: body.conversationId!,
-                requestId: c.req.param('requestId')
+                requestId
             }).then(async (events) => {
                 await dispatchMaybeEvents(deps.callbackClient, events)
             }).catch(() => {})
