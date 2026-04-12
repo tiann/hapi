@@ -5,6 +5,7 @@ import { OpenClawChatPage } from './OpenClawChatPage'
 import { useNavigate } from '@tanstack/react-router'
 import { useAppContext } from '@/lib/app-context'
 import { useHappyRuntime } from '@/lib/assistant-runtime'
+import { useVoiceOptional } from '@/lib/voice-context'
 import { useOpenClawConversation } from '@/hooks/queries/useOpenClawConversation'
 import { useOpenClawMessages } from '@/hooks/queries/useOpenClawMessages'
 import { useOpenClawState } from '@/hooks/queries/useOpenClawState'
@@ -13,6 +14,7 @@ import { useResolveOpenClawApproval } from '@/hooks/mutations/useResolveOpenClaw
 
 const happyThreadMock = vi.fn()
 const happyComposerMock = vi.fn()
+const realtimeVoiceSessionMock = vi.fn()
 
 vi.mock('@assistant-ui/react', () => ({
     AssistantRuntimeProvider: ({ children }: { children: ReactNode }) => <div data-testid="runtime-provider">{children}</div>
@@ -38,6 +40,18 @@ vi.mock('@/lib/use-translation', () => ({
 
 vi.mock('@/lib/assistant-runtime', () => ({
     useHappyRuntime: vi.fn()
+}))
+
+vi.mock('@/lib/voice-context', () => ({
+    useVoiceOptional: vi.fn()
+}))
+
+vi.mock('@/realtime', () => ({
+    registerVoiceHooksStore: vi.fn(),
+    RealtimeVoiceSession: (props: unknown) => {
+        realtimeVoiceSessionMock(props)
+        return <div data-testid="realtime-voice-session" />
+    }
 }))
 
 vi.mock('@/components/AssistantChat/HappyThread', () => ({
@@ -81,6 +95,9 @@ const denyMock = vi.fn()
 const refetchMessagesMock = vi.fn()
 const refetchStateMock = vi.fn()
 const loadMoreMock = vi.fn()
+const startVoiceMock = vi.fn()
+const stopVoiceMock = vi.fn()
+const toggleMicMock = vi.fn()
 
 describe('OpenClawChatPage', () => {
     afterEach(() => {
@@ -95,6 +112,17 @@ describe('OpenClawChatPage', () => {
             api: {} as never,
             token: 'token',
             baseUrl: 'http://localhost:3006'
+        })
+        vi.mocked(useVoiceOptional).mockReturnValue({
+            status: 'disconnected',
+            errorMessage: null,
+            micMuted: false,
+            currentSessionId: null,
+            setStatus: vi.fn(),
+            setMicMuted: vi.fn(),
+            toggleMic: toggleMicMock,
+            startVoice: startVoiceMock,
+            stopVoice: stopVoiceMock
         })
         vi.mocked(useHappyRuntime).mockReturnValue({} as never)
         vi.mocked(useOpenClawConversation).mockReturnValue({
@@ -183,6 +211,14 @@ describe('OpenClawChatPage', () => {
             thinking: false,
             attachmentsEnabled: false,
             enableAbort: false,
+            voiceStatus: 'disconnected',
+            voiceMicMuted: false,
+            onVoiceToggle: expect.any(Function),
+            onVoiceMicToggle: expect.any(Function),
+        }))
+        expect(screen.getByTestId('realtime-voice-session')).toBeInTheDocument()
+        expect(realtimeVoiceSessionMock).toHaveBeenCalledWith(expect.objectContaining({
+            sendMessage: expect.any(Function)
         }))
 
         expect(useHappyRuntime).toHaveBeenCalledWith(expect.objectContaining({

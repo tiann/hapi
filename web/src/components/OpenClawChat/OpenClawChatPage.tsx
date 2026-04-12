@@ -1,5 +1,5 @@
 import { AssistantRuntimeProvider } from '@assistant-ui/react'
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { openClawMessagesToChatBlocks } from '@/chat/openclaw'
 import { HappyComposer } from '@/components/AssistantChat/HappyComposer'
@@ -14,13 +14,17 @@ import { useOpenClawState } from '@/hooks/queries/useOpenClawState'
 import { useHappyRuntime } from '@/lib/assistant-runtime'
 import { useAppContext } from '@/lib/app-context'
 import { useTranslation } from '@/lib/use-translation'
+import { useVoiceOptional } from '@/lib/voice-context'
+import { RealtimeVoiceSession, registerVoiceHooksStore } from '@/realtime'
 
 const noop = () => {}
+const noopAsync = async () => {}
 
 export function OpenClawChatPage() {
     const navigate = useNavigate()
     const { api } = useAppContext()
     const { t } = useTranslation()
+    const voice = useVoiceOptional()
     const [forceScrollToken, setForceScrollToken] = useState(0)
     const { conversation, isLoading: conversationLoading, error: conversationError } = useOpenClawConversation(api)
     const conversationId = conversation?.id ?? null
@@ -58,6 +62,27 @@ export function OpenClawChatPage() {
         if (!conversationId) return
         void deny(conversationId, requestId)
     }, [conversationId, deny])
+
+    useEffect(() => {
+        registerVoiceHooksStore(
+            () => null,
+            () => []
+        )
+    }, [])
+
+    const handleVoiceToggle = useCallback(async () => {
+        if (!voice || !conversationId) return
+        if (voice.status === 'connected' || voice.status === 'connecting') {
+            await voice.stopVoice()
+        } else {
+            await voice.startVoice(conversationId)
+        }
+    }, [voice, conversationId])
+
+    const handleVoiceMicToggle = useCallback(() => {
+        if (!voice) return
+        voice.toggleMic()
+    }, [voice])
 
     const refreshOpenClaw = useCallback(() => {
         void refetchMessages()
@@ -176,9 +201,27 @@ export function OpenClawChatPage() {
                         agentState={null}
                         attachmentsEnabled={false}
                         enableAbort={false}
+                        voiceStatus={voice?.status}
+                        voiceMicMuted={voice?.micMuted}
+                        onVoiceToggle={voice && conversationId ? handleVoiceToggle : undefined}
+                        onVoiceMicToggle={voice ? handleVoiceMicToggle : undefined}
                     />
                 </div>
             </AssistantRuntimeProvider>
+
+            {voice ? (
+                <RealtimeVoiceSession
+                    api={api}
+                    micMuted={voice.micMuted}
+                    onStatusChange={voice.setStatus}
+                    getSession={() => null}
+                    sendMessage={(_sessionId, message) => {
+                        void handleSend(message)
+                    }}
+                    approvePermission={noopAsync}
+                    denyPermission={noopAsync}
+                />
+            ) : null}
         </div>
     )
 }
