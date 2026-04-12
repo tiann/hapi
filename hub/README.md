@@ -42,9 +42,8 @@ See `src/configuration.ts` for all options.
 - `HAPI_RELAY_AUTH` - Relay auth key (default: hapi).
 - `HAPI_RELAY_FORCE_TCP` - Force TCP relay mode (true/1).
 - `VAPID_SUBJECT` - Contact email/URL for Web Push.
-- `OPENCLAW_TRANSPORT_MODE` - OpenClaw transport mode: `fake` or `official` (default: `fake`).
-- `OPENCLAW_PLUGIN_BASE_URL` - Base URL for official OpenClaw plugin requests when `OPENCLAW_TRANSPORT_MODE=official`.
-- `OPENCLAW_SHARED_SECRET` - Shared secret used for both HAPI -> plugin bearer auth and plugin -> HAPI callback signature verification.
+- `OPENCLAW_PLUGIN_BASE_URL` - Base URL for OpenClaw plugin requests. If unset, hub disables OpenClaw.
+- `OPENCLAW_SHARED_SECRET` - Shared secret used for both HAPI -> plugin bearer auth and plugin -> HAPI callback signature verification. If unset, hub disables OpenClaw.
 - `OPENCLAW_CHANNEL_TIMEOUT_MS` - Timeout for outbound OpenClaw HTTP requests (default: `30000`).
 - `OPENCLAW_CHANNEL_ALLOWED_SKEW_MS` - Allowed timestamp skew for signed inbound OpenClaw events (default: `300000`).
 
@@ -218,7 +217,7 @@ See `src/sync/syncEngine.ts` for the main session/message manager:
 
 OpenClaw chat is a parallel domain, not part of `SyncEngine`. Its hub-side logic lives in `src/openclaw/`, with SQLite persistence in `src/store/openclaw*.ts` and SSE fan-out through `src/sse/sseManager.ts`.
 
-Current transport note: `src/openclaw/client.ts` now uses an asynchronous command-ack contract with durable command and receipt ledgers. `OPENCLAW_TRANSPORT_MODE=fake` remains the default for local development. `OPENCLAW_TRANSPORT_MODE=official` uses canonical `/hapi/channel/*` plugin routes plus a single `OPENCLAW_SHARED_SECRET` for outbound auth and inbound callback verification.
+Current transport note: `src/openclaw/client.ts` uses an asynchronous command-ack contract with durable command and receipt ledgers. OpenClaw uses canonical `/hapi/channel/*` plugin routes plus a single `OPENCLAW_SHARED_SECRET` for outbound auth and inbound callback verification. If required OpenClaw env vars are missing, hub keeps running and disables OpenClaw routes.
 
 ## Storage
 

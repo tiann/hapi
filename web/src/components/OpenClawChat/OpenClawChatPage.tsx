@@ -26,7 +26,12 @@ export function OpenClawChatPage() {
     const { t } = useTranslation()
     const voice = useVoiceOptional()
     const [forceScrollToken, setForceScrollToken] = useState(0)
-    const { conversation, isLoading: conversationLoading, error: conversationError } = useOpenClawConversation(api)
+    const {
+        conversation,
+        isLoading: conversationLoading,
+        isUnavailable,
+        error: conversationError
+    } = useOpenClawConversation(api)
     const conversationId = conversation?.id ?? null
     const {
         messages,
@@ -106,10 +111,25 @@ export function OpenClawChatPage() {
     const loading = conversationLoading || messagesLoading || stateLoading
     const error = conversationError ?? messagesError ?? stateError ?? sendError ?? approvalError
 
+    useEffect(() => {
+        if (!isUnavailable) {
+            return
+        }
+        void navigate({ to: '/sessions', replace: true })
+    }, [isUnavailable, navigate])
+
     if (loading && !conversationId) {
         return (
             <div className="flex h-full items-center justify-center p-4">
                 <LoadingState label="Loading OpenClaw…" className="text-sm" />
+            </div>
+        )
+    }
+
+    if (isUnavailable) {
+        return (
+            <div className="flex h-full items-center justify-center p-4">
+                <LoadingState label="Loading sessions…" className="text-sm" />
             </div>
         )
     }

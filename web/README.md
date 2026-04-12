@@ -24,7 +24,7 @@ React Mini App / PWA for OpenClaw chat and hapi session control.
 
 See `src/router.tsx` for route definitions.
 
-- `/` - OpenClaw chat homepage.
+- `/` - OpenClaw chat homepage; redirects to `/sessions` when OpenClaw is disabled on the hub.
 - `/sessions` - Session list and secondary operator entrypoint.
 - `/sessions/$sessionId` - Chat interface.
 - `/sessions/new` - Create new session.

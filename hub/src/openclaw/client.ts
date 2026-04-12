@@ -23,52 +23,6 @@ export interface OpenClawClient {
     }): Promise<OpenClawCommandAck>
 }
 
-class FakeOpenClawClient implements OpenClawClient {
-    async ensureDefaultConversation(input: { externalUserKey: string }): Promise<{ conversationId: string; title?: string | null }> {
-        return {
-            conversationId: `openclaw:${input.externalUserKey}`,
-            title: 'OpenClaw'
-        }
-    }
-
-    async sendMessage(input: {
-        conversationId: string
-        text: string
-        localMessageId: string
-        idempotencyKey: string
-    }): Promise<OpenClawCommandAck> {
-        return {
-            accepted: true,
-            upstreamRequestId: `fake-send:${input.idempotencyKey}`,
-            upstreamConversationId: input.conversationId
-        }
-    }
-
-    async approve(input: {
-        conversationId: string
-        requestId: string
-        idempotencyKey: string
-    }): Promise<OpenClawCommandAck> {
-        return {
-            accepted: true,
-            upstreamRequestId: `fake-approve:${input.requestId}:${input.idempotencyKey}`,
-            upstreamConversationId: input.conversationId
-        }
-    }
-
-    async deny(input: {
-        conversationId: string
-        requestId: string
-        idempotencyKey: string
-    }): Promise<OpenClawCommandAck> {
-        return {
-            accepted: true,
-            upstreamRequestId: `fake-deny:${input.requestId}:${input.idempotencyKey}`,
-            upstreamConversationId: input.conversationId
-        }
-    }
-}
-
 class OfficialOpenClawClient implements OpenClawClient {
     constructor(private readonly config: OpenClawTransportConfig) {}
 
@@ -166,9 +120,6 @@ class OfficialOpenClawClient implements OpenClawClient {
     private async requestJson(pathname: string, init: RequestInit): Promise<Record<string, unknown> | null> {
         const baseUrl = this.config.pluginBaseUrl
         const sharedSecret = this.config.sharedSecret
-        if (!baseUrl || !sharedSecret) {
-            throw new Error('OpenClaw official transport is missing OPENCLAW_PLUGIN_BASE_URL or OPENCLAW_SHARED_SECRET')
-        }
 
         const controller = new AbortController()
         const timeout = setTimeout(() => controller.abort(), this.config.timeoutMs)
@@ -229,8 +180,5 @@ function readNumber(...values: unknown[]): number | null {
 }
 
 export function createOpenClawClient(config: OpenClawTransportConfig = getOpenClawTransportConfig()): OpenClawClient {
-    if (config.mode === 'official') {
-        return new OfficialOpenClawClient(config)
-    }
-    return new FakeOpenClawClient()
+    return new OfficialOpenClawClient(config)
 }

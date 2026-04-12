@@ -134,6 +134,7 @@ describe('OpenClawChatPage', () => {
                 updatedAt: 1
             },
             isLoading: false,
+            isUnavailable: false,
             error: null,
             refetch: vi.fn()
         })
@@ -253,5 +254,38 @@ describe('OpenClawChatPage', () => {
         expect(approveMock).toHaveBeenCalledWith('conv-1', 'req-1')
         expect(denyMock).toHaveBeenCalledWith('conv-1', 'req-1')
         expect(navigateMock).toHaveBeenCalledWith({ to: '/sessions' })
+    })
+
+    it('redirects to sessions when OpenClaw is unavailable', async () => {
+        vi.mocked(useOpenClawConversation).mockReturnValue({
+            conversation: null,
+            isLoading: false,
+            isUnavailable: true,
+            error: 'HTTP 503 Service Unavailable: {"error":"OpenClaw service unavailable"}',
+            refetch: vi.fn()
+        })
+        vi.mocked(useOpenClawMessages).mockReturnValue({
+            messages: [],
+            hasMore: false,
+            isLoading: false,
+            isLoadingMore: false,
+            messagesVersion: 0,
+            error: null,
+            loadMore: loadMoreMock,
+            refetch: refetchMessagesMock
+        })
+        vi.mocked(useOpenClawState).mockReturnValue({
+            state: null,
+            isLoading: false,
+            error: null,
+            refetch: refetchStateMock
+        })
+
+        render(<OpenClawChatPage />)
+
+        expect(screen.getByText('Loading sessions…')).toBeInTheDocument()
+        await waitFor(() => {
+            expect(navigateMock).toHaveBeenCalledWith({ to: '/sessions', replace: true })
+        })
     })
 })

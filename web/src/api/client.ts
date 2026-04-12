@@ -121,7 +121,9 @@ export class ApiClient {
 
         if (!res.ok) {
             const body = await res.text().catch(() => '')
-            throw new Error(`HTTP ${res.status} ${res.statusText}: ${body}`)
+            const code = parseErrorCode(body)
+            const detail = body ? `: ${body}` : ''
+            throw new ApiError(`HTTP ${res.status} ${res.statusText}${detail}`, res.status, code, body || undefined)
         }
 
         return await res.json() as T

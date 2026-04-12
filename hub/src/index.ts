@@ -23,6 +23,11 @@ import { PushService } from './push/pushService'
 import { PushNotificationChannel } from './push/pushNotificationChannel'
 import { VisibilityTracker } from './visibility/visibilityTracker'
 import { createOpenClawClient } from './openclaw/client'
+import {
+    getMissingOpenClawTransportEnvVars,
+    getOpenClawTransportSettings,
+    isOpenClawTransportConfigured
+} from './openclaw/config'
 import { DefaultOpenClawChatService } from './openclaw/OpenClawChatService'
 import type { OpenClawChatService } from './openclaw/types'
 import { TunnelManager } from './tunnel'
@@ -161,6 +166,14 @@ async function main() {
         console.log(`[Hub] Tunnel: disabled (${relayFlag.source})`)
     }
 
+    const openClawTransportSettings = getOpenClawTransportSettings()
+    if (isOpenClawTransportConfigured(openClawTransportSettings)) {
+        console.log(`[Hub] OpenClaw: enabled (${openClawTransportSettings.pluginBaseUrl})`)
+    } else {
+        const missing = getMissingOpenClawTransportEnvVars(openClawTransportSettings)
+        console.log(`[Hub] OpenClaw: disabled (missing ${missing.join(', ')})`)
+    }
+
     const store = new Store(config.dbPath)
     const jwtSecret = await getOrCreateJwtSecret()
     const vapidKeys = await getOrCreateVapidKeys(config.dataDir)
@@ -188,11 +201,13 @@ async function main() {
     })
 
     syncEngine = new SyncEngine(store, socketServer.io, socketServer.rpcRegistry, sseManager)
-    openClawChatService = new DefaultOpenClawChatService(
-        store,
-        sseManager,
-        createOpenClawClient()
-    )
+    openClawChatService = isOpenClawTransportConfigured(openClawTransportSettings)
+        ? new DefaultOpenClawChatService(
+            store,
+            sseManager,
+            createOpenClawClient(openClawTransportSettings)
+        )
+        : null
 
     const notificationChannels: NotificationChannel[] = [
         new PushNotificationChannel(pushService, sseManager, visibilityTracker, config.publicUrl)

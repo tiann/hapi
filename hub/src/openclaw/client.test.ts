@@ -3,13 +3,11 @@ import { createOpenClawClient } from './client'
 
 describe('createOpenClawClient', () => {
     afterEach(() => {
-        delete process.env.OPENCLAW_TRANSPORT_MODE
         delete process.env.OPENCLAW_PLUGIN_BASE_URL
         delete process.env.OPENCLAW_SHARED_SECRET
     })
 
-    it('uses canonical /hapi channel routes and shared-secret auth in official mode', async () => {
-        process.env.OPENCLAW_TRANSPORT_MODE = 'official'
+    it('uses canonical /hapi channel routes and shared-secret auth', async () => {
         process.env.OPENCLAW_PLUGIN_BASE_URL = 'http://plugin.example'
         process.env.OPENCLAW_SHARED_SECRET = 'shared-secret'
 
@@ -42,15 +40,9 @@ describe('createOpenClawClient', () => {
         }
     })
 
-    it('throws the new env-name error when official config is incomplete', async () => {
-        process.env.OPENCLAW_TRANSPORT_MODE = 'official'
-
-        const client = createOpenClawClient()
-        await expect(client.sendMessage({
-            conversationId: 'thread-1',
-            text: 'hello',
-            localMessageId: 'msg-1',
-            idempotencyKey: 'idem-1'
-        })).rejects.toThrow('OPENCLAW_PLUGIN_BASE_URL or OPENCLAW_SHARED_SECRET')
+    it('throws when required config is incomplete', () => {
+        expect(() => createOpenClawClient()).toThrow(
+            'OpenClaw transport is missing OPENCLAW_PLUGIN_BASE_URL or OPENCLAW_SHARED_SECRET'
+        )
     })
 })

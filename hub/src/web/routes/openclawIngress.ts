@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { getOpenClawTransportConfig } from '../../openclaw/config'
+import { getOpenClawTransportSettings } from '../../openclaw/config'
 import { parseOfficialOpenClawEvent, verifyOfficialOpenClawSignature } from '../../openclaw/protocol'
 import type { OpenClawChatService } from '../../openclaw/types'
 import type { Store } from '../../store'
@@ -17,7 +17,7 @@ export function createOpenClawIngressRoutes(
             return c.json({ error: 'OpenClaw service unavailable' }, 503)
         }
 
-        const config = getOpenClawTransportConfig()
+        const config = getOpenClawTransportSettings()
         const rawBody = await c.req.text().catch(() => '')
         if (!rawBody) {
             return c.json({ error: 'Invalid body' }, 400)

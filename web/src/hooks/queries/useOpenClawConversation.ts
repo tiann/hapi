@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import type { ApiClient } from '@/api/client'
+import { ApiError, type ApiClient } from '@/api/client'
 import type { OpenClawConversationSummary } from '@hapi/protocol/types'
 import { queryKeys } from '@/lib/query-keys'
 
@@ -9,6 +9,7 @@ export function useOpenClawConversation(
 ): {
     conversation: OpenClawConversationSummary | null
     isLoading: boolean
+    isUnavailable: boolean
     error: string | null
     refetch: () => Promise<unknown>
 } {
@@ -26,6 +27,9 @@ export function useOpenClawConversation(
     return {
         conversation: query.data?.conversation ?? null,
         isLoading: query.isLoading,
+        isUnavailable: query.error instanceof ApiError
+            && query.error.status === 503
+            && query.error.code === 'OpenClaw service unavailable',
         error: query.error instanceof Error ? query.error.message : query.error ? 'Failed to load OpenClaw conversation' : null,
         refetch: query.refetch
     }
