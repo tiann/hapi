@@ -77,6 +77,8 @@ export function saveDraft(sessionId: string, text: string): void {
     if (!trimmed) {
         delete drafts[sessionId]
     } else {
+        // Delete before re-inserting to refresh Object.keys() order for eviction
+        delete drafts[sessionId]
         drafts[sessionId] = text
     }
     persist()

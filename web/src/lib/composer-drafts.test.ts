@@ -102,6 +102,22 @@ describe('composer-drafts', () => {
         expect(mod.getDraft('invalid-null')).toBe('')
     })
 
+    it('refreshes eviction order when updating an existing draft', async () => {
+        const mod = await import('./composer-drafts')
+        // Save 50 drafts (at capacity)
+        for (let i = 0; i < 50; i++) {
+            mod.saveDraft(`session-${i}`, `text-${i}`)
+        }
+        // Update the oldest one (session-0) — should move to end of eviction queue
+        mod.saveDraft('session-0', 'updated')
+        // Add one more to trigger eviction
+        mod.saveDraft('session-50', 'new')
+        // session-1 (the new oldest) should be evicted, not session-0
+        expect(mod.getDraft('session-0')).toBe('updated')
+        expect(mod.getDraft('session-1')).toBe('')
+        expect(mod.getDraft('session-50')).toBe('new')
+    })
+
     it('evicts oldest entries when exceeding MAX_DRAFTS', async () => {
         const mod = await import('./composer-drafts')
         // Save 55 drafts (MAX_DRAFTS is 50)
