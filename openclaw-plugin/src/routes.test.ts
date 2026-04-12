@@ -43,11 +43,36 @@ class FailingCallbackClient extends HapiCallbackClient {
     }
 }
 
+class RetryableCallbackClient extends HapiCallbackClient {
+    attempts = 0
+    events: HapiCallbackEvent[] = []
+
+    constructor(private readonly failuresBeforeSuccess: number) {
+        super('http://127.0.0.1:3006', 'shared-secret')
+    }
+
+    override async postEvent(event: HapiCallbackEvent): Promise<void> {
+        this.attempts += 1
+        if (this.attempts <= this.failuresBeforeSuccess) {
+            throw new Error(`retryable failure ${this.attempts}`)
+        }
+        this.events.push(event)
+    }
+}
+
+async function flushTimers(turns: number = 1): Promise<void> {
+    for (let index = 0; index < turns; index += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 0))
+    }
+}
+
 function createApp(
     runtime: OpenClawAdapterRuntime = new MockOpenClawRuntime('default'),
     options: {
         callbackClient?: HapiCallbackClient
         idempotencyCache?: Map<string, PluginCommandAck>
+        idempotencyTtlMs?: number
+        callbackRetryBaseDelayMs?: number
     } = {}
 ) {
     const callbackClient = options.callbackClient ?? new StubCallbackClient()
@@ -59,6 +84,8 @@ function createApp(
         callbackClient,
         runtime,
         idempotencyCache,
+        idempotencyTtlMs: options.idempotencyTtlMs,
+        callbackRetryBaseDelayMs: options.callbackRetryBaseDelayMs,
         prototypeCaptureSessionKey: null,
         prototypeCaptureFileName: 'transcript-capture.jsonl',
         logger
@@ -190,7 +217,7 @@ describe('openclaw plugin routes', () => {
         expect(second.status).toBe(200)
         expect(secondJson.upstreamRequestId).toBe(firstJson.upstreamRequestId)
 
-        await new Promise((resolve) => setTimeout(resolve, 0))
+        await flushTimers()
         expect((callbackClient as StubCallbackClient).events.length).toBeGreaterThan(0)
     })
 
@@ -210,7 +237,7 @@ describe('openclaw plugin routes', () => {
             })
         })
 
-        await new Promise((resolve) => setTimeout(resolve, 0))
+        await flushTimers()
         expect((callbackClient as StubCallbackClient).events.some((event) => {
             return typeof event === 'object'
                 && event !== null
@@ -297,16 +324,44 @@ describe('openclaw plugin routes', () => {
 
         expect(response.status).toBe(200)
 
-        await new Promise((resolve) => setTimeout(resolve, 0))
+        await flushTimers()
         expect(idempotencyCache.has('idem-approve-fail')).toBe(false)
         expect(logger.errorMessages.some((message) => message.includes('approve task failed'))).toBe(true)
+    })
+
+    it('retries approve callbacks before giving up', async () => {
+        const callbackClient = new RetryableCallbackClient(2)
+        const { app, logger } = createApp(new ApprovalRuntime(), {
+            callbackClient,
+            callbackRetryBaseDelayMs: 0
+        })
+
+        const response = await app.request('/hapi/channel/approvals/request-1/approve', {
+            method: 'POST',
+            headers: {
+                authorization: 'Bearer plugin-secret',
+                'content-type': 'application/json',
+                'idempotency-key': 'idem-approve-retry'
+            },
+            body: JSON.stringify({
+                conversationId: 'thread-1'
+            })
+        })
+
+        expect(response.status).toBe(200)
+
+        await flushTimers(4)
+        expect(callbackClient.attempts).toBe(3)
+        expect(callbackClient.events).toHaveLength(1)
+        expect(logger.errorMessages.some((message) => message.includes('approve callback failed'))).toBe(false)
     })
 
     it('logs callback failures without clearing idempotency cache after approve succeeds', async () => {
         const idempotencyCache = new Map()
         const { app, logger } = createApp(new ApprovalRuntime(), {
             idempotencyCache,
-            callbackClient: new FailingCallbackClient('callback offline')
+            callbackClient: new FailingCallbackClient('callback offline'),
+            callbackRetryBaseDelayMs: 0
         })
 
         const response = await app.request('/hapi/channel/approvals/request-1/approve', {
@@ -323,7 +378,7 @@ describe('openclaw plugin routes', () => {
 
         expect(response.status).toBe(200)
 
-        await new Promise((resolve) => setTimeout(resolve, 0))
+        await flushTimers(4)
         expect(idempotencyCache.has('idem-approve-callback')).toBe(true)
         expect(logger.errorMessages.some((message) => message.includes('approve callback failed'))).toBe(true)
     })
@@ -346,8 +401,36 @@ describe('openclaw plugin routes', () => {
 
         expect(response.status).toBe(200)
 
-        await new Promise((resolve) => setTimeout(resolve, 0))
+        await flushTimers()
         expect(idempotencyCache.has('idem-deny-fail')).toBe(false)
         expect(logger.errorMessages.some((message) => message.includes('deny task failed'))).toBe(true)
+    })
+
+    it('evicts remembered send-message acknowledgements after the TTL', async () => {
+        const idempotencyCache = new Map()
+        const { app } = createApp(new MockOpenClawRuntime('default'), {
+            idempotencyCache,
+            idempotencyTtlMs: 1
+        })
+
+        const response = await app.request('/hapi/channel/messages', {
+            method: 'POST',
+            headers: {
+                authorization: 'Bearer plugin-secret',
+                'content-type': 'application/json',
+                'idempotency-key': 'idem-ttl-1'
+            },
+            body: JSON.stringify({
+                conversationId: 'thread-1',
+                text: 'hello',
+                localMessageId: 'msg-1'
+            })
+        })
+
+        expect(response.status).toBe(200)
+        expect(idempotencyCache.has('idem-ttl-1')).toBe(true)
+
+        await flushTimers(3)
+        expect(idempotencyCache.has('idem-ttl-1')).toBe(false)
     })
 })

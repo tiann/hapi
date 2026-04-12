@@ -12,10 +12,16 @@ type RouteDeps = {
     callbackClient: HapiCallbackClient
     runtime: OpenClawAdapterRuntime
     idempotencyCache: Map<string, PluginCommandAck>
+    idempotencyTtlMs?: number
+    callbackRetryBaseDelayMs?: number
     prototypeCaptureSessionKey?: string | null
     prototypeCaptureFileName?: string
     logger: PluginLogger
 }
+
+const IDEMPOTENCY_TTL_MS = 5 * 60_000
+const CALLBACK_RETRY_ATTEMPTS = 3
+const CALLBACK_RETRY_BASE_DELAY_MS = 1000
 
 function isAuthorized(req: Request, sharedSecret: string): boolean {
     const header = req.headers.get('authorization')?.trim()
@@ -24,6 +30,10 @@ function isAuthorized(req: Request, sharedSecret: string): boolean {
 
 function formatError(error: unknown): string {
     return error instanceof Error ? error.message : String(error)
+}
+
+function delay(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 async function dispatchEvents(callbackClient: HapiCallbackClient, events: HapiCallbackEvent[]): Promise<void> {
@@ -45,6 +55,38 @@ async function dispatchMaybeEvents(
 
 export function createPluginApp(deps: RouteDeps): Hono {
     const app = new Hono()
+    const idempotencyTtlMs = deps.idempotencyTtlMs ?? IDEMPOTENCY_TTL_MS
+    const callbackRetryBaseDelayMs = deps.callbackRetryBaseDelayMs ?? CALLBACK_RETRY_BASE_DELAY_MS
+
+    const rememberAck = (idempotencyKey: string, ack: PluginCommandAck) => {
+        deps.idempotencyCache.set(idempotencyKey, ack)
+        setTimeout(() => {
+            deps.idempotencyCache.delete(idempotencyKey)
+        }, idempotencyTtlMs)
+    }
+
+    const dispatchMaybeEventsWithRetry = async (input: {
+        kind: 'approve' | 'deny'
+        conversationId: string
+        requestId: string
+        events: HapiCallbackEvent[] | void
+    }): Promise<void> => {
+        for (let attempt = 0; attempt < CALLBACK_RETRY_ATTEMPTS; attempt += 1) {
+            try {
+                await dispatchMaybeEvents(deps.callbackClient, input.events)
+                return
+            } catch (error) {
+                if (attempt === CALLBACK_RETRY_ATTEMPTS - 1) {
+                    deps.logger.error(
+                        `[${deps.namespace}] hapi-openclaw ${input.kind} callback failed `
+                        + `conversation=${input.conversationId} requestId=${input.requestId}: ${formatError(error)}`
+                    )
+                    return
+                }
+                await delay(callbackRetryBaseDelayMs * (attempt + 1))
+            }
+        }
+    }
 
     const healthHandler = (c: Context) => {
         const status: PluginHealthStatus = {
@@ -111,14 +153,12 @@ export function createPluginApp(deps: RouteDeps): Hono {
                     return
                 }
 
-                try {
-                    await dispatchMaybeEvents(deps.callbackClient, events)
-                } catch (error) {
-                    deps.logger.error(
-                        `[${deps.namespace}] hapi-openclaw ${input.kind} callback failed `
-                        + `conversation=${input.conversationId} requestId=${input.requestId}: ${formatError(error)}`
-                    )
-                }
+                await dispatchMaybeEventsWithRetry({
+                    kind: input.kind,
+                    conversationId: input.conversationId,
+                    requestId: input.requestId,
+                    events
+                })
             })()
         })
     }
@@ -156,7 +196,7 @@ export function createPluginApp(deps: RouteDeps): Hono {
             upstreamConversationId: body.conversationId,
             retryAfterMs: null
         }
-        deps.idempotencyCache.set(idempotencyKey, ack)
+        rememberAck(idempotencyKey, ack)
         deps.logger.info(`[${deps.namespace}] hapi-openclaw accepted send-message conversation=${body.conversationId} localMessageId=${body.localMessageId}`)
 
         queueMicrotask(() => {
@@ -213,7 +253,7 @@ export function createPluginApp(deps: RouteDeps): Hono {
             upstreamConversationId: body.conversationId,
             retryAfterMs: null
         }
-        deps.idempotencyCache.set(idempotencyKey, ack)
+        rememberAck(idempotencyKey, ack)
 
         queueApprovalTask({
             kind: 'approve',
@@ -256,7 +296,7 @@ export function createPluginApp(deps: RouteDeps): Hono {
             upstreamConversationId: body.conversationId,
             retryAfterMs: null
         }
-        deps.idempotencyCache.set(idempotencyKey, ack)
+        rememberAck(idempotencyKey, ack)
 
         queueApprovalTask({
             kind: 'deny',
