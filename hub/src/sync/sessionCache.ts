@@ -611,7 +611,7 @@ export class SessionCache {
         this.deduplicateInProgress.add(agentId.value)
 
         try {
-            const duplicates: string[] = []
+            const candidates: { id: string; session: Session }[] = [{ id: sessionId, session }]
             for (const [existingId, existing] of this.sessions) {
                 if (existingId === sessionId) continue
                 if (existing.namespace !== session.namespace) continue
@@ -621,15 +621,22 @@ export class SessionCache {
                 // whose keepalive/messages would fail if we deleted their session record.
                 // The web-side display dedup hides active duplicates from the UI.
                 if (existing.active) continue
-                duplicates.push(existingId)
+                candidates.push({ id: existingId, session: existing })
             }
 
-            // Merge direction: duplicate → current session. The current session is the one
-            // whose CLI just connected and set the agent session ID, so its Socket.IO room
-            // is active. Messages from duplicates are moved into it; no data is lost.
-            for (const duplicateId of duplicates) {
+            if (candidates.length <= 1) return
+
+            // Keep the most recent session as the merge target so newer state survives.
+            candidates.sort((a, b) =>
+                (b.session.activeAt - a.session.activeAt) || (b.session.updatedAt - a.session.updatedAt)
+            )
+            const targetId = candidates[0].id
+            const targetNamespace = candidates[0].session.namespace
+
+            for (const { id } of candidates.slice(1)) {
+                if (id === targetId) continue
                 try {
-                    await this.mergeSessions(duplicateId, sessionId, session.namespace)
+                    await this.mergeSessions(id, targetId, targetNamespace)
                 } catch {
                     // best-effort: duplicate remains if merge fails
                 }
