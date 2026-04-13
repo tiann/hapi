@@ -1,7 +1,9 @@
-import { describe, expect, it } from 'vitest'
+import { QueryClient } from '@tanstack/react-query'
+import { describe, expect, it, vi } from 'vitest'
 import type {
     OpenClawApprovalRequest,
     OpenClawMessage,
+    OpenClawSyncEvent,
     OpenClawState
 } from '@hapi/protocol/types'
 import type {
@@ -12,8 +14,10 @@ import {
     applyOpenClawApprovalRequestEvent,
     applyOpenClawApprovalResolvedEvent,
     applyOpenClawMessageEvent,
+    applyOpenClawSyncEvent,
     applyOpenClawStateEvent
 } from './openclawSseCache'
+import { queryKeys } from '@/lib/query-keys'
 
 function makeMessage(id: string, overrides: Partial<OpenClawMessage> = {}): OpenClawMessage {
     return {
@@ -113,5 +117,49 @@ describe('approval state patch helpers', () => {
 
         expect(next?.state.pendingApprovals).toHaveLength(1)
         expect(next?.state.pendingApprovals?.[0]?.id).toBe('req-2')
+    })
+})
+
+describe('applyOpenClawSyncEvent', () => {
+    it('patches and revalidates message queries after an SSE message update', async () => {
+        const queryClient = new QueryClient()
+        const invalidateQueries = vi.spyOn(queryClient, 'invalidateQueries')
+        const existing = makeMessagesResponse([makeMessage('msg-1', { text: 'partial' })])
+        queryClient.setQueryData(queryKeys.openclawMessages('conv-1'), existing)
+
+        const event: OpenClawSyncEvent = {
+            type: 'openclaw-message',
+            conversationId: 'conv-1',
+            message: makeMessage('msg-1', {
+                text: 'partial and more',
+                status: 'completed'
+            })
+        }
+
+        applyOpenClawSyncEvent(queryClient, event)
+
+        const next = queryClient.getQueryData<OpenClawMessagesResponse>(queryKeys.openclawMessages('conv-1'))
+        expect(next?.messages[0]?.text).toBe('partial and more')
+        expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: queryKeys.openclawMessages('conv-1') })
+    })
+
+    it('revalidates state queries after approval events', async () => {
+        const queryClient = new QueryClient()
+        const invalidateQueries = vi.spyOn(queryClient, 'invalidateQueries')
+        queryClient.setQueryData<OpenClawStateResponse>(queryKeys.openclawState('conv-1'), {
+            state: makeState()
+        })
+
+        const event: OpenClawSyncEvent = {
+            type: 'openclaw-approval-request',
+            conversationId: 'conv-1',
+            request: makeApproval('req-1')
+        }
+
+        applyOpenClawSyncEvent(queryClient, event)
+
+        const next = queryClient.getQueryData<OpenClawStateResponse>(queryKeys.openclawState('conv-1'))
+        expect(next?.state.pendingApprovals?.[0]?.id).toBe('req-1')
+        expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: queryKeys.openclawState('conv-1') })
     })
 })

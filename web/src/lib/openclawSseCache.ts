@@ -1,12 +1,15 @@
+import type { QueryClient } from '@tanstack/react-query'
 import type {
     OpenClawApprovalRequest,
     OpenClawMessage,
+    OpenClawSyncEvent,
     OpenClawState
 } from '@hapi/protocol/types'
 import type {
     OpenClawMessagesResponse,
     OpenClawStateResponse
 } from '@/types/api'
+import { queryKeys } from '@/lib/query-keys'
 
 const DEFAULT_OPENCLAW_PAGE_LIMIT = 50
 
@@ -98,4 +101,39 @@ export function applyOpenClawApprovalResolvedEvent(
             pendingApprovals: previous.state.pendingApprovals.filter((item) => item.id !== requestId)
         }
     }
+}
+
+export function applyOpenClawSyncEvent(queryClient: QueryClient, event: OpenClawSyncEvent): void {
+    if (event.type === 'openclaw-message') {
+        queryClient.setQueryData<OpenClawMessagesResponse | undefined>(
+            queryKeys.openclawMessages(event.conversationId),
+            (previous) => applyOpenClawMessageEvent(previous, event.message)
+        )
+        void queryClient.invalidateQueries({ queryKey: queryKeys.openclawMessages(event.conversationId) })
+        return
+    }
+
+    if (event.type === 'openclaw-state') {
+        queryClient.setQueryData<OpenClawStateResponse | undefined>(
+            queryKeys.openclawState(event.conversationId),
+            (previous) => applyOpenClawStateEvent(previous, event.state)
+        )
+        void queryClient.invalidateQueries({ queryKey: queryKeys.openclawState(event.conversationId) })
+        return
+    }
+
+    if (event.type === 'openclaw-approval-request') {
+        queryClient.setQueryData<OpenClawStateResponse | undefined>(
+            queryKeys.openclawState(event.conversationId),
+            (previous) => applyOpenClawApprovalRequestEvent(previous, event.request)
+        )
+        void queryClient.invalidateQueries({ queryKey: queryKeys.openclawState(event.conversationId) })
+        return
+    }
+
+    queryClient.setQueryData<OpenClawStateResponse | undefined>(
+        queryKeys.openclawState(event.conversationId),
+        (previous) => applyOpenClawApprovalResolvedEvent(previous, event.requestId, event.status)
+    )
+    void queryClient.invalidateQueries({ queryKey: queryKeys.openclawState(event.conversationId) })
 }
