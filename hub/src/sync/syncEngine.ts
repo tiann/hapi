@@ -221,8 +221,14 @@ export class SyncEngine {
 
     private expireInactive(): void {
         const expired = this.sessionCache.expireInactive()
-        for (const sessionId of expired) {
-            this.triggerDedupIfNeeded(sessionId)
+        // Sort by most recent first so dedup keeps the newest session when multiple
+        // duplicates for the same agent thread expire in the same sweep.
+        const sorted = expired
+            .map((id) => this.sessionCache.getSession(id))
+            .filter((s): s is NonNullable<typeof s> => s != null)
+            .sort((a, b) => (b.activeAt - a.activeAt) || (b.updatedAt - a.updatedAt))
+        for (const session of sorted) {
+            this.triggerDedupIfNeeded(session.id)
         }
         this.machineCache.expireInactive()
     }
