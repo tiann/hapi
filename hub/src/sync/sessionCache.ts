@@ -566,18 +566,20 @@ export class SessionCache {
         const oldObj = oldState as Record<string, unknown>
         const newObj = newState as Record<string, unknown>
 
-        return {
-            ...oldObj,
-            ...newObj,
-            requests: {
+        const completedRequests = {
+            ...((oldObj.completedRequests as Record<string, unknown> | undefined) ?? {}),
+            ...((newObj.completedRequests as Record<string, unknown> | undefined) ?? {})
+        }
+        // Filter out requests that are already completed to avoid resurrecting them as pending
+        const completedIds = new Set(Object.keys(completedRequests))
+        const requests = Object.fromEntries(
+            Object.entries({
                 ...((oldObj.requests as Record<string, unknown> | undefined) ?? {}),
                 ...((newObj.requests as Record<string, unknown> | undefined) ?? {})
-            },
-            completedRequests: {
-                ...((oldObj.completedRequests as Record<string, unknown> | undefined) ?? {}),
-                ...((newObj.completedRequests as Record<string, unknown> | undefined) ?? {})
-            }
-        }
+            }).filter(([id]) => !completedIds.has(id))
+        )
+
+        return { ...oldObj, ...newObj, requests, completedRequests }
     }
 
     private extractAgentSessionId(
