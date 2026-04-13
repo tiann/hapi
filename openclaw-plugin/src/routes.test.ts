@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test'
 import { createPluginApp } from './routes'
 import { HapiCallbackClient } from './hapiClient'
 import { MockOpenClawRuntime } from './openclawRuntime'
+import { adapterState } from './adapterState'
 import type { HapiCallbackEvent, OpenClawAdapterRuntime, PluginCommandAck } from './types'
 
 function createLogger() {
@@ -108,6 +109,10 @@ class BusyRuntime implements OpenClawAdapterRuntime {
         throw new Error('sendMessage should not be called when busy')
     }
 
+    async sendMessageReserved(): Promise<void> {
+        throw new Error('sendMessageReserved should not be called when busy')
+    }
+
     async approve(): Promise<void> {
         throw new Error('approve should not be called')
     }
@@ -130,6 +135,10 @@ class ApprovalRuntime implements OpenClawAdapterRuntime {
 
     async sendMessage(): Promise<void> {
         throw new Error('sendMessage should not be called')
+    }
+
+    async sendMessageReserved(): Promise<void> {
+        throw new Error('sendMessageReserved should not be called')
     }
 
     async approve(): Promise<[{ type: 'approval-resolved'; eventId: string; occurredAt: number; namespace: string; conversationId: string; requestId: string; status: 'approved' }]> {
@@ -164,6 +173,64 @@ class ApprovalRuntime implements OpenClawAdapterRuntime {
 }
 
 describe('openclaw plugin routes', () => {
+    it('rejects a second same-conversation send before the worker starts', async () => {
+        adapterState.resetForTests()
+
+        let releaseRun: () => void = () => {}
+        let reservedCalls = 0
+        class ReservingRuntime extends MockOpenClawRuntime {
+            override async sendMessageReserved(action: Parameters<MockOpenClawRuntime['sendMessageReserved']>[0]) {
+                reservedCalls += 1
+                await new Promise<void>((resolve) => {
+                    releaseRun = resolve
+                })
+                return await super.sendMessageReserved(action)
+            }
+        }
+
+        const { app } = createApp(new ReservingRuntime('default'))
+        const firstRequest = app.request('/hapi/channel/messages', {
+            method: 'POST',
+            headers: {
+                authorization: 'Bearer plugin-secret',
+                'content-type': 'application/json',
+                'idempotency-key': 'idem-race-1'
+            },
+            body: JSON.stringify({
+                conversationId: 'thread-1',
+                text: 'hello',
+                localMessageId: 'msg-1'
+            })
+        })
+
+        const secondResponse = await app.request('/hapi/channel/messages', {
+            method: 'POST',
+            headers: {
+                authorization: 'Bearer plugin-secret',
+                'content-type': 'application/json',
+                'idempotency-key': 'idem-race-2'
+            },
+            body: JSON.stringify({
+                conversationId: 'thread-1',
+                text: 'hello again',
+                localMessageId: 'msg-2'
+            })
+        })
+
+        const firstResponse = await firstRequest
+        expect(firstResponse.status).toBe(200)
+        expect(secondResponse.status).toBe(409)
+        expect(await secondResponse.json()).toEqual({
+            error: 'Conversation already has an active OpenClaw run',
+            retryAfterMs: 1000
+        })
+        expect(reservedCalls).toBe(1)
+
+        releaseRun()
+        await flushTimers()
+        adapterState.resetForTests()
+    })
+
     it('rejects unauthorized command requests', async () => {
         const { app } = createApp()
         const response = await app.request('/hapi/channel/messages', { method: 'POST' })

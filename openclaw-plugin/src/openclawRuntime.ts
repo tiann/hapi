@@ -21,6 +21,10 @@ export class MockOpenClawRuntime implements OpenClawAdapterRuntime {
     }
 
     async sendMessage(action: PluginRuntimeSendMessageAction): Promise<HapiCallbackEvent[]> {
+        return await this.sendMessageReserved(action)
+    }
+
+    async sendMessageReserved(action: PluginRuntimeSendMessageAction): Promise<HapiCallbackEvent[]> {
         const now = Date.now()
 
         if (action.text.toLowerCase().includes('approval')) {

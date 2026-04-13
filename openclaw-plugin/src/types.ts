@@ -95,6 +95,7 @@ export interface OpenClawAdapterRuntime {
     ensureDefaultConversation(externalUserKey: string): Promise<{ conversationId: string; title: string }>
     isConversationBusy?(conversationId: string): boolean
     sendMessage(action: PluginRuntimeSendMessageAction): Promise<HapiCallbackEvent[] | void>
+    sendMessageReserved(action: PluginRuntimeSendMessageAction): Promise<HapiCallbackEvent[] | void>
     approve(action: PluginRuntimeApproveAction): Promise<HapiCallbackEvent[] | void>
     deny(action: PluginRuntimeDenyAction): Promise<HapiCallbackEvent[] | void>
 }

@@ -174,11 +174,7 @@ export class RealOpenClawAdapter implements OpenClawAdapterRuntime {
         }
     }
 
-    async sendMessage(action: PluginRuntimeSendMessageAction): Promise<void> {
-        if (!adapterState.startRun(action.conversationId)) {
-            throw new ConversationBusyError()
-        }
-
+    private async runReservedSendMessage(action: PluginRuntimeSendMessageAction): Promise<void> {
         const namespace = getStateNamespace(action.conversationId, this.namespace)
         let initialStatePosted = false
         this.logger.info(`[${namespace}] hapi-openclaw send-message start conversation=${action.conversationId}`)
@@ -225,14 +221,12 @@ export class RealOpenClawAdapter implements OpenClawAdapterRuntime {
             const runError = result.meta.error?.message?.trim() || null
             if (runError) {
                 this.logger.warn(`[${namespace}] hapi-openclaw run failed conversation=${action.conversationId}: ${runError}`)
-                if (adapterState.finishRun(action.conversationId)) {
-                    await this.postStateWithRetry({
-                        namespace,
-                        conversationId: action.conversationId,
-                        thinking: false,
-                        lastError: runError
-                    })
-                }
+                await this.postStateWithRetry({
+                    namespace,
+                    conversationId: action.conversationId,
+                    thinking: false,
+                    lastError: runError
+                })
                 return
             }
 
@@ -245,19 +239,17 @@ export class RealOpenClawAdapter implements OpenClawAdapterRuntime {
                 await delay(RUN_COMPLETION_SETTLE_MS)
             }
 
-            if (adapterState.finishRun(action.conversationId)) {
-                await this.postStateWithRetry({
-                    namespace,
-                    conversationId: action.conversationId,
-                    thinking: false,
-                    lastError: null
-                })
-            }
+            await this.postStateWithRetry({
+                namespace,
+                conversationId: action.conversationId,
+                thinking: false,
+                lastError: null
+            })
         } catch (error) {
             const message = error instanceof Error ? error.message : 'OpenClaw embedded run failed'
             this.logger.error(`[${namespace}] hapi-openclaw send-message error conversation=${action.conversationId}: ${message}`)
 
-            if (adapterState.finishRun(action.conversationId) && initialStatePosted) {
+            if (initialStatePosted) {
                 await this.postStateWithRetry({
                     namespace,
                     conversationId: action.conversationId,
@@ -268,6 +260,22 @@ export class RealOpenClawAdapter implements OpenClawAdapterRuntime {
 
             throw error
         }
+    }
+
+    async sendMessage(action: PluginRuntimeSendMessageAction): Promise<void> {
+        if (!adapterState.startRun(action.conversationId)) {
+            throw new ConversationBusyError()
+        }
+
+        try {
+            await this.runReservedSendMessage(action)
+        } finally {
+            adapterState.finishRun(action.conversationId)
+        }
+    }
+
+    async sendMessageReserved(action: PluginRuntimeSendMessageAction): Promise<void> {
+        await this.runReservedSendMessage(action)
     }
 
     async approve(_action: PluginRuntimeApproveAction): Promise<void> {

@@ -5,6 +5,7 @@ import type { HapiCallbackEvent, OpenClawAdapterRuntime, PluginCommandAck, Plugi
 import { HapiCallbackClient } from './hapiClient'
 import { OPENCLAW_PLUGIN_VERSION } from './pluginId'
 import { ConversationBusyError } from './openclawAdapter'
+import { adapterState } from './adapterState'
 
 type RouteDeps = {
     sharedSecret: string
@@ -190,6 +191,13 @@ export function createPluginApp(deps: RouteDeps): Hono {
             }, 409)
         }
 
+        if (!adapterState.startRun(body.conversationId)) {
+            return c.json({
+                error: 'Conversation already has an active OpenClaw run',
+                retryAfterMs: 1000
+            }, 409)
+        }
+
         const ack: PluginCommandAck = {
             accepted: true,
             upstreamRequestId: `plugin-send:${randomUUID()}`,
@@ -200,7 +208,7 @@ export function createPluginApp(deps: RouteDeps): Hono {
         deps.logger.info(`[${deps.namespace}] hapi-openclaw accepted send-message conversation=${body.conversationId} localMessageId=${body.localMessageId}`)
 
         queueMicrotask(() => {
-            void deps.runtime.sendMessage({
+            void deps.runtime.sendMessageReserved({
                 kind: 'send-message',
                 conversationId: body.conversationId!,
                 text: body.text!,
@@ -216,6 +224,8 @@ export function createPluginApp(deps: RouteDeps): Hono {
                     `[${deps.namespace}] hapi-openclaw send-message task failed conversation=${body.conversationId}: `
                     + formatError(error)
                 )
+            }).finally(() => {
+                adapterState.finishRun(body.conversationId!)
             })
         })
 
