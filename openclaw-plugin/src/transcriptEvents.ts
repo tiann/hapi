@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import type { HapiCallbackEvent } from './types'
 import { parseHapiSessionKey, stripReplyToCurrentPrefix } from './sessionKeys'
 
@@ -17,6 +18,14 @@ type TranscriptUpdate = {
     sessionKey?: string
     messageId?: string
     message?: unknown
+}
+
+function buildTranscriptEventId(externalMessageId: string, createdAt: number, text: string): string {
+    const digest = createHash('sha1')
+        .update(`${externalMessageId}:${createdAt}:${text}`)
+        .digest('hex')
+        .slice(0, 12)
+    return `message:${externalMessageId}:${digest}`
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -84,7 +93,7 @@ export function normalizeAssistantTranscriptEvent(update: TranscriptUpdate): Ext
 
     return {
         type: 'message',
-        eventId: `message:${externalMessageId}`,
+        eventId: buildTranscriptEventId(externalMessageId, createdAt, text),
         occurredAt: createdAt,
         namespace: parsed.namespace,
         conversationId: update.sessionKey!,

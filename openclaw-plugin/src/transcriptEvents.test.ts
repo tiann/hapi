@@ -17,9 +17,8 @@ describe('normalizeAssistantTranscriptEvent', () => {
             }
         })
 
-        expect(event).toEqual({
+        expect(event).toMatchObject({
             type: 'message',
-            eventId: 'message:8acfd988',
             occurredAt: 1775961785178,
             namespace: 'default',
             conversationId: 'agent:main:hapi-openclaw:default:debug-user',
@@ -32,6 +31,31 @@ describe('normalizeAssistantTranscriptEvent', () => {
             createdAt: 1775961785178,
             status: 'completed'
         })
+        expect(event?.eventId).toMatch(/^message:8acfd988:[0-9a-f]{12}$/)
+    })
+
+    it('generates distinct event ids for successive updates to the same assistant message', () => {
+        const first = normalizeAssistantTranscriptEvent({
+            sessionKey: 'agent:main:hapi-openclaw:default:debug-user',
+            messageId: 'assistant-1',
+            message: {
+                role: 'assistant',
+                content: 'partial',
+                timestamp: 100
+            }
+        })
+        const second = normalizeAssistantTranscriptEvent({
+            sessionKey: 'agent:main:hapi-openclaw:default:debug-user',
+            messageId: 'assistant-1',
+            message: {
+                role: 'assistant',
+                content: 'partial and more',
+                timestamp: 100
+            }
+        })
+
+        expect(first?.externalMessageId).toBe(second?.externalMessageId)
+        expect(first?.eventId).not.toBe(second?.eventId)
     })
 
     it('ignores tool-only assistant transcript entries', () => {

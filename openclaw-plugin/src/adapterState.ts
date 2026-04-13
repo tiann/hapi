@@ -1,5 +1,4 @@
 const activeRuns = new Set<string>()
-const seenTranscriptMessageIds = new Set<string>()
 
 export const adapterState = {
     startRun(sessionKey: string): boolean {
@@ -19,17 +18,7 @@ export const adapterState = {
         return activeRuns.delete(sessionKey)
     },
 
-    rememberTranscriptMessage(messageId: string): boolean {
-        if (seenTranscriptMessageIds.has(messageId)) {
-            return false
-        }
-
-        seenTranscriptMessageIds.add(messageId)
-        return true
-    },
-
     resetForTests(): void {
         activeRuns.clear()
-        seenTranscriptMessageIds.clear()
     }
 }
