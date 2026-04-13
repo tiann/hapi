@@ -14,6 +14,9 @@ export type CodexPermissionMode = typeof CODEX_PERMISSION_MODES[number]
 export const CODEX_COLLABORATION_MODES = ['default', 'plan'] as const
 export type CodexCollaborationMode = typeof CODEX_COLLABORATION_MODES[number]
 
+export const EXIT_PLAN_IMPLEMENTATION_MODES = ['keep_context', 'clear_context'] as const
+export type ExitPlanImplementationMode = typeof EXIT_PLAN_IMPLEMENTATION_MODES[number]
+
 export const GEMINI_PERMISSION_MODES = ['default', 'read-only', 'safe-yolo', 'yolo'] as const
 export type GeminiPermissionMode = typeof GEMINI_PERMISSION_MODES[number]
 

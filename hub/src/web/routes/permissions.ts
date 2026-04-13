@@ -1,12 +1,13 @@
 import { isPermissionModeAllowedForFlavor } from '@hapi/protocol'
-import { PermissionModeSchema } from '@hapi/protocol/schemas'
+import { ExitPlanImplementationModeSchema, PermissionModeSchema } from '@hapi/protocol/schemas'
 import { Hono } from 'hono'
 import { z } from 'zod'
 import type { SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 import { requireSessionFromParam, requireSyncEngine } from './guards'
 
-const decisionSchema = z.enum(['approved', 'approved_for_session', 'denied', 'abort'])
+const approveDecisionSchema = z.enum(['approved', 'approved_for_session'])
+const denyDecisionSchema = z.enum(['denied', 'abort'])
 
 // Flat format: Record<string, string[]> (AskUserQuestion)
 // Nested format: Record<string, { answers: string[] }> (request_user_input)
@@ -17,14 +18,19 @@ const answersSchema = z.union([
 
 const approveBodySchema = z.object({
     mode: PermissionModeSchema.optional(),
+    implementationMode: ExitPlanImplementationModeSchema.optional(),
     allowTools: z.array(z.string()).optional(),
-    decision: decisionSchema.optional(),
+    decision: approveDecisionSchema.optional(),
     answers: answersSchema.optional()
 })
 
 const denyBodySchema = z.object({
-    decision: decisionSchema.optional()
+    decision: denyDecisionSchema.optional()
 })
+
+function isExitPlanModeToolName(toolName: string): boolean {
+    return toolName === 'exit_plan_mode' || toolName === 'ExitPlanMode'
+}
 
 export function createPermissionsRoutes(getSyncEngine: () => SyncEngine | null): Hono<WebAppEnv> {
     const app = new Hono<WebAppEnv>()
@@ -54,17 +60,34 @@ export function createPermissionsRoutes(getSyncEngine: () => SyncEngine | null):
             return c.json({ error: 'Request not found' }, 404)
         }
 
+        const request = requests[requestId]
+        const requestToolName = typeof request?.tool === 'string' ? request.tool : ''
+        const isExitPlanModeRequest = isExitPlanModeToolName(requestToolName)
+
+        const flavor = session.metadata?.flavor ?? 'claude'
+
         const mode = parsed.data.mode
         if (mode !== undefined) {
-            const flavor = session.metadata?.flavor ?? 'claude'
             if (!isPermissionModeAllowedForFlavor(mode, flavor)) {
                 return c.json({ error: 'Invalid permission mode for session flavor' }, 400)
+            }
+            if (isExitPlanModeRequest && mode === 'plan') {
+                return c.json({ error: 'Plan mode cannot be selected after exit_plan_mode approval' }, 400)
+            }
+        }
+        const implementationMode = parsed.data.implementationMode
+        if (implementationMode !== undefined) {
+            if (!isExitPlanModeRequest) {
+                return c.json({ error: 'Implementation mode is only supported for exit_plan_mode' }, 400)
+            }
+            if (flavor !== 'claude') {
+                return c.json({ error: 'Implementation mode is only supported for Claude exit_plan_mode' }, 400)
             }
         }
         const allowTools = parsed.data.allowTools
         const decision = parsed.data.decision
         const answers = parsed.data.answers
-        await engine.approvePermission(sessionId, requestId, mode, allowTools, decision, answers)
+        await engine.approvePermission(sessionId, requestId, mode, allowTools, decision, answers, implementationMode)
         return c.json({ ok: true })
     })
 

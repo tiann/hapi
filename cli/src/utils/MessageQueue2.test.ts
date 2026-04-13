@@ -456,4 +456,25 @@ describe('MessageQueue2', () => {
         expect(batch3?.message).toBe('after-isolated');
         expect(batch3?.mode.type).toBe('B');
     });
+
+    it('should prioritize isolated messages pushed with unshiftIsolate without clearing the queue', async () => {
+        const queue = new MessageQueue2<{ type: string }>((mode) => mode.type);
+
+        queue.push('message1', { type: 'A' });
+        queue.push('message2', { type: 'A' });
+        queue.unshiftIsolate('isolated', { type: 'B' });
+
+        const batch1 = await queue.waitForMessagesAndGetAsString();
+        expect(batch1).toEqual({
+            message: 'isolated',
+            mode: { type: 'B' },
+            hash: 'B',
+            isolate: true
+        });
+
+        const batch2 = await queue.waitForMessagesAndGetAsString();
+        expect(batch2?.message).toBe('message1\nmessage2');
+        expect(batch2?.mode.type).toBe('A');
+        expect(batch2?.isolate).toBe(false);
+    });
 });

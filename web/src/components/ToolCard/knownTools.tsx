@@ -321,12 +321,12 @@ export const knownTools: Record<string, {
     },
     ExitPlanMode: {
         icon: () => <ClipboardIcon className={DEFAULT_ICON_CLASS} />,
-        title: () => 'Plan proposal',
+        title: () => 'Execute Plan',
         minimal: false
     },
     exit_plan_mode: {
         icon: () => <ClipboardIcon className={DEFAULT_ICON_CLASS} />,
-        title: () => 'Plan proposal',
+        title: () => 'Execute Plan',
         minimal: false
     },
     AskUserQuestion: {

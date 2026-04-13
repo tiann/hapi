@@ -232,7 +232,7 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
                     t: 'update-session' as const,
                     sid,
                     metadata: null,
-                    agentState: { version: result.version, value: agentState }
+                    agentState: { version: result.version, value: result.value }
                 }
             }
             socket.to(`session:${sid}`).emit('update', update)

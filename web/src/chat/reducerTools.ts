@@ -21,6 +21,7 @@ export function getPermissions(agentState: AgentState | null | undefined): Map<s
                     status: entry.status,
                     reason: entry.reason ?? undefined,
                     mode: entry.mode ?? undefined,
+                    implementationMode: entry.implementationMode ?? undefined,
                     decision: entry.decision ?? undefined,
                     allowedTools: entry.allowTools,
                     answers: entry.answers,

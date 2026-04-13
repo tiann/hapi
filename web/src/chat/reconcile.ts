@@ -68,6 +68,7 @@ function arePermissionsEqual(left?: ToolPermission, right?: ToolPermission): boo
         && left.status === right.status
         && left.reason === right.reason
         && left.mode === right.mode
+        && left.implementationMode === right.implementationMode
         && left.decision === right.decision
         && left.date === right.date
         && left.createdAt === right.createdAt

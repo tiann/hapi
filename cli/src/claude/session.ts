@@ -21,6 +21,7 @@ export class Session extends AgentSessionBase<EnhancedMode> {
     readonly startedBy: 'runner' | 'terminal';
     readonly startingMode: 'local' | 'remote';
     localLaunchFailure: LocalLaunchFailure | null = null;
+    private currentModeSnapshot: EnhancedMode;
 
     constructor(opts: {
         api: ApiClient;
@@ -72,19 +73,53 @@ export class Session extends AgentSessionBase<EnhancedMode> {
         this.permissionMode = opts.permissionMode;
         this.model = opts.model;
         this.effort = opts.effort;
+        this.currentModeSnapshot = {
+            permissionMode: opts.permissionMode ?? 'default',
+            model: opts.model ?? undefined,
+            effort: opts.effort ?? undefined
+        };
     }
 
     setPermissionMode = (mode: PermissionMode): void => {
         this.permissionMode = mode;
+        this.currentModeSnapshot = {
+            ...this.currentModeSnapshot,
+            permissionMode: mode
+        };
     };
 
     setModel = (model: SessionModel): void => {
         this.model = model;
+        this.currentModeSnapshot = {
+            ...this.currentModeSnapshot,
+            model: model ?? undefined
+        };
     };
 
     setEffort = (effort: SessionEffort): void => {
         this.effort = effort;
+        this.currentModeSnapshot = {
+            ...this.currentModeSnapshot,
+            effort: effort ?? undefined
+        };
     };
+
+    setModeSnapshot = (mode: EnhancedMode): void => {
+        this.currentModeSnapshot = {
+            ...mode,
+            allowedTools: mode.allowedTools ? [...mode.allowedTools] : undefined,
+            disallowedTools: mode.disallowedTools ? [...mode.disallowedTools] : undefined
+        };
+        this.permissionMode = mode.permissionMode;
+        this.model = mode.model ?? null;
+        this.effort = mode.effort ?? null;
+    };
+
+    getModeSnapshot = (): EnhancedMode => ({
+        ...this.currentModeSnapshot,
+        allowedTools: this.currentModeSnapshot.allowedTools ? [...this.currentModeSnapshot.allowedTools] : undefined,
+        disallowedTools: this.currentModeSnapshot.disallowedTools ? [...this.currentModeSnapshot.disallowedTools] : undefined
+    });
 
     recordLocalLaunchFailure = (message: string, exitReason: LocalLaunchExitReason): void => {
         this.localLaunchFailure = { message, exitReason };
@@ -95,6 +130,14 @@ export class Session extends AgentSessionBase<EnhancedMode> {
      */
     clearSessionId = (): void => {
         this.sessionId = null;
+        this.client.updateMetadata((metadata) => {
+            if (metadata.claudeSessionId === undefined) {
+                return metadata;
+            }
+
+            const { claudeSessionId: _removed, ...rest } = metadata;
+            return rest;
+        });
         logger.debug('[Session] Session ID cleared');
     };
 

@@ -8,22 +8,15 @@ import { SDKAssistantMessage, SDKMessage, SDKUserMessage } from "./sdk";
 import { formatClaudeMessageForInk } from "@/ui/messageFormatterInk";
 import { logger } from "@/ui/logger";
 import { SDKToLogConverter } from "./utils/sdkToLogConverter";
+import { buildClaudeToolResultPermissions } from "./utils/toolResultPermissions";
 import { PLAN_FAKE_REJECT } from "./sdk/prompts";
 import { EnhancedMode } from "./loop";
 import { OutgoingMessageQueue } from "./utils/OutgoingMessageQueue";
-import type { ClaudePermissionMode } from "@hapi/protocol/types";
 import {
     RemoteLauncherBase,
     type RemoteLauncherDisplayContext,
     type RemoteLauncherExitReason
 } from "@/modules/common/remote/RemoteLauncherBase";
-
-interface PermissionsField {
-    date: number;
-    result: 'approved' | 'denied';
-    mode?: ClaudePermissionMode;
-    allowedTools?: string[];
-}
 
 class ClaudeRemoteLauncher extends RemoteLauncherBase {
     private readonly session: Session;
@@ -201,22 +194,9 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             const response = responses.get(c.tool_use_id);
 
                             if (response) {
-                                const permissions: PermissionsField = {
-                                    date: response.receivedAt || Date.now(),
-                                    result: response.approved ? 'approved' : 'denied'
-                                };
-
-                                if (response.mode) {
-                                    permissions.mode = response.mode;
-                                }
-
-                                if (response.allowTools && response.allowTools.length > 0) {
-                                    permissions.allowedTools = response.allowTools;
-                                }
-
                                 content[i] = {
                                     ...c,
-                                    permissions
+                                    permissions: buildClaudeToolResultPermissions(response)
                                 };
                             }
                         }

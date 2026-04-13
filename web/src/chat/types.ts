@@ -1,4 +1,4 @@
-import type { AttachmentMetadata, MessageStatus } from '@/types/api'
+import type { AttachmentMetadata, ExitPlanImplementationMode, MessageStatus, PermissionMode } from '@/types/api'
 
 export type UsageData = {
     input_tokens: number
@@ -24,7 +24,8 @@ export type AgentEvent =
 export type ToolResultPermission = {
     date: number
     result: 'approved' | 'denied'
-    mode?: string
+    mode?: PermissionMode
+    implementationMode?: ExitPlanImplementationMode
     allowedTools?: string[]
     decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort'
 }
@@ -91,7 +92,8 @@ export type ToolPermission = {
     id: string
     status: 'pending' | 'approved' | 'denied' | 'canceled'
     reason?: string
-    mode?: string
+    mode?: PermissionMode
+    implementationMode?: ExitPlanImplementationMode
     allowedTools?: string[]
     decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort'
     answers?: Record<string, string[]> | Record<string, { answers: string[] }>

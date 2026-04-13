@@ -1,8 +1,9 @@
 import { z } from 'zod'
-import { CODEX_COLLABORATION_MODES, PERMISSION_MODES } from './modes'
+import { CODEX_COLLABORATION_MODES, EXIT_PLAN_IMPLEMENTATION_MODES, PERMISSION_MODES } from './modes'
 
 export const PermissionModeSchema = z.enum(PERMISSION_MODES)
 export const CodexCollaborationModeSchema = z.enum(CODEX_COLLABORATION_MODES)
+export const ExitPlanImplementationModeSchema = z.enum(EXIT_PLAN_IMPLEMENTATION_MODES)
 
 const MetadataSummarySchema = z.object({
     text: z.string(),
@@ -66,7 +67,8 @@ export const AgentStateCompletedRequestSchema = z.object({
     completedAt: z.number().nullish(),
     status: z.enum(['canceled', 'denied', 'approved']),
     reason: z.string().optional(),
-    mode: z.string().optional(),
+    mode: PermissionModeSchema.optional(),
+    implementationMode: ExitPlanImplementationModeSchema.optional(),
     decision: z.enum(['approved', 'approved_for_session', 'denied', 'abort']).optional(),
     allowTools: z.array(z.string()).optional(),
     // Flat format: Record<string, string[]> (AskUserQuestion)

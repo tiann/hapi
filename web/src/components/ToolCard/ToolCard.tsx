@@ -10,8 +10,10 @@ import { DiffView } from '@/components/DiffView'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { PermissionFooter } from '@/components/ToolCard/PermissionFooter'
 import { AskUserQuestionFooter } from '@/components/ToolCard/AskUserQuestionFooter'
+import { ExitPlanModeFooter } from '@/components/ToolCard/ExitPlanModeFooter'
 import { RequestUserInputFooter } from '@/components/ToolCard/RequestUserInputFooter'
 import { isAskUserQuestionToolName } from '@/components/ToolCard/askUserQuestion'
+import { isExitPlanModeToolName } from '@/components/ToolCard/exitPlanMode'
 import { isRequestUserInputToolName } from '@/components/ToolCard/requestUserInput'
 import { getToolPresentation } from '@/components/ToolCard/knownTools'
 import { getToolFullViewComponent, getToolViewComponent } from '@/components/ToolCard/views/_all'
@@ -44,7 +46,23 @@ function ElapsedView(props: { from: number; active: boolean }) {
     )
 }
 
-function formatTaskChildLabel(child: ToolCallBlock, metadata: SessionMetadataSummary | null): string {
+function getLocalizedToolTitle(
+    toolName: string,
+    fallbackTitle: string,
+    t: (key: string) => string
+): string {
+    if (isExitPlanModeToolName(toolName)) {
+        return t('tool.exitPlanMode.title')
+    }
+
+    return fallbackTitle
+}
+
+function formatTaskChildLabel(
+    child: ToolCallBlock,
+    metadata: SessionMetadataSummary | null,
+    t: (key: string) => string
+): string {
     const presentation = getToolPresentation({
         toolName: child.tool.name,
         input: child.tool.input,
@@ -53,12 +71,13 @@ function formatTaskChildLabel(child: ToolCallBlock, metadata: SessionMetadataSum
         description: child.tool.description,
         metadata
     })
+    const title = getLocalizedToolTitle(child.tool.name, presentation.title, t)
 
     if (presentation.subtitle) {
-        return truncate(`${presentation.title}: ${presentation.subtitle}`, 140)
+        return truncate(`${title}: ${presentation.subtitle}`, 140)
     }
 
-    return presentation.title
+    return title
 }
 
 function TaskStateIcon(props: { state: ToolCallBlock['tool']['state'] }) {
@@ -87,7 +106,11 @@ function getTaskSummaryChildren(block: ToolCallBlock): { visible: ToolCallBlock[
     return { visible, remaining: children.length - visible.length }
 }
 
-function renderTaskSummary(block: ToolCallBlock, metadata: SessionMetadataSummary | null): ReactNode | null {
+function renderTaskSummary(
+    block: ToolCallBlock,
+    metadata: SessionMetadataSummary | null,
+    t: (key: string) => string
+): ReactNode | null {
     const summary = getTaskSummaryChildren(block)
     if (!summary) return null
 
@@ -104,7 +127,7 @@ function renderTaskSummary(block: ToolCallBlock, metadata: SessionMetadataSummar
                                 <TaskStateIcon state={child.tool.state} />
                             </span>
                             <span className="align-middle break-all">
-                                {formatTaskChildLabel(child, metadata)}
+                                {formatTaskChildLabel(child, metadata, t)}
                             </span>
                         </div>
                     </div>
@@ -302,9 +325,10 @@ function ToolCardInner(props: ToolCardProps) {
     ])
 
     const toolName = props.block.tool.name
-    const toolTitle = presentation.title
+    const isExitPlanMode = isExitPlanModeToolName(toolName)
+    const toolTitle = getLocalizedToolTitle(toolName, presentation.title, t)
     const subtitle = presentation.subtitle ?? props.block.tool.description
-    const taskSummary = renderTaskSummary(props.block, props.metadata)
+    const taskSummary = renderTaskSummary(props.block, props.metadata, t)
     const runningFrom = props.block.tool.startedAt ?? props.block.tool.createdAt
     const showInline = !presentation.minimal && toolName !== 'Task'
     const CompactToolView = showInline ? getToolViewComponent(toolName) : null
@@ -371,7 +395,7 @@ function ToolCardInner(props: ToolCardProps) {
                             {header}
                         </button>
                     </DialogTrigger>
-                    <DialogContent className="max-w-2xl">
+                    <DialogContent className="max-w-2xl" aria-describedby={undefined}>
                         <DialogHeader>
                             <DialogTitle>{toolTitle}</DialogTitle>
                         </DialogHeader>
@@ -379,6 +403,7 @@ function ToolCardInner(props: ToolCardProps) {
                             const isQuestionToolWithAnswers = isQuestionTool
                                 && permission?.answers
                                 && Object.keys(permission.answers).length > 0
+                            const hideResult = isQuestionToolWithAnswers || isExitPlanMode
 
                             return (
                                 <div className="mt-3 flex max-h-[75vh] flex-col gap-4 overflow-auto">
@@ -389,10 +414,10 @@ function ToolCardInner(props: ToolCardProps) {
                                         {FullToolView ? (
                                             <FullToolView block={props.block} metadata={props.metadata} />
                                         ) : (
-                                            renderToolInput(props.block)
+                                                renderToolInput(props.block)
                                         )}
                                     </div>
-                                    {!isQuestionToolWithAnswers && (
+                                    {!hideResult && (
                                         <div>
                                             <div className="mb-1 text-xs font-medium text-[var(--app-hint)]">{t('tool.result')}</div>
                                             <ResultToolView block={props.block} metadata={props.metadata} />
@@ -432,32 +457,58 @@ function ToolCardInner(props: ToolCardProps) {
                         )
                     ) : null}
 
-                    {isAskUserQuestion && permission?.status === 'pending' ? (
-                        <AskUserQuestionFooter
-                            api={props.api}
-                            sessionId={props.sessionId}
-                            tool={props.block.tool}
-                            disabled={props.disabled}
-                            onDone={props.onDone}
-                        />
-                    ) : isRequestUserInput && permission?.status === 'pending' ? (
-                        <RequestUserInputFooter
-                            api={props.api}
-                            sessionId={props.sessionId}
-                            tool={props.block.tool}
-                            disabled={props.disabled}
-                            onDone={props.onDone}
-                        />
-                    ) : (
-                        <PermissionFooter
-                            api={props.api}
-                            sessionId={props.sessionId}
-                            metadata={props.metadata}
-                            tool={props.block.tool}
-                            disabled={props.disabled}
-                            onDone={props.onDone}
-                        />
-                    )}
+                    {(() => {
+                        if (isAskUserQuestion && permission?.status === 'pending') {
+                            return (
+                                <AskUserQuestionFooter
+                                    api={props.api}
+                                    sessionId={props.sessionId}
+                                    tool={props.block.tool}
+                                    disabled={props.disabled}
+                                    onDone={props.onDone}
+                                />
+                            )
+                        }
+
+                        if (isExitPlanMode && permission?.status === 'pending') {
+                            return (
+                                <ExitPlanModeFooter
+                                    api={props.api}
+                                    sessionId={props.sessionId}
+                                    tool={props.block.tool}
+                                    disabled={props.disabled}
+                                    onDone={props.onDone}
+                                />
+                            )
+                        }
+
+                        if (isRequestUserInput && permission?.status === 'pending') {
+                            return (
+                                <RequestUserInputFooter
+                                    api={props.api}
+                                    sessionId={props.sessionId}
+                                    tool={props.block.tool}
+                                    disabled={props.disabled}
+                                    onDone={props.onDone}
+                                />
+                            )
+                        }
+
+                        if (isExitPlanMode) {
+                            return null
+                        }
+
+                        return (
+                            <PermissionFooter
+                                api={props.api}
+                                sessionId={props.sessionId}
+                                metadata={props.metadata}
+                                tool={props.block.tool}
+                                disabled={props.disabled}
+                                onDone={props.onDone}
+                            />
+                        )
+                    })()}
                 </CardContent>
             ) : null}
         </Card>

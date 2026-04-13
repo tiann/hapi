@@ -256,6 +256,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
                 allowedTools: messageAllowedTools,
                 disallowedTools: messageDisallowedTools
             };
+            currentSessionRef.current?.setModeSnapshot(enhancedMode);
             // Use raw text only, ignore attachments for special commands
             const commandText = specialCommand.originalMessage || message.content.text;
             messageQueue.pushIsolateAndClear(commandText, enhancedMode);
@@ -275,6 +276,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
                 allowedTools: messageAllowedTools,
                 disallowedTools: messageDisallowedTools
             };
+            currentSessionRef.current?.setModeSnapshot(enhancedMode);
             // Use raw text only, ignore attachments for special commands
             const commandText = specialCommand.originalMessage || message.content.text;
             messageQueue.pushIsolateAndClear(commandText, enhancedMode);
@@ -293,6 +295,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
             allowedTools: messageAllowedTools,
             disallowedTools: messageDisallowedTools
         };
+        currentSessionRef.current?.setModeSnapshot(enhancedMode);
         messageQueue.push(formattedText, enhancedMode);
         logger.debugLargeJson('User message pushed to queue:', message)
     });

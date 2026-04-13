@@ -1,6 +1,7 @@
-import { AgentStateSchema, MetadataSchema, TeamStateSchema } from '@hapi/protocol/schemas'
+import { MetadataSchema, TeamStateSchema } from '@hapi/protocol/schemas'
 import type { CodexCollaborationMode, PermissionMode, Session } from '@hapi/protocol/types'
 import type { Store } from '../store'
+import { normalizeAgentState } from '../store/normalizeAgentState'
 import { clampAliveTime } from './aliveTime'
 import { EventPublisher } from './eventPublisher'
 import { extractTodoWriteTodosFromMessageContent, TodosSchema } from './todos'
@@ -102,10 +103,7 @@ export class SessionCache {
             return parsed.success ? parsed.data : null
         })()
 
-        const agentState = (() => {
-            const parsed = AgentStateSchema.safeParse(stored.agentState)
-            return parsed.success ? parsed.data : null
-        })()
+        const agentState = normalizeAgentState(stored.agentState)
 
         const todos = (() => {
             if (stored.todos === null) return undefined

@@ -10,6 +10,7 @@ export type {
     AgentState,
     AttachmentMetadata,
     CodexCollaborationMode,
+    ExitPlanImplementationMode,
     PermissionMode,
     Session,
     SessionSummary,

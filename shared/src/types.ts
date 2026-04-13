@@ -25,6 +25,7 @@ export type {
     CodexCollaborationModeOption,
     CodexPermissionMode,
     CursorPermissionMode,
+    ExitPlanImplementationMode,
     GeminiPermissionMode,
     OpencodePermissionMode,
     PermissionMode,

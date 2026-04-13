@@ -440,4 +440,220 @@ describe('session model', () => {
             engine.stop()
         }
     })
+
+    it('sanitizes invalid completed request modes before storing new agent state', () => {
+        const store = new Store(':memory:')
+        const events: SyncEvent[] = []
+        const cache = new SessionCache(store, createPublisher(events))
+
+        const session = cache.getOrCreateSession(
+            'session-invalid-agent-state-create',
+            { path: '/tmp/project', host: 'localhost', flavor: 'claude' },
+            {
+                requests: {},
+                completedRequests: {
+                    'request-1': {
+                        tool: 'Edit',
+                        arguments: { file_path: 'src/example.ts' },
+                        createdAt: 1,
+                        completedAt: 2,
+                        status: 'approved',
+                        mode: 'legacy_mode',
+                        implementationMode: 'clear_context'
+                    }
+                }
+            },
+            'default'
+        )
+
+        expect(session.agentState?.completedRequests?.['request-1']).toEqual({
+            tool: 'Edit',
+            arguments: { file_path: 'src/example.ts' },
+            createdAt: 1,
+            completedAt: 2,
+            status: 'approved',
+            implementationMode: 'clear_context'
+        })
+        expect(store.sessions.getSession(session.id)?.agentState).toEqual({
+            requests: {},
+            completedRequests: {
+                'request-1': {
+                    tool: 'Edit',
+                    arguments: { file_path: 'src/example.ts' },
+                    createdAt: 1,
+                    completedAt: 2,
+                    status: 'approved',
+                    implementationMode: 'clear_context'
+                }
+            }
+        })
+    })
+
+    it('sanitizes invalid completed request modes on agent state updates', () => {
+        const store = new Store(':memory:')
+        const events: SyncEvent[] = []
+        const cache = new SessionCache(store, createPublisher(events))
+
+        const session = cache.getOrCreateSession(
+            'session-invalid-agent-state-update',
+            { path: '/tmp/project', host: 'localhost', flavor: 'claude' },
+            null,
+            'default'
+        )
+
+        const result = store.sessions.updateSessionAgentState(
+            session.id,
+            {
+                requests: {},
+                completedRequests: {
+                    'request-1': {
+                        tool: 'Edit',
+                        arguments: { file_path: 'src/example.ts' },
+                        createdAt: 1,
+                        completedAt: 2,
+                        status: 'approved',
+                        mode: 'legacy_mode',
+                        implementationMode: 'clear_context'
+                    }
+                }
+            },
+            session.agentStateVersion,
+            'default'
+        )
+
+        expect(result).toEqual({
+            result: 'success',
+            version: session.agentStateVersion + 1,
+            value: {
+                requests: {},
+                completedRequests: {
+                    'request-1': {
+                        tool: 'Edit',
+                        arguments: { file_path: 'src/example.ts' },
+                        createdAt: 1,
+                        completedAt: 2,
+                        status: 'approved',
+                        implementationMode: 'clear_context'
+                    }
+                }
+            }
+        })
+        if (result.result !== 'success') {
+            throw new Error('Expected success result')
+        }
+
+        const refreshed = cache.refreshSession(session.id)
+        expect(refreshed?.agentState).toEqual(result.value as never)
+    })
+
+    it('preserves sanitized agent state when reloading legacy rows with invalid completed request modes', () => {
+        const store = new Store(':memory:')
+        const events: SyncEvent[] = []
+        const cache = new SessionCache(store, createPublisher(events))
+
+        const session = cache.getOrCreateSession(
+            'session-invalid-agent-state-reload',
+            { path: '/tmp/project', host: 'localhost', flavor: 'claude' },
+            null,
+            'default'
+        )
+
+        const db = (store.sessions as unknown as { db: import('bun:sqlite').Database }).db
+        db.prepare('UPDATE sessions SET agent_state = @agent_state WHERE id = @id').run({
+            id: session.id,
+            agent_state: JSON.stringify({
+                requests: {},
+                completedRequests: {
+                    'request-1': {
+                        tool: 'Edit',
+                        arguments: { file_path: 'src/example.ts' },
+                        createdAt: 1,
+                        completedAt: 2,
+                        status: 'approved',
+                        mode: 'legacy_mode',
+                        implementationMode: 'keep_context'
+                    }
+                }
+            })
+        })
+
+        const refreshed = cache.refreshSession(session.id)
+
+        expect(refreshed?.agentState).toEqual({
+            requests: {},
+            completedRequests: {
+                'request-1': {
+                    tool: 'Edit',
+                    arguments: { file_path: 'src/example.ts' },
+                    createdAt: 1,
+                    completedAt: 2,
+                    status: 'approved',
+                    implementationMode: 'keep_context'
+                }
+            }
+        })
+    })
+
+    it('returns sanitized agent state on update version mismatches', () => {
+        const store = new Store(':memory:')
+        const events: SyncEvent[] = []
+        const cache = new SessionCache(store, createPublisher(events))
+
+        const session = cache.getOrCreateSession(
+            'session-invalid-agent-state-mismatch',
+            { path: '/tmp/project', host: 'localhost', flavor: 'claude' },
+            null,
+            'default'
+        )
+
+        const db = (store.sessions as unknown as { db: import('bun:sqlite').Database }).db
+        db.prepare(`
+            UPDATE sessions
+            SET agent_state = @agent_state,
+                agent_state_version = agent_state_version + 1
+            WHERE id = @id
+        `).run({
+            id: session.id,
+            agent_state: JSON.stringify({
+                requests: {},
+                completedRequests: {
+                    'request-1': {
+                        tool: 'Edit',
+                        arguments: { file_path: 'src/example.ts' },
+                        createdAt: 1,
+                        completedAt: 2,
+                        status: 'approved',
+                        mode: 'legacy_mode',
+                        decision: 'legacy_decision',
+                        implementationMode: 'keep_context'
+                    }
+                }
+            })
+        })
+
+        const result = store.sessions.updateSessionAgentState(
+            session.id,
+            { requests: {}, completedRequests: {} },
+            session.agentStateVersion,
+            'default'
+        )
+
+        expect(result).toEqual({
+            result: 'version-mismatch',
+            version: session.agentStateVersion + 1,
+            value: {
+                requests: {},
+                completedRequests: {
+                    'request-1': {
+                        tool: 'Edit',
+                        arguments: { file_path: 'src/example.ts' },
+                        createdAt: 1,
+                        completedAt: 2,
+                        status: 'approved',
+                        implementationMode: 'keep_context'
+                    }
+                }
+            }
+        })
+    })
 })

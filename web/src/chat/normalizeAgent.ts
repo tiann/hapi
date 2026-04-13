@@ -1,6 +1,23 @@
 import type { AgentEvent, NormalizedAgentContent, NormalizedMessage, ToolResultPermission } from '@/chat/types'
-import { AGENT_MESSAGE_PAYLOAD_TYPE, asNumber, asString, isObject } from '@hapi/protocol'
+import type { ExitPlanImplementationMode, PermissionMode } from '@/types/api'
+import { AGENT_MESSAGE_PAYLOAD_TYPE, EXIT_PLAN_IMPLEMENTATION_MODES, PERMISSION_MODES, asNumber, asString, isObject } from '@hapi/protocol'
 import { isClaudeChatVisibleMessage } from '@hapi/protocol/messages'
+
+function normalizePermissionMode(value: unknown): PermissionMode | undefined {
+    const mode = asString(value)
+    if (!mode) return undefined
+    return PERMISSION_MODES.includes(mode as PermissionMode)
+        ? mode as PermissionMode
+        : undefined
+}
+
+function normalizeImplementationMode(value: unknown): ExitPlanImplementationMode | undefined {
+    const mode = asString(value)
+    if (!mode) return undefined
+    return EXIT_PLAN_IMPLEMENTATION_MODES.includes(mode as ExitPlanImplementationMode)
+        ? mode as ExitPlanImplementationMode
+        : undefined
+}
 
 function normalizeToolResultPermissions(value: unknown): ToolResultPermission | undefined {
     if (!isObject(value)) return undefined
@@ -9,7 +26,8 @@ function normalizeToolResultPermissions(value: unknown): ToolResultPermission | 
     if (date === null) return undefined
     if (result !== 'approved' && result !== 'denied') return undefined
 
-    const mode = asString(value.mode) ?? undefined
+    const mode = normalizePermissionMode(value.mode)
+    const implementationMode = normalizeImplementationMode(value.implementationMode)
     const allowedTools = Array.isArray(value.allowedTools)
         ? value.allowedTools.filter((tool) => typeof tool === 'string')
         : undefined
@@ -22,6 +40,7 @@ function normalizeToolResultPermissions(value: unknown): ToolResultPermission | 
         date,
         result,
         mode,
+        implementationMode,
         allowedTools,
         decision: normalizedDecision
     }
