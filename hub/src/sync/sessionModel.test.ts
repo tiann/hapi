@@ -539,5 +539,34 @@ describe('session model', () => {
 
             expect(cache.getSession(s1.id)).toBeDefined()
         })
+
+        it('does not merge active duplicates', async () => {
+            const store = new Store(':memory:')
+            const events: SyncEvent[] = []
+            const cache = new SessionCache(store, createPublisher(events))
+
+            const s1 = cache.getOrCreateSession(
+                'tag-1',
+                { path: '/tmp/project', host: 'localhost', flavor: 'codex', codexSessionId: 'thread-X' },
+                null,
+                'default'
+            )
+
+            // Mark s1 as active (simulating a live CLI connection)
+            cache.handleSessionAlive({ sid: s1.id, time: Date.now(), thinking: false })
+
+            const s2 = cache.getOrCreateSession(
+                'tag-2',
+                { path: '/tmp/project', host: 'localhost', flavor: 'codex', codexSessionId: 'thread-X' },
+                null,
+                'default'
+            )
+
+            await cache.deduplicateByAgentSessionId(s2.id)
+
+            // s1 is active, so it should NOT be merged/deleted
+            expect(cache.getSession(s1.id)).toBeDefined()
+            expect(cache.getSession(s2.id)).toBeDefined()
+        })
     })
 })

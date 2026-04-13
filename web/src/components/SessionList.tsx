@@ -39,7 +39,7 @@ function getGroupDisplayName(directory: string): string {
 
 export const UNKNOWN_MACHINE_ID = '__unknown__'
 
-function deduplicateSessionsByAgentId(sessions: SessionSummary[]): SessionSummary[] {
+function deduplicateSessionsByAgentId(sessions: SessionSummary[], selectedSessionId?: string | null): SessionSummary[] {
     const byAgentId = new Map<string, SessionSummary[]>()
     const result: SessionSummary[] = []
 
@@ -59,6 +59,9 @@ function deduplicateSessionsByAgentId(sessions: SessionSummary[]): SessionSummar
 
     for (const group of byAgentId.values()) {
         group.sort((a, b) => {
+            // Keep the currently selected session visible so the sidebar row doesn't vanish
+            if (a.id === selectedSessionId) return -1
+            if (b.id === selectedSessionId) return 1
             if (a.active !== b.active) return a.active ? -1 : 1
             return b.updatedAt - a.updatedAt
         })
@@ -482,8 +485,8 @@ export function SessionList(props: {
     const { t } = useTranslation()
     const { renderHeader = true, api, selectedSessionId, machineLabelsById = {} } = props
     const groups = useMemo(
-        () => groupSessionsByDirectory(deduplicateSessionsByAgentId(props.sessions)),
-        [props.sessions]
+        () => groupSessionsByDirectory(deduplicateSessionsByAgentId(props.sessions, selectedSessionId)),
+        [props.sessions, selectedSessionId]
     )
     const [collapseOverrides, setCollapseOverrides] = useState<Map<string, boolean>>(
         () => new Map()

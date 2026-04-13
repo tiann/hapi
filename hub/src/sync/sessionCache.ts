@@ -569,6 +569,10 @@ export class SessionCache {
                 if (existing.namespace !== session.namespace) continue
                 if (!existing.metadata) continue
                 if (existing.metadata[agentId.field] !== agentId.value) continue
+                // Only merge inactive duplicates. Active ones still have a live CLI socket
+                // whose keepalive/messages would fail if we deleted their session record.
+                // The web-side display dedup hides active duplicates from the UI.
+                if (existing.active) continue
                 duplicates.push(existingId)
             }
 
