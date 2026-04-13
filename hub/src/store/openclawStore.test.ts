@@ -68,6 +68,26 @@ describe('OpenClaw store', () => {
         expect(updated?.lastError).toBe('socket lost')
     })
 
+    it('rebinds an existing conversation to a new external id', () => {
+        const store = new Store(':memory:')
+
+        const conversation = store.openclawConversations.getOrCreateConversation('default', 'default:1', {
+            externalId: 'legacy-thread-1',
+            title: 'Old title'
+        })
+
+        const rebound = store.openclawConversations.rebindConversation(
+            conversation.id,
+            'default',
+            'agent:main:hapi-openclaw:default:default%3A1',
+            'OpenClaw'
+        )
+
+        expect(rebound?.id).toBe(conversation.id)
+        expect(rebound?.externalId).toBe('agent:main:hapi-openclaw:default:default%3A1')
+        expect(rebound?.title).toBe('OpenClaw')
+    })
+
     it('updates a message when a later chunk reuses the external id', () => {
         const store = new Store(':memory:')
 

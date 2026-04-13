@@ -7,6 +7,7 @@ import {
     getOpenClawConversationByExternalId,
     getOpenClawConversationByUserKey,
     getOrCreateOpenClawConversation,
+    rebindOpenClawConversation,
     updateOpenClawConversation
 } from './openclawConversations'
 
@@ -39,6 +40,15 @@ export class OpenClawConversationStore {
 
     findConversationByExternalId(externalId: string): StoredOpenClawConversation | null {
         return findOpenClawConversationByExternalId(this.db, externalId)
+    }
+
+    rebindConversation(
+        id: string,
+        namespace: string,
+        externalId: string,
+        title?: string | null
+    ): StoredOpenClawConversation | null {
+        return rebindOpenClawConversation(this.db, id, namespace, externalId, title)
     }
 
     updateConversation(

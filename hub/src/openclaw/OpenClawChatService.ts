@@ -90,6 +90,32 @@ export class DefaultOpenClawChatService implements OpenClawChatService {
         this.publisher = new OpenClawEventPublisher(sseManager)
     }
 
+    private async getOrCreateBoundDefaultConversation(input: {
+        namespace: string
+        userKey: string
+    }) {
+        const ensured = await this.client.ensureDefaultConversation({
+            externalUserKey: input.userKey
+        })
+        const existing = this.store.openclawConversations.getConversationByUserKey(input.namespace, input.userKey)
+        if (!existing) {
+            return this.store.openclawConversations.getOrCreateConversation(input.namespace, input.userKey, {
+                externalId: ensured.conversationId,
+                title: ensured.title ?? 'OpenClaw',
+                status: 'ready'
+            })
+        }
+        if (existing.externalId !== ensured.conversationId) {
+            return this.store.openclawConversations.rebindConversation(
+                existing.id,
+                input.namespace,
+                ensured.conversationId,
+                ensured.title ?? existing.title
+            ) ?? existing
+        }
+        return existing
+    }
+
     private getOwnedConversation(input: {
         namespace: string
         userKey: string
@@ -122,17 +148,7 @@ export class DefaultOpenClawChatService implements OpenClawChatService {
         namespace: string
         userKey: string
     }): Promise<OpenClawConversationSummary> {
-        let conversation = this.store.openclawConversations.getConversationByUserKey(input.namespace, input.userKey)
-        if (!conversation) {
-            const ensured = await this.client.ensureDefaultConversation({
-                externalUserKey: input.userKey
-            })
-            conversation = this.store.openclawConversations.getOrCreateConversation(input.namespace, input.userKey, {
-                externalId: ensured.conversationId,
-                title: ensured.title ?? 'OpenClaw',
-                status: 'ready'
-            })
-        }
+        const conversation = await this.getOrCreateBoundDefaultConversation(input)
         return toConversationSummary(conversation)
     }
 

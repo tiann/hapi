@@ -124,6 +124,36 @@ export function findOpenClawConversationByExternalId(
     return toStoredConversation(rows[0])
 }
 
+export function rebindOpenClawConversation(
+    db: Database,
+    id: string,
+    namespace: string,
+    externalId: string,
+    title?: string | null
+): StoredOpenClawConversation | null {
+    const existing = getOpenClawConversationByNamespace(db, id, namespace)
+    if (!existing) {
+        return null
+    }
+
+    db.prepare(`
+        UPDATE openclaw_conversations
+        SET external_id = @external_id,
+            title = @title,
+            updated_at = @updated_at
+        WHERE id = @id
+          AND namespace = @namespace
+    `).run({
+        id,
+        namespace,
+        external_id: externalId,
+        title: title ?? existing.title,
+        updated_at: Date.now()
+    })
+
+    return getOpenClawConversationByNamespace(db, id, namespace)
+}
+
 export function updateOpenClawConversation(
     db: Database,
     id: string,

@@ -95,6 +95,49 @@ describe('DefaultOpenClawChatService', () => {
         expect(messagesAfterEvent.messages[1]?.text).toBe('world')
     })
 
+    it('rebinds an existing default conversation to the ensured upstream session key', async () => {
+        const store = new Store(':memory:')
+        const manager = new SSEManager(0, new VisibilityTracker())
+        let lastSentConversationId: string | null = null
+        const service = new DefaultOpenClawChatService(store, manager, {
+            ...createClient(),
+            async sendMessage(input) {
+                lastSentConversationId = input.conversationId
+                return {
+                    accepted: true,
+                    upstreamRequestId: `req:${input.idempotencyKey}`,
+                    upstreamConversationId: input.conversationId
+                }
+            }
+        })
+
+        const existing = store.openclawConversations.getOrCreateConversation('default', 'default:1', {
+            externalId: 'legacy-thread-1',
+            title: 'Legacy title'
+        })
+
+        const conversation = await service.getOrCreateDefaultConversation({
+            namespace: 'default',
+            userKey: 'default:1'
+        })
+
+        expect(conversation.id).toBe(existing.id)
+
+        const rebound = store.openclawConversations.getConversationByNamespace(existing.id, 'default')
+        expect(rebound?.externalId).toBe('openclaw:default:1')
+        expect(rebound?.title).toBe('OpenClaw')
+
+        await service.sendMessage({
+            namespace: 'default',
+            conversationId: conversation.id,
+            userKey: 'default:1',
+            text: 'hello'
+        })
+
+        expect(lastSentConversationId).not.toBeNull()
+        expect(lastSentConversationId!).toBe('openclaw:default:1')
+    })
+
     it('persists inbound state updates so refetch returns the same values', async () => {
         const store = new Store(':memory:')
         const manager = new SSEManager(0, new VisibilityTracker())
