@@ -63,7 +63,7 @@ export function buildSessionMetadata(options: {
 
     return {
         path: options.workingDirectory,
-        host: os.hostname(),
+        host: process.env.HAPI_HOSTNAME || os.hostname(),
         version: packageJson.version,
         os: os.platform(),
         machineId: options.machineId,
