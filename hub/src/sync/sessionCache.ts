@@ -478,16 +478,21 @@ export class SessionCache {
         // Merge agentState: union requests/completedRequests from both sessions so pending
         // approvals on the duplicate are not lost. Only inactive duplicates reach this point
         // (active ones are skipped by deduplicateByAgentSessionId).
-        const mergedAgentState = this.mergeAgentState(oldStored.agentState, newStored.agentState)
-        if (mergedAgentState !== null && mergedAgentState !== newStored.agentState) {
-            const latest = this.store.sessions.getSessionByNamespace(newSessionId, namespace)
-            if (latest) {
-                this.store.sessions.updateSessionAgentState(
+        // Read the latest target state right before writing to avoid overwriting live updates.
+        if (oldStored.agentState !== null) {
+            for (let attempt = 0; attempt < 2; attempt += 1) {
+                const latest = this.store.sessions.getSessionByNamespace(newSessionId, namespace)
+                if (!latest) break
+                const mergedAgentState = this.mergeAgentState(oldStored.agentState, latest.agentState)
+                if (mergedAgentState === null || mergedAgentState === latest.agentState) break
+                const result = this.store.sessions.updateSessionAgentState(
                     newSessionId,
                     mergedAgentState,
                     latest.agentStateVersion,
                     namespace
                 )
+                if (result.result !== 'version-mismatch') break
+                // version-mismatch: retry with fresh snapshot
             }
         }
 
