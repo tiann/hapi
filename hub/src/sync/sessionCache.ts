@@ -471,6 +471,15 @@ export class SessionCache {
             )
         }
 
+        if (oldStored.agentState !== null && newStored.agentState === null) {
+            this.store.sessions.updateSessionAgentState(
+                newSessionId,
+                oldStored.agentState,
+                newStored.agentStateVersion,
+                namespace
+            )
+        }
+
         if (oldStored.teamState !== null && oldStored.teamStateUpdatedAt !== null) {
             this.store.sessions.setSessionTeamState(
                 newSessionId,

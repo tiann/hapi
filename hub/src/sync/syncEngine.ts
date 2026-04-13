@@ -206,6 +206,9 @@ export class SyncEngine {
 
     handleSessionEnd(payload: { sid: string; time: number }): void {
         this.sessionCache.handleSessionEnd(payload)
+        // Retry dedup now that this session is inactive — a prior dedup may have
+        // skipped it because it was still active at the time.
+        this.triggerDedupIfNeeded(payload.sid)
     }
 
     handleBackgroundTaskDelta(sessionId: string, delta: { started: number; completed: number }): void {
@@ -459,6 +462,15 @@ export class SyncEngine {
             && (prev?.geminiSessionId ?? null) === (next.geminiSessionId ?? null)
             && (prev?.opencodeSessionId ?? null) === (next.opencodeSessionId ?? null)
             && (prev?.cursorSessionId ?? null) === (next.cursorSessionId ?? null)
+    }
+
+    private triggerDedupIfNeeded(sessionId: string): void {
+        const session = this.sessionCache.getSession(sessionId)
+        if (session?.metadata) {
+            void this.sessionCache.deduplicateByAgentSessionId(sessionId).catch(() => {
+                // best-effort: web-side safety net hides remaining duplicates
+            })
+        }
     }
 
     async waitForSessionActive(sessionId: string, timeoutMs: number = 15_000): Promise<boolean> {
