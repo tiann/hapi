@@ -281,16 +281,20 @@ export class SessionCache {
         this.publisher.emit({ type: 'session-updated', sessionId: session.id, data: { active: false, thinking: false, backgroundTaskCount: 0 } })
     }
 
-    expireInactive(now: number = Date.now()): void {
+    expireInactive(now: number = Date.now()): string[] {
         const sessionTimeoutMs = 30_000
+        const expired: string[] = []
 
         for (const session of this.sessions.values()) {
             if (!session.active) continue
             if (now - session.activeAt <= sessionTimeoutMs) continue
             session.active = false
             session.thinking = false
+            expired.push(session.id)
             this.publisher.emit({ type: 'session-updated', sessionId: session.id, data: { active: false } })
         }
+
+        return expired
     }
 
     applySessionConfig(
@@ -471,15 +475,20 @@ export class SessionCache {
             )
         }
 
-        // Preserve agentState if the new session has none. Only inactive duplicates reach
-        // this point (active ones are skipped), so the old agentState is typically stale.
-        if (oldStored.agentState !== null && newStored.agentState === null) {
-            this.store.sessions.updateSessionAgentState(
-                newSessionId,
-                oldStored.agentState,
-                newStored.agentStateVersion,
-                namespace
-            )
+        // Merge agentState: union requests/completedRequests from both sessions so pending
+        // approvals on the duplicate are not lost. Only inactive duplicates reach this point
+        // (active ones are skipped by deduplicateByAgentSessionId).
+        const mergedAgentState = this.mergeAgentState(oldStored.agentState, newStored.agentState)
+        if (mergedAgentState !== null && mergedAgentState !== newStored.agentState) {
+            const latest = this.store.sessions.getSessionByNamespace(newSessionId, namespace)
+            if (latest) {
+                this.store.sessions.updateSessionAgentState(
+                    newSessionId,
+                    mergedAgentState,
+                    latest.agentStateVersion,
+                    namespace
+                )
+            }
         }
 
         if (oldStored.teamState !== null && oldStored.teamStateUpdatedAt !== null) {
@@ -548,6 +557,27 @@ export class SessionCache {
         }
 
         return changed ? merged : newMetadata
+    }
+
+    private mergeAgentState(oldState: unknown | null, newState: unknown | null): unknown | null {
+        if (oldState === null) return newState
+        if (newState === null) return oldState
+
+        const oldObj = oldState as Record<string, unknown>
+        const newObj = newState as Record<string, unknown>
+
+        return {
+            ...oldObj,
+            ...newObj,
+            requests: {
+                ...((oldObj.requests as Record<string, unknown> | undefined) ?? {}),
+                ...((newObj.requests as Record<string, unknown> | undefined) ?? {})
+            },
+            completedRequests: {
+                ...((oldObj.completedRequests as Record<string, unknown> | undefined) ?? {}),
+                ...((newObj.completedRequests as Record<string, unknown> | undefined) ?? {})
+            }
+        }
     }
 
     private extractAgentSessionId(

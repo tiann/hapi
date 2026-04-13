@@ -220,7 +220,10 @@ export class SyncEngine {
     }
 
     private expireInactive(): void {
-        this.sessionCache.expireInactive()
+        const expired = this.sessionCache.expireInactive()
+        for (const sessionId of expired) {
+            this.triggerDedupIfNeeded(sessionId)
+        }
         this.machineCache.expireInactive()
     }
 
