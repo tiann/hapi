@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process'
 import { z } from 'zod'
 import { PROTOCOL_VERSION } from '@hapi/protocol'
 import type { StartOptions } from '@/claude/runClaude'
+import { CLAUDE_PERMISSION_MODES } from '@hapi/protocol/modes'
 import { configuration } from '@/configuration'
 import { isRunnerRunningCurrentlyInstalledHappyVersion } from '@/runner/controlClient'
 import { authAndSetupMachineIfNeeded } from '@/ui/auth'
@@ -36,6 +37,12 @@ export const claudeCommand: CommandDefinition = {
                 unknownArgs.push(arg)
             } else if (arg === '--hapi-starting-mode') {
                 options.startingMode = z.enum(['local', 'remote']).parse(args[++i])
+            } else if (arg === '--permission-mode') {
+                const mode = args[++i]
+                if (!mode || !(CLAUDE_PERMISSION_MODES as readonly string[]).includes(mode)) {
+                    throw new Error(`Invalid --permission-mode value: ${mode ?? '(missing)'}`)
+                }
+                options.permissionMode = mode as StartOptions['permissionMode']
             } else if (arg === '--yolo') {
                 options.permissionMode = 'bypassPermissions'
                 unknownArgs.push('--dangerously-skip-permissions')

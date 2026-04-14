@@ -13,6 +13,7 @@ import { getEnvironmentInfo } from '@/ui/doctor';
 import { spawnHappyCLI } from '@/utils/spawnHappyCLI';
 import { writeRunnerState, RunnerLocallyPersistedState, readRunnerState, acquireRunnerLock, releaseRunnerLock } from '@/persistence';
 import { isProcessAlive, isWindows, killProcess, killProcessByChildProcess } from '@/utils/process';
+import { PERMISSION_MODES } from '@hapi/protocol/modes';
 import { withRetry } from '@/utils/time';
 import { isRetryableConnectionError } from '@/utils/errorUtils';
 
@@ -369,7 +370,9 @@ export async function startRunner(): Promise<void> {
         if (options.modelReasoningEffort && agent === 'codex') {
           args.push('--model-reasoning-effort', options.modelReasoningEffort);
         }
-        if (yolo) {
+        if (options.permissionMode && (PERMISSION_MODES as readonly string[]).includes(options.permissionMode)) {
+          args.push('--permission-mode', options.permissionMode);
+        } else if (yolo) {
           args.push('--yolo');
         }
 

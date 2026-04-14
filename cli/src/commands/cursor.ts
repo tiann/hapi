@@ -3,6 +3,7 @@ import { authAndSetupMachineIfNeeded } from '@/ui/auth'
 import { initializeToken } from '@/ui/tokenInit'
 import { maybeAutoStartServer } from '@/utils/autoStartServer'
 import type { CommandDefinition } from './types'
+import { CURSOR_PERMISSION_MODES } from '@hapi/protocol/modes'
 import type { CursorPermissionMode } from '@hapi/protocol/types'
 
 export const cursorCommand: CommandDefinition = {
@@ -34,6 +35,12 @@ export const cursorCommand: CommandDefinition = {
                 }
                 if (arg === '--started-by') {
                     options.startedBy = commandArgs[++i] as 'runner' | 'terminal'
+                } else if (arg === '--permission-mode') {
+                    const mode = commandArgs[++i]
+                    if (!mode || !(CURSOR_PERMISSION_MODES as readonly string[]).includes(mode)) {
+                        throw new Error(`Invalid --permission-mode value: ${mode ?? '(missing)'}`)
+                    }
+                    options.permissionMode = mode as CursorPermissionMode
                 } else if (arg === '--yolo' || arg === '--force') {
                     options.permissionMode = 'yolo'
                 } else if (arg === '--mode') {
