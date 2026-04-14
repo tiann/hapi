@@ -4,6 +4,7 @@ import { CodeBlock } from '@/components/CodeBlock'
 import { MarkdownRenderer } from '@/components/MarkdownRenderer'
 import { ChecklistList, extractTodoChecklist } from '@/components/ToolCard/checklist'
 import { basename, resolveDisplayPath } from '@/utils/path'
+import { getInputStringAny } from '@/lib/toolInputUtils'
 
 function parseToolUseError(message: string): { isToolUseError: boolean; errorMessage: string | null } {
     const regex = /<tool_use_error>(.*?)<\/tool_use_error>/s
@@ -506,6 +507,33 @@ const TodoWriteResultView: ToolViewComponent = (props: ToolViewProps) => {
     return <ChecklistList items={todos} />
 }
 
+const SkillResultView: ToolViewComponent = (props: ToolViewProps) => {
+    const { state, result, input } = props.block.tool
+
+    if (result === undefined || result === null) {
+        if (state === 'completed') {
+            return <div className="text-sm text-[var(--app-hint)]">Skill loaded</div>
+        }
+        return <div className="text-sm text-[var(--app-hint)]">{placeholderForState(state)}</div>
+    }
+
+    // For errors, show the error text
+    if (state === 'error') {
+        const text = extractTextFromResult(result)
+        if (text) {
+            return <div className="text-sm text-red-600">{text}</div>
+        }
+    }
+
+    // For successful loads, show just the skill name
+    const skillName = getInputStringAny(input, ['skill'])
+    return (
+        <div className="text-sm text-[var(--app-hint)]">
+            {skillName ? `Skill "${skillName}" loaded` : 'Skill loaded'}
+        </div>
+    )
+}
+
 const GenericResultView: ToolViewComponent = (props: ToolViewProps) => {
     const result = props.block.tool.result
 
@@ -566,6 +594,7 @@ export const toolResultViewRegistry: Record<string, ToolViewComponent> = {
     CodexReasoning: CodexReasoningResultView,
     CodexPatch: CodexPatchResultView,
     CodexDiff: CodexDiffResultView,
+    Skill: SkillResultView,
     AskUserQuestion: AskUserQuestionResultView,
     ExitPlanMode: MarkdownResultView,
     ask_user_question: AskUserQuestionResultView,

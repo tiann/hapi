@@ -277,6 +277,14 @@ export const knownTools: Record<string, {
         subtitle: (opts) => formatChecklistCount(extractUpdatePlanChecklist(opts.input, opts.result), 'step'),
         minimal: (opts) => extractUpdatePlanChecklist(opts.input, opts.result).length === 0
     },
+    Skill: {
+        icon: () => <PuzzleIcon className={DEFAULT_ICON_CLASS} />,
+        title: (opts) => {
+            const skill = getInputStringAny(opts.input, ['skill'])
+            return skill ? `Skill: ${skill}` : 'Skill'
+        },
+        minimal: true
+    },
     CodexReasoning: {
         icon: () => <BulbIcon className={DEFAULT_ICON_CLASS} />,
         title: (opts) => getInputStringAny(opts.input, ['title']) ?? 'Reasoning',
