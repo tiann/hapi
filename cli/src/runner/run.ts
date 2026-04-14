@@ -340,41 +340,7 @@ export async function startRunner(): Promise<void> {
           };
         }
 
-        // Construct arguments for the CLI
-        const agentCommand = agent === 'codex'
-          ? 'codex'
-          : agent === 'cursor'
-            ? 'cursor'
-            : agent === 'gemini'
-              ? 'gemini'
-              : agent === 'opencode'
-                ? 'opencode'
-                : 'claude';
-        const args = [agentCommand];
-        if (options.resumeSessionId) {
-            if (agent === 'codex') {
-                args.push('resume', options.resumeSessionId);
-            } else if (agent === 'cursor') {
-                args.push('--resume', options.resumeSessionId);
-            } else {
-                args.push('--resume', options.resumeSessionId);
-            }
-        }
-        args.push('--hapi-starting-mode', 'remote', '--started-by', 'runner');
-        if (options.model && agent !== 'opencode') {
-          args.push('--model', options.model);
-        }
-        if (options.effort && agent === 'claude') {
-          args.push('--effort', options.effort);
-        }
-        if (options.modelReasoningEffort && agent === 'codex') {
-          args.push('--model-reasoning-effort', options.modelReasoningEffort);
-        }
-        if (options.permissionMode && (PERMISSION_MODES as readonly string[]).includes(options.permissionMode)) {
-          args.push('--permission-mode', options.permissionMode);
-        } else if (yolo) {
-          args.push('--yolo');
-        }
+        const args = buildCliArgs(agent, options, yolo);
 
         // sessionId reserved for future use
         const MAX_TAIL_CHARS = 4000;
@@ -855,4 +821,46 @@ export async function startRunner(): Promise<void> {
     logger.debug('[RUNNER RUN][FATAL] Failed somewhere unexpectedly - exiting with code 1', error);
     process.exit(1);
   }
+}
+
+export function buildCliArgs(
+  agent: string,
+  options: SpawnSessionOptions,
+  yolo?: boolean
+): string[] {
+  const agentCommand = agent === 'codex'
+    ? 'codex'
+    : agent === 'cursor'
+      ? 'cursor'
+      : agent === 'gemini'
+        ? 'gemini'
+        : agent === 'opencode'
+          ? 'opencode'
+          : 'claude';
+  const args = [agentCommand];
+  if (options.resumeSessionId) {
+    if (agent === 'codex') {
+      args.push('resume', options.resumeSessionId);
+    } else if (agent === 'cursor') {
+      args.push('--resume', options.resumeSessionId);
+    } else {
+      args.push('--resume', options.resumeSessionId);
+    }
+  }
+  args.push('--hapi-starting-mode', 'remote', '--started-by', 'runner');
+  if (options.model && agent !== 'opencode') {
+    args.push('--model', options.model);
+  }
+  if (options.effort && agent === 'claude') {
+    args.push('--effort', options.effort);
+  }
+  if (options.modelReasoningEffort && agent === 'codex') {
+    args.push('--model-reasoning-effort', options.modelReasoningEffort);
+  }
+  if (options.permissionMode && (PERMISSION_MODES as readonly string[]).includes(options.permissionMode)) {
+    args.push('--permission-mode', options.permissionMode);
+  } else if (yolo) {
+    args.push('--yolo');
+  }
+  return args;
 }
