@@ -21,6 +21,7 @@ export const cursorCommand: CommandDefinition = {
                 model?: string
             } = {}
             const unknownArgs: string[] = []
+            let hasExplicitPermissionMode = false
 
             for (let i = 0; i < commandArgs.length; i++) {
                 const arg = commandArgs[i]
@@ -41,7 +42,8 @@ export const cursorCommand: CommandDefinition = {
                         throw new Error(`Invalid --permission-mode value: ${mode ?? '(missing)'}`)
                     }
                     options.permissionMode = mode as CursorPermissionMode
-                } else if (arg === '--yolo' || arg === '--force') {
+                    hasExplicitPermissionMode = true
+                } else if ((arg === '--yolo' || arg === '--force') && !hasExplicitPermissionMode) {
                     options.permissionMode = 'yolo'
                 } else if (arg === '--mode') {
                     const mode = commandArgs[++i]

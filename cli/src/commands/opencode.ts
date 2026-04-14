@@ -18,6 +18,8 @@ export const opencodeCommand: CommandDefinition = {
                 resumeSessionId?: string
             } = {}
 
+            let hasExplicitPermissionMode = false
+
             for (let i = 0; i < commandArgs.length; i++) {
                 const arg = commandArgs[i]
                 if (arg === '--started-by') {
@@ -35,7 +37,8 @@ export const opencodeCommand: CommandDefinition = {
                         throw new Error(`Invalid --permission-mode value: ${mode ?? '(missing)'}`)
                     }
                     options.permissionMode = mode as OpencodePermissionMode
-                } else if (arg === '--yolo') {
+                    hasExplicitPermissionMode = true
+                } else if (arg === '--yolo' && !hasExplicitPermissionMode) {
                     options.permissionMode = 'yolo'
                 } else if (arg === '--resume') {
                     const sessionId = commandArgs[++i]

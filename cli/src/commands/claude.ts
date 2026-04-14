@@ -28,6 +28,7 @@ export const claudeCommand: CommandDefinition = {
         const options: StartOptions = {}
         let showHelp = false
         const unknownArgs: string[] = []
+        let hasExplicitPermissionMode = false
 
         for (let i = 0; i < args.length; i++) {
             const arg = args[i]
@@ -43,10 +44,11 @@ export const claudeCommand: CommandDefinition = {
                     throw new Error(`Invalid --permission-mode value: ${mode ?? '(missing)'}`)
                 }
                 options.permissionMode = mode as StartOptions['permissionMode']
-            } else if (arg === '--yolo') {
+                hasExplicitPermissionMode = true
+            } else if (arg === '--yolo' && !hasExplicitPermissionMode) {
                 options.permissionMode = 'bypassPermissions'
                 unknownArgs.push('--dangerously-skip-permissions')
-            } else if (arg === '--dangerously-skip-permissions') {
+            } else if (arg === '--dangerously-skip-permissions' && !hasExplicitPermissionMode) {
                 options.permissionMode = 'bypassPermissions'
                 unknownArgs.push(arg)
             } else if (arg === '--model') {

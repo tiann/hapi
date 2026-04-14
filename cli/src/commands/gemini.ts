@@ -19,6 +19,8 @@ export const geminiCommand: CommandDefinition = {
                 resumeSessionId?: string
             } = {}
 
+            let hasExplicitPermissionMode = false
+
             for (let i = 0; i < commandArgs.length; i++) {
                 const arg = commandArgs[i]
                 if (arg === '--started-by') {
@@ -36,7 +38,8 @@ export const geminiCommand: CommandDefinition = {
                         throw new Error(`Invalid --permission-mode value: ${mode ?? '(missing)'}`)
                     }
                     options.permissionMode = mode as GeminiPermissionMode
-                } else if (arg === '--yolo') {
+                    hasExplicitPermissionMode = true
+                } else if (arg === '--yolo' && !hasExplicitPermissionMode) {
                     options.permissionMode = 'yolo'
                 } else if (arg === '--resume') {
                     const sessionId = commandArgs[++i]

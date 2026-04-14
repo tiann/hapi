@@ -37,6 +37,7 @@ export const codexCommand: CommandDefinition = {
                 modelReasoningEffort?: ReasoningEffort
             } = {}
             const unknownArgs: string[] = []
+            let hasExplicitPermissionMode = false
 
             for (let i = 0; i < commandArgs.length; i++) {
                 const arg = commandArgs[i]
@@ -57,7 +58,8 @@ export const codexCommand: CommandDefinition = {
                         throw new Error(`Invalid --permission-mode value: ${mode ?? '(missing)'}`)
                     }
                     options.permissionMode = mode as CodexPermissionMode
-                } else if (arg === '--yolo' || arg === '--dangerously-bypass-approvals-and-sandbox') {
+                    hasExplicitPermissionMode = true
+                } else if ((arg === '--yolo' || arg === '--dangerously-bypass-approvals-and-sandbox') && !hasExplicitPermissionMode) {
                     options.permissionMode = 'yolo'
                     unknownArgs.push(arg)
                 } else if (arg === '--model') {
