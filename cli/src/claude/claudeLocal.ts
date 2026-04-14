@@ -76,8 +76,15 @@ export async function claudeLocal(opts: {
 
     // Prepare environment variables
     // Note: Local mode uses global Claude installation
+    //
+    // SDK metadata extraction (extractSDKMetadataAsync → query()) sets
+    // CLAUDE_CODE_ENTRYPOINT='sdk-ts' on the current process. If leaked
+    // into the local spawn, Claude Code thinks it was SDK-launched and
+    // excludes the session from `claude --resume`. Destructure it out
+    // so the child uses its own default entrypoint.
+    const { CLAUDE_CODE_ENTRYPOINT: _, ...cleanEnv } = process.env
     const env = {
-        ...process.env,
+        ...cleanEnv,
         DISABLE_AUTOUPDATER: '1',
         ...opts.claudeEnvVars
     }
