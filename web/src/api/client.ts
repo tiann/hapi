@@ -19,6 +19,8 @@ import type {
     SpawnResponse,
     UploadFileResponse,
     VisibilityPayload,
+    VoiceScribeTokenResponse,
+    VoiceTranscriptionResponse,
     SessionResponse,
     SessionsResponse
 } from '@/types/api'
@@ -94,7 +96,7 @@ export class ApiClient {
         if (authToken) {
             headers.set('authorization', `Bearer ${authToken}`)
         }
-        if (init?.body !== undefined && !headers.has('content-type')) {
+        if (init?.body !== undefined && !(init.body instanceof FormData) && !headers.has('content-type')) {
             headers.set('content-type', 'application/json')
         }
 
@@ -441,6 +443,30 @@ export class ApiClient {
         return await this.request('/api/voice/token', {
             method: 'POST',
             body: JSON.stringify(options || {})
+        })
+    }
+
+    async transcribeVoice(
+        file: File,
+        options?: { modelId?: 'scribe_v1' | 'scribe_v2'; languageCode?: string }
+    ): Promise<VoiceTranscriptionResponse> {
+        const formData = new FormData()
+        formData.set('file', file)
+        formData.set('modelId', options?.modelId ?? 'scribe_v2')
+        if (options?.languageCode) {
+            formData.set('languageCode', options.languageCode)
+        }
+
+        return await this.request('/api/voice/transcribe', {
+            method: 'POST',
+            body: formData
+        })
+    }
+
+    async fetchVoiceScribeToken(): Promise<VoiceScribeTokenResponse> {
+        return await this.request('/api/voice/scribe-token', {
+            method: 'POST',
+            body: JSON.stringify({})
         })
     }
 }

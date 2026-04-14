@@ -12,6 +12,19 @@ const tokenRequestSchema = z.object({
     customApiKey: z.string().optional()
 })
 
+const scribeTokenRequestSchema = z.object({
+    customApiKey: z.string().optional()
+})
+
+const transcriptionModelSchema = z.enum(['scribe_v1', 'scribe_v2'])
+
+const SUPPORTED_ELEVENLABS_LANGUAGE_CODES = new Set([
+    'en', 'ja', 'zh', 'de', 'hi', 'fr', 'ko',
+    'pt', 'pt-br', 'it', 'es', 'id', 'nl', 'tr', 'pl', 'sv', 'bg',
+    'ro', 'ar', 'cs', 'el', 'fi', 'ms', 'da', 'ta', 'uk', 'ru',
+    'hu', 'hr', 'sk', 'no', 'vi', 'tl'
+])
+
 // Cache for auto-created agent IDs (keyed by API key hash)
 const agentIdCache = new Map<string, string>()
 
@@ -20,6 +33,35 @@ interface ElevenLabsAgent {
     name: string
 }
 
+interface ElevenLabsTool {
+    id: string
+    tool_config?: {
+        name?: string
+        type?: string
+    }
+}
+
+function normalizeTranscriptionLanguageCode(raw: string | null): string | undefined {
+    if (!raw) return undefined
+
+    const normalized = raw.trim().toLowerCase()
+    if (!normalized) return undefined
+
+    if (SUPPORTED_ELEVENLABS_LANGUAGE_CODES.has(normalized)) {
+        return normalized
+    }
+
+    if (normalized === 'pt-br' || normalized.startsWith('pt-br-')) {
+        return 'pt-br'
+    }
+
+    const base = normalized.split(/[-_]/)[0]
+    if (base && SUPPORTED_ELEVENLABS_LANGUAGE_CODES.has(base)) {
+        return base
+    }
+
+    return undefined
+}
 /**
  * Find an existing "Hapi Voice Assistant" agent
  */
@@ -188,6 +230,114 @@ export function createVoiceRoutes(): Hono<WebAppEnv> {
             console.error('[Voice] Error fetching token:', error)
             return c.json({
                 allowed: false,
+                error: error instanceof Error ? error.message : 'Network error'
+            }, 500)
+        }
+    })
+
+    app.post('/voice/transcribe', async (c) => {
+        const formData = await c.req.formData().catch(() => null)
+        if (!formData) {
+            return c.json({ error: 'Invalid form data' }, 400)
+        }
+
+        const file = formData.get('file')
+        const modelIdRaw = formData.get('modelId')
+        const languageCodeRaw = formData.get('languageCode')
+
+        if (!(file instanceof File)) {
+            return c.json({ error: 'Missing audio file' }, 400)
+        }
+
+        const modelIdParsed = transcriptionModelSchema.safeParse(
+            typeof modelIdRaw === 'string' ? modelIdRaw : 'scribe_v2'
+        )
+        if (!modelIdParsed.success) {
+            return c.json({ error: 'Invalid modelId' }, 400)
+        }
+
+        const apiKey = process.env.ELEVENLABS_API_KEY
+        if (!apiKey) {
+            return c.json({ error: 'ElevenLabs API key not configured' }, 400)
+        }
+
+        const upstreamFormData = new FormData()
+        upstreamFormData.set('model_id', modelIdParsed.data)
+        upstreamFormData.set('file', file, file.name || 'speech.webm')
+        const languageCode = typeof languageCodeRaw === 'string'
+            ? normalizeTranscriptionLanguageCode(languageCodeRaw)
+            : undefined
+        if (languageCode && modelIdParsed.data === 'scribe_v2') {
+            upstreamFormData.set('language_code', languageCode)
+        }
+
+        try {
+            const response = await fetch(`${ELEVENLABS_API_BASE}/speech-to-text`, {
+                method: 'POST',
+                headers: {
+                    'xi-api-key': apiKey,
+                    'Accept': 'application/json'
+                },
+                body: upstreamFormData
+            })
+
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({})) as { detail?: { message?: string } | string; error?: string }
+                const errorMessage = typeof errorData.detail === 'string'
+                    ? errorData.detail
+                    : errorData.detail?.message || errorData.error || `ElevenLabs API error: ${response.status}`
+                return c.json({ error: errorMessage }, 500)
+            }
+
+            const data = await response.json() as { text?: string; language_code?: string }
+            return c.json({
+                text: data.text ?? '',
+                languageCode: data.language_code
+            })
+        } catch (error) {
+            return c.json({
+                error: error instanceof Error ? error.message : 'Network error'
+            }, 500)
+        }
+    })
+
+    app.post('/voice/scribe-token', async (c) => {
+        const json = await c.req.json().catch(() => null)
+        const parsed = scribeTokenRequestSchema.safeParse(json ?? {})
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid request body' }, 400)
+        }
+
+        const apiKey = parsed.data.customApiKey || process.env.ELEVENLABS_API_KEY
+        if (!apiKey) {
+            return c.json({ error: 'ElevenLabs API key not configured' }, 400)
+        }
+
+        try {
+            const response = await fetch(`${ELEVENLABS_API_BASE}/single-use-token/realtime_scribe`, {
+                method: 'POST',
+                headers: {
+                    'xi-api-key': apiKey,
+                    'Accept': 'application/json'
+                }
+            })
+
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({})) as { detail?: { message?: string } | string; error?: string }
+                const errorMessage = typeof errorData.detail === 'string'
+                    ? errorData.detail
+                    : errorData.detail?.message || errorData.error || `ElevenLabs API error: ${response.status}`
+                return c.json({ error: errorMessage }, 500)
+            }
+
+            const data = await response.json() as { token?: string }
+            if (!data.token) {
+                return c.json({ error: 'No token in ElevenLabs response' }, 500)
+            }
+
+            return c.json({ token: data.token })
+        } catch (error) {
+            return c.json({
                 error: error instanceof Error ? error.message : 'Network error'
             }, 500)
         }

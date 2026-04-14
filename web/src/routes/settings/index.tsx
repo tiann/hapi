@@ -5,6 +5,7 @@ import { getElevenLabsSupportedLanguages, getLanguageDisplayName, type Language 
 import { getFontScaleOptions, useFontScale, type FontScale } from '@/hooks/useFontScale'
 import { getTerminalFontSizeOptions, useTerminalFontSize, type TerminalFontSize } from '@/hooks/useTerminalFontSize'
 import { useAppearance, getAppearanceOptions, type AppearancePreference } from '@/hooks/useTheme'
+import { useVoiceMode, type VoiceMode } from '@/hooks/useVoiceMode'
 import { PROTOCOL_VERSION } from '@hapi/protocol'
 
 const locales: { value: Locale; nativeLabel: string }[] = [
@@ -13,6 +14,11 @@ const locales: { value: Locale; nativeLabel: string }[] = [
 ]
 
 const voiceLanguages = getElevenLabsSupportedLanguages()
+const voiceModeOptions: Array<{ value: VoiceMode; labelKey: string }> = [
+    { value: 'assistant', labelKey: 'settings.voice.mode.assistant' },
+    { value: 'dictation-local', labelKey: 'settings.voice.mode.dictationLocal' },
+    { value: 'dictation-elevenlabs', labelKey: 'settings.voice.mode.dictationElevenLabs' }
+]
 
 function BackIcon(props: { className?: string }) {
     return (
@@ -87,6 +93,7 @@ export default function SettingsPage() {
     const { fontScale, setFontScale } = useFontScale()
     const { terminalFontSize, setTerminalFontSize } = useTerminalFontSize()
     const { appearance, setAppearance } = useAppearance()
+    const { voiceMode, setVoiceMode } = useVoiceMode()
 
     // Voice language state - read from localStorage
     const [voiceLanguage, setVoiceLanguage] = useState<string | null>(() => {
@@ -101,6 +108,7 @@ export default function SettingsPage() {
     const currentFontScaleLabel = fontScaleOptions.find((opt) => opt.value === fontScale)?.label ?? '100%'
     const currentTerminalFontSizeLabel = terminalFontSizeOptions.find((opt) => opt.value === terminalFontSize)?.label ?? '13px'
     const currentVoiceLanguage = voiceLanguages.find((lang) => lang.code === voiceLanguage)
+    const currentVoiceModeLabel = voiceModeOptions.find((option) => option.value === voiceMode)?.labelKey ?? 'settings.voice.mode.assistant'
 
     const handleLocaleChange = (newLocale: Locale) => {
         setLocale(newLocale)
@@ -130,6 +138,10 @@ export default function SettingsPage() {
             localStorage.setItem('hapi-voice-lang', language.code)
         }
         setIsVoiceOpen(false)
+    }
+
+    const handleVoiceModeChange = (mode: VoiceMode) => {
+        setVoiceMode(mode)
     }
 
     // Close dropdown when clicking outside
@@ -404,7 +416,29 @@ export default function SettingsPage() {
                         <div className="px-3 py-2 text-xs font-semibold text-[var(--app-hint)] uppercase tracking-wide">
                             {t('settings.voice.title')}
                         </div>
-                        <div ref={voiceContainerRef} className="relative">
+                        <div className="px-3 py-3">
+                            <div className="mb-2 text-[var(--app-fg)]">{t('settings.voice.mode')}</div>
+                            <div className="flex flex-wrap gap-2">
+                                {voiceModeOptions.map((option) => {
+                                    const isSelected = voiceMode === option.value
+                                    return (
+                                        <button
+                                            key={option.value}
+                                            type="button"
+                                            onClick={() => handleVoiceModeChange(option.value)}
+                                            className={`rounded-full px-3 py-1.5 text-sm transition-colors ${
+                                                isSelected
+                                                    ? 'bg-[var(--app-link)] text-white'
+                                                    : 'bg-[var(--app-subtle-bg)] text-[var(--app-fg)] hover:bg-[var(--app-divider)]'
+                                            }`}
+                                        >
+                                            {t(option.labelKey)}
+                                        </button>
+                                    )
+                                })}
+                            </div>
+                        </div>
+                        <div ref={voiceContainerRef} className="relative border-t border-[var(--app-divider)]">
                             <button
                                 type="button"
                                 onClick={() => setIsVoiceOpen(!isVoiceOpen)}
@@ -414,7 +448,7 @@ export default function SettingsPage() {
                             >
                                 <span className="text-[var(--app-fg)]">{t('settings.voice.language')}</span>
                                 <span className="flex items-center gap-1 text-[var(--app-hint)]">
-                                    <span>
+                                    <span title={t(currentVoiceModeLabel)}>
                                         {currentVoiceLanguage
                                             ? currentVoiceLanguage.code === null
                                                 ? t('settings.voice.autoDetect')

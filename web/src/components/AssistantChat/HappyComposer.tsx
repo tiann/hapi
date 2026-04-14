@@ -12,6 +12,7 @@ import {
     useRef,
     useState
 } from 'react'
+import type { ApiClient } from '@/api/client'
 import type { AgentState, CodexCollaborationMode, PermissionMode } from '@/types/api'
 import type { Suggestion } from '@/hooks/useActiveSuggestions'
 import type { ConversationStatus } from '@/realtime/types'
@@ -22,6 +23,10 @@ import { usePlatform } from '@/hooks/usePlatform'
 import { usePWAInstall } from '@/hooks/usePWAInstall'
 import { supportsEffort, supportsModelChange } from '@hapi/protocol'
 import { markSkillUsed } from '@/lib/recent-skills'
+import { useComposerDraft } from '@/hooks/useComposerDraft'
+import { useElevenLabsTranscription } from '@/hooks/useElevenLabsTranscription'
+import { useSpeechToText } from '@/hooks/useSpeechToText'
+import { useVoiceMode } from '@/hooks/useVoiceMode'
 import { FloatingOverlay } from '@/components/ChatInput/FloatingOverlay'
 import { Autocomplete } from '@/components/ChatInput/Autocomplete'
 import { StatusBar } from '@/components/AssistantChat/StatusBar'
@@ -64,6 +69,7 @@ export function HappyComposer(props: {
     terminalUnsupported?: boolean
     autocompletePrefixes?: string[]
     autocompleteSuggestions?: (query: string) => Promise<Suggestion[]>
+    voiceTranscriptionApi?: ApiClient
     // Voice assistant props
     voiceStatus?: ConversationStatus
     voiceMicMuted?: boolean
@@ -96,6 +102,7 @@ export function HappyComposer(props: {
         terminalUnsupported = false,
         autocompletePrefixes = ['@', '/', '$'],
         autocompleteSuggestions = defaultSuggestionHandler,
+        voiceTranscriptionApi,
         voiceStatus = 'disconnected',
         voiceMicMuted = false,
         onVoiceToggle,
@@ -165,6 +172,7 @@ export function HappyComposer(props: {
     }, [controlledByUser])
 
     const { haptic: platformHaptic, isTouch } = usePlatform()
+    const { voiceMode } = useVoiceMode()
     const { isStandalone, isIOS } = usePWAInstall()
     const isIOSPWA = isIOS && isStandalone
     const bottomPaddingClass = isIOSPWA ? 'pb-0' : 'pb-3'
@@ -184,6 +192,34 @@ export function HappyComposer(props: {
             platformHaptic.notification('error')
         }
     }, [platformHaptic])
+
+    const dictation = useSpeechToText({
+        getCurrentText: () => composerText,
+        onTextChange: (text) => api.composer().setText(text)
+    })
+    const elevenLabsDictation = useElevenLabsTranscription({
+        api: voiceTranscriptionApi ?? null,
+        getCurrentText: () => composerText,
+        onTextChange: (text) => api.composer().setText(text)
+    })
+
+    const effectiveVoiceStatus = voiceMode === 'dictation-local'
+        ? dictation.status
+        : voiceMode === 'dictation-elevenlabs'
+            ? elevenLabsDictation.status
+            : voiceStatus
+    const effectiveVoiceEnabled = voiceMode === 'dictation-local'
+        ? dictation.supported
+        : voiceMode === 'dictation-elevenlabs'
+            ? elevenLabsDictation.supported
+            : Boolean(onVoiceToggle)
+    const effectiveVoiceMicMuted = voiceMode === 'assistant' ? voiceMicMuted : false
+    const effectiveOnVoiceToggle = voiceMode === 'dictation-local'
+        ? dictation.toggle
+        : voiceMode === 'dictation-elevenlabs'
+            ? elevenLabsDictation.toggle
+            : onVoiceToggle
+    const effectiveOnVoiceMicToggle = voiceMode === 'assistant' ? onVoiceMicToggle : undefined
 
     const handleSuggestionSelect = useCallback((index: number) => {
         const suggestion = suggestions[index]
@@ -483,7 +519,7 @@ export function HappyComposer(props: {
         || showEffortSettings
     )
     const showAbortButton = true
-    const voiceEnabled = Boolean(onVoiceToggle)
+    const voiceEnabled = effectiveVoiceEnabled
 
     const handleSend = useCallback(() => {
         api.composer().send()
@@ -759,7 +795,7 @@ export function HappyComposer(props: {
                         permissionMode={permissionMode}
                         collaborationMode={collaborationMode}
                         agentFlavor={agentFlavor}
-                        voiceStatus={voiceStatus}
+                        voiceStatus={effectiveVoiceStatus}
                     />
 
                     <div className="overflow-hidden rounded-[20px] bg-[var(--app-secondary-bg)]">
@@ -804,10 +840,10 @@ export function HappyComposer(props: {
                             isSwitching={isSwitching}
                             onSwitch={handleSwitch}
                             voiceEnabled={voiceEnabled}
-                            voiceStatus={voiceStatus}
-                            voiceMicMuted={voiceMicMuted}
-                            onVoiceToggle={onVoiceToggle ?? (() => {})}
-                            onVoiceMicToggle={onVoiceMicToggle}
+                            voiceStatus={effectiveVoiceStatus}
+                            voiceMicMuted={effectiveVoiceMicMuted}
+                            onVoiceToggle={effectiveOnVoiceToggle ?? (() => {})}
+                            onVoiceMicToggle={effectiveOnVoiceMicToggle}
                             onSend={handleSend}
                         />
                     </div>

@@ -150,6 +150,17 @@ export type DeleteUploadResponse = {
     error?: string
 }
 
+export type VoiceTranscriptionResponse = {
+    text?: string
+    languageCode?: string
+    error?: string
+}
+
+export type VoiceScribeTokenResponse = {
+    token?: string
+    error?: string
+}
+
 export type GitFileStatus = {
     fileName: string
     filePath: string
