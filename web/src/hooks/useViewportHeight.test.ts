@@ -60,4 +60,47 @@ describe('useViewportHeight update logic', () => {
 
         expect(root.style.getPropertyValue('--app-viewport-height')).toBe('')
     })
+
+    it('resets page scroll when keyboard is open', () => {
+        const scrollToSpy = vi.spyOn(window, 'scrollTo').mockImplementation(() => {})
+
+        // Simulate: keyboard open AND page has been scrolled by iOS
+        Object.defineProperty(window, 'scrollY', { value: 120, configurable: true })
+
+        const viewportHeight = 400
+        const windowHeight = 800
+        const diff = windowHeight - viewportHeight
+        if (diff > 1) {
+            root.style.setProperty('--app-viewport-height', `${viewportHeight}px`)
+            if (window.scrollY > 0) {
+                window.scrollTo(0, 0)
+            }
+        }
+
+        expect(scrollToSpy).toHaveBeenCalledWith(0, 0)
+
+        // Cleanup
+        Object.defineProperty(window, 'scrollY', { value: 0, configurable: true })
+        scrollToSpy.mockRestore()
+    })
+
+    it('does not reset scroll when page is not scrolled', () => {
+        const scrollToSpy = vi.spyOn(window, 'scrollTo').mockImplementation(() => {})
+
+        Object.defineProperty(window, 'scrollY', { value: 0, configurable: true })
+
+        const viewportHeight = 400
+        const windowHeight = 800
+        const diff = windowHeight - viewportHeight
+        if (diff > 1) {
+            root.style.setProperty('--app-viewport-height', `${viewportHeight}px`)
+            if (window.scrollY > 0) {
+                window.scrollTo(0, 0)
+            }
+        }
+
+        expect(scrollToSpy).not.toHaveBeenCalled()
+
+        scrollToSpy.mockRestore()
+    })
 })
