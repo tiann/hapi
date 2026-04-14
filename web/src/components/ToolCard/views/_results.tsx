@@ -520,9 +520,11 @@ const SkillResultView: ToolViewComponent = (props: ToolViewProps) => {
     // For errors, show the error text
     if (state === 'error') {
         const text = extractTextFromResult(result)
-        if (text) {
-            return <div className="text-sm text-red-600">{text}</div>
-        }
+        return (
+            <div className="text-sm text-red-600">
+                {text?.trim() ? text : 'Failed to load skill'}
+            </div>
+        )
     }
 
     // For successful loads, show just the skill name
