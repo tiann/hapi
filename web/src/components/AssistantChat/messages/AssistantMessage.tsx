@@ -57,7 +57,7 @@ export function HappyAssistantMessage() {
                 <MessagePrimitive.Content components={MESSAGE_PART_COMPONENTS} />
             </div>
             {copyText && (
-                <div className="flex justify-end mt-1 opacity-60 sm:opacity-0 sm:group-hover/msg:opacity-100 transition-opacity">
+                <div className="hidden sm:flex justify-end mt-1 opacity-0 group-hover/msg:opacity-100 transition-opacity">
                     <button
                         type="button"
                         title="Copy"
