@@ -11,9 +11,11 @@ describe('parseExtraHeaders', () => {
     })
 
     it('drops non-string values', () => {
-        expect(parseExtraHeaders('{"Cookie":"a=b","X-Num":1,"X-Bool":true}')).toEqual({
+        const warn = vi.fn()
+        expect(parseExtraHeaders('{"Cookie":"a=b","X-Num":1,"X-Bool":true}', warn)).toEqual({
             Cookie: 'a=b'
         })
+        expect(warn).toHaveBeenCalledOnce()
     })
 
     it('returns empty object and warns for invalid json', () => {
@@ -57,19 +59,9 @@ describe('hub extra headers helpers', () => {
         })
 
         expect(buildSocketIoExtraHeaderOptions()).toEqual({
-            transportOptions: {
-                polling: {
-                    extraHeaders: {
-                        Cookie: 'CF_Authorization=token',
-                        'X-Test': '1'
-                    }
-                },
-                websocket: {
-                    extraHeaders: {
-                        Cookie: 'CF_Authorization=token',
-                        'X-Test': '1'
-                    }
-                }
+            extraHeaders: {
+                Cookie: 'CF_Authorization=token',
+                'X-Test': '1'
             }
         })
     })

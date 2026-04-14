@@ -23,10 +23,14 @@ export function parseExtraHeaders(raw: string | undefined, warn: (message: strin
             return {}
         }
 
+        const entries = Object.entries(parsed)
         const headers = Object.fromEntries(
-            Object.entries(parsed)
-                .filter((entry): entry is [string, string] => typeof entry[0] === 'string' && typeof entry[1] === 'string')
+            entries.filter((entry): entry is [string, string] => typeof entry[0] === 'string' && typeof entry[1] === 'string')
         )
+
+        if (Object.keys(headers).length !== entries.length) {
+            warn('[WARN] HAPI_EXTRA_HEADERS_JSON only supports string header values. Ignoring non-string entries.')
+        }
 
         return headers
     } catch {

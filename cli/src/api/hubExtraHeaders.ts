@@ -8,21 +8,13 @@ export function buildHubRequestHeaders(baseHeaders: Record<string, string>): Rec
 }
 
 export function buildSocketIoExtraHeaderOptions(): {
-    transportOptions?: {
-        polling: { extraHeaders: Record<string, string> }
-        websocket: { extraHeaders: Record<string, string> }
-    }
+    extraHeaders?: Record<string, string>
 } {
     if (Object.keys(configuration.extraHeaders).length === 0) {
         return {}
     }
 
-    const extraHeaders = { ...configuration.extraHeaders }
-
     return {
-        transportOptions: {
-            polling: { extraHeaders },
-            websocket: { extraHeaders }
-        }
+        extraHeaders: { ...configuration.extraHeaders }
     }
 }

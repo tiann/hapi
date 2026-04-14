@@ -143,17 +143,8 @@ describe('API extra headers integration', () => {
 
         expect(ioMock).toHaveBeenCalledOnce()
         expect(ioMock.mock.calls[0]?.[1]).toMatchObject({
-            transportOptions: {
-                polling: {
-                    extraHeaders: {
-                        Cookie: 'CF_Authorization=token'
-                    }
-                },
-                websocket: {
-                    extraHeaders: {
-                        Cookie: 'CF_Authorization=token'
-                    }
-                }
+            extraHeaders: {
+                Cookie: 'CF_Authorization=token'
             }
         })
     })
