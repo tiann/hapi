@@ -4,7 +4,9 @@ import type { WebAppEnv } from '../middleware/auth'
 import {
     ELEVENLABS_API_BASE,
     VOICE_AGENT_NAME,
-    buildVoiceAgentConfig
+    buildVoiceAgentConfig,
+    buildVoiceToolRequests,
+    type VoiceToolConfig
 } from '@hapi/protocol/voice'
 
 const tokenRequestSchema = z.object({
@@ -18,6 +20,14 @@ const agentIdCache = new Map<string, string>()
 interface ElevenLabsAgent {
     agent_id: string
     name: string
+}
+
+interface ElevenLabsTool {
+    id: string
+    tool_config?: {
+        name?: string
+        type?: string
+    }
 }
 
 /**
@@ -50,7 +60,7 @@ async function findHapiAgent(apiKey: string): Promise<string | null> {
 /**
  * Create a new "Hapi Voice Assistant" agent
  */
-async function createHapiAgent(apiKey: string): Promise<string | null> {
+async function createHapiAgent(apiKey: string, toolIds: string[]): Promise<string | null> {
     try {
         const response = await fetch(`${ELEVENLABS_API_BASE}/convai/agents/create`, {
             method: 'POST',
@@ -59,7 +69,7 @@ async function createHapiAgent(apiKey: string): Promise<string | null> {
                 'Content-Type': 'application/json',
                 'Accept': 'application/json'
             },
-            body: JSON.stringify(buildVoiceAgentConfig())
+            body: JSON.stringify(buildVoiceAgentConfig(toolIds))
         })
 
         if (!response.ok) {
@@ -79,6 +89,106 @@ async function createHapiAgent(apiKey: string): Promise<string | null> {
     }
 }
 
+async function updateHapiAgent(apiKey: string, agentId: string, toolIds: string[]): Promise<boolean> {
+    try {
+        const response = await fetch(`${ELEVENLABS_API_BASE}/convai/agents/${agentId}`, {
+            method: 'PATCH',
+            headers: {
+                'xi-api-key': apiKey,
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
+            },
+            body: JSON.stringify(buildVoiceAgentConfig(toolIds))
+        })
+
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => ({})) as { detail?: { message?: string } | string }
+            const errorMessage = typeof errorData.detail === 'string'
+                ? errorData.detail
+                : (errorData.detail as { message?: string })?.message || `API error: ${response.status}`
+            console.error('[Voice] Failed to update agent:', errorMessage)
+            return false
+        }
+
+        return true
+    } catch (error) {
+        console.error('[Voice] Error updating agent:', error)
+        return false
+    }
+}
+
+async function listTools(apiKey: string): Promise<ElevenLabsTool[]> {
+    const response = await fetch(`${ELEVENLABS_API_BASE}/convai/tools`, {
+        method: 'GET',
+        headers: {
+            'xi-api-key': apiKey,
+            'Accept': 'application/json'
+        }
+    })
+
+    if (!response.ok) {
+        const errorData = await response.json().catch(() => ({})) as { detail?: { message?: string } | string }
+        const errorMessage = typeof errorData.detail === 'string'
+            ? errorData.detail
+            : (errorData.detail as { message?: string })?.message || `API error: ${response.status}`
+        throw new Error(errorMessage)
+    }
+
+    const data = await response.json() as { tools?: ElevenLabsTool[] }
+    return data.tools || []
+}
+
+async function createTool(apiKey: string, toolConfig: VoiceToolConfig): Promise<string> {
+    const response = await fetch(`${ELEVENLABS_API_BASE}/convai/tools`, {
+        method: 'POST',
+        headers: {
+            'xi-api-key': apiKey,
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+        },
+        body: JSON.stringify({ tool_config: toolConfig })
+    })
+
+    if (!response.ok) {
+        const errorData = await response.json().catch(() => ({})) as { detail?: { message?: string } | string }
+        const errorMessage = typeof errorData.detail === 'string'
+            ? errorData.detail
+            : (errorData.detail as { message?: string })?.message || `API error: ${response.status}`
+        throw new Error(errorMessage)
+    }
+
+    const data = await response.json() as { id?: string }
+    if (!data.id) {
+        throw new Error('No tool id in ElevenLabs response')
+    }
+
+    return data.id
+}
+
+async function ensureHapiToolIds(apiKey: string): Promise<string[]> {
+    const existingTools = await listTools(apiKey)
+    const toolIdByName = new Map(
+        existingTools
+            .filter((tool) => tool.tool_config?.type === 'client' && typeof tool.tool_config?.name === 'string')
+            .map((tool) => [tool.tool_config!.name!, tool.id])
+    )
+
+    const toolIds: string[] = []
+    for (const request of buildVoiceToolRequests()) {
+        const existingId = toolIdByName.get(request.tool_config.name)
+        if (existingId) {
+            toolIds.push(existingId)
+            continue
+        }
+
+        const createdId = await createTool(apiKey, request.tool_config)
+        toolIds.push(createdId)
+        toolIdByName.set(request.tool_config.name, createdId)
+    }
+
+    return toolIds
+}
+
 /**
  * Get or create agent ID - finds existing or creates new "Hapi Voice Assistant" agent
  */
@@ -90,16 +200,28 @@ async function getOrCreateAgentId(apiKey: string): Promise<string | null> {
         return cached
     }
 
+    let toolIds: string[]
+    try {
+        toolIds = await ensureHapiToolIds(apiKey)
+    } catch (error) {
+        console.error('[Voice] Failed to ensure Hapi tools:', error)
+        return null
+    }
+
     // Try to find existing agent
     console.log('[Voice] No agent ID configured, searching for existing agent...')
     let agentId = await findHapiAgent(apiKey)
 
     if (agentId) {
         console.log('[Voice] Found existing agent:', agentId)
+        const updated = await updateHapiAgent(apiKey, agentId, toolIds)
+        if (!updated) {
+            return null
+        }
     } else {
         // Create new agent
         console.log('[Voice] No existing agent found, creating new one...')
-        agentId = await createHapiAgent(apiKey)
+        agentId = await createHapiAgent(apiKey, toolIds)
         if (agentId) {
             console.log('[Voice] Created new agent:', agentId)
         }
