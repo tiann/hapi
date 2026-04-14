@@ -274,6 +274,22 @@ export default {
   'settings.about.appVersion': 'App Version',
   'settings.about.protocolVersion': 'Protocol Version',
 
+  // Browse / Workspace
+  'browse.title': 'Browse',
+  'browse.workspaces': 'Workspaces',
+  'browse.addWorkspace': 'Add workspace',
+  'browse.removeWorkspace': 'Remove workspace',
+  'browse.pathPlaceholder': '/path/to/workspace',
+  'browse.add': 'Add',
+  'browse.go': 'Go',
+  'browse.goUp': 'Go up',
+  'browse.goToPath': 'Go to path',
+  'browse.noWorkspaces': 'No workspaces added yet. Add a folder path to get started.',
+  'browse.empty': 'No subdirectories found',
+  'browse.refresh': 'Refresh',
+  'browse.startSession': 'Start Session',
+  'browse.nav': 'Browse',
+
   // Misc
   'misc.noMachines': 'No machines available',
   'misc.machine': 'Machine',

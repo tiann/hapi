@@ -34,6 +34,8 @@ export function NewSession(props: {
     isLoading?: boolean
     onSuccess: (sessionId: string) => void
     onCancel: () => void
+    initialDirectory?: string
+    initialMachineId?: string
 }) {
     const { haptic } = usePlatform()
     const { t } = useTranslation()
@@ -42,8 +44,8 @@ export function NewSession(props: {
     const isFormDisabled = Boolean(isPending || props.isLoading)
     const { getRecentPaths, addRecentPath, getLastUsedMachineId, setLastUsedMachineId } = useRecentPaths()
 
-    const [machineId, setMachineId] = useState<string | null>(null)
-    const [directory, setDirectory] = useState('')
+    const [machineId, setMachineId] = useState<string | null>(props.initialMachineId ?? null)
+    const [directory, setDirectory] = useState(props.initialDirectory ?? '')
     const [suppressSuggestions, setSuppressSuggestions] = useState(false)
     const [isDirectoryFocused, setIsDirectoryFocused] = useState(false)
     const [agent, setAgent] = useState<AgentType>(loadPreferredAgent)
@@ -85,12 +87,14 @@ export function NewSession(props: {
 
         if (foundLast) {
             setMachineId(foundLast.id)
-            const paths = getRecentPaths(foundLast.id)
-            if (paths[0]) setDirectory(paths[0])
+            if (!props.initialDirectory) {
+                const paths = getRecentPaths(foundLast.id)
+                if (paths[0]) setDirectory(paths[0])
+            }
         } else if (props.machines[0]) {
             setMachineId(props.machines[0].id)
         }
-    }, [props.machines, machineId, getLastUsedMachineId, getRecentPaths])
+    }, [props.machines, machineId, getLastUsedMachineId, getRecentPaths, props.initialDirectory])
 
     const selectedMachine = useMemo(
         () => (machineId ? props.machines.find((machine) => machine.id === machineId) ?? null : null),

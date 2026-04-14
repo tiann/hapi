@@ -15,6 +15,7 @@ import { App } from '@/App'
 import { SessionChat } from '@/components/SessionChat'
 import { SessionList } from '@/components/SessionList'
 import { NewSession } from '@/components/NewSession'
+import { WorkspaceBrowser } from '@/components/WorkspaceBrowser'
 import { LoadingState } from '@/components/LoadingState'
 import { useAppContext } from '@/lib/app-context'
 import { useAppGoBack } from '@/hooks/useAppGoBack'
@@ -73,6 +74,25 @@ function PlusIcon(props: { className?: string }) {
         >
             <line x1="12" y1="5" x2="12" y2="19" />
             <line x1="5" y1="12" x2="19" y2="12" />
+        </svg>
+    )
+}
+
+function FolderOpenIcon(props: { className?: string }) {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="20"
+            height="20"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={props.className}
+        >
+            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
         </svg>
     )
 }
@@ -143,6 +163,14 @@ function SessionsPage() {
                             {t('sessions.count', { n: sessions.length, m: projectCount })}
                         </div>
                         <div className="flex items-center gap-2">
+                            <button
+                                type="button"
+                                onClick={() => navigate({ to: '/browse' })}
+                                className="p-1.5 rounded-full text-[var(--app-hint)] hover:text-[var(--app-fg)] hover:bg-[var(--app-subtle-bg)] transition-colors"
+                                title={t('browse.nav')}
+                            >
+                                <FolderOpenIcon className="h-5 w-5" />
+                            </button>
                             <button
                                 type="button"
                                 onClick={() => navigate({ to: '/settings' })}
@@ -368,6 +396,7 @@ function NewSessionPage() {
     const queryClient = useQueryClient()
     const { machines, isLoading: machinesLoading, error: machinesError } = useMachines(api, true)
     const { t } = useTranslation()
+    const { directory: initialDirectory, machineId: initialMachineId } = newSessionRoute.useSearch()
 
     const handleCancel = useCallback(() => {
         navigate({ to: '/sessions' })
@@ -417,6 +446,49 @@ function NewSessionPage() {
                     isLoading={machinesLoading}
                     onCancel={handleCancel}
                     onSuccess={handleSuccess}
+                    initialDirectory={initialDirectory}
+                    initialMachineId={initialMachineId}
+                />
+            </div>
+        </div>
+    )
+}
+
+function BrowsePage() {
+    const { api } = useAppContext()
+    const navigate = useNavigate()
+    const goBack = useAppGoBack()
+    const { machines, isLoading: machinesLoading } = useMachines(api, true)
+    const { t } = useTranslation()
+
+    const handleStartSession = useCallback((machineId: string, directory: string) => {
+        navigate({
+            to: '/sessions/new',
+            search: { directory, machineId }
+        })
+    }, [navigate])
+
+    return (
+        <div className="flex h-full min-h-0 flex-col">
+            <div className="flex items-center gap-2 border-b border-[var(--app-border)] bg-[var(--app-bg)] p-3 pt-[calc(0.75rem+env(safe-area-inset-top))]">
+                {!isTelegramApp() && (
+                    <button
+                        type="button"
+                        onClick={goBack}
+                        className="flex h-8 w-8 items-center justify-center rounded-full text-[var(--app-hint)] transition-colors hover:bg-[var(--app-secondary-bg)] hover:text-[var(--app-fg)]"
+                    >
+                        <BackIcon />
+                    </button>
+                )}
+                <div className="flex-1 font-semibold">{t('browse.title')}</div>
+            </div>
+
+            <div className="flex-1 min-h-0">
+                <WorkspaceBrowser
+                    api={api}
+                    machines={machines}
+                    machinesLoading={machinesLoading}
+                    onStartSession={handleStartSession}
                 />
             </div>
         </div>
@@ -509,10 +581,31 @@ const sessionFileRoute = createRoute({
     component: FilePage,
 })
 
+type NewSessionSearch = {
+    directory?: string
+    machineId?: string
+}
+
 const newSessionRoute = createRoute({
     getParentRoute: () => sessionsRoute,
     path: 'new',
+    validateSearch: (search: Record<string, unknown>): NewSessionSearch => {
+        const result: NewSessionSearch = {}
+        if (typeof search.directory === 'string' && search.directory) {
+            result.directory = search.directory
+        }
+        if (typeof search.machineId === 'string' && search.machineId) {
+            result.machineId = search.machineId
+        }
+        return result
+    },
     component: NewSessionPage,
+})
+
+const browseRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: '/browse',
+    component: BrowsePage,
 })
 
 const settingsRoute = createRoute({
@@ -532,6 +625,7 @@ export const routeTree = rootRoute.addChildren([
             sessionFileRoute,
         ]),
     ]),
+    browseRoute,
     settingsRoute,
 ])
 

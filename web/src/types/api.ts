@@ -95,6 +95,20 @@ export type MessagesResponse = {
 export type MachinesResponse = { machines: Machine[] }
 export type MachinePathsExistsResponse = { exists: Record<string, boolean> }
 
+export type MachineDirectoryEntry = {
+    name: string
+    type: 'file' | 'directory' | 'other'
+    size?: number
+    modified?: number
+    isGitRepo?: boolean
+}
+
+export type MachineListDirectoryResponse = {
+    success: boolean
+    entries?: MachineDirectoryEntry[]
+    error?: string
+}
+
 export type SpawnResponse =
     | { type: 'success'; sessionId: string }
     | { type: 'error'; message: string }

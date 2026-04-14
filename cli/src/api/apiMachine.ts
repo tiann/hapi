@@ -3,7 +3,8 @@
  */
 
 import { io, type Socket } from 'socket.io-client'
-import { stat } from 'node:fs/promises'
+import { readdir, stat } from 'node:fs/promises'
+import { join } from 'node:path'
 import { logger } from '@/ui/logger'
 import { configuration } from '@/configuration'
 import type { Update, UpdateMachineBody } from '@hapi/protocol'
@@ -65,6 +66,24 @@ interface PathExistsResponse {
     exists: Record<string, boolean>
 }
 
+interface ListMachineDirectoryRequest {
+    path: string
+}
+
+interface ListMachineDirectoryEntry {
+    name: string
+    type: 'file' | 'directory' | 'other'
+    size?: number
+    modified?: number
+    isGitRepo?: boolean
+}
+
+interface ListMachineDirectoryResponse {
+    success: boolean
+    entries?: ListMachineDirectoryEntry[]
+    error?: string
+}
+
 export class ApiMachineClient {
     private socket!: Socket<ServerToRunnerEvents, RunnerToServerEvents>
     private keepAliveInterval: NodeJS.Timeout | null = null
@@ -98,6 +117,67 @@ export class ApiMachineClient {
             }))
 
             return { exists }
+        })
+
+        this.rpcHandlerManager.registerHandler<ListMachineDirectoryRequest, ListMachineDirectoryResponse>('list-directory', async (params) => {
+            const targetPath = typeof params?.path === 'string' ? params.path.trim() : ''
+            if (!targetPath) {
+                return { success: false, error: 'Path is required' }
+            }
+
+            try {
+                const dirStat = await stat(targetPath)
+                if (!dirStat.isDirectory()) {
+                    return { success: false, error: 'Path is not a directory' }
+                }
+
+                const dirEntries = await readdir(targetPath, { withFileTypes: true })
+                const entries: ListMachineDirectoryEntry[] = []
+
+                await Promise.all(dirEntries.map(async (entry) => {
+                    if (entry.name.startsWith('.')) return
+
+                    const fullPath = join(targetPath, entry.name)
+                    let type: 'file' | 'directory' | 'other' = 'other'
+                    let size: number | undefined
+                    let modified: number | undefined
+                    let isGitRepo = false
+
+                    if (entry.isDirectory()) {
+                        type = 'directory'
+                        try {
+                            const gitStat = await stat(join(fullPath, '.git'))
+                            isGitRepo = gitStat.isDirectory() || gitStat.isFile()
+                        } catch {
+                            // not a git repo
+                        }
+                    } else if (entry.isFile()) {
+                        type = 'file'
+                    }
+
+                    if (!entry.isSymbolicLink()) {
+                        try {
+                            const stats = await stat(fullPath)
+                            size = stats.size
+                            modified = stats.mtime.getTime()
+                        } catch {
+                            // ignore stat errors
+                        }
+                    }
+
+                    entries.push({ name: entry.name, type, size, modified, isGitRepo })
+                }))
+
+                entries.sort((a, b) => {
+                    if (a.type === 'directory' && b.type !== 'directory') return -1
+                    if (a.type !== 'directory' && b.type === 'directory') return 1
+                    return a.name.localeCompare(b.name)
+                })
+
+                return { success: true, entries }
+            } catch (error) {
+                return { success: false, error: error instanceof Error ? error.message : 'Failed to list directory' }
+            }
         })
     }
 

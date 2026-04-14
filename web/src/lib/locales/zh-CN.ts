@@ -276,6 +276,22 @@ export default {
   'settings.about.appVersion': '应用版本',
   'settings.about.protocolVersion': '协议版本',
 
+  // Browse / Workspace
+  'browse.title': '浏览',
+  'browse.workspaces': '工作区',
+  'browse.addWorkspace': '添加工作区',
+  'browse.removeWorkspace': '移除工作区',
+  'browse.pathPlaceholder': '/path/to/workspace',
+  'browse.add': '添加',
+  'browse.go': '前往',
+  'browse.goUp': '返回上层',
+  'browse.goToPath': '前往路径',
+  'browse.noWorkspaces': '尚未添加工作区。添加文件夹路径以开始。',
+  'browse.empty': '未找到子目录',
+  'browse.refresh': '刷新',
+  'browse.startSession': '启动会话',
+  'browse.nav': '浏览',
+
   // Misc
   'misc.noMachines': '无可用机器',
   'misc.machine': '机器',
