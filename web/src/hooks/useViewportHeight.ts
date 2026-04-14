@@ -32,15 +32,26 @@ export function useViewportHeight(): void {
             const diff = window.innerHeight - viewport.height
             if (diff > 1) {
                 root.style.setProperty('--app-viewport-height', `${viewport.height}px`)
+                // On iOS PWA (black-translucent status bar + viewport-fit=cover),
+                // the browser scrolls the page upward when the keyboard opens to
+                // keep the focused input visible. This pushes the header behind
+                // the iOS status bar. Reset the page scroll so the app stays
+                // pinned to the top — the inner flex layout already handles
+                // keeping the composer visible.
+                if (window.scrollY > 0) {
+                    window.scrollTo(0, 0)
+                }
             } else {
                 root.style.removeProperty('--app-viewport-height')
             }
         }
 
         viewport.addEventListener('resize', update)
+        viewport.addEventListener('scroll', update)
 
         return () => {
             viewport.removeEventListener('resize', update)
+            viewport.removeEventListener('scroll', update)
             root.style.removeProperty('--app-viewport-height')
         }
     }, [])
