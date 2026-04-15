@@ -8,7 +8,11 @@
 export const ELEVENLABS_API_BASE = 'https://api.elevenlabs.io/v1'
 export const VOICE_AGENT_NAME = 'Hapi Voice Assistant'
 
-export const VOICE_SYSTEM_PROMPT = `# Identity
+export const VOICE_SYSTEM_PROMPT = `# CRITICAL RULE - Tool Usage
+
+You MUST call the messageCodingAgent tool for ANY request related to coding, files, development, debugging, or tasks for the agent. Do NOT respond verbally to these requests — call the tool FIRST, then briefly confirm. This is your most important behavior.
+
+# Identity
 
 You are Hapi Voice Assistant. You bridge voice communication between users and their AI coding agents in the Hapi ecosystem.
 
@@ -136,9 +140,21 @@ For builds, tests, or large file operations:
 - Treat garbled input as phonetic hints and ask for clarification
 - Correct yourself immediately if you realize you made an error
 - Keep conversations forward-moving with fresh insights
-- Assume a technical software developer audience`
+- Assume a technical software developer audience
 
-export const VOICE_FIRST_MESSAGE = "Hey! Hapi here."
+# Language
+
+IMPORTANT: Always respond in Chinese (Mandarin). Use natural spoken Chinese.
+- Greet users in Chinese
+- Summarize technical content in Chinese
+- Use English only for proper nouns, tool names, and code identifiers
+- Keep the same warm, concise conversational style in Chinese
+
+# First Interaction
+
+When the user speaks to you for the first time, begin your response with a brief greeting (e.g. "你好！") before addressing their request. If their first message is a coding request, greet briefly AND call the tool — do both.`
+
+export const VOICE_FIRST_MESSAGE = "嗨！我是 Hapi 语音助手，有什么可以帮你的？"
 
 export const VOICE_TOOLS = [
     {
@@ -223,7 +239,7 @@ export function buildVoiceAgentConfig(): VoiceAgentConfig {
         conversation_config: {
             agent: {
                 first_message: VOICE_FIRST_MESSAGE,
-                language: 'en',
+                language: 'zh',
                 prompt: {
                     prompt: VOICE_SYSTEM_PROMPT,
                     llm: 'gemini-2.5-flash',
@@ -253,5 +269,80 @@ export function buildVoiceAgentConfig(): VoiceAgentConfig {
                 }
             }
         }
+    }
+}
+
+export type VoiceBackendType = 'elevenlabs' | 'gemini-live' | 'qwen-realtime'
+
+export const QWEN_REALTIME_MODEL = 'qwen3-omni-flash-realtime'
+export const QWEN_REALTIME_VOICE = 'Mia'
+
+export const DEFAULT_VOICE_BACKEND: VoiceBackendType = 'gemini-live'
+
+export const GEMINI_LIVE_MODEL = 'gemini-2.5-flash-native-audio-latest'
+
+export interface VoiceToolDefinition {
+    name: string
+    description: string
+    parameters: {
+        type: 'object'
+        required: string[]
+        properties: Record<string, {
+            type: string
+            description: string
+        }>
+    }
+}
+
+type VoiceToolSource = Pick<(typeof VOICE_TOOLS)[number], 'name' | 'description' | 'parameters'>
+
+function cloneVoiceToolDefinition(tool: VoiceToolSource): VoiceToolDefinition {
+    const properties: VoiceToolDefinition['parameters']['properties'] = {}
+
+    for (const [key, value] of Object.entries(tool.parameters.properties)) {
+        properties[key] = {
+            type: value.type,
+            description: value.description
+        }
+    }
+
+    return {
+        name: tool.name,
+        description: tool.description,
+        parameters: {
+            type: 'object',
+            required: [...tool.parameters.required],
+            properties
+        }
+    }
+}
+
+export const VOICE_TOOL_DEFINITIONS: VoiceToolDefinition[] = VOICE_TOOLS.map(cloneVoiceToolDefinition)
+
+export type GeminiLiveFunctionDeclaration = VoiceToolDefinition
+
+export interface GeminiLiveConfig {
+    model: string
+    systemInstruction: string
+    tools: Array<{
+        functionDeclarations: GeminiLiveFunctionDeclaration[]
+    }>
+    responseModalities: ['AUDIO']
+}
+
+export function buildGeminiLiveFunctionDeclarations(): GeminiLiveFunctionDeclaration[] {
+    return VOICE_TOOLS.map(cloneVoiceToolDefinition)
+}
+
+export function buildGeminiLiveConfig(): GeminiLiveConfig {
+    return {
+        model: GEMINI_LIVE_MODEL,
+        systemInstruction: VOICE_SYSTEM_PROMPT,
+        tools: [
+            {
+                functionDeclarations: buildGeminiLiveFunctionDeclarations()
+            }
+        ],
+        responseModalities: ['AUDIO']
     }
 }
