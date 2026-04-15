@@ -44,10 +44,18 @@ export function useAutoSpawn(api: ApiClient | null) {
     useEffect(() => {
         if (!api || attemptedRef.current) return
         if (!SPAWN_PARAMS.spawn || !SPAWN_PARAMS.machine || !SPAWN_PARAMS.dir) return
+        const machineId = SPAWN_PARAMS.machine
+        const directory = SPAWN_PARAMS.dir
 
         attemptedRef.current = true
 
-        api.spawnSession(SPAWN_PARAMS.machine, SPAWN_PARAMS.dir).then(async (result) => {
+        api.checkMachinePathsExists(machineId, [directory]).then(async (exists) => {
+            if (exists.exists[directory] === false) {
+                console.error('Auto-spawn blocked: missing directory requires explicit confirmation')
+                return
+            }
+
+            const result = await api.spawnSession(machineId, directory)
             if (result.type === 'success') {
                 if (SPAWN_PARAMS.boot) {
                     try {
