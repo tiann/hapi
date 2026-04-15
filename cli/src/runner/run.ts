@@ -204,14 +204,14 @@ export async function startRunner(): Promise<void> {
           logger.debug(
             `[RUNNER RUN] Ignoring late webhook from orphaned runner-spawned PID ${pid} (session ${sessionId}). Terminating child.`
           );
-          try {
-            process.kill(pid, 'SIGTERM');
-          } catch (err) {
-            logger.debug(
-              `[RUNNER RUN] Failed to SIGTERM orphaned runner child PID ${pid}:`,
-              err
-            );
-          }
+          // Use killProcess (SIGTERM → SIGKILL escalation) rather than a
+          // bare process.kill() so the orphan is reliably reaped even if
+          // it ignores SIGTERM.  We don't have a ChildProcess reference
+          // here (tracking entry was already removed by the timeout
+          // handler), so tree-kill via killProcessByChildProcess is not
+          // available — but the timeout handler should have already
+          // tree-killed the process group; this is defence-in-depth.
+          void killProcess(pid);
           return;
         }
 
@@ -557,19 +557,23 @@ export async function startRunner(): Promise<void> {
             // ghost session by onHappySessionWebhook().
             pidToTrackedSession.delete(pid);
 
-            // Best-effort terminate the orphan child. Without this, children
-            // spawned with `detached: true` keep running past the webhook
-            // deadline, eventually report back, and are turned into ghost
-            // sessions in the web UI. A single SIGTERM gives them a chance
-            // to clean up; even if the signal is ignored we already removed
-            // their tracking entry above, so they cannot be promoted.
-            try {
-              happyProcess?.kill('SIGTERM');
-            } catch (err) {
-              logger.debug(
-                `[RUNNER RUN] Failed to SIGTERM orphaned PID ${pid} after webhook timeout:`,
-                err
-              );
+            // Terminate the entire process tree (wrapper + agent
+            // grandchildren).  Using killProcessByChildProcess instead of
+            // a bare SIGTERM ensures that detached grandchild processes
+            // (the actual claude/codex agent) are also reaped, and that
+            // SIGTERM → SIGKILL escalation kicks in if needed.
+            if (happyProcess) {
+              void killProcessByChildProcess(happyProcess);
+            }
+
+            // If this was a worktree session, the worktree can only be
+            // safely removed after the child has actually exited (the
+            // child may still be writing to it).  Register a one-shot
+            // exit listener so cleanup happens once the tree-kill lands.
+            if (worktreeInfo && happyProcess) {
+              happyProcess.once('exit', () => {
+                void cleanupWorktree();
+              });
             }
 
             logger.debug(`[RUNNER RUN] Session webhook timeout for PID ${pid}`);
