@@ -2,6 +2,9 @@ import { useEffect, useRef } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import type { ApiClient } from '@/api/client'
 
+const AUTO_SPAWN_ACTIVE_POLL_INTERVAL_MS = 500
+const AUTO_SPAWN_ACTIVE_POLL_ATTEMPTS = 30
+
 // Capture spawn params at module load time, before any effect can clean the URL
 const initialSearch = typeof window !== 'undefined' ? window.location.search : ''
 const initialQuery = new URLSearchParams(initialSearch)
@@ -11,6 +14,28 @@ const SPAWN_PARAMS = {
     dir: initialQuery.get('dir'),
     boot: initialQuery.get('boot'),
 } as const
+
+function sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+        setTimeout(resolve, ms)
+    })
+}
+
+async function waitForSessionActive(api: ApiClient, sessionId: string): Promise<boolean> {
+    for (let attempt = 0; attempt < AUTO_SPAWN_ACTIVE_POLL_ATTEMPTS; attempt += 1) {
+        try {
+            const { session } = await api.getSession(sessionId)
+            if (session.active) {
+                return true
+            }
+        } catch {
+        }
+
+        await sleep(AUTO_SPAWN_ACTIVE_POLL_INTERVAL_MS)
+    }
+
+    return false
+}
 
 export function useAutoSpawn(api: ApiClient | null) {
     const navigate = useNavigate()
@@ -26,7 +51,12 @@ export function useAutoSpawn(api: ApiClient | null) {
             if (result.type === 'success') {
                 if (SPAWN_PARAMS.boot) {
                     try {
-                        await api.sendMessage(result.sessionId, SPAWN_PARAMS.boot)
+                        const active = await waitForSessionActive(api, result.sessionId)
+                        if (!active) {
+                            console.error('Auto-spawn boot message skipped: session did not become active in time')
+                        } else {
+                            await api.sendMessage(result.sessionId, SPAWN_PARAMS.boot)
+                        }
                     } catch (err) {
                         console.error('Auto-spawn boot message failed:', err)
                     }
