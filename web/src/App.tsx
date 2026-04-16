@@ -232,11 +232,19 @@ function AppInner() {
     const handleSseEvent = useCallback(() => {}, [])
     const isGridRoute = matchRoute({ to: '/grid' })
     const handleToast = useCallback((event: ToastEvent) => {
-        // In the grid parent frame, suppress all toasts — each iframe handles its own
-        if (isGridRoute) return
-        // In grid view iframes, only show toasts for the session this iframe is displaying
+        // In the grid parent frame, notify GridView via CustomEvent then suppress the card
+        if (isGridRoute) {
+            window.dispatchEvent(new CustomEvent('grid-toast', { detail: { sessionId: event.data.sessionId } }))
+            return
+        }
+        // In grid view iframes, notify the parent frame and filter by session
         const isInIframe = window.self !== window.top
-        if (isInIframe && event.data.sessionId && selectedSessionId && event.data.sessionId !== selectedSessionId) {
+        if (isInIframe) {
+            if (event.data.sessionId && selectedSessionId && event.data.sessionId !== selectedSessionId) {
+                return
+            }
+            // Forward to parent GridView
+            window.parent.postMessage({ type: 'grid-cell-toast', sessionId: event.data.sessionId }, '*')
             return
         }
         addToast({

@@ -6,7 +6,7 @@ export function ToastContainer() {
     const navigate = useNavigate()
     const { toasts, removeToast } = useToast()
 
-    // In grid iframes, toasts are shown inline in the composer status bar instead
+    // In grid iframes, suppress floating toasts — status dot in composer handles notification
     if (toasts.length === 0 || window.self !== window.top) {
         return null
     }

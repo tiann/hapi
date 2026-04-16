@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react'
+import { useState, useCallback, useRef, useEffect } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { useGlobalKeyboard } from '@/hooks/useGlobalKeyboard'
 import { SessionSearchModal } from '@/components/SessionSearchModal'
@@ -65,6 +65,39 @@ export function GridView({ sessions, baseUrl, token }: Props) {
     const [replaceTargetIdx, setReplaceTargetIdx] = useState<number | null>(null)
     const [stripMode, setStripMode] = useState(false)
     const iframeRefs = useRef<(HTMLIFrameElement | null)[]>([])
+
+    // ── notification dot tracking ────────────────────────────────────────────
+    // notifiedIds: sessions with a pending notification (dot turns orange)
+    // flashingIds: currently playing the 3-flash animation
+    const [notifiedIds, setNotifiedIds] = useState<Set<string>>(new Set())
+    const [flashingIds, setFlashingIds] = useState<Set<string>>(new Set())
+
+    useEffect(() => {
+        const customHandler = (e: Event) => {
+            const sessionId: string | undefined = (e as CustomEvent).detail?.sessionId
+            if (!sessionId) return
+            setNotifiedIds(prev => new Set([...prev, sessionId]))
+            setFlashingIds(prev => new Set([...prev, sessionId]))
+        }
+        // postMessage from iframes (most reliable path)
+        const msgHandler = (e: MessageEvent) => {
+            const sessionId: string | undefined = e.data?.sessionId
+            if (!sessionId) return
+            if (e.data?.type === 'grid-cell-toast') {
+                setNotifiedIds(prev => new Set([...prev, sessionId]))
+                setFlashingIds(prev => new Set([...prev, sessionId]))
+            } else if (e.data?.type === 'grid-cell-typing') {
+                setNotifiedIds(prev => { const s = new Set(prev); s.delete(sessionId); return s })
+                setFlashingIds(prev => { const s = new Set(prev); s.delete(sessionId); return s })
+            }
+        }
+        window.addEventListener('grid-toast', customHandler)
+        window.addEventListener('message', msgHandler)
+        return () => {
+            window.removeEventListener('grid-toast', customHandler)
+            window.removeEventListener('message', msgHandler)
+        }
+    }, [])
 
     // ── mutable ref holding latest actions ──────────────────────────────────
     // setupIframeKeyboard is registered once per iframe (onLoad); it would
@@ -337,10 +370,24 @@ export function GridView({ sessions, baseUrl, token }: Props) {
                                 borderRadius: 8,
                                 border: '1px solid rgba(255,255,255,0.06)',
                             }}>
-                                {session.active && (
-                                    <div style={{ width: 5, height: 5, borderRadius: '50%',
-                                        background: '#34c759', flexShrink: 0 }} />
-                                )}
+                                {session.active && (() => {
+                                    const isNotified = notifiedIds.has(session.id)
+                                    const isFlashing = flashingIds.has(session.id)
+                                    return (
+                                        <div
+                                            className={isFlashing ? 'animate-toast-alert' : ''}
+                                            onAnimationEnd={() => setFlashingIds(prev => { const s = new Set(prev); s.delete(session.id); return s })}
+                                            style={{
+                                                width: isNotified ? 8 : 5,
+                                                height: isNotified ? 8 : 5,
+                                                borderRadius: '50%',
+                                                background: isNotified ? '#f97316' : '#34c759',
+                                                flexShrink: 0,
+                                                transition: 'width 0.2s, height 0.2s, background 0.2s',
+                                            }}
+                                        />
+                                    )
+                                })()}
                                 <div style={{ minWidth: 0 }}>
                                     <div style={{ fontSize: 11, fontWeight: 700, color: '#fff',
                                         overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>

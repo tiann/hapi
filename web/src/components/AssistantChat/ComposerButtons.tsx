@@ -336,7 +336,6 @@ export function ComposerButtons(props: {
     agentFlavor?: string | null
     permissionMode?: PermissionMode
     collaborationMode?: CodexCollaborationMode
-    toastBanner?: { title: string; body: string } | null
 }) {
     const { t } = useTranslation()
     const isVoiceConnected = props.voiceStatus === 'connected'
@@ -454,25 +453,15 @@ export function ComposerButtons(props: {
                 ) : null}
             </div>
 
-            {/* Status area: shows toast banner when present, otherwise normal status */}
+            {/* Status area: left=dot+status+context, right=mode labels */}
             <div className="flex items-center justify-between mx-2 min-w-0 flex-1">
-                {props.toastBanner ? (
-                    <div className="flex items-center gap-1 min-w-0 animate-pulse-once">
-                        <span className="h-1.5 w-1.5 rounded-full flex-shrink-0 bg-amber-400" />
-                        <span className="text-[10px] leading-none font-medium text-amber-500 truncate">
-                            {props.toastBanner.title}
-                            {props.toastBanner.body ? <span className="font-normal opacity-80"> · {props.toastBanner.body}</span> : null}
-                        </span>
-                    </div>
-                ) : (
-                    <div className="flex items-center gap-1 min-w-0">
-                        <span className={`h-1.5 w-1.5 rounded-full flex-shrink-0 ${connectionStatus.dotColor} ${connectionStatus.isPulsing ? 'animate-pulse' : ''}`} />
-                        <span className={`text-[10px] leading-none truncate ${connectionStatus.color}`}>{connectionStatus.text}</span>
-                        {contextWarning ? (
-                            <span className={`text-[10px] leading-none whitespace-nowrap flex-shrink-0 ${contextWarning.color}`}>· {contextWarning.text}</span>
-                        ) : null}
-                    </div>
-                )}
+                <div className="flex items-center gap-1 min-w-0">
+                    <span className={`h-1.5 w-1.5 rounded-full flex-shrink-0 ${connectionStatus.dotColor} ${connectionStatus.isPulsing ? 'animate-pulse' : ''}`} />
+                    <span className={`text-[10px] leading-none truncate ${connectionStatus.color}`}>{connectionStatus.text}</span>
+                    {contextWarning ? (
+                        <span className={`text-[10px] leading-none whitespace-nowrap flex-shrink-0 ${contextWarning.color}`}>· {contextWarning.text}</span>
+                    ) : null}
+                </div>
                 <div className="flex items-center gap-1.5 flex-shrink-0 ml-2">
                     {collaborationLabel ? (
                         <span className="text-[10px] leading-none text-blue-500">{collaborationLabel}</span>
