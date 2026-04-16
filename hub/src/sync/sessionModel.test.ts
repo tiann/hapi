@@ -73,6 +73,44 @@ describe('session model', () => {
         expect(after?.updatedAt ?? 0).toBeGreaterThan(before?.updatedAt ?? 0)
     })
 
+    it('broadcasts a session update when a message is received', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+        const events: SyncEvent[] = []
+        const unsubscribe = engine.subscribe((event) => events.push(event))
+
+        try {
+            const session = engine.getOrCreateSession(
+                'session-message-event-time',
+                { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+                null,
+                'default'
+            )
+            await new Promise((resolve) => setTimeout(resolve, 2))
+            const message = store.messages.addMessage(session.id, { role: 'assistant', content: 'hello' })
+
+            engine.handleRealtimeEvent({
+                type: 'message-received',
+                sessionId: session.id,
+                message
+            })
+
+            const sessionUpdated = events.find((event) =>
+                event.type === 'session-updated' && event.sessionId === session.id
+            )
+            expect(sessionUpdated).toBeDefined()
+            expect(engine.getSession(session.id)?.updatedAt).toBe(message.createdAt)
+        } finally {
+            unsubscribe()
+            engine.stop()
+        }
+    })
+
     it('persists explicit model reasoning effort on Codex sessions', () => {
         const store = new Store(':memory:')
         const events: SyncEvent[] = []

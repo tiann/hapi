@@ -182,9 +182,7 @@ export class SyncEngine {
         }
 
         if (event.type === 'message-received' && event.sessionId) {
-            if (!this.getSession(event.sessionId)) {
-                this.sessionCache.refreshSession(event.sessionId)
-            }
+            this.sessionCache.refreshSession(event.sessionId)
         }
 
         this.eventPublisher.emit(event)
