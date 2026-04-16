@@ -240,7 +240,73 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         let scheduleReadyAfterTurn: (() => void) | null = null;
         let clearReadyAfterTurnTimer: (() => void) | null = null;
         let turnInFlight = false;
+        let steeringInFlight = false;
+        let activeTurnModeHash: string | null = null;
         let allowAnonymousTerminalEvent = false;
+        let resolveTurnSettled: (() => void) | null = null;
+
+        const settleTurnInFlight = () => {
+            if (!resolveTurnSettled) {
+                return;
+            }
+            const resolve = resolveTurnSettled;
+            resolveTurnSettled = null;
+            resolve();
+        };
+
+        const maybeSteerQueuedMessages = async () => {
+            if (this.shouldExit || turnInFlight === false || steeringInFlight) {
+                return;
+            }
+            if (!this.currentThreadId || !this.currentTurnId || !activeTurnModeHash) {
+                return;
+            }
+            if (session.queue.size() === 0) {
+                return;
+            }
+
+            const nextItem = session.queue.queue[0];
+            if (!nextItem || nextItem.isolate || nextItem.modeHash !== activeTurnModeHash) {
+                return;
+            }
+
+            steeringInFlight = true;
+            let batch: QueuedMessage | null = null;
+
+            try {
+                batch = await session.queue.waitForMessagesAndGetAsString();
+                if (!batch) {
+                    return;
+                }
+                if (batch.isolate || batch.hash !== activeTurnModeHash) {
+                    session.queue.unshift(batch.message, batch.mode);
+                    return;
+                }
+
+                messageBuffer.addMessage(batch.message, 'user');
+                await appServerClient.steerTurn({
+                    threadId: this.currentThreadId,
+                    expectedTurnId: this.currentTurnId,
+                    input: [{ type: 'text', text: batch.message }]
+                }, {
+                    signal: this.abortController.signal
+                });
+            } catch (error) {
+                if (batch) {
+                    session.queue.unshift(batch.message, batch.mode);
+                }
+                logger.debug('[Codex] Failed to steer active turn; keeping message queued for next turn', error);
+            } finally {
+                steeringInFlight = false;
+                if (turnInFlight && session.queue.size() > 0) {
+                    void maybeSteerQueuedMessages();
+                }
+            }
+        };
+
+        session.queue.setOnMessage(() => {
+            void maybeSteerQueuedMessages();
+        });
 
         const handleCodexEvent = (msg: Record<string, unknown>) => {
             const msgType = asString(msg.type);
@@ -282,6 +348,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     return;
                 }
                 this.currentTurnId = null;
+                activeTurnModeHash = null;
                 allowAnonymousTerminalEvent = false;
             }
 
@@ -330,7 +397,9 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             }
             if (isTerminalEvent) {
                 turnInFlight = false;
+                activeTurnModeHash = null;
                 allowAnonymousTerminalEvent = false;
+                settleTurnInFlight();
                 if (session.thinking) {
                     logger.debug('thinking completed');
                     session.onThinkingChange(false);
@@ -688,7 +757,11 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     cliOverrides: session.codexCliOverrides
                 });
                 turnInFlight = true;
+                activeTurnModeHash = message.hash;
                 allowAnonymousTerminalEvent = false;
+                const turnSettled = new Promise<void>((resolve) => {
+                    resolveTurnSettled = resolve;
+                });
                 const turnResponse = await appServerClient.startTurn(turnParams, {
                     signal: this.abortController.signal
                 });
@@ -700,12 +773,15 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 } else if (!this.currentTurnId) {
                     allowAnonymousTerminalEvent = true;
                 }
+                await turnSettled;
             } catch (error) {
                 logger.warn('Error in codex session:', error);
                 const isAbortError = error instanceof Error && error.name === 'AbortError';
                 turnInFlight = false;
+                activeTurnModeHash = null;
                 allowAnonymousTerminalEvent = false;
                 this.currentTurnId = null;
+                settleTurnInFlight();
 
                 if (isAbortError) {
                     messageBuffer.addMessage('Aborted by user', 'status');
@@ -739,6 +815,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
 
     protected async cleanup(): Promise<void> {
         logger.debug('[codex-remote]: cleanup start');
+        this.session.queue.setOnMessage(null);
         try {
             await this.appServerClient.disconnect();
         } catch (error) {
