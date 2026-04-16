@@ -11,7 +11,9 @@ import type {
     TurnStartParams,
     TurnStartResponse,
     TurnInterruptParams,
-    TurnInterruptResponse
+    TurnInterruptResponse,
+    TurnSteerParams,
+    TurnSteerResponse
 } from './appServerTypes';
 
 type JsonRpcLiteRequest = {
@@ -162,6 +164,14 @@ export class CodexAppServerClient {
             timeoutMs: 30_000
         });
         return response as TurnInterruptResponse;
+    }
+
+    async steerTurn(params: TurnSteerParams, options?: { signal?: AbortSignal }): Promise<TurnSteerResponse> {
+        const response = await this.sendRequest('turn/steer', params, {
+            signal: options?.signal,
+            timeoutMs: CodexAppServerClient.DEFAULT_TIMEOUT_MS
+        });
+        return response as TurnSteerResponse;
     }
 
     async disconnect(): Promise<void> {

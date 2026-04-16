@@ -144,3 +144,13 @@ export interface TurnInterruptResponse {
     ok: boolean;
     [key: string]: unknown;
 }
+
+export interface TurnSteerParams {
+    threadId: string;
+    expectedTurnId: string;
+    input: UserInput[];
+}
+
+export interface TurnSteerResponse {
+    [key: string]: unknown;
+}
