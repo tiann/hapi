@@ -160,6 +160,47 @@ export function HappyThread(props: {
         onFlushPendingRef.current()
     }, [])
 
+    // Alt+[/] — jump to prev/next message; Alt+Shift+[/] — scroll up/down
+    useEffect(() => {
+        const handler = (e: KeyboardEvent) => {
+            if (!e.altKey || e.metaKey || e.ctrlKey) return
+            const isBracketLeft = e.code === 'BracketLeft'
+            const isBracketRight = e.code === 'BracketRight'
+            if (!isBracketLeft && !isBracketRight) return
+            e.preventDefault()
+            e.stopPropagation()
+            const viewport = viewportRef.current
+            if (!viewport) return
+
+            if (e.shiftKey) {
+                // Jump to prev/next message
+                const messages = Array.from(viewport.querySelectorAll('.happy-thread-messages > *')) as HTMLElement[]
+                if (messages.length === 0) return
+                const scrollTop = viewport.scrollTop
+                if (isBracketLeft) {
+                    let target: HTMLElement | null = null
+                    for (let i = messages.length - 1; i >= 0; i--) {
+                        if (messages[i].offsetTop < scrollTop - 8) { target = messages[i]; break }
+                    }
+                    viewport.scrollTo({ top: target ? target.offsetTop : 0, behavior: 'smooth' })
+                } else {
+                    for (let i = 0; i < messages.length; i++) {
+                        if (messages[i].offsetTop > scrollTop + 8) {
+                            viewport.scrollTo({ top: messages[i].offsetTop, behavior: 'smooth' })
+                            break
+                        }
+                    }
+                }
+            } else {
+                // Scroll by ~40% of viewport height
+                const amount = viewport.clientHeight * 0.4
+                viewport.scrollBy({ top: isBracketLeft ? -amount : amount, behavior: 'smooth' })
+            }
+        }
+        document.addEventListener('keydown', handler, true)
+        return () => document.removeEventListener('keydown', handler, true)
+    }, [])
+
     // Reset state when session changes
     useEffect(() => {
         setAutoScrollEnabled(true)
@@ -280,7 +321,7 @@ export function HappyThread(props: {
             <ThreadPrimitive.Root className="flex min-h-0 flex-1 flex-col relative">
                 <ThreadPrimitive.Viewport asChild autoScroll={autoScrollEnabled}>
                     <div ref={viewportRef} className="app-scroll-y min-h-0 flex-1 overflow-x-hidden">
-                        <div className="mx-auto w-full max-w-content min-w-0 p-3">
+                        <div className={`w-full min-w-0 p-3 ${window.self !== window.top ? '' : 'mx-auto max-w-content'}`}>
                             <div ref={topSentinelRef} className="h-px w-full" aria-hidden="true" />
                             {showSkeleton ? (
                                 <MessageSkeleton />
