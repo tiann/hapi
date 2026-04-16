@@ -152,6 +152,39 @@ function groupByMachine(
     })
 }
 
+const SESSION_LIST_LAST_SEEN_KEY = 'hapi.session-list.last-seen.v1'
+
+function loadLastSeenUpdatedAt(): Record<string, number> {
+    if (typeof window === 'undefined') {
+        return {}
+    }
+    try {
+        const raw = window.localStorage.getItem(SESSION_LIST_LAST_SEEN_KEY)
+        if (!raw) return {}
+        const parsed = JSON.parse(raw) as Record<string, unknown>
+        const next: Record<string, number> = {}
+        for (const [key, value] of Object.entries(parsed)) {
+            if (typeof value === 'number' && Number.isFinite(value)) {
+                next[key] = value
+            }
+        }
+        return next
+    } catch {
+        return {}
+    }
+}
+
+function persistLastSeenUpdatedAt(value: Record<string, number>) {
+    if (typeof window === 'undefined') {
+        return
+    }
+    try {
+        window.localStorage.setItem(SESSION_LIST_LAST_SEEN_KEY, JSON.stringify(value))
+    } catch {
+        // Ignore storage failures.
+    }
+}
+
 function CopyPathButton({ path, className }: { path: string; className?: string }) {
     const [copied, setCopied] = useState(false)
     const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined)
@@ -178,6 +211,16 @@ function CopyPathButton({ path, className }: { path: string; className?: string 
                 : <CopyIcon className="h-3.5 w-3.5" />
             }
         </button>
+    )
+}
+
+function UnreadDot({ className }: { className?: string }) {
+    return (
+        <span
+            aria-label="Unread updates"
+            title="Unread updates"
+            className={`inline-block h-2 w-2 rounded-full bg-[var(--app-link)] shadow-[0_0_0_2px_var(--app-bg)] ${className ?? ''}`}
+        />
     )
 }
 
@@ -352,9 +395,10 @@ function SessionItem(props: {
     showPath?: boolean
     api: ApiClient | null
     selected?: boolean
+    unread?: boolean
 }) {
     const { t } = useTranslation()
-    const { session: s, onSelect, showPath = true, api, selected = false } = props
+    const { session: s, onSelect, showPath = true, api, selected = false, unread = false } = props
     const { haptic } = usePlatform()
     const [menuOpen, setMenuOpen] = useState(false)
     const [menuAnchorPoint, setMenuAnchorPoint] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
@@ -399,6 +443,9 @@ function SessionItem(props: {
                         <div className={`truncate text-sm font-medium ${s.active ? 'text-[var(--app-fg)]' : 'text-[var(--app-hint)]'}`}>
                             {sessionName}
                         </div>
+                        {unread ? (
+                            <UnreadDot className="shrink-0" />
+                        ) : null}
                         {s.active && s.thinking ? (
                             <LoaderIcon className="h-3.5 w-3.5 shrink-0 text-[var(--app-hint)] animate-spin-slow" />
                         ) : null}
@@ -489,9 +536,71 @@ export function SessionList(props: {
         () => groupSessionsByDirectory(deduplicateSessionsByAgentId(props.sessions, selectedSessionId)),
         [props.sessions, selectedSessionId]
     )
+    const [lastSeenUpdatedAtBySession, setLastSeenUpdatedAtBySession] = useState<Record<string, number>>(
+        () => loadLastSeenUpdatedAt()
+    )
     const [collapseOverrides, setCollapseOverrides] = useState<Map<string, boolean>>(
         () => new Map()
     )
+
+    useEffect(() => {
+        setLastSeenUpdatedAtBySession((prev) => {
+            const next: Record<string, number> = {}
+            let changed = false
+
+            for (const session of props.sessions) {
+                const previousValue = prev[session.id]
+                if (typeof previousValue === 'number' && Number.isFinite(previousValue)) {
+                    next[session.id] = previousValue
+                } else {
+                    next[session.id] = session.updatedAt
+                    changed = true
+                }
+            }
+
+            if (!changed && Object.keys(prev).length !== Object.keys(next).length) {
+                changed = true
+            }
+
+            return changed ? next : prev
+        })
+    }, [props.sessions])
+
+    useEffect(() => {
+        if (!selectedSessionId) return
+        const selectedSession = props.sessions.find((session) => session.id === selectedSessionId)
+        if (!selectedSession) return
+
+        setLastSeenUpdatedAtBySession((prev) => {
+            const previousValue = prev[selectedSession.id] ?? 0
+            if (previousValue >= selectedSession.updatedAt) {
+                return prev
+            }
+            return {
+                ...prev,
+                [selectedSession.id]: selectedSession.updatedAt
+            }
+        })
+    }, [props.sessions, selectedSessionId])
+
+    useEffect(() => {
+        persistLastSeenUpdatedAt(lastSeenUpdatedAtBySession)
+    }, [lastSeenUpdatedAtBySession])
+
+    const unreadSessionIds = useMemo(() => {
+        const next = new Set<string>()
+        for (const session of props.sessions) {
+            if (session.id === selectedSessionId) {
+                continue
+            }
+            const lastSeenUpdatedAt = lastSeenUpdatedAtBySession[session.id] ?? session.updatedAt
+            if (session.updatedAt > lastSeenUpdatedAt) {
+                next.add(session.id)
+            }
+        }
+        return next
+    }, [lastSeenUpdatedAtBySession, props.sessions, selectedSessionId])
+
     const isGroupCollapsed = (group: SessionGroup): boolean => {
         const override = collapseOverrides.get(group.key)
         if (override !== undefined) return override
@@ -523,6 +632,26 @@ export function SessionList(props: {
         () => groupByMachine(groups, resolveMachineLabel),
         [groups, machineLabelsById] // eslint-disable-line react-hooks/exhaustive-deps
     )
+
+    const groupHasUnread = useMemo(() => {
+        const map = new Map<string, boolean>()
+        for (const group of groups) {
+            map.set(group.key, group.sessions.some((session) => unreadSessionIds.has(session.id)))
+        }
+        return map
+    }, [groups, unreadSessionIds])
+
+    const machineHasUnread = useMemo(() => {
+        const map = new Map<string, boolean>()
+        for (const machineGroup of machineGroups) {
+            const key = machineGroup.machineId ?? UNKNOWN_MACHINE_ID
+            map.set(
+                key,
+                machineGroup.projectGroups.some((group) => groupHasUnread.get(group.key))
+            )
+        }
+        return map
+    }, [groupHasUnread, machineGroups])
 
     const isMachineCollapsed = (mg: MachineGroup): boolean => {
         const key = `machine::${mg.machineId ?? UNKNOWN_MACHINE_ID}`
@@ -611,6 +740,7 @@ export function SessionList(props: {
             <div className="flex flex-col gap-3 px-2 pt-1 pb-2">
                 {machineGroups.map((mg) => {
                     const machineCollapsed = isMachineCollapsed(mg)
+                    const hasUnreadInMachine = machineHasUnread.get(mg.machineId ?? UNKNOWN_MACHINE_ID) === true
                     return (
                         <div key={mg.machineId ?? UNKNOWN_MACHINE_ID}>
                             {/* Level 1: Machine */}
@@ -622,6 +752,9 @@ export function SessionList(props: {
                                 <ChevronIcon className="h-4 w-4 text-[var(--app-hint)] shrink-0" collapsed={machineCollapsed} />
                                 <MachineIcon className="h-4 w-4 text-[var(--app-hint)] shrink-0" />
                                 <span className="text-sm font-semibold truncate flex-1">{mg.label}</span>
+                                {hasUnreadInMachine ? (
+                                    <UnreadDot className="shrink-0" />
+                                ) : null}
                                 <span className="text-[11px] tabular-nums text-[var(--app-hint)] shrink-0">({mg.totalSessions})</span>
                             </button>
 
@@ -631,6 +764,7 @@ export function SessionList(props: {
                                 <div className="flex flex-col ml-3.5 pl-1 mt-0.5">
                                     {mg.projectGroups.map((group) => {
                                         const isCollapsed = isGroupCollapsed(group)
+                                        const hasUnreadInGroup = groupHasUnread.get(group.key) === true
                                         return (
                                             <div key={group.key}>
                                                 <div
@@ -642,6 +776,9 @@ export function SessionList(props: {
                                                     <span className="font-medium text-sm truncate flex-1">
                                                         {group.displayName}
                                                     </span>
+                                                    {hasUnreadInGroup ? (
+                                                        <UnreadDot className="shrink-0" />
+                                                    ) : null}
                                                     <CopyPathButton path={group.directory} className="opacity-0 group-hover/project:opacity-100 transition-opacity duration-150" />
                                                     <span className="text-[11px] tabular-nums text-[var(--app-hint)] shrink-0">
                                                         ({group.sessions.length})
@@ -660,6 +797,7 @@ export function SessionList(props: {
                                                                 showPath={false}
                                                                 api={api}
                                                                 selected={s.id === selectedSessionId}
+                                                                unread={unreadSessionIds.has(s.id)}
                                                             />
                                                         ))}
                                                     </div>
