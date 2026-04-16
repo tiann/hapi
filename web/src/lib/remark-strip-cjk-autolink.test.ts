@@ -36,7 +36,7 @@ describe('remarkStripCjkAutolink', () => {
         const paragraph = tree.children[0]
         const link = paragraph.children[1]
         expect(link.url).toBe('https://example.com/path')
-        expect(link.children[0].value).toBe('https://example.com/path')
+        expect(link.children![0].value).toBe('https://example.com/path')
 
         // Punctuation moved to a new text node after the link
         const punct = paragraph.children[2]
