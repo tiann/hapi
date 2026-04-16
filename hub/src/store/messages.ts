@@ -64,6 +64,16 @@ export function addMessage(
         local_id: localId ?? null
     })
 
+    db.prepare(`
+        UPDATE sessions
+        SET updated_at = CASE WHEN updated_at > @updated_at THEN updated_at ELSE @updated_at END,
+            seq = seq + 1
+        WHERE id = @session_id
+    `).run({
+        session_id: sessionId,
+        updated_at: now
+    })
+
     const row = db.prepare('SELECT * FROM messages WHERE id = ?').get(id) as DbMessageRow | undefined
     if (!row) {
         throw new Error('Failed to create message')
@@ -153,6 +163,20 @@ export function mergeSessionMessages(
         const result = db.prepare(
             'UPDATE messages SET session_id = ? WHERE session_id = ?'
         ).run(toSessionId, fromSessionId)
+
+        db.prepare(`
+            UPDATE sessions
+            SET updated_at = (
+                SELECT MAX(value)
+                FROM (
+                    SELECT updated_at AS value FROM sessions WHERE id = ?
+                    UNION ALL
+                    SELECT COALESCE(MAX(created_at), 0) AS value FROM messages WHERE session_id = ?
+                )
+            ),
+            seq = seq + 1
+            WHERE id = ?
+        `).run(toSessionId, toSessionId, toSessionId)
 
         db.exec('COMMIT')
         return { moved: result.changes, oldMaxSeq, newMaxSeq }
