@@ -202,6 +202,7 @@ export class SyncEngine {
         collaborationMode?: CodexCollaborationMode
     }): void {
         this.sessionCache.handleSessionAlive(payload)
+        this.triggerDedupIfNeeded(payload.sid)
     }
 
     handleSessionEnd(payload: { sid: string; time: number }): void {
