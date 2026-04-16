@@ -285,6 +285,18 @@ export const knownTools: Record<string, {
         },
         minimal: true
     },
+    Agent: {
+        icon: () => <RocketIcon className={DEFAULT_ICON_CLASS} />,
+        title: (opts) => {
+            const description = getInputStringAny(opts.input, ['description'])
+            return description ?? 'Agent'
+        },
+        subtitle: (opts) => {
+            const model = getInputStringAny(opts.input, ['subagent_type'])
+            return model ?? null
+        },
+        minimal: true
+    },
     CodexReasoning: {
         icon: () => <BulbIcon className={DEFAULT_ICON_CLASS} />,
         title: (opts) => getInputStringAny(opts.input, ['title']) ?? 'Reasoning',

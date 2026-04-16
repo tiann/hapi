@@ -507,6 +507,42 @@ const TodoWriteResultView: ToolViewComponent = (props: ToolViewProps) => {
     return <ChecklistList items={todos} />
 }
 
+const AgentResultView: ToolViewComponent = (props: ToolViewProps) => {
+    const { state, result } = props.block.tool
+
+    if (result === undefined || result === null) {
+        return <div className="text-sm text-[var(--app-hint)]">{placeholderForState(state)}</div>
+    }
+
+    // For errors, show the error text
+    if (state === 'error') {
+        const text = extractTextFromResult(result)
+        return (
+            <div className="text-sm text-red-600">
+                {text?.trim() ? text : 'Agent failed'}
+            </div>
+        )
+    }
+
+    const text = extractTextFromResult(result)
+    if (!text) {
+        return <div className="text-sm text-[var(--app-hint)]">{state === 'completed' ? 'Done' : placeholderForState(state)}</div>
+    }
+
+    // Strip internal system metadata (agentId, output_file, system instructions)
+    // that should not be shown to users
+    if (text.includes('agentId:') && text.includes('internal ID')) {
+        return <div className="text-sm text-[var(--app-hint)]">Agent launched</div>
+    }
+
+    return (
+        <>
+            <MarkdownRenderer content={text} />
+            <RawJsonDevOnly value={result} />
+        </>
+    )
+}
+
 const SkillResultView: ToolViewComponent = (props: ToolViewProps) => {
     const { state, result, input } = props.block.tool
 
@@ -597,6 +633,7 @@ export const toolResultViewRegistry: Record<string, ToolViewComponent> = {
     CodexPatch: CodexPatchResultView,
     CodexDiff: CodexDiffResultView,
     Skill: SkillResultView,
+    Agent: AgentResultView,
     AskUserQuestion: AskUserQuestionResultView,
     ExitPlanMode: MarkdownResultView,
     ask_user_question: AskUserQuestionResultView,
