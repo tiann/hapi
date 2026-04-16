@@ -230,14 +230,22 @@ function AppInner() {
     }, [])
 
     const handleSseEvent = useCallback(() => {}, [])
+    const isGridRoute = matchRoute({ to: '/grid' })
     const handleToast = useCallback((event: ToastEvent) => {
+        // In the grid parent frame, suppress all toasts — each iframe handles its own
+        if (isGridRoute) return
+        // In grid view iframes, only show toasts for the session this iframe is displaying
+        const isInIframe = window.self !== window.top
+        if (isInIframe && event.data.sessionId && selectedSessionId && event.data.sessionId !== selectedSessionId) {
+            return
+        }
         addToast({
             title: event.data.title,
             body: event.data.body,
             sessionId: event.data.sessionId,
             url: event.data.url
         })
-    }, [addToast])
+    }, [addToast, selectedSessionId, isGridRoute])
 
     const eventSubscription = useMemo(() => {
         if (selectedSessionId) {

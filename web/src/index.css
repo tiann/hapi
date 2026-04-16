@@ -350,3 +350,9 @@ html[data-theme="dark"] .shiki span {
   bottom: 50% !important;
   transform: translateY(50%);
 }
+
+/* Grid cell floating overlay — always readable, full opacity on hover */
+.grid-cell-overlay {
+  opacity: 1;
+  transition: opacity 0.15s;
+}

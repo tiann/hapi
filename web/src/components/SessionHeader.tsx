@@ -100,8 +100,8 @@ export function SessionHeader(props: {
         setMenuOpen((open) => !open)
     }
 
-    // In Telegram, don't render header (Telegram provides its own)
-    if (isTelegramApp()) {
+    // In Telegram or grid iframe, don't render header
+    if (isTelegramApp() || window.self !== window.top) {
         return null
     }
 

@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import {
     Navigate,
@@ -16,8 +16,11 @@ import { SessionChat } from '@/components/SessionChat'
 import { SessionList } from '@/components/SessionList'
 import { NewSession } from '@/components/NewSession'
 import { LoadingState } from '@/components/LoadingState'
+import { GridView } from '@/components/GridView'
+import { SessionSearchModal } from '@/components/SessionSearchModal'
 import { useAppContext } from '@/lib/app-context'
 import { useAppGoBack } from '@/hooks/useAppGoBack'
+import { useGlobalKeyboard } from '@/hooks/useGlobalKeyboard'
 import { isTelegramApp } from '@/hooks/useTelegram'
 import { useSidebarResize } from '@/hooks/useSidebarResize'
 import { useMessages } from '@/hooks/queries/useMessages'
@@ -97,6 +100,28 @@ function SettingsIcon(props: { className?: string }) {
     )
 }
 
+function GridIcon(props: { className?: string }) {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="20"
+            height="20"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={props.className}
+        >
+            <rect x="3" y="3" width="7" height="7" />
+            <rect x="14" y="3" width="7" height="7" />
+            <rect x="3" y="14" width="7" height="7" />
+            <rect x="14" y="14" width="7" height="7" />
+        </svg>
+    )
+}
+
 function getMachineTitle(machine: Machine): string {
     if (machine.metadata?.displayName) return machine.metadata.displayName
     if (machine.metadata?.host) return machine.metadata.host
@@ -111,6 +136,12 @@ function SessionsPage() {
     const { t } = useTranslation()
     const { sessions, isLoading, error, refetch } = useSessions(api)
     const { machines } = useMachines(api, true)
+    // When embedded in a grid iframe, always hide the sidebar regardless of viewport width
+    const isInIframe = window.self !== window.top
+
+    const [isSearchOpen, setIsSearchOpen] = useState(false)
+    // Global keyboard shortcuts: Cmd+G (grid), Cmd+K (search/navigate), Cmd+1-9 (session), Cmd+Shift+N (new)
+    useGlobalKeyboard(sessions, { onOpenSearch: () => setIsSearchOpen(true) })
 
     const handleRefresh = useCallback(() => {
         void refetch()
@@ -132,9 +163,16 @@ function SessionsPage() {
     const sidebar = useSidebarResize()
 
     return (
+        <>
+        <SessionSearchModal
+            sessions={sessions}
+            isOpen={isSearchOpen}
+            onClose={() => setIsSearchOpen(false)}
+            onSelect={s => navigate({ to: '/sessions/$sessionId', params: { sessionId: s.id } })}
+        />
         <div className="flex h-full min-h-0">
             <div
-                className={`${isSessionsIndex ? 'flex' : 'hidden lg:flex'} w-full shrink-0 flex-col bg-[var(--app-bg)]`}
+                className={`${isSessionsIndex ? 'flex' : (isInIframe ? 'hidden' : 'hidden lg:flex')} w-full shrink-0 flex-col bg-[var(--app-bg)]`}
                 style={{ '--sidebar-w': `${sidebar.width}px` } as React.CSSProperties}
             >
                 <div className="bg-[var(--app-bg)] pt-[env(safe-area-inset-top)]">
@@ -150,6 +188,14 @@ function SessionsPage() {
                                 title={t('settings.title')}
                             >
                                 <SettingsIcon className="h-5 w-5" />
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => navigate({ to: '/grid' })}
+                                className="p-1.5 rounded-full text-[var(--app-hint)] hover:text-[var(--app-fg)] hover:bg-[var(--app-subtle-bg)] transition-colors"
+                                title="Grid view (Cmd+;)"
+                            >
+                                <GridIcon className="h-5 w-5" />
                             </button>
                             <button
                                 type="button"
@@ -186,9 +232,9 @@ function SessionsPage() {
                 </div>
             </div>
 
-            {/* Resize handle - desktop only */}
+            {/* Resize handle - desktop only, not in iframes */}
             <div
-                className="sidebar-resize-handle hidden lg:block shrink-0"
+                className={`sidebar-resize-handle shrink-0 ${isInIframe ? 'hidden' : 'hidden lg:block'}`}
                 data-dragging={sidebar.isDragging || undefined}
                 onPointerDown={sidebar.onPointerDown}
                 onPointerMove={sidebar.onPointerMove}
@@ -201,6 +247,7 @@ function SessionsPage() {
                 </div>
             </div>
         </div>
+        </>
     )
 }
 
@@ -424,6 +471,13 @@ function NewSessionPage() {
     )
 }
 
+function GridPage() {
+    const { api, token, baseUrl } = useAppContext()
+    const { sessions } = useSessions(api)
+    // Note: GridView itself calls useGlobalKeyboard with grid-specific options
+    return <GridView sessions={sessions} baseUrl={baseUrl} token={token} />
+}
+
 const rootRoute = createRootRoute({
     component: App,
 })
@@ -522,6 +576,12 @@ const settingsRoute = createRoute({
     component: SettingsPage,
 })
 
+const gridRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: '/grid',
+    component: GridPage,
+})
+
 export const routeTree = rootRoute.addChildren([
     indexRoute,
     sessionsRoute.addChildren([
@@ -534,6 +594,7 @@ export const routeTree = rootRoute.addChildren([
         ]),
     ]),
     settingsRoute,
+    gridRoute,
 ])
 
 type RouterHistory = Parameters<typeof createRouter>[0]['history']
