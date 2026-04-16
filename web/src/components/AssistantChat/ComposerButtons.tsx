@@ -1,6 +1,13 @@
+import { useMemo } from 'react'
 import { ComposerPrimitive } from '@assistant-ui/react'
 import type { ConversationStatus } from '@/realtime/types'
 import { useTranslation } from '@/lib/use-translation'
+import type { AgentState, PermissionMode, CodexCollaborationMode } from '@/types/api'
+import { getConnectionStatus, getContextWarning } from '@/components/AssistantChat/StatusBar'
+import { getContextBudgetTokens } from '@/chat/modelConfig'
+import {
+    getPermissionModeLabel, getPermissionModeTone, getCodexCollaborationModeLabel, isPermissionModeAllowedForFlavor
+} from '@hapi/protocol'
 
 function VoiceAssistantIcon() {
     return (
@@ -319,9 +326,51 @@ export function ComposerButtons(props: {
     onVoiceToggle: () => void
     onVoiceMicToggle?: () => void
     onSend: () => void
+    // Status bar props
+    active?: boolean
+    thinking?: boolean
+    agentState?: AgentState | null
+    backgroundTaskCount?: number
+    contextSize?: number
+    model?: string | null
+    agentFlavor?: string | null
+    permissionMode?: PermissionMode
+    collaborationMode?: CodexCollaborationMode
 }) {
     const { t } = useTranslation()
     const isVoiceConnected = props.voiceStatus === 'connected'
+
+    const connectionStatus = useMemo(
+        () => getConnectionStatus(
+            props.active ?? true,
+            props.thinking ?? false,
+            props.agentState,
+            props.voiceStatus,
+            props.backgroundTaskCount ?? 0,
+            t
+        ),
+        [props.active, props.thinking, props.agentState, props.voiceStatus, props.backgroundTaskCount, t]
+    )
+
+    const contextWarning = useMemo(() => {
+        if (props.contextSize === undefined) return null
+        const max = getContextBudgetTokens(props.model, props.agentFlavor)
+        if (!max) return null
+        return getContextWarning(props.contextSize, max, t)
+    }, [props.contextSize, props.model, props.agentFlavor, t])
+
+    const permissionToneClasses: Record<string, string> = {
+        neutral: 'text-[var(--app-hint)]', info: 'text-blue-500', warning: 'text-amber-500', danger: 'text-red-500'
+    }
+    const displayPermissionMode = props.permissionMode
+        && isPermissionModeAllowedForFlavor(props.permissionMode, props.agentFlavor)
+        ? props.permissionMode : null
+    const permissionLabel = displayPermissionMode ? getPermissionModeLabel(displayPermissionMode) : null
+    const permissionColor = displayPermissionMode && displayPermissionMode !== 'default'
+        ? (permissionToneClasses[getPermissionModeTone(displayPermissionMode)] ?? 'text-[var(--app-hint)]')
+        : 'text-[var(--app-hint)]'
+    const collaborationLabel = props.agentFlavor === 'codex' && props.collaborationMode === 'plan'
+        ? getCodexCollaborationModeLabel(props.collaborationMode) : null
 
     return (
         <div className="flex items-center justify-between px-2 pb-2">
@@ -402,6 +451,25 @@ export function ComposerButtons(props: {
                         <SpeakerIcon muted={props.voiceMicMuted} />
                     </button>
                 ) : null}
+            </div>
+
+            {/* Status area: left=dot+status+context, right=mode labels */}
+            <div className="flex items-center justify-between mx-2 min-w-0 flex-1">
+                <div className="flex items-center gap-1 min-w-0">
+                    <span className={`h-1.5 w-1.5 rounded-full flex-shrink-0 ${connectionStatus.dotColor} ${connectionStatus.isPulsing ? 'animate-pulse' : ''}`} />
+                    <span className={`text-[10px] leading-none truncate ${connectionStatus.color}`}>{connectionStatus.text}</span>
+                    {contextWarning ? (
+                        <span className={`text-[10px] leading-none whitespace-nowrap flex-shrink-0 ${contextWarning.color}`}>· {contextWarning.text}</span>
+                    ) : null}
+                </div>
+                <div className="flex items-center gap-1.5 flex-shrink-0 ml-2">
+                    {collaborationLabel ? (
+                        <span className="text-[10px] leading-none text-blue-500">{collaborationLabel}</span>
+                    ) : null}
+                    {permissionLabel ? (
+                        <span className={`text-[10px] leading-none ${permissionColor}`}>{permissionLabel}</span>
+                    ) : null}
+                </div>
             </div>
 
             <UnifiedButton

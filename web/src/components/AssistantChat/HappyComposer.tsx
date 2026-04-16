@@ -25,7 +25,6 @@ import { markSkillUsed } from '@/lib/recent-skills'
 import { useComposerDraft } from '@/hooks/useComposerDraft'
 import { FloatingOverlay } from '@/components/ChatInput/FloatingOverlay'
 import { Autocomplete } from '@/components/ChatInput/Autocomplete'
-import { StatusBar } from '@/components/AssistantChat/StatusBar'
 import { ComposerButtons } from '@/components/AssistantChat/ComposerButtons'
 import { AttachmentItem } from '@/components/AssistantChat/AttachmentItem'
 import { useTranslation } from '@/lib/use-translation'
@@ -754,19 +753,6 @@ export function HappyComposer(props: {
                 <ComposerPrimitive.Root className="relative" onSubmit={handleSubmit}>
                     {overlays}
 
-                    <StatusBar
-                        active={active}
-                        thinking={thinking}
-                        agentState={agentState}
-                        backgroundTaskCount={backgroundTaskCount}
-                        contextSize={contextSize}
-                        model={model}
-                        permissionMode={permissionMode}
-                        collaborationMode={collaborationMode}
-                        agentFlavor={agentFlavor}
-                        voiceStatus={voiceStatus}
-                    />
-
                     <div className="overflow-hidden rounded-[20px] bg-[var(--app-secondary-bg)]">
                         {attachments.length > 0 ? (
                             <div className="flex flex-wrap gap-2 px-4 pt-3">
@@ -814,6 +800,15 @@ export function HappyComposer(props: {
                             onVoiceToggle={onVoiceToggle ?? (() => {})}
                             onVoiceMicToggle={onVoiceMicToggle}
                             onSend={handleSend}
+                            active={active}
+                            thinking={thinking}
+                            agentState={agentState}
+                            backgroundTaskCount={backgroundTaskCount}
+                            contextSize={contextSize}
+                            model={model}
+                            agentFlavor={agentFlavor}
+                            permissionMode={permissionMode}
+                            collaborationMode={collaborationMode}
                         />
                     </div>
                 </ComposerPrimitive.Root>
