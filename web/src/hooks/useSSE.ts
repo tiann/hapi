@@ -499,6 +499,9 @@ export function useSSE(options: {
 
             if (event.type === 'message-received') {
                 ingestIncomingMessages(event.sessionId, [event.message])
+                const patch = { updatedAt: event.message.createdAt }
+                patchSessionDetail(event.sessionId, patch)
+                patchSessionSummary(event.sessionId, patch)
             }
 
             if (event.type === 'session-added' || event.type === 'session-updated' || event.type === 'session-removed') {

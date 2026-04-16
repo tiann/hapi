@@ -239,22 +239,29 @@ function AppInner() {
         })
     }, [addToast])
 
-    const eventSubscription = useMemo(() => {
-        if (selectedSessionId) {
-            return { sessionId: selectedSessionId }
-        }
-        return { all: true }
-    }, [selectedSessionId])
+    const globalEventSubscription = useMemo(() => ({ all: true }), [])
+    const sessionEventSubscription = useMemo(
+        () => (selectedSessionId ? { sessionId: selectedSessionId } : undefined),
+        [selectedSessionId]
+    )
 
     const { subscriptionId } = useSSE({
         enabled: Boolean(api && token),
         token: token ?? '',
         baseUrl,
-        subscription: eventSubscription,
+        subscription: globalEventSubscription,
         onConnect: handleSseConnect,
         onDisconnect: handleSseDisconnect,
         onEvent: handleSseEvent,
         onToast: handleToast
+    })
+
+    useSSE({
+        enabled: Boolean(api && token && selectedSessionId),
+        token: token ?? '',
+        baseUrl,
+        subscription: sessionEventSubscription,
+        onEvent: handleSseEvent
     })
 
     useVisibilityReporter({
