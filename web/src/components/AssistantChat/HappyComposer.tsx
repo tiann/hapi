@@ -23,6 +23,7 @@ import { usePWAInstall } from '@/hooks/usePWAInstall'
 import { supportsEffort, supportsModelChange } from '@hapi/protocol'
 import { markSkillUsed } from '@/lib/recent-skills'
 import { useComposerDraft } from '@/hooks/useComposerDraft'
+import { useToast } from '@/lib/toast-context'
 import { FloatingOverlay } from '@/components/ChatInput/FloatingOverlay'
 import { Autocomplete } from '@/components/ChatInput/Autocomplete'
 import { ComposerButtons } from '@/components/AssistantChat/ComposerButtons'
@@ -141,6 +142,19 @@ export function HappyComposer(props: {
     const [isAborting, setIsAborting] = useState(false)
     const [isSwitching, setIsSwitching] = useState(false)
     const [showContinueHint, setShowContinueHint] = useState(false)
+    const [bannerToast, setBannerToast] = useState<{ title: string; body: string } | null>(null)
+
+    const isInIframe = window.self !== window.top
+    const { toasts } = useToast()
+    const prevToastsLenRef = useRef(0)
+    useEffect(() => {
+        if (!isInIframe) return
+        if (toasts.length > prevToastsLenRef.current) {
+            const latest = toasts[toasts.length - 1]
+            if (latest) setBannerToast({ title: latest.title, body: latest.body })
+        }
+        prevToastsLenRef.current = toasts.length
+    }, [toasts, isInIframe])
 
     const textareaRef = useRef<HTMLTextAreaElement>(null)
     const prevControlledByUser = useRef(controlledByUser)
@@ -321,6 +335,7 @@ export function HappyComposer(props: {
             if (!e.ctrlKey && !e.altKey && !e.metaKey && canSend) {
                 api.composer().send()
                 setShowContinueHint(false)
+                setBannerToast(null)
             }
             return
         }
@@ -491,6 +506,7 @@ export function HappyComposer(props: {
 
     const handleSend = useCallback(() => {
         api.composer().send()
+        setBannerToast(null)
     }, [api])
 
     const overlays = useMemo(() => {
@@ -809,6 +825,7 @@ export function HappyComposer(props: {
                             agentFlavor={agentFlavor}
                             permissionMode={permissionMode}
                             collaborationMode={collaborationMode}
+                            toastBanner={bannerToast}
                         />
                     </div>
                 </ComposerPrimitive.Root>
