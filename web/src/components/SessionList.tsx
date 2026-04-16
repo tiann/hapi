@@ -395,7 +395,6 @@ function SessionItem(props: {
             >
                 <div className={`flex items-center justify-between gap-3 ${!s.active ? 'opacity-50' : ''}`}>
                     <div className="flex items-center gap-2 min-w-0">
-                        <FlavorIcon flavor={s.metadata?.flavor} className="h-4 w-4 shrink-0" />
                         <div className={`truncate text-sm font-medium ${s.active ? 'text-[var(--app-fg)]' : 'text-[var(--app-hint)]'}`}>
                             {sessionName}
                         </div>

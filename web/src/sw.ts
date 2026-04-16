@@ -118,6 +118,18 @@ self.addEventListener('push', (event) => {
 self.addEventListener('notificationclick', (event) => {
     event.notification.close()
     const data = event.notification.data as { url?: string } | undefined
-    const url = data?.url ?? '/'
-    event.waitUntil(self.clients.openWindow(url))
+    const targetUrl = data?.url ?? '/'
+    event.waitUntil((async () => {
+        const allClients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
+        // Focus existing PWA window and navigate to the session
+        for (const client of allClients) {
+            if (client.url.startsWith(self.registration.scope)) {
+                await (client as WindowClient).navigate(targetUrl)
+                await client.focus()
+                return
+            }
+        }
+        // No existing window — open a new one
+        await self.clients.openWindow(targetUrl)
+    })())
 })
