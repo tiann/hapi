@@ -2,9 +2,9 @@ import { useState, useCallback, useRef } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { useGlobalKeyboard } from '@/hooks/useGlobalKeyboard'
 import { SessionSearchModal } from '@/components/SessionSearchModal'
-import type { Session } from '@/types/api'
+import type { SessionSummary } from '@/types/api'
 
-function getSessionTitle(session: Session): string {
+function getSessionTitle(session: SessionSummary): string {
     if (session.metadata?.name) return session.metadata.name
     if ((session.metadata as any)?.summary?.text) return (session.metadata as any).summary.text
     if (session.metadata?.path) {
@@ -14,7 +14,7 @@ function getSessionTitle(session: Session): string {
     return session.id.slice(0, 8)
 }
 
-function getSessionFolder(session: Session): string {
+function getSessionFolder(session: SessionSummary): string {
     const path = (session.metadata as any)?.worktree?.basePath ?? session.metadata?.path ?? ''
     if (!path) return ''
     const parts = path.split('/').filter(Boolean)
@@ -48,7 +48,7 @@ function CloseIcon() {
 }
 
 type Props = {
-    sessions: Session[]
+    sessions: SessionSummary[]
     baseUrl: string
     token: string
 }
@@ -76,8 +76,8 @@ export function GridView({ sessions, baseUrl, token }: Props) {
         toggleStrip: () => {},
         goBack: () => {},
         openAddModal: () => {},
-        openReplaceModal: () => {},
-        closeCurrentCell: () => {},
+        openReplaceModal: (_idx?: number) => {},
+        closeCell: (_idx?: number) => {},
     })
 
     // Rebuild actionsRef on every render so it always closes over current state
@@ -139,7 +139,7 @@ export function GridView({ sessions, baseUrl, token }: Props) {
         setFocusedIdx(null)
     }, [])
 
-    const replaceCell = useCallback((session: Session) => {
+    const replaceCell = useCallback((session: SessionSummary) => {
         if (replaceTargetIdx === null) {
             addSession(session.id)
             return
@@ -220,7 +220,7 @@ export function GridView({ sessions, baseUrl, token }: Props) {
         onToggleStrip: () => actionsRef.current.toggleStrip(),
     })
 
-    const pinned = pinnedIds.map(id => sessions.find(s => s.id === id)).filter(Boolean) as Session[]
+    const pinned = pinnedIds.map(id => sessions.find(s => s.id === id)).filter(Boolean) as SessionSummary[]
     const unpinned = sessions.filter(s => !pinnedIds.includes(s.id))
 
     // Strip mode: all panels in one row; otherwise adaptive grid

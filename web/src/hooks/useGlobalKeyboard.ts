@@ -1,6 +1,5 @@
 import { useEffect } from 'react'
 import { useNavigate } from '@tanstack/react-router'
-import type { Session } from '@/types/api'
 
 type Options = {
     // When in grid mode, Cmd+1-9 calls this instead of navigating
@@ -17,7 +16,7 @@ type Options = {
     onToggleStrip?: () => void
 }
 
-export function useGlobalKeyboard(sessions: Session[], options: Options = {}) {
+export function useGlobalKeyboard(sessions: { id: string }[], options: Options = {}) {
     const navigate = useNavigate()
 
     useEffect(() => {

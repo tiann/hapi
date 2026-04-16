@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
-import type { Session } from '@/types/api'
+import type { SessionSummary } from '@/types/api'
 
-function getSessionTitle(session: Session): string {
+function getSessionTitle(session: SessionSummary): string {
     if (session.metadata?.name) return session.metadata.name
     if ((session.metadata as any)?.summary?.text) return (session.metadata as any).summary.text
     if (session.metadata?.path) {
@@ -11,7 +11,7 @@ function getSessionTitle(session: Session): string {
     return session.id.slice(0, 8)
 }
 
-function getSessionFolder(session: Session): string {
+function getSessionFolder(session: SessionSummary): string {
     const path = (session.metadata as any)?.worktree?.basePath ?? session.metadata?.path ?? ''
     if (!path) return ''
     const parts = path.split('/').filter(Boolean)
@@ -20,10 +20,10 @@ function getSessionFolder(session: Session): string {
 }
 
 type Props = {
-    sessions: Session[]
+    sessions: SessionSummary[]
     isOpen: boolean
     onClose: () => void
-    onSelect: (session: Session) => void
+    onSelect: (session: SessionSummary) => void
     actionLabel?: string
 }
 
