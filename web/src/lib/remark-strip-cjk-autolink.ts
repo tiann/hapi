@@ -11,7 +11,9 @@
  */
 
 // Common CJK / fullwidth punctuation that should never be part of a URL.
-const TRAILING_CJK_PUNCT = /[，。、；：！？（）【】「」『』《》〈〉\u3000\uFF0C\uFF0E\uFF1B\uFF1A\uFF01\uFF1F\uFF08\uFF09]+$/
+// Includes: fullwidth comma/period/semicolon/colon/exclamation/question/parens,
+// ideographic comma/period, CJK brackets, ideographic space, fullwidth full stop.
+const TRAILING_CJK_PUNCT = /[，。、；：！？（）【】「」『』《》〈〉\u3000\uFF0E]+$/
 
 interface MdastNode {
     type: string
