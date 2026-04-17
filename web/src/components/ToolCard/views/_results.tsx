@@ -529,10 +529,15 @@ const AgentResultView: ToolViewComponent = (props: ToolViewProps) => {
         return <div className="text-sm text-[var(--app-hint)]">{state === 'completed' ? 'Done' : placeholderForState(state)}</div>
     }
 
-    // Strip internal system metadata (agentId, output_file, system instructions)
-    // that should not be shown to users
-    if (text.includes('agentId:') || text.includes('output_file:') || text.includes('internal ID')) {
-        return <div className="text-sm text-[var(--app-hint)]">Agent launched</div>
+    // Detect internal launch metadata. Check structurally first (result object
+    // may carry agentId/output_file keys), then fall back to a strict text
+    // pattern that is unlikely to appear in normal agent prose.
+    const isInternalMeta = isObject(result) && ('agentId' in result || 'output_file' in result)
+        || (text.startsWith('Async agent launched successfully.') && text.includes('agentId:'))
+
+    if (isInternalMeta) {
+        const label = state === 'completed' ? 'Done' : 'Agent launched'
+        return <div className="text-sm text-[var(--app-hint)]">{label}</div>
     }
 
     return (
