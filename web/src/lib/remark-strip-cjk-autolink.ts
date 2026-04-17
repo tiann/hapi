@@ -27,24 +27,31 @@ function visitLinks(node: MdastNode): void {
         const child = node.children[i]
 
         if (child.type === 'link' && typeof child.url === 'string') {
-            const match = child.url.match(TRAILING_CJK_PUNCT)
-            if (match) {
-                const punct = match[0]
+            // Only process auto-linked URLs (where the link text matches the URL).
+            // Explicit markdown links like [text](url) should not be modified.
+            const textChild = child.children?.[0]
+            const isAutolink = child.children?.length === 1
+                && textChild?.type === 'text'
+                && typeof textChild.value === 'string'
+                && textChild.value === child.url
 
-                // Strip punctuation from the URL
-                child.url = child.url.slice(0, -punct.length)
+            if (isAutolink) {
+                const match = child.url.match(TRAILING_CJK_PUNCT)
+                if (match) {
+                    const punct = match[0]
 
-                // Strip from the link's text child (auto-links have a single text child)
-                const textChild = child.children?.[0]
-                if (textChild?.type === 'text' && typeof textChild.value === 'string' && textChild.value.endsWith(punct)) {
-                    textChild.value = textChild.value.slice(0, -punct.length)
+                    // Strip punctuation from the URL
+                    child.url = child.url.slice(0, -punct.length)
+
+                    // Strip from the link's text child
+                    textChild!.value = textChild!.value.slice(0, -punct.length)
+
+                    // Insert the punctuation as a plain text node after the link
+                    const punctNode: MdastNode = { type: 'text', value: punct }
+                    node.children.splice(i + 1, 0, punctNode)
+                    // Skip the newly inserted node
+                    i++
                 }
-
-                // Insert the punctuation as a plain text node after the link
-                const punctNode: MdastNode = { type: 'text', value: punct }
-                node.children.splice(i + 1, 0, punctNode)
-                // Skip the newly inserted node
-                i++
             }
         }
 

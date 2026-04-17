@@ -82,4 +82,29 @@ describe('remarkStripCjkAutolink', () => {
         expect(link.url).toBe('https://example.com/路径/page')
         expect(tree.children[0].children.length).toBe(2)
     })
+
+    it('does not modify explicit markdown links', () => {
+        // Explicit markdown link: [click here](https://example.com/path）)
+        // The link text differs from the URL, so it's not an autolink
+        const tree = {
+            type: 'root',
+            children: [
+                {
+                    type: 'paragraph',
+                    children: [
+                        {
+                            type: 'link',
+                            url: 'https://example.com/path）',
+                            children: [{ type: 'text', value: 'click here' }]
+                        }
+                    ]
+                }
+            ]
+        }
+        transform(tree)
+
+        const link = tree.children[0].children[0]
+        expect(link.url).toBe('https://example.com/path）')
+        expect(tree.children[0].children.length).toBe(1)
+    })
 })
