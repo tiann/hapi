@@ -26,6 +26,7 @@ function getUserSkillsRoots(): string[] {
     return [
         join(home, '.agents', 'skills'),
         join(home, '.claude', 'skills'),
+        join(home, '.codex', 'skills'),
     ];
 }
 

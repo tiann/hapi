@@ -69,14 +69,15 @@ describe('listSkills', () => {
         expect(skills.find((s) => s.name === 'alpha')?.description).toBe('Alpha from agents')
     })
 
-    it('ignores legacy ~/.codex skills', async () => {
+    it('lists user skills from ~/.codex/skills', async () => {
         await writeSkill(join(homeDir, '.agents', 'skills', 'amis'), 'amis', 'AMIS guide')
         await writeSkill(join(homeDir, '.codex', 'skills', 'hello-agents'), 'helloagents', 'Main skill')
+        // Hidden directories (starting with .) are skipped
         await writeSkill(join(homeDir, '.codex', 'skills', '.system', 'skill-creator'), 'skill-creator', 'Create skills')
 
         const skills = await listSkills()
 
-        expect(skills.map((skill) => skill.name)).toEqual(['amis'])
+        expect(skills.map((skill) => skill.name)).toEqual(['amis', 'helloagents'])
     })
 
     it('falls back to directory name when frontmatter is missing', async () => {
