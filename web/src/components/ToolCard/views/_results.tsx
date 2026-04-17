@@ -531,7 +531,7 @@ const AgentResultView: ToolViewComponent = (props: ToolViewProps) => {
 
     // Strip internal system metadata (agentId, output_file, system instructions)
     // that should not be shown to users
-    if (text.includes('agentId:') && text.includes('internal ID')) {
+    if (text.includes('agentId:') || text.includes('output_file:') || text.includes('internal ID')) {
         return <div className="text-sm text-[var(--app-hint)]">Agent launched</div>
     }
 
