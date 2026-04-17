@@ -536,8 +536,7 @@ const AgentResultView: ToolViewComponent = (props: ToolViewProps) => {
         || (text.startsWith('Async agent launched successfully.') && text.includes('agentId:'))
 
     if (isInternalMeta) {
-        const label = state === 'completed' ? 'Done' : 'Agent launched'
-        return <div className="text-sm text-[var(--app-hint)]">{label}</div>
+        return <div className="text-sm text-[var(--app-hint)]">Agent launched</div>
     }
 
     return (
