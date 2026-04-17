@@ -10,11 +10,10 @@
  * node.
  */
 
-// Common CJK / fullwidth sentence-ending punctuation that should never be
-// part of a URL. Only includes terminators (comma, period, semicolon, colon,
-// exclamation, question mark, ideographic space, fullwidth full stop).
-// Brackets and parentheses are excluded because they can appear in valid URLs.
-const TRAILING_CJK_PUNCT = /[，。、；：！？\u3000\uFF0E]+$/
+// CJK / fullwidth sentence-ending punctuation that should never be part of a
+// URL, optionally followed by closing brackets/parens (which on their own are
+// valid URL characters but should be stripped when they trail sentence-enders).
+const TRAILING_CJK_PUNCT = /(?:[，。、；：！？\u3000\uFF0E]+[）】」』》〉]*)$/
 
 interface MdastNode {
     type: string
