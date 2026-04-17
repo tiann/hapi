@@ -44,7 +44,7 @@ function visitLinks(node: MdastNode): void {
                     child.url = child.url.slice(0, -punct.length)
 
                     // Strip from the link's text child
-                    textChild!.value = textChild!.value.slice(0, -punct.length)
+                    textChild!.value = textChild!.value!.slice(0, -punct.length)
 
                     // Insert the punctuation as a plain text node after the link
                     const punctNode: MdastNode = { type: 'text', value: punct }
