@@ -128,6 +128,18 @@ export async function startRunner(): Promise<void> {
     // Setup state - key by PID
     const pidToTrackedSession = new Map<number, TrackedSession>();
 
+    // Webhook timeout tolerance. Opus 1M + --resume can legitimately take
+    // longer than the default 15s to reach the "Session started" webhook
+    // (observed real-world durations of 30s – 60min under rate-limit /
+    // heavy session restore). Allow advanced users to raise this ceiling
+    // so that slow starts no longer leave orphaned child processes which
+    // later report back as ghost sessions.
+    const envWebhookTimeout = Number(process.env.HAPI_RUNNER_WEBHOOK_TIMEOUT_MS);
+    const webhookTimeoutMs =
+      Number.isFinite(envWebhookTimeout) && envWebhookTimeout > 0
+        ? envWebhookTimeout
+        : 15_000;
+
     // Session spawning awaiter system
     const pidToAwaiter = new Map<number, (session: TrackedSession) => void>();
     const pidToErrorAwaiter = new Map<number, (errorMessage: string) => void>();
@@ -179,7 +191,32 @@ export async function startRunner(): Promise<void> {
           logger.debug(`[RUNNER RUN] Resolved session awaiter for PID ${pid}`);
         }
       } else if (!existingSession) {
-        // New session started externally
+        // No tracked session for this PID. Two possibilities:
+        //  1. The child was spawned externally from a terminal (legitimate).
+        //  2. The child was runner-spawned but already had its tracking
+        //     entry removed because its webhook arrived after the timeout
+        //     (orphaned / ghost-session case).
+        //
+        // Differentiate via the webhook's own `startedBy` field: genuine
+        // terminal-launched children report `startedBy: 'terminal'`, so
+        // anything claiming `'runner'` here must be the second case and
+        // should be ignored + terminated instead of silently promoted.
+        if (sessionMetadata.startedBy === 'runner') {
+          logger.debug(
+            `[RUNNER RUN] Ignoring late webhook from orphaned runner-spawned PID ${pid} (session ${sessionId}). Terminating child.`
+          );
+          // Use killProcess (SIGTERM → SIGKILL escalation) rather than a
+          // bare process.kill() so the orphan is reliably reaped even if
+          // it ignores SIGTERM.  We don't have a ChildProcess reference
+          // here (tracking entry was already removed by the timeout
+          // handler), so tree-kill via killProcessByChildProcess is not
+          // available — but the timeout handler should have already
+          // tree-killed the process group; this is defence-in-depth.
+          void killProcess(pid);
+          return;
+        }
+
+        // New session started externally (terminal)
         const trackedSession: TrackedSession = {
           startedBy: 'hapi directly - likely by user from terminal',
           happySessionId: sessionId,
@@ -477,19 +514,44 @@ export async function startRunner(): Promise<void> {
         logger.debug(`[RUNNER RUN] Waiting for session webhook for PID ${pid}`);
 
         const spawnResult = await new Promise<SpawnSessionResult>((resolve) => {
-          // Set timeout for webhook
+          // Set timeout for webhook. Default is 15s but can be raised via
+          // HAPI_RUNNER_WEBHOOK_TIMEOUT_MS for users on slow models
+          // (e.g. opus[1m] --resume).
           const timeout = setTimeout(() => {
             pidToAwaiter.delete(pid);
             pidToErrorAwaiter.delete(pid);
+
+            // Remove the tracked session entry so a late-arriving webhook
+            // from this orphaned PID cannot be silently promoted into a
+            // ghost session by onHappySessionWebhook().
+            pidToTrackedSession.delete(pid);
+
+            // Terminate the entire process tree (wrapper + agent
+            // grandchildren).  Using killProcessByChildProcess instead of
+            // a bare SIGTERM ensures that detached grandchild processes
+            // (the actual claude/codex agent) are also reaped, and that
+            // SIGTERM → SIGKILL escalation kicks in if needed.
+            if (happyProcess) {
+              void killProcessByChildProcess(happyProcess);
+            }
+
+            // If this was a worktree session, the worktree can only be
+            // safely removed after the child has actually exited (the
+            // child may still be writing to it).  Register a one-shot
+            // exit listener so cleanup happens once the tree-kill lands.
+            if (worktreeInfo && happyProcess) {
+              happyProcess.once('exit', () => {
+                void cleanupWorktree();
+              });
+            }
+
             logger.debug(`[RUNNER RUN] Session webhook timeout for PID ${pid}`);
             logStderrTail();
             resolve({
               type: 'error',
               errorMessage: buildWebhookFailureMessage('timeout')
             });
-            // 15 second timeout - I have seen timeouts on 10 seconds
-            // even though session was still created successfully in ~2 more seconds
-          }, 15_000);
+          }, webhookTimeoutMs);
 
           // Register awaiter
           pidToAwaiter.set(pid, (completedSession) => {
