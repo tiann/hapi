@@ -483,22 +483,24 @@ function ProjectGroupItem(props: {
     const { group, isCollapsed, onToggle, onSelect, api, selectedSessionId } = props
     return (
         <div>
-            <button
-                type="button"
-                className="group/project sticky top-0 z-10 flex items-center gap-2 px-1 py-1.5 text-left rounded-lg transition-colors hover:bg-[var(--app-subtle-bg)] cursor-pointer min-w-0 w-full select-none"
-                onClick={onToggle}
-                title={group.directory}
-                aria-expanded={!isCollapsed}
-            >
-                <ChevronIcon className="h-3.5 w-3.5 text-[var(--app-hint)] shrink-0" collapsed={isCollapsed} />
-                <span className="font-medium text-sm truncate flex-1">
-                    {group.displayName}
-                </span>
+            <div className="group/project sticky top-0 z-10 flex items-center gap-2 px-1 py-1.5 rounded-lg transition-colors hover:bg-[var(--app-subtle-bg)] min-w-0 w-full select-none">
+                <button
+                    type="button"
+                    className="flex min-w-0 flex-1 items-center gap-2 text-left cursor-pointer"
+                    onClick={onToggle}
+                    title={group.directory}
+                    aria-expanded={!isCollapsed}
+                >
+                    <ChevronIcon className="h-3.5 w-3.5 text-[var(--app-hint)] shrink-0" collapsed={isCollapsed} />
+                    <span className="font-medium text-sm truncate flex-1">
+                        {group.displayName}
+                    </span>
+                    <span className="text-[11px] tabular-nums text-[var(--app-hint)] shrink-0">
+                        ({group.sessions.length})
+                    </span>
+                </button>
                 <CopyPathButton path={group.directory} className="opacity-0 group-hover/project:opacity-100 transition-opacity duration-150" />
-                <span className="text-[11px] tabular-nums text-[var(--app-hint)] shrink-0">
-                    ({group.sessions.length})
-                </span>
-            </button>
+            </div>
 
             <div className="collapsible-panel" data-open={!isCollapsed || undefined}>
                 <div className="collapsible-inner">
