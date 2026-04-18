@@ -1,5 +1,5 @@
 import type { Session } from '../sync/syncEngine'
-import type { NotificationChannel } from '../notifications/notificationTypes'
+import type { AttentionReason, NotificationChannel } from '../notifications/notificationTypes'
 import { getAgentName, getSessionName } from '../notifications/sessionInfo'
 import type { SSEManager } from '../sse/sseManager'
 import type { VisibilityTracker } from '../visibility/visibilityTracker'
@@ -90,6 +90,17 @@ export class PushNotificationChannel implements NotificationChannel {
         }
 
         await this.pushService.sendToNamespace(session.namespace, payload)
+    }
+
+    async sendAttention(session: Session, _reason: AttentionReason): Promise<void> {
+        if (!session.active) {
+            return
+        }
+
+        void _reason
+        // Delivery for mobile attention notifications is intentionally not implemented yet.
+        // Task 3 will provide the concrete implementation.
+        return
     }
 
     private buildSessionPath(sessionId: string): string {

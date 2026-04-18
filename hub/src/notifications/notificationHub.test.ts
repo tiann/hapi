@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 import type { Session, SyncEvent, SyncEventListener, SyncEngine } from '../sync/syncEngine'
-import type { NotificationChannel } from './notificationTypes'
+import type { AttentionReason, NotificationChannel } from './notificationTypes'
 import { NotificationHub } from './notificationHub'
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -32,6 +32,7 @@ class FakeSyncEngine {
 class StubChannel implements NotificationChannel {
     readonly readySessions: Session[] = []
     readonly permissionSessions: Session[] = []
+    readonly attentionSessions: Session[] = []
 
     async sendReady(session: Session): Promise<void> {
         this.readySessions.push(session)
@@ -39,6 +40,10 @@ class StubChannel implements NotificationChannel {
 
     async sendPermissionRequest(session: Session): Promise<void> {
         this.permissionSessions.push(session)
+    }
+
+    async sendAttention(_session: Session, _reason: AttentionReason): Promise<void> {
+        this.attentionSessions.push(_session)
     }
 }
 
