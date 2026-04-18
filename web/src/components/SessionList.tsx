@@ -483,7 +483,8 @@ function ProjectGroupItem(props: {
     const { group, isCollapsed, onToggle, onSelect, api, selectedSessionId } = props
     return (
         <div>
-            <div
+            <button
+                type="button"
                 className="group/project sticky top-0 z-10 flex items-center gap-2 px-1 py-1.5 text-left rounded-lg transition-colors hover:bg-[var(--app-subtle-bg)] cursor-pointer min-w-0 w-full select-none"
                 onClick={onToggle}
                 title={group.directory}
@@ -496,7 +497,7 @@ function ProjectGroupItem(props: {
                 <span className="text-[11px] tabular-nums text-[var(--app-hint)] shrink-0">
                     ({group.sessions.length})
                 </span>
-            </div>
+            </button>
 
             <div className="collapsible-panel" data-open={!isCollapsed || undefined}>
                 <div className="collapsible-inner">
@@ -547,7 +548,8 @@ export function SessionList(props: {
     const toggleArchivedSection = (machineKey: string) => {
         setArchivedCollapsed(prev => {
             const next = new Map(prev)
-            next.set(machineKey, !isArchivedSectionCollapsed(machineKey))
+            const currentlyCollapsed = prev.get(machineKey) ?? true
+            next.set(machineKey, !currentlyCollapsed)
             return next
         })
     }
@@ -660,6 +662,19 @@ export function SessionList(props: {
             }
             return changed ? next : prev
         })
+        setArchivedCollapsed(prev => {
+            if (prev.size === 0) return prev
+            const knownMachines = new Set(groups.map(g => g.machineId ?? UNKNOWN_MACHINE_ID))
+            const next = new Map(prev)
+            let changed = false
+            for (const key of next.keys()) {
+                if (!knownMachines.has(key)) {
+                    next.delete(key)
+                    changed = true
+                }
+            }
+            return changed ? next : prev
+        })
     }, [groups])
 
     return (
@@ -729,6 +744,7 @@ export function SessionList(props: {
                                                     <>
                                                         <button
                                                             type="button"
+                                                            aria-expanded={!archivedHidden}
                                                             onClick={() => toggleArchivedSection(machineKey)}
                                                             className="flex items-center gap-2 px-1 py-1.5 text-xs text-[var(--app-hint)] rounded-lg transition-colors hover:bg-[var(--app-subtle-bg)] select-none"
                                                         >
