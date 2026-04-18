@@ -278,4 +278,97 @@ describe('NotificationHub', () => {
         expect(channel.attentionNotifications[1]?.reason).toBe('interrupted')
         hub.stop()
     })
+
+    it('does not treat pre-thinking agent activity as current thinking-cycle activity', async () => {
+        const engine = new FakeSyncEngine()
+        const channel = new StubChannel()
+        const hub = new NotificationHub(engine as unknown as SyncEngine, [channel], {
+            permissionDebounceMs: 1,
+            readyCooldownMs: 0
+        })
+
+        engine.setSession(createSession({ thinking: false }))
+        engine.emit({
+            type: 'message-received',
+            sessionId: 'session-1',
+            message: {
+                id: 'agent-text',
+                seq: 2,
+                localId: null,
+                createdAt: 2,
+                content: { role: 'agent', content: { type: 'text', text: 'stale' } }
+            }
+        })
+
+        engine.setSession(createSession({ thinking: true, thinkingAt: 3 }))
+        engine.emit({ type: 'session-updated', sessionId: 'session-1' })
+
+        engine.setSession(createSession({ thinking: false, thinkingAt: 4 }))
+        engine.emit({ type: 'session-updated', sessionId: 'session-1' })
+
+        expect(channel.readySessions).toHaveLength(0)
+        hub.stop()
+    })
+
+    it('does not add extra transition-ready after an explicit ready event while thinking', async () => {
+        const engine = new FakeSyncEngine()
+        const channel = new StubChannel()
+        const hub = new NotificationHub(engine as unknown as SyncEngine, [channel], {
+            permissionDebounceMs: 1,
+            readyCooldownMs: 0
+        })
+
+        const readyEvent: SyncEvent = {
+            type: 'message-received',
+            sessionId: 'session-1',
+            message: {
+                id: 'ready-event',
+                seq: 1,
+                localId: null,
+                createdAt: 0,
+                content: { role: 'agent', content: { type: 'event', data: { type: 'ready' } } }
+            }
+        }
+
+        engine.setSession(createSession({ thinking: true, thinkingAt: 1 }))
+        engine.emit({ type: 'session-updated', sessionId: 'session-1' })
+        engine.emit(readyEvent)
+
+        engine.setSession(createSession({ thinking: false, thinkingAt: 2 }))
+        engine.emit({ type: 'session-updated', sessionId: 'session-1' })
+
+        expect(channel.readySessions).toHaveLength(1)
+        hub.stop()
+    })
+
+    it('does not schedule transition-ready after attention events for the same run', async () => {
+        const engine = new FakeSyncEngine()
+        const channel = new StubChannel()
+        const hub = new NotificationHub(engine as unknown as SyncEngine, [channel], {
+            permissionDebounceMs: 1,
+            readyCooldownMs: 0
+        })
+
+        engine.setSession(createSession({ thinking: true, thinkingAt: 1 }))
+        engine.emit({ type: 'session-updated', sessionId: 'session-1' })
+        engine.emit({
+            type: 'message-received',
+            sessionId: 'session-1',
+            message: {
+                id: 'failed-event',
+                seq: 2,
+                localId: null,
+                createdAt: 2,
+                content: { role: 'agent', content: { type: 'event', data: { type: 'failed' } } }
+            }
+        })
+
+        engine.setSession(createSession({ thinking: false, thinkingAt: 3 }))
+        engine.emit({ type: 'session-updated', sessionId: 'session-1' })
+
+        expect(channel.attentionNotifications).toHaveLength(1)
+        expect(channel.attentionNotifications[0]?.reason).toBe('failed')
+        expect(channel.readySessions).toHaveLength(0)
+        hub.stop()
+    })
 })

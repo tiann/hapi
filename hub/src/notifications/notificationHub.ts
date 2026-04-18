@@ -53,6 +53,12 @@ export class NotificationHub {
                 this.clearSessionState(event.sessionId)
                 return
             }
+
+            const wasThinking = this.lastThinkingBySession.get(session.id)
+            if (wasThinking !== true && session.thinking) {
+                this.agentActivityBySession.delete(session.id)
+            }
+
             this.checkForPermissionNotification(session)
             this.checkForThinkingStoppedNotification(session)
             this.lastThinkingBySession.set(session.id, session.thinking)
@@ -66,19 +72,26 @@ export class NotificationHub {
 
         if (event.type === 'message-received' && event.sessionId) {
             if (isAgentMessageEvent(event)) {
-                this.agentActivityBySession.set(event.sessionId, true)
+                const session = this.syncEngine.getSession(event.sessionId)
+                if (session?.active && session.thinking) {
+                    this.agentActivityBySession.set(event.sessionId, true)
+                } else {
+                    this.agentActivityBySession.delete(event.sessionId)
+                }
             }
 
+            const eventType = extractMessageEventType(event)
             const attentionReason = extractAttentionReason(event)
             if (attentionReason) {
+                this.agentActivityBySession.delete(event.sessionId)
                 this.sendAttentionNotification(event.sessionId, attentionReason).catch((error) => {
                     console.error('[NotificationHub] Failed to send attention notification:', error)
                 })
                 return
             }
 
-            const eventType = extractMessageEventType(event)
             if (eventType === 'ready') {
+                this.agentActivityBySession.delete(event.sessionId)
                 this.sendReadyNotification(event.sessionId).catch((error) => {
                     console.error('[NotificationHub] Failed to send ready notification:', error)
                 })
