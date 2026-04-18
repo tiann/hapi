@@ -92,4 +92,21 @@ describe('usePushNotifications', () => {
         })
         expect(result.current.isSubscribed).toBe(true)
     })
+
+    it('unsubscribes the browser subscription when hub registration fails', async () => {
+        const { subscription } = installSupportedPushGlobals({ permission: 'granted' })
+        const api = createApi()
+        vi.mocked(api.subscribePushNotifications).mockRejectedValueOnce(new Error('hub down'))
+        const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+        const { result } = renderHook(() => usePushNotifications(api))
+
+        await act(async () => {
+            const ok = await result.current.subscribe()
+            expect(ok).toBe(false)
+        })
+
+        expect(consoleError).toHaveBeenCalledWith('[PushNotifications] Failed to subscribe:', expect.any(Error))
+        expect(subscription.unsubscribe).toHaveBeenCalledTimes(1)
+        expect(result.current.isSubscribed).toBe(false)
+    })
 })

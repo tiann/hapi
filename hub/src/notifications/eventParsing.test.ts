@@ -103,6 +103,30 @@ describe('extractMessageEventType', () => {
         expect(extractAttentionReason(makeEvent('interrupted'))).toBe('interrupted')
     })
 
+    it('returns attention reason from Codex terminal payloads wrapped by sendAgentMessage', () => {
+        const makeCodexTerminalEvent = (type: string): SyncEvent => ({
+            type: 'message-received',
+            sessionId: 'session-1',
+            message: {
+                id: `codex-${type}`,
+                seq: 10,
+                localId: null,
+                createdAt: 0,
+                content: {
+                    role: 'agent',
+                    content: {
+                        type: 'codex',
+                        data: { type }
+                    }
+                }
+            }
+        })
+
+        expect(extractMessageEventType(makeCodexTerminalEvent('task_failed'))).toBe('task_failed')
+        expect(extractAttentionReason(makeCodexTerminalEvent('task_failed'))).toBe('failed')
+        expect(extractAttentionReason(makeCodexTerminalEvent('turn_aborted'))).toBe('interrupted')
+    })
+
     it('returns null attention reason for ready and ordinary message events', () => {
         const readyEvent: SyncEvent = {
             type: 'message-received',

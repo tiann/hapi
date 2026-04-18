@@ -214,6 +214,11 @@ export class NotificationHub {
         }
 
         const now = Date.now()
+        const lastAttention = this.lastAttentionNotificationAt.get(sessionId) ?? 0
+        if (now - lastAttention < this.attentionCooldownMs) {
+            return
+        }
+
         const last = this.lastReadyNotificationAt.get(sessionId) ?? 0
         if (now - last < this.readyCooldownMs) {
             return

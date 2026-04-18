@@ -1,4 +1,5 @@
 import { isObject } from '@hapi/protocol'
+import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol/modes'
 import type { SyncEvent } from '../sync/syncEngine'
 import type { AttentionReason } from './notificationTypes'
 
@@ -8,20 +9,35 @@ type EventEnvelope = {
 }
 
 function extractEventEnvelope(message: unknown): EventEnvelope | null {
+    const directEnvelope = extractContentEnvelope(message)
+    if (directEnvelope) {
+        return directEnvelope
+    }
+
     if (!isObject(message)) {
         return null
     }
 
-    if (message.type === 'event') {
-        return message as EventEnvelope
-    }
+    return extractContentEnvelope(message.content)
+}
 
-    const content = message.content
-    if (!isObject(content) || content.type !== 'event') {
+function extractContentEnvelope(content: unknown): EventEnvelope | null {
+    if (!isObject(content)) {
         return null
     }
 
-    return content as EventEnvelope
+    if (content.type === 'event') {
+        return content as EventEnvelope
+    }
+
+    if (content.type === AGENT_MESSAGE_PAYLOAD_TYPE || content.type === 'output') {
+        const data = isObject(content.data) ? content.data : null
+        if (data && typeof data.type === 'string') {
+            return { type: 'event', data }
+        }
+    }
+
+    return null
 }
 
 function extractMessageContent(event: SyncEvent): unknown {
@@ -44,10 +60,15 @@ export function extractMessageEventType(event: SyncEvent): string | null {
 
 export function extractAttentionReason(event: SyncEvent): AttentionReason | null {
     const eventType = extractMessageEventType(event)
-    if (eventType === 'error' || eventType === 'failed' || eventType === 'task-failed') {
+    if (
+        eventType === 'error'
+        || eventType === 'failed'
+        || eventType === 'task-failed'
+        || eventType === 'task_failed'
+    ) {
         return 'failed'
     }
-    if (eventType === 'aborted' || eventType === 'interrupted') {
+    if (eventType === 'aborted' || eventType === 'interrupted' || eventType === 'turn_aborted') {
         return 'interrupted'
     }
     return null

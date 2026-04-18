@@ -3,6 +3,7 @@ import { precacheAndRoute } from 'workbox-precaching'
 import { registerRoute } from 'workbox-routing'
 import { CacheFirst, NetworkFirst } from 'workbox-strategies'
 import { ExpirationPlugin } from 'workbox-expiration'
+import { focusOrOpenNotificationUrl, type NotificationClientsLike } from './lib/notificationClick'
 
 declare const self: ServiceWorkerGlobalScope & {
     __WB_MANIFEST: Array<string | { url: string; revision?: string }>
@@ -119,39 +120,5 @@ self.addEventListener('notificationclick', (event) => {
     event.notification.close()
     const data = event.notification.data as { url?: string } | undefined
     const url = data?.url ?? '/'
-    event.waitUntil((async () => {
-        const windowClients = await self.clients.matchAll({
-            type: 'window',
-            includeUncontrolled: true
-        })
-
-        for (const client of windowClients) {
-            if ('focus' in client) {
-                let navigatedClient: WindowClient | null = null
-
-                if ('navigate' in client) {
-                    try {
-                        navigatedClient = (await client.navigate(url)) ?? null
-                    } catch (error) {
-                        console.warn('Failed to navigate existing window client from notification click', error)
-                    }
-                }
-
-                try {
-                    const focusTarget = navigatedClient ?? client
-                    await focusTarget.focus()
-                    return
-                } catch (error) {
-                    console.warn('Failed to focus existing window client from notification click', error)
-                    continue
-                }
-            }
-        }
-
-        try {
-            await self.clients.openWindow(url)
-        } catch (error) {
-            console.warn('Failed to open window from notification click', error)
-        }
-    })())
+    event.waitUntil(focusOrOpenNotificationUrl(self.clients as unknown as NotificationClientsLike, url))
 })

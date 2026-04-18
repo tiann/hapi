@@ -165,10 +165,13 @@ export default function SettingsPage() {
         setIsNotificationBusy(true)
         try {
             const granted = pushPermission === 'granted' || await requestPermission()
+            let subscribed = false
             if (granted) {
-                await subscribe()
+                subscribed = await subscribe()
             }
-            await refreshSubscription()
+            if (subscribed) {
+                await refreshSubscription()
+            }
         } finally {
             setIsNotificationBusy(false)
         }

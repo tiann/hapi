@@ -194,6 +194,16 @@ describe('SettingsPage', () => {
         await waitFor(() => expect(mockSubscribe).toHaveBeenCalledTimes(1))
     })
 
+    it('does not refresh into an enabled state when hub subscription registration fails', async () => {
+        mockSubscribe.mockResolvedValueOnce(false)
+        renderWithProviders(<SettingsPage />)
+
+        fireEvent.click(screen.getByRole('button', { name: 'Enable notifications' }))
+
+        await waitFor(() => expect(mockSubscribe).toHaveBeenCalledTimes(1))
+        expect(mockRefreshSubscription).not.toHaveBeenCalled()
+    })
+
     it('renders resubscribe button when permission is granted but subscription is missing', () => {
         mockPushState = {
             isSupported: true,

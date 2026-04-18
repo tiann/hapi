@@ -371,4 +371,52 @@ describe('NotificationHub', () => {
         expect(channel.readySessions).toHaveLength(0)
         hub.stop()
     })
+
+    it('does not send ready immediately after an attention event for the same session', async () => {
+        const engine = new FakeSyncEngine()
+        const channel = new StubChannel()
+        const hub = new NotificationHub(engine as unknown as SyncEngine, [channel], {
+            permissionDebounceMs: 1,
+            readyCooldownMs: 0,
+            attentionCooldownMs: 20
+        })
+
+        engine.setSession(createSession({ thinking: true, thinkingAt: 1 }))
+        engine.emit({ type: 'session-updated', sessionId: 'session-1' })
+        engine.emit({
+            type: 'message-received',
+            sessionId: 'session-1',
+            message: {
+                id: 'codex-task-failed',
+                seq: 2,
+                localId: null,
+                createdAt: 2,
+                content: {
+                    role: 'agent',
+                    content: {
+                        type: 'codex',
+                        data: { type: 'task_failed', error: 'boom' }
+                    }
+                }
+            }
+        })
+        await sleep(5)
+
+        engine.emit({
+            type: 'message-received',
+            sessionId: 'session-1',
+            message: {
+                id: 'ready-event',
+                seq: 3,
+                localId: null,
+                createdAt: 3,
+                content: { role: 'agent', content: { type: 'event', data: { type: 'ready' } } }
+            }
+        })
+        await sleep(5)
+
+        expect(channel.attentionNotifications).toHaveLength(1)
+        expect(channel.readySessions).toHaveLength(0)
+        hub.stop()
+    })
 })
