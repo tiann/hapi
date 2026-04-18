@@ -37,6 +37,7 @@ coverage/
 .claude/settings.local.json
 localdocs/
 execplan/
+.worktrees/
 
 # Generated npm bundle output (local)
 cli/npm/main/
