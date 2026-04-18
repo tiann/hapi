@@ -132,6 +132,7 @@ export function usePushNotifications(api: ApiClient | null) {
         isSupported,
         permission,
         isSubscribed,
+        refreshSubscription,
         requestPermission,
         subscribe,
         unsubscribe

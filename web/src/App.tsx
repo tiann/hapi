@@ -9,6 +9,7 @@ import { useServerUrl } from '@/hooks/useServerUrl'
 import { useSSE } from '@/hooks/useSSE'
 import { useSyncingState } from '@/hooks/useSyncingState'
 import { usePushNotifications } from '@/hooks/usePushNotifications'
+import { useAutoPushSubscription } from '@/hooks/useAutoPushSubscription'
 import { useViewportHeight } from '@/hooks/useViewportHeight'
 import { useVisibilityReporter } from '@/hooks/useVisibilityReporter'
 import { queryKeys } from '@/lib/query-keys'
@@ -125,8 +126,7 @@ function AppInner() {
     const syncTokenRef = useRef(0)
     const isFirstConnectRef = useRef(true)
     const baseUrlRef = useRef(baseUrl)
-    const pushPromptedRef = useRef(false)
-    const { isSupported: isPushSupported, permission: pushPermission, requestPermission, subscribe } = usePushNotifications(api)
+    const { isSupported: isPushSupported, permission: pushPermission, subscribe } = usePushNotifications(api)
 
     useEffect(() => {
         if (baseUrlRef.current === baseUrl) {
@@ -154,34 +154,14 @@ function AppInner() {
         router.history.replace(nextHref, state)
     }, [token, api, router])
 
-    useEffect(() => {
-        if (!api || !token) {
-            pushPromptedRef.current = false
-            return
-        }
-        if (isTelegramApp() || !isPushSupported) {
-            return
-        }
-        if (pushPromptedRef.current) {
-            return
-        }
-        pushPromptedRef.current = true
-
-        const run = async () => {
-            if (pushPermission === 'granted') {
-                await subscribe()
-                return
-            }
-            if (pushPermission === 'default') {
-                const granted = await requestPermission()
-                if (granted) {
-                    await subscribe()
-                }
-            }
-        }
-
-        void run()
-    }, [api, isPushSupported, pushPermission, requestPermission, subscribe, token])
+    useAutoPushSubscription({
+        api,
+        token,
+        isTelegram: isTelegramApp(),
+        isSupported: isPushSupported,
+        permission: pushPermission,
+        subscribe
+    })
 
     const handleSseConnect = useCallback(() => {
         // Clear disconnected state on successful connection
