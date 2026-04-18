@@ -488,6 +488,7 @@ function ProjectGroupItem(props: {
                 className="group/project sticky top-0 z-10 flex items-center gap-2 px-1 py-1.5 text-left rounded-lg transition-colors hover:bg-[var(--app-subtle-bg)] cursor-pointer min-w-0 w-full select-none"
                 onClick={onToggle}
                 title={group.directory}
+                aria-expanded={!isCollapsed}
             >
                 <ChevronIcon className="h-3.5 w-3.5 text-[var(--app-hint)] shrink-0" collapsed={isCollapsed} />
                 <span className="font-medium text-sm truncate flex-1">
@@ -608,11 +609,11 @@ export function SessionList(props: {
     // Auto-expand group (and machine) containing selected session
     useEffect(() => {
         if (!selectedSessionId) return
+        const group = groups.find(g =>
+            g.sessions.some(s => s.id === selectedSessionId)
+        )
+        if (!group) return
         setCollapseOverrides(prev => {
-            const group = groups.find(g =>
-                g.sessions.some(s => s.id === selectedSessionId)
-            )
-            if (!group) return prev
             const next = new Map(prev)
             let changed = false
             // Expand project group if collapsed
@@ -629,10 +630,7 @@ export function SessionList(props: {
             return changed ? next : prev
         })
         // Auto-expand archived section if selected session is in an archived group
-        const group = groups.find(g =>
-            g.sessions.some(s => s.id === selectedSessionId)
-        )
-        if (group && !group.hasActiveSession) {
+        if (!group.hasActiveSession) {
             const machineKey = group.machineId ?? UNKNOWN_MACHINE_ID
             setArchivedCollapsed(prev => {
                 if (prev.get(machineKey) === false) return prev
