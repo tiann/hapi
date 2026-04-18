@@ -7,7 +7,7 @@ export type PushPayload = {
     body: string
     tag?: string
     data?: {
-        type: string
+        type: 'permission-request' | 'ready' | 'attention'
         sessionId: string
         url: string
     }
