@@ -10,23 +10,53 @@ export type AutoPushSubscriptionOptions = {
     subscribe: () => Promise<boolean>
 }
 
+type AutoPushAttemptContext = {
+    api: ApiClient
+    token: string
+}
+
+function isSameAuthContext(
+    a: AutoPushAttemptContext | null,
+    b: AutoPushAttemptContext
+): boolean {
+    return a !== null && a.api === b.api && a.token === b.token
+}
+
 export function useAutoPushSubscription(options: AutoPushSubscriptionOptions): void {
-    const attemptedRef = useRef(false)
+    const attemptedContextRef = useRef<AutoPushAttemptContext | null>(null)
 
     useEffect(() => {
         if (!options.api || !options.token) {
-            attemptedRef.current = false
+            attemptedContextRef.current = null
             return
         }
+
         if (options.isTelegram || !options.isSupported || options.permission !== 'granted') {
             return
         }
-        if (attemptedRef.current) {
+
+        const authContext: AutoPushAttemptContext = {
+            api: options.api,
+            token: options.token
+        }
+
+        if (isSameAuthContext(attemptedContextRef.current, authContext)) {
             return
         }
-        attemptedRef.current = true
+
+        attemptedContextRef.current = authContext
 
         void options.subscribe()
+            .then((success) => {
+                if (!success && isSameAuthContext(attemptedContextRef.current, authContext)) {
+                    attemptedContextRef.current = null
+                }
+            })
+            .catch(() => {
+                if (isSameAuthContext(attemptedContextRef.current, authContext)) {
+                    attemptedContextRef.current = null
+                }
+            })
     }, [
         options.api,
         options.isSupported,

@@ -49,4 +49,92 @@ describe('useAutoPushSubscription', () => {
         await new Promise((resolve) => setTimeout(resolve, 10))
         expect(subscribe).not.toHaveBeenCalled()
     })
+
+    it('retries when auth context changes', async () => {
+        const subscribe = vi.fn(async () => true)
+        const firstApi = {} as never
+        const secondApi = {} as never
+
+        const { rerender } = renderHook(
+            ({ api, token }) => useAutoPushSubscription({
+                api,
+                token,
+                isTelegram: false,
+                isSupported: true,
+                permission: 'granted',
+                subscribe
+            }),
+            {
+                initialProps: {
+                    api: firstApi,
+                    token: 'token-1'
+                }
+            }
+        )
+
+        await waitFor(() => expect(subscribe).toHaveBeenCalledTimes(1))
+
+        rerender({ api: secondApi, token: 'token-2' })
+        await waitFor(() => expect(subscribe).toHaveBeenCalledTimes(2))
+    })
+
+    it('retries when subscribe resolves false and auth context changes', async () => {
+        const subscribe = vi.fn(async () => false)
+            .mockResolvedValueOnce(false)
+            .mockResolvedValueOnce(true)
+        const firstApi = {} as never
+        const secondApi = {} as never
+
+        const { rerender } = renderHook(
+            ({ api, token }) => useAutoPushSubscription({
+                api,
+                token,
+                isTelegram: false,
+                isSupported: true,
+                permission: 'granted',
+                subscribe
+            }),
+            {
+                initialProps: {
+                    api: firstApi,
+                    token: 'token-1'
+                }
+            }
+        )
+
+        await waitFor(() => expect(subscribe).toHaveBeenCalledTimes(1))
+
+        rerender({ api: secondApi, token: 'token-2' })
+        await waitFor(() => expect(subscribe).toHaveBeenCalledTimes(2))
+    })
+
+    it('retries when subscribe rejects and auth context changes', async () => {
+        const subscribe = vi.fn()
+            .mockRejectedValueOnce(new Error('temporary failure'))
+            .mockResolvedValueOnce(true)
+        const firstApi = {} as never
+        const secondApi = {} as never
+
+        const { rerender } = renderHook(
+            ({ api, token }) => useAutoPushSubscription({
+                api,
+                token,
+                isTelegram: false,
+                isSupported: true,
+                permission: 'granted',
+                subscribe
+            }),
+            {
+                initialProps: {
+                    api: firstApi,
+                    token: 'token-1'
+                }
+            }
+        )
+
+        await waitFor(() => expect(subscribe).toHaveBeenCalledTimes(1))
+
+        rerender({ api: secondApi, token: 'token-2' })
+        await waitFor(() => expect(subscribe).toHaveBeenCalledTimes(2))
+    })
 })
