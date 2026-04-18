@@ -127,13 +127,31 @@ self.addEventListener('notificationclick', (event) => {
 
         for (const client of windowClients) {
             if ('focus' in client) {
+                let navigatedClient: WindowClient | null = null
+
                 if ('navigate' in client) {
-                    await client.navigate(url)
+                    try {
+                        navigatedClient = (await client.navigate(url)) ?? null
+                    } catch (error) {
+                        console.warn('Failed to navigate existing window client from notification click', error)
+                    }
                 }
-                return await client.focus()
+
+                try {
+                    const focusTarget = navigatedClient ?? client
+                    await focusTarget.focus()
+                    return
+                } catch (error) {
+                    console.warn('Failed to focus existing window client from notification click', error)
+                    continue
+                }
             }
         }
 
-        return await self.clients.openWindow(url)
+        try {
+            await self.clients.openWindow(url)
+        } catch (error) {
+            console.warn('Failed to open window from notification click', error)
+        }
     })())
 })
