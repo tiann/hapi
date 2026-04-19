@@ -5,7 +5,7 @@ export default {
     theme: {
         extend: {
             maxWidth: {
-                content: '960px'
+                content: 'var(--content-max-w, 960px)'
             }
         }
     },
