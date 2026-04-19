@@ -96,6 +96,23 @@ export function GridView({ sessions, baseUrl, token }: Props) {
     const [notifiedIds, setNotifiedIds] = useState<Set<string>>(new Set())
     const [flashingIds, setFlashingIds] = useState<Set<string>>(new Set())
 
+    // Track thinking→idle transitions to trigger orange flash when a session finishes
+    const prevThinkingRef = useRef<Map<string, boolean>>(new Map())
+    useEffect(() => {
+        const prev = prevThinkingRef.current
+        const next = new Map<string, boolean>()
+        for (const s of sessions) {
+            const wasThinking = prev.get(s.id) ?? false
+            next.set(s.id, s.thinking)
+            // transition: thinking → not thinking on an active session
+            if (wasThinking && !s.thinking && s.active) {
+                setNotifiedIds(n => new Set([...n, s.id]))
+                setFlashingIds(f => new Set([...f, s.id]))
+            }
+        }
+        prevThinkingRef.current = next
+    }, [sessions])
+
     useEffect(() => {
         const customHandler = (e: Event) => {
             const sessionId: string | undefined = (e as CustomEvent).detail?.sessionId
@@ -388,7 +405,7 @@ export function GridView({ sessions, baseUrl, token }: Props) {
                                 const isFlashing = flashingIds.has(session.id)
                                 const isThinking = session.active && session.thinking
                                 const dotColor = isNotified ? '#f97316' : isThinking ? '#3b82f6' : '#34c759'
-                                const dotSize = isNotified ? 8 : 5
+                                const dotSize = 8
                                 const titleColor = isThinking ? '#93c5fd' : '#fff'
                                 const subColor = isThinking ? 'rgba(147,197,253,0.7)' : 'rgba(255,255,255,0.6)'
                                 const closeColor = isThinking ? 'rgba(147,197,253,0.5)' : 'rgba(255,255,255,0.4)'
