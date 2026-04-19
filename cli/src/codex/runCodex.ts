@@ -95,7 +95,7 @@ export async function runCodex(opts: {
         );
     };
 
-    session.onUserMessage((message) => {
+    session.onUserMessage((message, localId) => {
         const sessionPermissionMode = sessionWrapperRef.current?.getPermissionMode();
         if (sessionPermissionMode && isPermissionModeAllowedForFlavor(sessionPermissionMode, 'codex')) {
             currentPermissionMode = sessionPermissionMode as PermissionMode;
@@ -127,7 +127,7 @@ export async function runCodex(opts: {
             collaborationMode: currentCollaborationMode
         };
         const formattedText = formatMessageWithAttachments(message.content.text, message.content.attachments);
-        messageQueue.push(formattedText, enhancedMode);
+        messageQueue.push(formattedText, enhancedMode, localId);
     });
 
     const formatFailureReason = (message: string): string => {

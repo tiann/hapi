@@ -11,7 +11,7 @@ import type {
     SyncEvent
 } from '@/types/api'
 import { queryKeys } from '@/lib/query-keys'
-import { clearMessageWindow, flushQueuedStatuses, getMessageWindowState, ingestIncomingMessages, updateMessageStatus } from '@/lib/message-window-store'
+import { clearMessageWindow, flushQueuedStatuses, getMessageWindowState, ingestIncomingMessages, markMessagesConsumed, updateMessageStatus } from '@/lib/message-window-store'
 
 type SSESubscription = {
     all?: boolean
@@ -475,10 +475,8 @@ export function useSSE(options: {
             })
         }
 
-        /** Transition queued messages to 'sent' for a session.
-         *  consumedAt limits the flush to messages created before that time. */
-        const flushQueuedMessages = (sessionId: string, consumedAt?: number) => {
-            flushQueuedStatuses(sessionId, consumedAt)
+        const flushQueuedMessages = (sessionId: string) => {
+            flushQueuedStatuses(sessionId)
         }
 
         const handleSyncEvent = (event: SyncEvent) => {
@@ -504,7 +502,7 @@ export function useSSE(options: {
             }
 
             if (event.type === 'messages-consumed') {
-                flushQueuedMessages(event.sessionId, event.consumedAt)
+                markMessagesConsumed(event.sessionId, event.localIds)
             }
 
             if (event.type === 'message-received') {

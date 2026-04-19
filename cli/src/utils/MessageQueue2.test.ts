@@ -426,21 +426,32 @@ describe('MessageQueue2', () => {
         expect(batch3?.mode.type).toBe('A');
     });
 
-    it('should call onBatchConsumed when collectBatch returns messages', async () => {
+    it('should call onBatchConsumed with collected localIds', async () => {
         const queue = new MessageQueue2<string>(mode => mode);
-        let consumedCount = 0;
-        queue.onBatchConsumed = () => { consumedCount++; };
+        const received: string[][] = [];
+        queue.onBatchConsumed = (localIds) => { received.push(localIds); };
 
-        queue.push('message1', 'local');
-        queue.push('message2', 'local');
+        queue.push('message1', 'local', 'id1');
+        queue.push('message2', 'local', 'id2');
 
         await queue.waitForMessagesAndGetAsString();
-        expect(consumedCount).toBe(1);
+        expect(received).toEqual([['id1', 'id2']]);
 
-        // Push more and consume again
-        queue.push('message3', 'remote');
+        // Push more with a different mode and consume again
+        queue.push('message3', 'remote', 'id3');
         await queue.waitForMessagesAndGetAsString();
-        expect(consumedCount).toBe(2);
+        expect(received).toEqual([['id1', 'id2'], ['id3']]);
+    });
+
+    it('should skip onBatchConsumed when batch has no localIds', async () => {
+        const queue = new MessageQueue2<string>(mode => mode);
+        let called = false;
+        queue.onBatchConsumed = () => { called = true; };
+
+        // Push without localIds (e.g., internal commands that do not need UI ack)
+        queue.push('internal', 'local');
+        await queue.waitForMessagesAndGetAsString();
+        expect(called).toBe(false);
     });
 
     it('should not call onBatchConsumed when collectBatch returns null', async () => {

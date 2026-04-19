@@ -254,8 +254,12 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         onSessionAlive?.(data)
     })
 
-    socket.on('messages-consumed', (data: { sid: string; consumedAt: number }) => {
-        if (!data || typeof data.sid !== 'string' || typeof data.consumedAt !== 'number') {
+    socket.on('messages-consumed', (data: { sid: string; localIds: string[] }) => {
+        if (!data || typeof data.sid !== 'string' || !Array.isArray(data.localIds)) {
+            return
+        }
+        const localIds = data.localIds.filter((id): id is string => typeof id === 'string')
+        if (localIds.length === 0) {
             return
         }
         const sessionAccess = resolveSessionAccess(data.sid)
@@ -263,7 +267,7 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             emitAccessError('session', data.sid, sessionAccess.reason)
             return
         }
-        onWebappEvent?.({ type: 'messages-consumed', sessionId: data.sid, consumedAt: data.consumedAt })
+        onWebappEvent?.({ type: 'messages-consumed', sessionId: data.sid, localIds })
     })
 
     socket.on('session-end', (data: SessionEndPayload) => {

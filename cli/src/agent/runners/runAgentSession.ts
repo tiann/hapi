@@ -50,9 +50,9 @@ export async function runAgentSession(opts: {
 
     const messageQueue = new MessageQueue2<Record<string, never>>(() => hashObject({}));
 
-    session.onUserMessage((message) => {
+    session.onUserMessage((message, localId) => {
         const formattedText = formatMessageWithAttachments(message.content.text, message.content.attachments);
-        messageQueue.push(formattedText, {});
+        messageQueue.push(formattedText, {}, localId);
     });
 
     let currentPermissionMode: SessionPermissionMode = opts.permissionMode ?? sessionInfo.permissionMode ?? 'default';

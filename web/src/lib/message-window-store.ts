@@ -538,20 +538,39 @@ export function updateMessageStatus(sessionId: string, localId: string, status: 
     })
 }
 
-/** Transition queued messages to 'sent' for a session.
- *  When consumedAt is provided, only messages created before that timestamp
- *  are flushed — this avoids marking messages as sent when they are still
- *  waiting in the CLI queue (race between new enqueue and SSE delivery).
- *  When omitted (e.g. thinking→false fallback), all queued messages are flushed. */
-export function flushQueuedStatuses(sessionId: string, consumedAt?: number): void {
+/** Transition the queued messages whose localIds match to 'sent'. Driven by the
+ *  CLI ack (messages-consumed). Unmatched messages remain queued. */
+export function markMessagesConsumed(sessionId: string, localIds: string[]): void {
+    if (localIds.length === 0) return
+    const idSet = new Set(localIds)
+    updateState(sessionId, (prev) => {
+        let changed = false
+        const updateList = (list: DecryptedMessage[]) => {
+            return list.map((message) => {
+                if (message.status !== 'queued' || !message.localId || !idSet.has(message.localId)) {
+                    return message
+                }
+                changed = true
+                return { ...message, status: 'sent' as MessageStatus }
+            })
+        }
+        const messages = updateList(prev.messages)
+        const pending = updateList(prev.pending)
+        if (!changed) {
+            return prev
+        }
+        return buildState(prev, { messages, pending })
+    })
+}
+
+/** Flush all queued messages for a session. Used as a fallback when the agent
+ *  transitions from thinking → idle (e.g. on CLI restart where acks were lost). */
+export function flushQueuedStatuses(sessionId: string): void {
     updateState(sessionId, (prev) => {
         let changed = false
         const updateList = (list: DecryptedMessage[]) => {
             return list.map((message) => {
                 if (message.status !== 'queued') {
-                    return message
-                }
-                if (consumedAt !== undefined && message.createdAt > consumedAt) {
                     return message
                 }
                 changed = true

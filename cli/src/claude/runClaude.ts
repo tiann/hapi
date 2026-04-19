@@ -170,7 +170,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         sessionInstance.setEffort(currentEffort);
         logger.debug(`[loop] Synced session config for keepalive: permissionMode=${currentPermissionMode}, model=${currentModel ?? 'auto'}, effort=${currentEffort ?? 'auto'}`);
     };
-    session.onUserMessage((message) => {
+    session.onUserMessage((message, localId) => {
         const sessionPermissionMode = currentSessionRef.current?.getPermissionMode();
         if (sessionPermissionMode && isPermissionModeAllowedForFlavor(sessionPermissionMode, 'claude')) {
             currentPermissionMode = sessionPermissionMode as PermissionMode;
@@ -258,7 +258,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
             };
             // Use raw text only, ignore attachments for special commands
             const commandText = specialCommand.originalMessage || message.content.text;
-            messageQueue.pushIsolateAndClear(commandText, enhancedMode);
+            messageQueue.pushIsolateAndClear(commandText, enhancedMode, localId);
             logger.debugLargeJson('[start] /compact command pushed to queue:', message);
             return;
         }
@@ -277,7 +277,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
             };
             // Use raw text only, ignore attachments for special commands
             const commandText = specialCommand.originalMessage || message.content.text;
-            messageQueue.pushIsolateAndClear(commandText, enhancedMode);
+            messageQueue.pushIsolateAndClear(commandText, enhancedMode, localId);
             logger.debugLargeJson('[start] /clear command pushed to queue:', message);
             return;
         }
@@ -293,7 +293,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
             allowedTools: messageAllowedTools,
             disallowedTools: messageDisallowedTools
         };
-        messageQueue.push(formattedText, enhancedMode);
+        messageQueue.push(formattedText, enhancedMode, localId);
         logger.debugLargeJson('User message pushed to queue:', message)
     });
 
