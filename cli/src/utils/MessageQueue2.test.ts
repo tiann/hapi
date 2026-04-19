@@ -443,6 +443,27 @@ describe('MessageQueue2', () => {
         expect(received).toEqual([['id1', 'id2'], ['id3']]);
     });
 
+    it('should report localIds batch-by-batch when modes differ', async () => {
+        const queue = new MessageQueue2<string>(mode => mode);
+        const received: string[][] = [];
+        queue.onBatchConsumed = (localIds) => { received.push(localIds); };
+
+        // Two messages land in different batches because their mode hashes differ.
+        queue.push('first', 'A', 'id1');
+        queue.push('second', 'B', 'id2');
+
+        const batch1 = await queue.waitForMessagesAndGetAsString();
+        expect(batch1?.message).toBe('first');
+        expect(received).toEqual([['id1']]);
+        // Second message still waiting in the queue.
+        expect(queue.size()).toBe(1);
+
+        const batch2 = await queue.waitForMessagesAndGetAsString();
+        expect(batch2?.message).toBe('second');
+        expect(received).toEqual([['id1'], ['id2']]);
+        expect(queue.size()).toBe(0);
+    });
+
     it('should skip onBatchConsumed when batch has no localIds', async () => {
         const queue = new MessageQueue2<string>(mode => mode);
         let called = false;
