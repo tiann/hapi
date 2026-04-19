@@ -493,8 +493,8 @@ export class ApiSessionClient extends EventEmitter {
         })
     }
 
-    emitMessagesConsumed(): void {
-        this.socket.emit('messages-consumed', { sid: this.sessionId })
+    emitMessagesConsumed(consumedAt: number): void {
+        this.socket.emit('messages-consumed', { sid: this.sessionId, consumedAt })
     }
 
     sendSessionDeath(): void {

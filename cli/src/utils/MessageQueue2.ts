@@ -16,7 +16,7 @@ export class MessageQueue2<T> {
     private waiter: ((hasMessages: boolean) => void) | null = null;
     private closed = false;
     private onMessageHandler: ((message: string, mode: T) => void) | null = null;
-    onBatchConsumed: (() => void) | null = null;
+    onBatchConsumed: ((consumedAt: number) => void) | null = null;
     modeHasher: (mode: T) => string;
 
     constructor(
@@ -276,7 +276,7 @@ export class MessageQueue2<T> {
         // Join all messages with newlines
         const combinedMessage = sameModeMessages.join('\n');
 
-        this.onBatchConsumed?.();
+        this.onBatchConsumed?.(Date.now());
 
         return {
             message: combinedMessage,

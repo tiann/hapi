@@ -475,11 +475,10 @@ export function useSSE(options: {
             })
         }
 
-        /** Transition all queued messages to 'sent' for a session.
-         *  Uses flushQueuedStatuses which matches by status rather than localId,
-         *  so it works even after server echo replaces the optimistic message. */
-        const flushQueuedMessages = (sessionId: string) => {
-            flushQueuedStatuses(sessionId)
+        /** Transition queued messages to 'sent' for a session.
+         *  consumedAt limits the flush to messages created before that time. */
+        const flushQueuedMessages = (sessionId: string, consumedAt?: number) => {
+            flushQueuedStatuses(sessionId, consumedAt)
         }
 
         const handleSyncEvent = (event: SyncEvent) => {
@@ -505,7 +504,7 @@ export function useSSE(options: {
             }
 
             if (event.type === 'messages-consumed') {
-                flushQueuedMessages(event.sessionId)
+                flushQueuedMessages(event.sessionId, event.consumedAt)
             }
 
             if (event.type === 'message-received') {

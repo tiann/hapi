@@ -88,12 +88,13 @@ export function useSendMessage(
         onMutate: async (input) => {
             const status = isSessionThinkingRef.current ? 'queued' as const : 'sending' as const
             appendOptimisticMessage(input.sessionId, createOptimisticMessage(input, status))
+            return { status }
         },
-        onSuccess: (_, input) => {
+        onSuccess: (_, input, context) => {
             updateMessageStatus(
                 input.sessionId,
                 input.localId,
-                isSessionThinkingRef.current ? 'queued' : 'sent'
+                context?.status === 'queued' ? 'queued' : 'sent'
             )
             haptic.notification('success')
             options?.onSuccess?.(input.sessionId)

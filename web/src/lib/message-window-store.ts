@@ -538,15 +538,20 @@ export function updateMessageStatus(sessionId: string, localId: string, status: 
     })
 }
 
-/** Transition all messages with status 'queued' to 'sent' for a session.
- *  Unlike updateMessageStatus, this matches by status rather than localId,
- *  so it works even after server echo replaces the optimistic message. */
-export function flushQueuedStatuses(sessionId: string): void {
+/** Transition queued messages to 'sent' for a session.
+ *  When consumedAt is provided, only messages created before that timestamp
+ *  are flushed — this avoids marking messages as sent when they are still
+ *  waiting in the CLI queue (race between new enqueue and SSE delivery).
+ *  When omitted (e.g. thinking→false fallback), all queued messages are flushed. */
+export function flushQueuedStatuses(sessionId: string, consumedAt?: number): void {
     updateState(sessionId, (prev) => {
         let changed = false
         const updateList = (list: DecryptedMessage[]) => {
             return list.map((message) => {
                 if (message.status !== 'queued') {
+                    return message
+                }
+                if (consumedAt !== undefined && message.createdAt > consumedAt) {
                     return message
                 }
                 changed = true
