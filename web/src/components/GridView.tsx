@@ -378,15 +378,18 @@ export function GridView({ sessions, baseUrl, token }: Props) {
                                 {session.active && (() => {
                                     const isNotified = notifiedIds.has(session.id)
                                     const isFlashing = flashingIds.has(session.id)
+                                    const isThinking = session.thinking
+                                    const dotColor = isNotified ? '#f97316' : isThinking ? '#3b82f6' : '#34c759'
+                                    const dotSize = isNotified ? 8 : 5
                                     return (
                                         <div
                                             className={isFlashing ? 'animate-toast-alert' : ''}
                                             onAnimationEnd={() => setFlashingIds(prev => { const s = new Set(prev); s.delete(session.id); return s })}
                                             style={{
-                                                width: isNotified ? 8 : 5,
-                                                height: isNotified ? 8 : 5,
+                                                width: dotSize,
+                                                height: dotSize,
                                                 borderRadius: '50%',
-                                                background: isNotified ? '#f97316' : '#34c759',
+                                                background: dotColor,
                                                 flexShrink: 0,
                                                 transition: 'width 0.2s, height 0.2s, background 0.2s',
                                             }}
