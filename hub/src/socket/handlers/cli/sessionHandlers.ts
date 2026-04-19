@@ -254,6 +254,18 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         onSessionAlive?.(data)
     })
 
+    socket.on('messages-consumed', (data: { sid: string }) => {
+        if (!data || typeof data.sid !== 'string') {
+            return
+        }
+        const sessionAccess = resolveSessionAccess(data.sid)
+        if (!sessionAccess.ok) {
+            emitAccessError('session', data.sid, sessionAccess.reason)
+            return
+        }
+        onWebappEvent?.({ type: 'messages-consumed', sessionId: data.sid })
+    })
+
     socket.on('session-end', (data: SessionEndPayload) => {
         if (!data || typeof data.sid !== 'string' || typeof data.time !== 'number') {
             return

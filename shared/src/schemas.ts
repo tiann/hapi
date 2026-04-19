@@ -226,6 +226,9 @@ export const SyncEventSchema = z.discriminatedUnion('type', [
             url: z.string()
         })
     }),
+    SessionChangedSchema.extend({
+        type: z.literal('messages-consumed')
+    }),
     SessionEventBaseSchema.extend({
         type: z.literal('heartbeat'),
         data: z.object({

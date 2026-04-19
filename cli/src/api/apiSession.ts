@@ -493,6 +493,10 @@ export class ApiSessionClient extends EventEmitter {
         })
     }
 
+    emitMessagesConsumed(): void {
+        this.socket.emit('messages-consumed', { sid: this.sessionId })
+    }
+
     sendSessionDeath(): void {
         void cleanupUploadDir(this.sessionId)
         this.socket.emit('session-end', { sid: this.sessionId, time: Date.now() })

@@ -426,6 +426,37 @@ describe('MessageQueue2', () => {
         expect(batch3?.mode.type).toBe('A');
     });
 
+    it('should call onBatchConsumed when collectBatch returns messages', async () => {
+        const queue = new MessageQueue2<string>(mode => mode);
+        let consumedCount = 0;
+        queue.onBatchConsumed = () => { consumedCount++; };
+
+        queue.push('message1', 'local');
+        queue.push('message2', 'local');
+
+        await queue.waitForMessagesAndGetAsString();
+        expect(consumedCount).toBe(1);
+
+        // Push more and consume again
+        queue.push('message3', 'remote');
+        await queue.waitForMessagesAndGetAsString();
+        expect(consumedCount).toBe(2);
+    });
+
+    it('should not call onBatchConsumed when collectBatch returns null', async () => {
+        const queue = new MessageQueue2<string>(mode => mode);
+        let consumedCount = 0;
+        queue.onBatchConsumed = () => { consumedCount++; };
+
+        // Close queue while waiting — should return null
+        const waitPromise = queue.waitForMessagesAndGetAsString();
+        queue.close();
+        const result = await waitPromise;
+
+        expect(result).toBeNull();
+        expect(consumedCount).toBe(0);
+    });
+
     it('should differentiate between pushImmediate and pushIsolateAndClear behavior', async () => {
         const queue = new MessageQueue2<{ type: string }>((mode) => mode.type);
         
