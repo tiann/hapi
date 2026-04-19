@@ -117,7 +117,7 @@ function AppInner() {
         }
     }, [goBack, pathname])
     const queryClient = useQueryClient()
-    const sessionMatch = matchRoute({ to: '/sessions/$sessionId' })
+    const sessionMatch = matchRoute({ to: '/sessions/$sessionId', fuzzy: true })
     const selectedSessionId = sessionMatch && sessionMatch.sessionId !== 'new' ? sessionMatch.sessionId : null
     const { isSyncing, startSync, endSync } = useSyncingState()
     const [sseDisconnected, setSseDisconnected] = useState(false)
@@ -230,14 +230,30 @@ function AppInner() {
     }, [])
 
     const handleSseEvent = useCallback(() => {}, [])
+    const isGridRoute = matchRoute({ to: '/grid' })
     const handleToast = useCallback((event: ToastEvent) => {
+        // In the grid parent frame, notify GridView via CustomEvent then suppress the card
+        if (isGridRoute) {
+            window.dispatchEvent(new CustomEvent('grid-toast', { detail: { sessionId: event.data.sessionId } }))
+            return
+        }
+        // In grid view iframes, notify the parent frame and filter by session
+        const isInIframe = window.self !== window.top
+        if (isInIframe) {
+            if (event.data.sessionId && selectedSessionId && event.data.sessionId !== selectedSessionId) {
+                return
+            }
+            // Forward to parent GridView
+            window.parent.postMessage({ type: 'grid-cell-toast', sessionId: event.data.sessionId }, '*')
+            return
+        }
         addToast({
             title: event.data.title,
             body: event.data.body,
             sessionId: event.data.sessionId,
             url: event.data.url
         })
-    }, [addToast])
+    }, [addToast, selectedSessionId, isGridRoute])
 
     const eventSubscription = useMemo(() => {
         if (selectedSessionId) {

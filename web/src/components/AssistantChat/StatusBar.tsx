@@ -37,7 +37,7 @@ const PERMISSION_TONE_CLASSES: Record<PermissionModeTone, string> = {
     danger: 'text-red-500'
 }
 
-function getConnectionStatus(
+export function getConnectionStatus(
     active: boolean,
     thinking: boolean,
     agentState: AgentState | null | undefined,
@@ -102,7 +102,7 @@ function getConnectionStatus(
     }
 }
 
-function getContextWarning(contextSize: number, maxContextSize: number, t: (key: string, params?: Record<string, string | number>) => string): { text: string; color: string } | null {
+export function getContextWarning(contextSize: number, maxContextSize: number, t: (key: string, params?: Record<string, string | number>) => string): { text: string; color: string } | null {
     const percentageUsed = (contextSize / maxContextSize) * 100
     const percentageRemaining = Math.max(0, 100 - percentageUsed)
 

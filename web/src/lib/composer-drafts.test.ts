@@ -1,14 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 describe('composer-drafts', () => {
-    let storage: Record<string, string>
+    let localStorage: Record<string, string>
+    let sessionStorage: Record<string, string>
 
     beforeEach(() => {
-        storage = {}
+        localStorage = {}
+        sessionStorage = {}
+        vi.stubGlobal('localStorage', {
+            getItem: vi.fn((key: string) => localStorage[key] ?? null),
+            setItem: vi.fn((key: string, value: string) => { localStorage[key] = value }),
+            removeItem: vi.fn((key: string) => { delete localStorage[key] }),
+        })
         vi.stubGlobal('sessionStorage', {
-            getItem: vi.fn((key: string) => storage[key] ?? null),
-            setItem: vi.fn((key: string, value: string) => { storage[key] = value }),
-            removeItem: vi.fn((key: string) => { delete storage[key] }),
+            getItem: vi.fn((key: string) => sessionStorage[key] ?? null),
+            setItem: vi.fn((key: string, value: string) => { sessionStorage[key] = value }),
+            removeItem: vi.fn((key: string) => { delete sessionStorage[key] }),
         })
         // Force re-hydration by clearing the module's internal cache
         // Re-import to reset the lazy-loaded cache
@@ -30,10 +37,10 @@ describe('composer-drafts', () => {
         expect(mod.getDraft('session-1')).toBe('hello world')
     })
 
-    it('persists drafts to sessionStorage', async () => {
+    it('persists drafts to localStorage', async () => {
         const mod = await import('./composer-drafts')
         mod.saveDraft('session-1', 'test')
-        const stored = JSON.parse(storage['hapi:composer-drafts'] ?? '{}')
+        const stored = JSON.parse(localStorage['hapi:composer-drafts'] ?? '{}')
         expect(stored['session-1']).toBe('test')
     })
 
@@ -52,7 +59,7 @@ describe('composer-drafts', () => {
         mod.saveDraft('session-1', '   ')
         expect(mod.getDraft('session-1')).toBe('')
 
-        const stored = JSON.parse(storage['hapi:composer-drafts'] ?? '{}')
+        const stored = JSON.parse(localStorage['hapi:composer-drafts'] ?? '{}')
         expect(stored).not.toHaveProperty('session-1')
     })
 
@@ -75,14 +82,24 @@ describe('composer-drafts', () => {
         expect(mod.getDraft('session-b')).toBe('text B')
     })
 
-    it('hydrates from existing sessionStorage data', async () => {
-        storage['hapi:composer-drafts'] = JSON.stringify({ 'existing': 'draft text' })
+    it('hydrates from existing localStorage data', async () => {
+        localStorage['hapi:composer-drafts'] = JSON.stringify({ 'existing': 'draft text' })
         const mod = await import('./composer-drafts')
         expect(mod.getDraft('existing')).toBe('draft text')
     })
 
-    it('recovers from invalid sessionStorage data', async () => {
-        storage['hapi:composer-drafts'] = 'not valid json'
+    it('migrates data from sessionStorage to localStorage on first load', async () => {
+        sessionStorage['hapi:composer-drafts'] = JSON.stringify({ 'existing': 'draft text' })
+        const mod = await import('./composer-drafts')
+        expect(mod.getDraft('existing')).toBe('draft text')
+        // Should have migrated to localStorage
+        expect(localStorage['hapi:composer-drafts']).toBeDefined()
+        // Should have removed from sessionStorage
+        expect(sessionStorage['hapi:composer-drafts']).toBeUndefined()
+    })
+
+    it('recovers from invalid localStorage data', async () => {
+        localStorage['hapi:composer-drafts'] = 'not valid json'
         const mod = await import('./composer-drafts')
         expect(mod.getDraft('any')).toBe('')
         // Should still be able to save
@@ -91,7 +108,7 @@ describe('composer-drafts', () => {
     })
 
     it('ignores non-string values during hydration', async () => {
-        storage['hapi:composer-drafts'] = JSON.stringify({
+        localStorage['hapi:composer-drafts'] = JSON.stringify({
             'valid': 'text',
             'invalid-number': 42,
             'invalid-null': null,

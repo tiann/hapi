@@ -345,8 +345,30 @@ html[data-theme="dark"] .shiki span {
   animation: bounce-in 0.3s ease-out;
 }
 
+@keyframes pulse-once {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+.animate-pulse-once {
+  animation: pulse-once 0.6s ease-in-out;
+}
+
+@keyframes toast-alert {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(2.2); opacity: 0.5; }
+}
+.animate-toast-alert {
+  animation: toast-alert 0.4s ease-in-out 3;
+}
+
 /* ReactQueryDevtools button - move to middle-right to avoid blocking UI */
 .tsqd-open-btn-container {
   bottom: 50% !important;
   transform: translateY(50%);
+}
+
+/* Grid cell floating overlay — always readable, full opacity on hover */
+.grid-cell-overlay {
+  opacity: 1;
+  transition: opacity 0.15s;
 }

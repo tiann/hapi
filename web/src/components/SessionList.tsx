@@ -260,9 +260,6 @@ function getSessionTitle(session: SessionSummary): string {
     if (session.metadata?.name) {
         return session.metadata.name
     }
-    if (session.metadata?.summary?.text) {
-        return session.metadata.summary.text
-    }
     if (session.metadata?.path) {
         const parts = session.metadata.path.split('/').filter(Boolean)
         return parts.length > 0 ? parts[parts.length - 1] : session.id.slice(0, 8)
@@ -395,7 +392,6 @@ function SessionItem(props: {
             >
                 <div className={`flex items-center justify-between gap-3 ${!s.active ? 'opacity-50' : ''}`}>
                     <div className="flex items-center gap-2 min-w-0">
-                        <FlavorIcon flavor={s.metadata?.flavor} className="h-4 w-4 shrink-0" />
                         <div className={`truncate text-sm font-medium ${s.active ? 'text-[var(--app-fg)]' : 'text-[var(--app-hint)]'}`}>
                             {sessionName}
                         </div>

@@ -26,6 +26,8 @@ export interface ListSlashCommandsResponse {
  */
 const BUILTIN_COMMANDS: Record<string, SlashCommand[]> = {
     claude: [
+        { name: 'branch', description: 'Create a new conversation branch', source: 'builtin' },
+        { name: 'btw', description: 'Add a note without triggering a response', source: 'builtin' },
         { name: 'clear', description: 'Clear conversation history', source: 'builtin' },
         { name: 'compact', description: 'Compact conversation context', source: 'builtin' },
         { name: 'context', description: 'Show context information', source: 'builtin' },

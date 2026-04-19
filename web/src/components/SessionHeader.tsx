@@ -13,9 +13,6 @@ function getSessionTitle(session: Session): string {
     if (session.metadata?.name) {
         return session.metadata.name
     }
-    if (session.metadata?.summary?.text) {
-        return session.metadata.summary.text
-    }
     if (session.metadata?.path) {
         const parts = session.metadata.path.split('/').filter(Boolean)
         return parts.length > 0 ? parts[parts.length - 1] : session.id.slice(0, 8)
@@ -100,8 +97,8 @@ export function SessionHeader(props: {
         setMenuOpen((open) => !open)
     }
 
-    // In Telegram, don't render header (Telegram provides its own)
-    if (isTelegramApp()) {
+    // In Telegram or grid iframe, don't render header
+    if (isTelegramApp() || window.self !== window.top) {
         return null
     }
 

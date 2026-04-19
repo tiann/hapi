@@ -20,7 +20,13 @@ function hydrate(): DraftsMap {
         return cache
     }
     try {
-        const raw = sessionStorage.getItem(STORAGE_KEY)
+        const localRaw = localStorage.getItem(STORAGE_KEY)
+        const sessionRaw = sessionStorage.getItem(STORAGE_KEY)
+        if (!localRaw && sessionRaw) {
+            localStorage.setItem(STORAGE_KEY, sessionRaw)
+            sessionStorage.removeItem(STORAGE_KEY)
+        }
+        const raw = localRaw ?? sessionRaw
         if (!raw) {
             cache = {}
             return cache
@@ -60,7 +66,7 @@ function persist(): void {
     try {
         const drafts = hydrate()
         evict(drafts)
-        sessionStorage.setItem(STORAGE_KEY, JSON.stringify(drafts))
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(drafts))
     } catch {
         // Ignore storage errors
     }
