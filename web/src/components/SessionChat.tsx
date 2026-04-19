@@ -303,6 +303,15 @@ export function SessionChat(props: {
     }, [navigate, props.session.id])
 
     const handleSend = useCallback((text: string, attachments?: AttachmentMetadata[]) => {
+        // Intercept /effort [level] — change effort without sending to AI
+        const effortMatch = text.trim().match(/^\/effort(?:\s+(\S+))?$/i)
+        if (effortMatch) {
+            const level = effortMatch[1]?.toLowerCase() ?? null
+            const normalized = (!level || level === 'auto' || level === 'default') ? null : level
+            handleEffortChange(normalized)
+            return
+        }
+
         if (agentFlavor === 'codex') {
             const unsupportedCommand = findUnsupportedCodexBuiltinSlashCommand(
                 text,
@@ -322,7 +331,7 @@ export function SessionChat(props: {
 
         props.onSend(text, attachments)
         setForceScrollToken((token) => token + 1)
-    }, [agentFlavor, props.availableSlashCommands, props.onSend, props.session.id, addToast, haptic, t])
+    }, [agentFlavor, handleEffortChange, props.availableSlashCommands, props.onSend, props.session.id, addToast, haptic, t])
 
     const attachmentAdapter = useMemo(() => {
         if (!props.session.active) {
