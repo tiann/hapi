@@ -191,8 +191,6 @@ function SessionsPage() {
                 className="sidebar-resize-handle hidden lg:block shrink-0"
                 data-dragging={sidebar.isDragging || undefined}
                 onPointerDown={sidebar.onPointerDown}
-                onPointerMove={sidebar.onPointerMove}
-                onPointerUp={sidebar.onPointerUp}
             />
 
             <div className={`${isSessionsIndex ? 'hidden lg:flex' : 'flex'} min-w-0 flex-1 flex-col bg-[var(--app-bg)]`}>

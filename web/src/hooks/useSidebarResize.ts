@@ -23,24 +23,41 @@ export function useSidebarResize() {
     const [isDragging, setIsDragging] = useState(false)
     const startXRef = useRef(0)
     const startWidthRef = useRef(0)
+    const activePointerIdRef = useRef<number | null>(null)
 
     const onPointerDown = useCallback((e: React.PointerEvent) => {
         e.preventDefault()
+        activePointerIdRef.current = e.pointerId
         startXRef.current = e.clientX
         startWidthRef.current = width
         setIsDragging(true)
-        ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
     }, [width])
 
-    const onPointerMove = useCallback((e: React.PointerEvent) => {
+    // Global listeners ensure pointerup is always captured even if cursor leaves the handle
+    useEffect(() => {
         if (!isDragging) return
-        const delta = e.clientX - startXRef.current
-        setWidth(clamp(startWidthRef.current + delta))
-    }, [isDragging])
 
-    const onPointerUp = useCallback(() => {
-        if (!isDragging) return
-        setIsDragging(false)
+        const onMove = (e: PointerEvent) => {
+            if (e.pointerId !== activePointerIdRef.current) return
+            const delta = e.clientX - startXRef.current
+            setWidth(clamp(startWidthRef.current + delta))
+        }
+
+        const onUp = (e: PointerEvent) => {
+            if (e.pointerId !== activePointerIdRef.current) return
+            activePointerIdRef.current = null
+            setIsDragging(false)
+        }
+
+        document.addEventListener('pointermove', onMove)
+        document.addEventListener('pointerup', onUp)
+        document.addEventListener('pointercancel', onUp)
+
+        return () => {
+            document.removeEventListener('pointermove', onMove)
+            document.removeEventListener('pointerup', onUp)
+            document.removeEventListener('pointercancel', onUp)
+        }
     }, [isDragging])
 
     // Persist width to localStorage when drag ends
@@ -65,5 +82,5 @@ export function useSidebarResize() {
         }
     }, [isDragging])
 
-    return { width, isDragging, onPointerDown, onPointerMove, onPointerUp }
+    return { width, isDragging, onPointerDown }
 }
