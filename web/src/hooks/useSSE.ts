@@ -11,7 +11,7 @@ import type {
     SyncEvent
 } from '@/types/api'
 import { queryKeys } from '@/lib/query-keys'
-import { clearMessageWindow, ingestIncomingMessages } from '@/lib/message-window-store'
+import { clearMessageWindow, flushQueuedStatuses, getMessageWindowState, ingestIncomingMessages, updateMessageStatus } from '@/lib/message-window-store'
 
 type SSESubscription = {
     all?: boolean
@@ -475,6 +475,13 @@ export function useSSE(options: {
             })
         }
 
+        /** Transition all queued messages to 'sent' for a session.
+         *  Uses flushQueuedStatuses which matches by status rather than localId,
+         *  so it works even after server echo replaces the optimistic message. */
+        const flushQueuedMessages = (sessionId: string) => {
+            flushQueuedStatuses(sessionId)
+        }
+
         const handleSyncEvent = (event: SyncEvent) => {
             lastActivityAtRef.current = Date.now()
 
@@ -497,6 +504,10 @@ export function useSSE(options: {
                 return
             }
 
+            if (event.type === 'messages-consumed') {
+                flushQueuedMessages(event.sessionId)
+            }
+
             if (event.type === 'message-received') {
                 ingestIncomingMessages(event.sessionId, [event.message])
             }
@@ -507,11 +518,17 @@ export function useSSE(options: {
                     void queryClient.removeQueries({ queryKey: queryKeys.session(event.sessionId) })
                     clearMessageWindow(event.sessionId)
                 } else if (isSessionRecord(event.data) && event.data.id === event.sessionId) {
+                    if (!event.data.thinking) {
+                        flushQueuedMessages(event.sessionId)
+                    }
                     queryClient.setQueryData<SessionResponse>(queryKeys.session(event.sessionId), { session: event.data })
                     upsertSessionSummary(event.data)
                 } else {
                     const patch = getSessionPatch(event.data)
                     if (patch) {
+                        if (patch.thinking === false) {
+                            flushQueuedMessages(event.sessionId)
+                        }
                         const detailPatched = patchSessionDetail(event.sessionId, patch)
                         const summaryPatched = patchSessionSummary(event.sessionId, patch)
 

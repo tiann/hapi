@@ -537,3 +537,27 @@ export function updateMessageStatus(sessionId: string, localId: string, status: 
         return buildState(prev, { messages, pending })
     })
 }
+
+/** Transition all messages with status 'queued' to 'sent' for a session.
+ *  Unlike updateMessageStatus, this matches by status rather than localId,
+ *  so it works even after server echo replaces the optimistic message. */
+export function flushQueuedStatuses(sessionId: string): void {
+    updateState(sessionId, (prev) => {
+        let changed = false
+        const updateList = (list: DecryptedMessage[]) => {
+            return list.map((message) => {
+                if (message.status !== 'queued') {
+                    return message
+                }
+                changed = true
+                return { ...message, status: 'sent' as MessageStatus }
+            })
+        }
+        const messages = updateList(prev.messages)
+        const pending = updateList(prev.pending)
+        if (!changed) {
+            return prev
+        }
+        return buildState(prev, { messages, pending })
+    })
+}
