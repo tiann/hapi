@@ -55,9 +55,14 @@ type Props = {
 
 export function GridView({ sessions, baseUrl, token }: Props) {
     const navigate = useNavigate()
-    const [pinnedIds, setPinnedIds] = useState<string[]>(() =>
-        sessions.filter(s => s.active).slice(0, 4).map(s => s.id)
-    )
+    const [pinnedIds, setPinnedIds] = useState<string[]>([])
+    const initializedPinnedRef = useRef(false)
+
+    useEffect(() => {
+        if (initializedPinnedRef.current || sessions.length === 0) return
+        initializedPinnedRef.current = true
+        setPinnedIds(sessions.filter(s => s.active).slice(0, 4).map(s => s.id))
+    }, [sessions])
     const [expandedId, setExpandedId] = useState<string | null>(null)
     const [focusedIdx, setFocusedIdx] = useState<number | null>(null)
     const [isAddOpen, setIsAddOpen] = useState(false)
@@ -434,7 +439,9 @@ export function GridView({ sessions, baseUrl, token }: Props) {
 
             {/* Cmd+Shift+F: replace focused cell */}
             <SessionSearchModal
-                sessions={sessions}
+                sessions={sessions.filter(s =>
+                    s.id === pinnedIds[replaceTargetIdx ?? -1] || !pinnedIds.includes(s.id)
+                )}
                 isOpen={isReplaceOpen}
                 onClose={() => setIsReplaceOpen(false)}
                 onSelect={replaceCell}
