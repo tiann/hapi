@@ -562,26 +562,3 @@ export function markMessagesConsumed(sessionId: string, localIds: string[]): voi
         return buildState(prev, { messages, pending })
     })
 }
-
-/** Flush all queued messages for a session. Used as a fallback when the agent
- *  transitions from thinking → idle (e.g. on CLI restart where acks were lost). */
-export function flushQueuedStatuses(sessionId: string): void {
-    updateState(sessionId, (prev) => {
-        let changed = false
-        const updateList = (list: DecryptedMessage[]) => {
-            return list.map((message) => {
-                if (message.status !== 'queued') {
-                    return message
-                }
-                changed = true
-                return { ...message, status: 'sent' as MessageStatus }
-            })
-        }
-        const messages = updateList(prev.messages)
-        const pending = updateList(prev.pending)
-        if (!changed) {
-            return prev
-        }
-        return buildState(prev, { messages, pending })
-    })
-}

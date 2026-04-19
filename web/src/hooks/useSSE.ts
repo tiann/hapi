@@ -11,7 +11,7 @@ import type {
     SyncEvent
 } from '@/types/api'
 import { queryKeys } from '@/lib/query-keys'
-import { clearMessageWindow, flushQueuedStatuses, getMessageWindowState, ingestIncomingMessages, markMessagesConsumed, updateMessageStatus } from '@/lib/message-window-store'
+import { clearMessageWindow, getMessageWindowState, ingestIncomingMessages, markMessagesConsumed, updateMessageStatus } from '@/lib/message-window-store'
 
 type SSESubscription = {
     all?: boolean
@@ -475,10 +475,6 @@ export function useSSE(options: {
             })
         }
 
-        const flushQueuedMessages = (sessionId: string) => {
-            flushQueuedStatuses(sessionId)
-        }
-
         const handleSyncEvent = (event: SyncEvent) => {
             lastActivityAtRef.current = Date.now()
 
@@ -515,17 +511,11 @@ export function useSSE(options: {
                     void queryClient.removeQueries({ queryKey: queryKeys.session(event.sessionId) })
                     clearMessageWindow(event.sessionId)
                 } else if (isSessionRecord(event.data) && event.data.id === event.sessionId) {
-                    if (!event.data.thinking) {
-                        flushQueuedMessages(event.sessionId)
-                    }
                     queryClient.setQueryData<SessionResponse>(queryKeys.session(event.sessionId), { session: event.data })
                     upsertSessionSummary(event.data)
                 } else {
                     const patch = getSessionPatch(event.data)
                     if (patch) {
-                        if (patch.thinking === false) {
-                            flushQueuedMessages(event.sessionId)
-                        }
                         const detailPatched = patchSessionDetail(event.sessionId, patch)
                         const summaryPatched = patchSessionSummary(event.sessionId, patch)
 
