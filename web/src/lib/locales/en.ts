@@ -40,6 +40,7 @@ export default {
 
   // Sessions page
   'sessions.count': '{n} sessions in {m} projects',
+  'sessions.archived': 'Archived ({n})',
   'sessions.new': 'New Session',
 
   // Session list
