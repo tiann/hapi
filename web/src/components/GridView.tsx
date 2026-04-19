@@ -364,24 +364,29 @@ export function GridView({ sessions, baseUrl, token }: Props) {
                                 borderRadius: 8, transition: 'border-color 0.15s' }}>
 
                             {/* Floating pill — right-aligned */}
-                            <div className="grid-cell-overlay" style={{
-                                position: 'absolute', top: 5, right: 5, zIndex: 10,
-                                display: 'inline-flex', alignItems: 'center', gap: 5,
-                                maxWidth: 'calc(100% - 10px)',
-                                padding: '3px 6px 3px 8px',
-                                background: 'rgba(0,0,0,0.5)',
-                                backdropFilter: 'blur(8px)',
-                                WebkitBackdropFilter: 'blur(8px)',
-                                borderRadius: 8,
-                                border: '1px solid rgba(255,255,255,0.06)',
-                            }}>
-                                {session.active && (() => {
-                                    const isNotified = notifiedIds.has(session.id)
-                                    const isFlashing = flashingIds.has(session.id)
-                                    const isThinking = session.thinking
-                                    const dotColor = isNotified ? '#f97316' : isThinking ? '#3b82f6' : '#34c759'
-                                    const dotSize = isNotified ? 8 : 5
-                                    return (
+                            {(() => {
+                                const isNotified = notifiedIds.has(session.id)
+                                const isFlashing = flashingIds.has(session.id)
+                                const isThinking = session.active && session.thinking
+                                const dotColor = isNotified ? '#f97316' : isThinking ? '#3b82f6' : '#34c759'
+                                const dotSize = isNotified ? 8 : 5
+                                const titleColor = isThinking ? '#93c5fd' : '#fff'
+                                const subColor = isThinking ? 'rgba(147,197,253,0.7)' : 'rgba(255,255,255,0.6)'
+                                const closeColor = isThinking ? 'rgba(147,197,253,0.5)' : 'rgba(255,255,255,0.4)'
+                                return (
+                                <div className="grid-cell-overlay" style={{
+                                    position: 'absolute', top: 5, right: 5, zIndex: 10,
+                                    display: 'inline-flex', alignItems: 'center', gap: 5,
+                                    maxWidth: 'calc(100% - 10px)',
+                                    padding: '3px 6px 3px 8px',
+                                    background: isThinking ? 'rgba(30,58,120,0.6)' : 'rgba(0,0,0,0.5)',
+                                    backdropFilter: 'blur(8px)',
+                                    WebkitBackdropFilter: 'blur(8px)',
+                                    borderRadius: 8,
+                                    border: isThinking ? '1px solid rgba(147,197,253,0.2)' : '1px solid rgba(255,255,255,0.06)',
+                                    transition: 'background 0.3s, border-color 0.3s',
+                                }}>
+                                    {session.active && (
                                         <div
                                             className={isFlashing ? 'animate-toast-alert' : ''}
                                             onAnimationEnd={() => setFlashingIds(prev => { const s = new Set(prev); s.delete(session.id); return s })}
@@ -391,29 +396,33 @@ export function GridView({ sessions, baseUrl, token }: Props) {
                                                 borderRadius: '50%',
                                                 background: dotColor,
                                                 flexShrink: 0,
-                                                transition: 'width 0.2s, height 0.2s, background 0.2s',
+                                                transition: 'width 0.2s, height 0.2s, background 0.3s',
                                             }}
                                         />
-                                    )
-                                })()}
-                                <div style={{ minWidth: 0 }}>
-                                    <div style={{ fontSize: 11, fontWeight: 700, color: '#fff',
-                                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                        {getSessionTitle(session)}
+                                    )}
+                                    <div style={{ minWidth: 0 }}>
+                                        <div style={{ fontSize: 11, fontWeight: 700, color: titleColor,
+                                            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                                            transition: 'color 0.3s' }}>
+                                            {getSessionTitle(session)}
+                                        </div>
+                                        <div style={{ fontSize: 10, color: subColor,
+                                            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                                            transition: 'color 0.3s' }}>
+                                            {[session.metadata?.flavor, getSessionFolder(session)].filter(Boolean).join(' · ')}
+                                        </div>
                                     </div>
-                                    <div style={{ fontSize: 10, color: '#fff',
-                                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                        {[session.metadata?.flavor, getSessionFolder(session)].filter(Boolean).join(' · ')}
-                                    </div>
+                                    <button onClick={e => { e.stopPropagation(); removeSession(session.id) }}
+                                        title="Remove (⌘⇧X)"
+                                        style={{ background: 'none', border: 'none', cursor: 'pointer',
+                                            color: closeColor, padding: '0 2px', borderRadius: 3,
+                                            display: 'flex', alignItems: 'center', flexShrink: 0,
+                                            transition: 'color 0.3s' }}>
+                                        <CloseIcon />
+                                    </button>
                                 </div>
-                                <button onClick={e => { e.stopPropagation(); removeSession(session.id) }}
-                                    title="Remove (⌘⇧X)"
-                                    style={{ background: 'none', border: 'none', cursor: 'pointer',
-                                        color: 'rgba(255,255,255,0.4)', padding: '0 2px', borderRadius: 3,
-                                        display: 'flex', alignItems: 'center', flexShrink: 0 }}>
-                                    <CloseIcon />
-                                </button>
-                            </div>
+                                )
+                            })()}
 
                             {/* iframe fills the full cell */}
                             <iframe
