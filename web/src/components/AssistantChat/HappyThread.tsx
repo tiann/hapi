@@ -182,11 +182,11 @@ export function HappyThread(props: {
                     for (let i = messages.length - 1; i >= 0; i--) {
                         if (messages[i].offsetTop < scrollTop - 8) { target = messages[i]; break }
                     }
-                    viewport.scrollTo({ top: target ? target.offsetTop : 0, behavior: 'smooth' })
+                    viewport.scrollTo({ top: target ? target.offsetTop : 0, behavior: 'instant' })
                 } else {
                     for (let i = 0; i < messages.length; i++) {
                         if (messages[i].offsetTop > scrollTop + 8) {
-                            viewport.scrollTo({ top: messages[i].offsetTop, behavior: 'smooth' })
+                            viewport.scrollTo({ top: messages[i].offsetTop, behavior: 'instant' })
                             break
                         }
                     }
@@ -194,7 +194,7 @@ export function HappyThread(props: {
             } else {
                 // Scroll by ~40% of viewport height
                 const amount = viewport.clientHeight * 0.4
-                viewport.scrollBy({ top: isBracketLeft ? -amount : amount, behavior: 'smooth' })
+                viewport.scrollBy({ top: isBracketLeft ? -amount : amount, behavior: 'instant' })
             }
         }
         document.addEventListener('keydown', handler, true)
