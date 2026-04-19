@@ -16,6 +16,54 @@ let conversationInstance: ReturnType<typeof useConversation> | null = null
 // Store reference for status updates
 let statusCallback: StatusCallback | null = null
 
+function getErrorName(error: unknown): string | null {
+    if (!error || typeof error !== 'object') return null
+    const maybeName = (error as { name?: unknown }).name
+    return typeof maybeName === 'string' ? maybeName : null
+}
+
+function resolveVoiceErrorMessage(error: unknown): string {
+    const name = getErrorName(error)
+    const rawMessage = error instanceof Error
+        ? error.message
+        : (typeof error === 'string' ? error : '')
+    const message = rawMessage.toLowerCase()
+
+    if (
+        name === 'NotAllowedError'
+        || name === 'PermissionDeniedError'
+        || message.includes('permission')
+        || message.includes('not allowed')
+        || message.includes('not granted')
+        || message.includes('denied')
+    ) {
+        return 'Microphone permission denied'
+    }
+
+    if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
+        return 'No microphone found'
+    }
+
+    if (name === 'NotReadableError' || name === 'TrackStartError') {
+        return 'Microphone is busy in another app'
+    }
+
+    if (
+        name === 'SecurityError'
+        || message.includes('secure context')
+        || message.includes('https')
+        || message.includes('insecure')
+    ) {
+        return 'Microphone requires HTTPS (or localhost)'
+    }
+
+    if (rawMessage.trim().length > 0) {
+        return rawMessage
+    }
+
+    return 'Failed to start voice session'
+}
+
 // Global voice session implementation
 class RealtimeVoiceSessionImpl implements VoiceSession {
     private api: ApiClient
@@ -34,16 +82,15 @@ class RealtimeVoiceSessionImpl implements VoiceSession {
 
         statusCallback?.('connecting')
 
-        // Request microphone permission first
-        let permissionStream: MediaStream | null = null
-        try {
-            permissionStream = await navigator.mediaDevices.getUserMedia({ audio: true })
-        } catch (error) {
-            console.error('[Voice] Failed to get microphone permission:', error)
-            statusCallback?.('error', 'Microphone permission denied')
+        if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
+            const error = new Error(
+                !window.isSecureContext
+                    ? 'Microphone requires HTTPS (or localhost)'
+                    : 'Microphone is not available in this browser'
+            )
+            console.error('[Voice] Microphone unavailable:', error)
+            statusCallback?.('error', error.message)
             throw error
-        } finally {
-            permissionStream?.getTracks().forEach((track) => track.stop())
         }
 
         // Fetch conversation token from server
@@ -85,7 +132,7 @@ class RealtimeVoiceSessionImpl implements VoiceSession {
             }
         } catch (error) {
             console.error('[Voice] Failed to start realtime session:', error)
-            statusCallback?.('error', 'Failed to start voice session')
+            statusCallback?.('error', resolveVoiceErrorMessage(error))
             throw error
         }
     }
@@ -185,7 +232,7 @@ export function RealtimeVoiceSession({
 
     const handleError = useCallback((error: unknown) => {
         if (DEBUG) console.error('[Voice] Realtime error:', error)
-        const errorMessage = error instanceof Error ? error.message : 'Connection error'
+        const errorMessage = resolveVoiceErrorMessage(error)
         onStatusChange?.('error', errorMessage)
     }, [onStatusChange])
 

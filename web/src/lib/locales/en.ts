@@ -41,6 +41,8 @@ export default {
   // Sessions page
   'sessions.count': '{n} sessions in {m} projects',
   'sessions.new': 'New Session',
+  'sessions.sort.auto': 'Sort: automatic',
+  'sessions.sort.manual': 'Sort: manual',
 
   // Session list
   'session.item.path': 'path',
@@ -63,6 +65,11 @@ export default {
   'session.action.archive': 'Archive',
   'session.action.delete': 'Delete',
   'session.action.copy': 'Copy',
+  'session.action.moveUp': 'Move Up',
+  'session.action.moveDown': 'Move Down',
+  'group.more': 'Group actions',
+  'group.action.moveUp': 'Move Up',
+  'group.action.moveDown': 'Move Down',
 
   // Dialogs
   'dialog.rename.title': 'Rename Session',
@@ -257,6 +264,14 @@ export default {
   'settings.language.title': 'Language',
   'settings.language.label': 'Language',
   'settings.display.title': 'Display',
+  'settings.display.theme': 'Theme',
+  'settings.display.theme.system': 'System',
+  'settings.display.theme.light': 'Light',
+  'settings.display.theme.dark': 'Dark',
+  'settings.display.theme.catpuccin': 'Catppuccin',
+  'settings.display.theme.gaius': 'Gaius',
+  'settings.display.theme.gaius-light': 'Gaius Light',
+  'settings.display.theme.gaius-dark': 'Gaius Dark',
   'settings.display.appearance': 'Appearance',
   'settings.display.appearance.system': 'Follow System',
   'settings.display.appearance.dark': 'Dark',

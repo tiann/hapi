@@ -538,6 +538,10 @@ export function useSSE(options: {
                 }
             }
 
+            if (event.type === 'session-sort-preference-updated') {
+                void queryClient.invalidateQueries({ queryKey: queryKeys.sessionSortPreference })
+            }
+
             onEventRef.current(event)
         }
 

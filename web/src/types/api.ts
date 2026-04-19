@@ -1,5 +1,8 @@
 import type {
     DecryptedMessage as ProtocolDecryptedMessage,
+    SessionManualOrder,
+    SessionSortMode,
+    SessionSortPreference,
     Session,
     SessionSummary,
     SyncEvent as ProtocolSyncEvent,
@@ -11,6 +14,9 @@ export type {
     AttachmentMetadata,
     CodexCollaborationMode,
     PermissionMode,
+    SessionManualOrder,
+    SessionSortMode,
+    SessionSortPreference,
     Session,
     SessionSummary,
     SessionSummaryMetadata,

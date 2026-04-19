@@ -41,6 +41,8 @@ export default {
   // Sessions page
   'sessions.count': '{n} 个会话，{m} 个项目',
   'sessions.new': '新建会话',
+  'sessions.sort.auto': '排序：自动',
+  'sessions.sort.manual': '排序：手动',
 
   // Session list
   'session.item.path': '路径',
@@ -63,6 +65,11 @@ export default {
   'session.action.archive': '归档',
   'session.action.delete': '删除',
   'session.action.copy': '复制',
+  'session.action.moveUp': '上移',
+  'session.action.moveDown': '下移',
+  'group.more': '分组操作',
+  'group.action.moveUp': '上移',
+  'group.action.moveDown': '下移',
 
   // Dialogs
   'dialog.rename.title': '重命名会话',
@@ -259,6 +266,14 @@ export default {
   'settings.language.title': '语言',
   'settings.language.label': '语言',
   'settings.display.title': '显示',
+  'settings.display.theme': '主题',
+  'settings.display.theme.system': '跟随系统',
+  'settings.display.theme.light': '浅色',
+  'settings.display.theme.dark': '深色',
+  'settings.display.theme.catpuccin': 'Catppuccin',
+  'settings.display.theme.gaius': 'Gaius',
+  'settings.display.theme.gaius-light': 'Gaius 浅色',
+  'settings.display.theme.gaius-dark': 'Gaius 深色',
   'settings.display.appearance': '外观',
   'settings.display.appearance.system': '跟随系统',
   'settings.display.appearance.dark': '深色',

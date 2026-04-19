@@ -140,6 +140,38 @@ bun run build:web
 
 The built assets land in `web/dist` and are served by hapi-hub. The single executable can embed these assets.
 
+## E2E (Playwright)
+
+Session-sort backend persistence has Playwright coverage in:
+
+- `web/e2e/session-sort.backend.e2e.spec.ts`
+
+Install browser once:
+
+```bash
+cd web
+bun run test:e2e:install
+```
+
+Run all Playwright tests:
+
+```bash
+cd web
+bun run test:e2e
+```
+
+Run only session-sort flow:
+
+```bash
+cd web
+bun run test:e2e:session-sort
+```
+
+Notes:
+
+- Seeded CLI sessions in these tests must include `metadata.host`; otherwise metadata schema parsing can drop fields and UI grouping/selectors become unstable.
+- `page.reload({ waitUntil: 'networkidle' })` can hang when SSE stays active. Prefer `waitUntil: 'domcontentloaded'` for authenticated app reload assertions.
+
 ## Standalone hosting
 
 You can host `web/dist` on a static host (GitHub Pages, Cloudflare Pages) and point it at any hapi hub:

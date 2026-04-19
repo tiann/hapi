@@ -12,8 +12,9 @@ import {
     useParams,
 } from '@tanstack/react-router'
 import { App } from '@/App'
+import { SortIcon, PinIcon } from '@/components/icons/SortIcons'
 import { SessionChat } from '@/components/SessionChat'
-import { SessionList } from '@/components/SessionList'
+import { SessionList, groupSessionsByDirectory } from '@/components/SessionList'
 import { NewSession } from '@/components/NewSession'
 import { LoadingState } from '@/components/LoadingState'
 import { useAppContext } from '@/lib/app-context'
@@ -26,6 +27,7 @@ import { useSessions } from '@/hooks/queries/useSessions'
 import { useSlashCommands } from '@/hooks/queries/useSlashCommands'
 import { useSkills } from '@/hooks/queries/useSkills'
 import { useSendMessage } from '@/hooks/mutations/useSendMessage'
+import { useSortToggle } from '@/hooks/useSortToggle'
 import { queryKeys } from '@/lib/query-keys'
 import { useToast } from '@/lib/toast-context'
 import { useTranslation } from '@/lib/use-translation'
@@ -148,6 +150,18 @@ function SessionsPage() {
                                 title={t('settings.title')}
                             >
                                 <SettingsIcon className="h-5 w-5" />
+                            </button>
+                            <button
+                                type="button"
+                                onClick={toggleSortMode}
+                                className="p-1.5 rounded-full text-[var(--app-hint)] hover:text-[var(--app-link)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                title={t(sortMode === 'auto' ? 'sessions.sort.auto' : 'sessions.sort.manual')}
+                                aria-pressed={sortMode === 'manual'}
+                                disabled={isSortPreferencePending}
+                            >
+                                {sortMode === 'auto'
+                                    ? <SortIcon className="h-4 w-4" />
+                                    : <PinIcon className="h-4 w-4" />}
                             </button>
                             <button
                                 type="button"
@@ -372,7 +386,7 @@ function NewSessionPage() {
     }, [navigate, queryClient])
 
     return (
-        <div className="flex h-full min-h-0 flex-col">
+        <div className="flex-1 overflow-y-auto">
             <div className="flex items-center gap-2 border-b border-[var(--app-border)] bg-[var(--app-bg)] p-3 pt-[calc(0.75rem+env(safe-area-inset-top))]">
                 {!isTelegramApp() && (
                     <button
@@ -393,14 +407,13 @@ function NewSessionPage() {
                     </div>
                 ) : null}
 
-                <NewSession
-                    api={api}
-                    machines={machines}
-                    isLoading={machinesLoading}
-                    onCancel={handleCancel}
-                    onSuccess={handleSuccess}
-                />
-            </div>
+            <NewSession
+                api={api}
+                machines={machines}
+                isLoading={machinesLoading}
+                onCancel={handleCancel}
+                onSuccess={handleSuccess}
+            />
         </div>
     )
 }

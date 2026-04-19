@@ -5,6 +5,7 @@ import { dirname } from 'node:path'
 import { MachineStore } from './machineStore'
 import { MessageStore } from './messageStore'
 import { PushStore } from './pushStore'
+import { SessionSortPreferenceStore } from './sessionSortPreferenceStore'
 import { SessionStore } from './sessionStore'
 import { UserStore } from './userStore'
 
@@ -13,22 +14,26 @@ export type {
     StoredMessage,
     StoredPushSubscription,
     StoredSession,
+    StoredSessionSortPreference,
     StoredUser,
+    SessionSortPreferenceUpdateResult,
     VersionedUpdateResult
 } from './types'
 export { MachineStore } from './machineStore'
 export { MessageStore } from './messageStore'
 export { PushStore } from './pushStore'
+export { SessionSortPreferenceStore } from './sessionSortPreferenceStore'
 export { SessionStore } from './sessionStore'
 export { UserStore } from './userStore'
 
-const SCHEMA_VERSION: number = 6
+const SCHEMA_VERSION: number = 7
 const REQUIRED_TABLES = [
     'sessions',
     'machines',
     'messages',
     'users',
-    'push_subscriptions'
+    'push_subscriptions',
+    'session_sort_preferences'
 ] as const
 
 export class Store {
@@ -40,6 +45,7 @@ export class Store {
     readonly messages: MessageStore
     readonly users: UserStore
     readonly push: PushStore
+    readonly sessionSortPreferences: SessionSortPreferenceStore
 
     constructor(dbPath: string) {
         this.dbPath = dbPath
@@ -81,6 +87,7 @@ export class Store {
         this.messages = new MessageStore(this.db)
         this.users = new UserStore(this.db)
         this.push = new PushStore(this.db)
+        this.sessionSortPreferences = new SessionSortPreferenceStore(this.db)
     }
 
     private initSchema(): void {
@@ -88,55 +95,36 @@ export class Store {
         if (currentVersion === 0) {
             if (this.hasAnyUserTables()) {
                 this.migrateLegacySchemaIfNeeded()
-                this.createSchema()
-                this.setUserVersion(SCHEMA_VERSION)
-                return
             }
-
             this.createSchema()
             this.setUserVersion(SCHEMA_VERSION)
             return
         }
 
-        if (currentVersion === 1 && SCHEMA_VERSION === 2) {
-            this.migrateFromV1ToV2()
-            this.setUserVersion(SCHEMA_VERSION)
-            return
-        }
-
-        if (currentVersion === 2 && SCHEMA_VERSION === 3) {
-            this.migrateFromV2ToV3()
-            this.setUserVersion(SCHEMA_VERSION)
-            return
-        }
-
-        if (currentVersion === 3 && SCHEMA_VERSION === 4) {
-            this.migrateFromV3ToV4()
-            this.setUserVersion(SCHEMA_VERSION)
-            return
-        }
-
-        if (currentVersion === 4 && SCHEMA_VERSION === 5) {
-            this.migrateFromV4ToV5()
-            this.setUserVersion(SCHEMA_VERSION)
-            return
-        }
-
-        if (currentVersion === 5 && SCHEMA_VERSION === 6) {
-            this.migrateFromV5ToV6()
-            this.setUserVersion(SCHEMA_VERSION)
-            return
-        }
-
-        if (currentVersion === 4 && SCHEMA_VERSION === 6) {
-            this.migrateFromV4ToV5()
-            this.migrateFromV5ToV6()
-            this.setUserVersion(SCHEMA_VERSION)
-            return
-        }
-
-        if (currentVersion !== SCHEMA_VERSION) {
+        if (currentVersion > SCHEMA_VERSION) {
             throw this.buildSchemaMismatchError(currentVersion)
+        }
+
+        let version = currentVersion
+        while (version < SCHEMA_VERSION) {
+            if (version === 1) {
+                this.migrateFromV1ToV2()
+            } else if (version === 2) {
+                this.migrateFromV2ToV3()
+            } else if (version === 3) {
+                this.migrateFromV3ToV4()
+            } else if (version === 4) {
+                this.migrateFromV4ToV5()
+            } else if (version === 5) {
+                this.migrateFromV5ToV6()
+            } else if (version === 6) {
+                this.migrateFromV6ToV7()
+            } else {
+                throw this.buildSchemaMismatchError(version)
+            }
+
+            version += 1
+            this.setUserVersion(version)
         }
 
         this.assertRequiredTablesPresent()
@@ -217,6 +205,25 @@ export class Store {
             );
             CREATE INDEX IF NOT EXISTS idx_push_subscriptions_namespace ON push_subscriptions(namespace);
         `)
+
+        this.createSessionSortPreferencesTable()
+    }
+
+    private createSessionSortPreferencesTable(): void {
+        this.db.exec(`
+            CREATE TABLE IF NOT EXISTS session_sort_preferences (
+                user_id INTEGER NOT NULL,
+                namespace TEXT NOT NULL,
+                sort_mode TEXT NOT NULL DEFAULT 'auto',
+                manual_order TEXT NOT NULL DEFAULT '{"groupOrder":[],"sessionOrder":{}}',
+                version INTEGER NOT NULL DEFAULT 1,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (user_id, namespace)
+            );
+            CREATE INDEX IF NOT EXISTS idx_session_sort_preferences_namespace
+                ON session_sort_preferences(namespace);
+        `)
     }
 
     private migrateLegacySchemaIfNeeded(): void {
@@ -260,7 +267,7 @@ export class Store {
             this.db.exec('ALTER TABLE machines RENAME COLUMN daemon_state_version TO runner_state_version')
             this.db.exec('COMMIT')
             return
-        } catch (error) {
+        } catch {
             this.db.exec('ROLLBACK')
         }
 
@@ -310,6 +317,10 @@ export class Store {
     }
 
     private migrateFromV3ToV4(): void {
+        this.createSessionSortPreferencesTable()
+    }
+
+    private migrateFromV4ToV5(): void {
         const columns = this.getSessionColumnNames()
         if (!columns.has('team_state')) {
             this.db.exec('ALTER TABLE sessions ADD COLUMN team_state TEXT')
@@ -319,18 +330,19 @@ export class Store {
         }
     }
 
-    private migrateFromV4ToV5(): void {
+    private migrateFromV5ToV6(): void {
         const columns = this.getSessionColumnNames()
         if (!columns.has('model')) {
             this.db.exec('ALTER TABLE sessions ADD COLUMN model TEXT')
         }
     }
 
-    private migrateFromV5ToV6(): void {
+    private migrateFromV6ToV7(): void {
         const columns = this.getSessionColumnNames()
         if (!columns.has('effort')) {
             this.db.exec('ALTER TABLE sessions ADD COLUMN effort TEXT')
         }
+        this.createSessionSortPreferencesTable()
     }
 
     private getSessionColumnNames(): Set<string> {

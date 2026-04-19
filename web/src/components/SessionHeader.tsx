@@ -2,6 +2,7 @@ import { Fragment, type ReactNode, useId, useMemo, useRef, useState } from 'reac
 import { getPermissionModeLabel, isPermissionModeAllowedForFlavor } from '@hapi/protocol'
 import type { Session } from '@/types/api'
 import type { ApiClient } from '@/api/client'
+import { getPermissionModeLabel, getPermissionModeTone, isPermissionModeAllowedForFlavor } from '@hapi/protocol'
 import { isTelegramApp } from '@/hooks/useTelegram'
 import { useSessionActions } from '@/hooks/mutations/useSessionActions'
 import { SessionActionMenu } from '@/components/SessionActionMenu'
@@ -10,6 +11,7 @@ import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { formatEffortLabel, getFlavorTextClass, META_DOT_SEPARATOR_CLASS } from '@/lib/agentFlavorUtils'
 import { getSessionModelLabel } from '@/lib/sessionModelLabel'
 import { useTranslation } from '@/lib/use-translation'
+import { getFlavorBadgeClass, PERMISSION_TONE_BADGE } from '@/lib/agentFlavorUtils'
 
 function getSessionTitle(session: Session): string {
     if (session.metadata?.name) {
