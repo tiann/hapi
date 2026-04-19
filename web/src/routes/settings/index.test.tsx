@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { I18nContext, I18nProvider } from '@/lib/i18n-context'
 import { en } from '@/lib/locales'
 import { PROTOCOL_VERSION } from '@hapi/protocol'
@@ -54,6 +54,29 @@ vi.mock('@/lib/languages', () => ({
     getLanguageDisplayName: (lang: { code: string | null; name: string }) => lang.name,
 }))
 
+const mockRequestPermission = vi.fn(async () => true)
+const mockSubscribe = vi.fn(async () => true)
+const mockRefreshSubscription = vi.fn(async () => {})
+let mockPushState = {
+    isSupported: true,
+    permission: 'default' as NotificationPermission,
+    isSubscribed: false,
+}
+
+vi.mock('@/lib/app-context', () => ({
+    useAppContext: () => ({ api: {}, token: 'token', baseUrl: 'http://localhost' }),
+}))
+
+vi.mock('@/hooks/usePushNotifications', () => ({
+    usePushNotifications: () => ({
+        ...mockPushState,
+        requestPermission: mockRequestPermission,
+        subscribe: mockSubscribe,
+        refreshSubscription: mockRefreshSubscription,
+        unsubscribe: vi.fn(async () => true),
+    }),
+}))
+
 function renderWithProviders(ui: React.ReactElement) {
     return render(
         <I18nProvider>
@@ -76,6 +99,14 @@ function renderWithSpyT(ui: React.ReactElement) {
 describe('SettingsPage', () => {
     beforeEach(() => {
         vi.clearAllMocks()
+        mockPushState = {
+            isSupported: true,
+            permission: 'default',
+            isSubscribed: false,
+        }
+        mockRequestPermission.mockClear()
+        mockSubscribe.mockClear()
+        mockRefreshSubscription.mockClear()
         // Mock localStorage
         const localStorageMock = {
             getItem: vi.fn(() => 'en'),
@@ -83,6 +114,10 @@ describe('SettingsPage', () => {
             removeItem: vi.fn(),
         }
         Object.defineProperty(window, 'localStorage', { value: localStorageMock })
+    })
+
+    afterEach(() => {
+        cleanup()
     })
 
     it('renders the About section', () => {
@@ -139,5 +174,59 @@ describe('SettingsPage', () => {
         renderWithProviders(<SettingsPage />)
         expect(screen.getAllByText('Terminal Font Size').length).toBeGreaterThanOrEqual(1)
         expect(screen.getAllByText('13px').length).toBeGreaterThanOrEqual(1)
+    })
+
+    it('renders notification settings state and enable button', () => {
+        renderWithProviders(<SettingsPage />)
+
+        expect(screen.getAllByText('Notifications').length).toBeGreaterThanOrEqual(1)
+        expect(screen.getAllByText('Not enabled').length).toBeGreaterThanOrEqual(1)
+        expect(screen.getByRole('button', { name: 'Enable notifications' })).toBeInTheDocument()
+    })
+
+    it('enables notifications only after clicking the explicit button', async () => {
+        renderWithProviders(<SettingsPage />)
+
+        expect(mockRequestPermission).not.toHaveBeenCalled()
+        fireEvent.click(screen.getByRole('button', { name: 'Enable notifications' }))
+
+        await waitFor(() => expect(mockRequestPermission).toHaveBeenCalledTimes(1))
+        await waitFor(() => expect(mockSubscribe).toHaveBeenCalledTimes(1))
+    })
+
+    it('does not refresh into an enabled state when hub subscription registration fails', async () => {
+        mockSubscribe.mockResolvedValueOnce(false)
+        renderWithProviders(<SettingsPage />)
+
+        fireEvent.click(screen.getByRole('button', { name: 'Enable notifications' }))
+
+        await waitFor(() => expect(mockSubscribe).toHaveBeenCalledTimes(1))
+        expect(mockRefreshSubscription).not.toHaveBeenCalled()
+    })
+
+    it('renders resubscribe button when permission is granted but subscription is missing', () => {
+        mockPushState = {
+            isSupported: true,
+            permission: 'granted',
+            isSubscribed: false,
+        }
+
+        renderWithProviders(<SettingsPage />)
+
+        expect(screen.getAllByText('Permission granted, not subscribed').length).toBeGreaterThanOrEqual(1)
+        expect(screen.getByRole('button', { name: 'Resubscribe notifications' })).toBeInTheDocument()
+    })
+
+    it('shows help text when notification permission is denied', () => {
+        mockPushState = {
+            isSupported: true,
+            permission: 'denied',
+            isSubscribed: false,
+        }
+
+        renderWithProviders(<SettingsPage />)
+
+        expect(screen.getAllByText('Blocked by browser settings').length).toBeGreaterThanOrEqual(1)
+        expect(screen.getByText('Enable notifications from browser or system settings, then return here.')).toBeInTheDocument()
     })
 })

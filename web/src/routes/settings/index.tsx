@@ -1,10 +1,12 @@
 import { useState, useRef, useEffect } from 'react'
 import { useTranslation, type Locale } from '@/lib/use-translation'
+import { useAppContext } from '@/lib/app-context'
 import { useAppGoBack } from '@/hooks/useAppGoBack'
 import { getElevenLabsSupportedLanguages, getLanguageDisplayName, type Language } from '@/lib/languages'
 import { getFontScaleOptions, useFontScale, type FontScale } from '@/hooks/useFontScale'
 import { getTerminalFontSizeOptions, useTerminalFontSize, type TerminalFontSize } from '@/hooks/useTerminalFontSize'
 import { useAppearance, getAppearanceOptions, type AppearancePreference } from '@/hooks/useTheme'
+import { usePushNotifications } from '@/hooks/usePushNotifications'
 import { PROTOCOL_VERSION } from '@hapi/protocol'
 
 const locales: { value: Locale; nativeLabel: string }[] = [
@@ -87,6 +89,16 @@ export default function SettingsPage() {
     const { fontScale, setFontScale } = useFontScale()
     const { terminalFontSize, setTerminalFontSize } = useTerminalFontSize()
     const { appearance, setAppearance } = useAppearance()
+    const { api } = useAppContext()
+    const {
+        isSupported: isPushSupported,
+        permission: pushPermission,
+        isSubscribed: isPushSubscribed,
+        requestPermission,
+        subscribe,
+        refreshSubscription,
+    } = usePushNotifications(api)
+    const [isNotificationBusy, setIsNotificationBusy] = useState(false)
 
     // Voice language state - read from localStorage
     const [voiceLanguage, setVoiceLanguage] = useState<string | null>(() => {
@@ -130,6 +142,39 @@ export default function SettingsPage() {
             localStorage.setItem('hapi-voice-lang', language.code)
         }
         setIsVoiceOpen(false)
+    }
+
+    const notificationStatusLabel = (() => {
+        if (!isPushSupported) return t('settings.notifications.unsupported')
+        if (pushPermission === 'denied') return t('settings.notifications.denied')
+        if (pushPermission === 'granted' && isPushSubscribed) return t('settings.notifications.grantedSubscribed')
+        if (pushPermission === 'granted') return t('settings.notifications.grantedUnsubscribed')
+        return t('settings.notifications.default')
+    })()
+
+    const notificationButtonLabel = pushPermission === 'granted'
+        ? t('settings.notifications.resubscribe')
+        : t('settings.notifications.enable')
+
+    const canEnableNotifications = isPushSupported
+        && pushPermission !== 'denied'
+        && !(pushPermission === 'granted' && isPushSubscribed)
+
+    const handleEnableNotifications = async () => {
+        if (!canEnableNotifications || isNotificationBusy) return
+        setIsNotificationBusy(true)
+        try {
+            const granted = pushPermission === 'granted' || await requestPermission()
+            let subscribed = false
+            if (granted) {
+                subscribed = await subscribe()
+            }
+            if (subscribed) {
+                await refreshSubscription()
+            }
+        } finally {
+            setIsNotificationBusy(false)
+        }
     }
 
     // Close dropdown when clicking outside
@@ -397,6 +442,39 @@ export default function SettingsPage() {
                                 </div>
                             )}
                         </div>
+                    </div>
+
+                    {/* Notifications section */}
+                    <div className="border-b border-[var(--app-divider)]">
+                        <div className="px-3 py-2 text-xs font-semibold text-[var(--app-hint)] uppercase tracking-wide">
+                            {t('settings.notifications.title')}
+                        </div>
+                        <div className="flex w-full items-center justify-between gap-3 px-3 py-3">
+                            <span className="text-[var(--app-fg)]">{t('settings.notifications.status')}</span>
+                            <span className="text-right text-[var(--app-hint)]">{notificationStatusLabel}</span>
+                        </div>
+                        {pushPermission === 'denied' && (
+                            <div className="px-3 pb-3 text-sm text-[var(--app-hint)]">
+                                {t('settings.notifications.deniedHelp')}
+                            </div>
+                        )}
+                        {!isPushSupported && (
+                            <div className="px-3 pb-3 text-sm text-[var(--app-hint)]">
+                                {t('settings.notifications.unsupportedHelp')}
+                            </div>
+                        )}
+                        {canEnableNotifications && (
+                            <div className="px-3 pb-3">
+                                <button
+                                    type="button"
+                                    onClick={handleEnableNotifications}
+                                    disabled={isNotificationBusy}
+                                    className="rounded-lg bg-[var(--app-link)] px-3 py-2 text-sm font-medium text-white disabled:opacity-60"
+                                >
+                                    {notificationButtonLabel}
+                                </button>
+                            </div>
+                        )}
                     </div>
 
                     {/* Voice Assistant section */}

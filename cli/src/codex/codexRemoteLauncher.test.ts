@@ -5,7 +5,8 @@ import type { EnhancedMode } from './loop';
 const harness = vi.hoisted(() => ({
     notifications: [] as Array<{ method: string; params: unknown }>,
     registerRequestCalls: [] as string[],
-    initializeCalls: [] as unknown[]
+    initializeCalls: [] as unknown[],
+    turnCompletion: { status: 'Completed' } as { status: string; message?: string }
 }));
 
 vi.mock('./codexAppServerClient', () => {
@@ -40,7 +41,7 @@ vi.mock('./codexAppServerClient', () => {
             harness.notifications.push({ method: 'turn/started', params: started });
             this.notificationHandler?.('turn/started', started);
 
-            const completed = { status: 'Completed', turn: {} };
+            const completed = { ...harness.turnCompletion, turn: {} };
             harness.notifications.push({ method: 'turn/completed', params: completed });
             this.notificationHandler?.('turn/completed', completed);
 
@@ -168,6 +169,7 @@ describe('codexRemoteLauncher', () => {
         harness.notifications = [];
         harness.registerRequestCalls = [];
         harness.initializeCalls = [];
+        harness.turnCompletion = { status: 'Completed' };
     });
 
     it('finishes a turn and emits ready when task lifecycle events omit turn_id', async () => {
@@ -197,5 +199,21 @@ describe('codexRemoteLauncher', () => {
         expect(sessionEvents.filter((event) => event.type === 'ready').length).toBeGreaterThanOrEqual(1);
         expect(thinkingChanges).toContain(true);
         expect(session.thinking).toBe(false);
+    });
+
+    it('persists failed terminal events so the hub can notify for attention', async () => {
+        harness.turnCompletion = { status: 'Failed', message: 'boom' };
+        const {
+            session,
+            codexMessages
+        } = createSessionStub();
+
+        const exitReason = await codexRemoteLauncher(session as never);
+
+        expect(exitReason).toBe('exit');
+        expect(codexMessages).toContainEqual(expect.objectContaining({
+            type: 'task_failed',
+            error: 'boom'
+        }));
     });
 });

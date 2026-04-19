@@ -285,6 +285,10 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 allowAnonymousTerminalEvent = false;
             }
 
+            if (msgType === 'turn_aborted' || msgType === 'task_failed') {
+                session.sendAgentMessage(msg);
+            }
+
             if (msgType === 'agent_message') {
                 const message = asString(msg.message);
                 if (message) {

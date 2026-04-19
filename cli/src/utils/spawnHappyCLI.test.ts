@@ -1,5 +1,7 @@
 import { beforeAll, afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SpawnOptions } from 'child_process';
+import { join } from 'node:path';
+import { projectPath } from '@/projectPath';
 
 const spawnMock = vi.fn((..._args: any[]) => ({ pid: 12345 } as any));
 
@@ -100,14 +102,16 @@ describe('spawnHappyCLI windowsHide behavior', () => {
 
     const command = getHappyCliCommand(['mcp', '--url', 'http://127.0.0.1:1234/']);
     const isBunRuntime = Boolean((process.versions as Record<string, string | undefined>).bun);
+    const expectedProjectRoot = projectPath().replace(/\\/g, '/');
+    const expectedEntrypoint = join(projectPath(), 'src', 'index.ts').replace(/\\/g, '/');
 
     expect(command.command).toBe(process.execPath);
     if (isBunRuntime) {
       expect(command.args[0]).toBe('--cwd');
-      expect(command.args[1].replace(/\\/g, '/')).toMatch(/\/hapi\/cli$/);
-      expect(command.args[2].replace(/\\/g, '/')).toMatch(/\/hapi\/cli\/src\/index\.ts$/);
+      expect(command.args[1].replace(/\\/g, '/')).toBe(expectedProjectRoot);
+      expect(command.args[2].replace(/\\/g, '/')).toBe(expectedEntrypoint);
     } else {
-      expect(command.args.some((arg) => arg.replace(/\\/g, '/').endsWith('/hapi/cli/src/index.ts'))).toBe(true);
+      expect(command.args.map((arg) => arg.replace(/\\/g, '/'))).toContain(expectedEntrypoint);
     }
   });
 

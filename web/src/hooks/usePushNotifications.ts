@@ -73,19 +73,27 @@ export function usePushNotifications(api: ApiClient | null) {
             return false
         }
 
+        let activeSubscription: PushSubscription | null = null
         try {
             const registration = await navigator.serviceWorker.ready
             const existing = await registration.pushManager.getSubscription()
             const { publicKey } = await api.getPushVapidPublicKey()
             const applicationServerKey = base64UrlToUint8Array(publicKey).buffer as ArrayBuffer
+            let createdSubscription = false
             const subscription = existing ?? await registration.pushManager.subscribe({
                 userVisibleOnly: true,
                 applicationServerKey
             })
+            createdSubscription = !existing
+            activeSubscription = subscription
 
             const json = subscription.toJSON()
             const keys = json.keys
             if (!json.endpoint || !keys?.p256dh || !keys.auth) {
+                if (createdSubscription) {
+                    await subscription.unsubscribe()
+                }
+                setIsSubscribed(false)
                 return false
             }
 
@@ -100,6 +108,18 @@ export function usePushNotifications(api: ApiClient | null) {
             return true
         } catch (error) {
             console.error('[PushNotifications] Failed to subscribe:', error)
+            try {
+                if (activeSubscription) {
+                    await activeSubscription.unsubscribe()
+                } else {
+                    const registration = await navigator.serviceWorker.ready
+                    const subscription = await registration.pushManager.getSubscription()
+                    await subscription?.unsubscribe()
+                }
+            } catch (cleanupError) {
+                console.error('[PushNotifications] Failed to clean up local subscription:', cleanupError)
+            }
+            setIsSubscribed(false)
             return false
         }
     }, [api])
@@ -132,6 +152,7 @@ export function usePushNotifications(api: ApiClient | null) {
         isSupported,
         permission,
         isSubscribed,
+        refreshSubscription,
         requestPermission,
         subscribe,
         unsubscribe

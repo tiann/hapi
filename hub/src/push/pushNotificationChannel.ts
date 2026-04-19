@@ -1,5 +1,5 @@
 import type { Session } from '../sync/syncEngine'
-import type { NotificationChannel } from '../notifications/notificationTypes'
+import type { AttentionReason, NotificationChannel } from '../notifications/notificationTypes'
 import { getAgentName, getSessionName } from '../notifications/sessionInfo'
 import type { SSEManager } from '../sse/sseManager'
 import type { VisibilityTracker } from '../visibility/visibilityTracker'
@@ -35,23 +35,7 @@ export class PushNotificationChannel implements NotificationChannel {
             }
         }
 
-        const url = payload.data?.url ?? this.buildSessionPath(session.id)
-        if (this.visibilityTracker.hasVisibleConnection(session.namespace)) {
-            const delivered = await this.sseManager.sendToast(session.namespace, {
-                type: 'toast',
-                data: {
-                    title: payload.title,
-                    body: payload.body,
-                    sessionId: session.id,
-                    url
-                }
-            })
-            if (delivered > 0) {
-                return
-            }
-        }
-
-        await this.pushService.sendToNamespace(session.namespace, payload)
+        await this.deliver(session, payload)
     }
 
     async sendReady(session: Session): Promise<void> {
@@ -73,6 +57,30 @@ export class PushNotificationChannel implements NotificationChannel {
             }
         }
 
+        await this.deliver(session, payload)
+    }
+
+    async sendAttention(session: Session, _reason: AttentionReason): Promise<void> {
+        if (!session.active) {
+            return
+        }
+
+        const name = getSessionName(session)
+        const payload: PushPayload = {
+            title: 'Task needs attention',
+            body: `${name} stopped or failed`,
+            tag: `attention-${session.id}`,
+            data: {
+                type: 'attention',
+                sessionId: session.id,
+                url: this.buildSessionPath(session.id)
+            }
+        }
+
+        await this.deliver(session, payload)
+    }
+
+    private async deliver(session: Session, payload: PushPayload): Promise<void> {
         const url = payload.data?.url ?? this.buildSessionPath(session.id)
         if (this.visibilityTracker.hasVisibleConnection(session.namespace)) {
             const delivered = await this.sseManager.sendToast(session.namespace, {

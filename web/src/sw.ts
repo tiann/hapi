@@ -3,6 +3,7 @@ import { precacheAndRoute } from 'workbox-precaching'
 import { registerRoute } from 'workbox-routing'
 import { CacheFirst, NetworkFirst } from 'workbox-strategies'
 import { ExpirationPlugin } from 'workbox-expiration'
+import { focusOrOpenNotificationUrl, type NotificationClientsLike } from './lib/notificationClick'
 
 declare const self: ServiceWorkerGlobalScope & {
     __WB_MANIFEST: Array<string | { url: string; revision?: string }>
@@ -119,5 +120,5 @@ self.addEventListener('notificationclick', (event) => {
     event.notification.close()
     const data = event.notification.data as { url?: string } | undefined
     const url = data?.url ?? '/'
-    event.waitUntil(self.clients.openWindow(url))
+    event.waitUntil(focusOrOpenNotificationUrl(self.clients as unknown as NotificationClientsLike, url))
 })

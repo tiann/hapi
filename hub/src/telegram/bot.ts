@@ -10,7 +10,7 @@ import { SyncEngine, Session } from '../sync/syncEngine'
 import { handleCallback, CallbackContext } from './callbacks'
 import { formatSessionNotification, createNotificationKeyboard } from './sessionView'
 import { getAgentName } from '../notifications/sessionInfo'
-import type { NotificationChannel } from '../notifications/notificationTypes'
+import type { AttentionReason, NotificationChannel } from '../notifications/notificationTypes'
 import type { Store } from '../store'
 
 export interface BotContext extends Context {
@@ -240,6 +240,12 @@ export class HappyBot implements NotificationChannel {
                 console.error(`[HAPIBot] Failed to send notification to chat ${chatId}:`, error)
             }
         }
+    }
+
+    async sendAttention(_session: Session, _reason: AttentionReason): Promise<void> {
+        // Mobile attention notifications are delivered via web push; Telegram has no behavior here.
+        void _session
+        void _reason
     }
 }
 
