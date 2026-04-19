@@ -379,12 +379,11 @@ export function GridView({ sessions, baseUrl, token }: Props) {
                                     display: 'inline-flex', alignItems: 'center', gap: 5,
                                     maxWidth: 'calc(100% - 10px)',
                                     padding: '3px 6px 3px 8px',
-                                    background: isThinking ? 'rgba(30,58,120,0.6)' : 'rgba(0,0,0,0.5)',
+                                    background: 'rgba(0,0,0,0.5)',
                                     backdropFilter: 'blur(8px)',
                                     WebkitBackdropFilter: 'blur(8px)',
                                     borderRadius: 8,
-                                    border: isThinking ? '1px solid rgba(147,197,253,0.2)' : '1px solid rgba(255,255,255,0.06)',
-                                    transition: 'background 0.3s, border-color 0.3s',
+                                    border: '1px solid rgba(255,255,255,0.06)',
                                 }}>
                                     {session.active && (
                                         <div
