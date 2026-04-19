@@ -12,7 +12,8 @@ async function login(page: Page, accessToken: string): Promise<void> {
     await page.goto(BASE_URL, { waitUntil: 'networkidle' })
     await page.getByPlaceholder('Access token').fill(accessToken)
     await page.getByRole('button', { name: 'Sign In' }).click()
-    await expect(page.getByText(/sessions in .* projects/i)).toBeVisible({ timeout: 15_000 })
+    await expect(page.getByPlaceholder('Access token')).toHaveCount(0, { timeout: 15_000 })
+    await expect(page.locator('.session-list-item').first()).toBeVisible({ timeout: 15_000 })
 }
 
 async function createCliSession(

@@ -93,11 +93,15 @@ describe('SessionHeader', () => {
     it('hides effort when absent', () => {
         const markup = renderHeader({ effort: null })
         expect(markup).not.toContain('Very High')
+        expect(markup).toContain('Named Session')
+        expect(markup).toContain('gpt-5.4')
     })
 
     it('hides permission mode when default', () => {
         const markup = renderHeader({ permissionMode: 'default' })
         expect(markup).not.toContain('Yolo')
+        expect(markup).toContain('Named Session')
+        expect(markup).toContain('codex')
     })
 
     it('hides worktree when absent', () => {

@@ -52,5 +52,6 @@ export function formatEffortLabel(effort?: string | null): string | null {
 }
 
 export function supportsModelChange(flavor?: string | null): boolean {
-    return flavor === 'claude' || flavor === 'gemini'
+    const normalized = normalizeFlavor(flavor)
+    return normalized === 'claude' || normalized === 'gemini'
 }

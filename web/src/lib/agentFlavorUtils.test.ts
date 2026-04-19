@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest'
 import {
     formatEffortLabel,
     getFlavorTextClass,
-    META_DOT_SEPARATOR_CLASS
+    META_DOT_SEPARATOR_CLASS,
+    supportsModelChange
 } from './agentFlavorUtils'
 
 describe('getFlavorTextClass', () => {
@@ -46,5 +47,26 @@ describe('formatEffortLabel', () => {
 describe('META_DOT_SEPARATOR_CLASS', () => {
     it('exports the expected separator class', () => {
         expect(META_DOT_SEPARATOR_CLASS).toBe('text-[var(--app-hint)] opacity-40')
+    })
+})
+
+describe('supportsModelChange', () => {
+    it.each(['claude', 'gemini'])('returns true for %s', (flavor) => {
+        expect(supportsModelChange(flavor)).toBe(true)
+    })
+
+    it.each(['codex', 'cursor', 'opencode', 'mystery'])('returns false for %s', (flavor) => {
+        expect(supportsModelChange(flavor)).toBe(false)
+    })
+
+    it('returns false for nullish values', () => {
+        expect(supportsModelChange(null)).toBe(false)
+        expect(supportsModelChange(undefined)).toBe(false)
+        expect(supportsModelChange('')).toBe(false)
+    })
+
+    it('normalizes whitespace and casing', () => {
+        expect(supportsModelChange('  Claude  ')).toBe(true)
+        expect(supportsModelChange('GEMINI')).toBe(true)
     })
 })

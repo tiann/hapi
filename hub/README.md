@@ -151,7 +151,7 @@ Namespace: `/cli`
 - `message` - Send message to session.
 - `update-metadata` - Update session metadata.
 - `update-state` - Update agent state.
-- `session-alive` - Keep session active.
+- `session-alive` - Keep session active. Payloads are validated against the shared protocol schemas; unknown `permissionMode`, `modelMode`, or `collaborationMode` values and out-of-range `sid`/`time` values cause the heartbeat to be dropped. Forked or older CLIs emitting non-standard values must upgrade.
 - `session-end` - Mark session ended.
 - `machine-alive` - Keep machine online.
 - `rpc-register` - Register RPC handler.

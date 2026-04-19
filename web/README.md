@@ -142,9 +142,12 @@ The built assets land in `web/dist` and are served by hapi-hub. The single execu
 
 ## E2E (Playwright)
 
-Session-sort backend persistence has Playwright coverage in:
+Playwright covers:
 
-- `web/e2e/session-sort.backend.e2e.spec.ts`
+- `web/e2e/session-sort.backend.e2e.spec.ts` — session-sort backend persistence.
+- `web/e2e/session-metadata.ui.e2e.spec.ts` — session list and header metadata chip rendering.
+
+Shared env knobs: `HAPI_E2E_BASE_URL` (default `http://127.0.0.1:3906`), `HAPI_E2E_CLI_TOKEN` (default `pw-test-token`), and `HAPI_E2E_RUN_ID` (defaults to a random suffix) namespace test sessions across runs.
 
 Install browser once:
 

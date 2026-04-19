@@ -2,7 +2,7 @@ import type { ClientToServerEvents } from '@hapi/protocol'
 import { CodexCollaborationModeSchema, ModelModeSchema, PermissionModeSchema } from '@hapi/protocol/schemas'
 import { z } from 'zod'
 import { randomUUID } from 'node:crypto'
-import type { CodexCollaborationMode, PermissionMode } from '@hapi/protocol/types'
+import type { CodexCollaborationMode, ModelMode, PermissionMode } from '@hapi/protocol/types'
 import type { Store, StoredSession } from '../../../store'
 import type { SyncEvent } from '../../../sync/syncEngine'
 import { extractTodoWriteTodosFromMessageContent } from '../../../sync/todos'
@@ -19,7 +19,7 @@ type SessionAlivePayload = {
     model?: string | null
     effort?: string | null
     collaborationMode?: CodexCollaborationMode
-    modelMode?: import('@hapi/protocol/types').ModelMode
+    modelMode?: ModelMode
 }
 
 type SessionEndPayload = {
@@ -53,13 +53,13 @@ const updateStateSchema = z.object({
 })
 
 const sessionAliveSchema = z.object({
-    sid: z.string(),
-    time: z.number(),
+    sid: z.string().min(1).max(128),
+    time: z.number().finite().nonnegative(),
     thinking: z.boolean().optional(),
     mode: z.enum(['local', 'remote']).optional(),
     permissionMode: PermissionModeSchema.optional(),
-    model: z.string().nullable().optional(),
-    effort: z.string().nullable().optional(),
+    model: z.string().max(256).nullable().optional(),
+    effort: z.string().max(64).nullable().optional(),
     collaborationMode: CodexCollaborationModeSchema.optional(),
     modelMode: ModelModeSchema.optional()
 })
