@@ -2,6 +2,8 @@ import type { SlashCommand } from '@/types/api'
 
 const BUILTIN_COMMANDS: Record<string, SlashCommand[]> = {
     claude: [
+        { name: 'branch', description: 'Create a new conversation branch', source: 'builtin' },
+        { name: 'btw', description: 'Add a note without triggering a response', source: 'builtin' },
         { name: 'clear', description: 'Clear conversation history and free up context', source: 'builtin' },
         { name: 'compact', description: 'Clear conversation history but keep a summary in context', source: 'builtin' },
         { name: 'context', description: 'Visualize current context usage as a colored grid', source: 'builtin' },
