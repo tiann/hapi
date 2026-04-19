@@ -40,22 +40,19 @@ export function useGlobalKeyboard(sessions: { id: string }[], options: Options =
 
             // Cmd+Shift+F — search to replace current focused grid cell
             if ((e.key === 'f' || e.key === 'F') && e.shiftKey) {
-                e.preventDefault()
-                options.onReplaceCell?.()
+                if (options.onReplaceCell) { e.preventDefault(); options.onReplaceCell(); return }
                 return
             }
 
             // Cmd+Shift+X — close current focused grid cell
             if ((e.key === 'x' || e.key === 'X') && e.shiftKey) {
-                e.preventDefault()
-                options.onCloseCell?.()
+                if (options.onCloseCell) { e.preventDefault(); options.onCloseCell(); return }
                 return
             }
 
             // Cmd+' — toggle strip/grid layout
             if (e.key === "'") {
-                e.preventDefault()
-                options.onToggleStrip?.()
+                if (options.onToggleStrip) { e.preventDefault(); options.onToggleStrip(); return }
                 return
             }
 
