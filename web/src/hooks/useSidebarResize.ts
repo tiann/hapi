@@ -23,9 +23,11 @@ export function useSidebarResize() {
     const [isDragging, setIsDragging] = useState(false)
     const startXRef = useRef(0)
     const startWidthRef = useRef(0)
+    const activePointerIdRef = useRef<number | null>(null)
 
     const onPointerDown = useCallback((e: React.PointerEvent) => {
         e.preventDefault()
+        activePointerIdRef.current = e.pointerId
         startXRef.current = e.clientX
         startWidthRef.current = width
         setIsDragging(true)
@@ -36,11 +38,16 @@ export function useSidebarResize() {
         if (!isDragging) return
 
         const onMove = (e: PointerEvent) => {
+            if (e.pointerId !== activePointerIdRef.current) return
             const delta = e.clientX - startXRef.current
             setWidth(clamp(startWidthRef.current + delta))
         }
 
-        const onUp = () => setIsDragging(false)
+        const onUp = (e: PointerEvent) => {
+            if (e.pointerId !== activePointerIdRef.current) return
+            activePointerIdRef.current = null
+            setIsDragging(false)
+        }
 
         document.addEventListener('pointermove', onMove)
         document.addEventListener('pointerup', onUp)
