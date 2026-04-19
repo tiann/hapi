@@ -3,7 +3,6 @@ import type { SessionSummary } from '@/types/api'
 
 function getSessionTitle(session: SessionSummary): string {
     if (session.metadata?.name) return session.metadata.name
-    if ((session.metadata as any)?.summary?.text) return (session.metadata as any).summary.text
     if (session.metadata?.path) {
         const parts = session.metadata.path.split('/').filter(Boolean)
         return parts.length > 0 ? parts[parts.length - 1] : session.id.slice(0, 8)

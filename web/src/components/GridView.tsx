@@ -1,12 +1,15 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
 import { useNavigate } from '@tanstack/react-router'
+import { useQueryClient } from '@tanstack/react-query'
 import { useGlobalKeyboard } from '@/hooks/useGlobalKeyboard'
 import { SessionSearchModal } from '@/components/SessionSearchModal'
+import { RenameSessionDialog } from '@/components/RenameSessionDialog'
+import { useAppContext } from '@/lib/app-context'
+import { queryKeys } from '@/lib/query-keys'
 import type { SessionSummary } from '@/types/api'
 
 function getSessionTitle(session: SessionSummary): string {
     if (session.metadata?.name) return session.metadata.name
-    if ((session.metadata as any)?.summary?.text) return (session.metadata as any).summary.text
     if (session.metadata?.path) {
         const parts = session.metadata.path.split('/').filter(Boolean)
         return parts.length > 0 ? parts[parts.length - 1] : session.id.slice(0, 8)
@@ -55,6 +58,8 @@ type Props = {
 
 export function GridView({ sessions, baseUrl, token }: Props) {
     const navigate = useNavigate()
+    const { api } = useAppContext()
+    const queryClient = useQueryClient()
     const [pinnedIds, setPinnedIds] = useState<string[]>([])
     const initializedPinnedRef = useRef(false)
 
@@ -69,7 +74,21 @@ export function GridView({ sessions, baseUrl, token }: Props) {
     const [isReplaceOpen, setIsReplaceOpen] = useState(false)
     const [replaceTargetIdx, setReplaceTargetIdx] = useState<number | null>(null)
     const [stripMode, setStripMode] = useState(false)
+    const [renameTargetId, setRenameTargetId] = useState<string | null>(null)
+    const [isRenaming, setIsRenaming] = useState(false)
     const iframeRefs = useRef<(HTMLIFrameElement | null)[]>([])
+
+    const handleRename = useCallback(async (newName: string) => {
+        if (!api || !renameTargetId) return
+        setIsRenaming(true)
+        try {
+            await api.renameSession(renameTargetId, newName)
+            await queryClient.invalidateQueries({ queryKey: queryKeys.session(renameTargetId) })
+            await queryClient.invalidateQueries({ queryKey: queryKeys.sessions })
+        } finally {
+            setIsRenaming(false)
+        }
+    }, [api, renameTargetId, queryClient])
 
     // ── notification dot tracking ────────────────────────────────────────────
     // notifiedIds: sessions with a pending notification (dot turns orange)
@@ -400,9 +419,12 @@ export function GridView({ sessions, baseUrl, token }: Props) {
                                         />
                                     )}
                                     <div style={{ minWidth: 0 }}>
-                                        <div style={{ fontSize: 11, fontWeight: 700, color: titleColor,
+                                        <div
+                                            onDoubleClick={(e) => { e.stopPropagation(); setRenameTargetId(session.id) }}
+                                            title="Double-click to rename"
+                                            style={{ fontSize: 11, fontWeight: 700, color: titleColor,
                                             overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                                            transition: 'color 0.3s' }}>
+                                            transition: 'color 0.3s', cursor: 'text' }}>
                                             {getSessionTitle(session)}
                                         </div>
                                         <div style={{ fontSize: 10, color: subColor,
@@ -457,6 +479,15 @@ export function GridView({ sessions, baseUrl, token }: Props) {
                 onClose={() => setIsReplaceOpen(false)}
                 onSelect={replaceCell}
                 actionLabel={replaceTargetIdx !== null ? `Replace ⌘${replaceTargetIdx + 1}` : 'Add to grid'}
+            />
+
+            {/* Double-click title: rename session */}
+            <RenameSessionDialog
+                isOpen={renameTargetId !== null}
+                onClose={() => setRenameTargetId(null)}
+                currentName={renameTargetId ? getSessionTitle(sessions.find(s => s.id === renameTargetId) ?? { id: '', metadata: null } as SessionSummary) : ''}
+                onRename={handleRename}
+                isPending={isRenaming}
             />
         </div>
     )
