@@ -78,8 +78,8 @@ export class ApiSessionClient extends EventEmitter {
     private agentState: AgentState | null
     private agentStateVersion: number
     private readonly socket: Socket<ServerToClientEvents, ClientToServerEvents>
-    private pendingMessages: UserMessage[] = []
-    private pendingMessageCallback: ((message: UserMessage) => void) | null = null
+    private pendingMessages: { message: UserMessage; localId?: string }[] = []
+    private pendingMessageCallback: ((message: UserMessage, localId?: string) => void) | null = null
     private lastSeenMessageSeq: number | null = null
     private backfillInFlight: Promise<void> | null = null
     private needsBackfill = false
@@ -244,22 +244,23 @@ export class ApiSessionClient extends EventEmitter {
         this.socket.connect()
     }
 
-    onUserMessage(callback: (data: UserMessage) => void): void {
+    onUserMessage(callback: (data: UserMessage, localId?: string) => void): void {
         this.pendingMessageCallback = callback
         while (this.pendingMessages.length > 0) {
-            callback(this.pendingMessages.shift()!)
+            const pending = this.pendingMessages.shift()!
+            callback(pending.message, pending.localId)
         }
     }
 
-    private enqueueUserMessage(message: UserMessage): void {
+    private enqueueUserMessage(message: UserMessage, localId?: string): void {
         if (this.pendingMessageCallback) {
-            this.pendingMessageCallback(message)
+            this.pendingMessageCallback(message, localId)
         } else {
-            this.pendingMessages.push(message)
+            this.pendingMessages.push({ message, localId })
         }
     }
 
-    private handleIncomingMessage(message: { seq?: number; content: unknown }): void {
+    private handleIncomingMessage(message: { seq?: number; localId?: string | null; content: unknown }): void {
         const seq = typeof message.seq === 'number' ? message.seq : null
         if (seq !== null) {
             if (this.lastSeenMessageSeq !== null && seq <= this.lastSeenMessageSeq) {
@@ -270,7 +271,7 @@ export class ApiSessionClient extends EventEmitter {
 
         const userResult = UserMessageSchema.safeParse(message.content)
         if (userResult.success) {
-            this.enqueueUserMessage(userResult.data)
+            this.enqueueUserMessage(userResult.data, message.localId ?? undefined)
             return
         }
 
@@ -491,6 +492,11 @@ export class ApiSessionClient extends EventEmitter {
             mode,
             ...(runtime ?? {})
         })
+    }
+
+    emitMessagesConsumed(localIds: string[]): void {
+        if (localIds.length === 0) return
+        this.socket.emit('messages-consumed', { sid: this.sessionId, localIds })
     }
 
     sendSessionDeath(): void {

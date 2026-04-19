@@ -77,13 +77,13 @@ export async function runCursor(opts: {
         logger.debug(`[cursor] Synced session permission mode: ${currentPermissionMode}`);
     };
 
-    session.onUserMessage((message) => {
+    session.onUserMessage((message, localId) => {
         const enhancedMode: EnhancedMode = {
             permissionMode: currentPermissionMode ?? 'default',
             model: currentModel
         };
         const formattedText = formatMessageWithAttachments(message.content.text, message.content.attachments);
-        messageQueue.push(formattedText, enhancedMode);
+        messageQueue.push(formattedText, enhancedMode, localId);
     });
 
     const resolvePermissionMode = (value: unknown): PermissionMode => {

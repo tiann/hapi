@@ -70,6 +70,8 @@ export class AgentSessionBase<Mode> {
         this.effort = opts.effort;
         this.collaborationMode = opts.collaborationMode;
 
+        this.queue.onBatchConsumed = (localIds) => this.client.emitMessagesConsumed(localIds);
+
         this.client.keepAlive(this.thinking, this.mode, this.getKeepAliveRuntime());
         this.keepAliveInterval = setInterval(() => {
             this.client.keepAlive(this.thinking, this.mode, this.getKeepAliveRuntime());

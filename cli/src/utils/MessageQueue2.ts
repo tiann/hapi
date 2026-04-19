@@ -4,6 +4,7 @@ interface QueueItem<T> {
     message: string;
     mode: T;
     modeHash: string;
+    localId?: string;
     isolate?: boolean; // If true, this message must be processed alone
 }
 
@@ -16,6 +17,7 @@ export class MessageQueue2<T> {
     private waiter: ((hasMessages: boolean) => void) | null = null;
     private closed = false;
     private onMessageHandler: ((message: string, mode: T) => void) | null = null;
+    onBatchConsumed: ((localIds: string[]) => void) | null = null;
     modeHasher: (mode: T) => string;
 
     constructor(
@@ -37,7 +39,7 @@ export class MessageQueue2<T> {
     /**
      * Push a message to the queue with a mode.
      */
-    push(message: string, mode: T): void {
+    push(message: string, mode: T, localId?: string): void {
         if (this.closed) {
             throw new Error('Cannot push to closed queue');
         }
@@ -49,6 +51,7 @@ export class MessageQueue2<T> {
             message,
             mode,
             modeHash,
+            localId,
             isolate: false
         });
 
@@ -72,7 +75,7 @@ export class MessageQueue2<T> {
      * Push a message immediately without batching delay.
      * Does not clear the queue or enforce isolation.
      */
-    pushImmediate(message: string, mode: T): void {
+    pushImmediate(message: string, mode: T, localId?: string): void {
         if (this.closed) {
             throw new Error('Cannot push to closed queue');
         }
@@ -84,6 +87,7 @@ export class MessageQueue2<T> {
             message,
             mode,
             modeHash,
+            localId,
             isolate: false
         });
 
@@ -108,7 +112,7 @@ export class MessageQueue2<T> {
      * Clears any pending messages and ensures this message is never batched with others.
      * Used for special commands that require dedicated processing.
      */
-    pushIsolateAndClear(message: string, mode: T): void {
+    pushIsolateAndClear(message: string, mode: T, localId?: string): void {
         if (this.closed) {
             throw new Error('Cannot push to closed queue');
         }
@@ -123,6 +127,7 @@ export class MessageQueue2<T> {
             message,
             mode,
             modeHash,
+            localId,
             isolate: true
         });
 
@@ -145,7 +150,7 @@ export class MessageQueue2<T> {
     /**
      * Push a message to the beginning of the queue with a mode.
      */
-    unshift(message: string, mode: T): void {
+    unshift(message: string, mode: T, localId?: string): void {
         if (this.closed) {
             throw new Error('Cannot unshift to closed queue');
         }
@@ -157,6 +162,7 @@ export class MessageQueue2<T> {
             message,
             mode,
             modeHash,
+            localId,
             isolate: false
         });
 
@@ -252,6 +258,7 @@ export class MessageQueue2<T> {
 
         const firstItem = this.queue[0];
         const sameModeMessages: string[] = [];
+        const consumedLocalIds: string[] = [];
         let mode = firstItem.mode;
         let isolate = firstItem.isolate ?? false;
         const targetModeHash = firstItem.modeHash;
@@ -260,6 +267,7 @@ export class MessageQueue2<T> {
         if (firstItem.isolate) {
             const item = this.queue.shift()!;
             sameModeMessages.push(item.message);
+            if (item.localId) consumedLocalIds.push(item.localId);
             logger.debug(`[MessageQueue2] Collected isolated message with mode hash: ${targetModeHash}`);
         } else {
             // Collect all messages with the same mode until we hit an isolated message
@@ -268,12 +276,17 @@ export class MessageQueue2<T> {
                 !this.queue[0].isolate) {
                 const item = this.queue.shift()!;
                 sameModeMessages.push(item.message);
+                if (item.localId) consumedLocalIds.push(item.localId);
             }
             logger.debug(`[MessageQueue2] Collected batch of ${sameModeMessages.length} messages with mode hash: ${targetModeHash}`);
         }
 
         // Join all messages with newlines
         const combinedMessage = sameModeMessages.join('\n');
+
+        if (consumedLocalIds.length > 0) {
+            this.onBatchConsumed?.(consumedLocalIds);
+        }
 
         return {
             message: combinedMessage,

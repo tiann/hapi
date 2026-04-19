@@ -11,7 +11,7 @@ import type {
     SyncEvent
 } from '@/types/api'
 import { queryKeys } from '@/lib/query-keys'
-import { clearMessageWindow, ingestIncomingMessages } from '@/lib/message-window-store'
+import { clearMessageWindow, getMessageWindowState, ingestIncomingMessages, markMessagesConsumed, updateMessageStatus } from '@/lib/message-window-store'
 
 type SSESubscription = {
     all?: boolean
@@ -495,6 +495,10 @@ export function useSSE(options: {
             if (event.type === 'toast') {
                 onToastRef.current?.(event)
                 return
+            }
+
+            if (event.type === 'messages-consumed') {
+                markMessagesConsumed(event.sessionId, event.localIds)
             }
 
             if (event.type === 'message-received') {

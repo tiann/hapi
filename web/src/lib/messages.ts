@@ -60,13 +60,28 @@ export function mergeMessages(existing: DecryptedMessage[], incoming: DecryptedM
     }
 
     // If we received stored messages with a localId, drop any optimistic bubbles with the same localId.
+    // Preserve client-side status (e.g. 'queued') on the replacing server message.
     if (incomingStoredLocalIds.size > 0) {
+        const optimisticStatusByLocalId = new Map<string, DecryptedMessage['status']>()
+        for (const msg of merged) {
+            if (msg.localId && isOptimisticMessage(msg) && incomingStoredLocalIds.has(msg.localId) && msg.status) {
+                optimisticStatusByLocalId.set(msg.localId, msg.status)
+            }
+        }
         merged = merged.filter((msg) => {
             if (!msg.localId || !incomingStoredLocalIds.has(msg.localId)) {
                 return true
             }
             return !isOptimisticMessage(msg)
         })
+        if (optimisticStatusByLocalId.size > 0) {
+            merged = merged.map((msg) => {
+                if (msg.localId && optimisticStatusByLocalId.has(msg.localId) && !msg.status) {
+                    return { ...msg, status: optimisticStatusByLocalId.get(msg.localId) }
+                }
+                return msg
+            })
+        }
     }
 
     // Fallback: if an optimistic message was marked as sent but we didn't get a localId echo,

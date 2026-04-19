@@ -537,3 +537,28 @@ export function updateMessageStatus(sessionId: string, localId: string, status: 
         return buildState(prev, { messages, pending })
     })
 }
+
+/** Transition the queued messages whose localIds match to 'sent'. Driven by the
+ *  CLI ack (messages-consumed). Unmatched messages remain queued. */
+export function markMessagesConsumed(sessionId: string, localIds: string[]): void {
+    if (localIds.length === 0) return
+    const idSet = new Set(localIds)
+    updateState(sessionId, (prev) => {
+        let changed = false
+        const updateList = (list: DecryptedMessage[]) => {
+            return list.map((message) => {
+                if (message.status !== 'queued' || !message.localId || !idSet.has(message.localId)) {
+                    return message
+                }
+                changed = true
+                return { ...message, status: 'sent' as MessageStatus }
+            })
+        }
+        const messages = updateList(prev.messages)
+        const pending = updateList(prev.pending)
+        if (!changed) {
+            return prev
+        }
+        return buildState(prev, { messages, pending })
+    })
+}
