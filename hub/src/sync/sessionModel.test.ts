@@ -614,7 +614,10 @@ describe('session model', () => {
             const s1 = cache.getOrCreateSession(
                 'tag-1',
                 { path: '/tmp/project', host: 'localhost', flavor: 'codex', codexSessionId: 'thread-X' },
-                null,
+                {
+                    requests: { 'req-from-active-duplicate': { tool: 'Bash', arguments: {} } },
+                    completedRequests: {}
+                },
                 'default'
             )
 
@@ -624,7 +627,10 @@ describe('session model', () => {
             const s2 = cache.getOrCreateSession(
                 'tag-2',
                 { path: '/tmp/project', host: 'localhost', flavor: 'codex', codexSessionId: 'thread-X' },
-                null,
+                {
+                    requests: { 'req-from-target': { tool: 'Read', arguments: {} } },
+                    completedRequests: {}
+                },
                 'default'
             )
             store.messages.addMessage(s2.id, { type: 'text', text: 'history from s2' }, 'local-s2')
@@ -643,6 +649,15 @@ describe('session model', () => {
                 'history from s1',
                 'history from s2'
             ])
+            expect(events).toContainEqual({ type: 'messages-invalidated', sessionId: s2.id, namespace: 'default' })
+
+            // Active duplicates keep their own pending permission requests because
+            // approve/deny RPCs still route by the originating HAPI session id.
+            const sourceRequests = cache.getSession(s1.id)?.agentState?.requests ?? {}
+            const targetRequests = cache.getSession(s2.id)?.agentState?.requests ?? {}
+            expect(sourceRequests['req-from-active-duplicate']).toBeDefined()
+            expect(targetRequests['req-from-active-duplicate']).toBeUndefined()
+            expect(targetRequests['req-from-target']).toBeDefined()
         })
 
         it('merges duplicate after it becomes inactive via session-end', async () => {

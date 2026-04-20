@@ -410,15 +410,23 @@ export class SessionCache {
         await this.mergeSessionData(oldSessionId, newSessionId, namespace, { deleteOldSession: true })
     }
 
-    async mergeSessionHistory(oldSessionId: string, newSessionId: string, namespace: string): Promise<void> {
-        await this.mergeSessionData(oldSessionId, newSessionId, namespace, { deleteOldSession: false })
+    async mergeSessionHistory(
+        oldSessionId: string,
+        newSessionId: string,
+        namespace: string,
+        options: { mergeAgentState?: boolean } = {}
+    ): Promise<void> {
+        await this.mergeSessionData(oldSessionId, newSessionId, namespace, {
+            deleteOldSession: false,
+            mergeAgentState: options.mergeAgentState ?? true
+        })
     }
 
     private async mergeSessionData(
         oldSessionId: string,
         newSessionId: string,
         namespace: string,
-        options: { deleteOldSession: boolean }
+        options: { deleteOldSession: boolean; mergeAgentState?: boolean }
     ): Promise<void> {
         if (oldSessionId === newSessionId) {
             return
@@ -430,7 +438,10 @@ export class SessionCache {
             throw new Error('Session not found for merge')
         }
 
-        this.store.messages.mergeSessionMessages(oldSessionId, newSessionId)
+        const movedMessages = this.store.messages.mergeSessionMessages(oldSessionId, newSessionId)
+        if (movedMessages.moved > 0) {
+            this.publisher.emit({ type: 'messages-invalidated', sessionId: newSessionId, namespace })
+        }
 
         const mergedMetadata = this.mergeSessionMetadata(oldStored.metadata, newStored.metadata)
         if (mergedMetadata !== null && mergedMetadata !== newStored.metadata) {
@@ -490,10 +501,10 @@ export class SessionCache {
         }
 
         // Merge agentState: union requests/completedRequests from both sessions so pending
-        // approvals on the duplicate are not lost. Only inactive duplicates reach this point
-        // (active ones are skipped by deduplicateByAgentSessionId).
+        // approvals on inactive duplicates are not lost. Active duplicates keep their
+        // own agentState because permission approve/deny RPCs are routed by session id.
         // Read the latest target state right before writing to avoid overwriting live updates.
-        if (oldStored.agentState !== null) {
+        if ((options.mergeAgentState ?? true) && oldStored.agentState !== null) {
             for (let attempt = 0; attempt < 2; attempt += 1) {
                 const latest = this.store.sessions.getSessionByNamespace(newSessionId, namespace)
                 if (!latest) break
@@ -680,7 +691,9 @@ export class SessionCache {
                             // persisted history into the visible dedup target.  This preserves
                             // left-sidebar dedup while making resumed/restarted sessions show
                             // the full conversation history.
-                            await this.mergeSessionHistory(id, targetId, targetNamespace)
+                            await this.mergeSessionHistory(id, targetId, targetNamespace, {
+                                mergeAgentState: false
+                            })
                         } else {
                             await this.mergeSessions(id, targetId, targetNamespace)
                         }

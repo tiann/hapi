@@ -229,7 +229,15 @@ function AppInner() {
         }
     }, [])
 
-    const handleSseEvent = useCallback(() => {}, [])
+    const handleSseEvent = useCallback((event: SyncEvent) => {
+        if (event.type !== 'messages-invalidated') {
+            return
+        }
+        if (!api || event.sessionId !== selectedSessionId) {
+            return
+        }
+        void fetchLatestMessages(api, event.sessionId)
+    }, [api, selectedSessionId])
     const handleToast = useCallback((event: ToastEvent) => {
         addToast({
             title: event.data.title,

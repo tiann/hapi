@@ -213,6 +213,9 @@ export const SyncEventSchema = z.discriminatedUnion('type', [
         type: z.literal('message-received'),
         message: DecryptedMessageSchema
     }),
+    SessionChangedSchema.extend({
+        type: z.literal('messages-invalidated')
+    }),
     MachineChangedSchema.extend({
         type: z.literal('machine-updated'),
         data: z.unknown().optional()
