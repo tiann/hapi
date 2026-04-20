@@ -13,7 +13,10 @@ const harness = vi.hoisted(() => ({
     notificationHandler: null as ((method: string, params: unknown) => void) | null,
     disconnectHandler: null as ((error: Error) => void) | null,
     startTurnImpl: null as null | (() => Promise<{ turn: Record<string, unknown> }>),
-    steerTurnImpl: null as null | (() => Promise<Record<string, never>>)
+    steerTurnImpl: null as null | ((
+        params: unknown,
+        options?: { signal?: AbortSignal }
+    ) => Promise<Record<string, never>>)
 }));
 
 vi.mock('./codexAppServerClient', () => {
@@ -66,10 +69,13 @@ vi.mock('./codexAppServerClient', () => {
             return { turn: {} };
         }
 
-        async steerTurn(params: unknown): Promise<Record<string, never>> {
+        async steerTurn(
+            params: unknown,
+            options?: { signal?: AbortSignal }
+        ): Promise<Record<string, never>> {
             harness.steerTurnCalls.push(params);
             if (harness.steerTurnImpl) {
-                return harness.steerTurnImpl();
+                return harness.steerTurnImpl(params, options);
             }
             return {};
         }
@@ -331,6 +337,58 @@ describe('codexRemoteLauncher', () => {
         expect(exitReason).toBe('exit');
         expect(harness.steerTurnCalls).toHaveLength(1);
         expect(harness.startTurnCalls).toHaveLength(2);
+        expect(session.thinking).toBe(false);
+    });
+
+    it('drops an in-flight steering batch when abort clears the queue', async () => {
+        let turnStarts = 0;
+        harness.startTurnImpl = async () => {
+            turnStarts += 1;
+            const turnId = `turn-${turnStarts}`;
+            const started = { turn: { id: turnId } };
+            harness.notifications.push({ method: 'turn/started', params: started });
+            harness.notificationHandler?.('turn/started', started);
+
+            if (turnStarts > 1) {
+                const completed = { status: 'Completed', turn: { id: turnId } };
+                harness.notifications.push({ method: 'turn/completed', params: completed });
+                harness.notificationHandler?.('turn/completed', completed);
+            }
+
+            return { turn: { id: turnId } };
+        };
+        harness.steerTurnImpl = async (_params, options) => {
+            return await new Promise<Record<string, never>>((_resolve, reject) => {
+                options?.signal?.addEventListener('abort', () => {
+                    const error = new Error('Request aborted');
+                    error.name = 'AbortError';
+                    reject(error);
+                }, { once: true });
+            });
+        };
+
+        const { session, rpcHandlers } = createSessionStub({ closeQueue: false });
+        const launcherPromise = codexRemoteLauncher(session as never);
+
+        await waitFor(() => harness.startTurnCalls.length === 1);
+
+        session.queue.push('message to steer then abort', createMode());
+        await waitFor(() => harness.steerTurnCalls.length === 1);
+
+        const abortHandler = rpcHandlers.get('abort');
+        expect(abortHandler).toBeDefined();
+        await abortHandler?.({});
+
+        const completed = { status: 'Completed', turn: { id: 'turn-1' } };
+        harness.notifications.push({ method: 'turn/completed', params: completed });
+        harness.notificationHandler?.('turn/completed', completed);
+        session.queue.close();
+
+        const exitReason = await launcherPromise;
+
+        expect(exitReason).toBe('exit');
+        expect(harness.steerTurnCalls).toHaveLength(1);
+        expect(harness.startTurnCalls).toHaveLength(1);
         expect(session.thinking).toBe(false);
     });
 

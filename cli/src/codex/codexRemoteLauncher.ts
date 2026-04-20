@@ -274,6 +274,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
 
             steeringInFlight = true;
             let batch: QueuedMessage | null = null;
+            let steerSignal: AbortSignal | null = null;
 
             try {
                 batch = await session.queue.waitForMessagesAndGetAsString();
@@ -286,19 +287,24 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 }
 
                 messageBuffer.addMessage(batch.message, 'user');
+                steerSignal = this.abortController.signal;
                 await appServerClient.steerTurn({
                     threadId: this.currentThreadId,
                     expectedTurnId: this.currentTurnId,
                     input: [{ type: 'text', text: batch.message }]
                 }, {
-                    signal: this.abortController.signal
+                    signal: steerSignal
                 });
             } catch (error) {
-                if (batch) {
+                const isAbortError = error instanceof Error && error.name === 'AbortError';
+                const wasAborted = Boolean(steerSignal?.aborted);
+                if (batch && !isAbortError && !wasAborted && !this.shouldExit) {
                     session.queue.unshift(batch.message, batch.mode);
                     steeringSuspendedForTurn = true;
+                    logger.debug('[Codex] Failed to steer active turn; keeping message queued for next turn', error);
+                } else {
+                    logger.debug('[Codex] Steering aborted; dropping queued message', error);
                 }
-                logger.debug('[Codex] Failed to steer active turn; keeping message queued for next turn', error);
             } finally {
                 steeringInFlight = false;
                 if (!steeringSuspendedForTurn && turnInFlight && session.queue.size() > 0) {
