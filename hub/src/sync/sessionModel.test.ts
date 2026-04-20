@@ -606,7 +606,7 @@ describe('session model', () => {
             expect(cache.getSession(s1.id)).toBeDefined()
         })
 
-        it('moves history from active duplicates without deleting their live session records', async () => {
+        it('does not move history while duplicate sessions are both active', async () => {
             const store = new Store(':memory:')
             const events: SyncEvent[] = []
             const cache = new SessionCache(store, createPublisher(events))
@@ -638,25 +638,67 @@ describe('session model', () => {
 
             await cache.deduplicateByAgentSessionId(s2.id)
 
-            // Both live session records stay around so their sockets/keepalives
-            // remain valid, but the older active session's persisted history is
-            // moved into the visible dedup target.
+            // Both live session records keep their own histories until one of the
+            // duplicates becomes inactive. The web may still be showing either
+            // active session id, so the hub must not pick a canonical target yet.
             expect(cache.getSession(s1.id)).toBeDefined()
             expect(cache.getSession(s2.id)).toBeDefined()
-            expect(store.messages.getMessages(s1.id, 100)).toHaveLength(0)
-            const targetMessages = store.messages.getMessages(s2.id, 100)
-            expect(targetMessages.map((message) => (message.content as { text?: string }).text)).toEqual([
-                'history from s1',
+            expect(store.messages.getMessages(s1.id, 100).map((message) => (message.content as { text?: string }).text)).toEqual([
+                'history from s1'
+            ])
+            expect(store.messages.getMessages(s2.id, 100).map((message) => (message.content as { text?: string }).text)).toEqual([
                 'history from s2'
             ])
-            expect(events).toContainEqual({ type: 'messages-invalidated', sessionId: s2.id, namespace: 'default' })
+            expect(events.some((event) => event.type === 'messages-invalidated')).toBe(false)
 
-            // Active duplicates keep their own pending permission requests because
-            // approve/deny RPCs still route by the originating HAPI session id.
             const sourceRequests = cache.getSession(s1.id)?.agentState?.requests ?? {}
             const targetRequests = cache.getSession(s2.id)?.agentState?.requests ?? {}
             expect(sourceRequests['req-from-active-duplicate']).toBeDefined()
             expect(targetRequests['req-from-active-duplicate']).toBeUndefined()
+            expect(targetRequests['req-from-target']).toBeDefined()
+        })
+
+        it('invalidates both sessions for history-only merges', async () => {
+            const store = new Store(':memory:')
+            const events: SyncEvent[] = []
+            const cache = new SessionCache(store, createPublisher(events))
+
+            const s1 = cache.getOrCreateSession(
+                'tag-1',
+                { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+                {
+                    requests: { 'req-from-source': { tool: 'Bash', arguments: {} } },
+                    completedRequests: {}
+                },
+                'default'
+            )
+            const s2 = cache.getOrCreateSession(
+                'tag-2',
+                { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+                {
+                    requests: { 'req-from-target': { tool: 'Read', arguments: {} } },
+                    completedRequests: {}
+                },
+                'default'
+            )
+
+            store.messages.addMessage(s1.id, { type: 'text', text: 'history from s1' }, 'local-s1')
+            store.messages.addMessage(s2.id, { type: 'text', text: 'history from s2' }, 'local-s2')
+
+            await cache.mergeSessionHistory(s1.id, s2.id, 'default', { mergeAgentState: false })
+
+            expect(store.messages.getMessages(s1.id, 100)).toHaveLength(0)
+            expect(store.messages.getMessages(s2.id, 100).map((message) => (message.content as { text?: string }).text)).toEqual([
+                'history from s1',
+                'history from s2'
+            ])
+            expect(events).toContainEqual({ type: 'messages-invalidated', sessionId: s1.id, namespace: 'default' })
+            expect(events).toContainEqual({ type: 'messages-invalidated', sessionId: s2.id, namespace: 'default' })
+
+            const sourceRequests = cache.getSession(s1.id)?.agentState?.requests ?? {}
+            const targetRequests = cache.getSession(s2.id)?.agentState?.requests ?? {}
+            expect(sourceRequests['req-from-source']).toBeDefined()
+            expect(targetRequests['req-from-source']).toBeUndefined()
             expect(targetRequests['req-from-target']).toBeDefined()
         })
 

@@ -440,6 +440,9 @@ export class SessionCache {
 
         const movedMessages = this.store.messages.mergeSessionMessages(oldSessionId, newSessionId)
         if (movedMessages.moved > 0) {
+            if (!options.deleteOldSession) {
+                this.publisher.emit({ type: 'messages-invalidated', sessionId: oldSessionId, namespace })
+            }
             this.publisher.emit({ type: 'messages-invalidated', sessionId: newSessionId, namespace })
         }
 
@@ -666,6 +669,14 @@ export class SessionCache {
                 }
 
                 if (candidates.length <= 1) continue
+
+                const activeCandidates = candidates.filter(({ session }) => session.active)
+                if (activeCandidates.length > 1) {
+                    // Do not move history between two live session ids. The web may
+                    // intentionally keep the currently selected duplicate visible,
+                    // and the hub does not know which active duplicate that is.
+                    continue
+                }
 
                 // Keep the same canonical session the sidebar is likely to show:
                 // active sessions win, then the most recently updated session wins.
