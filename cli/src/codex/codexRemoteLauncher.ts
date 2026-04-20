@@ -609,6 +609,8 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             activeTurnModeHash = null;
             allowAnonymousTerminalEvent = false;
             this.currentTurnId = null;
+            this.currentThreadId = null;
+            hasThread = false;
             settleTurnInFlight();
         });
 

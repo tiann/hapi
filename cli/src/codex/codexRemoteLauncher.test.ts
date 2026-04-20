@@ -6,6 +6,8 @@ const harness = vi.hoisted(() => ({
     notifications: [] as Array<{ method: string; params: unknown }>,
     registerRequestCalls: [] as string[],
     initializeCalls: [] as unknown[],
+    startThreadCalls: [] as unknown[],
+    resumeThreadCalls: [] as unknown[],
     startTurnCalls: [] as unknown[],
     steerTurnCalls: [] as unknown[],
     notificationHandler: null as ((method: string, params: unknown) => void) | null,
@@ -38,11 +40,13 @@ vi.mock('./codexAppServerClient', () => {
             harness.disconnectHandler = handler;
         }
 
-        async startThread(): Promise<{ thread: { id: string }; model: string }> {
+        async startThread(params: unknown): Promise<{ thread: { id: string }; model: string }> {
+            harness.startThreadCalls.push(params);
             return { thread: { id: 'thread-anonymous' }, model: 'gpt-5.4' };
         }
 
-        async resumeThread(): Promise<{ thread: { id: string }; model: string }> {
+        async resumeThread(params: unknown): Promise<{ thread: { id: string }; model: string }> {
+            harness.resumeThreadCalls.push(params);
             return { thread: { id: 'thread-anonymous' }, model: 'gpt-5.4' };
         }
 
@@ -211,6 +215,8 @@ describe('codexRemoteLauncher', () => {
         harness.notifications = [];
         harness.registerRequestCalls = [];
         harness.initializeCalls = [];
+        harness.startThreadCalls = [];
+        harness.resumeThreadCalls = [];
         harness.startTurnCalls = [];
         harness.steerTurnCalls = [];
         harness.notificationHandler = null;
@@ -317,23 +323,39 @@ describe('codexRemoteLauncher', () => {
         expect(session.thinking).toBe(false);
     });
 
-    it('settles an active turn when the app-server disconnects before a terminal event', async () => {
+    it('re-establishes thread lifecycle after disconnecting during an active turn', async () => {
+        let turnStarts = 0;
         harness.startTurnImpl = async () => {
-            const started = { turn: { id: 'turn-disconnect' } };
+            turnStarts += 1;
+            const turnId = `turn-${turnStarts}`;
+            const started = { turn: { id: turnId } };
             harness.notifications.push({ method: 'turn/started', params: started });
             harness.notificationHandler?.('turn/started', started);
-            return { turn: { id: 'turn-disconnect' } };
+
+            if (turnStarts === 2) {
+                const completed = { status: 'Completed', turn: { id: turnId } };
+                harness.notifications.push({ method: 'turn/completed', params: completed });
+                harness.notificationHandler?.('turn/completed', completed);
+            }
+
+            return { turn: {} };
         };
 
-        const { session, thinkingChanges } = createSessionStub();
+        const { session, thinkingChanges } = createSessionStub({ closeQueue: false });
         const launcherPromise = codexRemoteLauncher(session as never);
 
         await waitFor(() => harness.disconnectHandler !== null && session.thinking);
         harness.disconnectHandler?.(new Error('app-server disconnected in test'));
 
+        session.queue.push('message after app-server reconnect', createMode());
+        session.queue.close();
+
+        await waitFor(() => harness.startTurnCalls.length === 2);
         const exitReason = await launcherPromise;
 
         expect(exitReason).toBe('exit');
+        expect(harness.startThreadCalls).toHaveLength(1);
+        expect(harness.resumeThreadCalls).toHaveLength(1);
         expect(thinkingChanges).toContain(true);
         expect(session.thinking).toBe(false);
     });
