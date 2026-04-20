@@ -21,6 +21,7 @@ interface Settings {
   apiUrl?: string
   // Legacy field name (for migration, read-only)
   serverUrl?: string
+  enableAutoTitle?: boolean
 }
 
 const defaultSettings: Settings = {}
@@ -49,6 +50,19 @@ export async function readSettings(): Promise<Settings> {
 
   try {
     const content = await readFile(configuration.settingsFile, 'utf8')
+    return JSON.parse(content)
+  } catch {
+    return { ...defaultSettings }
+  }
+}
+
+export function readSettingsSync(): Settings {
+  if (!existsSync(configuration.settingsFile)) {
+    return { ...defaultSettings }
+  }
+
+  try {
+    const content = readFileSync(configuration.settingsFile, 'utf-8')
     return JSON.parse(content)
   } catch {
     return { ...defaultSettings }
