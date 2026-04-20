@@ -328,6 +328,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 if (turnId) {
                     this.currentTurnId = turnId;
                     allowAnonymousTerminalEvent = false;
+                    void maybeSteerQueuedMessages();
                 } else if (!this.currentTurnId) {
                     allowAnonymousTerminalEvent = true;
                 }
@@ -603,6 +604,14 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             }
         });
 
+        appServerClient.setDisconnectHandler(() => {
+            turnInFlight = false;
+            activeTurnModeHash = null;
+            allowAnonymousTerminalEvent = false;
+            this.currentTurnId = null;
+            settleTurnInFlight();
+        });
+
         const { server: happyServer, mcpServers } = await buildHapiMcpBridge(session.client);
         this.happyServer = happyServer;
 
@@ -770,6 +779,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 const turnId = asString(turn?.id);
                 if (turnId) {
                     this.currentTurnId = turnId;
+                    void maybeSteerQueuedMessages();
                 } else if (!this.currentTurnId) {
                     allowAnonymousTerminalEvent = true;
                 }

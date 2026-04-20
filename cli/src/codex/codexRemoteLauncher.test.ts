@@ -9,6 +9,7 @@ const harness = vi.hoisted(() => ({
     startTurnCalls: [] as unknown[],
     steerTurnCalls: [] as unknown[],
     notificationHandler: null as ((method: string, params: unknown) => void) | null,
+    disconnectHandler: null as ((error: Error) => void) | null,
     startTurnImpl: null as null | (() => Promise<{ turn: Record<string, unknown> }>),
     steerTurnImpl: null as null | (() => Promise<Record<string, never>>)
 }));
@@ -31,6 +32,10 @@ vi.mock('./codexAppServerClient', () => {
 
         registerRequestHandler(method: string): void {
             harness.registerRequestCalls.push(method);
+        }
+
+        setDisconnectHandler(handler: ((error: Error) => void) | null): void {
+            harness.disconnectHandler = handler;
         }
 
         async startThread(): Promise<{ thread: { id: string }; model: string }> {
@@ -209,6 +214,7 @@ describe('codexRemoteLauncher', () => {
         harness.startTurnCalls = [];
         harness.steerTurnCalls = [];
         harness.notificationHandler = null;
+        harness.disconnectHandler = null;
         harness.startTurnImpl = null;
         harness.steerTurnImpl = null;
     });
@@ -271,6 +277,63 @@ describe('codexRemoteLauncher', () => {
         expect(harness.startTurnCalls).toHaveLength(1);
         expect(harness.steerTurnCalls).toHaveLength(1);
         expect(sessionEvents.filter((event) => event.type === 'ready').length).toBeGreaterThanOrEqual(1);
+        expect(thinkingChanges).toContain(true);
+        expect(session.thinking).toBe(false);
+    });
+
+    it('steers queued messages once the active turn id becomes known', async () => {
+        let releaseTurnStart!: () => void;
+        harness.startTurnImpl = async () => {
+            await new Promise<void>((resolve) => {
+                releaseTurnStart = resolve;
+            });
+            return { turn: { id: 'turn-late-id' } };
+        };
+
+        const { session, sessionEvents, thinkingChanges } = createSessionStub({ closeQueue: false });
+        const launcherPromise = codexRemoteLauncher(session as never);
+
+        await waitFor(() => harness.startTurnCalls.length === 1);
+
+        session.queue.push('second message before turn id', createMode());
+        session.queue.close();
+        expect(harness.steerTurnCalls).toHaveLength(0);
+
+        releaseTurnStart();
+        await waitFor(() => harness.steerTurnCalls.length === 1);
+        expect(harness.startTurnCalls).toHaveLength(1);
+
+        const completed = { status: 'Completed', turn: { id: 'turn-late-id' } };
+        harness.notifications.push({ method: 'turn/completed', params: completed });
+        harness.notificationHandler?.('turn/completed', completed);
+
+        const exitReason = await launcherPromise;
+
+        expect(exitReason).toBe('exit');
+        expect(harness.startTurnCalls).toHaveLength(1);
+        expect(harness.steerTurnCalls).toHaveLength(1);
+        expect(sessionEvents.filter((event) => event.type === 'ready').length).toBeGreaterThanOrEqual(1);
+        expect(thinkingChanges).not.toContain(true);
+        expect(session.thinking).toBe(false);
+    });
+
+    it('settles an active turn when the app-server disconnects before a terminal event', async () => {
+        harness.startTurnImpl = async () => {
+            const started = { turn: { id: 'turn-disconnect' } };
+            harness.notifications.push({ method: 'turn/started', params: started });
+            harness.notificationHandler?.('turn/started', started);
+            return { turn: { id: 'turn-disconnect' } };
+        };
+
+        const { session, thinkingChanges } = createSessionStub();
+        const launcherPromise = codexRemoteLauncher(session as never);
+
+        await waitFor(() => harness.disconnectHandler !== null && session.thinking);
+        harness.disconnectHandler?.(new Error('app-server disconnected in test'));
+
+        const exitReason = await launcherPromise;
+
+        expect(exitReason).toBe('exit');
         expect(thinkingChanges).toContain(true);
         expect(session.thinking).toBe(false);
     });

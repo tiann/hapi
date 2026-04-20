@@ -66,6 +66,7 @@ export class CodexAppServerClient {
     private readonly pending = new Map<number, PendingRequest>();
     private readonly requestHandlers = new Map<string, RequestHandler>();
     private notificationHandler: ((method: string, params: unknown) => void) | null = null;
+    private disconnectHandler: ((error: Error) => void) | null = null;
     private protocolError: Error | null = null;
 
     static readonly DEFAULT_TIMEOUT_MS = 14 * 24 * 60 * 60 * 1000;
@@ -98,23 +99,27 @@ export class CodexAppServerClient {
 
         this.process.on('exit', (code, signal) => {
             const message = `Codex app-server exited (code=${code ?? 'null'}, signal=${signal ?? 'null'})`;
+            const error = new Error(message);
             logger.debug(message);
-            this.rejectAllPending(new Error(message));
+            this.rejectAllPending(error);
             this.connected = false;
             this.resetParserState();
             this.process = null;
+            this.notifyDisconnected(error);
         });
 
         this.process.on('error', (error) => {
             logger.debug('[CodexAppServer] Process error', error);
             const message = error instanceof Error ? error.message : String(error);
-            this.rejectAllPending(new Error(
+            const disconnectError = new Error(
                 `Failed to spawn codex app-server: ${message}. Is it installed and on PATH?`,
                 { cause: error }
-            ));
+            );
+            this.rejectAllPending(disconnectError);
             this.connected = false;
             this.resetParserState();
             this.process = null;
+            this.notifyDisconnected(disconnectError);
         });
 
         this.connected = true;
@@ -123,6 +128,10 @@ export class CodexAppServerClient {
 
     setNotificationHandler(handler: ((method: string, params: unknown) => void) | null): void {
         this.notificationHandler = handler;
+    }
+
+    setDisconnectHandler(handler: ((error: Error) => void) | null): void {
+        this.disconnectHandler = handler;
     }
 
     registerRequestHandler(method: string, handler: RequestHandler): void {
@@ -190,12 +199,22 @@ export class CodexAppServerClient {
         } catch (error) {
             logger.debug('[CodexAppServer] Error while stopping process', error);
         } finally {
-            this.rejectAllPending(new Error('Codex app-server disconnected'));
+            const disconnectError = new Error('Codex app-server disconnected');
+            this.rejectAllPending(disconnectError);
             this.connected = false;
             this.resetParserState();
+            this.notifyDisconnected(disconnectError);
         }
 
         logger.debug('[CodexAppServer] Disconnected');
+    }
+
+    private notifyDisconnected(error: Error): void {
+        try {
+            this.disconnectHandler?.(error);
+        } catch (handlerError) {
+            logger.debug('[CodexAppServer] Disconnect handler error', handlerError);
+        }
     }
 
     private async sendRequest(
