@@ -287,6 +287,53 @@ describe('codexRemoteLauncher', () => {
         expect(session.thinking).toBe(false);
     });
 
+    it('keeps failed steering messages queued for the next turn without retrying the active turn', async () => {
+        let turnStarts = 0;
+        harness.startTurnImpl = async () => {
+            turnStarts += 1;
+            const turnId = `turn-${turnStarts}`;
+            const started = { turn: { id: turnId } };
+            harness.notifications.push({ method: 'turn/started', params: started });
+            harness.notificationHandler?.('turn/started', started);
+
+            if (turnStarts === 2) {
+                const completed = { status: 'Completed', turn: { id: turnId } };
+                harness.notifications.push({ method: 'turn/completed', params: completed });
+                harness.notificationHandler?.('turn/completed', completed);
+            }
+
+            return { turn: {} };
+        };
+        harness.steerTurnImpl = async () => {
+            throw new Error('steer rejected');
+        };
+
+        const { session } = createSessionStub({ closeQueue: false });
+        const launcherPromise = codexRemoteLauncher(session as never);
+
+        await waitFor(() => harness.startTurnCalls.length === 1);
+
+        session.queue.push('second message', createMode());
+        await waitFor(() => harness.steerTurnCalls.length === 1);
+        await new Promise((resolve) => setTimeout(resolve, 50));
+
+        expect(harness.steerTurnCalls).toHaveLength(1);
+        expect(harness.startTurnCalls).toHaveLength(1);
+
+        const completed = { status: 'Completed', turn: { id: 'turn-1' } };
+        harness.notifications.push({ method: 'turn/completed', params: completed });
+        harness.notificationHandler?.('turn/completed', completed);
+        session.queue.close();
+
+        await waitFor(() => harness.startTurnCalls.length === 2);
+        const exitReason = await launcherPromise;
+
+        expect(exitReason).toBe('exit');
+        expect(harness.steerTurnCalls).toHaveLength(1);
+        expect(harness.startTurnCalls).toHaveLength(2);
+        expect(session.thinking).toBe(false);
+    });
+
     it('steers queued messages once the active turn id becomes known', async () => {
         let releaseTurnStart!: () => void;
         harness.startTurnImpl = async () => {

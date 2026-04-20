@@ -241,6 +241,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         let clearReadyAfterTurnTimer: (() => void) | null = null;
         let turnInFlight = false;
         let steeringInFlight = false;
+        let steeringSuspendedForTurn = false;
         let activeTurnModeHash: string | null = null;
         let allowAnonymousTerminalEvent = false;
         let resolveTurnSettled: (() => void) | null = null;
@@ -255,7 +256,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         };
 
         const maybeSteerQueuedMessages = async () => {
-            if (this.shouldExit || turnInFlight === false || steeringInFlight) {
+            if (this.shouldExit || turnInFlight === false || steeringInFlight || steeringSuspendedForTurn) {
                 return;
             }
             if (!this.currentThreadId || !this.currentTurnId || !activeTurnModeHash) {
@@ -294,11 +295,12 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             } catch (error) {
                 if (batch) {
                     session.queue.unshift(batch.message, batch.mode);
+                    steeringSuspendedForTurn = true;
                 }
                 logger.debug('[Codex] Failed to steer active turn; keeping message queued for next turn', error);
             } finally {
                 steeringInFlight = false;
-                if (turnInFlight && session.queue.size() > 0) {
+                if (!steeringSuspendedForTurn && turnInFlight && session.queue.size() > 0) {
                     void maybeSteerQueuedMessages();
                 }
             }
@@ -398,6 +400,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             }
             if (isTerminalEvent) {
                 turnInFlight = false;
+                steeringSuspendedForTurn = false;
                 activeTurnModeHash = null;
                 allowAnonymousTerminalEvent = false;
                 settleTurnInFlight();
@@ -606,6 +609,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
 
         appServerClient.setDisconnectHandler(() => {
             turnInFlight = false;
+            steeringSuspendedForTurn = false;
             activeTurnModeHash = null;
             allowAnonymousTerminalEvent = false;
             this.currentTurnId = null;
@@ -768,6 +772,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     cliOverrides: session.codexCliOverrides
                 });
                 turnInFlight = true;
+                steeringSuspendedForTurn = false;
                 activeTurnModeHash = message.hash;
                 allowAnonymousTerminalEvent = false;
                 const turnSettled = new Promise<void>((resolve) => {
@@ -790,6 +795,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 logger.warn('Error in codex session:', error);
                 const isAbortError = error instanceof Error && error.name === 'AbortError';
                 turnInFlight = false;
+                steeringSuspendedForTurn = false;
                 activeTurnModeHash = null;
                 allowAnonymousTerminalEvent = false;
                 this.currentTurnId = null;
