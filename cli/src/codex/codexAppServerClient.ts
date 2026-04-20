@@ -190,6 +190,7 @@ export class CodexAppServerClient {
 
         const child = this.process;
         this.process = null;
+        this.disconnectHandler = null;
 
         try {
             child?.stdin.end();
@@ -199,11 +200,9 @@ export class CodexAppServerClient {
         } catch (error) {
             logger.debug('[CodexAppServer] Error while stopping process', error);
         } finally {
-            const disconnectError = new Error('Codex app-server disconnected');
-            this.rejectAllPending(disconnectError);
+            this.rejectAllPending(new Error('Codex app-server disconnected'));
             this.connected = false;
             this.resetParserState();
-            this.notifyDisconnected(disconnectError);
         }
 
         logger.debug('[CodexAppServer] Disconnected');
