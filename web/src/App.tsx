@@ -256,7 +256,7 @@ function AppInner() {
         onToast: handleToast
     })
 
-    useSSE({
+    const { subscriptionId: sessionSubscriptionId } = useSSE({
         enabled: Boolean(api && token && selectedSessionId),
         token: token ?? '',
         baseUrl,
@@ -268,6 +268,12 @@ function AppInner() {
         api,
         subscriptionId,
         enabled: Boolean(api && token)
+    })
+
+    useVisibilityReporter({
+        api,
+        subscriptionId: sessionSubscriptionId,
+        enabled: Boolean(api && token && selectedSessionId)
     })
 
     // Loading auth source
