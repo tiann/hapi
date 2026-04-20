@@ -11,6 +11,7 @@ export class SessionCache {
     private readonly lastBroadcastAtBySessionId: Map<string, number> = new Map()
     private readonly todoBackfillAttemptedSessionIds: Set<string> = new Set()
     private readonly deduplicateInProgress: Set<string> = new Set()
+    private readonly deduplicatePending: Set<string> = new Set()
 
     constructor(
         private readonly store: Store,
@@ -406,6 +407,19 @@ export class SessionCache {
     }
 
     async mergeSessions(oldSessionId: string, newSessionId: string, namespace: string): Promise<void> {
+        await this.mergeSessionData(oldSessionId, newSessionId, namespace, { deleteOldSession: true })
+    }
+
+    async mergeSessionHistory(oldSessionId: string, newSessionId: string, namespace: string): Promise<void> {
+        await this.mergeSessionData(oldSessionId, newSessionId, namespace, { deleteOldSession: false })
+    }
+
+    private async mergeSessionData(
+        oldSessionId: string,
+        newSessionId: string,
+        namespace: string,
+        options: { deleteOldSession: boolean }
+    ): Promise<void> {
         if (oldSessionId === newSessionId) {
             return
         }
@@ -505,19 +519,26 @@ export class SessionCache {
             )
         }
 
-        const deleted = this.store.sessions.deleteSession(oldSessionId, namespace)
-        if (!deleted) {
-            throw new Error('Failed to delete old session during merge')
+        if (options.deleteOldSession) {
+            const deleted = this.store.sessions.deleteSession(oldSessionId, namespace)
+            if (!deleted) {
+                throw new Error('Failed to delete old session during merge')
+            }
+
+            const existed = this.sessions.delete(oldSessionId)
+            if (existed) {
+                this.publisher.emit({ type: 'session-removed', sessionId: oldSessionId, namespace })
+            }
+            this.lastBroadcastAtBySessionId.delete(oldSessionId)
+            this.todoBackfillAttemptedSessionIds.delete(oldSessionId)
+        } else {
+            this.refreshSession(oldSessionId)
         }
 
-        const existed = this.sessions.delete(oldSessionId)
-        if (existed) {
-            this.publisher.emit({ type: 'session-removed', sessionId: oldSessionId, namespace })
+        const refreshed = this.refreshSession(newSessionId)
+        if (refreshed) {
+            this.publisher.emit({ type: 'session-updated', sessionId: newSessionId, data: refreshed })
         }
-        this.lastBroadcastAtBySessionId.delete(oldSessionId)
-        this.todoBackfillAttemptedSessionIds.delete(oldSessionId)
-
-        this.refreshSession(newSessionId)
     }
 
     private mergeSessionMetadata(oldMetadata: unknown | null, newMetadata: unknown | null): unknown | null {
@@ -605,44 +626,72 @@ export class SessionCache {
         const agentId = this.extractAgentSessionId(session.metadata)
         if (!agentId) return
 
-        // Guard: skip if another dedup for this agent ID is already in progress.
-        // A skipped trigger is acceptable — the web-side display dedup hides any remaining duplicates.
-        if (this.deduplicateInProgress.has(agentId.value)) return
+        // Guard: if another dedup for this agent ID is already in progress,
+        // coalesce this trigger and run one more pass afterwards. This matters
+        // for active duplicates: a session can become inactive while the first
+        // pass is only allowed to move history, and the follow-up pass should
+        // then be allowed to delete the inactive duplicate record.
+        if (this.deduplicateInProgress.has(agentId.value)) {
+            this.deduplicatePending.add(agentId.value)
+            return
+        }
         this.deduplicateInProgress.add(agentId.value)
 
         try {
-            const candidates: { id: string; session: Session }[] = [{ id: sessionId, session }]
-            for (const [existingId, existing] of this.sessions) {
-                if (existingId === sessionId) continue
-                if (existing.namespace !== session.namespace) continue
-                if (!existing.metadata) continue
-                if (existing.metadata[agentId.field] !== agentId.value) continue
-                // Only merge inactive duplicates. Active ones still have a live CLI socket
-                // whose keepalive/messages would fail if we deleted their session record.
-                // The web-side display dedup hides active duplicates from the UI.
-                if (existing.active) continue
-                candidates.push({ id: existingId, session: existing })
-            }
+            do {
+                this.deduplicatePending.delete(agentId.value)
 
-            if (candidates.length <= 1) return
-
-            // Keep the most recent session as the merge target so newer state survives.
-            candidates.sort((a, b) =>
-                (b.session.activeAt - a.session.activeAt) || (b.session.updatedAt - a.session.updatedAt)
-            )
-            const targetId = candidates[0].id
-            const targetNamespace = candidates[0].session.namespace
-
-            for (const { id } of candidates.slice(1)) {
-                if (id === targetId) continue
-                try {
-                    await this.mergeSessions(id, targetId, targetNamespace)
-                } catch {
-                    // best-effort: duplicate remains if merge fails
+                const currentSession = this.sessions.get(sessionId)
+                const candidates: { id: string; session: Session }[] = []
+                if (currentSession?.metadata && currentSession.metadata[agentId.field] === agentId.value) {
+                    candidates.push({ id: sessionId, session: currentSession })
                 }
-            }
+                for (const [existingId, existing] of this.sessions) {
+                    if (existingId === sessionId) continue
+                    if (existing.namespace !== session.namespace) continue
+                    if (!existing.metadata) continue
+                    if (existing.metadata[agentId.field] !== agentId.value) continue
+                    candidates.push({ id: existingId, session: existing })
+                }
+
+                if (candidates.length <= 1) continue
+
+                // Keep the same canonical session the sidebar is likely to show:
+                // active sessions win, then the most recently updated session wins.
+                // If timestamps tie, prefer the session that triggered this dedup run
+                // so callers can intentionally preserve the visible/resumed session.
+                candidates.sort((a, b) => {
+                    if (a.session.active !== b.session.active) return a.session.active ? -1 : 1
+                    const updatedDelta = b.session.updatedAt - a.session.updatedAt
+                    if (updatedDelta !== 0) return updatedDelta
+                    if (a.id === sessionId) return -1
+                    if (b.id === sessionId) return 1
+                    return b.session.activeAt - a.session.activeAt
+                })
+                const targetId = candidates[0].id
+                const targetNamespace = candidates[0].session.namespace
+
+                for (const { id } of candidates.slice(1)) {
+                    if (id === targetId) continue
+                    try {
+                        const candidate = this.sessions.get(id)
+                        if (candidate?.active) {
+                            // Keep the live session record/socket intact, but move its already
+                            // persisted history into the visible dedup target.  This preserves
+                            // left-sidebar dedup while making resumed/restarted sessions show
+                            // the full conversation history.
+                            await this.mergeSessionHistory(id, targetId, targetNamespace)
+                        } else {
+                            await this.mergeSessions(id, targetId, targetNamespace)
+                        }
+                    } catch {
+                        // best-effort: duplicate remains if merge fails
+                    }
+                }
+            } while (this.deduplicatePending.has(agentId.value))
         } finally {
             this.deduplicateInProgress.delete(agentId.value)
+            this.deduplicatePending.delete(agentId.value)
         }
     }
 }
