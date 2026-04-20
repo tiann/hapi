@@ -388,7 +388,7 @@ describe('codexRemoteLauncher', () => {
             return { turn: {} };
         };
 
-        const { session, thinkingChanges } = createSessionStub({ closeQueue: false });
+        const { session, sessionEvents, thinkingChanges } = createSessionStub({ closeQueue: false });
         const launcherPromise = codexRemoteLauncher(session as never);
 
         await waitFor(() => harness.disconnectHandler !== null && session.thinking);
@@ -403,6 +403,7 @@ describe('codexRemoteLauncher', () => {
         expect(exitReason).toBe('exit');
         expect(harness.startThreadCalls).toHaveLength(1);
         expect(harness.resumeThreadCalls).toHaveLength(1);
+        expect(sessionEvents).toContainEqual({ type: 'message', message: 'Process exited unexpectedly' });
         expect(thinkingChanges).toContain(true);
         expect(session.thinking).toBe(false);
     });

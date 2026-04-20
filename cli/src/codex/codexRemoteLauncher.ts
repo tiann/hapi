@@ -244,6 +244,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         let steeringSuspendedForTurn = false;
         let activeTurnModeHash: string | null = null;
         let allowAnonymousTerminalEvent = false;
+        let appServerDisconnectError: Error | null = null;
         let resolveTurnSettled: (() => void) | null = null;
 
         const settleTurnInFlight = () => {
@@ -607,7 +608,8 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             }
         });
 
-        appServerClient.setDisconnectHandler(() => {
+        appServerClient.setDisconnectHandler((error) => {
+            appServerDisconnectError = error;
             turnInFlight = false;
             steeringSuspendedForTurn = false;
             activeTurnModeHash = null;
@@ -771,6 +773,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     },
                     cliOverrides: session.codexCliOverrides
                 });
+                appServerDisconnectError = null;
                 turnInFlight = true;
                 steeringSuspendedForTurn = false;
                 activeTurnModeHash = message.hash;
@@ -791,6 +794,9 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     allowAnonymousTerminalEvent = true;
                 }
                 await turnSettled;
+                if (appServerDisconnectError) {
+                    throw appServerDisconnectError;
+                }
             } catch (error) {
                 logger.warn('Error in codex session:', error);
                 const isAbortError = error instanceof Error && error.name === 'AbortError';
