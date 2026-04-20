@@ -52,6 +52,65 @@ describe('session model', () => {
         expect(toSessionSummary(session).effort).toBe('high')
     })
 
+    it('updates session timestamp when a message is stored', async () => {
+        const store = new Store(':memory:')
+        const events: SyncEvent[] = []
+        const cache = new SessionCache(store, createPublisher(events))
+
+        const session = cache.getOrCreateSession(
+            'session-message-time',
+            { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+            null,
+            'default'
+        )
+        const before = store.sessions.getSession(session.id)
+        await new Promise((resolve) => setTimeout(resolve, 2))
+
+        const message = store.messages.addMessage(session.id, { role: 'assistant', content: 'hello' })
+        const after = store.sessions.getSession(session.id)
+
+        expect(after?.updatedAt).toBe(message.createdAt)
+        expect(after?.updatedAt ?? 0).toBeGreaterThan(before?.updatedAt ?? 0)
+    })
+
+    it('broadcasts a session update when a message is received', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+        const events: SyncEvent[] = []
+        const unsubscribe = engine.subscribe((event) => events.push(event))
+
+        try {
+            const session = engine.getOrCreateSession(
+                'session-message-event-time',
+                { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+                null,
+                'default'
+            )
+            await new Promise((resolve) => setTimeout(resolve, 2))
+            const message = store.messages.addMessage(session.id, { role: 'assistant', content: 'hello' })
+
+            engine.handleRealtimeEvent({
+                type: 'message-received',
+                sessionId: session.id,
+                message
+            })
+
+            const sessionUpdated = events.find((event) =>
+                event.type === 'session-updated' && event.sessionId === session.id
+            )
+            expect(sessionUpdated).toBeDefined()
+            expect(engine.getSession(session.id)?.updatedAt).toBe(message.createdAt)
+        } finally {
+            unsubscribe()
+            engine.stop()
+        }
+    })
+
     it('persists explicit model reasoning effort on Codex sessions', () => {
         const store = new Store(':memory:')
         const events: SyncEvent[] = []
