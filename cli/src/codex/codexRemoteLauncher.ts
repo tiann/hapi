@@ -16,6 +16,7 @@ import { AppServerEventConverter } from './utils/appServerEventConverter';
 import { registerAppServerPermissionHandlers } from './utils/appServerPermissionAdapter';
 import { buildThreadStartParams, buildTurnStartParams } from './utils/appServerConfig';
 import { shouldIgnoreTerminalEvent } from './utils/terminalEventGuard';
+import type { PeekedMessageBatch } from '@/utils/MessageQueue2';
 import {
     RemoteLauncherBase,
     type RemoteLauncherDisplayContext,
@@ -24,6 +25,7 @@ import {
 
 type HappyServer = Awaited<ReturnType<typeof buildHapiMcpBridge>>['server'];
 type QueuedMessage = { message: string; mode: EnhancedMode; isolate: boolean; hash: string };
+type PeekedQueuedMessage = PeekedMessageBatch<EnhancedMode>;
 
 class CodexRemoteLauncher extends RemoteLauncherBase {
     private readonly session: CodexSession;
@@ -273,20 +275,18 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             }
 
             steeringInFlight = true;
-            let batch: QueuedMessage | null = null;
+            let batch: PeekedQueuedMessage | null = null;
             let steerSignal: AbortSignal | null = null;
 
             try {
-                batch = await session.queue.waitForMessagesAndGetAsString();
+                batch = session.queue.peekMessagesAndGetAsString();
                 if (!batch) {
                     return;
                 }
                 if (batch.isolate || batch.hash !== activeTurnModeHash) {
-                    session.queue.unshift(batch.message, batch.mode);
                     return;
                 }
 
-                messageBuffer.addMessage(batch.message, 'user');
                 steerSignal = this.abortController.signal;
                 await appServerClient.steerTurn({
                     threadId: this.currentThreadId,
@@ -295,13 +295,19 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 }, {
                     signal: steerSignal
                 });
+                if (steerSignal.aborted || this.shouldExit) {
+                    return;
+                }
+                if (session.queue.consumePeekedBatch(batch)) {
+                    messageBuffer.addMessage(batch.message, 'user');
+                } else {
+                    logger.debug('[Codex] Steered batch was no longer queued after steer success');
+                }
             } catch (error) {
-                const isAbortError = error instanceof Error && error.name === 'AbortError';
                 const wasAborted = Boolean(steerSignal?.aborted);
-                if (batch && !isAbortError && !wasAborted && !this.shouldExit) {
-                    session.queue.unshift(batch.message, batch.mode);
+                if (batch && !wasAborted && !this.shouldExit) {
                     steeringSuspendedForTurn = true;
-                    logger.debug('[Codex] Failed to steer active turn; keeping message queued for next turn', error);
+                    logger.debug('[Codex] Failed to steer active turn; leaving message queued for next turn', error);
                 } else {
                     logger.debug('[Codex] Steering aborted; dropping queued message', error);
                 }

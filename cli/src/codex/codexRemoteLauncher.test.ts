@@ -293,6 +293,46 @@ describe('codexRemoteLauncher', () => {
         expect(session.thinking).toBe(false);
     });
 
+    it('keeps a steering batch queued until the steer RPC succeeds', async () => {
+        let resolveSteer!: () => void;
+        harness.startTurnImpl = async () => {
+            const started = { turn: { id: 'turn-1' } };
+            harness.notifications.push({ method: 'turn/started', params: started });
+            harness.notificationHandler?.('turn/started', started);
+            return { turn: { id: 'turn-1' } };
+        };
+        harness.steerTurnImpl = async () => {
+            return await new Promise<Record<string, never>>((resolve) => {
+                resolveSteer = () => resolve({});
+            });
+        };
+
+        const { session } = createSessionStub({ closeQueue: false });
+        const launcherPromise = codexRemoteLauncher(session as never);
+
+        await waitFor(() => harness.startTurnCalls.length === 1);
+
+        session.queue.push('second message awaiting steer acceptance', createMode());
+        await waitFor(() => harness.steerTurnCalls.length === 1);
+
+        expect(session.queue.size()).toBe(1);
+
+        resolveSteer();
+        await waitFor(() => session.queue.size() === 0);
+
+        const completed = { status: 'Completed', turn: { id: 'turn-1' } };
+        harness.notifications.push({ method: 'turn/completed', params: completed });
+        harness.notificationHandler?.('turn/completed', completed);
+        session.queue.close();
+
+        const exitReason = await launcherPromise;
+
+        expect(exitReason).toBe('exit');
+        expect(harness.startTurnCalls).toHaveLength(1);
+        expect(harness.steerTurnCalls).toHaveLength(1);
+        expect(session.thinking).toBe(false);
+    });
+
     it('keeps failed steering messages queued for the next turn without retrying the active turn', async () => {
         let turnStarts = 0;
         harness.startTurnImpl = async () => {

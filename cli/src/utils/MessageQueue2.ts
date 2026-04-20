@@ -1,11 +1,22 @@
 import { logger } from "@/ui/logger";
 
-interface QueueItem<T> {
+export interface QueueItem<T> {
     message: string;
     mode: T;
     modeHash: string;
     isolate?: boolean; // If true, this message must be processed alone
 }
+
+export type MessageBatch<T> = {
+    message: string;
+    mode: T;
+    isolate: boolean;
+    hash: string;
+};
+
+export type PeekedMessageBatch<T> = MessageBatch<T> & {
+    items: QueueItem<T>[];
+};
 
 /**
  * A mode-aware message queue that stores messages with their modes.
@@ -221,7 +232,7 @@ export class MessageQueue2<T> {
      * Wait for messages and return all messages with the same mode as a single string
      * Returns { message: string, mode: T } or null if aborted/closed
      */
-    async waitForMessagesAndGetAsString(abortSignal?: AbortSignal): Promise<{ message: string, mode: T, isolate: boolean, hash: string } | null> {
+    async waitForMessagesAndGetAsString(abortSignal?: AbortSignal): Promise<MessageBatch<T> | null> {
         // If we have messages, return them immediately
         if (this.queue.length > 0) {
             return this.collectBatch();
@@ -245,41 +256,72 @@ export class MessageQueue2<T> {
     /**
      * Collect a batch of messages with the same mode, respecting isolation requirements
      */
-    private collectBatch(): { message: string, mode: T, hash: string, isolate: boolean } | null {
+    /**
+     * Peek at the next batch without removing it from the queue.
+     * Call consumePeekedBatch() after the downstream consumer accepts it.
+     */
+    peekMessagesAndGetAsString(): PeekedMessageBatch<T> | null {
         if (this.queue.length === 0) {
             return null;
         }
 
         const firstItem = this.queue[0];
-        const sameModeMessages: string[] = [];
-        let mode = firstItem.mode;
-        let isolate = firstItem.isolate ?? false;
+        const items: QueueItem<T>[] = [];
+        const mode = firstItem.mode;
+        const isolate = firstItem.isolate ?? false;
         const targetModeHash = firstItem.modeHash;
 
         // If the first message requires isolation, only process it alone
         if (firstItem.isolate) {
-            const item = this.queue.shift()!;
-            sameModeMessages.push(item.message);
-            logger.debug(`[MessageQueue2] Collected isolated message with mode hash: ${targetModeHash}`);
+            items.push(firstItem);
+            logger.debug(`[MessageQueue2] Peeked isolated message with mode hash: ${targetModeHash}`);
         } else {
             // Collect all messages with the same mode until we hit an isolated message
-            while (this.queue.length > 0 &&
-                this.queue[0].modeHash === targetModeHash &&
-                !this.queue[0].isolate) {
-                const item = this.queue.shift()!;
-                sameModeMessages.push(item.message);
+            while (items.length < this.queue.length &&
+                this.queue[items.length].modeHash === targetModeHash &&
+                !this.queue[items.length].isolate) {
+                items.push(this.queue[items.length]);
             }
-            logger.debug(`[MessageQueue2] Collected batch of ${sameModeMessages.length} messages with mode hash: ${targetModeHash}`);
+            logger.debug(`[MessageQueue2] Peeked batch of ${items.length} messages with mode hash: ${targetModeHash}`);
         }
 
         // Join all messages with newlines
-        const combinedMessage = sameModeMessages.join('\n');
+        const combinedMessage = items.map((item) => item.message).join('\n');
 
         return {
             message: combinedMessage,
             mode,
             hash: targetModeHash,
-            isolate
+            isolate,
+            items
+        };
+    }
+
+    /**
+     * Remove a previously peeked batch only if it is still at the front.
+     * Returns false when the queue changed, for example after reset().
+     */
+    consumePeekedBatch(batch: PeekedMessageBatch<T>): boolean {
+        for (let index = 0; index < batch.items.length; index += 1) {
+            if (this.queue[index] !== batch.items[index]) {
+                return false;
+            }
+        }
+        this.queue.splice(0, batch.items.length);
+        return true;
+    }
+
+    private collectBatch(): MessageBatch<T> | null {
+        const batch = this.peekMessagesAndGetAsString();
+        if (!batch) {
+            return null;
+        }
+        this.consumePeekedBatch(batch);
+        return {
+            message: batch.message,
+            mode: batch.mode,
+            hash: batch.hash,
+            isolate: batch.isolate
         };
     }
 
