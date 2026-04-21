@@ -80,6 +80,7 @@ export function SessionChat(props: {
 
     // Voice assistant integration
     const voice = useVoiceOptional()
+    const [voiceBackendReady, setVoiceBackendReady] = useState(false)
 
     // Register session store for voice client tools
     useEffect(() => {
@@ -423,8 +424,8 @@ export function SessionChat(props: {
                         autocompleteSuggestions={props.autocompleteSuggestions}
                         voiceStatus={voice?.status}
                         voiceMicMuted={voice?.micMuted}
-                        onVoiceToggle={voice ? handleVoiceToggle : undefined}
-                        onVoiceMicToggle={voice ? handleVoiceMicToggle : undefined}
+                        onVoiceToggle={voice && voiceBackendReady ? handleVoiceToggle : undefined}
+                        onVoiceMicToggle={voice && voiceBackendReady ? handleVoiceMicToggle : undefined}
                     />
                 </div>
             </AssistantRuntimeProvider>
@@ -435,6 +436,7 @@ export function SessionChat(props: {
                     api={props.api}
                     micMuted={voice.micMuted}
                     onStatusChange={voice.setStatus}
+                    onReadyChange={setVoiceBackendReady}
                 />
             )}
         </div>

@@ -15,6 +15,7 @@ const QwenVoiceSession = lazy(() =>
 
 export type VoiceBackendSessionProps = RealtimeVoiceSessionProps & {
     api: ApiClient
+    onReadyChange?: (ready: boolean) => void
 }
 
 /**
@@ -27,10 +28,16 @@ export function VoiceBackendSession(props: VoiceBackendSessionProps) {
     useEffect(() => {
         let cancelled = false
         fetchVoiceBackend(props.api).then((resp) => {
-            if (!cancelled) setBackend(resp.backend)
+            if (!cancelled) {
+                setBackend(resp.backend)
+                props.onReadyChange?.(true)
+            }
         })
-        return () => { cancelled = true }
-    }, [props.api])
+        return () => {
+            cancelled = true
+            props.onReadyChange?.(false)
+        }
+    }, [props.api]) // eslint-disable-line react-hooks/exhaustive-deps
 
     if (!backend) return null
 
