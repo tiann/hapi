@@ -106,6 +106,12 @@ export class AcpMessageHandler {
 
     constructor(private readonly onMessage: (message: AgentMessage) => void) {}
 
+    /**
+     * Emits any buffered assistant text as a single message and clears the
+     * buffer. Callers must treat this as a text-segment boundary: it is
+     * invoked internally before tool_call / plan events and externally at
+     * turn boundaries by AcpSdkBackend.
+     */
     flushText(): void {
         if (!this.bufferedText) {
             return;
@@ -191,20 +197,34 @@ export class AcpMessageHandler {
         }
 
         if (updateType === ACP_SESSION_UPDATE_TYPES.agentThoughtChunk) {
+            // Thought chunks are not forwarded as messages, so they do not
+            // participate in intra-turn ordering and must not flush the
+            // text buffer (that would split a live text segment).
             return;
         }
 
         if (updateType === ACP_SESSION_UPDATE_TYPES.toolCall) {
+            // A new tool invocation closes the preceding text segment.
+            // Flushing here preserves the arrival order between text and
+            // tool lifecycle events without disturbing cumulative dedup
+            // within a segment.
+            this.flushText();
             this.handleToolCall(update);
             return;
         }
 
         if (updateType === ACP_SESSION_UPDATE_TYPES.toolCallUpdate) {
+            // Do not flush here: a toolCallUpdate is a lifecycle event on
+            // an already-open tool call, not a boundary between text
+            // segments. If the agent streams a new text segment while the
+            // tool is running, flushing here would leak that segment
+            // across the tool_result boundary.
             this.handleToolCallUpdate(update);
             return;
         }
 
         if (updateType === ACP_SESSION_UPDATE_TYPES.plan) {
+            this.flushText();
             const items = normalizePlanEntries(update.entries);
             if (items.length > 0) {
                 this.onMessage({ type: 'plan', items });

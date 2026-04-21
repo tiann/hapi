@@ -61,18 +61,18 @@ describe('AcpMessageHandler', () => {
         expect(result.output).toEqual({ stdout: 'ok\n' });
     });
 
-    it('keeps buffered text behind tool lifecycle events', () => {
+    it('preserves intra-turn interleave order: text → tool_call → tool_result', () => {
         const messages: AgentMessage[] = [];
         const handler = new AcpMessageHandler((message) => messages.push(message));
 
         handler.handleUpdate({
             sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
-            content: { type: 'text', text: 'final answer' }
+            content: { type: 'text', text: 'thinking first' }
         });
 
         handler.handleUpdate({
             sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
-            toolCallId: 'tool-3',
+            toolCallId: 'tool-itr-1',
             title: 'Read',
             rawInput: { path: 'README.md' },
             status: 'in_progress'
@@ -80,16 +80,166 @@ describe('AcpMessageHandler', () => {
 
         handler.handleUpdate({
             sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCallUpdate,
-            toolCallId: 'tool-3',
+            toolCallId: 'tool-itr-1',
             status: 'completed',
             rawOutput: { content: 'ok' }
         });
 
         handler.flushText();
 
-        expect(messages.map((message) => message.type)).toEqual(['tool_call', 'tool_result', 'text']);
-        const textMessage = messages[messages.length - 1];
-        expect(textMessage).toEqual({ type: 'text', text: 'final answer' });
+        expect(messages.map((m) => m.type)).toEqual(['text', 'tool_call', 'tool_result']);
+        expect(messages[0]).toEqual({ type: 'text', text: 'thinking first' });
+    });
+
+    it('preserves intra-turn interleave order: text → tool → text → tool', () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message));
+
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+            content: { type: 'text', text: 'step one' }
+        });
+
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+            toolCallId: 'tool-itr-2a',
+            title: 'Bash',
+            rawInput: { cmd: 'ls' },
+            status: 'in_progress'
+        });
+
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCallUpdate,
+            toolCallId: 'tool-itr-2a',
+            status: 'completed',
+            rawOutput: { stdout: 'file.txt' }
+        });
+
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+            content: { type: 'text', text: 'step two' }
+        });
+
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+            toolCallId: 'tool-itr-2b',
+            title: 'Read',
+            rawInput: { path: 'file.txt' },
+            status: 'in_progress'
+        });
+
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCallUpdate,
+            toolCallId: 'tool-itr-2b',
+            status: 'completed',
+            rawOutput: { content: 'hello' }
+        });
+
+        handler.flushText();
+
+        expect(messages.map((m) => m.type)).toEqual([
+            'text', 'tool_call', 'tool_result',
+            'text', 'tool_call', 'tool_result'
+        ]);
+    });
+
+    it('preserves dedup base when text arrives between toolCall and toolCallUpdate', () => {
+        // Regression: while a tool call is in flight the agent may stream
+        // additional text as cumulative deltas. tool_call_update must not
+        // flush that buffer mid-segment: doing so would both reorder the
+        // text (emit before tool_result) and reset the dedup baseline, so
+        // the next cumulative chunk would re-emit content already visible.
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message));
+
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+            content: { type: 'text', text: 'init' }
+        });
+
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+            toolCallId: 'tool-mid',
+            title: 'Bash',
+            rawInput: { cmd: 'long' },
+            status: 'in_progress'
+        });
+
+        // Cumulative chunks arrive WHILE the tool is still running:
+        // "live " then "live update" — the second starts with the first,
+        // which exercises the dedup branch in appendTextChunk.
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+            content: { type: 'text', text: 'live ' }
+        });
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+            content: { type: 'text', text: 'live update' }
+        });
+
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCallUpdate,
+            toolCallId: 'tool-mid',
+            status: 'completed',
+            rawOutput: { stdout: 'done' }
+        });
+
+        handler.flushText();
+
+        expect(messages.map((m) => m.type)).toEqual(['text', 'tool_call', 'tool_result', 'text']);
+        const textMessages = messages.filter((m) => m.type === 'text') as Array<{ type: 'text'; text: string }>;
+        expect(textMessages).toHaveLength(2);
+        expect(textMessages[0].text).toBe('init');
+        expect(textMessages[1].text).toBe('live update');
+    });
+
+    it('deduplicates overlapping text chunks within the same text segment across tool boundaries', () => {
+        // Cumulative dedup should still work within each text segment separated by tool events.
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message));
+
+        // First text segment: cumulative chunks ("hello " → "hello world")
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+            content: { type: 'text', text: 'hello ' }
+        });
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+            content: { type: 'text', text: 'hello world' }
+        });
+
+        // Tool boundary flushes the first segment
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+            toolCallId: 'tool-dedup',
+            title: 'Bash',
+            rawInput: { cmd: 'ls' },
+            status: 'in_progress'
+        });
+
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCallUpdate,
+            toolCallId: 'tool-dedup',
+            status: 'completed',
+            rawOutput: { stdout: '' }
+        });
+
+        // Second text segment: cumulative chunks ("bye" → "bye bye")
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+            content: { type: 'text', text: 'bye' }
+        });
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+            content: { type: 'text', text: 'bye bye' }
+        });
+
+        handler.flushText();
+
+        const textMessages = messages.filter((m) => m.type === 'text') as Array<{ type: 'text'; text: string }>;
+        expect(textMessages).toHaveLength(2);
+        expect(textMessages[0].text).toBe('hello world');
+        expect(textMessages[1].text).toBe('bye bye');
     });
 
     it('ignores text chunks targeted only to user audience', () => {
