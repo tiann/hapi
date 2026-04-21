@@ -23,6 +23,7 @@ interface QwenState {
     ws: WebSocket | null
     recorder: GeminiAudioRecorder | null
     player: GeminiAudioPlayer | null
+    playbackContext: AudioContext | null
     statusCallback: StatusCallback | null
     apiKey: string | null
     wsBaseUrl: string | null
@@ -32,6 +33,7 @@ const state: QwenState = {
     ws: null,
     recorder: null,
     player: null,
+    playbackContext: null,
     statusCallback: null,
     apiKey: null,
     wsBaseUrl: null
@@ -51,6 +53,10 @@ function cleanup() {
         state.player.dispose()
         state.player = null
     }
+    if (state.playbackContext && state.playbackContext.state !== 'closed') {
+        void state.playbackContext.close()
+    }
+    state.playbackContext = null
     if (state.ws) {
         if (state.ws.readyState === WebSocket.OPEN || state.ws.readyState === WebSocket.CONNECTING) {
             state.ws.close()
@@ -81,8 +87,9 @@ class QwenVoiceSessionImpl implements VoiceSession {
 
         // Create playback AudioContext immediately while still inside the user
         // gesture (click/tap). Mobile browsers require this for autoplay policy.
-        const playbackContext = new AudioContext({ sampleRate: 24000 })
-        await playbackContext.resume()
+        // Store in state so cleanup() can close it on failure or stop.
+        state.playbackContext = new AudioContext({ sampleRate: 24000 })
+        await state.playbackContext.resume()
 
         // Check Qwen availability (hub no longer sends the raw API key)
         const tokenResp = await fetchQwenToken(this.api)
@@ -178,7 +185,7 @@ class QwenVoiceSessionImpl implements VoiceSession {
                 if (eventType === 'session.updated') {
                     if (DEBUG) console.log('[Qwen] Session configured')
                     state.statusCallback?.('connected')
-                    startAudioCapture(playbackContext)
+                    startAudioCapture(state.playbackContext!)
                     resolve()
                     return
                 }

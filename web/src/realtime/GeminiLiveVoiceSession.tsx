@@ -20,6 +20,7 @@ interface GeminiLiveState {
     ws: WebSocket | null
     recorder: GeminiAudioRecorder | null
     player: GeminiAudioPlayer | null
+    playbackContext: AudioContext | null
     statusCallback: StatusCallback | null
     apiKey: string | null
     wsBaseUrl: string | null
@@ -30,6 +31,7 @@ const state: GeminiLiveState = {
     ws: null,
     recorder: null,
     player: null,
+    playbackContext: null,
     statusCallback: null,
     apiKey: null,
     wsBaseUrl: null,
@@ -45,6 +47,10 @@ function cleanup() {
         state.player.dispose()
         state.player = null
     }
+    if (state.playbackContext && state.playbackContext.state !== 'closed') {
+        void state.playbackContext.close()
+    }
+    state.playbackContext = null
     if (state.ws) {
         if (state.ws.readyState === WebSocket.OPEN || state.ws.readyState === WebSocket.CONNECTING) {
             state.ws.close()
@@ -66,8 +72,9 @@ class GeminiLiveVoiceSessionImpl implements VoiceSession {
 
         // Create playback AudioContext immediately while still inside the user
         // gesture (click/tap). Mobile browsers require this for autoplay policy.
-        const playbackContext = new AudioContext({ sampleRate: 24000 })
-        await playbackContext.resume()
+        // Store in state so cleanup() can close it on failure or stop.
+        state.playbackContext = new AudioContext({ sampleRate: 24000 })
+        await state.playbackContext.resume()
 
         // Get API key from hub
         console.log('[GeminiLive] Fetching token...')
@@ -168,7 +175,7 @@ class GeminiLiveVoiceSessionImpl implements VoiceSession {
                     state.statusCallback?.('connected')
 
                     // Start audio capture
-                    startAudioCapture(playbackContext)
+                    startAudioCapture(state.playbackContext!)
 
                     // Send initial context if available (no clientContent greeting — it breaks tool calls)
                     if (config.initialContext) {
