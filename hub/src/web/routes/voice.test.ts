@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
+import { describe, test, expect, afterEach } from 'bun:test'
 import { Hono } from 'hono'
 import type { WebAppEnv } from '../middleware/auth'
 import { createVoiceRoutes } from './voice'
@@ -79,15 +79,16 @@ describe('POST /api/voice/gemini-token', () => {
         expect(body.error).toContain('not configured')
     })
 
-    test('returns GEMINI_API_KEY when set', async () => {
+    test('returns proxied wsUrl when GEMINI_API_KEY is set', async () => {
         process.env.GEMINI_API_KEY = 'test-gemini-key'
         delete process.env.GOOGLE_API_KEY
         const app = createApp()
         const res = await app.request('/api/voice/gemini-token', { method: 'POST' })
         expect(res.status).toBe(200)
-        const body = await res.json() as { allowed: boolean; apiKey: string }
+        const body = await res.json() as { allowed: boolean; apiKey: string; wsUrl: string }
         expect(body.allowed).toBe(true)
-        expect(body.apiKey).toBe('test-gemini-key')
+        expect(body.apiKey).toBe('proxied')
+        expect(body.wsUrl).toContain('/api/voice/gemini-ws')
     })
 
     test('falls back to GOOGLE_API_KEY', async () => {
@@ -96,9 +97,10 @@ describe('POST /api/voice/gemini-token', () => {
         const app = createApp()
         const res = await app.request('/api/voice/gemini-token', { method: 'POST' })
         expect(res.status).toBe(200)
-        const body = await res.json() as { allowed: boolean; apiKey: string }
+        const body = await res.json() as { allowed: boolean; apiKey: string; wsUrl: string }
         expect(body.allowed).toBe(true)
-        expect(body.apiKey).toBe('test-google-key')
+        expect(body.apiKey).toBe('proxied')
+        expect(body.wsUrl).toContain('/api/voice/gemini-ws')
     })
 })
 
@@ -124,15 +126,16 @@ describe('POST /api/voice/qwen-token', () => {
         expect(body.error).toContain('not configured')
     })
 
-    test('returns DASHSCOPE_API_KEY when set', async () => {
+    test('returns wsUrl when DASHSCOPE_API_KEY is set (no raw key exposed)', async () => {
         process.env.DASHSCOPE_API_KEY = 'test-dash-key'
         delete process.env.QWEN_API_KEY
         const app = createApp()
         const res = await app.request('/api/voice/qwen-token', { method: 'POST' })
         expect(res.status).toBe(200)
-        const body = await res.json() as { allowed: boolean; apiKey: string }
+        const body = await res.json() as { allowed: boolean; wsUrl: string }
         expect(body.allowed).toBe(true)
-        expect(body.apiKey).toBe('test-dash-key')
+        expect(body.wsUrl).toContain('/api/voice/qwen-ws')
+        expect(body).not.toHaveProperty('apiKey')
     })
 
     test('falls back to QWEN_API_KEY', async () => {
@@ -141,8 +144,9 @@ describe('POST /api/voice/qwen-token', () => {
         const app = createApp()
         const res = await app.request('/api/voice/qwen-token', { method: 'POST' })
         expect(res.status).toBe(200)
-        const body = await res.json() as { allowed: boolean; apiKey: string }
+        const body = await res.json() as { allowed: boolean; wsUrl: string }
         expect(body.allowed).toBe(true)
-        expect(body.apiKey).toBe('test-qwen-key')
+        expect(body.wsUrl).toContain('/api/voice/qwen-ws')
+        expect(body).not.toHaveProperty('apiKey')
     })
 })

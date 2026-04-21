@@ -307,6 +307,7 @@ export interface GeminiLiveVoiceSessionProps {
     api: ApiClient
     micMuted?: boolean
     onStatusChange?: StatusCallback
+    onRegistered?: () => void
     getSession?: (sessionId: string) => Session | null
     sendMessage?: (sessionId: string, message: string) => void
     approvePermission?: (sessionId: string, requestId: string) => Promise<void>
@@ -317,6 +318,7 @@ export function GeminiLiveVoiceSession({
     api,
     micMuted = false,
     onStatusChange,
+    onRegistered,
     getSession,
     sendMessage,
     approvePermission,
@@ -349,11 +351,12 @@ export function GeminiLiveVoiceSession({
             try {
                 registerVoiceSession(new GeminiLiveVoiceSessionImpl(api))
                 hasRegistered.current = true
+                onRegistered?.()
             } catch (error) {
                 console.error('[GeminiLive] Failed to register voice session:', error)
             }
         }
-    }, [api])
+    }, [api]) // eslint-disable-line react-hooks/exhaustive-deps
 
     // Sync mic mute state
     useEffect(() => {

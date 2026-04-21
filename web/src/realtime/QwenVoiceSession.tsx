@@ -103,10 +103,12 @@ class QwenVoiceSessionImpl implements VoiceSession {
         // Connect via Hub WebSocket proxy (DashScope requires Authorization header,
         // which browser WebSocket API doesn't support)
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-        const proxyBase = state.wsBaseUrl || `${protocol}//${window.location.host}`
+        const defaultProxyUrl = `${protocol}//${window.location.host}/api/voice/qwen-ws`
+        const proxyUrl = state.wsBaseUrl || defaultProxyUrl
         const model = QWEN_REALTIME_MODEL
         const authToken = this.api.getAuthToken() || ''
-        const wsUrl = `${proxyBase}/api/voice/qwen-ws?model=${encodeURIComponent(model)}&token=${encodeURIComponent(authToken)}`
+        const separator = proxyUrl.includes('?') ? '&' : '?'
+        const wsUrl = `${proxyUrl}${separator}model=${encodeURIComponent(model)}&token=${encodeURIComponent(authToken)}`
         const ws = new WebSocket(wsUrl)
         state.ws = ws
 
@@ -318,6 +320,7 @@ export interface QwenVoiceSessionProps {
     api: ApiClient
     micMuted?: boolean
     onStatusChange?: StatusCallback
+    onRegistered?: () => void
     getSession?: (sessionId: string) => Session | null
     sendMessage?: (sessionId: string, message: string) => void
     approvePermission?: (sessionId: string, requestId: string) => Promise<void>
@@ -328,6 +331,7 @@ export function QwenVoiceSession({
     api,
     micMuted = false,
     onStatusChange,
+    onRegistered,
     getSession,
     sendMessage,
     approvePermission,
@@ -357,11 +361,12 @@ export function QwenVoiceSession({
             try {
                 registerVoiceSession(new QwenVoiceSessionImpl(api))
                 hasRegistered.current = true
+                onRegistered?.()
             } catch (error) {
                 console.error('[Qwen] Failed to register voice session:', error)
             }
         }
-    }, [api])
+    }, [api]) // eslint-disable-line react-hooks/exhaustive-deps
 
     useEffect(() => {
         if (state.recorder) {

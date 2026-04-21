@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
 import { RealtimeVoiceSession } from './RealtimeVoiceSession'
 import type { RealtimeVoiceSessionProps } from './RealtimeVoiceSession'
 import { fetchVoiceBackend } from '@/api/voice'
@@ -21,6 +21,7 @@ export type VoiceBackendSessionProps = RealtimeVoiceSessionProps & {
 /**
  * Dynamically selects the voice session component based on the hub's configured backend.
  * Queries GET /voice/backend once on mount and renders the appropriate component.
+ * Only signals readiness after the selected backend has mounted and registered its session.
  */
 export function VoiceBackendSession(props: VoiceBackendSessionProps) {
     const [backend, setBackend] = useState<VoiceBackendType | null>(null)
@@ -28,10 +29,7 @@ export function VoiceBackendSession(props: VoiceBackendSessionProps) {
     useEffect(() => {
         let cancelled = false
         fetchVoiceBackend(props.api).then((resp) => {
-            if (!cancelled) {
-                setBackend(resp.backend)
-                props.onReadyChange?.(true)
-            }
+            if (!cancelled) setBackend(resp.backend)
         })
         return () => {
             cancelled = true
@@ -39,12 +37,16 @@ export function VoiceBackendSession(props: VoiceBackendSessionProps) {
         }
     }, [props.api]) // eslint-disable-line react-hooks/exhaustive-deps
 
+    const handleRegistered = useCallback(() => {
+        props.onReadyChange?.(true)
+    }, [props.onReadyChange])
+
     if (!backend) return null
 
     if (backend === 'gemini-live') {
         return (
             <Suspense fallback={null}>
-                <GeminiLiveVoiceSession {...props} />
+                <GeminiLiveVoiceSession {...props} onRegistered={handleRegistered} />
             </Suspense>
         )
     }
@@ -52,10 +54,10 @@ export function VoiceBackendSession(props: VoiceBackendSessionProps) {
     if (backend === 'qwen-realtime') {
         return (
             <Suspense fallback={null}>
-                <QwenVoiceSession {...props} />
+                <QwenVoiceSession {...props} onRegistered={handleRegistered} />
             </Suspense>
         )
     }
 
-    return <RealtimeVoiceSession {...props} />
+    return <RealtimeVoiceSession {...props} onRegistered={handleRegistered} />
 }
