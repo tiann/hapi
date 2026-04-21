@@ -69,7 +69,14 @@ export class GeminiAudioRecorder {
           const base64 = arrayBufferToBase64(pcm16);
           onChunk(base64);
         };
+        // Connect source → worklet → silent sink → destination.
+        // The downstream connection is required so the audio graph pulls
+        // frames through the worklet node and port.onmessage fires.
+        const sink = this.audioContext.createGain();
+        sink.gain.value = 0;
         this.sourceNode.connect(this.workletNode);
+        this.workletNode.connect(sink);
+        sink.connect(this.audioContext.destination);
       } catch (e) {
         console.warn('[GeminiLive] AudioWorklet failed, falling back to ScriptProcessorNode', e);
         this.scriptNode = this.audioContext.createScriptProcessor(4096, 1, 1);

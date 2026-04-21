@@ -142,7 +142,10 @@ export function createVoiceRoutes(): Hono<WebAppEnv> {
 
         // Use server-side WS proxy to avoid region restrictions.
         // The proxy at /api/voice/gemini-ws handles the API key server-side.
-        const publicUrl = process.env.HAPI_PUBLIC_URL || `http://localhost:${process.env.HAPI_LISTEN_PORT || '24888'}`
+        // Derive wsUrl from the request origin so remote browsers connect back to the hub,
+        // not to localhost. HAPI_PUBLIC_URL overrides when set (e.g. behind a reverse proxy).
+        const requestOrigin = new URL(c.req.url).origin
+        const publicUrl = process.env.HAPI_PUBLIC_URL || requestOrigin
         const wsProxyUrl = publicUrl.replace(/^http/, 'ws') + '/api/voice/gemini-ws'
 
         return c.json({
@@ -164,7 +167,8 @@ export function createVoiceRoutes(): Hono<WebAppEnv> {
             }, 400)
         }
 
-        const publicUrl = process.env.HAPI_PUBLIC_URL || `http://localhost:${process.env.HAPI_LISTEN_PORT || '24888'}`
+        const requestOrigin = new URL(c.req.url).origin
+        const publicUrl = process.env.HAPI_PUBLIC_URL || requestOrigin
         const wsProxyUrl = publicUrl.replace(/^http/, 'ws') + '/api/voice/qwen-ws'
 
         return c.json({

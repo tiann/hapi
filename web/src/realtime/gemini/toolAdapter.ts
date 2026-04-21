@@ -61,10 +61,16 @@ export async function handleGeminiFunctionCall(
 }
 
 /**
- * Process multiple function calls in parallel and return all responses.
+ * Process multiple function calls sequentially to avoid racing on shared
+ * session state (e.g. processPermissionRequest resolving the same pending
+ * request twice when calls run in parallel).
  */
 export async function handleGeminiFunctionCalls(
     calls: GeminiFunctionCall[]
 ): Promise<GeminiFunctionResponse[]> {
-    return Promise.all(calls.map(handleGeminiFunctionCall))
+    const responses: GeminiFunctionResponse[] = []
+    for (const call of calls) {
+        responses.push(await handleGeminiFunctionCall(call))
+    }
+    return responses
 }
