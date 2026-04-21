@@ -444,13 +444,17 @@ export class ApiClient {
         })
     }
 
+    /** Return the current auth token (for WebSocket query-param auth). */
+    getAuthToken(): string | null {
+        return this.getToken ? this.getToken() : this.token
+    }
+
     async fetchVoiceBackend(): Promise<{ backend: string }> {
         return await this.request('/api/voice/backend')
     }
 
     async fetchQwenToken(): Promise<{
         allowed: boolean
-        apiKey?: string
         wsUrl?: string
         error?: string
     }> {

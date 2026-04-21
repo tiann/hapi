@@ -140,16 +140,21 @@ export function createVoiceRoutes(): Hono<WebAppEnv> {
             }, 400)
         }
 
+        // Use server-side WS proxy to avoid region restrictions.
+        // The proxy at /api/voice/gemini-ws handles the API key server-side.
+        const publicUrl = process.env.HAPI_PUBLIC_URL || `http://localhost:${process.env.HAPI_LISTEN_PORT || '24888'}`
+        const wsProxyUrl = publicUrl.replace(/^http/, 'ws') + '/api/voice/gemini-ws'
+
         return c.json({
             allowed: true,
-            apiKey,
-            // Optional overrides for proxy/relay setups
-            wsUrl: process.env.GEMINI_LIVE_WS_URL || undefined,
+            apiKey: 'proxied', // Dummy — key is handled server-side
+            wsUrl: process.env.GEMINI_LIVE_WS_URL || wsProxyUrl,
             baseUrl: process.env.GEMINI_API_BASE || undefined
         })
     })
 
-    // Get Qwen (DashScope) API key for Qwen Realtime voice sessions
+    // Check Qwen (DashScope) availability for Qwen Realtime voice sessions
+    // The actual API key is never sent to the browser — it stays server-side in the WS proxy.
     app.post('/voice/qwen-token', async (c) => {
         const apiKey = process.env.DASHSCOPE_API_KEY || process.env.QWEN_API_KEY
         if (!apiKey) {
@@ -159,10 +164,12 @@ export function createVoiceRoutes(): Hono<WebAppEnv> {
             }, 400)
         }
 
+        const publicUrl = process.env.HAPI_PUBLIC_URL || `http://localhost:${process.env.HAPI_LISTEN_PORT || '24888'}`
+        const wsProxyUrl = publicUrl.replace(/^http/, 'ws') + '/api/voice/qwen-ws'
+
         return c.json({
             allowed: true,
-            apiKey,
-            wsUrl: process.env.QWEN_REALTIME_WS_URL || undefined
+            wsUrl: process.env.QWEN_REALTIME_WS_URL || wsProxyUrl
         })
     })
 

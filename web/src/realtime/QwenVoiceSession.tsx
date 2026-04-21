@@ -79,14 +79,14 @@ class QwenVoiceSessionImpl implements VoiceSession {
         cleanup()
         state.statusCallback?.('connecting')
 
-        // Get API key from hub
+        // Check Qwen availability (hub no longer sends the raw API key)
         const tokenResp = await fetchQwenToken(this.api)
-        if (!tokenResp.allowed || !tokenResp.apiKey) {
+        if (!tokenResp.allowed) {
             const msg = tokenResp.error ?? 'DashScope API key not available'
             state.statusCallback?.('error', msg)
             throw new Error(msg)
         }
-        state.apiKey = tokenResp.apiKey
+        state.apiKey = null // key stays server-side
         state.wsBaseUrl = tokenResp.wsUrl || null
 
         // Request microphone
@@ -105,7 +105,8 @@ class QwenVoiceSessionImpl implements VoiceSession {
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
         const proxyBase = state.wsBaseUrl || `${protocol}//${window.location.host}`
         const model = QWEN_REALTIME_MODEL
-        const wsUrl = `${proxyBase}/api/voice/qwen-ws?model=${encodeURIComponent(model)}`
+        const authToken = this.api.getAuthToken() || ''
+        const wsUrl = `${proxyBase}/api/voice/qwen-ws?model=${encodeURIComponent(model)}&token=${encodeURIComponent(authToken)}`
         const ws = new WebSocket(wsUrl)
         state.ws = ws
 

@@ -303,26 +303,26 @@ export function HappyComposer(props: {
             return
         }
 
-        // Shift+Enter inserts a newline (standard behavior)
-        if (key === 'Enter' && e.shiftKey) {
-            return // let default textarea behavior handle newline
-        }
-
         // Enter with suggestions visible: select the suggestion
-        if (key === 'Enter' && suggestions.length > 0) {
+        if (key === 'Enter' && suggestions.length > 0 && !e.ctrlKey && !e.metaKey) {
             e.preventDefault()
             const indexToSelect = selectedIndex >= 0 ? selectedIndex : 0
             handleSuggestionSelect(indexToSelect)
             return
         }
 
-        // Only plain Enter (no modifiers) sends; other modifier combos are ignored
-        if (key === 'Enter') {
+        // Ctrl+Enter (Windows/Linux) or Cmd+Enter (Mac) sends the message
+        if (key === 'Enter' && (e.ctrlKey || e.metaKey)) {
             e.preventDefault()
-            if (!e.ctrlKey && !e.altKey && !e.metaKey && canSend) {
+            if (canSend) {
                 api.composer().send()
                 setShowContinueHint(false)
             }
+            return
+        }
+
+        // Plain Enter inserts a newline (default textarea behavior)
+        if (key === 'Enter') {
             return
         }
 

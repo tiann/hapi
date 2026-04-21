@@ -11,7 +11,7 @@ import type { ApiClient } from '@/api/client'
 import type { Session } from '@/types/api'
 import type { GeminiFunctionCall } from './gemini/toolAdapter'
 
-const DEBUG = import.meta.env.DEV
+const DEBUG = true
 
 // Default Gemini Live WebSocket API endpoint (Google direct)
 const DEFAULT_GEMINI_LIVE_WS_BASE = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent'
@@ -65,9 +65,12 @@ class GeminiLiveVoiceSessionImpl implements VoiceSession {
         state.statusCallback?.('connecting')
 
         // Get API key from hub
+        console.log('[GeminiLive] Fetching token...')
         const tokenResp = await fetchGeminiToken(this.api)
+        console.log('[GeminiLive] Token response:', { allowed: tokenResp.allowed, hasKey: !!tokenResp.apiKey, error: tokenResp.error })
         if (!tokenResp.allowed || !tokenResp.apiKey) {
             const msg = tokenResp.error ?? 'Gemini API key not available'
+            console.error('[GeminiLive] Token failed:', msg)
             state.statusCallback?.('error', msg)
             throw new Error(msg)
         }
@@ -75,19 +78,27 @@ class GeminiLiveVoiceSessionImpl implements VoiceSession {
         state.wsBaseUrl = tokenResp.wsUrl || null
 
         // Request microphone
+        console.log('[GeminiLive] Requesting microphone...')
         let permissionStream: MediaStream | null = null
         try {
             permissionStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+            console.log('[GeminiLive] Microphone granted')
         } catch (error) {
+            console.error('[GeminiLive] Microphone denied:', error)
             state.statusCallback?.('error', 'Microphone permission denied')
             throw error
         } finally {
             permissionStream?.getTracks().forEach((t) => t.stop())
         }
 
-        // Connect WebSocket
+        // Connect WebSocket — use proxy URL if provided (avoids region restrictions)
         const wsBase = state.wsBaseUrl || DEFAULT_GEMINI_LIVE_WS_BASE
-        const wsUrl = `${wsBase}?key=${encodeURIComponent(state.apiKey)}`
+        const isProxy = !!state.wsBaseUrl
+        const authToken = this.api.getAuthToken() || ''
+        const wsUrl = isProxy
+            ? `${wsBase}${wsBase.includes('?') ? '&' : '?'}token=${encodeURIComponent(authToken)}`
+            : `${wsBase}?key=${encodeURIComponent(state.apiKey)}`
+        console.log('[GeminiLive] Connecting WebSocket to:', wsBase, isProxy ? '(proxied)' : '(direct)')
         const ws = new WebSocket(wsUrl)
         state.ws = ws
 

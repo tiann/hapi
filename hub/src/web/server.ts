@@ -23,6 +23,54 @@ import type { SSEManager } from '../sse/sseManager'
 import type { VisibilityTracker } from '../visibility/visibilityTracker'
 import type { Server as BunServer, ServerWebSocket } from 'bun'
 import type { Server as SocketEngine } from '@socket.io/bun-engine'
+import { jwtVerify } from 'jose'
+
+// Gemini Live WebSocket proxy — relays browser WS to Google, bypassing region restrictions
+function createGeminiProxyWebSocketHandler() {
+    const GEMINI_WS_BASE = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent'
+    const upstreamMap = new WeakMap<ServerWebSocket<unknown>, WebSocket>()
+
+    return {
+        open(clientWs: ServerWebSocket<unknown>) {
+            const data = clientWs.data as { _geminiProxy: boolean; apiKey: string }
+            const upstreamUrl = `${process.env.GEMINI_LIVE_WS_URL || GEMINI_WS_BASE}?key=${encodeURIComponent(data.apiKey)}`
+
+            const upstream = new WebSocket(upstreamUrl)
+            upstreamMap.set(clientWs, upstream)
+
+            upstream.onopen = () => {
+                // Ready — client will send setup message
+            }
+            upstream.onmessage = (event) => {
+                try {
+                    if (clientWs.readyState === 1) {
+                        clientWs.send(typeof event.data === 'string' ? event.data : new Uint8Array(event.data as ArrayBuffer))
+                    }
+                } catch { /* client gone */ }
+            }
+            upstream.onerror = () => {
+                try { clientWs.close(1011, 'Upstream error') } catch { /* */ }
+            }
+            upstream.onclose = (event) => {
+                try { clientWs.close(event.code, event.reason) } catch { /* */ }
+                upstreamMap.delete(clientWs)
+            }
+        },
+        message(clientWs: ServerWebSocket<unknown>, message: string | ArrayBuffer | Uint8Array) {
+            const upstream = upstreamMap.get(clientWs)
+            if (upstream?.readyState === WebSocket.OPEN) {
+                upstream.send(typeof message === 'string' ? message : message)
+            }
+        },
+        close(clientWs: ServerWebSocket<unknown>, code: number, reason: string) {
+            const upstream = upstreamMap.get(clientWs)
+            if (upstream) {
+                try { upstream.close(code, reason) } catch { /* */ }
+                upstreamMap.delete(clientWs)
+            }
+        }
+    }
+}
 
 // Qwen Realtime WebSocket proxy — bridges browser (no custom headers) to DashScope (requires Authorization header)
 function createQwenProxyWebSocketHandler() {
@@ -284,6 +332,7 @@ export async function startWebServer(options: {
 
     // Wrap socket.io websocket handler to also support Qwen Realtime proxy
     const originalWsHandler = socketHandler.websocket
+    const geminiProxyHandler = createGeminiProxyWebSocketHandler()
     const qwenProxyHandler = createQwenProxyWebSocketHandler()
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -295,34 +344,69 @@ export async function startWebServer(options: {
         websocket: {
             ...originalWsHandler,
             open(ws: unknown) {
-                const wsAny = ws as ServerWebSocket<{ _qwenProxy?: boolean }>
-                if (wsAny.data?._qwenProxy) {
+                const wsAny = ws as ServerWebSocket<{ _qwenProxy?: boolean; _geminiProxy?: boolean }>
+                if (wsAny.data?._geminiProxy) {
+                    geminiProxyHandler.open(wsAny)
+                } else if (wsAny.data?._qwenProxy) {
                     qwenProxyHandler.open(wsAny)
                 } else {
                     originalWsHandler.open?.(ws as never)
                 }
             },
             message(ws: unknown, message: unknown) {
-                const wsAny = ws as ServerWebSocket<{ _qwenProxy?: boolean }>
-                if (wsAny.data?._qwenProxy) {
+                const wsAny = ws as ServerWebSocket<{ _qwenProxy?: boolean; _geminiProxy?: boolean }>
+                if (wsAny.data?._geminiProxy) {
+                    geminiProxyHandler.message(wsAny, message as string)
+                } else if (wsAny.data?._qwenProxy) {
                     qwenProxyHandler.message(wsAny, message as string)
                 } else {
                     originalWsHandler.message?.(ws as never, message as never)
                 }
             },
             close(ws: unknown, code: number, reason: string) {
-                const wsAny = ws as ServerWebSocket<{ _qwenProxy?: boolean }>
-                if (wsAny.data?._qwenProxy) {
+                const wsAny = ws as ServerWebSocket<{ _qwenProxy?: boolean; _geminiProxy?: boolean }>
+                if (wsAny.data?._geminiProxy) {
+                    geminiProxyHandler.close(wsAny, code, reason)
+                } else if (wsAny.data?._qwenProxy) {
                     qwenProxyHandler.close(wsAny, code, reason)
                 } else {
                     originalWsHandler.close?.(ws as never, code as never, reason as never)
                 }
             }
         },
-        fetch: (req: Request, server: { upgrade: (req: Request, opts?: unknown) => boolean }) => {
+        fetch: async (req: Request, server: { upgrade: (req: Request, opts?: unknown) => boolean }) => {
             const url = new URL(req.url)
             if (url.pathname.startsWith('/socket.io/')) {
                 return socketHandler.fetch(req, server as never)
+            }
+
+            // Voice WebSocket proxies — require JWT auth via query param
+            // (browser WebSocket API cannot set custom headers)
+            if (url.pathname === '/api/voice/gemini-ws' || url.pathname === '/api/voice/qwen-ws') {
+                const token = url.searchParams.get('token')
+                if (!token) {
+                    return new Response('Missing authorization token', { status: 401 })
+                }
+                try {
+                    await jwtVerify(token, options.jwtSecret, { algorithms: ['HS256'] })
+                } catch {
+                    return new Response('Invalid token', { status: 401 })
+                }
+            }
+
+            // Gemini Live WebSocket proxy
+            if (url.pathname === '/api/voice/gemini-ws') {
+                const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY
+                if (!apiKey) {
+                    return new Response('Gemini API key not configured', { status: 400 })
+                }
+                const upgraded = (server as unknown as { upgrade: (req: Request, opts: unknown) => boolean }).upgrade(req, {
+                    data: { _geminiProxy: true, apiKey }
+                })
+                if (!upgraded) {
+                    return new Response('WebSocket upgrade failed', { status: 500 })
+                }
+                return undefined as unknown as Response
             }
             // Qwen Realtime WebSocket proxy
             if (url.pathname === '/api/voice/qwen-ws') {

@@ -166,7 +166,6 @@ export async function createOrUpdateHapiAgent(apiKey: string): Promise<CreateAge
 
 export interface QwenTokenResponse {
     allowed: boolean
-    apiKey?: string
     wsUrl?: string
     error?: string
 }
