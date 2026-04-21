@@ -11,7 +11,7 @@ import type { ApiClient } from '@/api/client'
 import type { Session } from '@/types/api'
 import type { GeminiFunctionCall } from './gemini/toolAdapter'
 
-const DEBUG = true
+const DEBUG = import.meta.env.DEV
 
 // Default Gemini Live WebSocket API endpoint (Google direct)
 const DEFAULT_GEMINI_LIVE_WS_BASE = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent'
@@ -255,6 +255,12 @@ class GeminiLiveVoiceSessionImpl implements VoiceSession {
                 if (DEBUG) console.log('[GeminiLive] WebSocket closed:', event.code, event.reason)
                 cleanup()
                 resetRealtimeSessionState()
+                if (!setupDone) {
+                    const message = event.reason || 'WebSocket closed before setup completed'
+                    state.statusCallback?.('error', message)
+                    reject(new Error(message))
+                    return
+                }
                 state.statusCallback?.('disconnected')
             }
         })

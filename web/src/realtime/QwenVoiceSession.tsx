@@ -259,7 +259,13 @@ class QwenVoiceSessionImpl implements VoiceSession {
                 // Error
                 if (eventType === 'error') {
                     const err = data.error as { message?: string } | undefined
-                    console.error('[Qwen] Server error:', err?.message || data)
+                    const message = err?.message || 'Realtime session setup failed'
+                    console.error('[Qwen] Server error:', message)
+                    state.statusCallback?.('error', message)
+                    if (!sessionCreated) {
+                        reject(new Error(message))
+                        ws.close()
+                    }
                     return
                 }
             }
@@ -276,6 +282,12 @@ class QwenVoiceSessionImpl implements VoiceSession {
                 if (DEBUG) console.log('[Qwen] WebSocket closed:', event.code, event.reason)
                 cleanup()
                 resetRealtimeSessionState()
+                if (!sessionCreated) {
+                    const message = event.reason || 'WebSocket closed before setup completed'
+                    state.statusCallback?.('error', message)
+                    reject(new Error(message))
+                    return
+                }
                 state.statusCallback?.('disconnected')
             }
         })
