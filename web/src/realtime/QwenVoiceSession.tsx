@@ -79,6 +79,11 @@ class QwenVoiceSessionImpl implements VoiceSession {
         cleanup()
         state.statusCallback?.('connecting')
 
+        // Create playback AudioContext immediately while still inside the user
+        // gesture (click/tap). Mobile browsers require this for autoplay policy.
+        const playbackContext = new AudioContext({ sampleRate: 24000 })
+        await playbackContext.resume()
+
         // Check Qwen availability (hub no longer sends the raw API key)
         const tokenResp = await fetchQwenToken(this.api)
         if (!tokenResp.allowed) {
@@ -173,7 +178,7 @@ class QwenVoiceSessionImpl implements VoiceSession {
                 if (eventType === 'session.updated') {
                     if (DEBUG) console.log('[Qwen] Session configured')
                     state.statusCallback?.('connected')
-                    startAudioCapture()
+                    startAudioCapture(playbackContext)
                     resolve()
                     return
                 }
@@ -299,8 +304,8 @@ class QwenVoiceSessionImpl implements VoiceSession {
     }
 }
 
-function startAudioCapture(): void {
-    state.player = new GeminiAudioPlayer()
+function startAudioCapture(playbackContext: AudioContext): void {
+    state.player = new GeminiAudioPlayer(playbackContext)
     state.recorder = new GeminiAudioRecorder()
 
     state.recorder.start(

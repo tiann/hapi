@@ -64,6 +64,11 @@ class GeminiLiveVoiceSessionImpl implements VoiceSession {
         cleanup()
         state.statusCallback?.('connecting')
 
+        // Create playback AudioContext immediately while still inside the user
+        // gesture (click/tap). Mobile browsers require this for autoplay policy.
+        const playbackContext = new AudioContext({ sampleRate: 24000 })
+        await playbackContext.resume()
+
         // Get API key from hub
         console.log('[GeminiLive] Fetching token...')
         const tokenResp = await fetchGeminiToken(this.api)
@@ -163,7 +168,7 @@ class GeminiLiveVoiceSessionImpl implements VoiceSession {
                     state.statusCallback?.('connected')
 
                     // Start audio capture
-                    startAudioCapture()
+                    startAudioCapture(playbackContext)
 
                     // Send initial context if available (no clientContent greeting — it breaks tool calls)
                     if (config.initialContext) {
@@ -288,8 +293,8 @@ function sendAudioChunk(base64Pcm: string): void {
     }))
 }
 
-function startAudioCapture(): void {
-    state.player = new GeminiAudioPlayer()
+function startAudioCapture(playbackContext: AudioContext): void {
+    state.player = new GeminiAudioPlayer(playbackContext)
     state.recorder = new GeminiAudioRecorder()
 
     state.recorder.start(
