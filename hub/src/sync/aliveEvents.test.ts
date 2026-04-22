@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'bun:test'
 import type { SyncEvent } from '@hapi/protocol/types'
 import { Store } from '../store'
+import { RpcRegistry } from '../socket/rpcRegistry'
 import type { EventPublisher } from './eventPublisher'
 import { MachineCache } from './machineCache'
 import { SessionCache } from './sessionCache'
+import { SyncEngine } from './syncEngine'
 
 function createPublisher(events: SyncEvent[]): EventPublisher {
     return {
@@ -60,5 +62,115 @@ describe('alive incremental events', () => {
         }
 
         expect(update.data).toEqual(expect.objectContaining({ id: machine.id, active: true }))
+    })
+
+    it('marks session thinking immediately when a user message is accepted by the hub', async () => {
+        const store = new Store(':memory:')
+        const emittedSocketUpdates: unknown[] = []
+        const io = {
+            of: () => ({
+                to: () => ({
+                    emit: (_event: string, payload: unknown) => {
+                        emittedSocketUpdates.push(payload)
+                    }
+                })
+            })
+        }
+        const engine = new SyncEngine(
+            store,
+            io as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+        const events: SyncEvent[] = []
+        const unsubscribe = engine.subscribe((event) => {
+            events.push(event)
+        })
+
+        try {
+            const session = engine.getOrCreateSession(
+                'session-send-thinking',
+                { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+                { requests: {}, completedRequests: {} },
+                'default'
+            )
+
+            engine.handleSessionAlive({ sid: session.id, time: Date.now(), thinking: false })
+            events.length = 0
+
+            await engine.sendMessage(session.id, {
+                text: 'hello from web',
+                sentFrom: 'webapp'
+            })
+
+            expect(engine.getSession(session.id)?.thinking).toBe(true)
+            expect(emittedSocketUpdates.length).toBeGreaterThan(0)
+
+            const update = events.find((event) => event.type === 'session-updated')
+            expect(update).toBeDefined()
+            if (!update || update.type !== 'session-updated') {
+                return
+            }
+
+            expect(update.data).toEqual(expect.objectContaining({
+                active: true,
+                thinking: true
+            }))
+            expect((update.data as { updatedAt?: unknown }).updatedAt).toEqual(expect.any(Number))
+        } finally {
+            unsubscribe()
+            engine.stop()
+        }
+    })
+
+    it('keeps queued thinking true across false heartbeats during the grace window', () => {
+        const store = new Store(':memory:')
+        const events: SyncEvent[] = []
+        const cache = new SessionCache(store, createPublisher(events))
+        const now = Date.now() - 30_000
+
+        const session = cache.getOrCreateSession(
+            'session-queued-thinking-grace',
+            { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+            { requests: {}, completedRequests: {} },
+            'default'
+        )
+
+        cache.handleSessionAlive({ sid: session.id, time: now, thinking: false })
+        cache.markMessageQueued(session.id, now + 10)
+        events.length = 0
+
+        cache.handleSessionAlive({ sid: session.id, time: now + 2_000, thinking: false })
+
+        expect(cache.getSession(session.id)?.thinking).toBe(true)
+        expect(events.find((event) => event.type === 'session-updated')).toBeUndefined()
+    })
+
+    it('clears queued thinking after the grace window expires', () => {
+        const store = new Store(':memory:')
+        const events: SyncEvent[] = []
+        const cache = new SessionCache(store, createPublisher(events))
+        const now = Date.now() - 30_000
+
+        const session = cache.getOrCreateSession(
+            'session-queued-thinking-expire',
+            { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+            { requests: {}, completedRequests: {} },
+            'default'
+        )
+
+        cache.handleSessionAlive({ sid: session.id, time: now, thinking: false })
+        cache.markMessageQueued(session.id, now + 10)
+        events.length = 0
+
+        cache.handleSessionAlive({ sid: session.id, time: now + 16_000, thinking: false })
+
+        expect(cache.getSession(session.id)?.thinking).toBe(false)
+        const update = events.find((event) => event.type === 'session-updated')
+        expect(update).toBeDefined()
+        if (!update || update.type !== 'session-updated') {
+            return
+        }
+        expect(update.data).toEqual(expect.objectContaining({ thinking: false }))
     })
 })
