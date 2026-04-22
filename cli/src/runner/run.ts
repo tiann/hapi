@@ -857,6 +857,9 @@ export function buildCliArgs(
   if (options.modelReasoningEffort && agent === 'codex') {
     args.push('--model-reasoning-effort', options.modelReasoningEffort);
   }
+  if (options.serviceTier && agent === 'codex') {
+    args.push('--service-tier', options.serviceTier);
+  }
   if (options.permissionMode && (PERMISSION_MODES as readonly string[]).includes(options.permissionMode)) {
     args.push('--permission-mode', options.permissionMode);
   } else if (yolo) {

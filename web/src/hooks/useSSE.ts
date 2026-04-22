@@ -30,7 +30,7 @@ const RECONNECT_MAX_DELAY_MS = 30_000
 const RECONNECT_JITTER_MS = 500
 const INVALIDATION_BATCH_MS = 16
 
-type SessionPatch = Partial<Pick<Session, 'active' | 'thinking' | 'activeAt' | 'updatedAt' | 'model' | 'modelReasoningEffort' | 'effort' | 'permissionMode' | 'collaborationMode'>>
+type SessionPatch = Partial<Pick<Session, 'active' | 'thinking' | 'activeAt' | 'updatedAt' | 'model' | 'modelReasoningEffort' | 'effort' | 'serviceTier' | 'permissionMode' | 'collaborationMode'>>
 
 function sortSessionSummaries(left: SessionSummary, right: SessionSummary): number {
     if (left.active !== right.active) {
@@ -93,6 +93,10 @@ function getSessionPatch(value: unknown): SessionPatch | null {
         patch.effort = value.effort
         hasKnownPatch = true
     }
+    if (value.serviceTier === null || typeof value.serviceTier === 'string') {
+        patch.serviceTier = value.serviceTier
+        hasKnownPatch = true
+    }
     if (typeof value.permissionMode === 'string') {
         patch.permissionMode = value.permissionMode as Session['permissionMode']
         hasKnownPatch = true
@@ -109,7 +113,7 @@ function hasUnknownSessionPatchKeys(value: unknown): boolean {
     if (!hasRecordShape(value)) {
         return false
     }
-    const knownKeys = new Set(['active', 'thinking', 'activeAt', 'updatedAt', 'model', 'modelReasoningEffort', 'effort', 'permissionMode', 'collaborationMode'])
+    const knownKeys = new Set(['active', 'thinking', 'activeAt', 'updatedAt', 'model', 'modelReasoningEffort', 'effort', 'serviceTier', 'permissionMode', 'collaborationMode'])
     return Object.keys(value).some((key) => !knownKeys.has(key))
 }
 
@@ -395,7 +399,11 @@ export function useSSE(options: {
                     activeAt: patch.activeAt ?? current.activeAt,
                     updatedAt: patch.updatedAt ?? current.updatedAt,
                     model: Object.prototype.hasOwnProperty.call(patch, 'model') ? patch.model ?? null : current.model,
-                    effort: Object.prototype.hasOwnProperty.call(patch, 'effort') ? patch.effort ?? null : current.effort
+                    modelReasoningEffort: Object.prototype.hasOwnProperty.call(patch, 'modelReasoningEffort') ? patch.modelReasoningEffort ?? null : current.modelReasoningEffort,
+                    effort: Object.prototype.hasOwnProperty.call(patch, 'effort') ? patch.effort ?? null : current.effort,
+                    serviceTier: Object.prototype.hasOwnProperty.call(patch, 'serviceTier') ? patch.serviceTier ?? null : current.serviceTier,
+                    permissionMode: Object.prototype.hasOwnProperty.call(patch, 'permissionMode') ? patch.permissionMode ?? null : current.permissionMode,
+                    collaborationMode: Object.prototype.hasOwnProperty.call(patch, 'collaborationMode') ? patch.collaborationMode ?? null : current.collaborationMode
                 }
 
                 patched = true

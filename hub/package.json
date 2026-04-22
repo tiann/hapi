@@ -11,7 +11,7 @@
         "dev": "bun --watch run src/index.ts",
         "test": "bun test",
         "typecheck": "tsc --noEmit",
-        "build": "bun build src/index.ts --outdir dist --target bun",
+        "build": "bun run generate:embedded-web-assets && bun build src/index.ts --outdir dist --target bun",
         "generate:embedded-web-assets": "bun run scripts/generate-embedded-web-assets.ts"
     },
     "dependencies": {

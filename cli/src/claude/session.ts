@@ -6,6 +6,7 @@ import type { SessionEffort, SessionModel } from '@/api/types';
 import type { EnhancedMode } from './loop';
 import type { PermissionMode } from './loop';
 import type { LocalLaunchExitReason } from '@/agent/localLaunchPolicy';
+import { extractExplicitResumeSessionId, isExplicitResumeSessionId } from './utils/explicitResume';
 
 type LocalLaunchFailure = {
     message: string;
@@ -21,6 +22,7 @@ export class Session extends AgentSessionBase<EnhancedMode> {
     readonly startedBy: 'runner' | 'terminal';
     readonly startingMode: 'local' | 'remote';
     localLaunchFailure: LocalLaunchFailure | null = null;
+    private explicitRemoteResumeReplayConsumed = false;
 
     constructor(opts: {
         api: ApiClient;
@@ -98,6 +100,21 @@ export class Session extends AgentSessionBase<EnhancedMode> {
         logger.debug('[Session] Session ID cleared');
     };
 
+    consumeExplicitRemoteResumeReplaySessionId = (): string | null => {
+        if (this.explicitRemoteResumeReplayConsumed) {
+            return null;
+        }
+
+        const resumeSessionId = extractExplicitResumeSessionId(this.claudeArgs);
+        if (!resumeSessionId) {
+            return null;
+        }
+
+        this.explicitRemoteResumeReplayConsumed = true;
+        logger.debug(`[Session] Consumed explicit remote resume replay session ID: ${resumeSessionId}`);
+        return resumeSessionId;
+    };
+
     /**
      * Consume one-time Claude flags from claudeArgs after Claude spawn
      * Currently handles: --resume (with or without session ID)
@@ -111,8 +128,7 @@ export class Session extends AgentSessionBase<EnhancedMode> {
                 // Check if next arg looks like a UUID (contains dashes and alphanumeric)
                 if (i + 1 < this.claudeArgs.length) {
                     const nextArg = this.claudeArgs[i + 1];
-                    // Simple UUID pattern check - contains dashes and is not another flag
-                    if (!nextArg.startsWith('-') && nextArg.includes('-')) {
+                    if (isExplicitResumeSessionId(nextArg)) {
                         // Skip both --resume and the UUID
                         i++; // Skip the UUID
                         logger.debug(`[Session] Consumed --resume flag with session ID: ${nextArg}`);

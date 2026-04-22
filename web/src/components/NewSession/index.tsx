@@ -25,7 +25,9 @@ import {
 } from './preferences'
 import { SessionTypeSelector } from './SessionTypeSelector'
 import { YoloToggle } from './YoloToggle'
+import { ImportExistingModal } from './ImportExistingModal'
 import { formatRunnerSpawnError } from '../../utils/formatRunnerSpawnError'
+import { Button } from '@/components/ui/button'
 
 export function NewSession(props: {
     api: ApiClient
@@ -53,6 +55,7 @@ export function NewSession(props: {
     const [sessionType, setSessionType] = useState<SessionType>('simple')
     const [worktreeName, setWorktreeName] = useState('')
     const [directoryCreationConfirmed, setDirectoryCreationConfirmed] = useState(false)
+    const [isImportOpen, setIsImportOpen] = useState(false)
     const [error, setError] = useState<string | null>(null)
     const worktreeInputRef = useRef<HTMLInputElement>(null)
 
@@ -353,6 +356,18 @@ export function NewSession(props: {
                 </div>
             ) : null}
 
+            <div className="px-3 pt-3">
+                <Button
+                    type="button"
+                    variant="outline"
+                    className="w-full justify-center"
+                    onClick={() => setIsImportOpen(true)}
+                    disabled={isFormDisabled}
+                >
+                    {t('newSession.import.entry')}
+                </Button>
+            </div>
+
             <ActionButtons
                 isPending={isPending}
                 canCreate={canCreate}
@@ -360,6 +375,13 @@ export function NewSession(props: {
                 createLabel={createLabel}
                 onCancel={props.onCancel}
                 onCreate={handleCreate}
+            />
+
+            <ImportExistingModal
+                api={props.api}
+                open={isImportOpen}
+                onOpenChange={setIsImportOpen}
+                onOpenSession={props.onSuccess}
             />
         </div>
     )

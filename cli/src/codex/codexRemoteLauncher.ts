@@ -16,6 +16,9 @@ import { AppServerEventConverter } from './utils/appServerEventConverter';
 import { registerAppServerPermissionHandlers } from './utils/appServerPermissionAdapter';
 import { buildThreadStartParams, buildTurnStartParams } from './utils/appServerConfig';
 import { shouldIgnoreTerminalEvent } from './utils/terminalEventGuard';
+import { createCodexSessionScanner } from './utils/codexSessionScanner';
+import { convertCodexEvent } from './utils/codexEventConverter';
+import { resolveCodexSessionFile } from './utils/resolveCodexSessionFile';
 import {
     RemoteLauncherBase,
     type RemoteLauncherDisplayContext,
@@ -116,6 +119,39 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         const messageBuffer = this.messageBuffer;
         const appServerClient = this.appServerClient;
         const appServerEventConverter = new AppServerEventConverter();
+
+        const replayExplicitResumeTranscript = async (): Promise<void> => {
+            const resumeSessionId = session.sessionId;
+            if (!resumeSessionId) {
+                return;
+            }
+
+            const resolvedSessionFile = await resolveCodexSessionFile(resumeSessionId);
+            if (resolvedSessionFile.status !== 'found') {
+                logger.debug(`[Codex] No transcript replay available for explicit remote resume ${resumeSessionId} (${resolvedSessionFile.status})`);
+                return;
+            }
+
+            const scanner = await createCodexSessionScanner({
+                sessionId: resumeSessionId,
+                cwd: session.path,
+                startupTimestampMs: Date.now(),
+                resolvedSessionFile,
+                onEvent: (event) => {
+                    const converted = convertCodexEvent(event);
+                    if (converted?.sessionId) {
+                        session.onSessionFound(converted.sessionId);
+                    }
+                    if (converted?.userMessage) {
+                        session.sendUserMessage(converted.userMessage, converted.userMessageMeta);
+                    }
+                    if (converted?.message) {
+                        session.sendAgentMessage(converted.message);
+                    }
+                }
+            });
+            await scanner.cleanup();
+        };
 
         const normalizeCommand = (value: unknown): string | undefined => {
             if (typeof value === 'string') {
@@ -241,6 +277,8 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         let clearReadyAfterTurnTimer: (() => void) | null = null;
         let turnInFlight = false;
         let allowAnonymousTerminalEvent = false;
+
+        await replayExplicitResumeTranscript();
 
         const handleCodexEvent = (msg: Record<string, unknown>) => {
             const msgType = asString(msg.type);

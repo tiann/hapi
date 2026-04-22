@@ -22,6 +22,14 @@ describe('RpcGateway', () => {
                                 transcriptPath: '/tmp/project/.codex/sessions/session-1.jsonl',
                                 previewTitle: 'Imported title',
                                 previewPrompt: 'Imported prompt',
+                                model: 'gpt-5.4',
+                                effort: 'xhigh',
+                                modelReasoningEffort: 'xhigh',
+                                serviceTier: 'fast',
+                                collaborationMode: 'default',
+                                approvalPolicy: 'never',
+                                sandboxPolicy: { type: 'danger-full-access' },
+                                permissionMode: 'yolo',
                                 ignoredField: 'strip-me'
                             }
                         ],
@@ -50,7 +58,15 @@ describe('RpcGateway', () => {
                     timestamp: 123,
                     transcriptPath: '/tmp/project/.codex/sessions/session-1.jsonl',
                     previewTitle: 'Imported title',
-                    previewPrompt: 'Imported prompt'
+                    previewPrompt: 'Imported prompt',
+                    model: 'gpt-5.4',
+                    effort: 'xhigh',
+                    modelReasoningEffort: 'xhigh',
+                    serviceTier: 'fast',
+                    collaborationMode: 'default',
+                    approvalPolicy: 'never',
+                    sandboxPolicy: { type: 'danger-full-access' },
+                    permissionMode: 'yolo'
                 }
             ]
         })

@@ -16,6 +16,7 @@ export interface EnhancedMode {
     model?: string;
     collaborationMode: CodexCollaborationMode;
     modelReasoningEffort?: ReasoningEffort;
+    serviceTier?: string;
 }
 
 interface LoopOptions {
@@ -31,6 +32,7 @@ interface LoopOptions {
     permissionMode?: PermissionMode;
     model?: string;
     modelReasoningEffort?: ReasoningEffort;
+    serviceTier?: string;
     collaborationMode?: CodexCollaborationMode;
     resumeSessionId?: string;
     onSessionReady?: (session: CodexSession) => void;
@@ -56,6 +58,7 @@ export async function loop(opts: LoopOptions): Promise<void> {
         permissionMode: opts.permissionMode ?? 'default',
         model: opts.model,
         modelReasoningEffort: opts.modelReasoningEffort,
+        serviceTier: opts.serviceTier,
         collaborationMode: opts.collaborationMode ?? 'default'
     });
 

@@ -3,10 +3,13 @@ import type {
     AuthResponse,
     CodexCollaborationMode,
     DeleteUploadResponse,
+    ExternalSessionActionResponse,
     ListDirectoryResponse,
     FileReadResponse,
     FileSearchResponse,
     GitCommandResponse,
+    ImportableSessionAgent,
+    ImportableSessionsResponse,
     MachinePathsExistsResponse,
     MachinesResponse,
     MessagesResponse,
@@ -158,6 +161,25 @@ export class ApiClient {
 
     async getSessions(): Promise<SessionsResponse> {
         return await this.request<SessionsResponse>('/api/sessions')
+    }
+
+    async listImportableSessions(agent: ImportableSessionAgent): Promise<ImportableSessionsResponse> {
+        const params = new URLSearchParams({ agent })
+        return await this.request<ImportableSessionsResponse>(`/api/importable-sessions?${params.toString()}`)
+    }
+
+    async importExternalSession(agent: ImportableSessionAgent, externalSessionId: string): Promise<ExternalSessionActionResponse> {
+        return await this.request<ExternalSessionActionResponse>(
+            `/api/importable-sessions/${agent}/${encodeURIComponent(externalSessionId)}/import`,
+            { method: 'POST' }
+        )
+    }
+
+    async refreshExternalSession(agent: ImportableSessionAgent, externalSessionId: string): Promise<ExternalSessionActionResponse> {
+        return await this.request<ExternalSessionActionResponse>(
+            `/api/importable-sessions/${agent}/${encodeURIComponent(externalSessionId)}/refresh`,
+            { method: 'POST' }
+        )
     }
 
     async getPushVapidPublicKey(): Promise<PushVapidPublicKeyResponse> {
@@ -334,6 +356,13 @@ export class ApiClient {
         })
     }
 
+    async setServiceTier(sessionId: string, serviceTier: string | null): Promise<void> {
+        await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/service-tier`, {
+            method: 'POST',
+            body: JSON.stringify({ serviceTier })
+        })
+    }
+
     async setEffort(sessionId: string, effort: string | null): Promise<void> {
         await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/effort`, {
             method: 'POST',
@@ -399,11 +428,12 @@ export class ApiClient {
         yolo?: boolean,
         sessionType?: 'simple' | 'worktree',
         worktreeName?: string,
-        effort?: string
+        effort?: string,
+        serviceTier?: string
     ): Promise<SpawnResponse> {
         return await this.request<SpawnResponse>(`/api/machines/${encodeURIComponent(machineId)}/spawn`, {
             method: 'POST',
-            body: JSON.stringify({ directory, agent, model, modelReasoningEffort, yolo, sessionType, worktreeName, effort })
+            body: JSON.stringify({ directory, agent, model, modelReasoningEffort, yolo, sessionType, worktreeName, effort, serviceTier })
         })
     }
 

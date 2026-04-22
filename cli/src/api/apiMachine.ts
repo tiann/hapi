@@ -13,7 +13,14 @@ import { backoff } from '@/utils/time'
 import { getInvokedCwd } from '@/utils/invokedCwd'
 import { RpcHandlerManager } from './rpc/RpcHandlerManager'
 import { registerCommonHandlers } from '../modules/common/registerCommonHandlers'
-import type { SpawnSessionOptions, SpawnSessionResult } from '../modules/common/rpcTypes'
+import type {
+    RpcListImportableSessionsRequest,
+    RpcListImportableSessionsResponse,
+    SpawnSessionOptions,
+    SpawnSessionResult
+} from '../modules/common/rpcTypes'
+import { listImportableClaudeSessions } from '@/claude/utils/listImportableClaudeSessions'
+import { listImportableCodexSessions } from '@/codex/utils/listImportableCodexSessions'
 import { applyVersionedAck } from './versionedUpdate'
 import { buildSocketIoExtraHeaderOptions } from './hubExtraHeaders'
 
@@ -80,30 +87,13 @@ export class ApiMachineClient {
         })
 
         registerCommonHandlers(this.rpcHandlerManager, getInvokedCwd())
-
-        this.rpcHandlerManager.registerHandler<PathExistsRequest, PathExistsResponse>('path-exists', async (params) => {
-            const rawPaths = Array.isArray(params?.paths) ? params.paths : []
-            const uniquePaths = Array.from(new Set(rawPaths.filter((path): path is string => typeof path === 'string')))
-            const exists: Record<string, boolean> = {}
-
-            await Promise.all(uniquePaths.map(async (path) => {
-                const trimmed = path.trim()
-                if (!trimmed) return
-                try {
-                    const stats = await stat(trimmed)
-                    exists[trimmed] = stats.isDirectory()
-                } catch {
-                    exists[trimmed] = false
-                }
-            }))
-
-            return { exists }
-        })
+        this.registerMachineHandlers()
     }
 
     setRPCHandlers({ spawnSession, stopSession, requestShutdown }: MachineRpcHandlers): void {
+
         this.rpcHandlerManager.registerHandler('spawn-happy-session', async (params: any) => {
-            const { directory, sessionId, resumeSessionId, machineId, approvedNewDirectoryCreation, agent, model, effort, modelReasoningEffort, yolo, permissionMode, token, sessionType, worktreeName } = params || {}
+            const { directory, sessionId, resumeSessionId, machineId, approvedNewDirectoryCreation, agent, model, effort, modelReasoningEffort, serviceTier, yolo, permissionMode, token, sessionType, worktreeName } = params || {}
 
             if (!directory) {
                 throw new Error('Directory is required')
@@ -119,6 +109,7 @@ export class ApiMachineClient {
                 model,
                 effort,
                 modelReasoningEffort,
+                serviceTier,
                 yolo,
                 permissionMode,
                 token,
@@ -156,6 +147,41 @@ export class ApiMachineClient {
         })
     }
 
+    private registerMachineHandlers(): void {
+        this.rpcHandlerManager.registerHandler<PathExistsRequest, PathExistsResponse>('path-exists', async (params) => {
+            const rawPaths = Array.isArray(params?.paths) ? params.paths : []
+            const uniquePaths = Array.from(new Set(rawPaths.filter((path): path is string => typeof path === 'string')))
+            const exists: Record<string, boolean> = {}
+
+            await Promise.all(uniquePaths.map(async (path) => {
+                const trimmed = path.trim()
+                if (!trimmed) return
+                try {
+                    const stats = await stat(trimmed)
+                    exists[trimmed] = stats.isDirectory()
+                } catch {
+                    exists[trimmed] = false
+                }
+            }))
+
+            return { exists }
+        })
+
+        this.rpcHandlerManager.registerHandler<RpcListImportableSessionsRequest, RpcListImportableSessionsResponse>(
+            'list-importable-sessions',
+            async (params) => {
+                if (params?.agent === 'codex') {
+                    return await listImportableCodexSessions()
+                }
+
+                if (params?.agent === 'claude') {
+                    return await listImportableClaudeSessions()
+                }
+
+                return { sessions: [] }
+            }
+        )
+    }
     async updateMachineMetadata(handler: (metadata: MachineMetadata | null) => MachineMetadata): Promise<void> {
         await backoff(async () => {
             const updated = handler(this.machine.metadata)

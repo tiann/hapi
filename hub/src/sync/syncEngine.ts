@@ -8,6 +8,7 @@
  */
 
 import type { CodexCollaborationMode, DecryptedMessage, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
+import type { RpcListImportableSessionsResponse } from '@hapi/protocol/rpcTypes'
 import type { Server } from 'socket.io'
 import type { Store } from '../store'
 import type { RpcRegistry } from '../socket/rpcRegistry'
@@ -42,8 +43,37 @@ export type ResumeSessionResult =
     | { type: 'success'; sessionId: string }
     | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'no_machine_online' | 'resume_unavailable' | 'resume_failed' }
 
+type ImportExternalAgentSessionResult =
+    | { type: 'success'; sessionId: string }
+    | { type: 'error'; message: string; code: 'session_not_found' | 'no_machine_online' | 'import_failed' }
+
+type RefreshExternalAgentSessionResult =
+    | { type: 'success'; sessionId: string }
+    | { type: 'error'; message: string; code: 'session_not_found' | 'no_machine_online' | 'resume_unavailable' | 'refresh_failed' }
+
+type ListImportableAgentSessionsResult =
+    | { type: 'success'; machineId: string; sessions: RpcListImportableSessionsResponse['sessions'] }
+    | { type: 'error'; message: string; code: 'no_machine_online' | 'importable_sessions_failed' }
+
+type SessionConfigForSpawn = {
+    model?: string | null
+    modelReasoningEffort?: string | null
+    effort?: string | null
+    serviceTier?: string | null
+    permissionMode?: PermissionMode
+    collaborationMode?: CodexCollaborationMode
+}
+
+export type ImportExternalCodexSessionResult = ImportExternalAgentSessionResult
+export type ImportExternalClaudeSessionResult = ImportExternalAgentSessionResult
+export type RefreshExternalCodexSessionResult = RefreshExternalAgentSessionResult
+export type RefreshExternalClaudeSessionResult = RefreshExternalAgentSessionResult
+export type ListImportableCodexSessionsResult = ListImportableAgentSessionsResult
+export type ListImportableClaudeSessionsResult = ListImportableAgentSessionsResult
+
 export class SyncEngine {
     private readonly eventPublisher: EventPublisher
+    private readonly store: Store
     private readonly sessionCache: SessionCache
     private readonly machineCache: MachineCache
     private readonly messageService: MessageService
@@ -56,6 +86,7 @@ export class SyncEngine {
         rpcRegistry: RpcRegistry,
         sseManager: SSEManager
     ) {
+        this.store = store
         this.eventPublisher = new EventPublisher(sseManager, (event) => this.resolveNamespace(event))
         this.sessionCache = new SessionCache(store, this.eventPublisher)
         this.machineCache = new MachineCache(store, this.eventPublisher)
@@ -145,6 +176,30 @@ export class SyncEngine {
         return this.machineCache.getOnlineMachinesByNamespace(namespace)
     }
 
+    findSessionByExternalCodexSessionId(namespace: string, externalSessionId: string): { sessionId: string } | null {
+        return this.sessionCache.findSessionByExternalCodexSessionId(namespace, externalSessionId)
+    }
+
+    findSessionByExternalClaudeSessionId(namespace: string, externalSessionId: string): { sessionId: string } | null {
+        return this.sessionCache.findSessionByExternalClaudeSessionId(namespace, externalSessionId)
+    }
+
+    async importExternalCodexSession(externalSessionId: string, namespace: string): Promise<ImportExternalCodexSessionResult> {
+        return await this.importExternalSession(externalSessionId, namespace, 'codex')
+    }
+
+    async importExternalClaudeSession(externalSessionId: string, namespace: string): Promise<ImportExternalClaudeSessionResult> {
+        return await this.importExternalSession(externalSessionId, namespace, 'claude')
+    }
+
+    async refreshExternalCodexSession(externalSessionId: string, namespace: string): Promise<RefreshExternalCodexSessionResult> {
+        return await this.refreshExternalSession(externalSessionId, namespace, 'codex')
+    }
+
+    async refreshExternalClaudeSession(externalSessionId: string, namespace: string): Promise<RefreshExternalClaudeSessionResult> {
+        return await this.refreshExternalSession(externalSessionId, namespace, 'claude')
+    }
+
     getMessagesPage(sessionId: string, options: { limit: number; beforeSeq: number | null }): {
         messages: DecryptedMessage[]
         page: {
@@ -200,6 +255,7 @@ export class SyncEngine {
         modelReasoningEffort?: string | null
         effort?: string | null
         collaborationMode?: CodexCollaborationMode
+        serviceTier?: string | null
     }): void {
         this.sessionCache.handleSessionAlive(payload)
         this.triggerDedupIfNeeded(payload.sid)
@@ -246,9 +302,10 @@ export class SyncEngine {
         namespace: string,
         model?: string,
         effort?: string,
-        modelReasoningEffort?: string
+        modelReasoningEffort?: string,
+        serviceTier?: string
     ): Session {
-        return this.sessionCache.getOrCreateSession(tag, metadata, agentState, namespace, model, effort, modelReasoningEffort)
+        return this.sessionCache.getOrCreateSession(tag, metadata, agentState, namespace, model, effort, modelReasoningEffort, serviceTier)
     }
 
     getOrCreateMachine(id: string, metadata: unknown, runnerState: unknown, namespace: string): Machine {
@@ -321,6 +378,7 @@ export class SyncEngine {
             model?: string | null
             modelReasoningEffort?: string | null
             effort?: string | null
+            serviceTier?: string | null
             collaborationMode?: CodexCollaborationMode
         }
     ): Promise<void> {
@@ -334,6 +392,7 @@ export class SyncEngine {
                 model?: Session['model']
                 modelReasoningEffort?: Session['modelReasoningEffort']
                 effort?: Session['effort']
+                serviceTier?: Session['serviceTier']
                 collaborationMode?: Session['collaborationMode']
             }
         }
@@ -356,7 +415,8 @@ export class SyncEngine {
         worktreeName?: string,
         resumeSessionId?: string,
         effort?: string,
-        permissionMode?: PermissionMode
+        permissionMode?: PermissionMode,
+        serviceTier?: string
     ): Promise<{ type: 'success'; sessionId: string } | { type: 'error'; message: string }> {
         return await this.rpcGateway.spawnSession(
             machineId,
@@ -369,7 +429,8 @@ export class SyncEngine {
             worktreeName,
             resumeSessionId,
             effort,
-            permissionMode
+            permissionMode,
+            serviceTier
         )
     }
 
@@ -442,7 +503,8 @@ export class SyncEngine {
             undefined,
             resumeToken,
             session.effort ?? undefined,
-            session.permissionMode ?? undefined
+            session.permissionMode ?? undefined,
+            session.serviceTier ?? undefined
         )
 
         if (spawnResult.type !== 'success') {
@@ -470,6 +532,14 @@ export class SyncEngine {
         }
 
         return { type: 'success', sessionId: spawnResult.sessionId }
+    }
+
+    async listImportableCodexSessions(namespace: string): Promise<ListImportableCodexSessionsResult> {
+        return await this.listImportableSessionsByAgent(namespace, 'codex')
+    }
+
+    async listImportableClaudeSessions(namespace: string): Promise<ListImportableClaudeSessionsResult> {
+        return await this.listImportableSessionsByAgent(namespace, 'claude')
     }
 
     private hasSameAgentSessionIds(
@@ -502,6 +572,462 @@ export class SyncEngine {
             await new Promise((resolve) => setTimeout(resolve, 250))
         }
         return false
+    }
+
+    async waitForSessionSettled(
+        sessionId: string,
+        timeoutMs: number = 15_000,
+        stableMs: number = 800
+    ): Promise<boolean> {
+        const start = Date.now()
+        let lastSeq = -1
+        let lastThinking: boolean | null = null
+        let lastChangeAt = Date.now()
+
+        while (Date.now() - start < timeoutMs) {
+            const session = this.getSession(sessionId)
+            if (!session?.active) {
+                await new Promise((resolve) => setTimeout(resolve, 250))
+                continue
+            }
+
+            const latestMessage = this.store.messages.getMessages(sessionId, 1).at(-1)
+            const latestSeq = latestMessage?.seq ?? 0
+            if (latestSeq !== lastSeq || session.thinking !== lastThinking) {
+                lastSeq = latestSeq
+                lastThinking = session.thinking
+                lastChangeAt = Date.now()
+            }
+
+            if (!session.thinking && Date.now() - lastChangeAt >= stableMs) {
+                return true
+            }
+
+            await new Promise((resolve) => setTimeout(resolve, 250))
+        }
+
+        return false
+    }
+
+    private getImportableAgentLabel(agent: 'codex' | 'claude'): 'Codex' | 'Claude' {
+        return agent === 'codex' ? 'Codex' : 'Claude'
+    }
+
+    private findSessionByExternalSessionId(
+        namespace: string,
+        externalSessionId: string,
+        agent: 'codex' | 'claude'
+    ): { sessionId: string } | null {
+        return agent === 'codex'
+            ? this.findSessionByExternalCodexSessionId(namespace, externalSessionId)
+            : this.findSessionByExternalClaudeSessionId(namespace, externalSessionId)
+    }
+
+    private async importExternalSession(
+        externalSessionId: string,
+        namespace: string,
+        agent: 'codex' | 'claude'
+    ): Promise<ImportExternalAgentSessionResult> {
+        const existing = this.findSessionByExternalSessionId(namespace, externalSessionId, agent)
+        if (existing) {
+            return { type: 'success', sessionId: existing.sessionId }
+        }
+
+        const sourceResult = await this.findImportableSessionSource(namespace, externalSessionId, agent)
+        if (sourceResult.type === 'error') {
+            return {
+                type: 'error',
+                message: sourceResult.message,
+                code: sourceResult.code === 'no_machine_online' || sourceResult.code === 'session_not_found'
+                    ? sourceResult.code
+                    : 'import_failed'
+            }
+        }
+
+        const cwd = sourceResult.session.cwd
+        if (typeof cwd !== 'string' || cwd.length === 0) {
+            return {
+                type: 'error',
+                message: `Importable ${this.getImportableAgentLabel(agent)} session is missing cwd`,
+                code: 'import_failed'
+            }
+        }
+
+        const sourceConfig = this.getImportableSessionConfig(sourceResult.session, agent)
+        const spawnResult = await this.rpcGateway.spawnSession(
+            sourceResult.machineId,
+            cwd,
+            agent,
+            this.stringOrUndefined(sourceConfig.model),
+            this.stringOrUndefined(sourceConfig.modelReasoningEffort),
+            undefined,
+            undefined,
+            undefined,
+            externalSessionId,
+            this.stringOrUndefined(sourceConfig.effort),
+            sourceConfig.permissionMode,
+            this.stringOrUndefined(sourceConfig.serviceTier)
+        )
+
+        if (spawnResult.type !== 'success') {
+            return {
+                type: 'error',
+                message: spawnResult.message,
+                code: 'import_failed'
+            }
+        }
+
+        if (!(await this.waitForSessionSettled(spawnResult.sessionId))) {
+            this.discardSpawnedSession(spawnResult.sessionId, namespace)
+            return {
+                type: 'error',
+                message: 'Session failed to become active',
+                code: 'import_failed'
+            }
+        }
+
+        await this.applyImportedSessionConfig(spawnResult.sessionId, sourceConfig)
+
+        const importedTitle = this.getBestImportableSessionTitle(sourceResult.session)
+        await this.applyImportableSessionTitle(spawnResult.sessionId, importedTitle)
+
+        return { type: 'success', sessionId: spawnResult.sessionId }
+    }
+
+    private async refreshExternalSession(
+        externalSessionId: string,
+        namespace: string,
+        agent: 'codex' | 'claude'
+    ): Promise<RefreshExternalAgentSessionResult> {
+        const existing = this.findSessionByExternalSessionId(namespace, externalSessionId, agent)
+        if (!existing) {
+            return {
+                type: 'error',
+                message: 'Imported session not found',
+                code: 'session_not_found'
+            }
+        }
+
+        const access = this.sessionCache.resolveSessionAccess(existing.sessionId, namespace)
+        if (!access.ok) {
+            return {
+                type: 'error',
+                message: access.reason === 'access-denied' ? 'Session access denied' : 'Imported session not found',
+                code: 'session_not_found'
+            }
+        }
+
+        const session = access.session
+        const sourceResult = await this.findImportableSessionSource(namespace, externalSessionId, agent)
+        if (sourceResult.type === 'error') {
+            return {
+                type: 'error',
+                message: sourceResult.message,
+                code: sourceResult.code === 'no_machine_online' || sourceResult.code === 'session_not_found'
+                    ? sourceResult.code
+                    : 'refresh_failed'
+            }
+        }
+
+        const cwd = sourceResult.session.cwd
+        if (typeof cwd !== 'string' || cwd.length === 0) {
+            return {
+                type: 'error',
+                message: `Importable ${this.getImportableAgentLabel(agent)} session is missing cwd`,
+                code: 'refresh_failed'
+            }
+        }
+
+        const sourceConfig = this.getImportableSessionConfig(sourceResult.session, agent)
+        const storedConfig = this.getStoredSessionConfig(session)
+        const spawnConfig = {
+            ...storedConfig,
+            ...sourceConfig
+        }
+        const spawnResult = await this.rpcGateway.spawnSession(
+            sourceResult.machineId,
+            cwd,
+            agent,
+            this.stringOrUndefined(spawnConfig.model),
+            this.stringOrUndefined(spawnConfig.modelReasoningEffort),
+            undefined,
+            undefined,
+            undefined,
+            externalSessionId,
+            this.stringOrUndefined(spawnConfig.effort),
+            spawnConfig.permissionMode,
+            this.stringOrUndefined(spawnConfig.serviceTier)
+        )
+
+        if (spawnResult.type !== 'success') {
+            return {
+                type: 'error',
+                message: spawnResult.message,
+                code: 'refresh_failed'
+            }
+        }
+
+        if (!(await this.waitForSessionSettled(spawnResult.sessionId))) {
+            this.discardSpawnedSession(spawnResult.sessionId, namespace)
+            return {
+                type: 'error',
+                message: 'Session failed to become active',
+                code: 'refresh_failed'
+            }
+        }
+
+        const importedTitle = this.getBestImportableSessionTitle(sourceResult.session)
+        await this.applyImportableSessionTitle(spawnResult.sessionId, importedTitle)
+
+        await this.applyImportedSessionConfig(spawnResult.sessionId, spawnConfig)
+
+        if (spawnResult.sessionId !== access.sessionId) {
+            try {
+                this.detachExternalSessionMapping(access.sessionId, namespace, agent)
+            } catch (error) {
+                this.discardSpawnedSession(spawnResult.sessionId, namespace)
+                return {
+                    type: 'error',
+                    message: error instanceof Error ? error.message : 'Failed to replace imported session',
+                    code: 'refresh_failed'
+                }
+            }
+        }
+
+        return { type: 'success', sessionId: spawnResult.sessionId }
+    }
+
+    private async listImportableSessionsByAgent(
+        namespace: string,
+        agent: 'codex' | 'claude'
+    ): Promise<ListImportableAgentSessionsResult> {
+        const onlineMachines = this.machineCache.getOnlineMachinesByNamespace(namespace)
+        const targetMachine = onlineMachines[0]
+        if (!targetMachine) {
+            return {
+                type: 'error',
+                message: 'No machine online',
+                code: 'no_machine_online'
+            }
+        }
+
+        try {
+            const response = await this.rpcGateway.listImportableSessions(targetMachine.id, { agent })
+            return {
+                type: 'success',
+                machineId: targetMachine.id,
+                sessions: response.sessions
+            }
+        } catch (error) {
+            return {
+                type: 'error',
+                message: error instanceof Error ? error.message : 'Failed to list importable sessions',
+                code: 'importable_sessions_failed'
+            }
+        }
+    }
+
+    private async findImportableSessionSource(
+        namespace: string,
+        externalSessionId: string,
+        agent: 'codex' | 'claude'
+    ): Promise<
+        | { type: 'success'; machineId: string; session: RpcListImportableSessionsResponse['sessions'][number] }
+        | { type: 'error'; message: string; code: 'session_not_found' | 'no_machine_online' | 'importable_sessions_failed' }
+    > {
+        const onlineMachines = this.machineCache.getOnlineMachinesByNamespace(namespace)
+        if (onlineMachines.length === 0) {
+            return {
+                type: 'error',
+                message: 'No machine online',
+                code: 'no_machine_online'
+            }
+        }
+
+        let lastError: string | null = null
+        for (const machine of onlineMachines) {
+            try {
+                const response = await this.rpcGateway.listImportableSessions(machine.id, { agent })
+                const session = response.sessions.find((item) => item.externalSessionId === externalSessionId)
+                if (session) {
+                    if (typeof session.cwd !== 'string' || session.cwd.length === 0) {
+                        return {
+                            type: 'error',
+                            message: `Importable ${this.getImportableAgentLabel(agent)} session is missing cwd`,
+                            code: 'importable_sessions_failed'
+                        }
+                    }
+                    return {
+                        type: 'success',
+                        machineId: machine.id,
+                        session
+                    }
+                }
+            } catch (error) {
+                lastError = error instanceof Error ? error.message : 'Failed to list importable sessions'
+            }
+        }
+
+        return {
+            type: 'error',
+            message: lastError ?? `Importable ${this.getImportableAgentLabel(agent)} session not found`,
+            code: lastError ? 'importable_sessions_failed' : 'session_not_found'
+        }
+    }
+
+    private getBestImportableSessionTitle(
+        session: RpcListImportableSessionsResponse['sessions'][number]
+    ): string | null {
+        const previewTitle = typeof session.previewTitle === 'string' ? session.previewTitle.trim() : ''
+        if (previewTitle.length > 0) {
+            return previewTitle
+        }
+
+        const previewPrompt = typeof session.previewPrompt === 'string' ? session.previewPrompt.trim() : ''
+        if (previewPrompt.length > 0) {
+            return previewPrompt
+        }
+
+        return null
+    }
+
+    private getStoredSessionConfig(session: Session): SessionConfigForSpawn {
+        return {
+            model: session.model,
+            modelReasoningEffort: session.modelReasoningEffort,
+            effort: session.effort,
+            serviceTier: session.serviceTier,
+            permissionMode: session.permissionMode,
+            collaborationMode: session.collaborationMode
+        }
+    }
+
+    private getImportableSessionConfig(
+        session: RpcListImportableSessionsResponse['sessions'][number],
+        agent: 'codex' | 'claude'
+    ): SessionConfigForSpawn {
+        if (agent !== 'codex') {
+            return {}
+        }
+
+        const raw = session as Record<string, unknown>
+        const config: SessionConfigForSpawn = {}
+        if (Object.hasOwn(raw, 'model') && (typeof raw.model === 'string' || raw.model === null)) {
+            config.model = raw.model
+        }
+        if (
+            Object.hasOwn(raw, 'modelReasoningEffort')
+            && (typeof raw.modelReasoningEffort === 'string' || raw.modelReasoningEffort === null)
+        ) {
+            config.modelReasoningEffort = raw.modelReasoningEffort
+        } else if (Object.hasOwn(raw, 'effort') && typeof raw.effort === 'string') {
+            config.modelReasoningEffort = raw.effort
+        }
+        if (Object.hasOwn(raw, 'effort') && (typeof raw.effort === 'string' || raw.effort === null)) {
+            config.effort = raw.effort
+        }
+        if (Object.hasOwn(raw, 'serviceTier') && (typeof raw.serviceTier === 'string' || raw.serviceTier === null)) {
+            config.serviceTier = raw.serviceTier
+        }
+        if (this.isPermissionMode(raw.permissionMode)) {
+            config.permissionMode = raw.permissionMode
+        }
+        if (raw.collaborationMode === 'default' || raw.collaborationMode === 'plan') {
+            config.collaborationMode = raw.collaborationMode
+        }
+        return config
+    }
+
+    private stringOrUndefined(value: string | null | undefined): string | undefined {
+        return typeof value === 'string' && value.length > 0 ? value : undefined
+    }
+
+    private isPermissionMode(value: unknown): value is PermissionMode {
+        return typeof value === 'string'
+            && (
+                value === 'default'
+                || value === 'acceptEdits'
+                || value === 'bypassPermissions'
+                || value === 'plan'
+                || value === 'ask'
+                || value === 'read-only'
+                || value === 'safe-yolo'
+                || value === 'yolo'
+            )
+    }
+
+    private async applyImportedSessionConfig(sessionId: string, config: SessionConfigForSpawn): Promise<void> {
+        if (Object.keys(config).length === 0) {
+            return
+        }
+
+        await this.applySessionConfig(sessionId, config)
+    }
+
+    private async applyImportableSessionTitle(sessionId: string, title: string | null): Promise<void> {
+        if (!title) {
+            return
+        }
+
+        const session = this.getSession(sessionId) ?? this.sessionCache.refreshSession(sessionId)
+        if (!session) {
+            return
+        }
+
+        if (session.metadata?.name === title) {
+            return
+        }
+
+        try {
+            await this.sessionCache.renameSession(sessionId, title)
+        } catch {
+            // Best effort. Import/refresh must not fail just because the title write raced.
+        }
+    }
+
+    private detachExternalSessionMapping(
+        sessionId: string,
+        namespace: string,
+        agent: 'codex' | 'claude'
+    ): void {
+        const session = this.getSessionByNamespace(sessionId, namespace)
+        if (!session?.metadata) {
+            return
+        }
+
+        const nextMetadata = { ...session.metadata }
+        if (agent === 'codex') {
+            delete nextMetadata.codexSessionId
+        } else {
+            delete nextMetadata.claudeSessionId
+        }
+
+        const update = (metadataVersion: number): boolean => {
+            const result = this.store.sessions.updateSessionMetadata(
+                sessionId,
+                nextMetadata,
+                metadataVersion,
+                namespace,
+                { touchUpdatedAt: false }
+            )
+            return result.result === 'success'
+        }
+
+        if (!update(session.metadataVersion)) {
+            const refreshed = this.sessionCache.refreshSession(sessionId)
+            if (!refreshed || !update(refreshed.metadataVersion)) {
+                throw new Error('Failed to detach old imported session mapping')
+            }
+        }
+
+        this.sessionCache.refreshSession(sessionId)
+    }
+
+    private discardSpawnedSession(sessionId: string, namespace: string): void {
+        const deleted = this.store.sessions.deleteSession(sessionId, namespace)
+        if (deleted) {
+            this.sessionCache.refreshSession(sessionId)
+        }
     }
 
     async checkPathsExist(machineId: string, paths: string[]): Promise<Record<string, boolean>> {

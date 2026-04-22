@@ -12,7 +12,11 @@ function makeSession(overrides: Partial<SessionSummary> & { id: string }): Sessi
         todoProgress: null,
         pendingRequestsCount: 0,
         model: null,
+        modelReasoningEffort: null,
         effort: null,
+        serviceTier: null,
+        permissionMode: null,
+        collaborationMode: null,
         ...overrides
     }
 }

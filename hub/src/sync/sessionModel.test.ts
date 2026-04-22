@@ -64,11 +64,43 @@ describe('session model', () => {
             'default',
             'gpt-5.4',
             undefined,
-            'xhigh'
+            'xhigh',
+            'fast'
         )
 
         expect(session.modelReasoningEffort).toBe('xhigh')
         expect(store.sessions.getSession(session.id)?.modelReasoningEffort).toBe('xhigh')
+    })
+
+    it('includes Codex runtime config in session summaries', () => {
+        const store = new Store(':memory:')
+        const events: SyncEvent[] = []
+        const cache = new SessionCache(store, createPublisher(events))
+
+        const session = cache.getOrCreateSession(
+            'session-codex-config-summary',
+            { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+            null,
+            'default',
+            'gpt-5.4',
+            undefined,
+            'xhigh',
+            'fast'
+        )
+
+        cache.applySessionConfig(session.id, {
+            permissionMode: 'yolo',
+            collaborationMode: 'default'
+        })
+
+        expect(toSessionSummary(session)).toMatchObject({
+            model: 'gpt-5.4',
+            modelReasoningEffort: 'xhigh',
+            effort: null,
+            serviceTier: 'fast',
+            permissionMode: 'yolo',
+            collaborationMode: 'default'
+        })
     })
 
     it('preserves model from old session when merging into resumed session', async () => {
@@ -502,6 +534,96 @@ describe('session model', () => {
 
             expect(result).toEqual({ type: 'success', sessionId: session.id })
             expect(capturedPermissionMode).toBe('bypassPermissions')
+        } finally {
+            engine.stop()
+        }
+    })
+
+    it('passes importable Codex config when importing an existing session', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            engine.getOrCreateMachine(
+                'machine-1',
+                { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
+                null,
+                'default'
+            )
+            engine.handleMachineAlive({ machineId: 'machine-1', time: Date.now() })
+
+            let capturedModel: string | undefined
+            let capturedModelReasoningEffort: string | undefined
+            let capturedPermissionMode: string | undefined
+            let capturedServiceTier: string | undefined
+            let capturedConfig: unknown
+            ;(engine as any).rpcGateway.listImportableSessions = async () => ({
+                sessions: [
+                    {
+                        agent: 'codex',
+                        externalSessionId: 'codex-thread-1',
+                        cwd: '/tmp/project',
+                        timestamp: 123,
+                        transcriptPath: '/tmp/codex-thread-1.jsonl',
+                        previewTitle: 'Imported title',
+                        previewPrompt: null,
+                        model: 'gpt-5.4',
+                        modelReasoningEffort: 'xhigh',
+                        effort: 'xhigh',
+                        serviceTier: 'fast',
+                        collaborationMode: 'default',
+                        permissionMode: 'yolo'
+                    }
+                ]
+            })
+            ;(engine as any).rpcGateway.spawnSession = async (
+                _machineId: string,
+                _directory: string,
+                _agent: string,
+                model?: string,
+                modelReasoningEffort?: string,
+                _yolo?: boolean,
+                _sessionType?: string,
+                _worktreeName?: string,
+                _resumeSessionId?: string,
+                _effort?: string,
+                permissionMode?: string,
+                serviceTier?: string
+            ) => {
+                capturedModel = model
+                capturedModelReasoningEffort = modelReasoningEffort
+                capturedPermissionMode = permissionMode
+                capturedServiceTier = serviceTier
+                return { type: 'success', sessionId: 'hapi-imported-1' }
+            }
+            ;(engine as any).rpcGateway.requestSessionConfig = async (_sessionId: string, config: unknown) => {
+                capturedConfig = config
+                return {
+                    applied: config
+                }
+            }
+            ;(engine as any).waitForSessionSettled = async () => true
+
+            const result = await engine.importExternalCodexSession('codex-thread-1', 'default')
+
+            expect(result).toEqual({ type: 'success', sessionId: 'hapi-imported-1' })
+            expect(capturedModel).toBe('gpt-5.4')
+            expect(capturedModelReasoningEffort).toBe('xhigh')
+            expect(capturedPermissionMode).toBe('yolo')
+            expect(capturedServiceTier).toBe('fast')
+            expect(capturedConfig).toEqual({
+                model: 'gpt-5.4',
+                modelReasoningEffort: 'xhigh',
+                effort: 'xhigh',
+                serviceTier: 'fast',
+                permissionMode: 'yolo',
+                collaborationMode: 'default'
+            })
         } finally {
             engine.stop()
         }

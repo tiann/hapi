@@ -1,4 +1,5 @@
 import type { Session, WorktreeMetadata } from './schemas'
+import type { CodexCollaborationMode, PermissionMode } from './modes'
 
 export type SessionSummaryMetadata = {
     name?: string
@@ -20,7 +21,11 @@ export type SessionSummary = {
     todoProgress: { completed: number; total: number } | null
     pendingRequestsCount: number
     model: string | null
+    modelReasoningEffort: string | null
     effort: string | null
+    serviceTier: string | null
+    permissionMode: PermissionMode | null
+    collaborationMode: CodexCollaborationMode | null
 }
 
 export function toSessionSummary(session: Session): SessionSummary {
@@ -56,6 +61,10 @@ export function toSessionSummary(session: Session): SessionSummary {
         todoProgress,
         pendingRequestsCount,
         model: session.model,
-        effort: session.effort
+        modelReasoningEffort: session.modelReasoningEffort,
+        effort: session.effort,
+        serviceTier: session.serviceTier,
+        permissionMode: session.permissionMode ?? null,
+        collaborationMode: session.collaborationMode ?? null
     }
 }

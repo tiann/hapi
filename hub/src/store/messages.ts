@@ -126,7 +126,7 @@ export function mergeSessionMessages(
     const newMaxSeq = getMaxSeq(db, toSessionId)
 
     try {
-        db.exec('BEGIN')
+        db.exec('SAVEPOINT merge_session_messages')
 
         if (newMaxSeq > 0 && oldMaxSeq > 0) {
             db.prepare(
@@ -154,10 +154,11 @@ export function mergeSessionMessages(
             'UPDATE messages SET session_id = ? WHERE session_id = ?'
         ).run(toSessionId, fromSessionId)
 
-        db.exec('COMMIT')
+        db.exec('RELEASE SAVEPOINT merge_session_messages')
         return { moved: result.changes, oldMaxSeq, newMaxSeq }
     } catch (error) {
-        db.exec('ROLLBACK')
+        db.exec('ROLLBACK TO SAVEPOINT merge_session_messages')
+        db.exec('RELEASE SAVEPOINT merge_session_messages')
         throw error
     }
 }

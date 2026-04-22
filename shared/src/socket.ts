@@ -142,6 +142,7 @@ export interface ClientToServerEvents {
         model?: string | null
         modelReasoningEffort?: string | null
         effort?: string | null
+        serviceTier?: string | null
         collaborationMode?: CodexCollaborationMode
     }) => void
     'session-end': (data: { sid: string; time: number }) => void

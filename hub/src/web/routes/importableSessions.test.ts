@@ -28,7 +28,15 @@ describe('importable sessions routes', () => {
                         timestamp: 123,
                         transcriptPath: '/tmp/project/.codex/sessions/external-1.jsonl',
                         previewTitle: 'Imported title',
-                        previewPrompt: 'Imported prompt'
+                        previewPrompt: 'Imported prompt',
+                        model: 'gpt-5.4',
+                        effort: 'xhigh',
+                        modelReasoningEffort: 'xhigh',
+                        serviceTier: 'fast',
+                        collaborationMode: 'default' as const,
+                        approvalPolicy: 'never',
+                        sandboxPolicy: { type: 'danger-full-access' },
+                        permissionMode: 'yolo' as const
                     },
                     {
                         agent: 'codex' as const,
@@ -64,6 +72,14 @@ describe('importable sessions routes', () => {
                     transcriptPath: '/tmp/project/.codex/sessions/external-1.jsonl',
                     previewTitle: 'Imported title',
                     previewPrompt: 'Imported prompt',
+                    model: 'gpt-5.4',
+                    effort: 'xhigh',
+                    modelReasoningEffort: 'xhigh',
+                    serviceTier: 'fast',
+                    collaborationMode: 'default',
+                    approvalPolicy: 'never',
+                    sandboxPolicy: { type: 'danger-full-access' },
+                    permissionMode: 'yolo',
                     alreadyImported: true,
                     importedHapiSessionId: 'hapi-123'
                 },

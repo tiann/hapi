@@ -243,4 +243,116 @@ describe('listImportableCodexSessions', () => {
 
         expect(result.sessions.find((session) => session.externalSessionId === childSessionId)).toBeUndefined();
     });
+
+    it('extracts the latest root turn context configuration', async () => {
+        const sessionDir = join(sessionsRoot, '2026', '04', '22');
+        await mkdir(sessionDir, { recursive: true });
+
+        const sessionId = 'codex-config-session';
+        const transcriptPath = join(sessionDir, `rollout-${sessionId}.jsonl`);
+        await writeFile(
+            transcriptPath,
+            [
+                JSON.stringify({
+                    type: 'session_meta',
+                    payload: {
+                        id: sessionId,
+                        cwd: '/work/project',
+                        timestamp: '2026-04-22T08:00:00.000Z'
+                    }
+                }),
+                JSON.stringify({
+                    type: 'turn_context',
+                    payload: {
+                        model: 'gpt-5.4',
+                        effort: 'xhigh',
+                        approval_policy: 'on-request',
+                        sandbox_policy: { type: 'workspaceWrite' },
+                        collaboration_mode: {
+                            mode: 'default',
+                            settings: {
+                                model: 'gpt-5.4',
+                                reasoning_effort: 'xhigh'
+                            }
+                        }
+                    }
+                }),
+                JSON.stringify({
+                    type: 'turn_context',
+                    payload: {
+                        model: 'gpt-5.4-mini',
+                        service_tier: 'fast',
+                        effort: null,
+                        approval_policy: 'never',
+                        sandbox_policy: { type: 'danger-full-access' },
+                        collaboration_mode: {
+                            mode: 'plan',
+                            settings: {
+                                model: 'gpt-5.4-mini',
+                                reasoning_effort: 'high'
+                            }
+                        }
+                    }
+                })
+            ].join('\n') + '\n'
+        );
+
+        const result = await listImportableCodexSessions({ rootDir: sessionsRoot });
+
+        expect(result.sessions[0]).toMatchObject({
+            externalSessionId: sessionId,
+            model: 'gpt-5.4-mini',
+            effort: null,
+            modelReasoningEffort: 'high',
+            serviceTier: 'fast',
+            collaborationMode: 'plan',
+            approvalPolicy: 'never',
+            sandboxPolicy: { type: 'danger-full-access' },
+            permissionMode: 'yolo'
+        });
+    });
+
+    it('uses Codex config service tier when transcript does not include it', async () => {
+        await writeFile(join(testDir, 'config.toml'), 'service_tier = "fast"\n');
+        const sessionDir = join(sessionsRoot, '2026', '04', '22');
+        await mkdir(sessionDir, { recursive: true });
+
+        const sessionId = 'codex-service-tier-session';
+        const transcriptPath = join(sessionDir, `rollout-${sessionId}.jsonl`);
+        await writeFile(
+            transcriptPath,
+            [
+                JSON.stringify({
+                    type: 'session_meta',
+                    payload: {
+                        id: sessionId,
+                        cwd: '/work/project',
+                        timestamp: '2026-04-22T08:00:00.000Z'
+                    }
+                }),
+                JSON.stringify({
+                    type: 'turn_context',
+                    payload: {
+                        model: 'gpt-5.4',
+                        effort: 'xhigh',
+                        approval_policy: 'never',
+                        sandbox_policy: { type: 'danger-full-access' },
+                        collaboration_mode: {
+                            mode: 'default',
+                            settings: {
+                                reasoning_effort: 'xhigh'
+                            }
+                        }
+                    }
+                })
+            ].join('\n') + '\n'
+        );
+
+        const result = await listImportableCodexSessions({ rootDir: sessionsRoot });
+
+        expect(result.sessions[0]).toMatchObject({
+            externalSessionId: sessionId,
+            serviceTier: 'fast'
+        });
+    });
 });

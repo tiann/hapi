@@ -22,6 +22,8 @@ export type {
     WorktreeMetadata
 } from '@hapi/protocol/types'
 
+import type { CodexCollaborationMode, PermissionMode } from '@hapi/protocol/types'
+
 export type SessionMetadataSummary = {
     path: string
     host: string
@@ -94,6 +96,37 @@ export type MessagesResponse = {
 
 export type MachinesResponse = { machines: Machine[] }
 export type MachinePathsExistsResponse = { exists: Record<string, boolean> }
+
+export type ImportableSessionAgent = 'codex' | 'claude'
+
+export type ImportableSessionView = {
+    agent: ImportableSessionAgent
+    externalSessionId: string
+    cwd: string | null
+    timestamp: number | null
+    transcriptPath: string
+    previewTitle: string | null
+    previewPrompt: string | null
+    model?: string | null
+    effort?: string | null
+    modelReasoningEffort?: string | null
+    serviceTier?: string | null
+    collaborationMode?: CodexCollaborationMode | null
+    approvalPolicy?: string | null
+    sandboxPolicy?: unknown | null
+    permissionMode?: PermissionMode | null
+    alreadyImported: boolean
+    importedHapiSessionId: string | null
+}
+
+export type ImportableSessionsResponse = {
+    sessions: ImportableSessionView[]
+}
+
+export type ExternalSessionActionResponse = {
+    type: 'success'
+    sessionId: string
+}
 
 export type SpawnResponse =
     | { type: 'success'; sessionId: string }

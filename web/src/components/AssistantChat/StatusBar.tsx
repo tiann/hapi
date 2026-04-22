@@ -123,6 +123,8 @@ export function StatusBar(props: {
     backgroundTaskCount?: number
     contextSize?: number
     model?: string | null
+    modelReasoningEffort?: string | null
+    serviceTier?: string | null
     permissionMode?: PermissionMode
     collaborationMode?: CodexCollaborationMode
     agentFlavor?: string | null
@@ -154,12 +156,18 @@ export function StatusBar(props: {
     const permissionModeLabel = displayPermissionMode ? getPermissionModeLabel(displayPermissionMode) : null
     const permissionModeTone = displayPermissionMode ? getPermissionModeTone(displayPermissionMode) : null
     const permissionModeColor = permissionModeTone ? PERMISSION_TONE_CLASSES[permissionModeTone] : 'text-[var(--app-hint)]'
-    const displayCollaborationMode = props.agentFlavor === 'codex' && props.collaborationMode === 'plan'
+    const displayCollaborationMode = props.agentFlavor === 'codex' && props.collaborationMode
         ? props.collaborationMode
         : null
     const collaborationModeLabel = displayCollaborationMode
         ? getCodexCollaborationModeLabel(displayCollaborationMode)
         : null
+    const modelReasoningEffort = props.agentFlavor === 'codex' && typeof props.modelReasoningEffort === 'string'
+        ? props.modelReasoningEffort.trim()
+        : ''
+    const serviceTier = props.agentFlavor === 'codex' && typeof props.serviceTier === 'string'
+        ? props.serviceTier.trim()
+        : ''
 
     return (
         <div className="flex items-center justify-between px-2 pb-1">
@@ -180,6 +188,16 @@ export function StatusBar(props: {
             </div>
 
             <div className="flex items-center gap-2">
+                {modelReasoningEffort ? (
+                    <span className="text-xs text-[var(--app-hint)]">
+                        {modelReasoningEffort}
+                    </span>
+                ) : null}
+                {serviceTier ? (
+                    <span className="text-xs text-emerald-500">
+                        {serviceTier}
+                    </span>
+                ) : null}
                 {collaborationModeLabel ? (
                     <span className="text-xs text-blue-500">
                         {collaborationModeLabel}

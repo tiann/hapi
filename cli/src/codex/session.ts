@@ -4,7 +4,7 @@ import { AgentSessionBase } from '@/agent/sessionBase';
 import type { EnhancedMode, PermissionMode } from './loop';
 import type { CodexCliOverrides } from './utils/codexCliOverrides';
 import type { LocalLaunchExitReason } from '@/agent/localLaunchPolicy';
-import type { SessionModel, SessionModelReasoningEffort } from '@/api/types';
+import type { SessionModel, SessionModelReasoningEffort, SessionServiceTier } from '@/api/types';
 
 type LocalLaunchFailure = {
     message: string;
@@ -34,6 +34,7 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
         permissionMode?: PermissionMode;
         model?: SessionModel;
         modelReasoningEffort?: SessionModelReasoningEffort;
+        serviceTier?: SessionServiceTier;
         collaborationMode?: EnhancedMode['collaborationMode'];
     }) {
         super({
@@ -54,6 +55,7 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
             permissionMode: opts.permissionMode,
             model: opts.model,
             modelReasoningEffort: opts.modelReasoningEffort,
+            serviceTier: opts.serviceTier,
             collaborationMode: opts.collaborationMode
         });
 
@@ -64,6 +66,7 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
         this.permissionMode = opts.permissionMode;
         this.model = opts.model;
         this.modelReasoningEffort = opts.modelReasoningEffort;
+        this.serviceTier = opts.serviceTier;
         this.collaborationMode = opts.collaborationMode;
     }
 
@@ -79,6 +82,10 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
         this.modelReasoningEffort = modelReasoningEffort;
     };
 
+    setServiceTier = (serviceTier: SessionServiceTier): void => {
+        this.serviceTier = serviceTier;
+    };
+
     setCollaborationMode = (mode: EnhancedMode['collaborationMode']): void => {
         this.collaborationMode = mode;
     };
@@ -91,8 +98,8 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
         this.client.sendAgentMessage(message);
     };
 
-    sendUserMessage = (text: string): void => {
-        this.client.sendUserMessage(text);
+    sendUserMessage = (text: string, meta?: Parameters<ApiSessionClient['sendUserMessage']>[1]): void => {
+        this.client.sendUserMessage(text, meta);
     };
 
     sendSessionEvent = (event: Parameters<ApiSessionClient['sendSessionEvent']>[0]): void => {
