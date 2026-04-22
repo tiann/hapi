@@ -2,6 +2,7 @@ import type { NormalizedAgentContent, NormalizedMessage } from '@/chat/types'
 import { isObject } from '@hapi/protocol'
 
 const SUBAGENT_NOTIFICATION_PREFIX = '<subagent_notification>'
+const CODEX_CONTROL_TOOL_NAMES = new Set(['CodexWaitAgent', 'CodexSendInput', 'CodexCloseAgent'])
 
 function extractSubagentSidechainKey(meta: unknown): string | null {
     if (!isObject(meta)) return null
@@ -62,6 +63,16 @@ function extractWaitTargets(message: NormalizedMessage): string[] {
     }
 
     return []
+}
+
+function messageContainsCodexControlToolResult(
+    message: NormalizedMessage,
+    toolNameByToolUseId: Map<string, string>
+): boolean {
+    return getToolResultBlocks(message).some((toolResult) => {
+        const toolName = toolNameByToolUseId.get(toolResult.tool_use_id)
+        return typeof toolName === 'string' && CODEX_CONTROL_TOOL_NAMES.has(toolName)
+    })
 }
 
 function messageLooksLikeInlineChildConversation(message: NormalizedMessage): boolean {
@@ -155,9 +166,12 @@ export function annotateSubagentSidechains<T extends NormalizedMessage>(messages
         const spawn = extractSpawnAgentId(message, toolNameByToolUseId)
         if (spawn) {
             pendingSpawnToolUseId = null
+            const alreadyKnownSpawn = agentIdToSpawnToolUseId.get(spawn.agentId) === spawn.spawnToolUseId
             agentIdToSpawnToolUseId.set(spawn.agentId, spawn.spawnToolUseId)
-            activeAgentIds = removeActiveAgents(activeAgentIds, [spawn.agentId])
-            activeAgentIds.push(spawn.agentId)
+            if (!alreadyKnownSpawn) {
+                activeAgentIds = removeActiveAgents(activeAgentIds, [spawn.agentId])
+                activeAgentIds.push(spawn.agentId)
+            }
             result.push({ ...message })
             continue
         }
@@ -165,6 +179,11 @@ export function annotateSubagentSidechains<T extends NormalizedMessage>(messages
         const waitTargets = extractWaitTargets(message)
         if (waitTargets.length > 0) {
             activeAgentIds = removeActiveAgents(activeAgentIds, waitTargets)
+            result.push({ ...message })
+            continue
+        }
+
+        if (messageContainsCodexControlToolResult(message, toolNameByToolUseId)) {
             result.push({ ...message })
             continue
         }
