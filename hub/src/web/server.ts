@@ -29,17 +29,24 @@ import { jwtVerify } from 'jose'
 function createGeminiProxyWebSocketHandler() {
     const GEMINI_WS_BASE = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent'
     const upstreamMap = new WeakMap<ServerWebSocket<unknown>, WebSocket>()
+    const pendingMap = new WeakMap<ServerWebSocket<unknown>, Array<string | ArrayBuffer | Uint8Array>>()
 
     return {
         open(clientWs: ServerWebSocket<unknown>) {
             const data = clientWs.data as { _geminiProxy: boolean; apiKey: string }
             const upstreamUrl = `${process.env.GEMINI_LIVE_WS_URL || GEMINI_WS_BASE}?key=${encodeURIComponent(data.apiKey)}`
+            const pending: Array<string | ArrayBuffer | Uint8Array> = []
+            pendingMap.set(clientWs, pending)
 
             const upstream = new WebSocket(upstreamUrl)
             upstreamMap.set(clientWs, upstream)
 
             upstream.onopen = () => {
-                // Ready — client will send setup message
+                // Flush any messages queued while upstream was connecting (e.g. setup frame)
+                for (const queued of pending.splice(0)) {
+                    upstream.send(typeof queued === 'string' ? queued : queued)
+                }
+                pendingMap.delete(clientWs)
             }
             upstream.onmessage = (event) => {
                 try {
@@ -49,9 +56,11 @@ function createGeminiProxyWebSocketHandler() {
                 } catch { /* client gone */ }
             }
             upstream.onerror = () => {
+                pendingMap.delete(clientWs)
                 try { clientWs.close(1011, 'Upstream error') } catch { /* */ }
             }
             upstream.onclose = (event) => {
+                pendingMap.delete(clientWs)
                 try { clientWs.close(event.code, event.reason) } catch { /* */ }
                 upstreamMap.delete(clientWs)
             }
@@ -60,10 +69,15 @@ function createGeminiProxyWebSocketHandler() {
             const upstream = upstreamMap.get(clientWs)
             if (upstream?.readyState === WebSocket.OPEN) {
                 upstream.send(typeof message === 'string' ? message : message)
+            } else if (upstream?.readyState === WebSocket.CONNECTING) {
+                // Queue messages until upstream opens (critical for the setup frame)
+                const pending = pendingMap.get(clientWs)
+                if (pending) pending.push(message)
             }
         },
         close(clientWs: ServerWebSocket<unknown>, code: number, reason: string) {
             const upstream = upstreamMap.get(clientWs)
+            pendingMap.delete(clientWs)
             if (upstream) {
                 try { upstream.close(code, reason) } catch { /* */ }
                 upstreamMap.delete(clientWs)

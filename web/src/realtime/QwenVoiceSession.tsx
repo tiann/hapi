@@ -125,7 +125,7 @@ class QwenVoiceSessionImpl implements VoiceSession {
         state.ws = ws
 
         return new Promise<void>((resolve, reject) => {
-            let sessionCreated = false
+            let sessionReady = false
 
             ws.onopen = () => {
                 if (DEBUG) console.log('[Qwen] WebSocket connected')
@@ -143,8 +143,7 @@ class QwenVoiceSessionImpl implements VoiceSession {
                 const eventType = data.type as string
 
                 // Session created - send configuration
-                if (eventType === 'session.created' && !sessionCreated) {
-                    sessionCreated = true
+                if (eventType === 'session.created' && !sessionReady) {
                     if (DEBUG) console.log('[Qwen] Session created')
 
                     // Build tools config
@@ -183,6 +182,7 @@ class QwenVoiceSessionImpl implements VoiceSession {
 
                 // Session updated - ready to go
                 if (eventType === 'session.updated') {
+                    sessionReady = true
                     if (DEBUG) console.log('[Qwen] Session configured')
                     state.statusCallback?.('connected')
                     startAudioCapture(state.playbackContext!)
@@ -262,7 +262,7 @@ class QwenVoiceSessionImpl implements VoiceSession {
                     const message = err?.message || 'Realtime session setup failed'
                     console.error('[Qwen] Server error:', message)
                     state.statusCallback?.('error', message)
-                    if (!sessionCreated) {
+                    if (!sessionReady) {
                         reject(new Error(message))
                         ws.close()
                     }
@@ -272,7 +272,7 @@ class QwenVoiceSessionImpl implements VoiceSession {
 
             ws.onerror = (event) => {
                 console.error('[Qwen] WebSocket error:', event)
-                if (!sessionCreated) {
+                if (!sessionReady) {
                     state.statusCallback?.('error', 'WebSocket connection failed')
                     reject(new Error('WebSocket connection failed'))
                 }
@@ -282,7 +282,7 @@ class QwenVoiceSessionImpl implements VoiceSession {
                 if (DEBUG) console.log('[Qwen] WebSocket closed:', event.code, event.reason)
                 cleanup()
                 resetRealtimeSessionState()
-                if (!sessionCreated) {
+                if (!sessionReady) {
                     const message = event.reason || 'WebSocket closed before setup completed'
                     state.statusCallback?.('error', message)
                     reject(new Error(message))
