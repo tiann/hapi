@@ -1,6 +1,6 @@
 import type { Session, SyncEngine, SyncEvent } from '../sync/syncEngine'
-import type { NotificationChannel, NotificationHubOptions } from './notificationTypes'
-import { extractMessageEventType } from './eventParsing'
+import type { NotificationChannel, NotificationHubOptions, TaskNotification } from './notificationTypes'
+import { extractMessageEventType, extractTaskNotification } from './eventParsing'
 
 export class NotificationHub {
     private readonly channels: NotificationChannel[]
@@ -59,6 +59,13 @@ export class NotificationHub {
             if (eventType === 'ready') {
                 this.sendReadyNotification(event.sessionId).catch((error) => {
                     console.error('[NotificationHub] Failed to send ready notification:', error)
+                })
+            }
+
+            const taskNotification = extractTaskNotification(event)
+            if (taskNotification) {
+                this.sendTaskNotification(event.sessionId, taskNotification).catch((error) => {
+                    console.error('[NotificationHub] Failed to send task notification:', error)
                 })
             }
         }
@@ -146,6 +153,15 @@ export class NotificationHub {
         await this.notifyReady(session)
     }
 
+    private async sendTaskNotification(sessionId: string, notification: TaskNotification): Promise<void> {
+        const session = this.getNotifiableSession(sessionId)
+        if (!session) {
+            return
+        }
+
+        await this.notifyTask(session, notification)
+    }
+
     private async notifyReady(session: Session): Promise<void> {
         for (const channel of this.channels) {
             try {
@@ -162,6 +178,16 @@ export class NotificationHub {
                 await channel.sendPermissionRequest(session)
             } catch (error) {
                 console.error('[NotificationHub] Failed to send permission notification:', error)
+            }
+        }
+    }
+
+    private async notifyTask(session: Session, notification: TaskNotification): Promise<void> {
+        for (const channel of this.channels) {
+            try {
+                await channel.sendTaskNotification(session, notification)
+            } catch (error) {
+                console.error('[NotificationHub] Failed to send task notification:', error)
             }
         }
     }
