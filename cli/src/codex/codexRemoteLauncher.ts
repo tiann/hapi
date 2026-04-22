@@ -19,6 +19,7 @@ import { shouldIgnoreTerminalEvent } from './utils/terminalEventGuard';
 import { createCodexSessionScanner } from './utils/codexSessionScanner';
 import { convertCodexEvent } from './utils/codexEventConverter';
 import { resolveCodexSessionFile } from './utils/resolveCodexSessionFile';
+import { resolveCodexSubagentNickname } from './utils/spawnNicknameResolver';
 import {
     RemoteLauncherBase,
     type RemoteLauncherDisplayContext,
@@ -27,6 +28,17 @@ import {
 
 type HappyServer = Awaited<ReturnType<typeof buildHapiMcpBridge>>['server'];
 type QueuedMessage = { message: string; mode: EnhancedMode; isolate: boolean; hash: string };
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+    if (!value || typeof value !== 'object') {
+        return null;
+    }
+    return value as Record<string, unknown>;
+}
+
+function asString(value: unknown): string | null {
+    return typeof value === 'string' && value.length > 0 ? value : null;
+}
 
 class CodexRemoteLauncher extends RemoteLauncherBase {
     private readonly session: CodexSession;
@@ -38,6 +50,8 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
     private abortController: AbortController = new AbortController();
     private currentThreadId: string | null = null;
     private currentTurnId: string | null = null;
+    private readonly spawnNicknameBackfillTimers = new Set<ReturnType<typeof setTimeout>>();
+    private readonly spawnNicknameBackfillCallIds = new Set<string>();
 
     constructor(session: CodexSession) {
         super(process.env.DEBUG ? session.logPath : undefined);
@@ -75,6 +89,65 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         } finally {
             this.abortController = new AbortController();
         }
+    }
+
+    private scheduleSpawnNicknameBackfill(callId: string, output: unknown): void {
+        const outputRecord = asRecord(output);
+        if (!outputRecord || asString(outputRecord.nickname)) {
+            return;
+        }
+
+        const agentIds = Array.isArray(outputRecord.agent_ids) ? outputRecord.agent_ids : [];
+        const agentId = asString(outputRecord.agent_id)
+            ?? agentIds.find((value: unknown): value is string => typeof value === 'string' && value.length > 0)
+            ?? null;
+        if (!agentId || this.spawnNicknameBackfillCallIds.has(callId)) {
+            return;
+        }
+
+        this.spawnNicknameBackfillCallIds.add(callId);
+        let attempts = 0;
+        const maxAttempts = 20;
+
+        const scheduleAttempt = (delayMs: number) => {
+            const timer = setTimeout(() => {
+                this.spawnNicknameBackfillTimers.delete(timer);
+                void (async () => {
+                    if (this.shouldExit) {
+                        return;
+                    }
+
+                    attempts += 1;
+                    const nickname = await resolveCodexSubagentNickname(agentId);
+                    if (nickname) {
+                        this.session.sendAgentMessage({
+                            type: 'tool-call-result',
+                            callId,
+                            output: {
+                                ...outputRecord,
+                                nickname
+                            },
+                            id: randomUUID()
+                        });
+                        return;
+                    }
+
+                    if (attempts < maxAttempts) {
+                        scheduleAttempt(500);
+                        return;
+                    }
+
+                    this.spawnNicknameBackfillCallIds.delete(callId);
+                })().catch((error) => {
+                    logger.debug('[Codex] Failed to backfill subagent nickname', error);
+                    this.spawnNicknameBackfillCallIds.delete(callId);
+                });
+            }, delayMs);
+            timer.unref?.();
+            this.spawnNicknameBackfillTimers.add(timer);
+        };
+
+        scheduleAttempt(0);
     }
 
     private async handleExitFromUi(): Promise<void> {
@@ -163,17 +236,6 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 return joined.length > 0 ? joined : undefined;
             }
             return undefined;
-        };
-
-        const asRecord = (value: unknown): Record<string, unknown> | null => {
-            if (!value || typeof value !== 'object') {
-                return null;
-            }
-            return value as Record<string, unknown>;
-        };
-
-        const asString = (value: unknown): string | null => {
-            return typeof value === 'string' && value.length > 0 ? value : null;
         };
 
         const extractParentToolCallId = (value: unknown): string | null => {
@@ -293,6 +355,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         let turnInFlight = false;
         let allowAnonymousTerminalEvent = false;
         let lastRootSessionTitle: string | null = null;
+        const toolNameByCallId = new Map<string, string>();
 
         await replayExplicitResumeTranscript();
 
@@ -520,6 +583,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 const callId = asString(msg.call_id ?? msg.callId);
                 const name = asString(msg.name);
                 if (callId && name) {
+                    toolNameByCallId.set(callId, name);
                     const payload: Record<string, unknown> = {
                         type: 'tool-call',
                         name,
@@ -550,6 +614,9 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                         payload.parentToolCallId = parentToolCallId;
                     }
                     session.sendAgentMessage(payload);
+                    if (toolNameByCallId.get(callId) === 'CodexSpawnAgent') {
+                        this.scheduleSpawnNicknameBackfill(callId, msg.output);
+                    }
                 }
             }
             if (msgType === 'patch_apply_begin') {
@@ -910,6 +977,11 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         this.permissionHandler?.reset();
         this.reasoningProcessor?.abort();
         this.diffProcessor?.reset();
+        for (const timer of this.spawnNicknameBackfillTimers) {
+            clearTimeout(timer);
+        }
+        this.spawnNicknameBackfillTimers.clear();
+        this.spawnNicknameBackfillCallIds.clear();
         this.permissionHandler = null;
         this.reasoningProcessor = null;
         this.diffProcessor = null;

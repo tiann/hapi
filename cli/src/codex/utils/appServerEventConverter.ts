@@ -440,6 +440,7 @@ export class AppServerEventConverter {
                         const receiverThreadIds = Array.isArray(item.receiverThreadIds)
                             ? item.receiverThreadIds.filter((value): value is string => typeof value === 'string' && value.length > 0)
                             : [];
+                        const nickname = asString(item.nickname ?? item.agentNickname ?? item.agent_nickname);
                         for (const receiverThreadId of receiverThreadIds) {
                             this.childThreadIdToParentToolCallId.set(receiverThreadId, itemId);
                         }
@@ -450,6 +451,7 @@ export class AppServerEventConverter {
                             output: {
                                 agent_id: receiverThreadIds[0] ?? null,
                                 agent_ids: receiverThreadIds,
+                                ...(nickname ? { nickname } : {}),
                                 agentsStates: item.agentsStates
                             }
                         });

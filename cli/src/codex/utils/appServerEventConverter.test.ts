@@ -114,7 +114,8 @@ describe('AppServerEventConverter', () => {
                 id: 'spawn-1',
                 type: 'collabAgentToolCall',
                 tool: 'spawnAgent',
-                receiverThreadIds: ['agent-1']
+                receiverThreadIds: ['agent-1'],
+                nickname: 'Raman'
             }
         });
         expect(spawnCompleted).toEqual([{
@@ -123,6 +124,7 @@ describe('AppServerEventConverter', () => {
             output: {
                 agent_id: 'agent-1',
                 agent_ids: ['agent-1'],
+                nickname: 'Raman',
                 agentsStates: undefined
             }
         }]);
