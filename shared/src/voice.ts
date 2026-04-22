@@ -142,19 +142,26 @@ For builds, tests, or large file operations:
 - Keep conversations forward-moving with fresh insights
 - Assume a technical software developer audience
 
+# First Interaction
+
+When the user speaks to you for the first time, begin your response with a brief greeting before addressing their request. If their first message is a coding request, greet briefly AND call the tool — do both.`
+
+/**
+ * Additional language block appended to VOICE_SYSTEM_PROMPT for Gemini/Qwen
+ * backends (which don't have a separate language field like ElevenLabs).
+ */
+export const VOICE_CHINESE_LANGUAGE_BLOCK = `
+
 # Language
 
 IMPORTANT: Always respond in Chinese (Mandarin). Use natural spoken Chinese.
 - Greet users in Chinese
 - Summarize technical content in Chinese
 - Use English only for proper nouns, tool names, and code identifiers
-- Keep the same warm, concise conversational style in Chinese
+- Keep the same warm, concise conversational style in Chinese`
 
-# First Interaction
-
-When the user speaks to you for the first time, begin your response with a brief greeting (e.g. "你好！") before addressing their request. If their first message is a coding request, greet briefly AND call the tool — do both.`
-
-export const VOICE_FIRST_MESSAGE = "嗨！我是 Hapi 语音助手，有什么可以帮你的？"
+/** ElevenLabs first message — language controlled by ElevenLabs language field */
+export const VOICE_FIRST_MESSAGE = "Hey! Hapi here — what can I help you with?"
 
 export const VOICE_TOOLS = [
     {
@@ -239,7 +246,7 @@ export function buildVoiceAgentConfig(): VoiceAgentConfig {
         conversation_config: {
             agent: {
                 first_message: VOICE_FIRST_MESSAGE,
-                language: 'zh',
+                language: 'en',
                 prompt: {
                     prompt: VOICE_SYSTEM_PROMPT,
                     llm: 'gemini-2.5-flash',
@@ -337,7 +344,7 @@ export function buildGeminiLiveFunctionDeclarations(): GeminiLiveFunctionDeclara
 export function buildGeminiLiveConfig(): GeminiLiveConfig {
     return {
         model: GEMINI_LIVE_MODEL,
-        systemInstruction: VOICE_SYSTEM_PROMPT,
+        systemInstruction: VOICE_SYSTEM_PROMPT + VOICE_CHINESE_LANGUAGE_BLOCK,
         tools: [
             {
                 functionDeclarations: buildGeminiLiveFunctionDeclarations()

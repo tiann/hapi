@@ -151,7 +151,7 @@ export function createVoiceRoutes(): Hono<WebAppEnv> {
         return c.json({
             allowed: true,
             apiKey: 'proxied', // Dummy — key is handled server-side
-            wsUrl: process.env.GEMINI_LIVE_WS_URL || wsProxyUrl,
+            wsUrl: wsProxyUrl, // Always proxy — env WS URLs are upstream-only (server-side)
             baseUrl: process.env.GEMINI_API_BASE || undefined
         })
     })
@@ -173,7 +173,7 @@ export function createVoiceRoutes(): Hono<WebAppEnv> {
 
         return c.json({
             allowed: true,
-            wsUrl: process.env.QWEN_REALTIME_WS_URL || wsProxyUrl
+            wsUrl: wsProxyUrl // Always proxy — env WS URLs are upstream-only (server-side)
         })
     })
 
