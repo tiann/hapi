@@ -431,14 +431,27 @@ export class ApiSessionClient extends EventEmitter {
     }
 
     sendAgentMessage(body: unknown): void {
+        const bodyRecord = body && typeof body === 'object' && !Array.isArray(body)
+            ? body as Record<string, unknown>
+            : null
+        const bodyMeta = bodyRecord && bodyRecord.meta && typeof bodyRecord.meta === 'object' && !Array.isArray(bodyRecord.meta)
+            ? bodyRecord.meta as Record<string, unknown>
+            : null
+        const data = bodyMeta && bodyRecord
+            ? (() => {
+                const { meta: _meta, ...rest } = bodyRecord
+                return rest
+            })()
+            : body
         const content = {
             role: 'agent',
             content: {
                 type: AGENT_MESSAGE_PAYLOAD_TYPE,
-                data: body
+                data
             },
             meta: {
-                sentFrom: 'cli'
+                sentFrom: 'cli',
+                ...(bodyMeta ?? {})
             }
         }
         this.socket.emit('message', {

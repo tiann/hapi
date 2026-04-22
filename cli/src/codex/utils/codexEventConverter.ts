@@ -17,27 +17,39 @@ type CodexSidechainMeta = {
     parentToolCallId: string;
 };
 
+type CodexMessageMeta = {
+    subagent?: {
+        kind: 'spawn';
+        sidechainKey: string;
+        prompt?: string;
+    };
+};
+
 export type CodexMessage = {
     type: 'message';
     message: string;
     id: string;
+    meta?: CodexMessageMeta;
     isSidechain?: true;
     parentToolCallId?: string;
 } | {
     type: 'reasoning';
     message: string;
     id: string;
+    meta?: CodexMessageMeta;
     isSidechain?: true;
     parentToolCallId?: string;
 } | {
     type: 'reasoning-delta';
     delta: string;
+    meta?: CodexMessageMeta;
     isSidechain?: true;
     parentToolCallId?: string;
 } | {
     type: 'token_count';
     info: Record<string, unknown>;
     id: string;
+    meta?: CodexMessageMeta;
     isSidechain?: true;
     parentToolCallId?: string;
 } | {
@@ -46,6 +58,7 @@ export type CodexMessage = {
     callId: string;
     input: unknown;
     id: string;
+    meta?: CodexMessageMeta;
     isSidechain?: true;
     parentToolCallId?: string;
 } | {
@@ -53,6 +66,7 @@ export type CodexMessage = {
     callId: string;
     output: unknown;
     id: string;
+    meta?: CodexMessageMeta;
     isSidechain?: true;
     parentToolCallId?: string;
 };
@@ -93,6 +107,38 @@ function parseArguments(value: unknown): unknown {
     }
 
     return value;
+}
+
+function extractSpawnPrompt(input: unknown): string | undefined {
+    const record = asRecord(input);
+    if (!record) {
+        return undefined;
+    }
+
+    return asString(record.message)
+        ?? asString(record.prompt)
+        ?? asString(record.text)
+        ?? asString(record.content)
+        ?? undefined;
+}
+
+function normalizeCodexToolName(name: string): string {
+    switch (name) {
+        case 'exec_command':
+            return 'CodexBash';
+        case 'write_stdin':
+            return 'CodexWriteStdin';
+        case 'spawn_agent':
+            return 'CodexSpawnAgent';
+        case 'wait_agent':
+            return 'CodexWaitAgent';
+        case 'send_input':
+            return 'CodexSendInput';
+        case 'close_agent':
+            return 'CodexCloseAgent';
+        default:
+            return name;
+    }
 }
 
 function extractCallId(payload: Record<string, unknown>): string | null {
@@ -247,13 +293,25 @@ export function convertCodexEvent(rawEvent: unknown): CodexConversionResult | nu
             if (!name || !callId) {
                 return null;
             }
+            const input = parseArguments(payloadRecord.arguments);
             return {
                 message: applySidechainMeta({
                     type: 'tool-call',
-                    name,
+                    name: normalizeCodexToolName(name),
                     callId,
-                    input: parseArguments(payloadRecord.arguments),
-                    id: randomUUID()
+                    input,
+                    id: randomUUID(),
+                    ...(name === 'spawn_agent'
+                        ? {
+                            meta: {
+                                subagent: {
+                                    kind: 'spawn',
+                                    sidechainKey: callId,
+                                    ...(extractSpawnPrompt(input) ? { prompt: extractSpawnPrompt(input) } : {})
+                                }
+                            }
+                        }
+                        : {})
                 }, sidechainMeta)
             };
         }

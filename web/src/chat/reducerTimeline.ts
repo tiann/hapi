@@ -12,6 +12,9 @@ export function reduceTimeline(
         consumedGroupIds: Set<string>
         titleChangesByToolUseId: Map<string, string>
         emittedTitleChangeToolUseIds: Set<string>
+    },
+    options?: {
+        renderSidechainPromptAsUserText?: boolean
     }
 ): { blocks: ChatBlock[]; toolBlocksById: Map<string, ToolCallBlock>; hasReadyEvent: boolean } {
     const blocks: ChatBlock[] = []
@@ -206,10 +209,10 @@ export function reduceTimeline(
                         block.tool.startedAt = msg.createdAt
                     }
 
-                    if (c.name === 'Task' && !context.consumedGroupIds.has(msg.id)) {
-                        const sidechain = context.groups.get(msg.id) ?? null
+                    if (!context.consumedGroupIds.has(c.id)) {
+                        const sidechain = context.groups.get(c.id) ?? null
                         if (sidechain && sidechain.length > 0) {
-                            context.consumedGroupIds.add(msg.id)
+                            context.consumedGroupIds.add(c.id)
                             const child = reduceTimeline(sidechain, context)
                             hasReadyEvent = hasReadyEvent || child.hasReadyEvent
                             block.children = child.blocks
@@ -286,6 +289,17 @@ export function reduceTimeline(
                                 meta: msg.meta
                             })
                         }
+                        continue
+                    }
+                    if (options?.renderSidechainPromptAsUserText) {
+                        blocks.push({
+                            kind: 'user-text',
+                            id: `${msg.id}:${idx}`,
+                            localId: msg.localId,
+                            createdAt: msg.createdAt,
+                            text: c.prompt,
+                            meta: msg.meta
+                        })
                     }
                     // Skip rendering prompt text (already in parent Task tool card or not user-visible)
                     continue

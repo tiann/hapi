@@ -85,6 +85,80 @@ describe('AppServerEventConverter', () => {
         }]);
     });
 
+    it('maps Codex collab spawn/wait items and links child thread events to the spawn call', () => {
+        const converter = new AppServerEventConverter();
+
+        const spawnStarted = converter.handleNotification('item/started', {
+            item: {
+                id: 'spawn-1',
+                type: 'collabAgentToolCall',
+                tool: 'spawnAgent',
+                prompt: 'First child prompt',
+                model: 'gpt-5.4',
+                reasoningEffort: 'xhigh'
+            }
+        });
+        expect(spawnStarted).toEqual([{
+            type: 'tool_call',
+            call_id: 'spawn-1',
+            name: 'CodexSpawnAgent',
+            input: {
+                message: 'First child prompt',
+                model: 'gpt-5.4',
+                reasoningEffort: 'xhigh'
+            }
+        }]);
+
+        const spawnCompleted = converter.handleNotification('item/completed', {
+            item: {
+                id: 'spawn-1',
+                type: 'collabAgentToolCall',
+                tool: 'spawnAgent',
+                receiverThreadIds: ['agent-1']
+            }
+        });
+        expect(spawnCompleted).toEqual([{
+            type: 'tool_call_result',
+            call_id: 'spawn-1',
+            output: {
+                agent_id: 'agent-1',
+                agent_ids: ['agent-1'],
+                agentsStates: undefined
+            }
+        }]);
+
+        const childMessage = converter.handleNotification('item/completed', {
+            threadId: 'agent-1',
+            item: {
+                id: 'child-msg-1',
+                type: 'agentMessage',
+                text: 'child answer'
+            }
+        });
+        expect(childMessage).toEqual([{
+            type: 'agent_message',
+            message: 'child answer',
+            parent_tool_call_id: 'spawn-1'
+        }]);
+
+        const waitStarted = converter.handleNotification('item/started', {
+            item: {
+                id: 'wait-1',
+                type: 'collabAgentToolCall',
+                tool: 'wait',
+                receiverThreadIds: ['agent-1']
+            }
+        });
+        expect(waitStarted).toEqual([{
+            type: 'tool_call',
+            call_id: 'wait-1',
+            name: 'CodexWaitAgent',
+            input: {
+                targets: ['agent-1']
+            }
+        }]);
+    });
+
     it('maps reasoning deltas', () => {
         const converter = new AppServerEventConverter();
 

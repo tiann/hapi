@@ -81,6 +81,7 @@ export type NormalizedMessage = ({
     localId: string | null
     createdAt: number
     isSidechain: boolean
+    sidechainKey?: string
     meta?: unknown
     usage?: UsageData
     status?: MessageStatus
@@ -98,6 +99,24 @@ export type ToolPermission = {
     date?: number
     createdAt?: number | null
     completedAt?: number | null
+}
+
+export type CodexAgentLifecycleStatus = 'running' | 'waiting' | 'completed' | 'error' | 'closed'
+
+export type CodexAgentLifecycleAction = {
+    type: 'wait' | 'send' | 'close'
+    createdAt: number
+    summary: string
+}
+
+export type CodexAgentLifecycle = {
+    kind: 'codex-agent-lifecycle'
+    agentId: string
+    nickname?: string
+    status: CodexAgentLifecycleStatus
+    latestText?: string
+    actions: CodexAgentLifecycleAction[]
+    hiddenToolIds: string[]
 }
 
 export type ChatToolCall = {
@@ -168,6 +187,7 @@ export type ToolCallBlock = {
     createdAt: number
     tool: ChatToolCall
     children: ChatBlock[]
+    lifecycle?: CodexAgentLifecycle
     meta?: unknown
 }
 
