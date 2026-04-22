@@ -28,6 +28,7 @@ interface QwenState {
     statusCallback: StatusCallback | null
     apiKey: string | null
     wsBaseUrl: string | null
+    micMuted: boolean
 }
 
 const state: QwenState = {
@@ -37,7 +38,8 @@ const state: QwenState = {
     playbackContext: null,
     statusCallback: null,
     apiKey: null,
-    wsBaseUrl: null
+    wsBaseUrl: null,
+    micMuted: false
 }
 
 let eventCounter = 0
@@ -338,6 +340,11 @@ function startAudioCapture(playbackContext: AudioContext): void {
             state.statusCallback?.('error', 'Microphone error')
         }
     )
+
+    // Apply initial mute state — the React effect may have run before the recorder existed
+    if (state.micMuted) {
+        state.recorder.setMuted(true)
+    }
 }
 
 // --- React component ---
@@ -394,7 +401,9 @@ export function QwenVoiceSession({
         }
     }, [api]) // eslint-disable-line react-hooks/exhaustive-deps
 
+    // Sync mic mute state — also persist to module state so startAudioCapture can apply it
     useEffect(() => {
+        state.micMuted = micMuted
         if (state.recorder) {
             state.recorder.setMuted(micMuted)
         }
