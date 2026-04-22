@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 import type { SyncEvent } from '../sync/syncEngine'
-import { extractMessageEventType } from './eventParsing'
+import { extractAttentionReason, extractMessageEventType, isAgentMessageEvent } from './eventParsing'
 
 describe('extractMessageEventType', () => {
     it('returns the event type from a role-wrapped envelope', () => {
@@ -74,5 +74,123 @@ describe('extractMessageEventType', () => {
         }
 
         expect(extractMessageEventType(event)).toBeNull()
+    })
+
+    it('returns attention reason for supported failure and interruption event types', () => {
+        const makeEvent = (type: string): SyncEvent => ({
+            type: 'message-received',
+            sessionId: 'session-1',
+            message: {
+                id: `message-${type}`,
+                seq: 10,
+                localId: null,
+                createdAt: 0,
+                content: {
+                    role: 'agent',
+                    content: {
+                        id: `event-${type}`,
+                        type: 'event',
+                        data: { type }
+                    }
+                }
+            }
+        })
+
+        expect(extractAttentionReason(makeEvent('error'))).toBe('failed')
+        expect(extractAttentionReason(makeEvent('failed'))).toBe('failed')
+        expect(extractAttentionReason(makeEvent('task-failed'))).toBe('failed')
+        expect(extractAttentionReason(makeEvent('aborted'))).toBe('interrupted')
+        expect(extractAttentionReason(makeEvent('interrupted'))).toBe('interrupted')
+    })
+
+    it('returns attention reason from Codex terminal payloads wrapped by sendAgentMessage', () => {
+        const makeCodexTerminalEvent = (type: string): SyncEvent => ({
+            type: 'message-received',
+            sessionId: 'session-1',
+            message: {
+                id: `codex-${type}`,
+                seq: 10,
+                localId: null,
+                createdAt: 0,
+                content: {
+                    role: 'agent',
+                    content: {
+                        type: 'codex',
+                        data: { type }
+                    }
+                }
+            }
+        })
+
+        expect(extractMessageEventType(makeCodexTerminalEvent('task_failed'))).toBe('task_failed')
+        expect(extractAttentionReason(makeCodexTerminalEvent('task_failed'))).toBe('failed')
+        expect(extractAttentionReason(makeCodexTerminalEvent('turn_aborted'))).toBe('interrupted')
+    })
+
+    it('returns null attention reason for ready and ordinary message events', () => {
+        const readyEvent: SyncEvent = {
+            type: 'message-received',
+            sessionId: 'session-1',
+            message: {
+                id: 'message-ready',
+                seq: 11,
+                localId: null,
+                createdAt: 0,
+                content: {
+                    role: 'agent',
+                    content: {
+                        id: 'event-ready',
+                        type: 'event',
+                        data: { type: 'ready' }
+                    }
+                }
+            }
+        }
+
+        const textEvent: SyncEvent = {
+            type: 'message-received',
+            sessionId: 'session-1',
+            message: {
+                id: 'message-text',
+                seq: 12,
+                localId: null,
+                createdAt: 0,
+                content: {
+                    role: 'agent',
+                    content: { type: 'text', text: 'done' }
+                }
+            }
+        }
+
+        expect(extractAttentionReason(readyEvent)).toBeNull()
+        expect(extractAttentionReason(textEvent)).toBeNull()
+    })
+
+    it('detects agent message events without treating user messages as agent activity', () => {
+        const agentEvent: SyncEvent = {
+            type: 'message-received',
+            sessionId: 'session-1',
+            message: {
+                id: 'agent-message',
+                seq: 13,
+                localId: null,
+                createdAt: 0,
+                content: { role: 'agent', content: { type: 'text', text: 'done' } }
+            }
+        }
+        const userEvent: SyncEvent = {
+            type: 'message-received',
+            sessionId: 'session-1',
+            message: {
+                id: 'user-message',
+                seq: 14,
+                localId: null,
+                createdAt: 0,
+                content: { role: 'user', content: { type: 'text', text: 'hello' } }
+            }
+        }
+
+        expect(isAgentMessageEvent(agentEvent)).toBe(true)
+        expect(isAgentMessageEvent(userEvent)).toBe(false)
     })
 })
