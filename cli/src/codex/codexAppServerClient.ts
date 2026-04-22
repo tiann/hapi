@@ -1,6 +1,44 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { logger } from '@/ui/logger';
 import { killProcessByChildProcess } from '@/utils/process';
+
+const MAX_STDERR_TAIL_CHARS = 4000;
+
+export type CodexErrorStage = 'app-server-spawn' | 'app-server-request' | 'process-exit' | 'protocol' | 'response-error';
+
+export class CodexAppServerError extends Error {
+    readonly stage: CodexErrorStage;
+    readonly stderrTail?: string;
+    readonly exitCode?: number | null;
+    readonly signal?: NodeJS.Signals | null;
+    readonly errorCode?: number;
+    readonly retryable?: boolean;
+
+    constructor(message: string, options: {
+        stage: CodexErrorStage;
+        stderrTail?: string;
+        exitCode?: number | null;
+        signal?: NodeJS.Signals | null;
+        errorCode?: number;
+        retryable?: boolean;
+        cause?: unknown;
+    }) {
+        super(message, options.cause !== undefined ? { cause: options.cause } : undefined);
+        this.name = 'CodexAppServerError';
+        this.stage = options.stage;
+        this.stderrTail = options.stderrTail;
+        this.exitCode = options.exitCode;
+        this.signal = options.signal;
+        this.errorCode = options.errorCode;
+        this.retryable = options.retryable;
+    }
+}
+
+function appendTail(current: string, chunk: string): string {
+    if (!chunk) return current;
+    const combined = current + chunk;
+    return combined.length > MAX_STDERR_TAIL_CHARS ? combined.slice(-MAX_STDERR_TAIL_CHARS) : combined;
+}
 import type {
     InitializeParams,
     InitializeResponse,
@@ -65,6 +103,7 @@ export class CodexAppServerClient {
     private readonly requestHandlers = new Map<string, RequestHandler>();
     private notificationHandler: ((method: string, params: unknown) => void) | null = null;
     private protocolError: Error | null = null;
+    private stderrTail = '';
 
     static readonly DEFAULT_TIMEOUT_MS = 14 * 24 * 60 * 60 * 1000;
 
@@ -88,16 +127,23 @@ export class CodexAppServerClient {
 
         this.process.stderr.setEncoding('utf8');
         this.process.stderr.on('data', (chunk) => {
-            const text = chunk.toString().trim();
-            if (text.length > 0) {
-                logger.debug(`[CodexAppServer][stderr] ${text}`);
+            const text = chunk.toString();
+            this.stderrTail = appendTail(this.stderrTail, text);
+            const trimmed = text.trim();
+            if (trimmed.length > 0) {
+                logger.debug(`[CodexAppServer][stderr] ${trimmed}`);
             }
         });
 
         this.process.on('exit', (code, signal) => {
             const message = `Codex app-server exited (code=${code ?? 'null'}, signal=${signal ?? 'null'})`;
             logger.debug(message);
-            this.rejectAllPending(new Error(message));
+            this.rejectAllPending(new CodexAppServerError(message, {
+                stage: 'process-exit',
+                stderrTail: this.getStderrTail(),
+                exitCode: code,
+                signal
+            }));
             this.connected = false;
             this.resetParserState();
             this.process = null;
@@ -106,9 +152,13 @@ export class CodexAppServerClient {
         this.process.on('error', (error) => {
             logger.debug('[CodexAppServer] Process error', error);
             const message = error instanceof Error ? error.message : String(error);
-            this.rejectAllPending(new Error(
+            this.rejectAllPending(new CodexAppServerError(
                 `Failed to spawn codex app-server: ${message}. Is it installed and on PATH?`,
-                { cause: error }
+                {
+                    stage: 'app-server-spawn',
+                    stderrTail: this.getStderrTail(),
+                    cause: error
+                }
             ));
             this.connected = false;
             this.resetParserState();
@@ -180,7 +230,10 @@ export class CodexAppServerClient {
         } catch (error) {
             logger.debug('[CodexAppServer] Error while stopping process', error);
         } finally {
-            this.rejectAllPending(new Error('Codex app-server disconnected'));
+            this.rejectAllPending(new CodexAppServerError('Codex app-server disconnected', {
+                stage: 'process-exit',
+                stderrTail: this.getStderrTail()
+            }));
             this.connected = false;
             this.resetParserState();
         }
@@ -240,7 +293,10 @@ export class CodexAppServerClient {
                     if (this.pending.has(id)) {
                         this.pending.delete(id);
                         cleanup();
-                        reject(new Error(`Codex app-server request '${method}' timed out after ${timeoutMs}ms`));
+                        reject(new CodexAppServerError(`Codex app-server request '${method}' timed out after ${timeoutMs}ms`, {
+                            stage: 'app-server-request',
+                            stderrTail: this.getStderrTail()
+                        }));
                     }
                 }, timeoutMs);
                 timeout.unref();
@@ -297,7 +353,10 @@ export class CodexAppServerClient {
                 return;
             }
         } catch (error) {
-            const protocolError = new Error('Failed to parse JSON from codex app-server');
+            const protocolError = new CodexAppServerError('Failed to parse JSON from codex app-server', {
+                stage: 'protocol',
+                stderrTail: this.getStderrTail()
+            });
             this.protocolError = protocolError;
             logger.debug('[CodexAppServer] Failed to parse JSON line', { line, error });
             this.rejectAllPending(protocolError);
@@ -382,7 +441,12 @@ export class CodexAppServerClient {
         this.pending.delete(response.id);
 
         if (response.error) {
-            pending.reject(new Error(response.error.message));
+            pending.reject(new CodexAppServerError(response.error.message, {
+                stage: 'response-error',
+                stderrTail: this.getStderrTail(),
+                errorCode: typeof response.error.code === 'number' ? response.error.code : undefined,
+                retryable: this.isRetryableError(response.error)
+            }));
             return;
         }
 
@@ -397,6 +461,17 @@ export class CodexAppServerClient {
     private resetParserState(): void {
         this.buffer = '';
         this.protocolError = null;
+        this.stderrTail = '';
+    }
+
+    getStderrTail(): string | undefined {
+        const trimmed = this.stderrTail.trim();
+        return trimmed.length > 0 ? trimmed : undefined;
+    }
+
+    private isRetryableError(error: { code?: number; message: string; data?: unknown }): boolean {
+        const haystack = [error.message, typeof error.data === 'string' ? error.data : ''].join('\n').toLowerCase();
+        return haystack.includes('high demand') || haystack.includes('rate limit') || haystack.includes('temporar');
     }
 
     private rejectAllPending(error: Error): void {

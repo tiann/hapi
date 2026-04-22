@@ -176,10 +176,15 @@ export class AppServerEventConverter {
                 event.turn_id = turnId;
             }
             if (msgType === 'task_failed') {
-                const error = asString(msg.error ?? msg.message ?? asRecord(msg.error)?.message);
-                if (error) {
-                    event.error = error;
-                }
+                const errorRecord = asRecord(msg.error);
+                const error = asString(msg.error ?? msg.message ?? errorRecord?.message);
+                const stderr = asString(msg.stderr ?? errorRecord?.stderr);
+                const exitCode = asNumber(msg.exit_code ?? msg.exitCode ?? errorRecord?.exit_code ?? errorRecord?.exitCode);
+                const retryable = asBoolean(msg.retryable ?? errorRecord?.retryable);
+                if (error) event.error = error;
+                if (stderr) event.stderr = stderr;
+                if (exitCode !== null) event.exit_code = exitCode;
+                if (retryable !== null) event.retryable = retryable;
             }
             return [event];
         }
@@ -278,7 +283,11 @@ export class AppServerEventConverter {
             const statusRaw = asString(paramsRecord.status ?? turn.status);
             const status = statusRaw?.toLowerCase();
             const turnId = asString(turn.turnId ?? turn.turn_id ?? turn.id);
-            const errorMessage = asString(paramsRecord.error ?? paramsRecord.message ?? paramsRecord.reason);
+            const errorRecord = asRecord(paramsRecord.error);
+            const errorMessage = asString(paramsRecord.error ?? paramsRecord.message ?? paramsRecord.reason ?? errorRecord?.message);
+            const stderr = asString(paramsRecord.stderr ?? errorRecord?.stderr);
+            const exitCode = asNumber(paramsRecord.exit_code ?? paramsRecord.exitCode ?? errorRecord?.exit_code ?? errorRecord?.exitCode);
+            const retryable = asBoolean(paramsRecord.retryable ?? errorRecord?.retryable);
 
             if (status === 'interrupted' || status === 'cancelled' || status === 'canceled') {
                 events.push({ type: 'turn_aborted', ...(turnId ? { turn_id: turnId } : {}) });
@@ -286,7 +295,7 @@ export class AppServerEventConverter {
             }
 
             if (status === 'failed' || status === 'error') {
-                events.push({ type: 'task_failed', ...(turnId ? { turn_id: turnId } : {}), ...(errorMessage ? { error: errorMessage } : {}) });
+                events.push({ type: 'task_failed', ...(turnId ? { turn_id: turnId } : {}), ...(errorMessage ? { error: errorMessage } : {}), ...(stderr ? { stderr } : {}), ...(exitCode !== null ? { exit_code: exitCode } : {}), ...(retryable !== null ? { retryable } : {}) });
                 return events;
             }
 
@@ -311,9 +320,12 @@ export class AppServerEventConverter {
         if (method === 'error') {
             const willRetry = asBoolean(paramsRecord.will_retry ?? paramsRecord.willRetry) ?? false;
             if (willRetry) return events;
-            const message = asString(paramsRecord.message) ?? asString(asRecord(paramsRecord.error)?.message);
-            if (message) {
-                events.push({ type: 'task_failed', error: message });
+            const errorRecord = asRecord(paramsRecord.error);
+            const message = asString(paramsRecord.message) ?? asString(errorRecord?.message);
+            const stderr = asString(paramsRecord.stderr ?? errorRecord?.stderr);
+            const exitCode = asNumber(paramsRecord.exit_code ?? paramsRecord.exitCode ?? errorRecord?.exit_code ?? errorRecord?.exitCode);
+            if (message || stderr) {
+                events.push({ type: 'task_failed', ...(message ? { error: message } : {}), ...(stderr ? { stderr } : {}), ...(exitCode !== null ? { exit_code: exitCode } : {}) });
             }
             return events;
         }

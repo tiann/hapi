@@ -1,7 +1,7 @@
 import React from 'react';
 import { randomUUID } from 'node:crypto';
 
-import { CodexAppServerClient } from './codexAppServerClient';
+import { CodexAppServerClient, CodexAppServerError } from './codexAppServerClient';
 import { CodexPermissionHandler } from './utils/permissionHandler';
 import { ReasoningProcessor } from './utils/reasoningProcessor';
 import { DiffProcessor } from './utils/diffProcessor';
@@ -24,6 +24,25 @@ import {
 
 type HappyServer = Awaited<ReturnType<typeof buildHapiMcpBridge>>['server'];
 type QueuedMessage = { message: string; mode: EnhancedMode; isolate: boolean; hash: string };
+
+function formatCodexErrorForUser(error: unknown): string {
+    if (!(error instanceof Error)) {
+        return String(error);
+    }
+
+    const lines: string[] = [error.message];
+    if (error instanceof CodexAppServerError) {
+        const details: string[] = [];
+        details.push(`stage=${error.stage}`);
+        if (typeof error.errorCode === 'number') details.push(`errorCode=${error.errorCode}`);
+        if (typeof error.exitCode === 'number') details.push(`exitCode=${error.exitCode}`);
+        if (error.signal) details.push(`signal=${error.signal}`);
+        if (error.retryable) details.push('retryable=true');
+        if (details.length > 0) lines.push(`(${details.join(', ')})`);
+        if (error.stderrTail) lines.push(`stderr:\n${error.stderrTail}`);
+    }
+    return lines.join('\n');
+}
 
 class CodexRemoteLauncher extends RemoteLauncherBase {
     private readonly session: CodexSession;
@@ -268,11 +287,17 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             }
 
             if (isTerminalEvent) {
+                const hasFailureDetails = msgType === 'task_failed' && Boolean(
+                    asString(msg.error) ||
+                    asString(msg.stderr) ||
+                    typeof msg.exit_code === 'number'
+                );
                 if (shouldIgnoreTerminalEvent({
                     eventTurnId,
                     currentTurnId: this.currentTurnId,
                     turnInFlight,
-                    allowAnonymousTerminalEvent
+                    allowAnonymousTerminalEvent,
+                    acceptAnonymousFailureWithDetails: hasFailureDetails
                 })) {
                     logger.debug(
                         `[Codex] Ignoring terminal event ${msgType} without matching turn context; ` +
@@ -314,7 +339,15 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 messageBuffer.addMessage('Turn aborted', 'status');
             } else if (msgType === 'task_failed') {
                 const error = asString(msg.error);
-                messageBuffer.addMessage(error ? `Task failed: ${error}` : 'Task failed', 'status');
+                const stderr = asString(msg.stderr);
+                const exitCode = typeof msg.exit_code === 'number' ? msg.exit_code : null;
+                const retryable = msg.retryable === true;
+                const detail = [error, stderr ? `stderr: ${stderr}` : null, exitCode !== null ? `exitCode=${exitCode}` : null, retryable ? 'retryable=true' : null]
+                    .filter((value): value is string => typeof value === 'string' && value.length > 0)
+                    .join(' | ');
+                const taskFailedMessage = detail ? `Task failed: ${detail}` : 'Task failed';
+                messageBuffer.addMessage(taskFailedMessage, 'status');
+                session.sendSessionEvent({ type: 'message', message: taskFailedMessage });
             }
 
             if (msgType === 'task_started') {
@@ -711,8 +744,9 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     messageBuffer.addMessage('Aborted by user', 'status');
                     session.sendSessionEvent({ type: 'message', message: 'Aborted by user' });
                 } else {
-                    messageBuffer.addMessage('Process exited unexpectedly', 'status');
-                    session.sendSessionEvent({ type: 'message', message: 'Process exited unexpectedly' });
+                    const detail = formatCodexErrorForUser(error);
+                    messageBuffer.addMessage(`Codex error: ${detail.split('\n')[0]}`, 'status');
+                    session.sendSessionEvent({ type: 'message', message: `Codex error:\n${detail}` });
                     this.currentTurnId = null;
                     this.currentThreadId = null;
                     hasThread = false;

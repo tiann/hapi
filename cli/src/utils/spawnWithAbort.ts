@@ -37,6 +37,13 @@ export async function spawnWithAbort(options: SpawnWithAbortOptions): Promise<vo
     const abortSignals = options.abortSignals ?? DEFAULT_ABORT_SIGNALS;
     const stdio = options.stdio ?? ['inherit', 'inherit', 'inherit'];
     const logPrefix = options.logLabel ? `[${options.logLabel}] ` : '';
+    let stderrTail = '';
+    const appendStderrTail = (chunk: Buffer | string) => {
+        const text = chunk.toString();
+        if (!text) return;
+        const combined = stderrTail + text;
+        stderrTail = combined.length > 4000 ? combined.slice(-4000) : combined;
+    };
 
     const logDebug = (message: string, ...args: unknown[]) => {
         logger.debug(`${logPrefix}${message}`, ...args);
@@ -55,6 +62,12 @@ export async function spawnWithAbort(options: SpawnWithAbortOptions): Promise<vo
         });
 
         let abortKillTimeout: NodeJS.Timeout | null = null;
+
+        if (child.stderr) {
+            child.stderr.on('data', (chunk) => {
+                appendStderrTail(chunk);
+            });
+        }
 
         const abortHandler = () => {
             if (abortKillTimeout) {
@@ -141,7 +154,9 @@ export async function spawnWithAbort(options: SpawnWithAbortOptions): Promise<vo
                 return;
             }
             if (typeof code === 'number' && code !== 0) {
-                reject(new Error(`Process exited with code: ${code}`));
+                const trimmed = stderrTail.trim();
+                const suffix = trimmed ? `\nStderr:\n${trimmed}` : '';
+                reject(new Error(`Process exited with code: ${code}${suffix}`));
                 return;
             }
             resolve();

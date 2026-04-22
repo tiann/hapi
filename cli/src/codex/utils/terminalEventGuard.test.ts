@@ -44,6 +44,28 @@ describe('shouldIgnoreTerminalEvent', () => {
         expect(ignored).toBe(true);
     });
 
+    it('accepts anonymous failed terminal event with details even when current turn id exists', () => {
+        const ignored = shouldIgnoreTerminalEvent({
+            eventTurnId: null,
+            currentTurnId: 'turn-1',
+            turnInFlight: true,
+            acceptAnonymousFailureWithDetails: true
+        });
+
+        expect(ignored).toBe(false);
+    });
+
+    it('accepts anonymous failed terminal event with details while turn is still in flight', () => {
+        const ignored = shouldIgnoreTerminalEvent({
+            eventTurnId: null,
+            currentTurnId: null,
+            turnInFlight: true,
+            acceptAnonymousFailureWithDetails: true
+        });
+
+        expect(ignored).toBe(false);
+    });
+
     it('ignores stale terminal events from another turn', () => {
         const ignored = shouldIgnoreTerminalEvent({
             eventTurnId: 'turn-old',

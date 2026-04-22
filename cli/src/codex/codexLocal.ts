@@ -84,6 +84,7 @@ export async function codexLocal(opts: {
         installHint: 'Codex CLI',
         includeCause: true,
         logExit: true,
-        shell: process.platform === 'win32'
+        shell: process.platform === 'win32',
+        stdio: ['inherit', 'inherit', 'pipe']
     });
 }
