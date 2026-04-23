@@ -241,11 +241,13 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         let clearReadyAfterTurnTimer: (() => void) | null = null;
         let turnInFlight = false;
         let allowAnonymousTerminalEvent = false;
+        let invalidThreadId: string | null = null;
 
         const handleCodexEvent = (msg: Record<string, unknown>) => {
             const msgType = asString(msg.type);
             if (!msgType) return;
             const eventTurnId = asString(msg.turn_id ?? msg.turnId);
+            const eventThreadId = asString(msg.thread_id ?? msg.threadId);
             const isTerminalEvent = msgType === 'task_complete' || msgType === 'turn_aborted' || msgType === 'task_failed';
 
             if (msgType === 'thread_started') {
@@ -267,22 +269,33 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 }
             }
 
+            const isThreadStatusFailure = msgType === 'task_failed' && msg.terminal_source === 'thread_status';
+
             if (isTerminalEvent) {
                 if (shouldIgnoreTerminalEvent({
                     eventTurnId,
                     currentTurnId: this.currentTurnId,
                     turnInFlight,
-                    allowAnonymousTerminalEvent
+                    allowAnonymousTerminalEvent,
+                    eventThreadId,
+                    currentThreadId: this.currentThreadId,
+                    allowMatchingThreadIdTerminalEvent: msg.terminal_source === 'thread_status'
                 })) {
                     logger.debug(
                         `[Codex] Ignoring terminal event ${msgType} without matching turn context; ` +
                         `eventTurnId=${eventTurnId ?? 'none'}, activeTurn=${this.currentTurnId ?? 'none'}, ` +
+                        `eventThreadId=${eventThreadId ?? 'none'}, activeThread=${this.currentThreadId ?? 'none'}, ` +
                         `turnInFlight=${turnInFlight}, allowAnonymous=${allowAnonymousTerminalEvent}`
                     );
                     return;
                 }
                 this.currentTurnId = null;
                 allowAnonymousTerminalEvent = false;
+                if (isThreadStatusFailure) {
+                    invalidThreadId = eventThreadId ?? this.currentThreadId;
+                    this.currentThreadId = null;
+                    hasThread = false;
+                }
             }
 
             if (msgType === 'agent_message') {
@@ -314,7 +327,9 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 messageBuffer.addMessage('Turn aborted', 'status');
             } else if (msgType === 'task_failed') {
                 const error = asString(msg.error);
-                messageBuffer.addMessage(error ? `Task failed: ${error}` : 'Task failed', 'status');
+                const message = error ? `Task failed: ${error}` : 'Task failed';
+                messageBuffer.addMessage(message, 'status');
+                session.sendSessionEvent({ type: 'message', message });
             }
 
             if (msgType === 'task_started') {
@@ -627,7 +642,9 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                         cliOverrides: session.codexCliOverrides
                     });
 
-                    const resumeCandidate = session.sessionId;
+                    const resumeCandidate = session.sessionId && session.sessionId !== invalidThreadId
+                        ? session.sessionId
+                        : null;
                     let threadId: string | null = null;
 
                     if (resumeCandidate) {
@@ -695,10 +712,12 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 const turnRecord = asRecord(turnResponse);
                 const turn = turnRecord ? asRecord(turnRecord.turn) : null;
                 const turnId = asString(turn?.id);
-                if (turnId) {
-                    this.currentTurnId = turnId;
-                } else if (!this.currentTurnId) {
-                    allowAnonymousTerminalEvent = true;
+                if (turnInFlight) {
+                    if (turnId) {
+                        this.currentTurnId = turnId;
+                    } else if (!this.currentTurnId) {
+                        allowAnonymousTerminalEvent = true;
+                    }
                 }
             } catch (error) {
                 logger.warn('Error in codex session:', error);
