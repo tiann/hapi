@@ -5,6 +5,8 @@ import type {
     AgentTextBlock,
     ChatBlock,
     CliOutputBlock,
+    CodexAgentLifecycle,
+    CodexAgentLifecycleAction,
     ToolCallBlock,
     ToolPermission,
     UserTextBlock,
@@ -74,6 +76,33 @@ function arePermissionsEqual(left?: ToolPermission, right?: ToolPermission): boo
         && left.completedAt === right.completedAt
         && areStringArraysEqual(left.allowedTools, right.allowedTools)
         && areAnswersEqual(left.answers, right.answers)
+}
+
+function areLifecycleActionsEqual(left: CodexAgentLifecycleAction[], right: CodexAgentLifecycleAction[]): boolean {
+    if (left === right) return true
+    if (left.length !== right.length) return false
+    for (let i = 0; i < left.length; i += 1) {
+        if (
+            left[i].type !== right[i].type
+            || left[i].createdAt !== right[i].createdAt
+            || left[i].summary !== right[i].summary
+        ) {
+            return false
+        }
+    }
+    return true
+}
+
+function areCodexLifecyclesEqual(left?: CodexAgentLifecycle, right?: CodexAgentLifecycle): boolean {
+    if (left === right) return true
+    if (!left || !right) return false
+    return left.kind === right.kind
+        && left.agentId === right.agentId
+        && left.nickname === right.nickname
+        && left.status === right.status
+        && left.latestText === right.latestText
+        && areStringArraysEqual(left.hiddenToolIds, right.hiddenToolIds)
+        && areLifecycleActionsEqual(left.actions, right.actions)
 }
 
 function getEventKey(event: AgentEvent): string {
@@ -156,6 +185,7 @@ function areToolCallsEqual(left: ToolCallBlock, right: ToolCallBlock, childrenSa
         && left.tool.startedAt === right.tool.startedAt
         && left.tool.completedAt === right.tool.completedAt
         && arePermissionsEqual(left.tool.permission, right.tool.permission)
+        && areCodexLifecyclesEqual(left.lifecycle, right.lifecycle)
 }
 
 function reconcileBlockList(blocks: ChatBlock[], prevById: ChatBlocksById): ChatBlock[] {

@@ -12,7 +12,7 @@ import { getInputStringAny, truncate } from '@/lib/toolInputUtils'
 
 function getSubagentSummary(block: ToolCallBlock): {
     title: string
-    subtitle: string | null
+    label: string
     detail: string
     prompt: string | null
     promptPreview: string | null
@@ -25,12 +25,12 @@ function getSubagentSummary(block: ToolCallBlock): {
         : getInputStringAny(input, ['nickname', 'name', 'agent_name'])
     const prompt = getInputStringAny(input, ['message', 'messagePreview', 'prompt', 'description'])
 
-    const subtitle = nickname && nickname.length > 0 ? nickname : null
+    const displayName = nickname && nickname.length > 0 ? nickname : 'Subagent conversation'
     const countLabel = `${block.children.length} nested block${block.children.length === 1 ? '' : 's'}`
 
     return {
-        title: 'Subagent conversation',
-        subtitle,
+        title: displayName,
+        label: nickname && nickname.length > 0 ? 'Subagent conversation' : 'Subagent',
         detail: countLabel,
         prompt: prompt ?? null,
         promptPreview: prompt ? truncate(prompt, 72) : null
@@ -119,6 +119,56 @@ function getLifecycleStatusClass(status: LifecycleSnapshot['status']): string {
     if (status === 'closed') return 'bg-slate-100 text-slate-700 border-slate-200'
     if (status === 'waiting') return 'bg-amber-100 text-amber-700 border-amber-200'
     return 'bg-blue-100 text-blue-700 border-blue-200'
+}
+
+const SUBAGENT_ACCENTS = [
+    {
+        name: 'emerald',
+        card: 'border-l-emerald-500 hover:border-l-emerald-600',
+        badge: 'border-emerald-300 bg-emerald-100 text-emerald-800'
+    },
+    {
+        name: 'cyan',
+        card: 'border-l-cyan-500 hover:border-l-cyan-600',
+        badge: 'border-cyan-300 bg-cyan-100 text-cyan-800'
+    },
+    {
+        name: 'amber',
+        card: 'border-l-amber-500 hover:border-l-amber-600',
+        badge: 'border-amber-300 bg-amber-100 text-amber-800'
+    },
+    {
+        name: 'rose',
+        card: 'border-l-rose-500 hover:border-l-rose-600',
+        badge: 'border-rose-300 bg-rose-100 text-rose-800'
+    },
+    {
+        name: 'indigo',
+        card: 'border-l-indigo-500 hover:border-l-indigo-600',
+        badge: 'border-indigo-300 bg-indigo-100 text-indigo-800'
+    },
+    {
+        name: 'lime',
+        card: 'border-l-lime-500 hover:border-l-lime-600',
+        badge: 'border-lime-300 bg-lime-100 text-lime-800'
+    }
+] as const
+
+function getSubagentAccent(seed: string | null) {
+    const value = seed && seed.length > 0 ? seed : 'subagent'
+    let hash = 0
+    for (let i = 0; i < value.length; i += 1) {
+        hash = (hash * 31 + value.charCodeAt(i)) >>> 0
+    }
+    return SUBAGENT_ACCENTS[hash % SUBAGENT_ACCENTS.length]
+}
+
+function getInitials(name: string): string {
+    const words = name.trim().split(/\s+/).filter(Boolean)
+    const letters = words.length > 1
+        ? `${words[0][0] ?? ''}${words[1][0] ?? ''}`
+        : name.trim().slice(0, 2)
+    return letters.toUpperCase() || 'SA'
 }
 
 function OpenIcon() {
@@ -244,7 +294,9 @@ function SubagentBlockList(props: { blocks: ToolCallBlock['children'] }) {
 export function SubagentPreviewCard(props: { block: ToolCallBlock; dialogDescription?: string }) {
     const summary = getSubagentSummary(props.block)
     const lifecycle = getLifecycleSnapshot(props.block)
-    const dialogTitle = summary.subtitle ? `${summary.title} - ${summary.subtitle}` : summary.title
+    const dialogTitle = `${summary.title} - ${summary.label}`
+    const accentSeed = lifecycle.agentId ?? (summary.title !== 'Subagent conversation' ? summary.title : props.block.tool.id)
+    const accent = getSubagentAccent(accentSeed)
     const actionCount = lifecycle.actions.length
     const [open, setOpen] = useState(false)
     const dialogBlocks = useMemo(
@@ -261,23 +313,29 @@ export function SubagentPreviewCard(props: { block: ToolCallBlock; dialogDescrip
                     className="w-full text-left rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]"
                     aria-label={dialogTitle}
                 >
-                    <Card className="overflow-hidden border-dashed bg-[var(--app-secondary-bg)]/50 shadow-sm transition-colors hover:border-[var(--app-link)]">
+                    <Card
+                        data-subagent-accent={accent.name}
+                        className={`overflow-hidden border-dashed border-l-4 bg-[var(--app-secondary-bg)]/50 shadow-sm transition-colors hover:border-[var(--app-link)] ${accent.card}`}
+                    >
                         <CardHeader className="p-3 pb-2">
-                            <div className="flex items-start justify-between gap-3">
-                                <div className="min-w-0">
-                                    <div className="flex items-center gap-2">
-                                        <CardTitle className="text-sm font-medium leading-tight">
-                                            {summary.title}
-                                        </CardTitle>
-                                        <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium ${getLifecycleStatusClass(lifecycle.status)}`}>
+                            <div className="flex items-start gap-3">
+                                <div className={`mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-md border text-sm font-semibold tracking-normal ${accent.badge}`} aria-hidden="true">
+                                    {getInitials(summary.title)}
+                                </div>
+                                <div className="min-w-0 flex-1">
+                                    <div className="flex items-start justify-between gap-2">
+                                        <div className="min-w-0">
+                                            <CardTitle className="break-words text-base font-semibold leading-tight tracking-normal">
+                                                {summary.title}
+                                            </CardTitle>
+                                            <CardDescription className="mt-0.5 break-words text-[11px] leading-tight text-[var(--app-hint)]">
+                                                {summary.label}
+                                            </CardDescription>
+                                        </div>
+                                        <span className={`inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 text-[11px] font-medium ${getLifecycleStatusClass(lifecycle.status)}`}>
                                             {getLifecycleStatusLabel(lifecycle.status)}
                                         </span>
                                     </div>
-                                    {summary.subtitle ? (
-                                        <CardDescription className="mt-1 text-xs text-[var(--app-hint)] break-words">
-                                            {summary.subtitle}
-                                        </CardDescription>
-                                    ) : null}
                                 </div>
                                 <div className="shrink-0 text-[var(--app-hint)]">
                                     <OpenIcon />

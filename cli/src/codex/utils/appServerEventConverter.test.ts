@@ -16,6 +16,34 @@ describe('AppServerEventConverter', () => {
         expect(events).toEqual([{ type: 'thread_started', thread_id: 'thread-2' }]);
     });
 
+    it('maps root thread title updates to session title changes', () => {
+        const converter = new AppServerEventConverter();
+
+        expect(converter.handleNotification('thread/title/updated', { title: 'Native Codex Title' })).toEqual([
+            { type: 'session_title_change', title: 'Native Codex Title' }
+        ]);
+
+        expect(converter.handleNotification('thread/updated', { thread: { id: 'thread-1', title: 'Refined Codex Title' } })).toEqual([
+            { type: 'session_title_change', title: 'Refined Codex Title' }
+        ]);
+    });
+
+    it('does not map child thread title updates onto the root session', () => {
+        const converter = new AppServerEventConverter();
+
+        converter.handleNotification('item/completed', {
+            item: {
+                id: 'spawn-1',
+                type: 'collabAgentToolCall',
+                tool: 'spawnAgent',
+                receiverThreadIds: ['agent-1'],
+                nickname: 'Raman'
+            }
+        });
+
+        expect(converter.handleNotification('thread/title/updated', { threadId: 'agent-1', title: 'Child title' })).toEqual([]);
+    });
+
     it('maps turn/started and completed statuses', () => {
         const converter = new AppServerEventConverter();
 

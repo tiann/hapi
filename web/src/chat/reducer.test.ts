@@ -214,6 +214,45 @@ describe('reduceChatBlocks subagent grouping', () => {
         )
     })
 
+    it('keeps each Codex spawn completed when multi-agent wait results arrive in separate chunks', () => {
+        const messages: NormalizedMessage[] = [
+            agentToolCall('spawn-1-call', 'spawn-1', 'CodexSpawnAgent', { message: 'First child prompt' }, 1),
+            agentToolResult('spawn-1-result', 'spawn-1', { agent_id: 'agent-1' }, 2),
+            agentToolCall('spawn-2-call', 'spawn-2', 'CodexSpawnAgent', { message: 'Second child prompt' }, 3),
+            agentToolResult('spawn-2-result', 'spawn-2', { agent_id: 'agent-2' }, 4),
+            agentToolCall('wait-both-call', 'wait-both', 'CodexWaitAgent', { targets: ['agent-1', 'agent-2'] }, 5),
+            userText('child-2-user', 'Second child prompt', 6, { isSidechain: true, sidechainKey: 'spawn-2' }),
+            userText('child-1-user', 'First child prompt', 7, { isSidechain: true, sidechainKey: 'spawn-1' }),
+            agentToolResult('spawn-2-backfill', 'spawn-2', { agent_id: 'agent-2', nickname: 'Second' }, 8),
+            agentToolResult('spawn-1-backfill', 'spawn-1', { agent_id: 'agent-1', nickname: 'First' }, 9),
+            agentText('child-2-agent', 'Second child done', 10, { isSidechain: true, sidechainKey: 'spawn-2' }),
+            agentToolResult('wait-both-result', 'wait-both', { statuses: { 'agent-2': { status: 'completed', message: 'Second child done' } } }, 11),
+            agentText('child-1-stray', 'First child done', 12),
+            agentToolCall('wait-first-call', 'wait-first', 'CodexWaitAgent', { targets: ['agent-1'] }, 13),
+            agentToolResult('wait-first-result', 'wait-first', { statuses: { 'agent-1': { status: 'completed', message: 'First child done' } } }, 14),
+            agentText('root-final', 'SUBAGENT_UI_OK', 15)
+        ]
+
+        const reduced = reduceChatBlocks(messages, null)
+        const spawnBlocks = reduced.blocks.filter(
+            (block): block is ToolCallBlock => block.kind === 'tool-call' && block.tool.name === 'CodexSpawnAgent'
+        )
+
+        expect(spawnBlocks.find((block) => block.tool.id === 'spawn-1')?.lifecycle).toEqual(
+            expect.objectContaining({
+                status: 'completed',
+                latestText: 'First child done'
+            })
+        )
+        expect(spawnBlocks.find((block) => block.tool.id === 'spawn-2')?.lifecycle).toEqual(
+            expect.objectContaining({
+                status: 'completed',
+                latestText: 'Second child done'
+            })
+        )
+        expect(reduced.blocks.some((block) => block.kind === 'tool-call' && block.tool.name === 'CodexWaitAgent')).toBe(false)
+    })
+
     it('suppresses Codex title tool calls from visible chat blocks', () => {
         const messages: NormalizedMessage[] = [
             agentToolCall('title-call', 'title-1', 'change_title', { title: 'Better Session Title' }, 1),

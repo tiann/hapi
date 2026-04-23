@@ -357,6 +357,20 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         let lastRootSessionTitle: string | null = null;
         const toolNameByCallId = new Map<string, string>();
 
+        const applyRootSessionTitle = (title: string) => {
+            if (lastRootSessionTitle === title) {
+                return;
+            }
+            lastRootSessionTitle = title;
+            session.client.updateMetadata((metadata) => ({
+                ...metadata,
+                summary: {
+                    text: title,
+                    updatedAt: Date.now()
+                }
+            }));
+        };
+
         await replayExplicitResumeTranscript();
 
         const handleCodexEvent = (msg: Record<string, unknown>) => {
@@ -377,21 +391,12 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             if (msgType === 'session_title_change') {
                 const title = asString(msg.title);
                 if (title) {
-                    lastRootSessionTitle = title;
+                    applyRootSessionTitle(title);
                 }
                 return;
             }
 
             if (msgType === 'subagent_title_change') {
-                if (lastRootSessionTitle) {
-                    session.client.updateMetadata((metadata) => ({
-                        ...metadata,
-                        summary: {
-                            text: lastRootSessionTitle!,
-                            updatedAt: Date.now()
-                        }
-                    }));
-                }
                 return;
             }
 

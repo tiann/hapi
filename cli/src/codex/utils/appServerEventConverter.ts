@@ -123,6 +123,53 @@ function extractReasoningText(item: Record<string, unknown>): string | null {
     return null;
 }
 
+function extractThreadId(params: Record<string, unknown>): string | null {
+    const thread = asRecord(params.thread);
+    return asString(
+        params.threadId
+        ?? params.thread_id
+        ?? thread?.threadId
+        ?? thread?.thread_id
+        ?? thread?.id
+    );
+}
+
+function normalizeTitle(value: unknown): string | null {
+    if (typeof value !== 'string') {
+        return null;
+    }
+    const title = value.trim();
+    if (!title || title.toLowerCase() === 'none') {
+        return null;
+    }
+    return title;
+}
+
+function extractThreadTitle(params: Record<string, unknown>): string | null {
+    const thread = asRecord(params.thread);
+    const candidates = [
+        params.title,
+        params.name,
+        params.summaryTitle,
+        params.summary_title,
+        params.summary,
+        thread?.title,
+        thread?.name,
+        thread?.summaryTitle,
+        thread?.summary_title,
+        thread?.summary
+    ];
+
+    for (const candidate of candidates) {
+        const title = normalizeTitle(candidate);
+        if (title) {
+            return title;
+        }
+    }
+
+    return null;
+}
+
 export class AppServerEventConverter {
     private readonly agentMessageBuffers = new Map<string, string>();
     private readonly reasoningBuffers = new Map<string, string>();
@@ -166,6 +213,20 @@ export class AppServerEventConverter {
         const msgType = asString(msg.type);
         if (!msgType) {
             return [];
+        }
+
+        if (msgType === 'session_title_change') {
+            const title = extractThreadTitle(msg);
+            return title ? [{ type: 'session_title_change', title }] : [];
+        }
+
+        if (
+            msgType === 'thread_title_updated' ||
+            msgType === 'thread_title_change' ||
+            msgType === 'thread_updated' ||
+            msgType === 'session_title_updated'
+        ) {
+            return this.handleThreadTitleUpdate(msg);
         }
 
         if (msgType === 'item_started' || msgType === 'item_completed') {
@@ -267,6 +328,16 @@ export class AppServerEventConverter {
         return [msg as ConvertedEvent];
     }
 
+    private handleThreadTitleUpdate(paramsRecord: Record<string, unknown>): ConvertedEvent[] {
+        const threadId = extractThreadId(paramsRecord);
+        if (threadId && this.childThreadIdToParentToolCallId.has(threadId)) {
+            return [];
+        }
+
+        const title = extractThreadTitle(paramsRecord);
+        return title ? [{ type: 'session_title_change', title }] : [];
+    }
+
     handleNotification(method: string, params: unknown): ConvertedEvent[] {
         const events: ConvertedEvent[] = [];
         const paramsRecord = asRecord(params) ?? {};
@@ -286,6 +357,15 @@ export class AppServerEventConverter {
                 events.push({ type: 'thread_started', thread_id: threadId });
             }
             return events;
+        }
+
+        if (
+            method === 'thread/title/updated' ||
+            method === 'thread/updated' ||
+            method === 'thread/renamed' ||
+            method === 'session/title/updated'
+        ) {
+            return this.handleThreadTitleUpdate(paramsRecord);
         }
 
         if (method === 'turn/started') {
