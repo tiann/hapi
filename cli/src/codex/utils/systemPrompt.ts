@@ -1,22 +1,22 @@
 /**
  * Codex-specific system prompt for local mode.
  *
- * This prompt instructs Codex to call the hapi__change_title function
- * to set appropriate chat session titles.
+ * This prompt keeps the HAPI title tool available without forcing an
+ * extra title-tool turn in every Codex session.
  */
 
 import { trimIdent } from '@/utils/trimIdent';
 
 /**
- * Title instruction for Codex to call the hapi MCP tool.
+ * Title instruction for Codex's HAPI MCP tool.
  * Note: Codex exposes MCP tools under the `functions.` namespace,
  * so the tool is called as `functions.hapi__change_title`.
  */
 export const TITLE_INSTRUCTION = trimIdent(`
-    ALWAYS when you start a new chat, call the title tool to set a concise task title.
-    Prefer calling functions.hapi__change_title.
-    If that exact tool name is unavailable, call an equivalent alias such as hapi__change_title, mcp__hapi__change_title, or hapi_change_title.
-    If the task focus changes significantly later, call the title tool again with a better title.
+    Do not call the HAPI title tool automatically.
+    Only call functions.hapi__change_title if the user explicitly asks to rename the current chat.
+    If that exact tool name is unavailable, use an equivalent alias such as hapi__change_title, mcp__hapi__change_title, hapi_change_title, or change_title.
+    Keep title tool calls silent; never mention title changes in the chat response.
 `);
 
 /**

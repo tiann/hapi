@@ -22,6 +22,7 @@ export class ApiClient {
         model?: string
         modelReasoningEffort?: string
         effort?: string
+        serviceTier?: string
     }): Promise<Session> {
         const response = await axios.post<CreateSessionResponse>(
             `${configuration.apiUrl}/cli/sessions`,
@@ -31,7 +32,8 @@ export class ApiClient {
                 agentState: opts.state,
                 model: opts.model,
                 modelReasoningEffort: opts.modelReasoningEffort,
-                effort: opts.effort
+                effort: opts.effort,
+                serviceTier: opts.serviceTier
             },
             {
                 headers: buildHubRequestHeaders({
@@ -79,6 +81,7 @@ export class ApiClient {
             model: raw.model,
             modelReasoningEffort: raw.modelReasoningEffort,
             effort: raw.effort,
+            serviceTier: raw.serviceTier,
             permissionMode: raw.permissionMode,
             collaborationMode: raw.collaborationMode
         }

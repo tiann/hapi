@@ -16,6 +16,10 @@ import { AppServerEventConverter } from './utils/appServerEventConverter';
 import { registerAppServerPermissionHandlers } from './utils/appServerPermissionAdapter';
 import { buildThreadStartParams, buildTurnStartParams } from './utils/appServerConfig';
 import { shouldIgnoreTerminalEvent } from './utils/terminalEventGuard';
+import { createCodexSessionScanner } from './utils/codexSessionScanner';
+import { convertCodexEvent } from './utils/codexEventConverter';
+import { resolveCodexSessionFile } from './utils/resolveCodexSessionFile';
+import { resolveCodexSubagentNickname } from './utils/spawnNicknameResolver';
 import {
     RemoteLauncherBase,
     type RemoteLauncherDisplayContext,
@@ -24,6 +28,17 @@ import {
 
 type HappyServer = Awaited<ReturnType<typeof buildHapiMcpBridge>>['server'];
 type QueuedMessage = { message: string; mode: EnhancedMode; isolate: boolean; hash: string };
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+    if (!value || typeof value !== 'object') {
+        return null;
+    }
+    return value as Record<string, unknown>;
+}
+
+function asString(value: unknown): string | null {
+    return typeof value === 'string' && value.length > 0 ? value : null;
+}
 
 class CodexRemoteLauncher extends RemoteLauncherBase {
     private readonly session: CodexSession;
@@ -35,6 +50,8 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
     private abortController: AbortController = new AbortController();
     private currentThreadId: string | null = null;
     private currentTurnId: string | null = null;
+    private readonly spawnNicknameBackfillTimers = new Set<ReturnType<typeof setTimeout>>();
+    private readonly spawnNicknameBackfillCallIds = new Set<string>();
 
     constructor(session: CodexSession) {
         super(process.env.DEBUG ? session.logPath : undefined);
@@ -72,6 +89,65 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         } finally {
             this.abortController = new AbortController();
         }
+    }
+
+    private scheduleSpawnNicknameBackfill(callId: string, output: unknown): void {
+        const outputRecord = asRecord(output);
+        if (!outputRecord || asString(outputRecord.nickname)) {
+            return;
+        }
+
+        const agentIds = Array.isArray(outputRecord.agent_ids) ? outputRecord.agent_ids : [];
+        const agentId = asString(outputRecord.agent_id)
+            ?? agentIds.find((value: unknown): value is string => typeof value === 'string' && value.length > 0)
+            ?? null;
+        if (!agentId || this.spawnNicknameBackfillCallIds.has(callId)) {
+            return;
+        }
+
+        this.spawnNicknameBackfillCallIds.add(callId);
+        let attempts = 0;
+        const maxAttempts = 20;
+
+        const scheduleAttempt = (delayMs: number) => {
+            const timer = setTimeout(() => {
+                this.spawnNicknameBackfillTimers.delete(timer);
+                void (async () => {
+                    if (this.shouldExit) {
+                        return;
+                    }
+
+                    attempts += 1;
+                    const nickname = await resolveCodexSubagentNickname(agentId);
+                    if (nickname) {
+                        this.session.sendAgentMessage({
+                            type: 'tool-call-result',
+                            callId,
+                            output: {
+                                ...outputRecord,
+                                nickname
+                            },
+                            id: randomUUID()
+                        });
+                        return;
+                    }
+
+                    if (attempts < maxAttempts) {
+                        scheduleAttempt(500);
+                        return;
+                    }
+
+                    this.spawnNicknameBackfillCallIds.delete(callId);
+                })().catch((error) => {
+                    logger.debug('[Codex] Failed to backfill subagent nickname', error);
+                    this.spawnNicknameBackfillCallIds.delete(callId);
+                });
+            }, delayMs);
+            timer.unref?.();
+            this.spawnNicknameBackfillTimers.add(timer);
+        };
+
+        scheduleAttempt(0);
     }
 
     private async handleExitFromUi(): Promise<void> {
@@ -117,6 +193,39 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         const appServerClient = this.appServerClient;
         const appServerEventConverter = new AppServerEventConverter();
 
+        const replayExplicitResumeTranscript = async (): Promise<void> => {
+            const resumeSessionId = session.sessionId;
+            if (!resumeSessionId) {
+                return;
+            }
+
+            const resolvedSessionFile = await resolveCodexSessionFile(resumeSessionId);
+            if (resolvedSessionFile.status !== 'found') {
+                logger.debug(`[Codex] No transcript replay available for explicit remote resume ${resumeSessionId} (${resolvedSessionFile.status})`);
+                return;
+            }
+
+            const scanner = await createCodexSessionScanner({
+                sessionId: resumeSessionId,
+                cwd: session.path,
+                startupTimestampMs: Date.now(),
+                resolvedSessionFile,
+                onEvent: (event) => {
+                    const converted = convertCodexEvent(event);
+                    if (converted?.sessionId) {
+                        session.onSessionFound(converted.sessionId);
+                    }
+                    if (converted?.userMessage) {
+                        session.sendUserMessage(converted.userMessage, converted.userMessageMeta);
+                    }
+                    if (converted?.message) {
+                        session.sendAgentMessage(converted.message);
+                    }
+                }
+            });
+            await scanner.cleanup();
+        };
+
         const normalizeCommand = (value: unknown): string | undefined => {
             if (typeof value === 'string') {
                 const trimmed = value.trim();
@@ -129,15 +238,19 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             return undefined;
         };
 
-        const asRecord = (value: unknown): Record<string, unknown> | null => {
-            if (!value || typeof value !== 'object') {
-                return null;
+        const extractParentToolCallId = (value: unknown): string | null => {
+            const record = asRecord(value);
+            if (!record) {
+                return asString(value);
             }
-            return value as Record<string, unknown>;
-        };
-
-        const asString = (value: unknown): string | null => {
-            return typeof value === 'string' && value.length > 0 ? value : null;
+            return asString(
+                record.parent_tool_call_id
+                ?? record.parentToolCallId
+                ?? asRecord(record.input)?.parent_tool_call_id
+                ?? asRecord(record.input)?.parentToolCallId
+                ?? asRecord(record.output)?.parent_tool_call_id
+                ?? asRecord(record.output)?.parentToolCallId
+            );
         };
 
         const applyResolvedModel = (value: unknown): string | undefined => {
@@ -241,6 +354,24 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         let clearReadyAfterTurnTimer: (() => void) | null = null;
         let turnInFlight = false;
         let allowAnonymousTerminalEvent = false;
+        let lastRootSessionTitle: string | null = null;
+        const toolNameByCallId = new Map<string, string>();
+
+        const applyRootSessionTitle = (title: string) => {
+            if (lastRootSessionTitle === title) {
+                return;
+            }
+            lastRootSessionTitle = title;
+            session.client.updateMetadata((metadata) => ({
+                ...metadata,
+                summary: {
+                    text: title,
+                    updatedAt: Date.now()
+                }
+            }));
+        };
+
+        await replayExplicitResumeTranscript();
 
         const handleCodexEvent = (msg: Record<string, unknown>) => {
             const msgType = asString(msg.type);
@@ -254,6 +385,18 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     this.currentThreadId = threadId;
                     session.onSessionFound(threadId);
                 }
+                return;
+            }
+
+            if (msgType === 'session_title_change') {
+                const title = asString(msg.title);
+                if (title) {
+                    applyRootSessionTitle(title);
+                }
+                return;
+            }
+
+            if (msgType === 'subagent_title_change') {
                 return;
             }
 
@@ -363,10 +506,26 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             if (msgType === 'agent_message') {
                 const message = asString(msg.message);
                 if (message) {
-                    session.sendAgentMessage({
+                    const payload: Record<string, unknown> = {
                         type: 'message',
                         message,
                         id: randomUUID()
+                    };
+                    const parentToolCallId = asString(msg.parent_tool_call_id ?? msg.parentToolCallId);
+                    if (parentToolCallId) {
+                        payload.isSidechain = true;
+                        payload.parentToolCallId = parentToolCallId;
+                    }
+                    session.sendAgentMessage(payload);
+                }
+            }
+            if (msgType === 'user_message') {
+                const message = asString(msg.message);
+                const parentToolCallId = asString(msg.parent_tool_call_id ?? msg.parentToolCallId);
+                if (message && parentToolCallId) {
+                    session.sendUserMessage(message, {
+                        isSidechain: true,
+                        sidechainKey: parentToolCallId
                     });
                 }
             }
@@ -377,14 +536,22 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     delete inputs.type;
                     delete inputs.call_id;
                     delete inputs.callId;
+                    delete inputs.parent_tool_call_id;
+                    delete inputs.parentToolCallId;
 
-                    session.sendAgentMessage({
+                    const payload: Record<string, unknown> = {
                         type: 'tool-call',
                         name: 'CodexBash',
                         callId: callId,
                         input: inputs,
                         id: randomUUID()
-                    });
+                    };
+                    const parentToolCallId = extractParentToolCallId(msg);
+                    if (parentToolCallId) {
+                        payload.isSidechain = true;
+                        payload.parentToolCallId = parentToolCallId;
+                    }
+                    session.sendAgentMessage(payload);
                 }
             }
             if (msgType === 'exec_command_end') {
@@ -394,13 +561,21 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     delete output.type;
                     delete output.call_id;
                     delete output.callId;
+                    delete output.parent_tool_call_id;
+                    delete output.parentToolCallId;
 
-                    session.sendAgentMessage({
+                    const payload: Record<string, unknown> = {
                         type: 'tool-call-result',
                         callId: callId,
                         output,
                         id: randomUUID()
-                    });
+                    };
+                    const parentToolCallId = extractParentToolCallId(msg);
+                    if (parentToolCallId) {
+                        payload.isSidechain = true;
+                        payload.parentToolCallId = parentToolCallId;
+                    }
+                    session.sendAgentMessage(payload);
                 }
             }
             if (msgType === 'token_count') {
@@ -408,6 +583,46 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     ...msg,
                     id: randomUUID()
                 });
+            }
+            if (msgType === 'tool_call') {
+                const callId = asString(msg.call_id ?? msg.callId);
+                const name = asString(msg.name);
+                if (callId && name) {
+                    toolNameByCallId.set(callId, name);
+                    const payload: Record<string, unknown> = {
+                        type: 'tool-call',
+                        name,
+                        callId,
+                        input: msg.input ?? {},
+                        id: randomUUID()
+                    };
+                    const parentToolCallId = asString(msg.parent_tool_call_id ?? msg.parentToolCallId);
+                    if (parentToolCallId) {
+                        payload.isSidechain = true;
+                        payload.parentToolCallId = parentToolCallId;
+                    }
+                    session.sendAgentMessage(payload);
+                }
+            }
+            if (msgType === 'tool_call_result') {
+                const callId = asString(msg.call_id ?? msg.callId);
+                if (callId) {
+                    const payload: Record<string, unknown> = {
+                        type: 'tool-call-result',
+                        callId,
+                        output: msg.output,
+                        id: randomUUID()
+                    };
+                    const parentToolCallId = asString(msg.parent_tool_call_id ?? msg.parentToolCallId);
+                    if (parentToolCallId) {
+                        payload.isSidechain = true;
+                        payload.parentToolCallId = parentToolCallId;
+                    }
+                    session.sendAgentMessage(payload);
+                    if (toolNameByCallId.get(callId) === 'CodexSpawnAgent') {
+                        this.scheduleSpawnNicknameBackfill(callId, msg.output);
+                    }
+                }
             }
             if (msgType === 'patch_apply_begin') {
                 const callId = asString(msg.call_id ?? msg.callId);
@@ -417,7 +632,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     const filesMsg = changeCount === 1 ? '1 file' : `${changeCount} files`;
                     messageBuffer.addMessage(`Modifying ${filesMsg}...`, 'tool');
 
-                    session.sendAgentMessage({
+                    const payload: Record<string, unknown> = {
                         type: 'tool-call',
                         name: 'CodexPatch',
                         callId: callId,
@@ -426,7 +641,13 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                             changes
                         },
                         id: randomUUID()
-                    });
+                    };
+                    const parentToolCallId = extractParentToolCallId(msg);
+                    if (parentToolCallId) {
+                        payload.isSidechain = true;
+                        payload.parentToolCallId = parentToolCallId;
+                    }
+                    session.sendAgentMessage(payload);
                 }
             }
             if (msgType === 'patch_apply_end') {
@@ -444,7 +665,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                         messageBuffer.addMessage(`Error: ${errorMsg.substring(0, 200)}`, 'result');
                     }
 
-                    session.sendAgentMessage({
+                    const payload: Record<string, unknown> = {
                         type: 'tool-call-result',
                         callId: callId,
                         output: {
@@ -453,7 +674,13 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                             success
                         },
                         id: randomUUID()
-                    });
+                    };
+                    const parentToolCallId = extractParentToolCallId(msg);
+                    if (parentToolCallId) {
+                        payload.isSidechain = true;
+                        payload.parentToolCallId = parentToolCallId;
+                    }
+                    session.sendAgentMessage(payload);
                 }
             }
             if (msgType === 'mcp_tool_call_begin') {
@@ -755,6 +982,11 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         this.permissionHandler?.reset();
         this.reasoningProcessor?.abort();
         this.diffProcessor?.reset();
+        for (const timer of this.spawnNicknameBackfillTimers) {
+            clearTimeout(timer);
+        }
+        this.spawnNicknameBackfillTimers.clear();
+        this.spawnNicknameBackfillCallIds.clear();
         this.permissionHandler = null;
         this.reasoningProcessor = null;
         this.diffProcessor = null;

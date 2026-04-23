@@ -1,3 +1,10 @@
+export type {
+    ImportableCodexSessionSummary,
+    ImportableSessionAgent,
+    RpcListImportableSessionsRequest,
+    RpcListImportableSessionsResponse
+} from '@hapi/protocol/rpcTypes'
+
 export interface SpawnSessionOptions {
     machineId?: string
     directory: string
@@ -8,6 +15,7 @@ export interface SpawnSessionOptions {
     model?: string
     effort?: string
     modelReasoningEffort?: string
+    serviceTier?: string
     yolo?: boolean
     permissionMode?: string
     token?: string

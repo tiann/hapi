@@ -26,6 +26,16 @@ function formatChecklistCount(items: ChecklistItem[], noun: string): string | nu
     return `${items.length} ${noun}${items.length === 1 ? '' : 's'}`
 }
 
+function getInputTextAny(input: unknown, keys: string[]): string | null {
+    if (!isObject(input)) return null
+    for (const key of keys) {
+        const value = input[key]
+        if (typeof value === 'string' && value.length > 0) return value
+        if (typeof value === 'number' && Number.isFinite(value)) return String(value)
+    }
+    return null
+}
+
 function snakeToTitleWithSpaces(value: string): string {
     return value
         .split('_')
@@ -157,8 +167,84 @@ export const knownTools: Record<string, {
             if (isObject(opts.input) && Array.isArray(opts.input.command)) {
                 return opts.input.command.filter((part) => typeof part === 'string').join(' ')
             }
+            const cwd = getInputStringAny(opts.input, ['cwd'])
+            if (cwd) return cwd
             return null
         },
+        minimal: true
+    },
+    CodexWriteStdin: {
+        icon: () => <TerminalIcon className={DEFAULT_ICON_CLASS} />,
+        title: (opts) => {
+            const interrupt = isObject(opts.input) && opts.input.interrupt === true
+            const chars = getInputStringAny(opts.input, ['chars', 'charsPreview'])
+            if (interrupt) return 'Interrupt'
+            if (chars && chars.length > 0) return 'Send input'
+            return 'Poll output'
+        },
+        subtitle: (opts) => {
+            const chars = getInputStringAny(opts.input, ['charsPreview', 'chars'])
+            if (chars && chars.length > 0) return truncate(chars.replace(/\r?\n/g, ' / '), 80)
+            const target = getInputTextAny(opts.input, ['target', 'session_id', 'sessionId'])
+            return target ? `target: ${target}` : 'poll'
+        },
+        minimal: true
+    },
+    CodexSpawnAgent: {
+        icon: () => <RocketIcon className={DEFAULT_ICON_CLASS} />,
+        title: (opts) => {
+            const name = getInputStringAny(opts.input, ['name', 'agent_name', 'nickname'])
+            return name ? `Agent: ${name}` : 'Spawn agent'
+        },
+        subtitle: (opts) => {
+            const message = getInputStringAny(opts.input, ['messagePreview', 'message', 'prompt', 'description'])
+            if (message) return truncate(message, 120)
+            const model = getInputStringAny(opts.input, ['model'])
+            const effort = getInputStringAny(opts.input, ['reasoningEffort', 'reasoning_effort'])
+            const parts = [model, effort ? `effort: ${effort}` : null].filter((part): part is string => typeof part === 'string' && part.length > 0)
+            return parts.length > 0 ? parts.join(' / ') : null
+        },
+        minimal: true
+    },
+    CodexWaitAgent: {
+        icon: () => <UsersIcon className={DEFAULT_ICON_CLASS} />,
+        title: (opts) => {
+            const targets = isObject(opts.input) && Array.isArray(opts.input.targets)
+                ? opts.input.targets.filter((target): target is string => typeof target === 'string' && target.length > 0)
+                : []
+            return targets.length > 1 ? 'Wait for agents' : 'Wait for agent'
+        },
+        subtitle: (opts) => {
+            const targets = isObject(opts.input) && Array.isArray(opts.input.targets)
+                ? opts.input.targets.filter((target): target is string => typeof target === 'string' && target.length > 0)
+                : []
+            const timeout = getInputTextAny(opts.input, ['timeout_ms', 'timeout'])
+            const parts: string[] = []
+            if (targets.length === 1) parts.push(`target: ${targets[0]}`)
+            else if (targets.length > 1) parts.push(`${targets.length} targets`)
+            if (timeout) parts.push(`timeout: ${timeout}`)
+            return parts.length > 0 ? parts.join(' / ') : null
+        },
+        minimal: true
+    },
+    CodexSendInput: {
+        icon: () => <MessageSquareIcon className={DEFAULT_ICON_CLASS} />,
+        title: (opts) => {
+            const target = getInputTextAny(opts.input, ['target'])
+            return target ? `Message: ${target}` : 'Message agent'
+        },
+        subtitle: (opts) => {
+            const interrupt = isObject(opts.input) && opts.input.interrupt === true
+            const message = getInputStringAny(opts.input, ['messagePreview', 'message'])
+            if (message) return truncate(message, 120)
+            return interrupt ? 'interrupt' : null
+        },
+        minimal: true
+    },
+    CodexCloseAgent: {
+        icon: () => <UsersIcon className={DEFAULT_ICON_CLASS} />,
+        title: () => 'Close agent',
+        subtitle: (opts) => getInputTextAny(opts.input, ['target', 'agent_id', 'agentId']) ?? null,
         minimal: true
     },
     CodexPermission: {
@@ -167,7 +253,7 @@ export const knownTools: Record<string, {
             const tool = getInputStringAny(opts.input, ['tool'])
             return tool ? `Permission: ${tool}` : 'Permission request'
         },
-        subtitle: (opts) => getInputStringAny(opts.input, ['message', 'command']) ?? null,
+        subtitle: (opts) => getInputStringAny(opts.input, ['message', 'command', 'cwd']) ?? null,
         minimal: true
     },
     shell_command: {

@@ -3,13 +3,14 @@ import type { SpawnOptions } from 'child_process';
 
 const spawnMock = vi.fn((..._args: any[]) => ({ pid: 12345 } as any));
 
-vi.mock('child_process', async () => {
-  const actual = await vi.importActual<typeof import('child_process')>('child_process');
-  return {
-    ...actual,
-    spawn: spawnMock
-  };
-});
+vi.mock('child_process', () => ({
+  spawn: spawnMock,
+  spawnSync: vi.fn(),
+  exec: vi.fn(),
+  execSync: vi.fn(),
+  execFile: vi.fn(),
+  execFileSync: vi.fn(),
+}));
 
 const originalPlatformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
 const originalInvokedCwd = process.env.HAPI_INVOKED_CWD;
@@ -104,10 +105,10 @@ describe('spawnHappyCLI windowsHide behavior', () => {
     expect(command.command).toBe(process.execPath);
     if (isBunRuntime) {
       expect(command.args[0]).toBe('--cwd');
-      expect(command.args[1].replace(/\\/g, '/')).toMatch(/\/hapi\/cli$/);
-      expect(command.args[2].replace(/\\/g, '/')).toMatch(/\/hapi\/cli\/src\/index\.ts$/);
+      expect(command.args[1].replace(/\\/g, '/')).toMatch(/\/cli$/);
+      expect(command.args[2].replace(/\\/g, '/')).toMatch(/\/cli\/src\/index\.ts$/);
     } else {
-      expect(command.args.some((arg) => arg.replace(/\\/g, '/').endsWith('/hapi/cli/src/index.ts'))).toBe(true);
+      expect(command.args.some((arg) => arg.replace(/\\/g, '/').endsWith('/cli/src/index.ts'))).toBe(true);
     }
   });
 

@@ -6,7 +6,8 @@ import type {
     SessionEffort,
     SessionModel,
     SessionModelReasoningEffort,
-    SessionPermissionMode
+    SessionPermissionMode,
+    SessionServiceTier
 } from '@/api/types';
 import { logger } from '@/ui/logger';
 
@@ -26,6 +27,7 @@ export type AgentSessionBaseOptions<Mode> = {
     model?: SessionModel;
     modelReasoningEffort?: SessionModelReasoningEffort;
     effort?: SessionEffort;
+    serviceTier?: SessionServiceTier;
     collaborationMode?: SessionCollaborationMode;
 };
 
@@ -50,6 +52,7 @@ export class AgentSessionBase<Mode> {
     protected model?: SessionModel;
     protected modelReasoningEffort?: SessionModelReasoningEffort;
     protected effort?: SessionEffort;
+    protected serviceTier?: SessionServiceTier;
     protected collaborationMode?: SessionCollaborationMode;
 
     constructor(opts: AgentSessionBaseOptions<Mode>) {
@@ -68,6 +71,7 @@ export class AgentSessionBase<Mode> {
         this.model = opts.model;
         this.modelReasoningEffort = opts.modelReasoningEffort;
         this.effort = opts.effort;
+        this.serviceTier = opts.serviceTier;
         this.collaborationMode = opts.collaborationMode;
 
         this.queue.onBatchConsumed = (localIds) => this.client.emitMessagesConsumed(localIds);
@@ -91,10 +95,11 @@ export class AgentSessionBase<Mode> {
         const modelLabel = this.model === undefined ? 'unset' : (this.model ?? 'auto');
         const modelReasoningEffortLabel = this.modelReasoningEffort === undefined ? 'unset' : (this.modelReasoningEffort ?? 'default');
         const effortLabel = this.effort === undefined ? 'unset' : (this.effort ?? 'auto');
+        const serviceTierLabel = this.serviceTier === undefined ? 'unset' : (this.serviceTier ?? 'default');
         const collaborationLabel = this.collaborationMode ?? 'unset';
         logger.debug(
             `[${this.sessionLabel}] Mode switched to ${mode} ` +
-            `(permissionMode=${permissionLabel}, model=${modelLabel}, modelReasoningEffort=${modelReasoningEffortLabel}, effort=${effortLabel}, collaborationMode=${collaborationLabel})`
+            `(permissionMode=${permissionLabel}, model=${modelLabel}, modelReasoningEffort=${modelReasoningEffortLabel}, effort=${effortLabel}, serviceTier=${serviceTierLabel}, collaborationMode=${collaborationLabel})`
         );
         this._onModeChange(mode);
     };
@@ -133,6 +138,7 @@ export class AgentSessionBase<Mode> {
             model?: SessionModel
             modelReasoningEffort?: SessionModelReasoningEffort
             effort?: SessionEffort
+            serviceTier?: SessionServiceTier
             collaborationMode?: SessionCollaborationMode
         } | undefined {
         if (
@@ -140,6 +146,7 @@ export class AgentSessionBase<Mode> {
             && this.model === undefined
             && this.modelReasoningEffort === undefined
             && this.effort === undefined
+            && this.serviceTier === undefined
             && this.collaborationMode === undefined
         ) {
             return undefined;
@@ -149,6 +156,7 @@ export class AgentSessionBase<Mode> {
             model: this.model,
             modelReasoningEffort: this.modelReasoningEffort,
             effort: this.effort,
+            serviceTier: this.serviceTier,
             collaborationMode: this.collaborationMode
         };
     }
@@ -167,6 +175,10 @@ export class AgentSessionBase<Mode> {
 
     getEffort(): SessionEffort | undefined {
         return this.effort;
+    }
+
+    getServiceTier(): SessionServiceTier | undefined {
+        return this.serviceTier;
     }
 
     getCollaborationMode(): SessionCollaborationMode | undefined {

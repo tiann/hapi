@@ -26,6 +26,7 @@ export type SessionCollaborationMode = CodexCollaborationMode
 export type SessionModel = string | null
 export type SessionModelReasoningEffort = string | null
 export type SessionEffort = string | null
+export type SessionServiceTier = string | null
 
 export { AgentStateSchema, AttachmentMetadataSchema, MetadataSchema }
 
@@ -103,6 +104,7 @@ export const CreateSessionResponseSchema = z.object({
         model: z.string().nullable().optional().default(null),
         modelReasoningEffort: z.string().nullable().optional().default(null),
         effort: z.string().nullable().optional().default(null),
+        serviceTier: z.string().nullable().optional().default(null),
         permissionMode: PermissionModeSchema.optional(),
         collaborationMode: CodexCollaborationModeSchema.optional()
     })
@@ -133,7 +135,9 @@ export const MessageMetaSchema = z.object({
     customSystemPrompt: z.string().nullable().optional(),
     appendSystemPrompt: z.string().nullable().optional(),
     allowedTools: z.array(z.string()).nullable().optional(),
-    disallowedTools: z.array(z.string()).nullable().optional()
+    disallowedTools: z.array(z.string()).nullable().optional(),
+    isSidechain: z.boolean().optional(),
+    sidechainKey: z.string().optional()
 })
 
 export type MessageMeta = z.infer<typeof MessageMetaSchema>

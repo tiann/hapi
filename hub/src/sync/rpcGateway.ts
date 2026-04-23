@@ -1,6 +1,42 @@
 import type { CodexCollaborationMode, PermissionMode } from '@hapi/protocol/types'
+import type {
+    RpcListImportableSessionsRequest,
+    RpcListImportableSessionsResponse
+} from '@hapi/protocol/rpcTypes'
 import type { Server } from 'socket.io'
+import { z } from 'zod'
 import type { RpcRegistry } from '../socket/rpcRegistry'
+
+const importableCodexSessionSummarySchema = z.object({
+    agent: z.union([z.literal('codex'), z.literal('claude')]),
+    externalSessionId: z.string(),
+    cwd: z.string().nullable(),
+    timestamp: z.number().nullable(),
+    transcriptPath: z.string(),
+    previewTitle: z.string().nullable(),
+    previewPrompt: z.string().nullable(),
+    model: z.string().nullable().optional(),
+    effort: z.string().nullable().optional(),
+    modelReasoningEffort: z.string().nullable().optional(),
+    collaborationMode: z.union([z.literal('default'), z.literal('plan')]).nullable().optional(),
+    approvalPolicy: z.string().nullable().optional(),
+    sandboxPolicy: z.unknown().nullable().optional(),
+    serviceTier: z.string().nullable().optional(),
+    permissionMode: z.union([
+        z.literal('default'),
+        z.literal('acceptEdits'),
+        z.literal('bypassPermissions'),
+        z.literal('plan'),
+        z.literal('ask'),
+        z.literal('read-only'),
+        z.literal('safe-yolo'),
+        z.literal('yolo')
+    ]).nullable().optional()
+})
+
+const listImportableSessionsResponseSchema = z.object({
+    sessions: z.array(importableCodexSessionSummarySchema)
+})
 
 export type RpcCommandResponse = {
     success: boolean
@@ -96,6 +132,7 @@ export class RpcGateway {
             model?: string | null
             modelReasoningEffort?: string | null
             effort?: string | null
+            serviceTier?: string | null
             collaborationMode?: CodexCollaborationMode
         }
     ): Promise<unknown> {
@@ -117,13 +154,14 @@ export class RpcGateway {
         worktreeName?: string,
         resumeSessionId?: string,
         effort?: string,
-        permissionMode?: PermissionMode
+        permissionMode?: PermissionMode,
+        serviceTier?: string
     ): Promise<{ type: 'success'; sessionId: string } | { type: 'error'; message: string }> {
         try {
             const result = await this.machineRpc(
                 machineId,
                 'spawn-happy-session',
-                { type: 'spawn-in-directory', directory, agent, model, modelReasoningEffort, yolo, sessionType, worktreeName, resumeSessionId, effort, permissionMode }
+                { type: 'spawn-in-directory', directory, agent, model, modelReasoningEffort, yolo, sessionType, worktreeName, resumeSessionId, effort, permissionMode, serviceTier }
             )
             if (result && typeof result === 'object') {
                 const obj = result as Record<string, unknown>
@@ -230,6 +268,20 @@ export class RpcGateway {
             skills?: Array<{ name: string; description?: string }>
             error?: string
         }
+    }
+
+    async listImportableSessions(
+        machineId: string,
+        request: RpcListImportableSessionsRequest
+    ): Promise<RpcListImportableSessionsResponse> {
+        const response = await this.machineRpc(machineId, 'list-importable-sessions', request)
+        const parsed = listImportableSessionsResponseSchema.parse(response)
+        for (const session of parsed.sessions) {
+            if (session.agent !== request.agent) {
+                throw new Error(`Unexpected importable session agent "${session.agent}" for request "${request.agent}"`)
+            }
+        }
+        return parsed
     }
 
     private async sessionRpc(sessionId: string, method: string, params: unknown): Promise<unknown> {

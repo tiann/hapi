@@ -16,6 +16,34 @@ describe('AppServerEventConverter', () => {
         expect(events).toEqual([{ type: 'thread_started', thread_id: 'thread-2' }]);
     });
 
+    it('maps root thread title updates to session title changes', () => {
+        const converter = new AppServerEventConverter();
+
+        expect(converter.handleNotification('thread/title/updated', { title: 'Native Codex Title' })).toEqual([
+            { type: 'session_title_change', title: 'Native Codex Title' }
+        ]);
+
+        expect(converter.handleNotification('thread/updated', { thread: { id: 'thread-1', title: 'Refined Codex Title' } })).toEqual([
+            { type: 'session_title_change', title: 'Refined Codex Title' }
+        ]);
+    });
+
+    it('does not map child thread title updates onto the root session', () => {
+        const converter = new AppServerEventConverter();
+
+        converter.handleNotification('item/completed', {
+            item: {
+                id: 'spawn-1',
+                type: 'collabAgentToolCall',
+                tool: 'spawnAgent',
+                receiverThreadIds: ['agent-1'],
+                nickname: 'Raman'
+            }
+        });
+
+        expect(converter.handleNotification('thread/title/updated', { threadId: 'agent-1', title: 'Child title' })).toEqual([]);
+    });
+
     it('maps turn/started and completed statuses', () => {
         const converter = new AppServerEventConverter();
 
@@ -82,6 +110,82 @@ describe('AppServerEventConverter', () => {
             command: 'ls',
             output: 'ok',
             exit_code: 0
+        }]);
+    });
+
+    it('maps Codex collab spawn/wait items and links child thread events to the spawn call', () => {
+        const converter = new AppServerEventConverter();
+
+        const spawnStarted = converter.handleNotification('item/started', {
+            item: {
+                id: 'spawn-1',
+                type: 'collabAgentToolCall',
+                tool: 'spawnAgent',
+                prompt: 'First child prompt',
+                model: 'gpt-5.4',
+                reasoningEffort: 'xhigh'
+            }
+        });
+        expect(spawnStarted).toEqual([{
+            type: 'tool_call',
+            call_id: 'spawn-1',
+            name: 'CodexSpawnAgent',
+            input: {
+                message: 'First child prompt',
+                model: 'gpt-5.4',
+                reasoningEffort: 'xhigh'
+            }
+        }]);
+
+        const spawnCompleted = converter.handleNotification('item/completed', {
+            item: {
+                id: 'spawn-1',
+                type: 'collabAgentToolCall',
+                tool: 'spawnAgent',
+                receiverThreadIds: ['agent-1'],
+                nickname: 'Raman'
+            }
+        });
+        expect(spawnCompleted).toEqual([{
+            type: 'tool_call_result',
+            call_id: 'spawn-1',
+            output: {
+                agent_id: 'agent-1',
+                agent_ids: ['agent-1'],
+                nickname: 'Raman',
+                agentsStates: undefined
+            }
+        }]);
+
+        const childMessage = converter.handleNotification('item/completed', {
+            threadId: 'agent-1',
+            item: {
+                id: 'child-msg-1',
+                type: 'agentMessage',
+                text: 'child answer'
+            }
+        });
+        expect(childMessage).toEqual([{
+            type: 'agent_message',
+            message: 'child answer',
+            parent_tool_call_id: 'spawn-1'
+        }]);
+
+        const waitStarted = converter.handleNotification('item/started', {
+            item: {
+                id: 'wait-1',
+                type: 'collabAgentToolCall',
+                tool: 'wait',
+                receiverThreadIds: ['agent-1']
+            }
+        });
+        expect(waitStarted).toEqual([{
+            type: 'tool_call',
+            call_id: 'wait-1',
+            name: 'CodexWaitAgent',
+            input: {
+                targets: ['agent-1']
+            }
         }]);
     });
 

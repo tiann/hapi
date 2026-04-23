@@ -20,11 +20,13 @@ export async function createSessionScanner(opts: {
     sessionId: string | null;
     workingDirectory: string;
     onMessage: (message: RawJSONLines) => void;
+    replayExistingMessages?: boolean;
 }) {
     const scanner = new ClaudeSessionScanner({
         sessionId: opts.sessionId,
         workingDirectory: opts.workingDirectory,
-        onMessage: opts.onMessage
+        onMessage: opts.onMessage,
+        replayExistingMessages: opts.replayExistingMessages
     });
 
     await scanner.start();
@@ -49,12 +51,19 @@ class ClaudeSessionScanner extends BaseSessionScanner<RawJSONLines> {
     private readonly pendingSessions = new Set<string>();
     private currentSessionId: string | null;
     private readonly scannedSessions = new Set<string>();
+    private readonly replayExistingMessages: boolean;
 
-    constructor(opts: { sessionId: string | null; workingDirectory: string; onMessage: (message: RawJSONLines) => void }) {
+    constructor(opts: {
+        sessionId: string | null;
+        workingDirectory: string;
+        onMessage: (message: RawJSONLines) => void;
+        replayExistingMessages?: boolean;
+    }) {
         super({ intervalMs: 3000 });
         this.projectDir = getProjectPath(opts.workingDirectory);
         this.onMessage = opts.onMessage;
         this.currentSessionId = opts.sessionId;
+        this.replayExistingMessages = opts.replayExistingMessages ?? false;
     }
 
     public onNewSession(sessionId: string): void {
@@ -79,7 +88,7 @@ class ClaudeSessionScanner extends BaseSessionScanner<RawJSONLines> {
     }
 
     protected async initialize(): Promise<void> {
-        if (!this.currentSessionId) {
+        if (!this.currentSessionId || this.replayExistingMessages) {
             return;
         }
         const sessionFile = this.sessionFilePath(this.currentSessionId);

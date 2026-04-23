@@ -4,6 +4,7 @@ import type { EnhancedMode } from './loop';
 
 const harness = vi.hoisted(() => ({
     notifications: [] as Array<{ method: string; params: unknown }>,
+    turnNotifications: [] as Array<{ method: string; params: unknown }>,
     registerRequestCalls: [] as string[],
     initializeCalls: [] as unknown[]
 }));
@@ -39,6 +40,11 @@ vi.mock('./codexAppServerClient', () => {
             const started = { turn: {} };
             harness.notifications.push({ method: 'turn/started', params: started });
             this.notificationHandler?.('turn/started', started);
+
+            for (const notification of harness.turnNotifications) {
+                harness.notifications.push(notification);
+                this.notificationHandler?.(notification.method, notification.params);
+            }
 
             const completed = { status: 'Completed', turn: {} };
             harness.notifications.push({ method: 'turn/completed', params: completed });
@@ -89,7 +95,9 @@ function createSessionStub() {
     const codexMessages: unknown[] = [];
     const thinkingChanges: boolean[] = [];
     const foundSessionIds: string[] = [];
+    const metadataUpdates: unknown[] = [];
     let currentModel: string | null | undefined;
+    let metadata: Record<string, unknown> = {};
     let agentState: FakeAgentState = {
         requests: {},
         completedRequests: {}
@@ -111,6 +119,10 @@ function createSessionStub() {
         sendUserMessage(_text: string) {},
         sendSessionEvent(event: { type: string; [key: string]: unknown }) {
             sessionEvents.push(event);
+        },
+        updateMetadata(handler: (metadata: Record<string, unknown>) => Record<string, unknown>) {
+            metadata = handler(metadata);
+            metadataUpdates.push(metadata);
         }
     };
 
@@ -159,13 +171,15 @@ function createSessionStub() {
         foundSessionIds,
         rpcHandlers,
         getModel: () => currentModel,
-        getAgentState: () => agentState
+        getAgentState: () => agentState,
+        getMetadataUpdates: () => metadataUpdates
     };
 }
 
 describe('codexRemoteLauncher', () => {
     afterEach(() => {
         harness.notifications = [];
+        harness.turnNotifications = [];
         harness.registerRequestCalls = [];
         harness.initializeCalls = [];
     });
@@ -197,5 +211,21 @@ describe('codexRemoteLauncher', () => {
         expect(sessionEvents.filter((event) => event.type === 'ready').length).toBeGreaterThanOrEqual(1);
         expect(thinkingChanges).toContain(true);
         expect(session.thinking).toBe(false);
+    });
+
+    it('applies Codex session title changes to metadata immediately', async () => {
+        harness.turnNotifications = [
+            { method: 'thread/title/updated', params: { title: 'Native Codex Title' } }
+        ];
+        const { session, getMetadataUpdates } = createSessionStub();
+
+        await codexRemoteLauncher(session as never);
+
+        expect(getMetadataUpdates()).toContainEqual({
+            summary: {
+                text: 'Native Codex Title',
+                updatedAt: expect.any(Number)
+            }
+        });
     });
 });

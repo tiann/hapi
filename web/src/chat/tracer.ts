@@ -6,7 +6,7 @@ export type TracedMessage = NormalizedMessage & {
 }
 
 type TracerState = {
-    promptToTaskId: Map<string, string>
+    promptToTaskIds: Map<string, Set<string>>
     uuidToSidechainId: Map<string, string>
     orphanMessages: Map<string, NormalizedMessage[]>
 }
@@ -49,9 +49,42 @@ function processOrphans(state: TracerState, parentUuid: string, sidechainId: str
     return results
 }
 
+function flushOrphansAsRoot(state: TracerState, parentUuid: string): TracedMessage[] {
+    const results: TracedMessage[] = []
+    const orphans = state.orphanMessages.get(parentUuid)
+    if (!orphans) return results
+    state.orphanMessages.delete(parentUuid)
+
+    for (const orphan of orphans) {
+        results.push({ ...orphan })
+
+        const uuid = getMessageUuid(orphan)
+        if (uuid) {
+            results.push(...flushOrphansAsRoot(state, uuid))
+        }
+    }
+
+    return results
+}
+
+function addPromptTaskId(state: TracerState, prompt: string, taskId: string): void {
+    const existing = state.promptToTaskIds.get(prompt)
+    if (existing) {
+        existing.add(taskId)
+        return
+    }
+    state.promptToTaskIds.set(prompt, new Set([taskId]))
+}
+
+function resolvePromptTaskId(state: TracerState, prompt: string): string | null {
+    const taskIds = state.promptToTaskIds.get(prompt)
+    if (!taskIds || taskIds.size !== 1) return null
+    return taskIds.values().next().value ?? null
+}
+
 export function traceMessages(messages: NormalizedMessage[]): TracedMessage[] {
     const state: TracerState = {
-        promptToTaskId: new Map(),
+        promptToTaskIds: new Map(),
         uuidToSidechainId: new Map(),
         orphanMessages: new Map()
     }
@@ -65,7 +98,7 @@ export function traceMessages(messages: NormalizedMessage[]): TracedMessage[] {
             if (content.type !== 'tool-call' || content.name !== 'Task') continue
             const input = content.input
             if (!isObject(input) || typeof input.prompt !== 'string') continue
-            state.promptToTaskId.set(input.prompt, message.id)
+            addPromptTaskId(state, input.prompt, content.id)
         }
     }
 
@@ -78,12 +111,23 @@ export function traceMessages(messages: NormalizedMessage[]): TracedMessage[] {
         const uuid = getMessageUuid(message)
         const parentUuid = getParentUuid(message)
 
+        if (message.sidechainKey) {
+            if (uuid) {
+                state.uuidToSidechainId.set(uuid, message.sidechainKey)
+            }
+            results.push({ ...message, sidechainId: message.sidechainKey })
+            if (uuid) {
+                results.push(...processOrphans(state, uuid, message.sidechainKey))
+            }
+            continue
+        }
+
         // Sidechain root matching (prompt == Task.prompt).
         let sidechainId: string | undefined
         if (message.role === 'agent') {
             for (const content of message.content) {
                 if (content.type !== 'sidechain') continue
-                const taskId = state.promptToTaskId.get(content.prompt)
+                const taskId = resolvePromptTaskId(state, content.prompt)
                 if (taskId) {
                     sidechainId = taskId
                     break
@@ -117,6 +161,10 @@ export function traceMessages(messages: NormalizedMessage[]): TracedMessage[] {
         }
 
         results.push({ ...message })
+    }
+
+    for (const [parentUuid] of state.orphanMessages) {
+        results.push(...flushOrphansAsRoot(state, parentUuid))
     }
 
     return results

@@ -11,6 +11,8 @@ import { SDKToLogConverter } from "./utils/sdkToLogConverter";
 import { PLAN_FAKE_REJECT } from "./sdk/prompts";
 import { EnhancedMode } from "./loop";
 import { OutgoingMessageQueue } from "./utils/OutgoingMessageQueue";
+import { createSessionScanner } from "./utils/sessionScanner";
+import { isClaudeChatVisibleMessage } from "./utils/chatVisibility";
 import type { ClaudePermissionMode } from "@hapi/protocol/types";
 import {
     RemoteLauncherBase,
@@ -108,11 +110,42 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
             version: process.env.npm_package_version
         }, permissionHandler.getResponses());
 
+        const replayExplicitResumeTranscript = async (): Promise<void> => {
+            if (session.startingMode !== 'remote') {
+                return;
+            }
+
+            const resumeSessionId = session.consumeExplicitRemoteResumeReplaySessionId();
+            if (!resumeSessionId) {
+                return;
+            }
+
+            if (session.sessionId !== resumeSessionId) {
+                session.onSessionFound(resumeSessionId);
+            }
+
+            const scanner = await createSessionScanner({
+                sessionId: resumeSessionId,
+                workingDirectory: session.path,
+                replayExistingMessages: true,
+                onMessage: (message) => {
+                    if (!isClaudeChatVisibleMessage(message)) {
+                        return;
+                    }
+                    session.client.sendClaudeSessionMessage(message);
+                }
+            });
+
+            await scanner.cleanup();
+        };
+
         const handleSessionFound = (sessionId: string) => {
             sdkToLogConverter.updateSessionId(sessionId);
         };
         this.handleSessionFound = handleSessionFound;
         session.addSessionFoundCallback(handleSessionFound);
+
+        await replayExplicitResumeTranscript();
 
         let planModeToolCalls = new Set<string>();
         let ongoingToolCalls = new Map<string, { parentToolCallId: string | null }>();

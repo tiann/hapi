@@ -123,6 +123,53 @@ function extractReasoningText(item: Record<string, unknown>): string | null {
     return null;
 }
 
+function extractThreadId(params: Record<string, unknown>): string | null {
+    const thread = asRecord(params.thread);
+    return asString(
+        params.threadId
+        ?? params.thread_id
+        ?? thread?.threadId
+        ?? thread?.thread_id
+        ?? thread?.id
+    );
+}
+
+function normalizeTitle(value: unknown): string | null {
+    if (typeof value !== 'string') {
+        return null;
+    }
+    const title = value.trim();
+    if (!title || title.toLowerCase() === 'none') {
+        return null;
+    }
+    return title;
+}
+
+function extractThreadTitle(params: Record<string, unknown>): string | null {
+    const thread = asRecord(params.thread);
+    const candidates = [
+        params.title,
+        params.name,
+        params.summaryTitle,
+        params.summary_title,
+        params.summary,
+        thread?.title,
+        thread?.name,
+        thread?.summaryTitle,
+        thread?.summary_title,
+        thread?.summary
+    ];
+
+    for (const candidate of candidates) {
+        const title = normalizeTitle(candidate);
+        if (title) {
+            return title;
+        }
+    }
+
+    return null;
+}
+
 export class AppServerEventConverter {
     private readonly agentMessageBuffers = new Map<string, string>();
     private readonly reasoningBuffers = new Map<string, string>();
@@ -135,6 +182,27 @@ export class AppServerEventConverter {
     private readonly lastAgentMessageDeltaByItemId = new Map<string, string>();
     private readonly lastReasoningDeltaByItemId = new Map<string, string>();
     private readonly lastCommandOutputDeltaByItemId = new Map<string, string>();
+    private readonly childThreadIdToParentToolCallId = new Map<string, string>();
+    private readonly lastDeliveredChildAgentMessageByThreadId = new Map<string, string>();
+
+    private addSidechainMeta(
+        event: ConvertedEvent,
+        threadId: string | null
+    ): ConvertedEvent {
+        if (!threadId) {
+            return event;
+        }
+
+        const parentToolCallId = this.childThreadIdToParentToolCallId.get(threadId);
+        if (!parentToolCallId) {
+            return event;
+        }
+
+        return {
+            ...event,
+            parent_tool_call_id: parentToolCallId
+        };
+    }
 
     private handleWrappedCodexEvent(paramsRecord: Record<string, unknown>): ConvertedEvent[] | null {
         const msg = asRecord(paramsRecord.msg);
@@ -145,6 +213,20 @@ export class AppServerEventConverter {
         const msgType = asString(msg.type);
         if (!msgType) {
             return [];
+        }
+
+        if (msgType === 'session_title_change') {
+            const title = extractThreadTitle(msg);
+            return title ? [{ type: 'session_title_change', title }] : [];
+        }
+
+        if (
+            msgType === 'thread_title_updated' ||
+            msgType === 'thread_title_change' ||
+            msgType === 'thread_updated' ||
+            msgType === 'session_title_updated'
+        ) {
+            return this.handleThreadTitleUpdate(msg);
         }
 
         if (msgType === 'item_started' || msgType === 'item_completed') {
@@ -165,6 +247,7 @@ export class AppServerEventConverter {
             msgType === 'turn_aborted' ||
             msgType === 'task_failed'
         ) {
+            const threadId = asString(msg.thread_id ?? msg.threadId);
             const turnId = asString(msg.turn_id ?? msg.turnId);
             if ((msgType === 'task_complete' || msgType === 'turn_aborted' || msgType === 'task_failed') && !turnId) {
                 logger.debug('[AppServerEventConverter] Ignoring wrapped terminal event without turn_id', { msgType });
@@ -181,7 +264,7 @@ export class AppServerEventConverter {
                     event.error = error;
                 }
             }
-            return [event];
+            return [this.addSidechainMeta(event, threadId)];
         }
 
         if (msgType === 'agent_message_delta' || msgType === 'agent_message_content_delta') {
@@ -245,6 +328,16 @@ export class AppServerEventConverter {
         return [msg as ConvertedEvent];
     }
 
+    private handleThreadTitleUpdate(paramsRecord: Record<string, unknown>): ConvertedEvent[] {
+        const threadId = extractThreadId(paramsRecord);
+        if (threadId && this.childThreadIdToParentToolCallId.has(threadId)) {
+            return [];
+        }
+
+        const title = extractThreadTitle(paramsRecord);
+        return title ? [{ type: 'session_title_change', title }] : [];
+    }
+
     handleNotification(method: string, params: unknown): ConvertedEvent[] {
         const events: ConvertedEvent[] = [];
         const paramsRecord = asRecord(params) ?? {};
@@ -264,6 +357,15 @@ export class AppServerEventConverter {
                 events.push({ type: 'thread_started', thread_id: threadId });
             }
             return events;
+        }
+
+        if (
+            method === 'thread/title/updated' ||
+            method === 'thread/updated' ||
+            method === 'thread/renamed' ||
+            method === 'session/title/updated'
+        ) {
+            return this.handleThreadTitleUpdate(paramsRecord);
         }
 
         if (method === 'turn/started') {
@@ -384,9 +486,149 @@ export class AppServerEventConverter {
 
             const itemType = normalizeItemType(item.type ?? item.itemType ?? item.kind);
             const itemId = extractItemId(paramsRecord) ?? asString(item.id ?? item.itemId ?? item.item_id);
+            const threadId = asString(
+                paramsRecord.threadId
+                ?? paramsRecord.thread_id
+                ?? item.threadId
+                ?? item.thread_id
+                ?? asRecord(item.thread)?.id
+                ?? asRecord(item.thread)?.threadId
+                ?? asRecord(item.thread)?.thread_id
+            );
 
             if (!itemType || !itemId) {
                 return events;
+            }
+
+            if (itemType === 'collabagenttoolcall') {
+                const tool = normalizeItemType(item.tool);
+                if (tool === 'spawnagent') {
+                    if (method === 'item/started') {
+                        events.push({
+                            type: 'tool_call',
+                            call_id: itemId,
+                            name: 'CodexSpawnAgent',
+                            input: {
+                                message: asString(item.prompt),
+                                model: asString(item.model),
+                                reasoningEffort: asString(item.reasoningEffort ?? item.reasoning_effort)
+                            }
+                        });
+                    }
+
+                    if (method === 'item/completed') {
+                        const receiverThreadIds = Array.isArray(item.receiverThreadIds)
+                            ? item.receiverThreadIds.filter((value): value is string => typeof value === 'string' && value.length > 0)
+                            : [];
+                        const nickname = asString(item.nickname ?? item.agentNickname ?? item.agent_nickname);
+                        for (const receiverThreadId of receiverThreadIds) {
+                            this.childThreadIdToParentToolCallId.set(receiverThreadId, itemId);
+                        }
+
+                        events.push({
+                            type: 'tool_call_result',
+                            call_id: itemId,
+                            output: {
+                                agent_id: receiverThreadIds[0] ?? null,
+                                agent_ids: receiverThreadIds,
+                                ...(nickname ? { nickname } : {}),
+                                agentsStates: item.agentsStates
+                            }
+                        });
+                    }
+
+                    return events;
+                }
+
+                if (tool === 'wait') {
+                    const receiverThreadIds = Array.isArray(item.receiverThreadIds)
+                        ? item.receiverThreadIds.filter((value): value is string => typeof value === 'string' && value.length > 0)
+                        : [];
+
+                    if (method === 'item/started') {
+                        events.push({
+                            type: 'tool_call',
+                            call_id: itemId,
+                            name: 'CodexWaitAgent',
+                            input: {
+                                targets: receiverThreadIds
+                            }
+                        });
+                    }
+
+                    if (method === 'item/completed') {
+                        const agentsStates = asRecord(item.agentsStates) ?? {};
+                        const statuses: Record<string, unknown> = {};
+                        for (const [receiverThreadId, rawState] of Object.entries(agentsStates)) {
+                            const stateRecord = asRecord(rawState) ?? {};
+                            const status = asString(stateRecord.status) ?? 'completed';
+                            const message = asString(stateRecord.message);
+                            statuses[receiverThreadId] = message ? { status, message } : { status };
+                            const parentToolCallId = this.childThreadIdToParentToolCallId.get(receiverThreadId);
+                            const lastDeliveredMessage = this.lastDeliveredChildAgentMessageByThreadId.get(receiverThreadId);
+                            if (message && parentToolCallId && lastDeliveredMessage !== message) {
+                                this.lastDeliveredChildAgentMessageByThreadId.set(receiverThreadId, message);
+                                events.push({
+                                    type: 'agent_message',
+                                    message,
+                                    parent_tool_call_id: parentToolCallId
+                                });
+                            }
+                        }
+
+                        events.push({
+                            type: 'tool_call_result',
+                            call_id: itemId,
+                            output: {
+                                statuses
+                            }
+                        });
+                    }
+
+                    return events;
+                }
+            }
+
+            if (itemType === 'usermessage') {
+                if (method === 'item/completed') {
+                    const text = extractItemText(item);
+                    const parentToolCallId = threadId ? this.childThreadIdToParentToolCallId.get(threadId) : null;
+                    if (text && parentToolCallId) {
+                        events.push({
+                            type: 'user_message',
+                            message: text,
+                            parent_tool_call_id: parentToolCallId
+                        });
+                    }
+                }
+                return events;
+            }
+
+            if (itemType === 'mcptoolcall') {
+                const server = asString(item.server);
+                const tool = asString(item.tool);
+                const parentToolCallId = threadId ? this.childThreadIdToParentToolCallId.get(threadId) : null;
+                const title = asString(asRecord(item.arguments)?.title);
+
+                if (server === 'hapi' && tool === 'change_title') {
+                    if (parentToolCallId) {
+                        if (title) {
+                            events.push(this.addSidechainMeta({
+                                type: 'subagent_title_change',
+                                title
+                            }, threadId));
+                        }
+                        return events;
+                    }
+
+                    if (title) {
+                        events.push({
+                            type: 'session_title_change',
+                            title
+                        });
+                    }
+                    return events;
+                }
             }
 
             if (itemType === 'agentmessage') {
@@ -396,7 +638,16 @@ export class AppServerEventConverter {
                     }
                     const text = extractItemText(item) ?? this.agentMessageBuffers.get(itemId);
                     if (text) {
-                        events.push({ type: 'agent_message', message: text });
+                        const event = this.addSidechainMeta({ type: 'agent_message', message: text }, threadId);
+                        const parentToolCallId = asString((event as Record<string, unknown>).parent_tool_call_id);
+                        if (threadId && parentToolCallId) {
+                            const lastDeliveredMessage = this.lastDeliveredChildAgentMessageByThreadId.get(threadId);
+                            if (lastDeliveredMessage === text) {
+                                return events;
+                            }
+                            this.lastDeliveredChildAgentMessageByThreadId.set(threadId, text);
+                        }
+                        events.push(event);
                         this.completedAgentMessageItems.add(itemId);
                         this.agentMessageBuffers.delete(itemId);
                     }
@@ -412,7 +663,7 @@ export class AppServerEventConverter {
                     }
                     const text = extractReasoningText(item) ?? this.reasoningBuffers.get(itemId);
                     if (text) {
-                        events.push({ type: 'agent_reasoning', text });
+                        events.push(this.addSidechainMeta({ type: 'agent_reasoning', text }, threadId));
                         this.completedReasoningItems.add(itemId);
                         this.reasoningBuffers.delete(itemId);
                     }
@@ -432,11 +683,11 @@ export class AppServerEventConverter {
                     if (autoApproved !== null) meta.auto_approved = autoApproved;
                     this.commandMeta.set(itemId, meta);
 
-                    events.push({
+                    events.push(this.addSidechainMeta({
                         type: 'exec_command_begin',
                         call_id: itemId,
                         ...meta
-                    });
+                    }, threadId));
                 }
 
                 if (method === 'item/completed') {
@@ -447,7 +698,7 @@ export class AppServerEventConverter {
                     const exitCode = asNumber(item.exitCode ?? item.exit_code ?? item.exitcode);
                     const status = asString(item.status);
 
-                    events.push({
+                    events.push(this.addSidechainMeta({
                         type: 'exec_command_end',
                         call_id: itemId,
                         ...meta,
@@ -456,7 +707,7 @@ export class AppServerEventConverter {
                         ...(error ? { error } : {}),
                         ...(exitCode !== null ? { exit_code: exitCode } : {}),
                         ...(status ? { status } : {})
-                    });
+                    }, threadId));
 
                     this.commandMeta.delete(itemId);
                     this.commandOutputBuffers.delete(itemId);
@@ -475,11 +726,11 @@ export class AppServerEventConverter {
                     if (autoApproved !== null) meta.auto_approved = autoApproved;
                     this.fileChangeMeta.set(itemId, meta);
 
-                    events.push({
+                    events.push(this.addSidechainMeta({
                         type: 'patch_apply_begin',
                         call_id: itemId,
                         ...meta
-                    });
+                    }, threadId));
                 }
 
                 if (method === 'item/completed') {
@@ -488,14 +739,14 @@ export class AppServerEventConverter {
                     const stderr = asString(item.stderr);
                     const success = asBoolean(item.success ?? item.ok ?? item.applied ?? item.status === 'completed');
 
-                    events.push({
+                    events.push(this.addSidechainMeta({
                         type: 'patch_apply_end',
                         call_id: itemId,
                         ...meta,
                         ...(stdout ? { stdout } : {}),
                         ...(stderr ? { stderr } : {}),
                         success: success ?? false
-                    });
+                    }, threadId));
 
                     this.fileChangeMeta.delete(itemId);
                 }
@@ -520,5 +771,7 @@ export class AppServerEventConverter {
         this.lastAgentMessageDeltaByItemId.clear();
         this.lastReasoningDeltaByItemId.clear();
         this.lastCommandOutputDeltaByItemId.clear();
+        this.childThreadIdToParentToolCallId.clear();
+        this.lastDeliveredChildAgentMessageByThreadId.clear();
     }
 }

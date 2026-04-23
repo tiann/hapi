@@ -75,6 +75,56 @@ describe('convertCodexEvent', () => {
         });
     });
 
+    it.each([
+        ['exec_command', 'CodexBash'],
+        ['write_stdin', 'CodexWriteStdin'],
+        ['spawn_agent', 'CodexSpawnAgent'],
+        ['wait_agent', 'CodexWaitAgent'],
+        ['send_input', 'CodexSendInput'],
+        ['close_agent', 'CodexCloseAgent']
+    ])('normalizes Codex tool %s as %s', (rawName, expectedName) => {
+        const result = convertCodexEvent({
+            type: 'response_item',
+            payload: {
+                type: 'function_call',
+                name: rawName,
+                call_id: 'call-1',
+                arguments: '{"message":"child prompt"}'
+            }
+        });
+
+        expect(result?.message).toMatchObject({
+            type: 'tool-call',
+            name: expectedName,
+            callId: 'call-1'
+        });
+    });
+
+    it('adds normalized subagent metadata for Codex spawn_agent calls', () => {
+        const result = convertCodexEvent({
+            type: 'response_item',
+            payload: {
+                type: 'function_call',
+                name: 'spawn_agent',
+                call_id: 'spawn-1',
+                arguments: '{"message":"Summarize this file"}'
+            }
+        });
+
+        expect(result?.message).toMatchObject({
+            type: 'tool-call',
+            name: 'CodexSpawnAgent',
+            callId: 'spawn-1',
+            meta: {
+                subagent: {
+                    kind: 'spawn',
+                    sidechainKey: 'spawn-1',
+                    prompt: 'Summarize this file'
+                }
+            }
+        });
+    });
+
     it('converts function_call_output items', () => {
         const result = convertCodexEvent({
             type: 'response_item',

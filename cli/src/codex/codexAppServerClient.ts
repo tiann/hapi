@@ -56,6 +56,11 @@ function createAbortError(): Error {
     return error;
 }
 
+export function resolveCodexAppServerCommand(env: Record<string, string | undefined> = process.env): string {
+    const configured = env.CODEX_BIN?.trim();
+    return configured && configured.length > 0 ? configured : 'codex';
+}
+
 export class CodexAppServerClient {
     private process: ChildProcessWithoutNullStreams | null = null;
     private connected = false;
@@ -73,7 +78,8 @@ export class CodexAppServerClient {
             return;
         }
 
-        this.process = spawn('codex', ['app-server'], {
+        const command = resolveCodexAppServerCommand();
+        this.process = spawn(command, ['app-server'], {
             env: Object.keys(process.env).reduce((acc, key) => {
                 const value = process.env[key];
                 if (typeof value === 'string') acc[key] = value;
@@ -107,7 +113,7 @@ export class CodexAppServerClient {
             logger.debug('[CodexAppServer] Process error', error);
             const message = error instanceof Error ? error.message : String(error);
             this.rejectAllPending(new Error(
-                `Failed to spawn codex app-server: ${message}. Is it installed and on PATH?`,
+                `Failed to spawn Codex app-server with '${command}': ${message}. Set CODEX_BIN or install codex on PATH.`,
                 { cause: error }
             ));
             this.connected = false;
