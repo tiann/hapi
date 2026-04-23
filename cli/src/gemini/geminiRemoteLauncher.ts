@@ -183,6 +183,8 @@ class GeminiRemoteLauncher extends RemoteLauncherBase {
             case 'text':
                 this.messageBuffer.addMessage(message.text, 'assistant');
                 break;
+            case 'reasoning':
+                break;
             case 'tool_call':
                 this.messageBuffer.addMessage(`Tool call: ${message.name}`, 'tool');
                 break;
