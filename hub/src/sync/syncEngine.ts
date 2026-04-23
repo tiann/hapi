@@ -205,8 +205,13 @@ export class SyncEngine {
         this.triggerDedupIfNeeded(payload.sid)
     }
 
-    handleSessionEnd(payload: { sid: string; time: number }): void {
+    handleSessionEnd(payload: { sid: string; time: number; reason?: 'completed' | 'terminated' | 'error' }): void {
         this.sessionCache.handleSessionEnd(payload)
+        this.eventPublisher.emit({
+            type: 'session-ended',
+            sessionId: payload.sid,
+            reason: payload.reason
+        })
         // Retry dedup now that this session is inactive — a prior dedup may have
         // skipped it because it was still active at the time.
         this.triggerDedupIfNeeded(payload.sid)

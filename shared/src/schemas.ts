@@ -217,6 +217,10 @@ export const SyncEventSchema = z.discriminatedUnion('type', [
     SessionChangedSchema.extend({
         type: z.literal('messages-invalidated')
     }),
+    SessionChangedSchema.extend({
+        type: z.literal('session-ended'),
+        reason: z.enum(['completed', 'terminated', 'error']).optional()
+    }),
     MachineChangedSchema.extend({
         type: z.literal('machine-updated'),
         data: z.unknown().optional()

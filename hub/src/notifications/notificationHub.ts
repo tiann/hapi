@@ -1,4 +1,5 @@
 import type { Session, SyncEngine, SyncEvent } from '../sync/syncEngine'
+import type { SessionEndReason } from '@hapi/protocol'
 import type { NotificationChannel, NotificationHubOptions, TaskNotification } from './notificationTypes'
 import { extractMessageEventType, extractTaskNotification } from './eventParsing'
 
@@ -51,6 +52,15 @@ export class NotificationHub {
 
         if (event.type === 'session-removed' && event.sessionId) {
             this.clearSessionState(event.sessionId)
+            return
+        }
+
+        if (event.type === 'session-ended' && event.sessionId) {
+            if (event.reason === 'completed') {
+                this.sendSessionCompletion(event.sessionId, event.reason).catch((error) => {
+                    console.error('[NotificationHub] Failed to send session completion notification:', error)
+                })
+            }
             return
         }
 
@@ -162,6 +172,15 @@ export class NotificationHub {
         await this.notifyTask(session, notification)
     }
 
+    private async sendSessionCompletion(sessionId: string, reason: SessionEndReason): Promise<void> {
+        const session = this.syncEngine.getSession(sessionId)
+        if (!session) {
+            return
+        }
+
+        await this.notifySessionCompletion(session, reason)
+    }
+
     private async notifyReady(session: Session): Promise<void> {
         for (const channel of this.channels) {
             try {
@@ -188,6 +207,19 @@ export class NotificationHub {
                 await channel.sendTaskNotification(session, notification)
             } catch (error) {
                 console.error('[NotificationHub] Failed to send task notification:', error)
+            }
+        }
+    }
+
+    private async notifySessionCompletion(session: Session, reason: SessionEndReason): Promise<void> {
+        for (const channel of this.channels) {
+            if (typeof channel.sendSessionCompletion !== 'function') {
+                continue
+            }
+            try {
+                await channel.sendSessionCompletion(session, reason)
+            } catch (error) {
+                console.error('[NotificationHub] Failed to send session completion notification:', error)
             }
         }
     }

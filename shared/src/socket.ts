@@ -67,6 +67,8 @@ export const TerminalErrorPayloadSchema = z.object({
 })
 
 export type TerminalErrorPayload = z.infer<typeof TerminalErrorPayloadSchema>
+export const SessionEndReasonSchema = z.enum(['completed', 'terminated', 'error'])
+export type SessionEndReason = z.infer<typeof SessionEndReasonSchema>
 
 export const UpdateNewMessageBodySchema = z.object({
     t: z.literal('new-message'),
@@ -144,7 +146,7 @@ export interface ClientToServerEvents {
         effort?: string | null
         collaborationMode?: CodexCollaborationMode
     }) => void
-    'session-end': (data: { sid: string; time: number }) => void
+    'session-end': (data: { sid: string; time: number; reason?: SessionEndReason }) => void
     'messages-consumed': (data: { sid: string; localIds: string[] }) => void
     'update-metadata': (data: { sid: string; expectedVersion: number; metadata: unknown }, cb: (answer: {
         result: 'error'

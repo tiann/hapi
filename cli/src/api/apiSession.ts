@@ -10,6 +10,7 @@ import { AsyncLock } from '@/utils/lock'
 import type { RawJSONLines } from '@/claude/types'
 import { configuration } from '@/configuration'
 import { AGENT_MESSAGE_PAYLOAD_TYPE } from "@hapi/protocol"
+import type { SessionEndReason } from '@hapi/protocol'
 import type { ClientToServerEvents, ServerToClientEvents, Update } from '@hapi/protocol'
 import {
     TerminalClosePayloadSchema,
@@ -499,9 +500,9 @@ export class ApiSessionClient extends EventEmitter {
         this.socket.emit('messages-consumed', { sid: this.sessionId, localIds })
     }
 
-    sendSessionDeath(): void {
+    sendSessionDeath(reason?: SessionEndReason): void {
         void cleanupUploadDir(this.sessionId)
-        this.socket.emit('session-end', { sid: this.sessionId, time: Date.now() })
+        this.socket.emit('session-end', { sid: this.sessionId, time: Date.now(), reason })
     }
 
     updateMetadata(handler: (metadata: Metadata) => Metadata): void {

@@ -224,6 +224,9 @@ export async function runCodex(opts: {
         if (localFailure?.exitReason === 'exit') {
             lifecycle.setExitCode(1);
             lifecycle.setArchiveReason(`Local launch failed: ${formatFailureReason(localFailure.message)}`);
+            lifecycle.setSessionEndReason('error');
+        } else {
+            lifecycle.setSessionEndReason('completed');
         }
         await lifecycle.cleanupAndExit();
     }

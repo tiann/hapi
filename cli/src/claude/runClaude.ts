@@ -390,11 +390,16 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
     if (localFailure?.exitReason === 'exit') {
         lifecycle.setExitCode(1);
         lifecycle.setArchiveReason(`Local launch failed: ${formatFailureReason(localFailure.message)}`);
+        lifecycle.setSessionEndReason('error');
     }
 
     if (loopFailed) {
         await lifecycle.cleanup();
         throw loopError;
+    }
+
+    if (!localFailure) {
+        lifecycle.setSessionEndReason('completed');
     }
 
     await lifecycle.cleanupAndExit();

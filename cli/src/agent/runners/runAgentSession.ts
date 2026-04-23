@@ -194,7 +194,7 @@ export async function runAgentSession(opts: {
     } finally {
         clearInterval(keepAliveInterval);
         await permissionAdapter.cancelAll('Session ended');
-        session.sendSessionDeath();
+        session.sendSessionDeath(shouldExit ? 'terminated' : 'completed');
         await session.flush();
         session.close();
         await backend.disconnect();
