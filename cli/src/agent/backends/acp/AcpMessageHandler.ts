@@ -70,6 +70,52 @@ function extractAudienceField(value: unknown): string[] {
     return value.filter((entry): entry is string => typeof entry === 'string');
 }
 
+/**
+ * Normalizes the ACP `tool_call_update` content array sent by agents (e.g.
+ * Gemini, OpenCode) that do not populate `rawOutput`.
+ *
+ * ACP ToolCallContent union (as emitted by Gemini CLI):
+ *   - `{type:'content', content:{type:'text', text:…}}` — tool stdout/stderr
+ *   - `{type:'diff', path, oldText, newText, _meta:{kind}}` — file edits
+ *
+ * Returns:
+ *   - string   — concatenated text from all content blocks
+ *   - object   — structured diff when a diff block is present
+ *   - ""       — empty string when content array is empty (no visible output)
+ *   - null     — content is not an array; caller should pass through the original value
+ */
+function normalizeAcpToolContent(content: unknown): string | object | null {
+    if (!Array.isArray(content)) {
+        return null;
+    }
+    // Empty array: no display output from the agent (e.g. touch, silent command)
+    if (content.length === 0) {
+        return '';
+    }
+    // Single pass: collect text parts and capture the first diff block encountered.
+    // In practice agents send either a single content block or a single diff block,
+    // but we handle mixed arrays defensively: diff wins over text if both are present.
+    let diffBlock: object | null = null;
+    const parts: string[] = [];
+    for (const block of content) {
+        if (!isObject(block)) continue;
+        if (block.type === 'diff' && diffBlock === null) {
+            diffBlock = {
+                path: typeof block.path === 'string' ? block.path : undefined,
+                oldText: typeof block.oldText === 'string' ? block.oldText : undefined,
+                newText: typeof block.newText === 'string' ? block.newText : undefined,
+                kind: isObject(block._meta) && typeof block._meta.kind === 'string' ? block._meta.kind : undefined
+            };
+        } else if (block.type === 'content' && isObject(block.content)) {
+            const inner = block.content;
+            if (inner.type === 'text' && typeof inner.text === 'string') {
+                parts.push(inner.text);
+            }
+        }
+    }
+    return diffBlock ?? parts.join('');
+}
+
 function normalizePlanEntries(entries: unknown): PlanItem[] {
     if (!Array.isArray(entries)) return [];
 
@@ -297,11 +343,21 @@ export class AcpMessageHandler {
         }
 
         if (status === 'completed' || status === 'failed') {
-            const result = update.rawOutput ?? update.content;
+            // Prefer rawOutput (Claude/Codex path). When absent, normalize the
+            // ACP content array sent by agents such as Gemini and OpenCode.
+            // If content is not an array (normalizeAcpToolContent returns null),
+            // fall back to the original content value to avoid silent data loss.
+            let output: unknown;
+            if (update.rawOutput !== undefined) {
+                output = update.rawOutput;
+            } else {
+                const normalized = normalizeAcpToolContent(update.content);
+                output = normalized !== null ? normalized : update.content;
+            }
             this.onMessage({
                 type: 'tool_result',
                 id: toolCallId,
-                output: result,
+                output,
                 status: status === 'failed' ? 'failed' : 'completed'
             });
         }

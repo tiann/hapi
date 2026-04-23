@@ -779,4 +779,149 @@ describe('AcpMessageHandler', () => {
 
         expect(messages).toHaveLength(0);
     });
+
+    describe('tool_call_update content normalization (Gemini/OpenCode path)', () => {
+        it('unwraps text content block to string output', () => {
+            // Gemini sends content: [{type:'content', content:{type:'text', text:'...'}}]
+            // when the tool has stdout. HAPI must normalize this to a plain string.
+            const messages: AgentMessage[] = [];
+            const handler = new AcpMessageHandler((message) => messages.push(message));
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+                toolCallId: 'gem-1',
+                title: 'shell',
+                rawInput: { cmd: 'echo hello' },
+                status: 'in_progress'
+            });
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCallUpdate,
+                toolCallId: 'gem-1',
+                status: 'completed',
+                content: [{ type: 'content', content: { type: 'text', text: 'hello\n' } }]
+            });
+
+            const result = getToolResult(messages, 'gem-1');
+            expect(result.status).toBe('completed');
+            expect(result.output).toBe('hello\n');
+        });
+
+        it('normalizes empty content array to empty string output', () => {
+            // Gemini sends content: [] when returnDisplay is falsy (no visible output).
+            // Raw [] must not be forwarded to the web renderer.
+            const messages: AgentMessage[] = [];
+            const handler = new AcpMessageHandler((message) => messages.push(message));
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+                toolCallId: 'gem-2',
+                title: 'shell',
+                rawInput: { cmd: 'touch file' },
+                status: 'in_progress'
+            });
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCallUpdate,
+                toolCallId: 'gem-2',
+                status: 'completed',
+                content: []
+            });
+
+            const result = getToolResult(messages, 'gem-2');
+            expect(result.status).toBe('completed');
+            expect(result.output).toBe('');
+        });
+
+        it('preserves diff content block fields in output', () => {
+            // Gemini sends content: [{type:'diff', path, oldText, newText, _meta:{kind}}]
+            // for file-edit tools. HAPI must surface these fields intact.
+            const messages: AgentMessage[] = [];
+            const handler = new AcpMessageHandler((message) => messages.push(message));
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+                toolCallId: 'gem-3',
+                title: 'write_file',
+                rawInput: { path: 'src/foo.ts' },
+                status: 'in_progress'
+            });
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCallUpdate,
+                toolCallId: 'gem-3',
+                status: 'completed',
+                content: [{
+                    type: 'diff',
+                    path: 'src/foo.ts',
+                    oldText: 'old content',
+                    newText: 'new content',
+                    _meta: { kind: 'modify' }
+                }]
+            });
+
+            const result = getToolResult(messages, 'gem-3');
+            expect(result.status).toBe('completed');
+            expect(result.output).toEqual({
+                path: 'src/foo.ts',
+                oldText: 'old content',
+                newText: 'new content',
+                kind: 'modify'
+            });
+        });
+
+        it('prefers rawOutput over content when both are present (regression guard)', () => {
+            // Claude/Codex always send rawOutput. If both fields arrive, rawOutput wins
+            // and the ACP content array is ignored to preserve existing behavior.
+            const messages: AgentMessage[] = [];
+            const handler = new AcpMessageHandler((message) => messages.push(message));
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+                toolCallId: 'reg-1',
+                title: 'Bash',
+                rawInput: { cmd: 'ls' },
+                status: 'in_progress'
+            });
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCallUpdate,
+                toolCallId: 'reg-1',
+                status: 'completed',
+                rawOutput: { stdout: 'file.txt\n' },
+                content: [{ type: 'content', content: { type: 'text', text: 'should be ignored' } }]
+            });
+
+            const result = getToolResult(messages, 'reg-1');
+            expect(result.status).toBe('completed');
+            expect(result.output).toEqual({ stdout: 'file.txt\n' });
+        });
+
+        it('passes through non-array content value unchanged when rawOutput is absent', () => {
+            // If an ACP agent sends content as a non-array value (e.g. a plain string or
+            // object), normalizeAcpToolContent returns null and we fall back to the
+            // original content to avoid silent data loss.
+            const messages: AgentMessage[] = [];
+            const handler = new AcpMessageHandler((message) => messages.push(message));
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+                toolCallId: 'reg-2',
+                title: 'Bash',
+                rawInput: { cmd: 'ls' },
+                status: 'in_progress'
+            });
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCallUpdate,
+                toolCallId: 'reg-2',
+                status: 'completed',
+                content: { stdout: 'file.txt\n' }
+            });
+
+            const result = getToolResult(messages, 'reg-2');
+            expect(result.status).toBe('completed');
+            expect(result.output).toEqual({ stdout: 'file.txt\n' });
+        });
+    });
 });
