@@ -657,4 +657,126 @@ describe('AcpMessageHandler', () => {
         expect(messages).toHaveLength(1);
         expect((messages[0] as { text: string }).text).toMatch(/^Claude AI usage limit warning\|/);
     });
+
+    it('forwards agent_thought_chunk as a reasoning message', () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message));
+
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentThoughtChunk,
+            content: { type: 'text', text: 'thinking about the problem' }
+        });
+
+        expect(messages).toHaveLength(1);
+        expect(messages[0]).toEqual({ type: 'reasoning', text: 'thinking about the problem' });
+    });
+
+    it('silently drops agent_thought_chunk when content is not a text block', () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message));
+
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentThoughtChunk,
+            content: { type: 'image', url: 'https://example.com/img.png' }
+        });
+
+        expect(messages).toHaveLength(0);
+    });
+
+    it('does not flush the text buffer when a thought chunk arrives mid-stream', () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message));
+
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+            content: { type: 'text', text: 'partial answer' }
+        });
+
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentThoughtChunk,
+            content: { type: 'text', text: 'mid-stream thought' }
+        });
+
+        handler.flushText();
+
+        // Both messages are delivered intact with no loss. Reasoning is
+        // emitted inline (see AcpMessageHandler) so it precedes the
+        // flushed text segment — this is an intentional contract to let
+        // thoughts and text interleave without splitting a live segment.
+        expect(messages).toHaveLength(2);
+        expect(messages).toContainEqual({ type: 'reasoning', text: 'mid-stream thought' });
+        expect(messages).toContainEqual({ type: 'text', text: 'partial answer' });
+        expect(messages[0]).toEqual({ type: 'reasoning', text: 'mid-stream thought' });
+    });
+
+    it('does not drop thought chunks annotated with a non-assistant audience', () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message));
+
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentThoughtChunk,
+            content: {
+                type: 'text',
+                text: 'private reasoning',
+                annotations: { audience: ['user'] }
+            }
+        });
+
+        expect(messages).toHaveLength(1);
+        expect(messages[0]).toEqual({ type: 'reasoning', text: 'private reasoning' });
+    });
+
+    it('forwards sequential thought chunks in arrival order as separate reasoning messages', () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message));
+
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentThoughtChunk,
+            content: { type: 'text', text: 'first thought' }
+        });
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentThoughtChunk,
+            content: { type: 'text', text: 'second thought' }
+        });
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentThoughtChunk,
+            content: { type: 'text', text: 'third thought' }
+        });
+
+        expect(messages).toEqual([
+            { type: 'reasoning', text: 'first thought' },
+            { type: 'reasoning', text: 'second thought' },
+            { type: 'reasoning', text: 'third thought' }
+        ]);
+    });
+
+    it('silently drops agent_thought_chunk with empty text', () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message));
+
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentThoughtChunk,
+            content: { type: 'text', text: '' }
+        });
+
+        expect(messages).toHaveLength(0);
+    });
+
+    it.each([
+        ['null', null],
+        ['undefined', undefined],
+        ['number', 42],
+        ['string', 'not a block'],
+        ['array', ['text']]
+    ])('silently drops agent_thought_chunk when content is %s', (_label, content) => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message));
+
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentThoughtChunk,
+            content
+        });
+
+        expect(messages).toHaveLength(0);
+    });
 });

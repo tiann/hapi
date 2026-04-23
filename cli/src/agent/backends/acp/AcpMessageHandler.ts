@@ -197,9 +197,24 @@ export class AcpMessageHandler {
         }
 
         if (updateType === ACP_SESSION_UPDATE_TYPES.agentThoughtChunk) {
-            // Thought chunks are not forwarded as messages, so they do not
-            // participate in intra-turn ordering and must not flush the
-            // text buffer (that would split a live text segment).
+            // Thought chunks do not participate in intra-turn ordering and
+            // must not flush the text buffer (that would split a live text
+            // segment). Forward as a reasoning message so the web UI can
+            // render the model's thinking in a collapsible block.
+            //
+            // Reasoning messages are emitted inline (never buffered), so they
+            // arrive before any still-pending text segment is flushed. Tests
+            // in this file rely on that contract.
+            //
+            // We deliberately do not reuse `extractTextContent` here: that
+            // helper applies an assistant-audience filter which only makes
+            // sense for regular message chunks. Thought content has no
+            // meaningful audience — a non-assistant audience annotation
+            // should not cause the reasoning to be silently dropped.
+            const content = update.content;
+            if (isObject(content) && content.type === 'text' && typeof content.text === 'string' && content.text.length > 0) {
+                this.onMessage({ type: 'reasoning', text: content.text });
+            }
             return;
         }
 

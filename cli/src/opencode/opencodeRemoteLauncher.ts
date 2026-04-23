@@ -179,6 +179,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 this.messageBuffer.addMessage(message.text, 'assistant');
                 break;
             case 'reasoning':
+                this.messageBuffer.addMessage(`[Thinking] ${message.text.substring(0, 100)}...`, 'system');
                 break;
             case 'tool_call':
                 this.messageBuffer.addMessage(`Tool call: ${message.name}`, 'tool');
