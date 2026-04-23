@@ -923,5 +923,103 @@ describe('AcpMessageHandler', () => {
             expect(result.status).toBe('completed');
             expect(result.output).toEqual({ stdout: 'file.txt\n' });
         });
+
+        it('falls back to raw content for mixed text+diff array (null from normalizer)', () => {
+            // A mixed array [{type:'content',...}, {type:'diff',...}] cannot be safely
+            // collapsed into either a string or a single diff object without losing data.
+            // normalizeAcpToolContent must return null so the caller falls back to the
+            // original content array, preserving all information.
+            const messages: AgentMessage[] = [];
+            const handler = new AcpMessageHandler((message) => messages.push(message));
+
+            const mixedContent = [
+                { type: 'content', content: { type: 'text', text: 'some stdout' } },
+                { type: 'diff', path: 'src/foo.ts', oldText: 'old', newText: 'new', _meta: { kind: 'modify' } }
+            ];
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+                toolCallId: 'mixed-1',
+                title: 'run_and_edit',
+                rawInput: { cmd: 'patch' },
+                status: 'in_progress'
+            });
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCallUpdate,
+                toolCallId: 'mixed-1',
+                status: 'completed',
+                content: mixedContent
+            });
+
+            const result = getToolResult(messages, 'mixed-1');
+            expect(result.status).toBe('completed');
+            // Must fall back to original content array — no information loss
+            expect(result.output).toEqual(mixedContent);
+        });
+
+        it('falls back to raw content for multi-diff array (null from normalizer)', () => {
+            // Multiple diff blocks cannot be collapsed into a single diff object.
+            // normalizeAcpToolContent must return null so we keep the full array.
+            const messages: AgentMessage[] = [];
+            const handler = new AcpMessageHandler((message) => messages.push(message));
+
+            const multiDiffContent = [
+                { type: 'diff', path: 'a.ts', oldText: 'a-old', newText: 'a-new', _meta: { kind: 'modify' } },
+                { type: 'diff', path: 'b.ts', oldText: 'b-old', newText: 'b-new', _meta: { kind: 'modify' } }
+            ];
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+                toolCallId: 'multidiff-1',
+                title: 'edit_files',
+                rawInput: { files: ['a.ts', 'b.ts'] },
+                status: 'in_progress'
+            });
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCallUpdate,
+                toolCallId: 'multidiff-1',
+                status: 'completed',
+                content: multiDiffContent
+            });
+
+            const result = getToolResult(messages, 'multidiff-1');
+            expect(result.status).toBe('completed');
+            // Must fall back to original content array — no information loss
+            expect(result.output).toEqual(multiDiffContent);
+        });
+
+        it('falls back to raw content for unknown block type (null from normalizer)', () => {
+            // An unrecognized block type (e.g. {type:'image',...}) cannot be safely
+            // normalized. We must return null and let the caller fall back to the original
+            // content to avoid silent data loss.
+            const messages: AgentMessage[] = [];
+            const handler = new AcpMessageHandler((message) => messages.push(message));
+
+            const unknownContent = [
+                { type: 'image', url: 'https://example.com/screenshot.png' }
+            ];
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+                toolCallId: 'unknown-1',
+                title: 'screenshot',
+                rawInput: { url: 'https://example.com' },
+                status: 'in_progress'
+            });
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCallUpdate,
+                toolCallId: 'unknown-1',
+                status: 'completed',
+                content: unknownContent
+            });
+
+            const result = getToolResult(messages, 'unknown-1');
+            expect(result.status).toBe('completed');
+            // Must fall back to original content array — no information loss
+            expect(result.output).toEqual(unknownContent);
+        });
     });
 });

@@ -78,11 +78,16 @@ function extractAudienceField(value: unknown): string[] {
  *   - `{type:'content', content:{type:'text', text:…}}` — tool stdout/stderr
  *   - `{type:'diff', path, oldText, newText, _meta:{kind}}` — file edits
  *
+ * Only normalizes unambiguous cases. Returns null for anything that cannot be
+ * safely collapsed without losing information, so the caller can fall back to
+ * the original content value.
+ *
  * Returns:
- *   - string   — concatenated text from all content blocks
- *   - object   — structured diff when a diff block is present
+ *   - string   — concatenated text from a pure-text-block array
+ *   - object   — structured diff from a single-diff-block array
  *   - ""       — empty string when content array is empty (no visible output)
- *   - null     — content is not an array; caller should pass through the original value
+ *   - null     — non-array, mixed types, multiple diffs, or unknown block type;
+ *                caller should pass through the original value unchanged
  */
 function normalizeAcpToolContent(content: unknown): string | object | null {
     if (!Array.isArray(content)) {
@@ -92,14 +97,23 @@ function normalizeAcpToolContent(content: unknown): string | object | null {
     if (content.length === 0) {
         return '';
     }
-    // Single pass: collect text parts and capture the first diff block encountered.
-    // In practice agents send either a single content block or a single diff block,
-    // but we handle mixed arrays defensively: diff wins over text if both are present.
-    let diffBlock: object | null = null;
+    // Classify every block. If any block has an unrecognized type or the array
+    // contains a mix of text and diff blocks we cannot collapse losslessly, so
+    // return null and let the caller fall back to the original content array.
+    let diffCount = 0;
+    let textCount = 0;
     const parts: string[] = [];
+    let diffBlock: object | null = null;
+
     for (const block of content) {
-        if (!isObject(block)) continue;
-        if (block.type === 'diff' && diffBlock === null) {
+        if (!isObject(block)) {
+            return null; // Non-object element — unrecognized
+        }
+        if (block.type === 'diff') {
+            diffCount++;
+            if (diffCount > 1) {
+                return null; // Multiple diffs cannot be merged into one object
+            }
             diffBlock = {
                 path: typeof block.path === 'string' ? block.path : undefined,
                 oldText: typeof block.oldText === 'string' ? block.oldText : undefined,
@@ -109,10 +123,21 @@ function normalizeAcpToolContent(content: unknown): string | object | null {
         } else if (block.type === 'content' && isObject(block.content)) {
             const inner = block.content;
             if (inner.type === 'text' && typeof inner.text === 'string') {
+                textCount++;
                 parts.push(inner.text);
+            } else {
+                return null; // Unknown inner content type (e.g. image, resource)
             }
+        } else {
+            return null; // Unknown top-level block type
         }
     }
+
+    // Mixed text + diff: cannot represent as a single value without losing data
+    if (diffCount > 0 && textCount > 0) {
+        return null;
+    }
+
     return diffBlock ?? parts.join('');
 }
 
