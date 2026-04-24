@@ -140,7 +140,24 @@ For builds, tests, or large file operations:
 
 export const VOICE_FIRST_MESSAGE = "Hey! Hapi here."
 
-export const VOICE_TOOLS = [
+export interface VoiceToolConfig {
+    type: 'client'
+    name: string
+    description: string
+    expects_response: boolean
+    response_timeout_secs: number
+    parameters: {
+        type: 'object'
+        required: string[]
+        properties: Record<string, {
+            type: 'string'
+            description: string
+            enum?: string[]
+        }>
+    }
+}
+
+export const VOICE_TOOLS: VoiceToolConfig[] = [
     {
         type: 'client' as const,
         name: 'messageCodingAgent',
@@ -170,7 +187,8 @@ export const VOICE_TOOLS = [
             properties: {
                 decision: {
                     type: 'string',
-                    description: "The user's decision: must be either 'allow' or 'deny'"
+                    description: "The user's decision: must be either 'allow' or 'deny'",
+                    enum: ['allow', 'deny']
                 }
             }
         }
@@ -188,7 +206,7 @@ export interface VoiceAgentConfig {
                 llm: string
                 temperature: number
                 max_tokens: number
-                tools: typeof VOICE_TOOLS
+                tool_ids: string[]
             }
         }
         turn: {
@@ -213,11 +231,21 @@ export interface VoiceAgentConfig {
     }
 }
 
+export interface VoiceToolCreateRequest {
+    tool_config: VoiceToolConfig
+}
+
+export function buildVoiceToolRequests(): VoiceToolCreateRequest[] {
+    return VOICE_TOOLS.map(tool => ({
+        tool_config: tool
+    }))
+}
+
 /**
  * Build the agent configuration for Hapi Voice Assistant.
  * Used by both server-side auto-creation and client-side configuration.
  */
-export function buildVoiceAgentConfig(): VoiceAgentConfig {
+export function buildVoiceAgentConfig(toolIds: string[] = []): VoiceAgentConfig {
     return {
         name: VOICE_AGENT_NAME,
         conversation_config: {
@@ -229,7 +257,7 @@ export function buildVoiceAgentConfig(): VoiceAgentConfig {
                     llm: 'gemini-2.5-flash',
                     temperature: 0.7,
                     max_tokens: 1024,
-                    tools: VOICE_TOOLS
+                    tool_ids: toolIds
                 }
             },
             turn: {
