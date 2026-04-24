@@ -472,6 +472,56 @@ function SessionItem(props: {
     )
 }
 
+function ProjectGroupItem(props: {
+    group: SessionGroup
+    isCollapsed: boolean
+    onToggle: () => void
+    onSelect: (sessionId: string) => void
+    api: ApiClient | null
+    selectedSessionId?: string | null
+}) {
+    const { group, isCollapsed, onToggle, onSelect, api, selectedSessionId } = props
+    return (
+        <div>
+            <div className="group/project sticky top-0 z-10 flex items-center gap-2 px-1 py-1.5 rounded-lg transition-colors hover:bg-[var(--app-subtle-bg)] min-w-0 w-full select-none">
+                <button
+                    type="button"
+                    className="flex min-w-0 flex-1 items-center gap-2 text-left cursor-pointer"
+                    onClick={onToggle}
+                    title={group.directory}
+                    aria-expanded={!isCollapsed}
+                >
+                    <ChevronIcon className="h-3.5 w-3.5 text-[var(--app-hint)] shrink-0" collapsed={isCollapsed} />
+                    <span className="font-medium text-sm truncate flex-1">
+                        {group.displayName}
+                    </span>
+                    <span className="text-[11px] tabular-nums text-[var(--app-hint)] shrink-0">
+                        ({group.sessions.length})
+                    </span>
+                </button>
+                <CopyPathButton path={group.directory} className="opacity-0 group-hover/project:opacity-100 transition-opacity duration-150" />
+            </div>
+
+            <div className="collapsible-panel" data-open={!isCollapsed || undefined}>
+                <div className="collapsible-inner">
+                <div className="flex flex-col gap-0.5 ml-3 pl-1 pr-1 py-1">
+                    {group.sessions.map((s) => (
+                        <SessionItem
+                            key={s.id}
+                            session={s}
+                            onSelect={onSelect}
+                            showPath={false}
+                            api={api}
+                            selected={s.id === selectedSessionId}
+                        />
+                    ))}
+                </div>
+                </div>
+            </div>
+        </div>
+    )
+}
+
 export function SessionList(props: {
     sessions: SessionSummary[]
     onSelect: (sessionId: string) => void
@@ -492,6 +542,20 @@ export function SessionList(props: {
     const [collapseOverrides, setCollapseOverrides] = useState<Map<string, boolean>>(
         () => new Map()
     )
+    const [archivedCollapsed, setArchivedCollapsed] = useState<Map<string, boolean>>(
+        () => new Map()
+    )
+    const isArchivedSectionCollapsed = (machineKey: string): boolean => {
+        return archivedCollapsed.get(machineKey) ?? true
+    }
+    const toggleArchivedSection = (machineKey: string) => {
+        setArchivedCollapsed(prev => {
+            const next = new Map(prev)
+            const currentlyCollapsed = prev.get(machineKey) ?? true
+            next.set(machineKey, !currentlyCollapsed)
+            return next
+        })
+    }
     const isGroupCollapsed = (group: SessionGroup): boolean => {
         const override = collapseOverrides.get(group.key)
         if (override !== undefined) return override
@@ -547,11 +611,11 @@ export function SessionList(props: {
     // Auto-expand group (and machine) containing selected session
     useEffect(() => {
         if (!selectedSessionId) return
+        const group = groups.find(g =>
+            g.sessions.some(s => s.id === selectedSessionId)
+        )
+        if (!group) return
         setCollapseOverrides(prev => {
-            const group = groups.find(g =>
-                g.sessions.some(s => s.id === selectedSessionId)
-            )
-            if (!group) return prev
             const next = new Map(prev)
             let changed = false
             // Expand project group if collapsed
@@ -567,6 +631,16 @@ export function SessionList(props: {
             }
             return changed ? next : prev
         })
+        // Auto-expand archived section if selected session is in an archived group
+        if (!group.hasActiveSession) {
+            const machineKey = group.machineId ?? UNKNOWN_MACHINE_ID
+            setArchivedCollapsed(prev => {
+                if (prev.get(machineKey) === false) return prev
+                const next = new Map(prev)
+                next.set(machineKey, false)
+                return next
+            })
+        }
     }, [selectedSessionId, groups])
 
     // Clean up stale collapse overrides
@@ -582,6 +656,19 @@ export function SessionList(props: {
             let changed = false
             for (const key of next.keys()) {
                 if (!knownKeys.has(key)) {
+                    next.delete(key)
+                    changed = true
+                }
+            }
+            return changed ? next : prev
+        })
+        setArchivedCollapsed(prev => {
+            if (prev.size === 0) return prev
+            const knownMachines = new Set(groups.map(g => g.machineId ?? UNKNOWN_MACHINE_ID))
+            const next = new Map(prev)
+            let changed = false
+            for (const key of next.keys()) {
+                if (!knownMachines.has(key)) {
                     next.delete(key)
                     changed = true
                 }
@@ -629,45 +716,64 @@ export function SessionList(props: {
                             <div className="collapsible-panel" data-open={!machineCollapsed || undefined}>
                                 <div className="collapsible-inner">
                                 <div className="flex flex-col ml-3.5 pl-1 mt-0.5">
-                                    {mg.projectGroups.map((group) => {
-                                        const isCollapsed = isGroupCollapsed(group)
-                                        return (
-                                            <div key={group.key}>
-                                                <div
-                                                    className="group/project sticky top-0 z-10 flex items-center gap-2 px-1 py-1.5 text-left rounded-lg transition-colors hover:bg-[var(--app-subtle-bg)] cursor-pointer min-w-0 w-full select-none"
-                                                    onClick={() => toggleGroup(group.key, isCollapsed)}
-                                                    title={group.directory}
-                                                >
-                                                    <ChevronIcon className="h-3.5 w-3.5 text-[var(--app-hint)] shrink-0" collapsed={isCollapsed} />
-                                                    <span className="font-medium text-sm truncate flex-1">
-                                                        {group.displayName}
-                                                    </span>
-                                                    <CopyPathButton path={group.directory} className="opacity-0 group-hover/project:opacity-100 transition-opacity duration-150" />
-                                                    <span className="text-[11px] tabular-nums text-[var(--app-hint)] shrink-0">
-                                                        ({group.sessions.length})
-                                                    </span>
-                                                </div>
+                                    {(() => {
+                                        const activeProjectGroups = mg.projectGroups.filter(g => g.hasActiveSession)
+                                        const archivedProjectGroups = mg.projectGroups.filter(g => !g.hasActiveSession)
+                                        const showArchivedSection = activeProjectGroups.length > 0 && archivedProjectGroups.length > 0
+                                        const machineKey = mg.machineId ?? UNKNOWN_MACHINE_ID
+                                        const archivedHidden = showArchivedSection && isArchivedSectionCollapsed(machineKey)
+                                        const visibleGroups = showArchivedSection ? activeProjectGroups : mg.projectGroups
 
-                                                {/* Level 3: Sessions */}
-                                                <div className="collapsible-panel" data-open={!isCollapsed || undefined}>
-                                                    <div className="collapsible-inner">
-                                                    <div className="flex flex-col gap-0.5 ml-3 pl-1 pr-1 py-1">
-                                                        {group.sessions.map((s) => (
-                                                            <SessionItem
-                                                                key={s.id}
-                                                                session={s}
-                                                                onSelect={props.onSelect}
-                                                                showPath={false}
-                                                                api={api}
-                                                                selected={s.id === selectedSessionId}
-                                                            />
-                                                        ))}
-                                                    </div>
-                                                    </div>
-                                                </div>
-                                            </div>
+                                        return (
+                                            <>
+                                                {visibleGroups.map((group) => {
+                                                    const isCollapsed = isGroupCollapsed(group)
+                                                    return (
+                                                        <ProjectGroupItem
+                                                            key={group.key}
+                                                            group={group}
+                                                            isCollapsed={isCollapsed}
+                                                            onToggle={() => toggleGroup(group.key, isCollapsed)}
+                                                            onSelect={props.onSelect}
+                                                            api={api}
+                                                            selectedSessionId={selectedSessionId}
+                                                        />
+                                                    )
+                                                })}
+                                                {showArchivedSection ? (
+                                                    <>
+                                                        <button
+                                                            type="button"
+                                                            aria-expanded={!archivedHidden}
+                                                            onClick={() => toggleArchivedSection(machineKey)}
+                                                            className="flex items-center gap-2 px-1 py-1.5 text-xs text-[var(--app-hint)] rounded-lg transition-colors hover:bg-[var(--app-subtle-bg)] select-none"
+                                                        >
+                                                            <ChevronIcon className="h-3 w-3 shrink-0" collapsed={archivedHidden} />
+                                                            <span>{t('sessions.archived', { n: archivedProjectGroups.length })}</span>
+                                                        </button>
+                                                        <div className="collapsible-panel" data-open={!archivedHidden || undefined}>
+                                                            <div className="collapsible-inner">
+                                                                {archivedProjectGroups.map((group) => {
+                                                                    const isCollapsed = isGroupCollapsed(group)
+                                                                    return (
+                                                                        <ProjectGroupItem
+                                                                            key={group.key}
+                                                                            group={group}
+                                                                            isCollapsed={isCollapsed}
+                                                                            onToggle={() => toggleGroup(group.key, isCollapsed)}
+                                                                            onSelect={props.onSelect}
+                                                                            api={api}
+                                                                            selectedSessionId={selectedSessionId}
+                                                                        />
+                                                                    )
+                                                                })}
+                                                            </div>
+                                                        </div>
+                                                    </>
+                                                ) : null}
+                                            </>
                                         )
-                                    })}
+                                    })()}
                                 </div>
                                 </div>
                             </div>
