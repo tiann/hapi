@@ -11,6 +11,7 @@ import { useSyncingState } from '@/hooks/useSyncingState'
 import { usePushNotifications } from '@/hooks/usePushNotifications'
 import { useViewportHeight } from '@/hooks/useViewportHeight'
 import { useVisibilityReporter } from '@/hooks/useVisibilityReporter'
+import { useAutoSpawn } from '@/hooks/useAutoSpawn'
 import { queryKeys } from '@/lib/query-keys'
 import { AppContextProvider } from '@/lib/app-context'
 import { clearMessageWindow, fetchLatestMessages } from '@/lib/message-window-store'
@@ -143,12 +144,13 @@ function AppInner() {
         if (!token || !api) return
         const { pathname, search, hash, state } = router.history.location
         const searchParams = new URLSearchParams(search)
-        if (!searchParams.has('server') && !searchParams.has('hub') && !searchParams.has('token')) {
+        const authKeys = ['server', 'hub', 'token', 'spawn', 'machine', 'dir', 'boot']
+        if (!authKeys.some(k => searchParams.has(k))) {
             return
         }
-        searchParams.delete('server')
-        searchParams.delete('hub')
-        searchParams.delete('token')
+        for (const key of authKeys) {
+            searchParams.delete(key)
+        }
         const nextSearch = searchParams.toString()
         const nextHref = `${pathname}${nextSearch ? `?${nextSearch}` : ''}${hash}`
         router.history.replace(nextHref, state)
@@ -254,6 +256,9 @@ function AppInner() {
         }
         return { all: true }
     }, [selectedSessionId])
+
+    // Auto-spawn session from URL params (?spawn=true&machine=xxx&dir=/path)
+    useAutoSpawn(api)
 
     const { subscriptionId } = useSSE({
         enabled: Boolean(api && token),
