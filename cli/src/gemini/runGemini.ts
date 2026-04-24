@@ -160,6 +160,8 @@ export async function runGemini(opts: {
         return { applied };
     });
 
+    let crashed = false;
+
     try {
         await geminiLoop({
             path: workingDirectory,
@@ -179,6 +181,7 @@ export async function runGemini(opts: {
             }
         });
     } catch (error) {
+        crashed = true;
         lifecycle.markCrash(error);
         logger.debug('[gemini] Loop error:', error);
     } finally {
@@ -187,7 +190,7 @@ export async function runGemini(opts: {
             lifecycle.setExitCode(1);
             lifecycle.setArchiveReason(`Local launch failed: ${localFailure.message.slice(0, 200)}`);
             lifecycle.setSessionEndReason('error');
-        } else {
+        } else if (!crashed) {
             lifecycle.setSessionEndReason('completed');
         }
         await lifecycle.cleanupAndExit();

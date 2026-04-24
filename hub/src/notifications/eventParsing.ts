@@ -74,7 +74,9 @@ function extractTaskNotificationFromUserOutput(message: unknown): TaskNotificati
     }
 
     const wrappedMessage = isObject(data.message) ? data.message : null
-    const content = wrappedMessage?.content
+    const content = typeof data.content === 'string'
+        ? data.content
+        : wrappedMessage?.content
     if (typeof content !== 'string') {
         return null
     }

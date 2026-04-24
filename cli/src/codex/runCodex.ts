@@ -195,6 +195,8 @@ export async function runCodex(opts: {
         };
     });
 
+    let crashed = false;
+
     try {
         await loop({
             path: workingDirectory,
@@ -217,6 +219,7 @@ export async function runCodex(opts: {
             }
         });
     } catch (error) {
+        crashed = true;
         lifecycle.markCrash(error);
         logger.debug('[codex] Loop error:', error);
     } finally {
@@ -225,7 +228,7 @@ export async function runCodex(opts: {
             lifecycle.setExitCode(1);
             lifecycle.setArchiveReason(`Local launch failed: ${formatFailureReason(localFailure.message)}`);
             lifecycle.setSessionEndReason('error');
-        } else {
+        } else if (!crashed) {
             lifecycle.setSessionEndReason('completed');
         }
         await lifecycle.cleanupAndExit();

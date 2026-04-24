@@ -114,6 +114,8 @@ export async function runOpencode(opts: {
         return { applied: { permissionMode: currentPermissionMode } };
     });
 
+    let crashed = false;
+
     try {
         await opencodeLoop({
             path: workingDirectory,
@@ -133,6 +135,7 @@ export async function runOpencode(opts: {
             }
         });
     } catch (error) {
+        crashed = true;
         lifecycle.markCrash(error);
         logger.debug('[opencode] Loop error:', error);
     } finally {
@@ -141,7 +144,7 @@ export async function runOpencode(opts: {
             lifecycle.setExitCode(1);
             lifecycle.setArchiveReason(`Local launch failed: ${localFailure.message.slice(0, 200)}`);
             lifecycle.setSessionEndReason('error');
-        } else {
+        } else if (!crashed) {
             lifecycle.setSessionEndReason('completed');
         }
         await lifecycle.cleanupAndExit();

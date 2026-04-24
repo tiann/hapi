@@ -138,6 +138,34 @@ describe('extractTaskNotification', () => {
         })
     })
 
+    it('extracts task notification from direct user output content payload', () => {
+        const event: SyncEvent = {
+            type: 'message-received',
+            sessionId: 'session-1',
+            message: {
+                id: 'message-task-user-direct',
+                seq: 6,
+                localId: null,
+                createdAt: 0,
+                content: {
+                    role: 'agent',
+                    content: {
+                        type: 'output',
+                        data: {
+                            type: 'user',
+                            content: '<task-notification> <summary>Direct done</summary> <status>completed</status> </task-notification>'
+                        }
+                    }
+                }
+            }
+        }
+
+        expect(extractTaskNotification(event)).toEqual({
+            status: 'completed',
+            summary: 'Direct done'
+        })
+    })
+
     it('returns null when task notification summary is missing', () => {
         const event: SyncEvent = {
             type: 'message-received',

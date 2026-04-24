@@ -9,6 +9,7 @@ const mockGeminiSession = vi.hoisted(() => ({
 const harness = vi.hoisted(() => ({
     bootstrapArgs: [] as Array<Record<string, unknown>>,
     geminiLoopArgs: [] as Array<Record<string, unknown>>,
+    geminiLoopError: null as Error | null,
     session: {
         onUserMessage: vi.fn(),
         rpcHandlerManager: {
@@ -30,6 +31,9 @@ vi.mock('@/agent/sessionFactory', () => ({
 vi.mock('./loop', () => ({
     geminiLoop: vi.fn(async (options: Record<string, unknown>) => {
         harness.geminiLoopArgs.push(options);
+        if (harness.geminiLoopError) {
+            throw harness.geminiLoopError;
+        }
         const onSessionReady = options.onSessionReady as ((session: unknown) => void) | undefined;
         if (onSessionReady) {
             onSessionReady(mockGeminiSession);
@@ -41,15 +45,18 @@ vi.mock('@/claude/registerKillSessionHandler', () => ({
     registerKillSessionHandler: vi.fn()
 }));
 
+const lifecycleMock = vi.hoisted(() => ({
+    registerProcessHandlers: vi.fn(),
+    cleanupAndExit: vi.fn(async () => {}),
+    markCrash: vi.fn(),
+    setExitCode: vi.fn(),
+    setArchiveReason: vi.fn(),
+    setSessionEndReason: vi.fn()
+}));
+
 vi.mock('@/agent/runnerLifecycle', () => ({
     createModeChangeHandler: vi.fn(() => vi.fn()),
-    createRunnerLifecycle: vi.fn(() => ({
-        registerProcessHandlers: vi.fn(),
-        cleanupAndExit: vi.fn(async () => {}),
-        markCrash: vi.fn(),
-        setExitCode: vi.fn(),
-        setArchiveReason: vi.fn()
-    })),
+    createRunnerLifecycle: vi.fn(() => lifecycleMock),
     setControlledByUser: vi.fn()
 }));
 
@@ -88,10 +95,17 @@ describe('runGemini', () => {
     beforeEach(() => {
         harness.bootstrapArgs.length = 0;
         harness.geminiLoopArgs.length = 0;
+        harness.geminiLoopError = null;
         mockGeminiSession.setModel.mockReset();
         mockGeminiSession.setPermissionMode.mockReset();
         harness.session.onUserMessage.mockReset();
         harness.session.rpcHandlerManager.registerHandler.mockReset();
+        lifecycleMock.registerProcessHandlers.mockClear();
+        lifecycleMock.cleanupAndExit.mockClear();
+        lifecycleMock.markCrash.mockClear();
+        lifecycleMock.setExitCode.mockClear();
+        lifecycleMock.setArchiveReason.mockClear();
+        lifecycleMock.setSessionEndReason.mockClear();
         resolveGeminiRuntimeConfigMock.mockReset();
     });
 
@@ -251,5 +265,19 @@ describe('runGemini', () => {
         await runGemini({});
 
         expect(harness.geminiLoopArgs[0]?.resumeSessionId).toBeUndefined();
+    });
+
+    it('preserves crash session end reason instead of overwriting it as completed', async () => {
+        resolveGeminiRuntimeConfigMock.mockReturnValue({
+            model: 'gemini-2.5-pro',
+            modelSource: 'default'
+        });
+        harness.geminiLoopError = new Error('loop failed');
+
+        await runGemini({});
+
+        expect(lifecycleMock.markCrash).toHaveBeenCalledWith(harness.geminiLoopError);
+        expect(lifecycleMock.setSessionEndReason).not.toHaveBeenCalledWith('completed');
+        expect(lifecycleMock.cleanupAndExit).toHaveBeenCalled();
     });
 });
