@@ -1,11 +1,9 @@
 import type { InfiniteData } from '@tanstack/react-query'
 import type { DecryptedMessage, MessagesResponse } from '@/types/api'
+import { randomId } from '@/lib/randomId'
 
 export function makeClientSideId(prefix: string): string {
-    if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
-        return `${prefix}-${crypto.randomUUID()}`
-    }
-    return `${prefix}-${Date.now()}-${Math.random()}`
+    return `${prefix}-${randomId()}`
 }
 
 export function isUserMessage(msg: DecryptedMessage): boolean {
