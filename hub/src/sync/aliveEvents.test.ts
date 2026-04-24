@@ -96,6 +96,7 @@ describe('alive incremental events', () => {
             )
 
             engine.handleSessionAlive({ sid: session.id, time: Date.now(), thinking: false })
+            const activeAtBeforeSend = engine.getSession(session.id)?.activeAt
             events.length = 0
 
             await engine.sendMessage(session.id, {
@@ -104,6 +105,7 @@ describe('alive incremental events', () => {
             })
 
             expect(engine.getSession(session.id)?.thinking).toBe(true)
+            expect(engine.getSession(session.id)?.activeAt).toBe(activeAtBeforeSend)
             expect(emittedSocketUpdates.length).toBeGreaterThan(0)
 
             const update = events.find((event) => event.type === 'session-updated')
@@ -112,15 +114,42 @@ describe('alive incremental events', () => {
                 return
             }
 
-            expect(update.data).toEqual(expect.objectContaining({
-                active: true,
-                thinking: true
-            }))
+            expect(update.data).toEqual(expect.objectContaining({ thinking: true }))
+            expect(update.data).not.toHaveProperty('activeAt')
             expect((update.data as { updatedAt?: unknown }).updatedAt).toEqual(expect.any(Number))
         } finally {
             unsubscribe()
             engine.stop()
         }
+    })
+
+    it('does not revive inactive sessions or refresh liveness when marking queued thinking', () => {
+        const store = new Store(':memory:')
+        const events: SyncEvent[] = []
+        const cache = new SessionCache(store, createPublisher(events))
+        const now = Date.now() - 30_000
+
+        const session = cache.getOrCreateSession(
+            'session-queued-thinking-inactive',
+            { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+            { requests: {}, completedRequests: {} },
+            'default'
+        )
+
+        cache.handleSessionAlive({ sid: session.id, time: now, thinking: false })
+        cache.handleSessionEnd({ sid: session.id, time: now + 1_000 })
+        const inactive = cache.getSession(session.id)
+        expect(inactive?.active).toBe(false)
+        const inactiveActiveAt = inactive?.activeAt
+
+        events.length = 0
+        cache.markMessageQueued(session.id, now + 2_000)
+
+        const updated = cache.getSession(session.id)
+        expect(updated?.active).toBe(false)
+        expect(updated?.thinking).toBe(false)
+        expect(updated?.activeAt).toBe(inactiveActiveAt)
+        expect(events.find((event) => event.type === 'session-updated')).toBeUndefined()
     })
 
     it('keeps queued thinking true across false heartbeats during the grace window', () => {

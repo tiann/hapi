@@ -261,31 +261,23 @@ export class SessionCache {
     markMessageQueued(sessionId: string, time: number = Date.now()): void {
         const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
         if (!session) return
+        if (!session.active) return
 
         const nextTime = clampAliveTime(time) ?? Date.now()
-        const wasActive = session.active
         const wasThinking = session.thinking
         const previousUpdatedAt = session.updatedAt
 
-        session.active = true
-        session.activeAt = Math.max(session.activeAt, nextTime)
         session.thinking = true
         session.thinkingAt = nextTime
         session.updatedAt = Math.max(session.updatedAt, nextTime)
         this.pendingThinkingUntilBySessionId.set(session.id, nextTime + QUEUED_MESSAGE_THINKING_GRACE_MS)
 
-        if (!wasActive && session.active) {
-            this.lastBroadcastAtBySessionId.delete(session.id)
-        }
-
-        if (!wasActive || !wasThinking || session.updatedAt !== previousUpdatedAt) {
+        if (!wasThinking || session.updatedAt !== previousUpdatedAt) {
             this.lastBroadcastAtBySessionId.set(session.id, Date.now())
             this.publisher.emit({
                 type: 'session-updated',
                 sessionId: session.id,
                 data: {
-                    active: true,
-                    activeAt: session.activeAt,
                     thinking: true,
                     updatedAt: session.updatedAt
                 }
