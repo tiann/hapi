@@ -32,7 +32,7 @@ export async function handleAuthCommand(args: string[]): Promise<void> {
         if (!hasToken) {
             console.log('')
             console.log(chalk.yellow('  Token not configured. To get your token:'))
-            console.log(chalk.gray('    1. Check the server startup logs (first run shows generated token)'))
+            console.log(chalk.gray('    1. Check the server startup logs (hub now prints a local login URL)'))
             console.log(chalk.gray('    2. Read ~/.hapi/settings.json on the server'))
             console.log(chalk.gray('    3. Ask your server administrator (if token is set via env var)'))
             console.log('')
