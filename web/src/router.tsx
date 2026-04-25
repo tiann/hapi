@@ -415,6 +415,12 @@ function NewSessionPage() {
         })
     }, [navigate, queryClient])
 
+    const handleChooseFolder = useCallback(() => {
+        // Browse page reads `hapi:lastMachineId` from localStorage, so the
+        // currently-selected machine stays selected naturally.
+        navigate({ to: '/browse' })
+    }, [navigate])
+
     return (
         <div className="flex h-full min-h-0 flex-col">
             <div className="flex items-center gap-2 border-b border-[var(--app-border)] bg-[var(--app-bg)] p-3 pt-[calc(0.75rem+env(safe-area-inset-top))]">
@@ -446,6 +452,7 @@ function NewSessionPage() {
                     isLoading={machinesLoading}
                     onCancel={handleCancel}
                     onSuccess={handleSuccess}
+                    onChooseFolder={handleChooseFolder}
                     initialDirectory={initialDirectory}
                     initialMachineId={initialMachineId}
                 />

@@ -96,6 +96,7 @@ export default {
   'newSession.machine': '机器',
   'newSession.directory': '目录',
   'newSession.placeholder': '/path/to/project',
+  'newSession.browse': '浏览',
   'newSession.recent': '最近路径',
   'newSession.type': '会话类型',
   'newSession.type.simple': '简单',
@@ -278,19 +279,15 @@ export default {
 
   // Browse / Workspace
   'browse.title': '浏览',
-  'browse.workspaces': '工作区',
-  'browse.addWorkspace': '添加工作区',
-  'browse.removeWorkspace': '移除工作区',
-  'browse.pathPlaceholder': '/path/to/workspace',
-  'browse.add': '添加',
-  'browse.go': '前往',
   'browse.goUp': '返回上层',
-  'browse.goToPath': '前往路径',
-  'browse.noWorkspaces': '尚未添加工作区。添加文件夹路径以开始。',
   'browse.empty': '未找到子目录',
   'browse.refresh': '刷新',
   'browse.startSession': '启动会话',
   'browse.nav': '浏览',
+  'browse.noRootTitle': '未启用 workspace 浏览',
+  'browse.noRootHint': '浏览功能是可选的。带 --workspace-root 参数重启 runner，即可启用文件树浏览和受限的会话启动。',
+  'browse.noRootFooter': '你仍然可以在「新建会话」页面直接创建会话。',
+  'browse.noMachinesConnected': '没有已连接的 CLI。在某台机器上运行 `hapi runner start --workspace-root /path` 来开始。',
 
   // Misc
   'misc.noMachines': '无可用机器',

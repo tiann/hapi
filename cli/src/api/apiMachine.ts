@@ -4,7 +4,7 @@
 
 import { io, type Socket } from 'socket.io-client'
 import { readdir, stat } from 'node:fs/promises'
-import { join } from 'node:path'
+import { isAbsolute, join, relative, resolve as resolvePath } from 'node:path'
 import { logger } from '@/ui/logger'
 import { configuration } from '@/configuration'
 import type { Update, UpdateMachineBody } from '@hapi/protocol'
@@ -89,10 +89,15 @@ export class ApiMachineClient {
     private keepAliveInterval: NodeJS.Timeout | null = null
     private rpcHandlerManager: RpcHandlerManager
 
+    private readonly normalizedWorkspaceRoot: string | undefined
+
     constructor(
         private readonly token: string,
-        private readonly machine: Machine
+        private readonly machine: Machine,
+        private readonly workspaceRoot?: string
     ) {
+        this.normalizedWorkspaceRoot = workspaceRoot ? resolvePath(workspaceRoot) : undefined
+
         this.rpcHandlerManager = new RpcHandlerManager({
             scopePrefix: this.machine.id,
             logger: (msg, data) => logger.debug(msg, data)
@@ -120,9 +125,14 @@ export class ApiMachineClient {
         })
 
         this.rpcHandlerManager.registerHandler<ListMachineDirectoryRequest, ListMachineDirectoryResponse>('list-directory', async (params) => {
-            const targetPath = typeof params?.path === 'string' ? params.path.trim() : ''
-            if (!targetPath) {
+            const rawPath = typeof params?.path === 'string' ? params.path.trim() : ''
+            if (!rawPath) {
                 return { success: false, error: 'Path is required' }
+            }
+
+            const targetPath = resolvePath(rawPath)
+            if (!this.isWithinWorkspaceRoot(targetPath)) {
+                return { success: false, error: 'Path is outside workspace root' }
             }
 
             try {
@@ -181,12 +191,23 @@ export class ApiMachineClient {
         })
     }
 
+    private isWithinWorkspaceRoot(absolutePath: string): boolean {
+        if (!this.normalizedWorkspaceRoot) return true
+        const rel = relative(this.normalizedWorkspaceRoot, absolutePath)
+        return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+    }
+
     setRPCHandlers({ spawnSession, stopSession, requestShutdown }: MachineRpcHandlers): void {
         this.rpcHandlerManager.registerHandler('spawn-happy-session', async (params: any) => {
             const { directory, sessionId, resumeSessionId, machineId, approvedNewDirectoryCreation, agent, model, effort, modelReasoningEffort, yolo, permissionMode, token, sessionType, worktreeName } = params || {}
 
             if (!directory) {
                 throw new Error('Directory is required')
+            }
+
+            const resolvedDirectory = resolvePath(directory)
+            if (!this.isWithinWorkspaceRoot(resolvedDirectory)) {
+                return { type: 'error', errorMessage: 'Directory is outside this machine\'s workspace root' }
             }
 
             const result = await spawnSession({
@@ -329,6 +350,34 @@ export class ApiMachineClient {
             })).catch((error) => {
                 logger.debug('[API MACHINE] Failed to update runner state on connect', error)
             })
+
+            const hubWorkspaceRoot = this.machine.metadata?.workspaceRoot
+            const desiredWorkspaceRoot = this.workspaceRoot
+            if (desiredWorkspaceRoot !== hubWorkspaceRoot) {
+                if (desiredWorkspaceRoot) {
+                    console.log(`[HAPI] Syncing workspace root to hub: ${desiredWorkspaceRoot} (current hub value: ${hubWorkspaceRoot ?? 'none'})`)
+                } else {
+                    console.log(`[HAPI] Clearing workspace root on hub (was: ${hubWorkspaceRoot})`)
+                }
+                this.updateMachineMetadata((current) => {
+                    const base = current ?? this.machine.metadata
+                    if (!base) {
+                        return { workspaceRoot: desiredWorkspaceRoot } as MachineMetadata
+                    }
+                    if (desiredWorkspaceRoot) {
+                        return { ...base, workspaceRoot: desiredWorkspaceRoot }
+                    }
+                    const { workspaceRoot: _omit, ...rest } = base
+                    return rest as MachineMetadata
+                }).then(() => {
+                    console.log(`[HAPI] Workspace root synced: ${this.machine.metadata?.workspaceRoot ?? '(none)'}`)
+                }).catch((error) => {
+                    console.error('[HAPI] Failed to sync workspace root:', error instanceof Error ? error.message : error)
+                })
+            } else if (desiredWorkspaceRoot) {
+                console.log(`[HAPI] Workspace root already up to date on hub: ${desiredWorkspaceRoot}`)
+            }
+
             this.startKeepAlive()
         })
 

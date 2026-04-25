@@ -94,6 +94,7 @@ export default {
   'newSession.machine': 'Machine',
   'newSession.directory': 'Directory',
   'newSession.placeholder': '/path/to/project',
+  'newSession.browse': 'Browse',
   'newSession.recent': 'Recent paths',
   'newSession.type': 'Session type',
   'newSession.type.simple': 'Simple',
@@ -276,19 +277,15 @@ export default {
 
   // Browse / Workspace
   'browse.title': 'Browse',
-  'browse.workspaces': 'Workspaces',
-  'browse.addWorkspace': 'Add workspace',
-  'browse.removeWorkspace': 'Remove workspace',
-  'browse.pathPlaceholder': '/path/to/workspace',
-  'browse.add': 'Add',
-  'browse.go': 'Go',
   'browse.goUp': 'Go up',
-  'browse.goToPath': 'Go to path',
-  'browse.noWorkspaces': 'No workspaces added yet. Add a folder path to get started.',
   'browse.empty': 'No subdirectories found',
   'browse.refresh': 'Refresh',
   'browse.startSession': 'Start Session',
   'browse.nav': 'Browse',
+  'browse.noRootTitle': 'Workspace browsing is off',
+  'browse.noRootHint': 'Browsing is opt-in. Restart the runner with a workspace root to enable file-tree navigation and scoped session spawning.',
+  'browse.noRootFooter': 'You can still create sessions from the “New Session” page.',
+  'browse.noMachinesConnected': 'No CLI connected. Run `hapi runner start --workspace-root /path` on a machine to get started.',
 
   // Misc
   'misc.noMachines': 'No machines available',

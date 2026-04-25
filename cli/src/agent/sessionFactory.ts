@@ -38,14 +38,15 @@ export type SessionBootstrapResult = {
     workingDirectory: string
 }
 
-export function buildMachineMetadata(): MachineMetadata {
+export function buildMachineMetadata(options?: { workspaceRoot?: string }): MachineMetadata {
     return {
         host: process.env.HAPI_HOSTNAME || os.hostname(),
         platform: os.platform(),
         happyCliVersion: packageJson.version,
         homeDir: os.homedir(),
         happyHomeDir: configuration.happyHomeDir,
-        happyLibDir: runtimePath()
+        happyLibDir: runtimePath(),
+        workspaceRoot: options?.workspaceRoot
     }
 }
 

@@ -142,7 +142,7 @@ export class ApiClient {
         return new ApiSessionClient(this.token, session)
     }
 
-    machineSyncClient(machine: Machine): ApiMachineClient {
-        return new ApiMachineClient(this.token, machine)
+    machineSyncClient(machine: Machine, options?: { workspaceRoot?: string }): ApiMachineClient {
+        return new ApiMachineClient(this.token, machine, options?.workspaceRoot)
     }
 }
