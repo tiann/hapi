@@ -143,7 +143,22 @@ export function HappyThread(props: {
         }
 
         viewport.addEventListener('scroll', handleScroll, { passive: true })
-        return () => viewport.removeEventListener('scroll', handleScroll)
+
+        // User scroll-up via wheel/touch should immediately release the autoScroll
+        // hold, even if still within the bottom threshold — otherwise auto-scroll
+        // races with the wheel and the view feels stuck at the bottom.
+        const handleWheel = (e: WheelEvent) => {
+            if (e.deltaY < 0 && autoScrollEnabledRef.current) {
+                setAutoScrollEnabled(false)
+                autoScrollEnabledRef.current = false
+            }
+        }
+        viewport.addEventListener('wheel', handleWheel, { passive: true })
+
+        return () => {
+            viewport.removeEventListener('scroll', handleScroll)
+            viewport.removeEventListener('wheel', handleWheel)
+        }
     }, []) // Stable: no dependencies, reads from refs
 
     // Scroll to bottom handler for the indicator button

@@ -50,6 +50,16 @@ export function SessionSearchModal({ sessions, isOpen, onClose, onSelect, action
         }
     }, [isOpen])
 
+    // Document-level Esc — works even when focus drifts off the input
+    useEffect(() => {
+        if (!isOpen) return
+        const handler = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); onClose() }
+        }
+        document.addEventListener('keydown', handler, true)
+        return () => document.removeEventListener('keydown', handler, true)
+    }, [isOpen, onClose])
+
     useEffect(() => { setActiveIdx(0) }, [query])
 
     // Scroll active item into view
