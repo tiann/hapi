@@ -205,6 +205,7 @@ function SessionsPage() {
                             params: { sessionId },
                         })}
                         onNewSession={() => navigate({ to: '/sessions/new' })}
+                        onBrowse={() => navigate({ to: '/browse' })}
                         onRefresh={handleRefresh}
                         isLoading={isLoading}
                         renderHeader={false}

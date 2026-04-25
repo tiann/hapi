@@ -41,6 +41,10 @@ export default {
   // Sessions page
   'sessions.count': '{n} sessions in {m} projects',
   'sessions.new': 'New Session',
+  'sessions.empty.title': 'No sessions yet',
+  'sessions.empty.hint': 'Start a coding session in any folder under your workspace, or browse the tree first.',
+  'sessions.empty.startSession': 'Start a session',
+  'sessions.empty.browse': 'Browse workspace',
 
   // Session list
   'session.item.path': 'path',

@@ -41,6 +41,10 @@ export default {
   // Sessions page
   'sessions.count': '{n} 个会话，{m} 个项目',
   'sessions.new': '新建会话',
+  'sessions.empty.title': '还没有会话',
+  'sessions.empty.hint': '在 workspace 下任意目录启动一个会话，或先浏览目录树看看。',
+  'sessions.empty.startSession': '启动会话',
+  'sessions.empty.browse': '浏览 workspace',
 
   // Session list
   'session.item.path': '路径',
