@@ -187,13 +187,14 @@ export class SessionCache {
         const previousCollaborationMode = session.collaborationMode
         const pendingThinkingUntil = this.pendingThinkingUntilBySessionId.get(session.id) ?? 0
         const requestedThinking = Boolean(payload.thinking)
-        const preserveQueuedThinking = !requestedThinking && pendingThinkingUntil > t
+        const hubNow = Date.now()
+        const preserveQueuedThinking = !requestedThinking && pendingThinkingUntil > hubNow
 
         session.active = true
         session.activeAt = Math.max(session.activeAt, t)
         session.thinking = requestedThinking || preserveQueuedThinking
         session.thinkingAt = t
-        if (requestedThinking || pendingThinkingUntil <= t) {
+        if (requestedThinking || pendingThinkingUntil <= hubNow) {
             this.pendingThinkingUntilBySessionId.delete(session.id)
         }
         if (payload.permissionMode !== undefined) {

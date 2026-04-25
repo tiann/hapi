@@ -169,7 +169,13 @@ describe('alive incremental events', () => {
         cache.markMessageQueued(session.id, now + 10)
         events.length = 0
 
-        cache.handleSessionAlive({ sid: session.id, time: now + 2_000, thinking: false })
+        const originalNow = Date.now
+        Date.now = () => now + 2_000
+        try {
+            cache.handleSessionAlive({ sid: session.id, time: now + 2_000, thinking: false })
+        } finally {
+            Date.now = originalNow
+        }
 
         expect(cache.getSession(session.id)?.thinking).toBe(true)
         expect(events.find((event) => event.type === 'session-updated')).toBeUndefined()
@@ -193,6 +199,40 @@ describe('alive incremental events', () => {
         events.length = 0
 
         cache.handleSessionAlive({ sid: session.id, time: now + 16_000, thinking: false })
+
+        expect(cache.getSession(session.id)?.thinking).toBe(false)
+        const update = events.find((event) => event.type === 'session-updated')
+        expect(update).toBeDefined()
+        if (!update || update.type !== 'session-updated') {
+            return
+        }
+        expect(update.data).toEqual(expect.objectContaining({ thinking: false }))
+    })
+
+    it('expires queued thinking against hub time instead of client heartbeat time', () => {
+        const store = new Store(':memory:')
+        const events: SyncEvent[] = []
+        const cache = new SessionCache(store, createPublisher(events))
+        const now = Date.now()
+
+        const session = cache.getOrCreateSession(
+            'session-queued-thinking-clock-skew',
+            { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+            { requests: {}, completedRequests: {} },
+            'default'
+        )
+
+        cache.handleSessionAlive({ sid: session.id, time: now, thinking: false })
+        cache.markMessageQueued(session.id, now + 10)
+        events.length = 0
+
+        const originalNow = Date.now
+        Date.now = () => now + 16_000
+        try {
+            cache.handleSessionAlive({ sid: session.id, time: now - 60_000, thinking: false })
+        } finally {
+            Date.now = originalNow
+        }
 
         expect(cache.getSession(session.id)?.thinking).toBe(false)
         const update = events.find((event) => event.type === 'session-updated')
