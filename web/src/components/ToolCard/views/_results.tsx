@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import type { ToolViewComponent, ToolViewProps } from '@/components/ToolCard/views/_all'
 import { isObject, safeStringify } from '@hapi/protocol'
 import { CodeBlock } from '@/components/CodeBlock'
@@ -5,6 +6,7 @@ import { MarkdownRenderer } from '@/components/MarkdownRenderer'
 import { ChecklistList, extractTodoChecklist } from '@/components/ToolCard/checklist'
 import { basename, resolveDisplayPath } from '@/utils/path'
 import { getInputStringAny } from '@/lib/toolInputUtils'
+import { ImageLightbox } from '@/components/ImageLightbox'
 
 function parseToolUseError(message: string): { isToolUseError: boolean; errorMessage: string | null } {
     const regex = /<tool_use_error>(.*?)<\/tool_use_error>/s
@@ -26,6 +28,66 @@ function extractTextFromContentBlock(block: unknown): string | null {
     if (block.type === 'text' && typeof block.text === 'string') return block.text
     if (typeof block.text === 'string') return block.text
     return null
+}
+
+interface ImageBlock {
+    mediaType: string
+    dataUrl: string
+}
+
+function extractImageFromContentBlock(block: unknown): ImageBlock | null {
+    if (!isObject(block)) return null
+    if (block.type !== 'image') return null
+    const source = isObject(block.source) ? block.source : null
+    if (!source) return null
+    if (source.type === 'base64' && typeof source.media_type === 'string' && typeof source.data === 'string') {
+        return { mediaType: source.media_type, dataUrl: `data:${source.media_type};base64,${source.data}` }
+    }
+    return null
+}
+
+function extractImagesFromResult(result: unknown): ImageBlock[] {
+    if (!result) return []
+
+    if (Array.isArray(result)) {
+        return result.map(extractImageFromContentBlock).filter((img): img is ImageBlock => img !== null)
+    }
+
+    if (isObject(result)) {
+        const contentArray = Array.isArray(result.content) ? result.content : null
+        if (contentArray) {
+            return contentArray.map(extractImageFromContentBlock).filter((img): img is ImageBlock => img !== null)
+        }
+    }
+
+    return []
+}
+
+function InlineImage({ image }: { image: ImageBlock }) {
+    const [open, setOpen] = useState(false)
+    return (
+        <>
+            <img
+                src={image.dataUrl}
+                alt="Tool result image"
+                className="max-h-48 max-w-full cursor-pointer rounded-lg object-contain transition-opacity hover:opacity-80"
+                onClick={() => setOpen(true)}
+            />
+            <ImageLightbox src={image.dataUrl} alt="Tool result image" open={open} onClose={() => setOpen(false)} />
+        </>
+    )
+}
+
+function ResultImages({ result }: { result: unknown }) {
+    const images = extractImagesFromResult(result)
+    if (images.length === 0) return null
+    return (
+        <div className="mt-2 flex flex-wrap gap-2">
+            {images.map((img, i) => (
+                <InlineImage key={i} image={img} />
+            ))}
+        </div>
+    )
 }
 
 export function extractTextFromResult(result: unknown, depth: number = 0): string | null {
@@ -249,6 +311,7 @@ const BashResultView: ToolViewComponent = (props: ToolViewProps) => {
                     {stdio.stdout ? <CodeBlock code={stdio.stdout} language="text" /> : null}
                     {stdio.stderr ? <CodeBlock code={stdio.stderr} language="text" /> : null}
                 </div>
+                <ResultImages result={result} />
                 <RawJsonDevOnly value={result} />
             </>
         )
@@ -259,6 +322,17 @@ const BashResultView: ToolViewComponent = (props: ToolViewProps) => {
         return (
             <>
                 {renderText(text, { mode: 'code', language: 'text' })}
+                <ResultImages result={result} />
+                <RawJsonDevOnly value={result} />
+            </>
+        )
+    }
+
+    const images = extractImagesFromResult(result)
+    if (images.length > 0) {
+        return (
+            <>
+                <ResultImages result={result} />
                 <RawJsonDevOnly value={result} />
             </>
         )
@@ -284,6 +358,17 @@ const MarkdownResultView: ToolViewComponent = (props: ToolViewProps) => {
         return (
             <>
                 {renderText(text, { mode: 'auto' })}
+                <ResultImages result={result} />
+                <RawJsonDevOnly value={result} />
+            </>
+        )
+    }
+
+    const images = extractImagesFromResult(result)
+    if (images.length > 0) {
+        return (
+            <>
+                <ResultImages result={result} />
                 <RawJsonDevOnly value={result} />
             </>
         )
@@ -354,6 +439,8 @@ const ReadResultView: ToolViewComponent = (props: ToolViewProps) => {
         return <div className="text-sm text-[var(--app-hint)]">{placeholderForState(props.block.tool.state)}</div>
     }
 
+    const images = extractImagesFromResult(result)
+
     const file = extractReadFileContent(result)
     if (file) {
         const path = file.filePath ? resolveDisplayPath(file.filePath, props.metadata) : null
@@ -365,6 +452,16 @@ const ReadResultView: ToolViewComponent = (props: ToolViewProps) => {
                     </div>
                 ) : null}
                 <CodeBlock code={file.content} language="text" />
+                {images.length > 0 ? <ResultImages result={result} /> : null}
+                <RawJsonDevOnly value={result} />
+            </>
+        )
+    }
+
+    if (images.length > 0) {
+        return (
+            <>
+                <ResultImages result={result} />
                 <RawJsonDevOnly value={result} />
             </>
         )
@@ -595,6 +692,7 @@ const GenericResultView: ToolViewComponent = (props: ToolViewProps) => {
                         {parsed.wallTime && `Wall time: ${parsed.wallTime}`}
                     </div>
                     {renderText(parsed.output.trim(), { mode: 'code' })}
+                    <ResultImages result={result} />
                     <RawJsonDevOnly value={result} />
                 </>
             )
@@ -606,7 +704,18 @@ const GenericResultView: ToolViewComponent = (props: ToolViewProps) => {
         return (
             <>
                 {renderText(text, { mode: 'auto' })}
+                <ResultImages result={result} />
                 {typeof result === 'object' ? <RawJsonDevOnly value={result} /> : null}
+            </>
+        )
+    }
+
+    const images = extractImagesFromResult(result)
+    if (images.length > 0) {
+        return (
+            <>
+                <ResultImages result={result} />
+                <RawJsonDevOnly value={result} />
             </>
         )
     }
