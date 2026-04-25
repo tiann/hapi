@@ -138,6 +138,10 @@ export class ApiMachineClient {
         })
 
         this.rpcHandlerManager.registerHandler<ListMachineDirectoryRequest, ListMachineDirectoryResponse>('list-directory', async (params) => {
+            if (!this.normalizedWorkspaceRoot) {
+                return { success: false, error: 'Workspace browsing is not enabled for this machine' }
+            }
+
             const rawPath = typeof params?.path === 'string' ? params.path.trim() : ''
             if (!rawPath) {
                 return { success: false, error: 'Path is required' }
