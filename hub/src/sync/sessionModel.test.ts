@@ -3,6 +3,7 @@ import { toSessionSummary } from '@hapi/protocol'
 import type { SyncEvent } from '@hapi/protocol/types'
 import { Store } from '../store'
 import { RpcRegistry } from '../socket/rpcRegistry'
+import { registerSessionHandlers } from '../socket/handlers/cli/sessionHandlers'
 import type { EventPublisher } from './eventPublisher'
 import { SessionCache } from './sessionCache'
 import { SyncEngine } from './syncEngine'
@@ -263,6 +264,169 @@ describe('session model', () => {
             collaborationMode: 'default'
         })
         expect(cache.getSession(session.id)?.collaborationMode).toBe('default')
+    })
+
+    it('touches session updatedAt when new message activity is recorded', () => {
+        const store = new Store(':memory:')
+        const events: SyncEvent[] = []
+        const cache = new SessionCache(store, createPublisher(events))
+
+        const session = cache.getOrCreateSession(
+            'session-message-activity',
+            { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+            null,
+            'default'
+        )
+        const activityAt = session.updatedAt + 60_000
+
+        cache.recordSessionActivity(session.id, activityAt)
+
+        expect(store.sessions.getSession(session.id)?.updatedAt).toBe(activityAt)
+        expect(cache.getSession(session.id)?.updatedAt).toBe(activityAt)
+        expect(events).toContainEqual({
+            type: 'session-updated',
+            sessionId: session.id,
+            namespace: 'default',
+            data: { updatedAt: activityAt }
+        })
+    })
+
+    it('touches session updatedAt when web sends a message through sync engine', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            { of: () => ({ to: () => ({ emit() {} }) }) } as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            const session = engine.getOrCreateSession(
+                'session-web-message-activity',
+                { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+                null,
+                'default'
+            )
+            const before = store.sessions.getSession(session.id)?.updatedAt ?? 0
+
+            await new Promise((resolve) => setTimeout(resolve, 2))
+            await engine.sendMessage(session.id, { text: 'hello' })
+
+            const after = store.sessions.getSession(session.id)?.updatedAt ?? 0
+            expect(after).toBeGreaterThan(before)
+            expect(engine.getSession(session.id)?.updatedAt).toBe(after)
+        } finally {
+            engine.stop()
+        }
+    })
+
+    it('reports session activity when CLI receives a turn-ready event over socket', () => {
+        const store = new Store(':memory:')
+        const events: SyncEvent[] = []
+        const cache = new SessionCache(store, createPublisher(events))
+        const session = cache.getOrCreateSession(
+            'session-cli-message-activity',
+            { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+            null,
+            'default'
+        )
+        const handlers = new Map<string, (payload: unknown) => void>()
+        const activity: Array<{ sessionId: string; updatedAt: number }> = []
+
+        registerSessionHandlers({
+            on: (event: string, handler: (payload: unknown) => void) => {
+                handlers.set(event, handler)
+            },
+            to: () => ({ emit() {} })
+        } as never, {
+            store,
+            resolveSessionAccess: (sessionId) => {
+                const stored = store.sessions.getSessionByNamespace(sessionId, 'default')
+                return stored ? { ok: true, value: stored } : { ok: false, reason: 'not-found' }
+            },
+            emitAccessError: () => {},
+            onSessionActivity: (sessionId, updatedAt) => {
+                activity.push({ sessionId, updatedAt })
+            }
+        })
+
+        handlers.get('message')?.({
+            sid: session.id,
+            message: JSON.stringify({
+                role: 'agent',
+                content: {
+                    type: 'event',
+                    data: { type: 'ready' }
+                }
+            })
+        })
+
+        expect(activity).toHaveLength(1)
+        expect(activity[0].sessionId).toBe(session.id)
+        expect(activity[0].updatedAt).toBe(store.messages.getMessages(session.id, 1)[0]?.createdAt)
+    })
+
+    it('does not report session activity for CLI tool messages', () => {
+        const store = new Store(':memory:')
+        const events: SyncEvent[] = []
+        const cache = new SessionCache(store, createPublisher(events))
+        const session = cache.getOrCreateSession(
+            'session-cli-tool-activity',
+            { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+            null,
+            'default'
+        )
+        const handlers = new Map<string, (payload: unknown) => void>()
+        const activity: Array<{ sessionId: string; updatedAt: number }> = []
+
+        registerSessionHandlers({
+            on: (event: string, handler: (payload: unknown) => void) => {
+                handlers.set(event, handler)
+            },
+            to: () => ({ emit() {} })
+        } as never, {
+            store,
+            resolveSessionAccess: (sessionId) => {
+                const stored = store.sessions.getSessionByNamespace(sessionId, 'default')
+                return stored ? { ok: true, value: stored } : { ok: false, reason: 'not-found' }
+            },
+            emitAccessError: () => {},
+            onSessionActivity: (sessionId, updatedAt) => {
+                activity.push({ sessionId, updatedAt })
+            }
+        })
+
+        handlers.get('message')?.({
+            sid: session.id,
+            message: JSON.stringify({
+                role: 'agent',
+                content: {
+                    type: 'codex',
+                    data: {
+                        type: 'tool-call',
+                        name: 'CodexBash',
+                        callId: 'call-1',
+                        input: { cmd: 'date' }
+                    }
+                }
+            })
+        })
+        handlers.get('message')?.({
+            sid: session.id,
+            message: JSON.stringify({
+                role: 'agent',
+                content: {
+                    type: 'codex',
+                    data: {
+                        type: 'tool-call-result',
+                        callId: 'call-1',
+                        output: { stdout: 'Sat Apr 25' }
+                    }
+                }
+            })
+        })
+
+        expect(activity).toHaveLength(0)
     })
 
     it('passes the stored model when respawning a resumed session', async () => {

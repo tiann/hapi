@@ -264,6 +264,40 @@ export class SessionCache {
         })
     }
 
+    recordSessionActivity(sessionId: string, updatedAt: number): void {
+        if (!Number.isFinite(updatedAt)) {
+            return
+        }
+
+        const stored = this.store.sessions.getSession(sessionId)
+        if (!stored) {
+            return
+        }
+
+        const nextUpdatedAt = Math.max(stored.updatedAt, updatedAt)
+        const touched = this.store.sessions.touchSessionUpdatedAt(sessionId, nextUpdatedAt, stored.namespace)
+        const session = this.sessions.get(sessionId)
+
+        if (!session) {
+            if (touched) {
+                this.refreshSession(sessionId)
+            }
+            return
+        }
+
+        if (nextUpdatedAt <= session.updatedAt && !touched) {
+            return
+        }
+
+        session.updatedAt = Math.max(session.updatedAt, nextUpdatedAt)
+        this.publisher.emit({
+            type: 'session-updated',
+            sessionId,
+            namespace: session.namespace,
+            data: { updatedAt: session.updatedAt }
+        })
+    }
+
     handleSessionEnd(payload: { sid: string; time: number }): void {
         const t = clampAliveTime(payload.time) ?? Date.now()
 

@@ -63,7 +63,12 @@ export class SyncEngine {
         this.eventPublisher = new EventPublisher(sseManager, (event) => this.resolveNamespace(event))
         this.sessionCache = new SessionCache(store, this.eventPublisher)
         this.machineCache = new MachineCache(store, this.eventPublisher)
-        this.messageService = new MessageService(store, io, this.eventPublisher)
+        this.messageService = new MessageService(
+            store,
+            io,
+            this.eventPublisher,
+            (sessionId, updatedAt) => this.recordSessionActivity(sessionId, updatedAt)
+        )
         this.rpcGateway = new RpcGateway(io, rpcRegistry)
         this.reloadAll()
         this.inactivityTimer = setInterval(() => this.expireInactive(), 5_000)
@@ -218,6 +223,10 @@ export class SyncEngine {
 
     handleBackgroundTaskDelta(sessionId: string, delta: { started: number; completed: number }): void {
         this.sessionCache.applyBackgroundTaskDelta(sessionId, delta)
+    }
+
+    recordSessionActivity(sessionId: string, updatedAt: number): void {
+        this.sessionCache.recordSessionActivity(sessionId, updatedAt)
     }
 
     handleMachineAlive(payload: { machineId: string; time: number }): void {
