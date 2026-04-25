@@ -94,12 +94,13 @@ export function WorkspaceBrowser(props: {
     machines: Machine[]
     machinesLoading: boolean
     onStartSession: (machineId: string, directory: string) => void
+    initialMachineId?: string
 }) {
     const { t } = useTranslation()
-    const { api, machines, machinesLoading } = props
+    const { api, machines, machinesLoading, initialMachineId } = props
     const queryClient = useQueryClient()
 
-    const [machineId, setMachineId] = useState<string | null>(null)
+    const [machineId, setMachineId] = useState<string | null>(initialMachineId ?? null)
     const [currentPath, setCurrentPath] = useState<string | null>(null)
     const [entries, setEntries] = useState<MachineDirectoryEntry[]>([])
     const [isLoading, setIsLoading] = useState(false)
@@ -111,6 +112,12 @@ export function WorkspaceBrowser(props: {
             return
         }
         if (machineId && machines.find(m => m.id === machineId)) return
+        // Honor an explicit initial machine before falling back to the
+        // last-used or first-available machine.
+        if (initialMachineId && machines.find(m => m.id === initialMachineId)) {
+            setMachineId(initialMachineId)
+            return
+        }
         try {
             const lastUsed = localStorage.getItem('hapi:lastMachineId')
             const found = lastUsed ? machines.find(m => m.id === lastUsed) : null
@@ -118,7 +125,7 @@ export function WorkspaceBrowser(props: {
         } catch {
             setMachineId(machines[0].id)
         }
-    }, [machines, machineId])
+    }, [machines, machineId, initialMachineId])
 
     const selectedMachine = useMemo(
         () => machineId ? machines.find(m => m.id === machineId) ?? null : null,

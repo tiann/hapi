@@ -26,7 +26,12 @@ function extractWorkspaceRootArg(args: string[]): string | undefined {
         const arg = args[i]
         let value: string | undefined
         if (arg === '--workspace-root') {
-            value = args[i + 1]
+            const next = args[i + 1]
+            if (next === undefined || next.startsWith('--')) {
+                console.error('--workspace-root requires a path argument')
+                process.exit(1)
+            }
+            value = next
             args.splice(i, 2)
         } else if (arg?.startsWith('--workspace-root=')) {
             value = arg.slice('--workspace-root='.length)

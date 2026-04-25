@@ -416,10 +416,15 @@ function NewSessionPage() {
         })
     }, [navigate, queryClient])
 
-    const handleChooseFolder = useCallback(() => {
-        // Browse page reads `hapi:lastMachineId` from localStorage, so the
-        // currently-selected machine stays selected naturally.
-        navigate({ to: '/browse' })
+    const handleChooseFolder = useCallback((args: { machineId: string | null; directory: string }) => {
+        // Forward the currently-selected machine so /browse opens scoped to
+        // it rather than falling back to `hapi:lastMachineId`, which can
+        // disagree if the user changed machines without yet creating a
+        // session.
+        navigate({
+            to: '/browse',
+            search: args.machineId ? { machineId: args.machineId } : {}
+        })
     }, [navigate])
 
     return (
@@ -468,6 +473,7 @@ function BrowsePage() {
     const goBack = useAppGoBack()
     const { machines, isLoading: machinesLoading } = useMachines(api, true)
     const { t } = useTranslation()
+    const { machineId: initialMachineId } = browseRoute.useSearch()
 
     const handleStartSession = useCallback((machineId: string, directory: string) => {
         navigate({
@@ -497,6 +503,7 @@ function BrowsePage() {
                     machines={machines}
                     machinesLoading={machinesLoading}
                     onStartSession={handleStartSession}
+                    initialMachineId={initialMachineId}
                 />
             </div>
         </div>
@@ -613,6 +620,12 @@ const newSessionRoute = createRoute({
 const browseRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: '/browse',
+    validateSearch: (search: Record<string, unknown>): { machineId?: string } => {
+        if (typeof search.machineId === 'string' && search.machineId) {
+            return { machineId: search.machineId }
+        }
+        return {}
+    },
     component: BrowsePage,
 })
 

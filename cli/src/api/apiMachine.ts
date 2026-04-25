@@ -3,8 +3,9 @@
  */
 
 import { io, type Socket } from 'socket.io-client'
-import { readdir, stat } from 'node:fs/promises'
-import { isAbsolute, join, relative, resolve as resolvePath } from 'node:path'
+import { readdir, realpath, stat } from 'node:fs/promises'
+import { realpathSync } from 'node:fs'
+import { basename, dirname, isAbsolute, join, relative, resolve as resolvePath } from 'node:path'
 import { logger } from '@/ui/logger'
 import { configuration } from '@/configuration'
 import type { Update, UpdateMachineBody } from '@hapi/protocol'
@@ -96,7 +97,19 @@ export class ApiMachineClient {
         private readonly machine: Machine,
         private readonly workspaceRoot?: string
     ) {
-        this.normalizedWorkspaceRoot = workspaceRoot ? resolvePath(workspaceRoot) : undefined
+        // realpath the root once so all subsequent comparisons are against
+        // the canonical, symlink-resolved path. Falls back to a lexical
+        // resolve if realpath fails (e.g. unusual permission setup) so we
+        // still get *some* protection rather than skipping the check.
+        if (workspaceRoot) {
+            try {
+                this.normalizedWorkspaceRoot = realpathSync(workspaceRoot)
+            } catch {
+                this.normalizedWorkspaceRoot = resolvePath(workspaceRoot)
+            }
+        } else {
+            this.normalizedWorkspaceRoot = undefined
+        }
 
         this.rpcHandlerManager = new RpcHandlerManager({
             scopePrefix: this.machine.id,
@@ -130,7 +143,7 @@ export class ApiMachineClient {
                 return { success: false, error: 'Path is required' }
             }
 
-            const targetPath = resolvePath(rawPath)
+            const targetPath = await this.resolveForWorkspaceCheck(rawPath)
             if (!this.isWithinWorkspaceRoot(targetPath)) {
                 return { success: false, error: 'Path is outside workspace root' }
             }
@@ -197,6 +210,37 @@ export class ApiMachineClient {
         return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
     }
 
+    /**
+     * Canonicalize a path for workspace-root containment checks. Resolves
+     * symlinks via realpath so a symlink such as `/safe/out -> /etc` cannot
+     * be used to escape the configured root with a lexical-only check.
+     *
+     * If the path doesn't exist (e.g. a session is being spawned in a
+     * directory we'll create), walks up to the nearest existing ancestor
+     * and realpaths *that*, joining the missing tail back on. This way the
+     * check still runs against the real on-disk location once any
+     * intermediate symlink in the parent chain has been resolved.
+     */
+    private async resolveForWorkspaceCheck(path: string): Promise<string> {
+        const absolute = resolvePath(path)
+        try {
+            return await realpath(absolute)
+        } catch {
+            const missing: string[] = []
+            let cursor = absolute
+            while (cursor !== dirname(cursor)) {
+                missing.unshift(basename(cursor))
+                cursor = dirname(cursor)
+                try {
+                    return join(await realpath(cursor), ...missing)
+                } catch {
+                    // keep walking to the nearest existing parent
+                }
+            }
+            return absolute
+        }
+    }
+
     setRPCHandlers({ spawnSession, stopSession, requestShutdown }: MachineRpcHandlers): void {
         this.rpcHandlerManager.registerHandler('spawn-happy-session', async (params: any) => {
             const { directory, sessionId, resumeSessionId, machineId, approvedNewDirectoryCreation, agent, model, effort, modelReasoningEffort, yolo, permissionMode, token, sessionType, worktreeName } = params || {}
@@ -205,7 +249,7 @@ export class ApiMachineClient {
                 throw new Error('Directory is required')
             }
 
-            const resolvedDirectory = resolvePath(directory)
+            const resolvedDirectory = await this.resolveForWorkspaceCheck(directory)
             if (!this.isWithinWorkspaceRoot(resolvedDirectory)) {
                 return { type: 'error', errorMessage: 'Directory is outside this machine\'s workspace root' }
             }
