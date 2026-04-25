@@ -21,6 +21,9 @@ type PushPayload = {
     }
 }
 
+// Let the new service worker wait until all tabs close before activating.
+// Immediate skipWaiting + clientsClaim can break lazy-loaded chunks (e.g. voice)
+// when the old app shell requests hashes that the new precache no longer serves.
 precacheAndRoute(self.__WB_MANIFEST)
 
 registerRoute(
