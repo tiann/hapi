@@ -14,6 +14,7 @@ import { formatMessageWithAttachments } from '@/utils/attachmentFormatter';
 import { getInvokedCwd } from '@/utils/invokedCwd';
 import { PermissionModeSchema } from '@hapi/protocol/schemas';
 import { isPermissionModeAllowedForFlavor } from '@hapi/protocol';
+import type { SessionEndReason } from '@hapi/protocol';
 
 function emitReadyIfIdle(props: {
     queueSize: () => number;
@@ -146,6 +147,7 @@ export async function runAgentSession(opts: {
 
     registerKillSessionHandler(session.rpcHandlerManager, handleKillSession);
 
+    let sessionEndReason: SessionEndReason = 'completed';
     try {
         while (!shouldExit) {
             waitAbortController = new AbortController();
@@ -191,10 +193,16 @@ export async function runAgentSession(opts: {
                 });
             }
         }
+        if (shouldExit) {
+            sessionEndReason = 'terminated';
+        }
+    } catch (error) {
+        sessionEndReason = 'error';
+        throw error;
     } finally {
         clearInterval(keepAliveInterval);
         await permissionAdapter.cancelAll('Session ended');
-        session.sendSessionDeath(shouldExit ? 'terminated' : 'completed');
+        session.sendSessionDeath(sessionEndReason);
         await session.flush();
         session.close();
         await backend.disconnect();

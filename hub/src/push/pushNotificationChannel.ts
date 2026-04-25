@@ -108,7 +108,6 @@ export class PushNotificationChannel implements NotificationChannel {
         const payload: PushPayload = {
             title: isFailure ? 'Task failed' : 'Task completed',
             body: `${agentName} · ${name} · ${notification.summary}`,
-            tag: `task-${session.id}`,
             data: {
                 type: 'task-notification',
                 sessionId: session.id,
