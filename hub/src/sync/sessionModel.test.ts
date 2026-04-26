@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'bun:test'
+import { describe, expect, it, spyOn } from 'bun:test'
 import { toSessionSummary } from '@hapi/protocol'
 import type { SyncEvent } from '@hapi/protocol/types'
 import { Store } from '../store'
@@ -7,6 +7,13 @@ import { registerSessionHandlers } from '../socket/handlers/cli/sessionHandlers'
 import type { EventPublisher } from './eventPublisher'
 import { SessionCache } from './sessionCache'
 import { SyncEngine } from './syncEngine'
+
+/** Exposes private SyncEngine internals for test stubs without `any` propagation. */
+type EngineInternals = {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    rpcGateway: { spawnSession: (...args: any[]) => Promise<{ type: 'success'; sessionId: string } | { type: 'error'; message: string }> }
+    sessionCache: SessionCache
+}
 
 function createPublisher(events: SyncEvent[]): EventPublisher {
     return {
@@ -463,7 +470,7 @@ describe('session model', () => {
             let capturedModel: string | undefined
             let capturedModelReasoningEffort: string | undefined
             let capturedEffort: string | undefined
-            ;(engine as any).rpcGateway.spawnSession = async (
+            ;(engine as unknown as EngineInternals).rpcGateway.spawnSession = async (
                 _machineId: string,
                 _directory: string,
                 _agent: string,
@@ -480,7 +487,7 @@ describe('session model', () => {
                 capturedEffort = effort
                 return { type: 'success', sessionId: session.id }
             }
-            ;(engine as any).waitForSessionActive = async () => true
+            spyOn(engine, 'waitForSessionActive').mockResolvedValue(true)
 
             const result = await engine.resumeSession(session.id, 'default')
 
@@ -527,7 +534,7 @@ describe('session model', () => {
             engine.handleMachineAlive({ machineId: 'machine-1', time: Date.now() })
 
             let capturedModelReasoningEffort: string | undefined
-            ;(engine as any).rpcGateway.spawnSession = async (
+            ;(engine as unknown as EngineInternals).rpcGateway.spawnSession = async (
                 _machineId: string,
                 _directory: string,
                 _agent: string,
@@ -537,7 +544,7 @@ describe('session model', () => {
                 capturedModelReasoningEffort = modelReasoningEffort
                 return { type: 'success', sessionId: session.id }
             }
-            ;(engine as any).waitForSessionActive = async () => true
+            spyOn(engine, 'waitForSessionActive').mockResolvedValue(true)
 
             const result = await engine.resumeSession(session.id, 'default')
 
@@ -580,7 +587,7 @@ describe('session model', () => {
             engine.handleMachineAlive({ machineId: 'machine-1', time: Date.now() })
 
             let capturedResumeSessionId: string | undefined
-            ;(engine as any).rpcGateway.spawnSession = async (
+            ;(engine as unknown as EngineInternals).rpcGateway.spawnSession = async (
                 _machineId: string,
                 _directory: string,
                 _agent: string,
@@ -594,7 +601,7 @@ describe('session model', () => {
                 capturedResumeSessionId = resumeSessionId
                 return { type: 'success', sessionId: session.id }
             }
-            ;(engine as any).waitForSessionActive = async () => true
+            spyOn(engine, 'waitForSessionActive').mockResolvedValue(true)
 
             const result = await engine.resumeSession(session.id, 'default')
 
@@ -664,7 +671,7 @@ describe('session model', () => {
             // (after fix, route calls resumeSession with opts.permissionMode)
 
             let capturedPermissionMode: string | undefined
-            ;(engine as any).rpcGateway.spawnSession = async (
+            ;(engine as unknown as EngineInternals).rpcGateway.spawnSession = async (
                 _machineId: string,
                 _directory: string,
                 _agent: string,
@@ -680,7 +687,7 @@ describe('session model', () => {
                 capturedPermissionMode = permissionMode
                 return { type: 'success', sessionId: session.id }
             }
-            ;(engine as any).waitForSessionActive = async () => true
+            spyOn(engine, 'waitForSessionActive').mockResolvedValue(true)
 
             // Call resumeSession with permissionMode override
             const result = await engine.resumeSession(session.id, 'default', { permissionMode: 'bypassPermissions' })
@@ -731,7 +738,7 @@ describe('session model', () => {
             engine.handleSessionEnd({ sid: session.id, time: Date.now() })
 
             let capturedPermissionMode: string | undefined
-            ;(engine as any).rpcGateway.spawnSession = async (
+            ;(engine as unknown as EngineInternals).rpcGateway.spawnSession = async (
                 _machineId: string,
                 _directory: string,
                 _agent: string,
@@ -747,7 +754,7 @@ describe('session model', () => {
                 capturedPermissionMode = permissionMode
                 return { type: 'success', sessionId: session.id }
             }
-            ;(engine as any).waitForSessionActive = async () => true
+            spyOn(engine, 'waitForSessionActive').mockResolvedValue(true)
 
             const result = await engine.resumeSession(session.id, 'default')
 
@@ -981,7 +988,7 @@ describe('session model', () => {
 
                 // s1 is active, so dedup keeps its live record around
                 const events: SyncEvent[] = []
-                const cache = (engine as any).sessionCache as SessionCache
+                const cache = (engine as unknown as EngineInternals).sessionCache
                 await cache.deduplicateByAgentSessionId(s2.id)
                 expect(cache.getSession(s1.id)).toBeDefined()
 
