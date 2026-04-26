@@ -112,6 +112,7 @@ export default {
   'newSession.model.optional': 'optional',
   'newSession.model.loadFailed': 'Failed to load Codex models',
   'newSession.reasoningEffort': 'Reasoning effort',
+  'newSession.permissionMode': 'Permission Mode',
   'newSession.yolo': 'YOLO mode',
   'newSession.yolo.title': 'Bypass approvals and sandbox',
   'newSession.yolo.desc': 'Uses dangerous agent flags when spawning.',

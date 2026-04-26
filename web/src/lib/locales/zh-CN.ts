@@ -114,6 +114,7 @@ export default {
   'newSession.model.optional': '可选',
   'newSession.model.loadFailed': '加载 Codex 模型失败',
   'newSession.reasoningEffort': '推理强度',
+  'newSession.permissionMode': '权限模式',
   'newSession.yolo': 'YOLO 模式',
   'newSession.yolo.title': '跳过审批和沙箱',
   'newSession.yolo.desc': '启动时使用危险的代理标志。',
