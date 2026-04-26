@@ -55,6 +55,11 @@ function createApp(session: Session) {
     const applySessionConfig = async (sessionId: string, config: Record<string, unknown>) => {
         applySessionConfigCalls.push([sessionId, config])
     }
+    const resumeSessionCalls: Array<[string, string, Parameters<SyncEngine['resumeSession']>[2]]> = []
+    const resumeSession = async (sessionId: string, namespace: string, opts?: Parameters<SyncEngine['resumeSession']>[2]) => {
+        resumeSessionCalls.push([sessionId, namespace, opts])
+        return { type: 'success' as const, sessionId }
+    }
     const listCodexModelsForSession = async () => ({
         success: true,
         models: [
@@ -64,6 +69,7 @@ function createApp(session: Session) {
     const engine = {
         resolveSessionAccess: () => ({ ok: true, sessionId: session.id, session }),
         applySessionConfig,
+        resumeSession,
         listCodexModelsForSession
     } as Partial<SyncEngine>
 
@@ -74,7 +80,7 @@ function createApp(session: Session) {
     })
     app.route('/api', createSessionsRoutes(() => engine as SyncEngine))
 
-    return { app, applySessionConfigCalls }
+    return { app, applySessionConfigCalls, resumeSessionCalls }
 }
 
 describe('sessions routes', () => {
@@ -292,6 +298,48 @@ describe('sessions routes', () => {
                 { id: 'gpt-5.5', displayName: 'GPT-5.5', isDefault: true }
             ]
         })
+    })
+
+    it('forwards permissionMode from resume body to engine.resumeSession', async () => {
+        const session = createSession({ active: false })
+        const { app, resumeSessionCalls } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/resume', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ permissionMode: 'bypassPermissions' })
+        })
+
+        expect(response.status).toBe(200)
+        expect(resumeSessionCalls).toHaveLength(1)
+        expect(resumeSessionCalls[0][2]).toEqual({ permissionMode: 'bypassPermissions' })
+    })
+
+    it('accepts resume requests without a body (backward compatible)', async () => {
+        const session = createSession({ active: false })
+        const { app, resumeSessionCalls } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/resume', {
+            method: 'POST'
+        })
+
+        expect(response.status).toBe(200)
+        expect(resumeSessionCalls).toHaveLength(1)
+        expect(resumeSessionCalls[0][2]).toBeUndefined()
+    })
+
+    it('returns 400 when resume body is present but invalid', async () => {
+        const session = createSession({ active: false })
+        const { app, resumeSessionCalls } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/resume', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ permissionMode: 'not-a-valid-mode' })
+        })
+
+        expect(response.status).toBe(400)
+        expect(resumeSessionCalls).toHaveLength(0)
     })
 
     it('accepts permission-mode changes for inactive sessions and updates cache', async () => {

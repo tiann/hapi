@@ -1,5 +1,6 @@
 import { getPermissionModesForFlavor, isPermissionModeAllowedForFlavor, toSessionSummary } from '@hapi/protocol'
 import { CodexCollaborationModeSchema, PermissionModeSchema } from '@hapi/protocol/schemas'
+import type { PermissionMode } from '@hapi/protocol/types'
 import { Hono } from 'hono'
 import { z } from 'zod'
 import type { SyncEngine, Session } from '../../sync/syncEngine'
@@ -8,6 +9,10 @@ import { requireSessionFromParam, requireSyncEngine } from './guards'
 
 const permissionModeSchema = z.object({
     mode: PermissionModeSchema
+})
+
+const resumeBodySchema = z.object({
+    permissionMode: PermissionModeSchema.optional()
 })
 
 const collaborationModeSchema = z.object({
@@ -107,7 +112,27 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
 
         const namespace = c.get('namespace')
-        const result = await engine.resumeSession(sessionResult.sessionId, namespace)
+        const body = await c.req.json().catch(() => null)
+        let requestedPermissionMode: PermissionMode | undefined = undefined
+        if (body !== null) {
+            const parsed = resumeBodySchema.safeParse(body)
+            if (!parsed.success) {
+                return c.json({ error: 'Invalid body' }, 400)
+            }
+            requestedPermissionMode = parsed.data.permissionMode
+        }
+
+        if (requestedPermissionMode !== undefined) {
+            const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
+            if (!isPermissionModeAllowedForFlavor(requestedPermissionMode, flavor)) {
+                return c.json({ error: 'Invalid permission mode for session flavor' }, 400)
+            }
+        }
+
+        const opts = requestedPermissionMode !== undefined
+            ? { permissionMode: requestedPermissionMode }
+            : undefined
+        const result = await engine.resumeSession(sessionResult.sessionId, namespace, opts)
         if (result.type === 'error') {
             const status = result.code === 'no_machine_online' ? 503
                 : result.code === 'access_denied' ? 403
