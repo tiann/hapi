@@ -1,5 +1,7 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
+import { isPermissionModeAllowedForFlavor } from '@hapi/protocol'
+import { PermissionModeSchema } from '@hapi/protocol/schemas'
 import type { SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 import { requireMachine } from './guards'
@@ -11,6 +13,7 @@ const spawnBodySchema = z.object({
     effort: z.string().optional(),
     modelReasoningEffort: z.string().optional(),
     yolo: z.boolean().optional(),
+    permissionMode: PermissionModeSchema.optional(),
     sessionType: z.enum(['simple', 'worktree']).optional(),
     worktreeName: z.string().optional()
 })
@@ -51,17 +54,23 @@ export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return c.json({ error: 'Invalid body' }, 400)
         }
 
+        const agent = parsed.data.agent ?? 'claude'
+        if (parsed.data.permissionMode && !isPermissionModeAllowedForFlavor(parsed.data.permissionMode, agent)) {
+            return c.json({ error: 'Invalid permissionMode for agent' }, 400)
+        }
+
         const result = await engine.spawnSession(
             machineId,
             parsed.data.directory,
-            parsed.data.agent,
+            agent,
             parsed.data.model,
             parsed.data.modelReasoningEffort,
             parsed.data.yolo,
             parsed.data.sessionType,
             parsed.data.worktreeName,
             undefined,
-            parsed.data.effort
+            parsed.data.effort,
+            parsed.data.permissionMode
         )
         return c.json(result)
     })

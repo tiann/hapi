@@ -10,7 +10,7 @@ import { useActiveSuggestions, type Suggestion } from '@/hooks/useActiveSuggesti
 import { useDirectorySuggestions } from '@/hooks/useDirectorySuggestions'
 import { useRecentPaths } from '@/hooks/useRecentPaths'
 import { useTranslation } from '@/lib/use-translation'
-import type { AgentType, ClaudeEffort, CodexReasoningEffort, SessionType } from './types'
+import type { AgentType, ClaudeEffort, ClaudePermissionMode, CodexReasoningEffort, SessionType } from './types'
 import { ActionButtons } from './ActionButtons'
 import { AgentSelector } from './AgentSelector'
 import { DirectorySection } from './DirectorySection'
@@ -18,14 +18,14 @@ import { MachineSelector } from './MachineSelector'
 import { ModelSelector } from './ModelSelector'
 import { ClaudeEffortSelector } from './ClaudeEffortSelector'
 import { ReasoningEffortSelector } from './ReasoningEffortSelector'
+import { PermissionModeSelector } from './PermissionModeSelector'
 import {
     loadPreferredAgent,
-    loadPreferredYoloMode,
+    loadPreferredPermissionMode,
     savePreferredAgent,
-    savePreferredYoloMode,
+    savePreferredPermissionMode,
 } from './preferences'
 import { SessionTypeSelector } from './SessionTypeSelector'
-import { YoloToggle } from './YoloToggle'
 import { formatRunnerSpawnError } from '../../utils/formatRunnerSpawnError'
 
 export function NewSession(props: {
@@ -53,7 +53,7 @@ export function NewSession(props: {
     const [model, setModel] = useState('auto')
     const [effort, setEffort] = useState<ClaudeEffort>('auto')
     const [modelReasoningEffort, setModelReasoningEffort] = useState<CodexReasoningEffort>('default')
-    const [yoloMode, setYoloMode] = useState(loadPreferredYoloMode)
+    const [permissionMode, setPermissionMode] = useState<ClaudePermissionMode>(loadPreferredPermissionMode)
     const [sessionType, setSessionType] = useState<SessionType>('simple')
     const [worktreeName, setWorktreeName] = useState('')
     const [directoryCreationConfirmed, setDirectoryCreationConfirmed] = useState(false)
@@ -76,8 +76,8 @@ export function NewSession(props: {
     }, [agent])
 
     useEffect(() => {
-        savePreferredYoloMode(yoloMode)
-    }, [yoloMode])
+        savePreferredPermissionMode(permissionMode)
+    }, [permissionMode])
 
     useEffect(() => {
         if (props.machines.length === 0) return
@@ -282,6 +282,7 @@ export function NewSession(props: {
             const resolvedModelReasoningEffort = agent === 'codex' && modelReasoningEffort !== 'default'
                 ? modelReasoningEffort
                 : undefined
+            const claudePermissionMode = agent === 'claude' ? permissionMode : undefined
             const result = await spawnSession({
                 machineId,
                 directory: trimmedDirectory,
@@ -289,7 +290,8 @@ export function NewSession(props: {
                 model: resolvedModel,
                 effort: resolvedEffort,
                 modelReasoningEffort: resolvedModelReasoningEffort,
-                yolo: yoloMode,
+                yolo: claudePermissionMode === 'bypassPermissions',
+                permissionMode: claudePermissionMode,
                 sessionType,
                 worktreeName: sessionType === 'worktree' ? (worktreeName.trim() || undefined) : undefined
             })
@@ -378,10 +380,11 @@ export function NewSession(props: {
                 isDisabled={isFormDisabled}
                 onChange={setModelReasoningEffort}
             />
-            <YoloToggle
-                yoloMode={yoloMode}
+            <PermissionModeSelector
+                agent={agent}
+                permissionMode={permissionMode}
                 isDisabled={isFormDisabled}
-                onToggle={setYoloMode}
+                onPermissionModeChange={setPermissionMode}
             />
 
             {(error ?? spawnError) ? (
