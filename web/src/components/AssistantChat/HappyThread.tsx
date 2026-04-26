@@ -121,16 +121,25 @@ export function HappyThread(props: {
         const viewport = viewportRef.current
         if (!viewport) return
 
-        const THRESHOLD_PX = 120
+        const NEAR_BOTTOM_PX = 120  // for atBottom indicator
+        const AT_BOTTOM_PX = 8       // strict: only re-enable autoScroll when truly at bottom
+
+        // userPausedRef: user scrolled up — keep autoScroll off until they reach the bottom again
+        const userPausedRef = { current: false }
 
         const handleScroll = () => {
             const distanceFromBottom = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight
-            const isNearBottom = distanceFromBottom < THRESHOLD_PX
+            const isNearBottom = distanceFromBottom < NEAR_BOTTOM_PX
+            const isAtBottom = distanceFromBottom < AT_BOTTOM_PX
 
-            if (isNearBottom) {
+            if (isAtBottom) {
+                // Truly at bottom — clear pause and resume autoScroll
+                userPausedRef.current = false
                 if (!autoScrollEnabledRef.current) setAutoScrollEnabled(true)
-            } else if (autoScrollEnabledRef.current) {
-                setAutoScrollEnabled(false)
+            } else if (autoScrollEnabledRef.current && !userPausedRef.current) {
+                // Drifted off bottom and user hasn't paused — disable autoScroll
+                // (no longer racing with user input)
+                if (distanceFromBottom > AT_BOTTOM_PX) setAutoScrollEnabled(false)
             }
 
             if (isNearBottom !== atBottomRef.current) {
@@ -142,17 +151,19 @@ export function HappyThread(props: {
             }
         }
 
-        viewport.addEventListener('scroll', handleScroll, { passive: true })
-
-        // User scroll-up via wheel/touch should immediately release the autoScroll
-        // hold, even if still within the bottom threshold — otherwise auto-scroll
-        // races with the wheel and the view feels stuck at the bottom.
-        const handleWheel = (e: WheelEvent) => {
-            if (e.deltaY < 0 && autoScrollEnabledRef.current) {
-                setAutoScrollEnabled(false)
-                autoScrollEnabledRef.current = false
+        // Mark user-paused on any upward wheel/touch — independent of distance
+        const markPausedOnScrollUp = (deltaY: number) => {
+            if (deltaY < 0) {
+                userPausedRef.current = true
+                if (autoScrollEnabledRef.current) {
+                    setAutoScrollEnabled(false)
+                    autoScrollEnabledRef.current = false
+                }
             }
         }
+        const handleWheel = (e: WheelEvent) => markPausedOnScrollUp(e.deltaY)
+
+        viewport.addEventListener('scroll', handleScroll, { passive: true })
         viewport.addEventListener('wheel', handleWheel, { passive: true })
 
         return () => {
