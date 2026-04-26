@@ -51,6 +51,7 @@ export function loadPreferredPermissionMode(): ClaudePermissionMode {
         }
         // Migrate from legacy yolo toggle
         if (localStorage.getItem(YOLO_STORAGE_KEY) === 'true') {
+            savePreferredPermissionMode('bypassPermissions')
             return 'bypassPermissions'
         }
     } catch {

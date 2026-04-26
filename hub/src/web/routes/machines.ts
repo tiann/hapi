@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
+import type { PermissionMode } from '@hapi/protocol'
 import type { SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 import { requireMachine } from './guards'
@@ -11,6 +12,7 @@ const spawnBodySchema = z.object({
     effort: z.string().optional(),
     modelReasoningEffort: z.string().optional(),
     yolo: z.boolean().optional(),
+    permissionMode: z.string().optional(),
     sessionType: z.enum(['simple', 'worktree']).optional(),
     worktreeName: z.string().optional()
 })
@@ -61,7 +63,8 @@ export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Ho
             parsed.data.sessionType,
             parsed.data.worktreeName,
             undefined,
-            parsed.data.effort
+            parsed.data.effort,
+            parsed.data.permissionMode as PermissionMode | undefined
         )
         return c.json(result)
     })
