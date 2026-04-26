@@ -300,8 +300,47 @@ describe('sessions routes', () => {
         })
     })
 
+    it('rejects resume with bypassPermissions for Codex sessions (flavor validation)', async () => {
+        const session = createSession({
+            active: false,
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'codex' }
+        })
+        const { app, resumeSessionCalls } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/resume', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ permissionMode: 'bypassPermissions' })
+        })
+
+        expect(response.status).toBe(400)
+        expect(await response.json()).toMatchObject({ error: expect.stringContaining('permission mode') })
+        expect(resumeSessionCalls).toHaveLength(0)
+    })
+
+    it('allows resume with a valid Codex permissionMode', async () => {
+        const session = createSession({
+            active: false,
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'codex' }
+        })
+        const { app, resumeSessionCalls } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/resume', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ permissionMode: 'yolo' })
+        })
+
+        expect(response.status).toBe(200)
+        expect(resumeSessionCalls).toHaveLength(1)
+        expect(resumeSessionCalls[0][2]).toEqual({ permissionMode: 'yolo' })
+    })
+
     it('forwards permissionMode from resume body to engine.resumeSession', async () => {
-        const session = createSession({ active: false })
+        const session = createSession({
+            active: false,
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'claude' }
+        })
         const { app, resumeSessionCalls } = createApp(session)
 
         const response = await app.request('/api/sessions/session-1/resume', {
