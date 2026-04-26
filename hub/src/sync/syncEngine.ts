@@ -477,13 +477,29 @@ export class SyncEngine {
             return { type: 'error', message: spawnResult.message, code: 'resume_failed' }
         }
 
-        if (opts?.permissionMode !== undefined) {
-            this.sessionCache.applySessionConfig(sessionId, { permissionMode: opts.permissionMode })
-        }
-
         const becameActive = await this.waitForSessionActive(spawnResult.sessionId)
         if (!becameActive) {
             return { type: 'error', message: 'Session failed to become active', code: 'resume_failed' }
+        }
+
+        if (opts?.permissionMode !== undefined) {
+            // In the normal path, the keepalive received during waitForSessionActive already
+            // carries the mode that was injected into the spawn payload, so handleSessionAlive
+            // will have persisted it to the cache and DB. We only apply a manual fallback if
+            // the session has already gone inactive again before the keepalive arrived (a narrow
+            // race window: session became active enough to unblock waitForSessionActive but then
+            // immediately expired before the keepalive handler ran).
+            const currentSession = this.sessionCache.getSession(sessionId)
+            if (!currentSession?.active) {
+                try {
+                    this.sessionCache.applySessionConfig(sessionId, { permissionMode: opts.permissionMode })
+                } catch (err) {
+                    // Fallback write failed — the session state may be partially stale.
+                    // The next keepalive will self-correct via handleSessionAlive.
+                    const msg = err instanceof Error ? err.message : String(err)
+                    console.warn(`[resumeSession] TOCTOU fallback permissionMode write failed (self-healing via keepalive): ${msg}`)
+                }
+            }
         }
 
         if (spawnResult.sessionId !== access.sessionId) {

@@ -785,6 +785,57 @@ describe('session model', () => {
         expect(stored?.permissionMode).toBe('bypassPermissions')
     })
 
+    it('rejects resumeSession with opts.permissionMode if session became active before spawn', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            const session = engine.getOrCreateSession(
+                'session-toctou-active',
+                {
+                    path: '/tmp/project',
+                    host: 'localhost',
+                    machineId: 'machine-toctou',
+                    flavor: 'claude',
+                    claudeSessionId: 'claude-toctou'
+                },
+                null,
+                'default',
+                'sonnet'
+            )
+            engine.getOrCreateMachine(
+                'machine-toctou',
+                { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
+                null,
+                'default'
+            )
+            engine.handleMachineAlive({ machineId: 'machine-toctou', time: Date.now() })
+
+            // Session starts inactive. Simulate it becoming active between resolve and spawn.
+            ;(engine as any).rpcGateway.spawnSession = async () => {
+                // Race: session becomes active right before spawn
+                engine.handleSessionAlive({ sid: session.id, time: Date.now(), thinking: false })
+                return { type: 'success', sessionId: session.id }
+            }
+            ;(engine as any).waitForSessionActive = async () => true
+
+            // When opts.permissionMode is supplied and session became active mid-flight,
+            // the implementation must detect the race and abort the permissionMode write.
+            const result = await engine.resumeSession(session.id, 'default', { permissionMode: 'bypassPermissions' })
+
+            // The session is now active, so the result can be success, but
+            // the cache permissionMode must NOT have been overwritten.
+            expect(engine.getSession(session.id)?.permissionMode).not.toBe('bypassPermissions')
+        } finally {
+            engine.stop()
+        }
+    })
+
     it('does not mutate cache permissionMode when spawn fails', async () => {
         const store = new Store(':memory:')
         const engine = new SyncEngine(
