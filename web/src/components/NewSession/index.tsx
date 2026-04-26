@@ -282,6 +282,7 @@ export function NewSession(props: {
             const resolvedModelReasoningEffort = agent === 'codex' && modelReasoningEffort !== 'default'
                 ? modelReasoningEffort
                 : undefined
+            const claudePermissionMode = agent === 'claude' ? permissionMode : undefined
             const result = await spawnSession({
                 machineId,
                 directory: trimmedDirectory,
@@ -289,8 +290,8 @@ export function NewSession(props: {
                 model: resolvedModel,
                 effort: resolvedEffort,
                 modelReasoningEffort: resolvedModelReasoningEffort,
-                yolo: permissionMode === 'bypassPermissions',
-                permissionMode: agent === 'claude' ? permissionMode : undefined,
+                yolo: claudePermissionMode === 'bypassPermissions',
+                permissionMode: claudePermissionMode,
                 sessionType,
                 worktreeName: sessionType === 'worktree' ? (worktreeName.trim() || undefined) : undefined
             })
