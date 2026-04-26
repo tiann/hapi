@@ -399,7 +399,7 @@ export class SyncEngine {
         )
     }
 
-    async resumeSession(sessionId: string, namespace: string): Promise<ResumeSessionResult> {
+    async resumeSession(sessionId: string, namespace: string, opts?: { permissionMode?: PermissionMode }): Promise<ResumeSessionResult> {
         const access = this.sessionCache.resolveSessionAccess(sessionId, namespace)
         if (!access.ok) {
             return {
@@ -457,6 +457,12 @@ export class SyncEngine {
             return { type: 'error', message: 'No machine online', code: 'no_machine_online' }
         }
 
+        if (opts?.permissionMode !== undefined) {
+            this.sessionCache.applySessionConfig(sessionId, { permissionMode: opts.permissionMode })
+        }
+
+        const effectivePermissionMode = opts?.permissionMode ?? session.permissionMode ?? undefined
+
         const spawnResult = await this.rpcGateway.spawnSession(
             targetMachine.id,
             metadata.path,
@@ -468,7 +474,7 @@ export class SyncEngine {
             undefined,
             resumeToken,
             session.effort ?? undefined,
-            session.permissionMode ?? undefined
+            effectivePermissionMode
         )
 
         if (spawnResult.type !== 'success') {
