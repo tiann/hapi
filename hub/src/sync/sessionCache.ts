@@ -1,4 +1,4 @@
-import { AgentStateSchema, MetadataSchema, TeamStateSchema } from '@hapi/protocol/schemas'
+import { AgentStateSchema, MetadataSchema, PermissionModeSchema, TeamStateSchema } from '@hapi/protocol/schemas'
 import type { CodexCollaborationMode, PermissionMode, Session } from '@hapi/protocol/types'
 import type { Store } from '../store'
 import { clampAliveTime } from './aliveTime'
@@ -145,7 +145,7 @@ export class SessionCache {
             model: stored.model,
             modelReasoningEffort: stored.modelReasoningEffort,
             effort: stored.effort,
-            permissionMode: existing?.permissionMode,
+            permissionMode: existing?.permissionMode ?? PermissionModeSchema.safeParse(stored.permissionMode).data,
             collaborationMode: existing?.collaborationMode
         }
 
@@ -198,6 +198,9 @@ export class SessionCache {
             this.pendingThinkingUntilBySessionId.delete(session.id)
         }
         if (payload.permissionMode !== undefined) {
+            if (payload.permissionMode !== session.permissionMode) {
+                this.store.sessions.setSessionPermissionMode(payload.sid, payload.permissionMode, session.namespace)
+            }
             session.permissionMode = payload.permissionMode
         }
         if (payload.model !== undefined) {
@@ -388,6 +391,12 @@ export class SessionCache {
         }
 
         if (config.permissionMode !== undefined) {
+            if (config.permissionMode !== session.permissionMode) {
+                const updated = this.store.sessions.setSessionPermissionMode(sessionId, config.permissionMode, session.namespace)
+                if (!updated) {
+                    throw new Error('Failed to update session permission mode')
+                }
+            }
             session.permissionMode = config.permissionMode
         }
         if (config.model !== undefined) {

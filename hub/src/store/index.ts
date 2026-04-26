@@ -22,7 +22,7 @@ export { PushStore } from './pushStore'
 export { SessionStore } from './sessionStore'
 export { UserStore } from './userStore'
 
-const SCHEMA_VERSION: number = 7
+const SCHEMA_VERSION: number = 8
 const REQUIRED_TABLES = [
     'sessions',
     'machines',
@@ -98,60 +98,39 @@ export class Store {
             return
         }
 
-        if (currentVersion === 1 && SCHEMA_VERSION === 2) {
-            this.migrateFromV1ToV2()
+        if (currentVersion < 4) {
+            throw new Error(
+                `Database schema version ${currentVersion} is no longer auto-upgradable. ` +
+                'Please reinstall or contact maintainers.'
+            )
+        }
+
+        if (currentVersion === 7) {
+            this.migrateFromV7ToV8()
             this.setUserVersion(SCHEMA_VERSION)
             return
         }
 
-        if (currentVersion === 2 && SCHEMA_VERSION === 3) {
-            this.migrateFromV2ToV3()
-            this.setUserVersion(SCHEMA_VERSION)
-            return
-        }
-
-        if (currentVersion === 3 && SCHEMA_VERSION === 4) {
-            this.migrateFromV3ToV4()
-            this.setUserVersion(SCHEMA_VERSION)
-            return
-        }
-
-        if (currentVersion === 4 && SCHEMA_VERSION === 5) {
-            this.migrateFromV4ToV5()
-            this.setUserVersion(SCHEMA_VERSION)
-            return
-        }
-
-        if (currentVersion === 5 && SCHEMA_VERSION === 6) {
-            this.migrateFromV5ToV6()
-            this.setUserVersion(SCHEMA_VERSION)
-            return
-        }
-
-        if (currentVersion === 6 && SCHEMA_VERSION === 7) {
+        if (currentVersion === 6) {
             this.migrateFromV6ToV7()
+            this.migrateFromV7ToV8()
             this.setUserVersion(SCHEMA_VERSION)
             return
         }
 
-        if (currentVersion === 4 && SCHEMA_VERSION === 6) {
-            this.migrateFromV4ToV5()
+        if (currentVersion === 5) {
             this.migrateFromV5ToV6()
+            this.migrateFromV6ToV7()
+            this.migrateFromV7ToV8()
             this.setUserVersion(SCHEMA_VERSION)
             return
         }
 
-        if (currentVersion === 4 && SCHEMA_VERSION === 7) {
+        if (currentVersion === 4) {
             this.migrateFromV4ToV5()
             this.migrateFromV5ToV6()
             this.migrateFromV6ToV7()
-            this.setUserVersion(SCHEMA_VERSION)
-            return
-        }
-
-        if (currentVersion === 5 && SCHEMA_VERSION === 7) {
-            this.migrateFromV5ToV6()
-            this.migrateFromV6ToV7()
+            this.migrateFromV7ToV8()
             this.setUserVersion(SCHEMA_VERSION)
             return
         }
@@ -179,6 +158,7 @@ export class Store {
                 model TEXT,
                 model_reasoning_effort TEXT,
                 effort TEXT,
+                permission_mode TEXT,
                 todos TEXT,
                 todos_updated_at INTEGER,
                 team_state TEXT,
@@ -359,6 +339,13 @@ export class Store {
         const columns = this.getSessionColumnNames()
         if (!columns.has('model_reasoning_effort')) {
             this.db.exec('ALTER TABLE sessions ADD COLUMN model_reasoning_effort TEXT')
+        }
+    }
+
+    private migrateFromV7ToV8(): void {
+        const columns = this.getSessionColumnNames()
+        if (!columns.has('permission_mode')) {
+            this.db.exec('ALTER TABLE sessions ADD COLUMN permission_mode TEXT')
         }
     }
 

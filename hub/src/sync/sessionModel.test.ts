@@ -765,6 +765,48 @@ describe('session model', () => {
         }
     })
 
+    it('persists permissionMode to SQLite when applySessionConfig is called', () => {
+        const store = new Store(':memory:')
+        const events: SyncEvent[] = []
+        const cache = new SessionCache(store, createPublisher(events))
+
+        const session = cache.getOrCreateSession(
+            'session-perm-persist',
+            { path: '/tmp/project', host: 'localhost', flavor: 'claude' },
+            null,
+            'default',
+            'sonnet'
+        )
+
+        cache.applySessionConfig(session.id, { permissionMode: 'bypassPermissions' })
+
+        // Must survive a cache eviction and re-load from SQLite
+        const stored = store.sessions.getSession(session.id)
+        expect(stored?.permissionMode).toBe('bypassPermissions')
+    })
+
+    it('restores permissionMode from SQLite when session is refreshed', () => {
+        const store = new Store(':memory:')
+        const events: SyncEvent[] = []
+        const cache = new SessionCache(store, createPublisher(events))
+
+        const session = cache.getOrCreateSession(
+            'session-perm-refresh',
+            { path: '/tmp/project', host: 'localhost', flavor: 'claude' },
+            null,
+            'default',
+            'sonnet'
+        )
+
+        // Write directly to SQLite (simulating what applySessionConfig will do)
+        store.sessions.setSessionPermissionMode(session.id, 'bypassPermissions', session.namespace)
+
+        // Force a refresh from SQLite on the same cache (simulates hub restart / eviction)
+        const cache2 = new SessionCache(store, createPublisher([]))
+        const refreshed = cache2.refreshSession(session.id)
+        expect(refreshed?.permissionMode).toBe('bypassPermissions')
+    })
+
     describe('session dedup by agent session ID', () => {
         it('merges duplicate when codexSessionId collides', async () => {
             const store = new Store(':memory:')
