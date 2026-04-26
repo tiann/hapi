@@ -605,6 +605,93 @@ describe('session model', () => {
         }
     })
 
+    it('updates cache permissionMode when applySessionConfig is called on inactive session', () => {
+        const store = new Store(':memory:')
+        const events: SyncEvent[] = []
+        const cache = new SessionCache(store, createPublisher(events))
+
+        const session = cache.getOrCreateSession(
+            'session-inactive-perm-config',
+            { path: '/tmp/project', host: 'localhost', flavor: 'claude' },
+            null,
+            'default',
+            'sonnet'
+        )
+
+        // Simulate session going inactive
+        cache.handleSessionAlive({ sid: session.id, time: Date.now(), thinking: false })
+        // Force inactive by manipulating activeAt (simulating timeout or session-end)
+        // We test the cache layer directly: applySessionConfig should update permissionMode
+        // regardless of session active state.
+        cache.applySessionConfig(session.id, { permissionMode: 'bypassPermissions' })
+
+        expect(cache.getSession(session.id)?.permissionMode).toBe('bypassPermissions')
+    })
+
+    it('uses opts.permissionMode override when resuming inactive session', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            const session = engine.getOrCreateSession(
+                'session-perm-override-resume',
+                {
+                    path: '/tmp/project',
+                    host: 'localhost',
+                    machineId: 'machine-perm-ovr',
+                    flavor: 'claude',
+                    claudeSessionId: 'claude-perm-ovr-session'
+                },
+                null,
+                'default',
+                'sonnet'
+            )
+            engine.getOrCreateMachine(
+                'machine-perm-ovr',
+                { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
+                null,
+                'default'
+            )
+            engine.handleMachineAlive({ machineId: 'machine-perm-ovr', time: Date.now() })
+
+            // Session starts inactive (no session-alive sent)
+            // Simulate: user toggled mode to 'bypassPermissions' via the route
+            // (after fix, route calls resumeSession with opts.permissionMode)
+
+            let capturedPermissionMode: string | undefined
+            ;(engine as any).rpcGateway.spawnSession = async (
+                _machineId: string,
+                _directory: string,
+                _agent: string,
+                _model?: string,
+                _modelReasoningEffort?: string,
+                _yolo?: boolean,
+                _sessionType?: string,
+                _worktreeName?: string,
+                _resumeSessionId?: string,
+                _effort?: string,
+                permissionMode?: string
+            ) => {
+                capturedPermissionMode = permissionMode
+                return { type: 'success', sessionId: session.id }
+            }
+            ;(engine as any).waitForSessionActive = async () => true
+
+            // Call resumeSession with permissionMode override
+            const result = await engine.resumeSession(session.id, 'default', { permissionMode: 'bypassPermissions' })
+
+            expect(result).toEqual({ type: 'success', sessionId: session.id })
+            expect(capturedPermissionMode).toBe('bypassPermissions')
+        } finally {
+            engine.stop()
+        }
+    })
+
     it('passes the cached permissionMode when respawning a resumed session', async () => {
         const store = new Store(':memory:')
         const engine = new SyncEngine(

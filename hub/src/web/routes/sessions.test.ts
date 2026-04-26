@@ -293,4 +293,24 @@ describe('sessions routes', () => {
             ]
         })
     })
+
+    it('accepts permission-mode changes for inactive sessions and updates cache', async () => {
+        const session = createSession({
+            active: false,
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'claude' }
+        })
+        const { app, applySessionConfigCalls } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/permission-mode', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ mode: 'bypassPermissions' })
+        })
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({ ok: true })
+        expect(applySessionConfigCalls).toEqual([
+            ['session-1', { permissionMode: 'bypassPermissions' }]
+        ])
+    })
 })
