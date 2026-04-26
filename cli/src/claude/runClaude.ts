@@ -153,9 +153,9 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
 
     // Forward messages to the queue
     const claudeSettings = readClaudeSettings();
-    const rawDefaultMode = claudeSettings?.permissions?.defaultMode;
-    const claudeDefaultMode = PermissionModeSchema.safeParse(rawDefaultMode).success
-        ? rawDefaultMode as PermissionMode
+    const parsedDefaultMode = PermissionModeSchema.safeParse(claudeSettings?.permissions?.defaultMode);
+    const claudeDefaultMode = parsedDefaultMode.success && isPermissionModeAllowedForFlavor(parsedDefaultMode.data, 'claude')
+        ? parsedDefaultMode.data
         : undefined;
     let currentPermissionMode: PermissionMode = options.permissionMode ?? claudeDefaultMode ?? 'default';
     let currentModel: SessionModel = initialModel;
