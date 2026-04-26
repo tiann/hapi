@@ -457,10 +457,6 @@ export class SyncEngine {
             return { type: 'error', message: 'No machine online', code: 'no_machine_online' }
         }
 
-        if (opts?.permissionMode !== undefined) {
-            this.sessionCache.applySessionConfig(sessionId, { permissionMode: opts.permissionMode })
-        }
-
         const effectivePermissionMode = opts?.permissionMode ?? session.permissionMode ?? undefined
 
         const spawnResult = await this.rpcGateway.spawnSession(
@@ -479,6 +475,10 @@ export class SyncEngine {
 
         if (spawnResult.type !== 'success') {
             return { type: 'error', message: spawnResult.message, code: 'resume_failed' }
+        }
+
+        if (opts?.permissionMode !== undefined) {
+            this.sessionCache.applySessionConfig(sessionId, { permissionMode: opts.permissionMode })
         }
 
         const becameActive = await this.waitForSessionActive(spawnResult.sessionId)

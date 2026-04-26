@@ -785,6 +785,55 @@ describe('session model', () => {
         expect(stored?.permissionMode).toBe('bypassPermissions')
     })
 
+    it('does not mutate cache permissionMode when spawn fails', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            const session = engine.getOrCreateSession(
+                'session-perm-spawn-fail',
+                {
+                    path: '/tmp/project',
+                    host: 'localhost',
+                    machineId: 'machine-spawn-fail',
+                    flavor: 'claude',
+                    claudeSessionId: 'claude-spawn-fail'
+                },
+                null,
+                'default',
+                'sonnet'
+            )
+            engine.getOrCreateMachine(
+                'machine-spawn-fail',
+                { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
+                null,
+                'default'
+            )
+            engine.handleMachineAlive({ machineId: 'machine-spawn-fail', time: Date.now() })
+
+            // Session starts with default permissionMode
+            expect(engine.getSession(session.id)?.permissionMode).toBeUndefined()
+
+            ;(engine as any).rpcGateway.spawnSession = async () => ({
+                type: 'error',
+                message: 'spawn failed'
+            })
+
+            const result = await engine.resumeSession(session.id, 'default', { permissionMode: 'bypassPermissions' })
+
+            expect(result.type).toBe('error')
+            // Cache must NOT have been mutated to bypassPermissions
+            expect(engine.getSession(session.id)?.permissionMode).toBeUndefined()
+        } finally {
+            engine.stop()
+        }
+    })
+
     it('restores permissionMode from SQLite when session is refreshed', () => {
         const store = new Store(':memory:')
         const events: SyncEvent[] = []
