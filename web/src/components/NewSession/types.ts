@@ -1,4 +1,7 @@
-import { GEMINI_MODEL_PRESETS, GEMINI_MODEL_LABELS } from '@hapi/protocol'
+import { GEMINI_MODEL_PRESETS, GEMINI_MODEL_LABELS, CLAUDE_PERMISSION_MODES, PERMISSION_MODE_LABELS } from '@hapi/protocol'
+import type { ClaudePermissionMode } from '@hapi/protocol'
+
+export type { ClaudePermissionMode }
 
 export type AgentType = 'claude' | 'codex' | 'cursor' | 'gemini' | 'opencode'
 export type SessionType = 'simple' | 'worktree'
@@ -38,3 +41,6 @@ export const CLAUDE_EFFORT_OPTIONS: { value: ClaudeEffort; label: string }[] = [
     { value: 'high', label: 'High' },
     { value: 'max', label: 'Max' },
 ]
+
+export const CLAUDE_PERMISSION_MODE_OPTIONS: { value: ClaudePermissionMode; label: string }[] =
+    CLAUDE_PERMISSION_MODES.map((mode) => ({ value: mode, label: PERMISSION_MODE_LABELS[mode] }))
