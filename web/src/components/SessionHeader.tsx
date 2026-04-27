@@ -43,6 +43,30 @@ function FilesIcon(props: { className?: string }) {
     )
 }
 
+function OutlineIcon(props: { className?: string }) {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={props.className}
+        >
+            <path d="M8 6h13" />
+            <path d="M8 12h13" />
+            <path d="M8 18h13" />
+            <path d="M3 6h.01" />
+            <path d="M3 12h.01" />
+            <path d="M3 18h.01" />
+        </svg>
+    )
+}
+
 function MoreVerticalIcon(props: { className?: string }) {
     return (
         <svg
@@ -64,6 +88,7 @@ export function SessionHeader(props: {
     session: Session
     onBack: () => void
     onViewFiles?: () => void
+    onOpenOutline?: () => void
     api: ApiClient | null
     onSessionDeleted?: () => void
 }) {
@@ -159,6 +184,18 @@ export function SessionHeader(props: {
                             title={t('session.title')}
                         >
                             <FilesIcon />
+                        </button>
+                    ) : null}
+
+                    {props.onOpenOutline ? (
+                        <button
+                            type="button"
+                            onClick={props.onOpenOutline}
+                            className="flex h-8 w-8 items-center justify-center rounded-full text-[var(--app-hint)] transition-colors hover:bg-[var(--app-secondary-bg)] hover:text-[var(--app-fg)]"
+                            title={t('session.outline.open')}
+                            aria-label={t('session.outline.open')}
+                        >
+                            <OutlineIcon />
                         </button>
                     ) : null}
 
