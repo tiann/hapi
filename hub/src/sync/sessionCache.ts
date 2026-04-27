@@ -202,7 +202,10 @@ export class SessionCache {
         }
         if (payload.permissionMode !== undefined) {
             if (payload.permissionMode !== session.permissionMode) {
-                this.store.sessions.setSessionPermissionMode(payload.sid, payload.permissionMode, session.namespace)
+                const persisted = this.store.sessions.setSessionPermissionMode(payload.sid, payload.permissionMode, session.namespace)
+                if (!persisted) {
+                    console.warn(`[sessionCache] failed to persist permissionMode for ${payload.sid} via keepalive`)
+                }
             }
             session.permissionMode = payload.permissionMode
         }
