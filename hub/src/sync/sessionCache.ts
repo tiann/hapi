@@ -145,7 +145,10 @@ export class SessionCache {
             model: stored.model,
             modelReasoningEffort: stored.modelReasoningEffort,
             effort: stored.effort,
-            permissionMode: existing?.permissionMode ?? PermissionModeSchema.safeParse(stored.permissionMode).data,
+            permissionMode: existing?.permissionMode ?? (() => {
+                const parsed = PermissionModeSchema.safeParse(stored.permissionMode)
+                return parsed.success ? parsed.data : undefined
+            })(),
             collaborationMode: existing?.collaborationMode
         }
 
