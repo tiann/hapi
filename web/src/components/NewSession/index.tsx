@@ -5,6 +5,7 @@ import { usePlatform } from '@/hooks/usePlatform'
 import { useMachinePathsExists } from '@/hooks/useMachinePathsExists'
 import { useSpawnSession } from '@/hooks/mutations/useSpawnSession'
 import { useCodexModels } from '@/hooks/queries/useCodexModels'
+import { useCodexSessions } from '@/hooks/queries/useCodexSessions'
 import { useCursorModelsForMachine } from '@/hooks/queries/useCursorModelsForMachine'
 import { useOpencodeModelsForCwd } from '@/hooks/queries/useOpencodeModelsForCwd'
 import { useSessions } from '@/hooks/queries/useSessions'
@@ -37,6 +38,7 @@ import { MachineSelector } from './MachineSelector'
 import { ModelSelector } from './ModelSelector'
 import { OpencodeModelSelector } from './OpencodeModelSelector'
 import { ClaudeEffortSelector } from './ClaudeEffortSelector'
+import { CodexSessionSelector } from './CodexSessionSelector'
 import { shouldEnableOpencodeModelDiscovery } from './opencodeModelsGate'
 import { ReasoningEffortSelector } from './ReasoningEffortSelector'
 import {
@@ -76,6 +78,8 @@ export function NewSession(props: {
     const pendingCursorBaseRef = useRef<string | null>(null)
     const [effort, setEffort] = useState<ClaudeEffort>('auto')
     const [modelReasoningEffort, setModelReasoningEffort] = useState<CodexReasoningEffort>('default')
+    const [showOldCodexSessions, setShowOldCodexSessions] = useState(false)
+    const [selectedCodexSessionId, setSelectedCodexSessionId] = useState('')
     const [yoloMode, setYoloMode] = useState(loadPreferredYoloMode)
     const [sessionType, setSessionType] = useState<SessionType>('simple')
     const [worktreeName, setWorktreeName] = useState('')
@@ -95,6 +99,9 @@ export function NewSession(props: {
         if (agent !== 'cursor') {
             setModel('auto')
             setCursorSelectedBase('auto')
+        }
+        if (agent !== 'codex') {
+            setSelectedCodexSessionId('')
         }
     }, [agent])
 
@@ -181,6 +188,14 @@ export function NewSession(props: {
         machineId,
         enabled: agent === 'codex' && Boolean(machineId)
     })
+
+    const codexSessionsState = useCodexSessions({
+        api: props.api,
+        machineId,
+        includeOld: showOldCodexSessions,
+        enabled: agent === 'codex' && Boolean(machineId)
+    })
+
     const [opencodeSelectedModel, setOpencodeSelectedModel] = useState<string | null>(null)
     const runnerSpawnError = useMemo(
         () => formatRunnerSpawnError(selectedMachine),
@@ -405,6 +420,7 @@ export function NewSession(props: {
         setMachineId(newMachineId)
         setModel('auto')
         setCursorSelectedBase('auto')
+        setSelectedCodexSessionId('')
         const paths = getRecentPaths(newMachineId)
         if (paths[0]) {
             setDirectory(paths[0])
@@ -572,7 +588,8 @@ export function NewSession(props: {
                 modelReasoningEffort: resolvedModelReasoningEffort,
                 yolo: yoloMode,
                 sessionType,
-                worktreeName: sessionType === 'worktree' ? (worktreeName.trim() || undefined) : undefined
+                worktreeName: sessionType === 'worktree' ? (worktreeName.trim() || undefined) : undefined,
+                resumeSessionId: agent === 'codex' && selectedCodexSessionId ? selectedCodexSessionId : undefined
             })
 
             if (result.type === 'success') {
@@ -715,6 +732,18 @@ export function NewSession(props: {
                 effort={effort}
                 isDisabled={isFormDisabled}
                 onEffortChange={setEffort}
+            />
+
+            <CodexSessionSelector
+                enabled={agent === 'codex'}
+                includeOld={showOldCodexSessions}
+                sessions={codexSessionsState.sessions}
+                selectedSessionId={selectedCodexSessionId}
+                isLoading={codexSessionsState.isLoading}
+                isDisabled={isFormDisabled}
+                error={codexSessionsState.error}
+                onToggleIncludeOld={setShowOldCodexSessions}
+                onSelectSession={setSelectedCodexSessionId}
             />
             <ReasoningEffortSelector
                 agent={agent}
