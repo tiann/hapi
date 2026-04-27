@@ -112,9 +112,15 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
 
         const namespace = c.get('namespace')
-        const body = await c.req.json().catch(() => null)
+        const rawBody = await c.req.text()
         let requestedPermissionMode: PermissionMode | undefined = undefined
-        if (body !== null) {
+        if (rawBody.trim() !== '') {
+            let body: unknown
+            try {
+                body = JSON.parse(rawBody) as unknown
+            } catch {
+                return c.json({ error: 'Invalid body' }, 400)
+            }
             const parsed = resumeBodySchema.safeParse(body)
             if (!parsed.success) {
                 return c.json({ error: 'Invalid body' }, 400)
