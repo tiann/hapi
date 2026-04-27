@@ -180,6 +180,8 @@ export default {
   'tool.exitPlan': 'Exit Plan Mode',
   'tool.patch': 'Patch',
   'tool.input': 'Input',
+  'tool.trace': 'Trace',
+  'tool.trace.callsSuffix': 'calls',
   'tool.result': 'Result',
   'tool.questionsAnswers': 'Questions & Answers',
   'tool.submit': 'Submit',

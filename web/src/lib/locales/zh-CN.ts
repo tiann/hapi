@@ -182,6 +182,8 @@ export default {
   'tool.exitPlan': '退出计划模式',
   'tool.patch': '补丁',
   'tool.input': '输入',
+  'tool.trace': '追踪',
+  'tool.trace.callsSuffix': '次调用',
   'tool.result': '结果',
   'tool.questionsAnswers': '问答',
   'tool.submit': '提交',

@@ -21,6 +21,7 @@ import { usePointerFocusRing } from '@/hooks/usePointerFocusRing'
 import { getInputString, getInputStringAny, truncate } from '@/lib/toolInputUtils'
 import { cn } from '@/lib/utils'
 import { useTranslation } from '@/lib/use-translation'
+import { TraceSection } from '@/components/ToolCard/trace'
 
 const ELAPSED_INTERVAL_MS = 1000
 
@@ -363,6 +364,7 @@ function ToolCardInner(props: ToolCardProps) {
                                             renderToolInput(props.block)
                                         )}
                                     </div>
+                                    <TraceSection block={props.block} metadata={props.metadata} />
                                     {!isQuestionToolWithAnswers && (
                                         <div>
                                             <div className="mb-1 text-xs font-medium text-[var(--app-hint)]">{t('tool.result')}</div>
