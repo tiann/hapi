@@ -784,7 +784,15 @@ export class AppServerEventConverter {
         }
 
         if (method === 'thread/tokenUsage/updated') {
-            const info = asRecord(paramsRecord.tokenUsage ?? paramsRecord.token_usage ?? paramsRecord) ?? {};
+            const info = {
+                ...(asRecord(paramsRecord.tokenUsage ?? paramsRecord.token_usage ?? paramsRecord) ?? {})
+            };
+            if (info.rate_limits === undefined && info.rateLimits === undefined) {
+                const rateLimits = paramsRecord.rate_limits ?? paramsRecord.rateLimits;
+                if (rateLimits !== undefined) {
+                    info.rate_limits = rateLimits;
+                }
+            }
             events.push(scoped({ type: 'token_count', ...INCLUSIVE_INPUT_TOKEN_USAGE_MARKER, info }));
             return events;
         }
