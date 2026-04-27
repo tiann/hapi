@@ -538,20 +538,30 @@ export function updateMessageStatus(sessionId: string, localId: string, status: 
     })
 }
 
-/** Transition the queued messages whose localIds match to 'sent'. Driven by the
- *  CLI ack (messages-consumed). Unmatched messages remain queued. */
-export function markMessagesConsumed(sessionId: string, localIds: string[]): void {
+/** Transition the queued messages whose localIds match to 'sent' and record invokedAt.
+ *  Driven by the CLI ack (messages-consumed). Unmatched messages remain queued.
+ *  Also handles server-loaded messages (status=undefined) that have a matching localId.
+ *  If invokedAt is undefined (V7 hub compat), only status is updated. */
+export function markMessagesConsumed(sessionId: string, localIds: string[], invokedAt: number | undefined): void {
     if (localIds.length === 0) return
     const idSet = new Set(localIds)
     updateState(sessionId, (prev) => {
         let changed = false
         const updateList = (list: DecryptedMessage[]) => {
             return list.map((message) => {
-                if (message.status !== 'queued' || !message.localId || !idSet.has(message.localId)) {
+                if (!message.localId || !idSet.has(message.localId)) {
+                    return message
+                }
+                // Only update if not already in a terminal state
+                if (message.status === 'sent' || message.status === 'failed') {
                     return message
                 }
                 changed = true
-                return { ...message, status: 'sent' as MessageStatus }
+                const update: Partial<DecryptedMessage> = { status: 'sent' as MessageStatus }
+                if (invokedAt != null) {
+                    update.invokedAt = invokedAt
+                }
+                return { ...message, ...update }
             })
         }
         const messages = updateList(prev.messages)

@@ -274,7 +274,14 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             emitAccessError('session', data.sid, sessionAccess.reason)
             return
         }
-        onWebappEvent?.({ type: 'messages-consumed', sessionId: data.sid, localIds })
+        const invokedAt = Date.now()
+        try {
+            store.messages.markMessagesInvoked(data.sid, localIds, invokedAt)
+            onSessionActivity?.(data.sid, invokedAt)
+        } catch (err) {
+            console.error('markMessagesInvoked failed', err)
+        }
+        onWebappEvent?.({ type: 'messages-consumed', sessionId: data.sid, localIds, invokedAt })
     })
 
     socket.on('session-end', (data: SessionEndPayload) => {

@@ -58,12 +58,18 @@ export function mergeMessages(existing: DecryptedMessage[], incoming: DecryptedM
     }
 
     // If we received stored messages with a localId, drop any optimistic bubbles with the same localId.
-    // Preserve client-side status (e.g. 'queued') on the replacing server message.
+    // Preserve client-side status (e.g. 'queued') and invokedAt on the replacing server message.
     if (incomingStoredLocalIds.size > 0) {
         const optimisticStatusByLocalId = new Map<string, DecryptedMessage['status']>()
+        const optimisticInvokedAtByLocalId = new Map<string, number | null | undefined>()
         for (const msg of merged) {
-            if (msg.localId && isOptimisticMessage(msg) && incomingStoredLocalIds.has(msg.localId) && msg.status) {
-                optimisticStatusByLocalId.set(msg.localId, msg.status)
+            if (msg.localId && isOptimisticMessage(msg) && incomingStoredLocalIds.has(msg.localId)) {
+                if (msg.status) {
+                    optimisticStatusByLocalId.set(msg.localId, msg.status)
+                }
+                if ('invokedAt' in msg) {
+                    optimisticInvokedAtByLocalId.set(msg.localId, (msg as any).invokedAt)
+                }
             }
         }
         merged = merged.filter((msg) => {
@@ -72,10 +78,18 @@ export function mergeMessages(existing: DecryptedMessage[], incoming: DecryptedM
             }
             return !isOptimisticMessage(msg)
         })
-        if (optimisticStatusByLocalId.size > 0) {
+        if (optimisticStatusByLocalId.size > 0 || optimisticInvokedAtByLocalId.size > 0) {
             merged = merged.map((msg) => {
-                if (msg.localId && optimisticStatusByLocalId.has(msg.localId) && !msg.status) {
-                    return { ...msg, status: optimisticStatusByLocalId.get(msg.localId) }
+                if (!msg.localId) return msg
+                const update: Partial<DecryptedMessage> = {}
+                if (optimisticStatusByLocalId.has(msg.localId) && !msg.status) {
+                    update.status = optimisticStatusByLocalId.get(msg.localId)
+                }
+                if (optimisticInvokedAtByLocalId.has(msg.localId) && !('invokedAt' in msg)) {
+                    ;(update as any).invokedAt = optimisticInvokedAtByLocalId.get(msg.localId)
+                }
+                if (Object.keys(update).length > 0) {
+                    return { ...msg, ...update }
                 }
                 return msg
             })

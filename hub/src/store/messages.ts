@@ -11,6 +11,7 @@ type DbMessageRow = {
     created_at: number
     seq: number
     local_id: string | null
+    invoked_at: number | null
 }
 
 function toStoredMessage(row: DbMessageRow): StoredMessage {
@@ -20,7 +21,8 @@ function toStoredMessage(row: DbMessageRow): StoredMessage {
         content: safeJsonParse(row.content),
         createdAt: row.created_at,
         seq: row.seq,
-        localId: row.local_id
+        localId: row.local_id,
+        invokedAt: row.invoked_at ?? null
     }
 }
 
@@ -51,9 +53,9 @@ export function addMessage(
 
     db.prepare(`
         INSERT INTO messages (
-            id, session_id, content, created_at, seq, local_id
+            id, session_id, content, created_at, seq, local_id, invoked_at
         ) VALUES (
-            @id, @session_id, @content, @created_at, @seq, @local_id
+            @id, @session_id, @content, @created_at, @seq, @local_id, NULL
         )
     `).run({
         id,
@@ -111,6 +113,21 @@ export function getMaxSeq(db: Database, sessionId: string): number {
         'SELECT COALESCE(MAX(seq), 0) AS maxSeq FROM messages WHERE session_id = ?'
     ).get(sessionId) as { maxSeq: number } | undefined
     return row?.maxSeq ?? 0
+}
+
+/** Mark messages as invoked at the given server timestamp.
+ *  Only updates rows whose local_id is in localIds. */
+export function markMessagesInvoked(
+    db: Database,
+    sessionId: string,
+    localIds: string[],
+    invokedAt: number
+): void {
+    if (localIds.length === 0) return
+    const placeholders = localIds.map(() => '?').join(', ')
+    db.prepare(
+        `UPDATE messages SET invoked_at = ? WHERE session_id = ? AND local_id IN (${placeholders})`
+    ).run(invokedAt, sessionId, ...localIds)
 }
 
 export function mergeSessionMessages(

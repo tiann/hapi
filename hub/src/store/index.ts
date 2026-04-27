@@ -22,7 +22,7 @@ export { PushStore } from './pushStore'
 export { SessionStore } from './sessionStore'
 export { UserStore } from './userStore'
 
-const SCHEMA_VERSION: number = 7
+const SCHEMA_VERSION: number = 8
 const REQUIRED_TABLES = [
     'sessions',
     'machines',
@@ -98,60 +98,19 @@ export class Store {
             return
         }
 
-        if (currentVersion === 1 && SCHEMA_VERSION === 2) {
-            this.migrateFromV1ToV2()
-            this.setUserVersion(SCHEMA_VERSION)
-            return
+        const stepMigrations: Record<number, () => void> = {
+            4: () => this.migrateFromV4ToV5(),
+            5: () => this.migrateFromV5ToV6(),
+            6: () => this.migrateFromV6ToV7(),
+            7: () => this.migrateFromV7ToV8(),
         }
 
-        if (currentVersion === 2 && SCHEMA_VERSION === 3) {
-            this.migrateFromV2ToV3()
-            this.setUserVersion(SCHEMA_VERSION)
-            return
-        }
-
-        if (currentVersion === 3 && SCHEMA_VERSION === 4) {
-            this.migrateFromV3ToV4()
-            this.setUserVersion(SCHEMA_VERSION)
-            return
-        }
-
-        if (currentVersion === 4 && SCHEMA_VERSION === 5) {
-            this.migrateFromV4ToV5()
-            this.setUserVersion(SCHEMA_VERSION)
-            return
-        }
-
-        if (currentVersion === 5 && SCHEMA_VERSION === 6) {
-            this.migrateFromV5ToV6()
-            this.setUserVersion(SCHEMA_VERSION)
-            return
-        }
-
-        if (currentVersion === 6 && SCHEMA_VERSION === 7) {
-            this.migrateFromV6ToV7()
-            this.setUserVersion(SCHEMA_VERSION)
-            return
-        }
-
-        if (currentVersion === 4 && SCHEMA_VERSION === 6) {
-            this.migrateFromV4ToV5()
-            this.migrateFromV5ToV6()
-            this.setUserVersion(SCHEMA_VERSION)
-            return
-        }
-
-        if (currentVersion === 4 && SCHEMA_VERSION === 7) {
-            this.migrateFromV4ToV5()
-            this.migrateFromV5ToV6()
-            this.migrateFromV6ToV7()
-            this.setUserVersion(SCHEMA_VERSION)
-            return
-        }
-
-        if (currentVersion === 5 && SCHEMA_VERSION === 7) {
-            this.migrateFromV5ToV6()
-            this.migrateFromV6ToV7()
+        if (currentVersion < SCHEMA_VERSION && stepMigrations[currentVersion]) {
+            for (let v = currentVersion; v < SCHEMA_VERSION; v++) {
+                const step = stepMigrations[v]
+                if (!step) throw this.buildSchemaMismatchError(currentVersion)
+                step()
+            }
             this.setUserVersion(SCHEMA_VERSION)
             return
         }
@@ -212,6 +171,7 @@ export class Store {
                 created_at INTEGER NOT NULL,
                 seq INTEGER NOT NULL,
                 local_id TEXT,
+                invoked_at INTEGER,
                 FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
             );
             CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, seq);
@@ -362,6 +322,14 @@ export class Store {
         }
     }
 
+    private migrateFromV7ToV8(): void {
+        const columns = this.getMessageColumnNames()
+        if (!columns.has('invoked_at')) {
+            this.db.exec('ALTER TABLE messages ADD COLUMN invoked_at INTEGER')
+            this.db.exec('UPDATE messages SET invoked_at = created_at WHERE invoked_at IS NULL')
+        }
+    }
+
     private getSessionColumnNames(): Set<string> {
         const rows = this.db.prepare('PRAGMA table_info(sessions)').all() as Array<{ name: string }>
         return new Set(rows.map((row) => row.name))
@@ -369,6 +337,11 @@ export class Store {
 
     private getMachineColumnNames(): Set<string> {
         const rows = this.db.prepare('PRAGMA table_info(machines)').all() as Array<{ name: string }>
+        return new Set(rows.map((row) => row.name))
+    }
+
+    private getMessageColumnNames(): Set<string> {
+        const rows = this.db.prepare('PRAGMA table_info(messages)').all() as Array<{ name: string }>
         return new Set(rows.map((row) => row.name))
     }
 

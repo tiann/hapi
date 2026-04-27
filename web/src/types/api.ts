@@ -40,6 +40,7 @@ export type MessageStatus = 'queued' | 'sending' | 'sent' | 'failed'
 export type DecryptedMessage = ProtocolDecryptedMessage & {
     status?: MessageStatus
     originalText?: string
+    invokedAt?: number | null
 }
 
 export type RunnerState = {
