@@ -25,6 +25,28 @@ type UseSendMessageOptions = {
     onSessionResolved?: (sessionId: string) => void
     onBlocked?: (reason: BlockedReason) => void
     onSuccess?: (sessionId: string) => void
+    isSessionThinking?: boolean
+}
+
+/** Create an optimistic message for display. Extracted as an extension point
+ *  so a future floating-UI PR can route queued messages to a separate area. */
+function createOptimisticMessage(input: SendMessageInput, status: 'queued' | 'sending'): DecryptedMessage {
+    return {
+        id: input.localId,
+        seq: null,
+        localId: input.localId,
+        content: {
+            role: 'user',
+            content: {
+                type: 'text',
+                text: input.text,
+                attachments: input.attachments
+            }
+        },
+        createdAt: input.createdAt,
+        status,
+        originalText: input.text,
+    }
 }
 
 function findMessageByLocalId(
@@ -53,6 +75,8 @@ export function useSendMessage(
     const { haptic } = usePlatform()
     const [isResolving, setIsResolving] = useState(false)
     const resolveGuardRef = useRef(false)
+    const isSessionThinkingRef = useRef(options?.isSessionThinking ?? false)
+    isSessionThinkingRef.current = options?.isSessionThinking ?? false
 
     const mutation = useMutation({
         mutationFn: async (input: SendMessageInput) => {
@@ -62,27 +86,16 @@ export function useSendMessage(
             await api.sendMessage(input.sessionId, input.text, input.localId, input.attachments)
         },
         onMutate: async (input) => {
-            const optimisticMessage: DecryptedMessage = {
-                id: input.localId,
-                seq: null,
-                localId: input.localId,
-                content: {
-                    role: 'user',
-                    content: {
-                        type: 'text',
-                        text: input.text,
-                        attachments: input.attachments
-                    }
-                },
-                createdAt: input.createdAt,
-                status: 'sending',
-                originalText: input.text,
-            }
-
-            appendOptimisticMessage(input.sessionId, optimisticMessage)
+            const status = isSessionThinkingRef.current ? 'queued' as const : 'sending' as const
+            appendOptimisticMessage(input.sessionId, createOptimisticMessage(input, status))
+            return { status }
         },
-        onSuccess: (_, input) => {
-            updateMessageStatus(input.sessionId, input.localId, 'sent')
+        onSuccess: (_, input, context) => {
+            updateMessageStatus(
+                input.sessionId,
+                input.localId,
+                context?.status === 'queued' ? 'queued' : 'sent'
+            )
             haptic.notification('success')
             options?.onSuccess?.(input.sessionId)
         },

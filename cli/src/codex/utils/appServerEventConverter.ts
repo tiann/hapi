@@ -266,6 +266,24 @@ export class AppServerEventConverter {
             return events;
         }
 
+        if (method === 'thread/status/changed') {
+            const thread = asRecord(paramsRecord.thread) ?? paramsRecord;
+            const threadId = asString(thread.threadId ?? thread.thread_id ?? thread.id);
+            const status = asRecord(paramsRecord.status ?? thread.status);
+            const statusType = asString(status?.type ?? paramsRecord.statusType ?? paramsRecord.status_type);
+            if (statusType === 'systemError') {
+                const error = asString(status?.message ?? status?.error ?? paramsRecord.message ?? paramsRecord.error)
+                    ?? 'Codex thread entered systemError';
+                events.push({
+                    type: 'task_failed',
+                    ...(threadId ? { thread_id: threadId } : {}),
+                    terminal_source: 'thread_status',
+                    error
+                });
+            }
+            return events;
+        }
+
         if (method === 'turn/started') {
             const turn = asRecord(paramsRecord.turn) ?? paramsRecord;
             const turnId = asString(turn.turnId ?? turn.turn_id ?? turn.id);

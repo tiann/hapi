@@ -71,21 +71,15 @@ export async function runCodex(opts: {
     lifecycle.registerProcessHandlers();
     registerKillSessionHandler(session.rpcHandlerManager, lifecycle.cleanupAndExit);
 
-    const syncSessionMode = () => {
+    const applyCurrentConfigToSession = (options?: { syncModel?: boolean }) => {
         const sessionInstance = sessionWrapperRef.current;
         if (!sessionInstance) {
             return;
         }
-        const sessionModel = sessionInstance.getModel();
-        if (sessionModel !== undefined) {
-            currentModel = sessionModel ?? undefined;
-        }
-        const sessionModelReasoningEffort = sessionInstance.getModelReasoningEffort();
-        if (sessionModelReasoningEffort !== undefined) {
-            currentModelReasoningEffort = (sessionModelReasoningEffort ?? undefined) as ReasoningEffort | undefined;
-        }
         sessionInstance.setPermissionMode(currentPermissionMode);
-        sessionInstance.setModel(currentModel ?? null);
+        if (options?.syncModel !== false) {
+            sessionInstance.setModel(currentModel ?? null);
+        }
         sessionInstance.setModelReasoningEffort(currentModelReasoningEffort ?? null);
         sessionInstance.setCollaborationMode(currentCollaborationMode);
         logger.debug(
@@ -95,7 +89,7 @@ export async function runCodex(opts: {
         );
     };
 
-    session.onUserMessage((message) => {
+    session.onUserMessage((message, localId) => {
         const sessionPermissionMode = sessionWrapperRef.current?.getPermissionMode();
         if (sessionPermissionMode && isPermissionModeAllowedForFlavor(sessionPermissionMode, 'codex')) {
             currentPermissionMode = sessionPermissionMode as PermissionMode;
@@ -127,7 +121,7 @@ export async function runCodex(opts: {
             collaborationMode: currentCollaborationMode
         };
         const formattedText = formatMessageWithAttachments(message.content.text, message.content.attachments);
-        messageQueue.push(formattedText, enhancedMode);
+        messageQueue.push(formattedText, enhancedMode, localId);
     });
 
     const formatFailureReason = (message: string): string => {
@@ -167,14 +161,30 @@ export async function runCodex(opts: {
         return value as ReasoningEffort;
     };
 
+    const resolveModel = (value: unknown): string => {
+        if (typeof value !== 'string') {
+            throw new Error('Invalid model');
+        }
+        const trimmedValue = value.trim();
+        if (!trimmedValue) {
+            throw new Error('Invalid model');
+        }
+        return trimmedValue;
+    };
+
     session.rpcHandlerManager.registerHandler('set-session-config', async (payload: unknown) => {
         if (!payload || typeof payload !== 'object') {
             throw new Error('Invalid session config payload');
         }
-        const config = payload as { permissionMode?: unknown; modelReasoningEffort?: unknown; collaborationMode?: unknown };
+        const config = payload as { permissionMode?: unknown; model?: unknown; modelReasoningEffort?: unknown; collaborationMode?: unknown };
 
         if (config.permissionMode !== undefined) {
             currentPermissionMode = resolvePermissionMode(config.permissionMode);
+        }
+
+        const shouldSyncModel = config.model !== undefined;
+        if (shouldSyncModel) {
+            currentModel = resolveModel(config.model);
         }
 
         if (config.modelReasoningEffort !== undefined) {
@@ -185,15 +195,26 @@ export async function runCodex(opts: {
             currentCollaborationMode = resolveCollaborationMode(config.collaborationMode);
         }
 
-        syncSessionMode();
+        applyCurrentConfigToSession({ syncModel: shouldSyncModel });
+        const applied: {
+            permissionMode: PermissionMode;
+            model?: string | null;
+            modelReasoningEffort: ReasoningEffort | null;
+            collaborationMode: EnhancedMode['collaborationMode'];
+        } = {
+            permissionMode: currentPermissionMode,
+            modelReasoningEffort: currentModelReasoningEffort ?? null,
+            collaborationMode: currentCollaborationMode
+        };
+        if (shouldSyncModel) {
+            applied.model = currentModel ?? null;
+        }
         return {
-            applied: {
-                permissionMode: currentPermissionMode,
-                modelReasoningEffort: currentModelReasoningEffort ?? null,
-                collaborationMode: currentCollaborationMode
-            }
+            applied
         };
     });
+
+    let crashed = false;
 
     try {
         await loop({
@@ -213,10 +234,11 @@ export async function runCodex(opts: {
             onModeChange: createModeChangeHandler(session),
             onSessionReady: (instance) => {
                 sessionWrapperRef.current = instance;
-                syncSessionMode();
+                applyCurrentConfigToSession();
             }
         });
     } catch (error) {
+        crashed = true;
         lifecycle.markCrash(error);
         logger.debug('[codex] Loop error:', error);
     } finally {
@@ -224,6 +246,9 @@ export async function runCodex(opts: {
         if (localFailure?.exitReason === 'exit') {
             lifecycle.setExitCode(1);
             lifecycle.setArchiveReason(`Local launch failed: ${formatFailureReason(localFailure.message)}`);
+            lifecycle.setSessionEndReason('error');
+        } else if (!crashed) {
+            lifecycle.setSessionEndReason('completed');
         }
         await lifecycle.cleanupAndExit();
     }

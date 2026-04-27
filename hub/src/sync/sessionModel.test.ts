@@ -3,6 +3,7 @@ import { toSessionSummary } from '@hapi/protocol'
 import type { SyncEvent } from '@hapi/protocol/types'
 import { Store } from '../store'
 import { RpcRegistry } from '../socket/rpcRegistry'
+import { registerSessionHandlers } from '../socket/handlers/cli/sessionHandlers'
 import type { EventPublisher } from './eventPublisher'
 import { SessionCache } from './sessionCache'
 import { SyncEngine } from './syncEngine'
@@ -263,6 +264,169 @@ describe('session model', () => {
             collaborationMode: 'default'
         })
         expect(cache.getSession(session.id)?.collaborationMode).toBe('default')
+    })
+
+    it('touches session updatedAt when new message activity is recorded', () => {
+        const store = new Store(':memory:')
+        const events: SyncEvent[] = []
+        const cache = new SessionCache(store, createPublisher(events))
+
+        const session = cache.getOrCreateSession(
+            'session-message-activity',
+            { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+            null,
+            'default'
+        )
+        const activityAt = session.updatedAt + 60_000
+
+        cache.recordSessionActivity(session.id, activityAt)
+
+        expect(store.sessions.getSession(session.id)?.updatedAt).toBe(activityAt)
+        expect(cache.getSession(session.id)?.updatedAt).toBe(activityAt)
+        expect(events).toContainEqual({
+            type: 'session-updated',
+            sessionId: session.id,
+            namespace: 'default',
+            data: { updatedAt: activityAt }
+        })
+    })
+
+    it('touches session updatedAt when web sends a message through sync engine', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            { of: () => ({ to: () => ({ emit() {} }) }) } as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            const session = engine.getOrCreateSession(
+                'session-web-message-activity',
+                { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+                null,
+                'default'
+            )
+            const before = store.sessions.getSession(session.id)?.updatedAt ?? 0
+
+            await new Promise((resolve) => setTimeout(resolve, 2))
+            await engine.sendMessage(session.id, { text: 'hello' })
+
+            const after = store.sessions.getSession(session.id)?.updatedAt ?? 0
+            expect(after).toBeGreaterThan(before)
+            expect(engine.getSession(session.id)?.updatedAt).toBe(after)
+        } finally {
+            engine.stop()
+        }
+    })
+
+    it('reports session activity when CLI receives a turn-ready event over socket', () => {
+        const store = new Store(':memory:')
+        const events: SyncEvent[] = []
+        const cache = new SessionCache(store, createPublisher(events))
+        const session = cache.getOrCreateSession(
+            'session-cli-message-activity',
+            { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+            null,
+            'default'
+        )
+        const handlers = new Map<string, (payload: unknown) => void>()
+        const activity: Array<{ sessionId: string; updatedAt: number }> = []
+
+        registerSessionHandlers({
+            on: (event: string, handler: (payload: unknown) => void) => {
+                handlers.set(event, handler)
+            },
+            to: () => ({ emit() {} })
+        } as never, {
+            store,
+            resolveSessionAccess: (sessionId) => {
+                const stored = store.sessions.getSessionByNamespace(sessionId, 'default')
+                return stored ? { ok: true, value: stored } : { ok: false, reason: 'not-found' }
+            },
+            emitAccessError: () => {},
+            onSessionActivity: (sessionId, updatedAt) => {
+                activity.push({ sessionId, updatedAt })
+            }
+        })
+
+        handlers.get('message')?.({
+            sid: session.id,
+            message: JSON.stringify({
+                role: 'agent',
+                content: {
+                    type: 'event',
+                    data: { type: 'ready' }
+                }
+            })
+        })
+
+        expect(activity).toHaveLength(1)
+        expect(activity[0].sessionId).toBe(session.id)
+        expect(activity[0].updatedAt).toBe(store.messages.getMessages(session.id, 1)[0]?.createdAt)
+    })
+
+    it('does not report session activity for CLI tool messages', () => {
+        const store = new Store(':memory:')
+        const events: SyncEvent[] = []
+        const cache = new SessionCache(store, createPublisher(events))
+        const session = cache.getOrCreateSession(
+            'session-cli-tool-activity',
+            { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+            null,
+            'default'
+        )
+        const handlers = new Map<string, (payload: unknown) => void>()
+        const activity: Array<{ sessionId: string; updatedAt: number }> = []
+
+        registerSessionHandlers({
+            on: (event: string, handler: (payload: unknown) => void) => {
+                handlers.set(event, handler)
+            },
+            to: () => ({ emit() {} })
+        } as never, {
+            store,
+            resolveSessionAccess: (sessionId) => {
+                const stored = store.sessions.getSessionByNamespace(sessionId, 'default')
+                return stored ? { ok: true, value: stored } : { ok: false, reason: 'not-found' }
+            },
+            emitAccessError: () => {},
+            onSessionActivity: (sessionId, updatedAt) => {
+                activity.push({ sessionId, updatedAt })
+            }
+        })
+
+        handlers.get('message')?.({
+            sid: session.id,
+            message: JSON.stringify({
+                role: 'agent',
+                content: {
+                    type: 'codex',
+                    data: {
+                        type: 'tool-call',
+                        name: 'CodexBash',
+                        callId: 'call-1',
+                        input: { cmd: 'date' }
+                    }
+                }
+            })
+        })
+        handlers.get('message')?.({
+            sid: session.id,
+            message: JSON.stringify({
+                role: 'agent',
+                content: {
+                    type: 'codex',
+                    data: {
+                        type: 'tool-call-result',
+                        callId: 'call-1',
+                        output: { stdout: 'Sat Apr 25' }
+                    }
+                }
+            })
+        })
+
+        expect(activity).toHaveLength(0)
     })
 
     it('passes the stored model when respawning a resumed session', async () => {
@@ -606,7 +770,7 @@ describe('session model', () => {
             expect(cache.getSession(s1.id)).toBeDefined()
         })
 
-        it('does not merge active duplicates', async () => {
+        it('does not move history while duplicate sessions are both active', async () => {
             const store = new Store(':memory:')
             const events: SyncEvent[] = []
             const cache = new SessionCache(store, createPublisher(events))
@@ -614,25 +778,92 @@ describe('session model', () => {
             const s1 = cache.getOrCreateSession(
                 'tag-1',
                 { path: '/tmp/project', host: 'localhost', flavor: 'codex', codexSessionId: 'thread-X' },
-                null,
+                {
+                    requests: { 'req-from-active-duplicate': { tool: 'Bash', arguments: {} } },
+                    completedRequests: {}
+                },
                 'default'
             )
 
-            // Mark s1 as active (simulating a live CLI connection)
+            store.messages.addMessage(s1.id, { type: 'text', text: 'history from s1' }, 'local-s1')
             cache.handleSessionAlive({ sid: s1.id, time: Date.now(), thinking: false })
 
             const s2 = cache.getOrCreateSession(
                 'tag-2',
                 { path: '/tmp/project', host: 'localhost', flavor: 'codex', codexSessionId: 'thread-X' },
-                null,
+                {
+                    requests: { 'req-from-target': { tool: 'Read', arguments: {} } },
+                    completedRequests: {}
+                },
                 'default'
             )
+            store.messages.addMessage(s2.id, { type: 'text', text: 'history from s2' }, 'local-s2')
+            cache.handleSessionAlive({ sid: s2.id, time: Date.now() + 1000, thinking: false })
 
             await cache.deduplicateByAgentSessionId(s2.id)
 
-            // s1 is active, so it should NOT be merged/deleted
+            // Both live session records keep their own histories until one of the
+            // duplicates becomes inactive. The web may still be showing either
+            // active session id, so the hub must not pick a canonical target yet.
             expect(cache.getSession(s1.id)).toBeDefined()
             expect(cache.getSession(s2.id)).toBeDefined()
+            expect(store.messages.getMessages(s1.id, 100).map((message) => (message.content as { text?: string }).text)).toEqual([
+                'history from s1'
+            ])
+            expect(store.messages.getMessages(s2.id, 100).map((message) => (message.content as { text?: string }).text)).toEqual([
+                'history from s2'
+            ])
+            expect(events.some((event) => event.type === 'messages-invalidated')).toBe(false)
+
+            const sourceRequests = cache.getSession(s1.id)?.agentState?.requests ?? {}
+            const targetRequests = cache.getSession(s2.id)?.agentState?.requests ?? {}
+            expect(sourceRequests['req-from-active-duplicate']).toBeDefined()
+            expect(targetRequests['req-from-active-duplicate']).toBeUndefined()
+            expect(targetRequests['req-from-target']).toBeDefined()
+        })
+
+        it('invalidates both sessions for history-only merges', async () => {
+            const store = new Store(':memory:')
+            const events: SyncEvent[] = []
+            const cache = new SessionCache(store, createPublisher(events))
+
+            const s1 = cache.getOrCreateSession(
+                'tag-1',
+                { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+                {
+                    requests: { 'req-from-source': { tool: 'Bash', arguments: {} } },
+                    completedRequests: {}
+                },
+                'default'
+            )
+            const s2 = cache.getOrCreateSession(
+                'tag-2',
+                { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+                {
+                    requests: { 'req-from-target': { tool: 'Read', arguments: {} } },
+                    completedRequests: {}
+                },
+                'default'
+            )
+
+            store.messages.addMessage(s1.id, { type: 'text', text: 'history from s1' }, 'local-s1')
+            store.messages.addMessage(s2.id, { type: 'text', text: 'history from s2' }, 'local-s2')
+
+            await cache.mergeSessionHistory(s1.id, s2.id, 'default', { mergeAgentState: false })
+
+            expect(store.messages.getMessages(s1.id, 100)).toHaveLength(0)
+            expect(store.messages.getMessages(s2.id, 100).map((message) => (message.content as { text?: string }).text)).toEqual([
+                'history from s1',
+                'history from s2'
+            ])
+            expect(events).toContainEqual({ type: 'messages-invalidated', sessionId: s1.id, namespace: 'default' })
+            expect(events).toContainEqual({ type: 'messages-invalidated', sessionId: s2.id, namespace: 'default' })
+
+            const sourceRequests = cache.getSession(s1.id)?.agentState?.requests ?? {}
+            const targetRequests = cache.getSession(s2.id)?.agentState?.requests ?? {}
+            expect(sourceRequests['req-from-source']).toBeDefined()
+            expect(targetRequests['req-from-source']).toBeUndefined()
+            expect(targetRequests['req-from-target']).toBeDefined()
         })
 
         it('merges duplicate after it becomes inactive via session-end', async () => {
@@ -661,12 +892,11 @@ describe('session model', () => {
                 // Mark s1 as active
                 engine.handleSessionAlive({ sid: s1.id, time: Date.now() })
 
-                // s1 is active, dedup from s2 should skip it
+                // s1 is active, so dedup keeps its live record around
                 const events: SyncEvent[] = []
                 const cache = (engine as any).sessionCache as SessionCache
                 await cache.deduplicateByAgentSessionId(s2.id)
                 expect(cache.getSession(s1.id)).toBeDefined()
-                expect(cache.getSession(s2.id)).toBeDefined()
 
                 // Now s1 ends — handleSessionEnd should trigger dedup retry
                 engine.handleSessionEnd({ sid: s1.id, time: Date.now() })
@@ -701,16 +931,22 @@ describe('session model', () => {
                 'default'
             )
 
-            // Mark s1 as active now
-            cache.handleSessionAlive({ sid: s1.id, time: Date.now() })
+            // Mark both duplicates active. The older live record should keep
+            // existing while active, because its socket may still send keepalives.
+            const now = Date.now()
+            cache.handleSessionAlive({ sid: s1.id, time: now })
+            cache.handleSessionAlive({ sid: s2.id, time: now })
 
-            // s1 is active — dedup skips it
+            // s1 is active — dedup only moves history and keeps the record.
             await cache.deduplicateByAgentSessionId(s2.id)
             expect(cache.getSession(s1.id)).toBeDefined()
+            expect(cache.getSession(s2.id)).toBeDefined()
 
-            // Simulate time passing beyond the 30s timeout
-            const expired = cache.expireInactive(Date.now() + 60_000)
+            // Simulate only s1 passing beyond the 30s timeout.
+            cache.getSession(s1.id)!.activeAt = now - 31_000
+            const expired = cache.expireInactive(now)
             expect(expired).toContain(s1.id)
+            expect(expired).not.toContain(s2.id)
 
             // Now s1 is inactive — dedup should merge it
             await cache.deduplicateByAgentSessionId(s2.id)

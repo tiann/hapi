@@ -165,6 +165,13 @@ body {
     opacity: 1;
 }
 
+/* Scale content area to use available space on wide screens */
+@media (min-width: 1280px) {
+    :root {
+        --content-max-w: min(90%, 1200px);
+    }
+}
+
 /* Desktop sidebar: use custom width from CSS variable */
 @media (min-width: 1024px) {
     .desktop-scrollbar-left {

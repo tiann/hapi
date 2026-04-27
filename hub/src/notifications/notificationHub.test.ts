@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test'
 import type { Session, SyncEvent, SyncEventListener, SyncEngine } from '../sync/syncEngine'
-import type { NotificationChannel } from './notificationTypes'
+import type { SessionEndReason } from '@hapi/protocol'
+import type { NotificationChannel, TaskNotification } from './notificationTypes'
 import { NotificationHub } from './notificationHub'
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -32,6 +33,8 @@ class FakeSyncEngine {
 class StubChannel implements NotificationChannel {
     readonly readySessions: Session[] = []
     readonly permissionSessions: Session[] = []
+    readonly taskNotifications: Array<{ session: Session; notification: TaskNotification }> = []
+    readonly sessionCompletions: Session[] = []
 
     async sendReady(session: Session): Promise<void> {
         this.readySessions.push(session)
@@ -39,6 +42,14 @@ class StubChannel implements NotificationChannel {
 
     async sendPermissionRequest(session: Session): Promise<void> {
         this.permissionSessions.push(session)
+    }
+
+    async sendTaskNotification(session: Session, notification: TaskNotification): Promise<void> {
+        this.taskNotifications.push({ session, notification })
+    }
+
+    async sendSessionCompletion(session: Session): Promise<void> {
+        this.sessionCompletions.push(session)
     }
 }
 
@@ -153,6 +164,83 @@ describe('NotificationHub', () => {
         engine.emit(readyEvent)
         await sleep(5)
         expect(channel.readySessions).toHaveLength(2)
+
+        hub.stop()
+    })
+
+    it('sends task notifications for task_notification system messages', async () => {
+        const engine = new FakeSyncEngine()
+        const channel = new StubChannel()
+        const hub = new NotificationHub(engine as unknown as SyncEngine, [channel], {
+            permissionDebounceMs: 1,
+            readyCooldownMs: 20
+        })
+
+        const session = createSession()
+        engine.setSession(session)
+
+        const taskEvent: SyncEvent = {
+            type: 'message-received',
+            sessionId: session.id,
+            message: {
+                id: 'message-task',
+                seq: 2,
+                localId: null,
+                createdAt: 0,
+                content: {
+                    role: 'agent',
+                    content: {
+                        type: 'output',
+                        data: {
+                            type: 'system',
+                            subtype: 'task_notification',
+                            status: 'completed',
+                            summary: 'Commit T4 finished'
+                        }
+                    }
+                }
+            }
+        }
+
+        engine.emit(taskEvent)
+        await sleep(5)
+
+        expect(channel.taskNotifications).toHaveLength(1)
+        expect(channel.taskNotifications[0]?.notification).toEqual({
+            status: 'completed',
+            summary: 'Commit T4 finished'
+        })
+
+        hub.stop()
+    })
+
+    it('sends session completion only for completed session-ended events', async () => {
+        const engine = new FakeSyncEngine()
+        const channel = new StubChannel()
+        const hub = new NotificationHub(engine as unknown as SyncEngine, [channel], {
+            permissionDebounceMs: 1,
+            readyCooldownMs: 20
+        })
+
+        const completedSession = createSession({ id: 'session-completed', active: false })
+        const terminatedSession = createSession({ id: 'session-terminated', active: false })
+        engine.setSession(completedSession)
+        engine.setSession(terminatedSession)
+
+        engine.emit({
+            type: 'session-ended',
+            sessionId: completedSession.id,
+            reason: 'completed' satisfies SessionEndReason
+        })
+        engine.emit({
+            type: 'session-ended',
+            sessionId: terminatedSession.id,
+            reason: 'terminated' satisfies SessionEndReason
+        })
+        await sleep(5)
+
+        expect(channel.sessionCompletions).toHaveLength(1)
+        expect(channel.sessionCompletions[0]?.id).toBe(completedSession.id)
 
         hub.stop()
     })

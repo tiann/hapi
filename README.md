@@ -12,6 +12,7 @@ Run official Claude Code / Codex / Gemini / OpenCode sessions locally and contro
 - **Your AI, Your Choice** - Claude Code, Codex, Cursor Agent, Gemini, OpenCode—different models, one unified workflow.
 - **Terminal Anywhere** - Run commands from your phone or browser, directly connected to the working machine.
 - **Voice Control** - Talk to your AI agent hands-free using the built-in voice assistant.
+- **Workspace Browser** - Opt-in via `hapi runner start --workspace-root <path>`: browse a scoped file tree from the web and start sessions in any subdirectory.
 
 ## Demo
 

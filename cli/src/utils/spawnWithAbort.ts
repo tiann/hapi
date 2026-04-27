@@ -1,4 +1,5 @@
-import { spawn, type SpawnOptions, type StdioOptions } from 'node:child_process';
+import type { SpawnOptions, StdioOptions } from 'node:child_process';
+import spawn from 'cross-spawn';
 import { logger } from '@/ui/logger';
 import { killProcessByChildProcess } from '@/utils/process';
 
@@ -148,5 +149,4 @@ export async function spawnWithAbort(options: SpawnWithAbortOptions): Promise<vo
         });
     });
 }
-
 

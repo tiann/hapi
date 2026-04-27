@@ -12,11 +12,14 @@ type LocalLaunchFailure = {
 };
 
 export class CodexSession extends AgentSessionBase<EnhancedMode> {
+    transcriptPath: string | null = null;
     readonly codexArgs?: string[];
     readonly codexCliOverrides?: CodexCliOverrides;
     readonly startedBy: 'runner' | 'terminal';
     readonly startingMode: 'local' | 'remote';
     localLaunchFailure: LocalLaunchFailure | null = null;
+
+    private transcriptPathCallbacks: Array<(path: string) => void> = [];
 
     constructor(opts: {
         api: ApiClient;
@@ -65,6 +68,31 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
         this.model = opts.model;
         this.modelReasoningEffort = opts.modelReasoningEffort;
         this.collaborationMode = opts.collaborationMode;
+    }
+
+    onTranscriptPathFound(path: string): void {
+        if (this.transcriptPath === path) {
+            return;
+        }
+        this.transcriptPath = path;
+        for (const callback of this.transcriptPathCallbacks) {
+            callback(path);
+        }
+    }
+
+    addTranscriptPathCallback(cb: (path: string) => void): void {
+        this.transcriptPathCallbacks.push(cb);
+    }
+
+    removeTranscriptPathCallback(cb: (path: string) => void): void {
+        const index = this.transcriptPathCallbacks.indexOf(cb);
+        if (index !== -1) {
+            this.transcriptPathCallbacks.splice(index, 1);
+        }
+    }
+
+    resetTranscriptPath(): void {
+        this.transcriptPath = null;
     }
 
     setPermissionMode = (mode: PermissionMode): void => {

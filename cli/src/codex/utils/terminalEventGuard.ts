@@ -3,6 +3,9 @@ export type TerminalEventGuardInput = {
     currentTurnId: string | null;
     turnInFlight: boolean;
     allowAnonymousTerminalEvent?: boolean;
+    eventThreadId?: string | null;
+    currentThreadId?: string | null;
+    allowMatchingThreadIdTerminalEvent?: boolean;
 };
 
 export function shouldIgnoreTerminalEvent(input: TerminalEventGuardInput): boolean {
@@ -13,6 +16,15 @@ export function shouldIgnoreTerminalEvent(input: TerminalEventGuardInput): boole
     }
 
     if (input.currentTurnId) {
+        const allowMatchingThreadIdTerminalEvent = input.allowMatchingThreadIdTerminalEvent === true;
+        if (
+            allowMatchingThreadIdTerminalEvent &&
+            input.eventThreadId &&
+            input.currentThreadId &&
+            input.eventThreadId === input.currentThreadId
+        ) {
+            return false;
+        }
         return true;
     }
 

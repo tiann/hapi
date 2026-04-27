@@ -10,7 +10,7 @@ import { SyncEngine, Session } from '../sync/syncEngine'
 import { handleCallback, CallbackContext } from './callbacks'
 import { formatSessionNotification, createNotificationKeyboard } from './sessionView'
 import { getAgentName } from '../notifications/sessionInfo'
-import type { NotificationChannel } from '../notifications/notificationTypes'
+import type { NotificationChannel, TaskNotification } from '../notifications/notificationTypes'
 import type { Store } from '../store'
 
 export interface BotContext extends Context {
@@ -238,6 +238,36 @@ export class HappyBot implements NotificationChannel {
                 })
             } catch (error) {
                 console.error(`[HAPIBot] Failed to send notification to chat ${chatId}:`, error)
+            }
+        }
+    }
+
+    async sendTaskNotification(session: Session, notification: TaskNotification): Promise<void> {
+        if (!session.active) {
+            return
+        }
+
+        const agentName = getAgentName(session)
+        const status = notification.status?.trim().toLowerCase()
+        const prefix = status === 'failed' || status === 'error' || status === 'killed' || status === 'aborted'
+            ? 'Task failed'
+            : 'Task completed'
+        const url = buildMiniAppDeepLink(this.publicUrl, `session_${session.id}`)
+        const keyboard = new InlineKeyboard()
+            .webApp('Open Session', url)
+
+        const chatIds = this.getBoundChatIds(session.namespace)
+        if (chatIds.length === 0) {
+            return
+        }
+
+        for (const chatId of chatIds) {
+            try {
+                await this.bot.api.sendMessage(chatId, `${prefix}\n\n${agentName}: ${notification.summary}`, {
+                    reply_markup: keyboard
+                })
+            } catch (error) {
+                console.error(`[HAPIBot] Failed to send task notification to chat ${chatId}:`, error)
             }
         }
     }

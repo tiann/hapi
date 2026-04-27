@@ -6,6 +6,7 @@ import type { CommandDefinition } from './types'
 import { CODEX_PERMISSION_MODES } from '@hapi/protocol/modes'
 import type { CodexPermissionMode } from '@hapi/protocol/types'
 import type { ReasoningEffort } from '@/codex/appServerTypes'
+import { assertCodexLocalSupported } from '@/codex/utils/codexVersion'
 
 function parseReasoningEffort(value: string): ReasoningEffort {
     switch (value) {
@@ -81,6 +82,10 @@ export const codexCommand: CommandDefinition = {
             }
             if (unknownArgs.length > 0) {
                 options.codexArgs = unknownArgs
+            }
+
+            if (options.startedBy !== 'runner') {
+                assertCodexLocalSupported()
             }
 
             await initializeToken()

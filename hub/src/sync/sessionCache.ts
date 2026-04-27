@@ -6,11 +6,15 @@ import { EventPublisher } from './eventPublisher'
 import { extractTodoWriteTodosFromMessageContent, TodosSchema } from './todos'
 import { extractBackgroundTaskDelta } from './backgroundTasks'
 
+const QUEUED_MESSAGE_THINKING_GRACE_MS = 15_000
+
 export class SessionCache {
     private readonly sessions: Map<string, Session> = new Map()
     private readonly lastBroadcastAtBySessionId: Map<string, number> = new Map()
     private readonly todoBackfillAttemptedSessionIds: Set<string> = new Set()
     private readonly deduplicateInProgress: Set<string> = new Set()
+    private readonly deduplicatePending: Set<string> = new Set()
+    private readonly pendingThinkingUntilBySessionId: Map<string, number> = new Map()
 
     constructor(
         private readonly store: Store,
@@ -74,6 +78,7 @@ export class SessionCache {
         let stored = this.store.sessions.getSession(sessionId)
         if (!stored) {
             const existed = this.sessions.delete(sessionId)
+            this.pendingThinkingUntilBySessionId.delete(sessionId)
             if (existed) {
                 this.publisher.emit({ type: 'session-removed', sessionId })
             }
@@ -180,11 +185,18 @@ export class SessionCache {
         const previousModelReasoningEffort = session.modelReasoningEffort
         const previousEffort = session.effort
         const previousCollaborationMode = session.collaborationMode
+        const pendingThinkingUntil = this.pendingThinkingUntilBySessionId.get(session.id) ?? 0
+        const requestedThinking = Boolean(payload.thinking)
+        const hubNow = Date.now()
+        const preserveQueuedThinking = !requestedThinking && pendingThinkingUntil > hubNow
 
         session.active = true
         session.activeAt = Math.max(session.activeAt, t)
-        session.thinking = Boolean(payload.thinking)
+        session.thinking = requestedThinking || preserveQueuedThinking
         session.thinkingAt = t
+        if (requestedThinking || pendingThinkingUntil <= hubNow) {
+            this.pendingThinkingUntilBySessionId.delete(session.id)
+        }
         if (payload.permissionMode !== undefined) {
             session.permissionMode = payload.permissionMode
         }
@@ -247,6 +259,33 @@ export class SessionCache {
         }
     }
 
+    markMessageQueued(sessionId: string, time: number = Date.now()): void {
+        const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
+        if (!session) return
+        if (!session.active) return
+
+        const nextTime = clampAliveTime(time) ?? Date.now()
+        const wasThinking = session.thinking
+        const previousUpdatedAt = session.updatedAt
+
+        session.thinking = true
+        session.thinkingAt = nextTime
+        session.updatedAt = Math.max(session.updatedAt, nextTime)
+        this.pendingThinkingUntilBySessionId.set(session.id, nextTime + QUEUED_MESSAGE_THINKING_GRACE_MS)
+
+        if (!wasThinking || session.updatedAt !== previousUpdatedAt) {
+            this.lastBroadcastAtBySessionId.set(session.id, Date.now())
+            this.publisher.emit({
+                type: 'session-updated',
+                sessionId: session.id,
+                data: {
+                    thinking: true,
+                    updatedAt: session.updatedAt
+                }
+            })
+        }
+    }
+
     applyBackgroundTaskDelta(sessionId: string, delta: { started: number; completed: number }): void {
         const session = this.sessions.get(sessionId)
         if (!session) return
@@ -260,6 +299,40 @@ export class SessionCache {
             type: 'session-updated',
             sessionId,
             data: { backgroundTaskCount: next }
+        })
+    }
+
+    recordSessionActivity(sessionId: string, updatedAt: number): void {
+        if (!Number.isFinite(updatedAt)) {
+            return
+        }
+
+        const stored = this.store.sessions.getSession(sessionId)
+        if (!stored) {
+            return
+        }
+
+        const nextUpdatedAt = Math.max(stored.updatedAt, updatedAt)
+        const touched = this.store.sessions.touchSessionUpdatedAt(sessionId, nextUpdatedAt, stored.namespace)
+        const session = this.sessions.get(sessionId)
+
+        if (!session) {
+            if (touched) {
+                this.refreshSession(sessionId)
+            }
+            return
+        }
+
+        if (nextUpdatedAt <= session.updatedAt && !touched) {
+            return
+        }
+
+        session.updatedAt = Math.max(session.updatedAt, nextUpdatedAt)
+        this.publisher.emit({
+            type: 'session-updated',
+            sessionId,
+            namespace: session.namespace,
+            data: { updatedAt: session.updatedAt }
         })
     }
 
@@ -277,6 +350,7 @@ export class SessionCache {
         session.thinking = false
         session.thinkingAt = t
         session.backgroundTaskCount = 0
+        this.pendingThinkingUntilBySessionId.delete(session.id)
 
         this.publisher.emit({ type: 'session-updated', sessionId: session.id, data: { active: false, thinking: false, backgroundTaskCount: 0 } })
     }
@@ -290,6 +364,7 @@ export class SessionCache {
             if (now - session.activeAt <= sessionTimeoutMs) continue
             session.active = false
             session.thinking = false
+            this.pendingThinkingUntilBySessionId.delete(session.id)
             expired.push(session.id)
             this.publisher.emit({ type: 'session-updated', sessionId: session.id, data: { active: false } })
         }
@@ -401,11 +476,33 @@ export class SessionCache {
         this.sessions.delete(sessionId)
         this.lastBroadcastAtBySessionId.delete(sessionId)
         this.todoBackfillAttemptedSessionIds.delete(sessionId)
+        this.pendingThinkingUntilBySessionId.delete(sessionId)
 
         this.publisher.emit({ type: 'session-removed', sessionId, namespace: session.namespace })
     }
 
     async mergeSessions(oldSessionId: string, newSessionId: string, namespace: string): Promise<void> {
+        await this.mergeSessionData(oldSessionId, newSessionId, namespace, { deleteOldSession: true })
+    }
+
+    async mergeSessionHistory(
+        oldSessionId: string,
+        newSessionId: string,
+        namespace: string,
+        options: { mergeAgentState?: boolean } = {}
+    ): Promise<void> {
+        await this.mergeSessionData(oldSessionId, newSessionId, namespace, {
+            deleteOldSession: false,
+            mergeAgentState: options.mergeAgentState ?? true
+        })
+    }
+
+    private async mergeSessionData(
+        oldSessionId: string,
+        newSessionId: string,
+        namespace: string,
+        options: { deleteOldSession: boolean; mergeAgentState?: boolean }
+    ): Promise<void> {
         if (oldSessionId === newSessionId) {
             return
         }
@@ -416,7 +513,13 @@ export class SessionCache {
             throw new Error('Session not found for merge')
         }
 
-        this.store.messages.mergeSessionMessages(oldSessionId, newSessionId)
+        const movedMessages = this.store.messages.mergeSessionMessages(oldSessionId, newSessionId)
+        if (movedMessages.moved > 0) {
+            if (!options.deleteOldSession) {
+                this.publisher.emit({ type: 'messages-invalidated', sessionId: oldSessionId, namespace })
+            }
+            this.publisher.emit({ type: 'messages-invalidated', sessionId: newSessionId, namespace })
+        }
 
         const mergedMetadata = this.mergeSessionMetadata(oldStored.metadata, newStored.metadata)
         if (mergedMetadata !== null && mergedMetadata !== newStored.metadata) {
@@ -476,10 +579,10 @@ export class SessionCache {
         }
 
         // Merge agentState: union requests/completedRequests from both sessions so pending
-        // approvals on the duplicate are not lost. Only inactive duplicates reach this point
-        // (active ones are skipped by deduplicateByAgentSessionId).
+        // approvals on inactive duplicates are not lost. Active duplicates keep their
+        // own agentState because permission approve/deny RPCs are routed by session id.
         // Read the latest target state right before writing to avoid overwriting live updates.
-        if (oldStored.agentState !== null) {
+        if ((options.mergeAgentState ?? true) && oldStored.agentState !== null) {
             for (let attempt = 0; attempt < 2; attempt += 1) {
                 const latest = this.store.sessions.getSessionByNamespace(newSessionId, namespace)
                 if (!latest) break
@@ -505,19 +608,26 @@ export class SessionCache {
             )
         }
 
-        const deleted = this.store.sessions.deleteSession(oldSessionId, namespace)
-        if (!deleted) {
-            throw new Error('Failed to delete old session during merge')
+        if (options.deleteOldSession) {
+            const deleted = this.store.sessions.deleteSession(oldSessionId, namespace)
+            if (!deleted) {
+                throw new Error('Failed to delete old session during merge')
+            }
+
+            const existed = this.sessions.delete(oldSessionId)
+            if (existed) {
+                this.publisher.emit({ type: 'session-removed', sessionId: oldSessionId, namespace })
+            }
+            this.lastBroadcastAtBySessionId.delete(oldSessionId)
+            this.todoBackfillAttemptedSessionIds.delete(oldSessionId)
+        } else {
+            this.refreshSession(oldSessionId)
         }
 
-        const existed = this.sessions.delete(oldSessionId)
-        if (existed) {
-            this.publisher.emit({ type: 'session-removed', sessionId: oldSessionId, namespace })
+        const refreshed = this.refreshSession(newSessionId)
+        if (refreshed) {
+            this.publisher.emit({ type: 'session-updated', sessionId: newSessionId, data: refreshed })
         }
-        this.lastBroadcastAtBySessionId.delete(oldSessionId)
-        this.todoBackfillAttemptedSessionIds.delete(oldSessionId)
-
-        this.refreshSession(newSessionId)
     }
 
     private mergeSessionMetadata(oldMetadata: unknown | null, newMetadata: unknown | null): unknown | null {
@@ -605,44 +715,82 @@ export class SessionCache {
         const agentId = this.extractAgentSessionId(session.metadata)
         if (!agentId) return
 
-        // Guard: skip if another dedup for this agent ID is already in progress.
-        // A skipped trigger is acceptable — the web-side display dedup hides any remaining duplicates.
-        if (this.deduplicateInProgress.has(agentId.value)) return
+        // Guard: if another dedup for this agent ID is already in progress,
+        // coalesce this trigger and run one more pass afterwards. This matters
+        // for active duplicates: a session can become inactive while the first
+        // pass is only allowed to move history, and the follow-up pass should
+        // then be allowed to delete the inactive duplicate record.
+        if (this.deduplicateInProgress.has(agentId.value)) {
+            this.deduplicatePending.add(agentId.value)
+            return
+        }
         this.deduplicateInProgress.add(agentId.value)
 
         try {
-            const candidates: { id: string; session: Session }[] = [{ id: sessionId, session }]
-            for (const [existingId, existing] of this.sessions) {
-                if (existingId === sessionId) continue
-                if (existing.namespace !== session.namespace) continue
-                if (!existing.metadata) continue
-                if (existing.metadata[agentId.field] !== agentId.value) continue
-                // Only merge inactive duplicates. Active ones still have a live CLI socket
-                // whose keepalive/messages would fail if we deleted their session record.
-                // The web-side display dedup hides active duplicates from the UI.
-                if (existing.active) continue
-                candidates.push({ id: existingId, session: existing })
-            }
+            do {
+                this.deduplicatePending.delete(agentId.value)
 
-            if (candidates.length <= 1) return
-
-            // Keep the most recent session as the merge target so newer state survives.
-            candidates.sort((a, b) =>
-                (b.session.activeAt - a.session.activeAt) || (b.session.updatedAt - a.session.updatedAt)
-            )
-            const targetId = candidates[0].id
-            const targetNamespace = candidates[0].session.namespace
-
-            for (const { id } of candidates.slice(1)) {
-                if (id === targetId) continue
-                try {
-                    await this.mergeSessions(id, targetId, targetNamespace)
-                } catch {
-                    // best-effort: duplicate remains if merge fails
+                const currentSession = this.sessions.get(sessionId)
+                const candidates: { id: string; session: Session }[] = []
+                if (currentSession?.metadata && currentSession.metadata[agentId.field] === agentId.value) {
+                    candidates.push({ id: sessionId, session: currentSession })
                 }
-            }
+                for (const [existingId, existing] of this.sessions) {
+                    if (existingId === sessionId) continue
+                    if (existing.namespace !== session.namespace) continue
+                    if (!existing.metadata) continue
+                    if (existing.metadata[agentId.field] !== agentId.value) continue
+                    candidates.push({ id: existingId, session: existing })
+                }
+
+                if (candidates.length <= 1) continue
+
+                const activeCandidates = candidates.filter(({ session }) => session.active)
+                if (activeCandidates.length > 1) {
+                    // Do not move history between two live session ids. The web may
+                    // intentionally keep the currently selected duplicate visible,
+                    // and the hub does not know which active duplicate that is.
+                    continue
+                }
+
+                // Keep the same canonical session the sidebar is likely to show:
+                // active sessions win, then the most recently updated session wins.
+                // If timestamps tie, prefer the session that triggered this dedup run
+                // so callers can intentionally preserve the visible/resumed session.
+                candidates.sort((a, b) => {
+                    if (a.session.active !== b.session.active) return a.session.active ? -1 : 1
+                    const updatedDelta = b.session.updatedAt - a.session.updatedAt
+                    if (updatedDelta !== 0) return updatedDelta
+                    if (a.id === sessionId) return -1
+                    if (b.id === sessionId) return 1
+                    return b.session.activeAt - a.session.activeAt
+                })
+                const targetId = candidates[0].id
+                const targetNamespace = candidates[0].session.namespace
+
+                for (const { id } of candidates.slice(1)) {
+                    if (id === targetId) continue
+                    try {
+                        const candidate = this.sessions.get(id)
+                        if (candidate?.active) {
+                            // Keep the live session record/socket intact, but move its already
+                            // persisted history into the visible dedup target.  This preserves
+                            // left-sidebar dedup while making resumed/restarted sessions show
+                            // the full conversation history.
+                            await this.mergeSessionHistory(id, targetId, targetNamespace, {
+                                mergeAgentState: false
+                            })
+                        } else {
+                            await this.mergeSessions(id, targetId, targetNamespace)
+                        }
+                    } catch {
+                        // best-effort: duplicate remains if merge fails
+                    }
+                }
+            } while (this.deduplicatePending.has(agentId.value))
         } finally {
             this.deduplicateInProgress.delete(agentId.value)
+            this.deduplicatePending.delete(agentId.value)
         }
     }
 }

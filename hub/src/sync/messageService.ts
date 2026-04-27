@@ -7,7 +7,8 @@ export class MessageService {
     constructor(
         private readonly store: Store,
         private readonly io: Server,
-        private readonly publisher: EventPublisher
+        private readonly publisher: EventPublisher,
+        private readonly onSessionActivity?: (sessionId: string, updatedAt: number) => void
     ) {
     }
 
@@ -87,6 +88,7 @@ export class MessageService {
         }
 
         const msg = this.store.messages.addMessage(sessionId, content, payload.localId ?? undefined)
+        this.onSessionActivity?.(sessionId, msg.createdAt)
 
         const update = {
             id: msg.id,

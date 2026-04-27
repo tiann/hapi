@@ -26,6 +26,7 @@ import { SessionHeader } from '@/components/SessionHeader'
 import { TeamPanel } from '@/components/TeamPanel'
 import { usePlatform } from '@/hooks/usePlatform'
 import { useSessionActions } from '@/hooks/mutations/useSessionActions'
+import { useCodexModels } from '@/hooks/queries/useCodexModels'
 import { useVoiceOptional } from '@/lib/voice-context'
 import { RealtimeVoiceSession, registerSessionStore, registerVoiceHooksStore, voiceHooks } from '@/realtime'
 import { isRemoteTerminalSupported } from '@/utils/terminalSupport'
@@ -63,6 +64,25 @@ export function SessionChat(props: {
     const agentFlavor = props.session.metadata?.flavor ?? null
     const controlledByUser = props.session.agentState?.controlledByUser === true
     const codexCollaborationModeSupported = agentFlavor === 'codex' && !controlledByUser
+    const codexModelsState = useCodexModels({
+        api: props.api,
+        sessionId: props.session.id,
+        enabled: agentFlavor === 'codex' && props.session.active && !controlledByUser
+    })
+    const codexModelOptions = useMemo(() => {
+        if (agentFlavor !== 'codex') {
+            return undefined
+        }
+
+        const options: Array<{ value: string | null; label: string }> = []
+        for (const codexModel of codexModelsState.models) {
+            options.push({
+                value: codexModel.id,
+                label: codexModel.displayName
+            })
+        }
+        return options
+    }, [agentFlavor, codexModelsState.models])
     const {
         abortSession,
         switchSession,
@@ -387,6 +407,14 @@ export function SessionChat(props: {
                         forceScrollToken={forceScrollToken}
                     />
 
+                    {codexCollaborationModeSupported && codexModelsState.error ? (
+                        <div className="px-3 pb-2">
+                            <div className="mx-auto w-full max-w-content rounded-md bg-[var(--app-subtle-bg)] p-3 text-sm text-red-600">
+                                {t('session.codexModelsLoadFailed')}: {codexModelsState.error}
+                            </div>
+                        </div>
+                    ) : null}
+
                     <HappyComposer
                         key={props.session.id}
                         sessionId={props.session.id}
@@ -397,6 +425,7 @@ export function SessionChat(props: {
                         modelReasoningEffort={agentFlavor === 'codex' ? props.session.modelReasoningEffort : undefined}
                         effort={props.session.effort}
                         agentFlavor={agentFlavor}
+                        availableModelOptions={agentFlavor === 'codex' ? codexModelOptions : undefined}
                         active={props.session.active}
                         allowSendWhenInactive
                         thinking={props.session.thinking}
@@ -410,7 +439,11 @@ export function SessionChat(props: {
                                 : undefined
                         }
                         onPermissionModeChange={handlePermissionModeChange}
-                        onModelChange={handleModelChange}
+                        onModelChange={
+                            agentFlavor === 'codex'
+                                ? (props.session.active && !controlledByUser && !codexModelsState.error ? handleModelChange : undefined)
+                                : handleModelChange
+                        }
                         onModelReasoningEffortChange={
                             agentFlavor === 'codex' && props.session.active && !controlledByUser
                                 ? handleModelReasoningEffortChange

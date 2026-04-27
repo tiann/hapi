@@ -1,5 +1,5 @@
 import type { Session } from '../sync/syncEngine'
-import type { NotificationChannel } from '../notifications/notificationTypes'
+import type { NotificationChannel, TaskNotification } from '../notifications/notificationTypes'
 import { getAgentName, getSessionName } from '../notifications/sessionInfo'
 import type { SSEManager } from '../sse/sseManager'
 import type { VisibilityTracker } from '../visibility/visibilityTracker'
@@ -68,6 +68,48 @@ export class PushNotificationChannel implements NotificationChannel {
             tag: `ready-${session.id}`,
             data: {
                 type: 'ready',
+                sessionId: session.id,
+                url: this.buildSessionPath(session.id)
+            }
+        }
+
+        const url = payload.data?.url ?? this.buildSessionPath(session.id)
+        if (this.visibilityTracker.hasVisibleConnection(session.namespace)) {
+            const delivered = await this.sseManager.sendToast(session.namespace, {
+                type: 'toast',
+                data: {
+                    title: payload.title,
+                    body: payload.body,
+                    sessionId: session.id,
+                    url
+                }
+            })
+            if (delivered > 0) {
+                return
+            }
+        }
+
+        await this.pushService.sendToNamespace(session.namespace, payload)
+    }
+
+    async sendTaskNotification(session: Session, notification: TaskNotification): Promise<void> {
+        if (!session.active) {
+            return
+        }
+
+        const agentName = getAgentName(session)
+        const name = getSessionName(session)
+        const normalizedStatus = notification.status?.trim().toLowerCase()
+        const isFailure = normalizedStatus === 'failed'
+            || normalizedStatus === 'error'
+            || normalizedStatus === 'killed'
+            || normalizedStatus === 'aborted'
+
+        const payload: PushPayload = {
+            title: isFailure ? 'Task failed' : 'Task completed',
+            body: `${agentName} · ${name} · ${notification.summary}`,
+            data: {
+                type: 'task-notification',
                 sessionId: session.id,
                 url: this.buildSessionPath(session.id)
             }

@@ -68,6 +68,15 @@ function buildFilteredEnv(): NodeJS.ProcessEnv {
         }
         env[key] = value
     }
+    if (!env.TERM) {
+        env.TERM = 'xterm-256color'
+    }
+    if (!env.COLORTERM) {
+        env.COLORTERM = 'truecolor'
+    }
+    if (!env.LANG) {
+        env.LANG = process.platform === 'darwin' ? 'en_US.UTF-8' : 'C.UTF-8'
+    }
     return env
 }
 
