@@ -1,4 +1,6 @@
 import { ComposerPrimitive } from '@assistant-ui/react'
+import { useCallback, useLayoutEffect, useRef, useState } from 'react'
+import type { CodexUsage } from '@hapi/protocol/types'
 import type { ConversationStatus } from '@/realtime/types'
 import { useTranslation } from '@/lib/use-translation'
 import { ScheduleIcon } from '@/components/icons'
@@ -6,7 +8,7 @@ import { ScheduleTimePicker } from './ScheduleTimePicker'
 import type { PendingSchedule } from './ScheduleTimePicker'
 import { useFue } from '@/lib/use-fue'
 import { FueCallout, FueDot } from '@/components/Fue'
-import { useRef, useState } from 'react'
+import { getCodexUsageRingPercent, getCodexUsageRows } from './codexUsageDisplay'
 
 function ChevronIcon() {
     return <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><path d="M2.5 3.75L5 6.25L7.5 3.75" /></svg>
@@ -430,6 +432,97 @@ export function UnifiedButton(props: {
     )
 }
 
+function CodexUsageIndicator(props: { usage?: CodexUsage | null }) {
+    const [open, setOpen] = useState(false)
+    const [position, setPosition] = useState<{ left: number; bottom: number } | null>(null)
+    const buttonRef = useRef<HTMLButtonElement | null>(null)
+    const percent = getCodexUsageRingPercent(props.usage)
+
+    const updatePosition = useCallback(() => {
+        const button = buttonRef.current
+        if (!button) return
+        const rect = button.getBoundingClientRect()
+        const width = 288
+        const margin = 8
+        const maxLeft = Math.max(margin, window.innerWidth - width - margin)
+        setPosition({
+            left: Math.min(Math.max(margin, rect.right - width), maxLeft),
+            bottom: Math.max(margin, window.innerHeight - rect.top + margin)
+        })
+    }, [])
+
+    useLayoutEffect(() => {
+        if (!open) return
+        updatePosition()
+        window.addEventListener('resize', updatePosition)
+        window.addEventListener('scroll', updatePosition, true)
+        return () => {
+            window.removeEventListener('resize', updatePosition)
+            window.removeEventListener('scroll', updatePosition, true)
+        }
+    }, [open, updatePosition])
+
+    if (!props.usage || percent === null) {
+        return null
+    }
+
+    const rows = getCodexUsageRows(props.usage)
+    const roundedPercent = Math.round(percent)
+    const isHighUsage = percent > 85
+    const usageColor = isHighUsage ? '#991b1b' : 'var(--app-link)'
+    const textColor = isHighUsage ? '#991b1b' : 'var(--app-hint)'
+    const background = `conic-gradient(${usageColor} ${percent * 3.6}deg, var(--app-divider) 0deg)`
+
+    return (
+        <div className="relative">
+            <button
+                ref={buttonRef}
+                type="button"
+                aria-label="Codex usage"
+                title="Codex usage"
+                className="flex h-8 w-8 items-center justify-center rounded-full text-[10px] font-normal transition-colors hover:bg-[var(--app-bg)]"
+                style={{ color: textColor }}
+                onClick={() => {
+                    updatePosition()
+                    setOpen((value) => !value)
+                }}
+            >
+                <span
+                    className="flex h-6 w-6 items-center justify-center rounded-full"
+                    style={{ background }}
+                >
+                    <span className="flex h-[21px] w-[21px] items-center justify-center rounded-full bg-[var(--app-secondary-bg)]">
+                        {roundedPercent}
+                    </span>
+                </span>
+            </button>
+            {open && position ? (
+                <div
+                    className="fixed z-[9999] w-72 rounded-md border border-[var(--app-divider)] bg-[var(--app-bg)] p-3 text-sm shadow-lg"
+                    style={{ left: position.left, bottom: position.bottom }}
+                >
+                    <div className="mb-2 text-xs font-semibold uppercase text-[var(--app-hint)]">
+                        Codex Usage
+                    </div>
+                    <div className="space-y-2">
+                        {rows.map((row) => (
+                            <div key={row.label} className="flex items-start justify-between gap-3">
+                                <div className="min-w-0">
+                                    <div className="text-[var(--app-fg)]">{row.label}</div>
+                                    {row.detail ? (
+                                        <div className="mt-0.5 break-words text-xs text-[var(--app-hint)]">{row.detail}</div>
+                                    ) : null}
+                                </div>
+                                <div className="shrink-0 font-medium text-[var(--app-fg)]">{row.value}</div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            ) : null}
+        </div>
+    )
+}
+
 export function ComposerButtons(props: {
     canSend: boolean
     controlsDisabled: boolean
@@ -477,6 +570,7 @@ export function ComposerButtons(props: {
     scratchlistMode?: boolean
     scratchlistCount?: number
     onScratchlistToggle?: () => void
+    codexUsage?: CodexUsage | null
 }) {
     const { t } = useTranslation()
     const isVoiceConnected = props.voiceStatus === 'connected'
@@ -661,29 +755,32 @@ export function ComposerButtons(props: {
                 ) : null}
             </div>
 
-            <UnifiedButton
-                canSend={props.canSend}
-                voiceStatus={props.voiceStatus}
-                voiceEnabled={props.voiceEnabled}
-                controlsDisabled={props.controlsDisabled}
-                onSend={props.onSend}
-                onVoiceToggle={props.onVoiceToggle}
-                /*
-                 * Derived, NOT raw scratchlistMode. Mirror SessionChat's
-                 * shouldRouteToScratchlist so the visible send-button state
-                 * matches the actual routing decision: amber + "Send to
-                 * scratchlist" only when mode is on AND the payload would
-                 * be a pure-text scratchlist add. Attachments or a pending
-                 * schedule force a chat fallback in onSendForComposer; the
-                 * button must reflect that, otherwise the UI lies about
-                 * where the user's content is going.
-                 */
-                routesToScratchlist={
-                    (props.scratchlistMode ?? false)
-                    && !hasAttachments
-                    && props.pendingSchedule == null
-                }
-            />
+            <div className="flex items-center gap-1">
+                <CodexUsageIndicator usage={props.codexUsage} />
+                <UnifiedButton
+                    canSend={props.canSend}
+                    voiceStatus={props.voiceStatus}
+                    voiceEnabled={props.voiceEnabled}
+                    controlsDisabled={props.controlsDisabled}
+                    onSend={props.onSend}
+                    onVoiceToggle={props.onVoiceToggle}
+                    /*
+                     * Derived, NOT raw scratchlistMode. Mirror SessionChat's
+                     * shouldRouteToScratchlist so the visible send-button state
+                     * matches the actual routing decision: amber + "Send to
+                     * scratchlist" only when mode is on AND the payload would
+                     * be a pure-text scratchlist add. Attachments or a pending
+                     * schedule force a chat fallback in onSendForComposer; the
+                     * button must reflect that, otherwise the UI lies about
+                     * where the user's content is going.
+                     */
+                    routesToScratchlist={
+                        (props.scratchlistMode ?? false)
+                        && !hasAttachments
+                        && props.pendingSchedule == null
+                    }
+                />
+            </div>
         </div>
     )
 }

@@ -64,7 +64,7 @@ function getSessionPatch(value: unknown): SessionPatch | null {
     if (!parsed.success) {
         return null
     }
-    return Object.keys(parsed.data).length > 0 ? parsed.data : null
+    return Object.keys(parsed.data).length > 0 ? (parsed.data as SessionPatch) : null
 }
 
 function isMachineRecord(value: unknown): value is Machine {

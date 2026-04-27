@@ -5,6 +5,7 @@ import type { EnhancedMode, PermissionMode } from './loop';
 import type { CodexCliOverrides } from './utils/codexCliOverrides';
 import type { LocalLaunchExitReason } from '@/agent/localLaunchPolicy';
 import type { Metadata, SessionModel, SessionModelReasoningEffort } from '@/api/types';
+import { normalizeCodexUsage } from './utils/codexUsage';
 
 type LocalLaunchFailure = {
     message: string;
@@ -129,6 +130,17 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
 
     setModelReasoningEffort = (modelReasoningEffort: SessionModelReasoningEffort): void => {
         this.modelReasoningEffort = modelReasoningEffort;
+    };
+
+    recordCodexUsage = (payload: unknown): void => {
+        const codexUsage = normalizeCodexUsage(payload);
+        if (!codexUsage) {
+            return;
+        }
+        this.client.updateMetadata((metadata) => ({
+            ...metadata,
+            codexUsage
+        }));
     };
 
     setCollaborationMode = (mode: EnhancedMode['collaborationMode']): void => {

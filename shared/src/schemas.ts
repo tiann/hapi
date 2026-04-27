@@ -272,6 +272,8 @@ export const SessionPatchSchema = z.object({
     thinking: z.boolean().optional(),
     activeAt: z.number().optional(),
     updatedAt: z.number().optional(),
+    metadata: MetadataSchema.nullable().optional(),
+    metadataVersion: z.number().optional(),
     model: z.string().nullable().optional(),
     modelReasoningEffort: z.string().nullable().optional(),
     effort: z.string().nullable().optional(),
