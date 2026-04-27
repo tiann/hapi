@@ -28,10 +28,28 @@ export interface ListCodexSessionsResponse {
 type RawSession = {
     id: string;
     title: string;
+    titleSource: TitleSource;
     updatedAt: number;
     path: string | null;
     model: string | null;
 };
+
+type IndexedSessionTitle = {
+    title: string;
+    updatedAt: number;
+};
+
+type SqliteDatabaseConstructor = new (path: string, options?: { readonly?: boolean }) => {
+    query: (sql: string) => { all: () => unknown[] };
+    close: (throwOnError?: boolean) => void;
+};
+
+type TitleSource = 'generated' | 'user' | 'agent' | 'fallback';
+
+export function formatCodexSessionTitle(text: string): string | null {
+    const title = text.replace(/\s+/g, ' ').trim();
+    return title.length > 0 ? title.slice(0, 80) : null;
+}
 
 function asRecord(value: unknown): Record<string, unknown> | null {
     if (!value || typeof value !== 'object') {
@@ -46,6 +64,17 @@ function asNonEmptyString(value: unknown): string | null {
 
 function readCodexHome(): string {
     return process.env.CODEX_HOME ?? join(homedir(), '.codex');
+}
+
+function parseIndexUpdatedAt(value: unknown): number {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+        return value;
+    }
+    if (typeof value === 'string') {
+        const parsed = Date.parse(value);
+        return Number.isFinite(parsed) ? parsed : 0;
+    }
+    return 0;
 }
 
 async function walkJsonlFiles(rootDir: string, maxFiles: number): Promise<string[]> {
@@ -86,7 +115,29 @@ async function walkJsonlFiles(rootDir: string, maxFiles: number): Promise<string
     return files;
 }
 
-function parseSessionLine(line: string): { id?: string; title?: string; path?: string; model?: string } | null {
+async function readJsonlLines(filePath: string): Promise<string[] | null> {
+    try {
+        const content = await fs.readFile(filePath, 'utf8');
+        return content.split('\n').filter((line) => line.trim().length > 0);
+    } catch {
+        return null;
+    }
+}
+
+function titleSourcePriority(source: TitleSource | undefined): number {
+    switch (source) {
+        case 'generated':
+            return 3;
+        case 'user':
+            return 2;
+        case 'agent':
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+function parseSessionLine(line: string): { id?: string; title?: string; titleSource?: TitleSource; path?: string; model?: string } | null {
     let parsed: unknown;
     try {
         parsed = JSON.parse(line);
@@ -111,10 +162,28 @@ function parseSessionLine(line: string): { id?: string; title?: string; path?: s
 
     if (type === 'event_msg') {
         const messageType = asNonEmptyString(payload?.type);
+        if (messageType === 'thread_name_updated') {
+            const id = asNonEmptyString(payload?.thread_id) ?? asNonEmptyString(payload?.threadId) ?? asNonEmptyString(payload?.id);
+            const text = asNonEmptyString(payload?.thread_name) ?? asNonEmptyString(payload?.threadName) ?? asNonEmptyString(payload?.title);
+            const title = text ? formatCodexSessionTitle(text) : null;
+            if (title) {
+                return { id: id ?? undefined, title, titleSource: 'generated' };
+            }
+        }
+
+        if (messageType === 'user_message') {
+            const text = asNonEmptyString(payload?.message) ?? asNonEmptyString(payload?.text) ?? asNonEmptyString(payload?.content);
+            const title = text ? formatCodexSessionTitle(text) : null;
+            if (title) {
+                return { title, titleSource: 'user' };
+            }
+        }
+
         if (messageType === 'agent_message') {
             const text = asNonEmptyString(payload?.message) ?? asNonEmptyString(payload?.text);
-            if (text) {
-                return { title: text.slice(0, 80) };
+            const title = text ? formatCodexSessionTitle(text) : null;
+            if (title) {
+                return { title, titleSource: 'agent' };
             }
         }
 
@@ -127,25 +196,121 @@ function parseSessionLine(line: string): { id?: string; title?: string; path?: s
     return null;
 }
 
-async function parseSessionFile(filePath: string): Promise<RawSession | null> {
-    let stat: Stats;
-    let content: string;
+function parseSessionIndexLine(line: string): { id: string; title: string; updatedAt: number } | null {
+    let parsed: unknown;
     try {
-        [stat, content] = await Promise.all([
-            fs.stat(filePath),
-            fs.readFile(filePath, 'utf8')
-        ]);
+        parsed = JSON.parse(line);
     } catch {
         return null;
     }
 
-    const lines = content.split('\n').filter((line) => line.trim().length > 0).slice(0, 400);
+    const record = asRecord(parsed);
+    if (!record) {
+        return null;
+    }
+
+    const id = asNonEmptyString(record.id) ?? asNonEmptyString(record.session_id) ?? asNonEmptyString(record.sessionId);
+    const title = asNonEmptyString(record.thread_name) ?? asNonEmptyString(record.title) ?? asNonEmptyString(record.name);
+    if (!id || !title) {
+        return null;
+    }
+
+    return {
+        id,
+        title: formatCodexSessionTitle(title) ?? title,
+        updatedAt: parseIndexUpdatedAt(record.updated_at ?? record.updatedAt ?? record.ts)
+    };
+}
+
+async function readCodexSessionIndex(): Promise<Map<string, IndexedSessionTitle>> {
+    const lines = await readJsonlLines(join(readCodexHome(), 'session_index.jsonl'));
+    const titles = new Map<string, IndexedSessionTitle>();
+    if (!lines) {
+        return titles;
+    }
+
+    for (const line of lines) {
+        const parsed = parseSessionIndexLine(line);
+        if (!parsed) {
+            continue;
+        }
+        const existing = titles.get(parsed.id);
+        if (!existing || existing.updatedAt <= parsed.updatedAt) {
+            titles.set(parsed.id, {
+                title: parsed.title,
+                updatedAt: parsed.updatedAt
+            });
+        }
+    }
+    return titles;
+}
+
+async function loadBunSqliteDatabase(): Promise<SqliteDatabaseConstructor | null> {
+    try {
+        const dynamicImport = new Function('specifier', 'return import(specifier)') as (specifier: string) => Promise<{ Database: SqliteDatabaseConstructor }>;
+        return (await dynamicImport('bun:sqlite')).Database;
+    } catch {
+        return null;
+    }
+}
+
+async function readCodexThreadTitles(): Promise<Map<string, IndexedSessionTitle>> {
+    const titles = new Map<string, IndexedSessionTitle>();
+    const Database = await loadBunSqliteDatabase();
+    if (!Database) {
+        return titles;
+    }
+
+    let db: InstanceType<SqliteDatabaseConstructor> | null = null;
+    try {
+        db = new Database(join(readCodexHome(), 'state_5.sqlite'), { readonly: true });
+        const rows = db.query(`
+            SELECT id, title, updated_at, updated_at_ms
+            FROM threads
+            WHERE title IS NOT NULL AND title != ''
+        `).all() as Array<{ id: unknown; title: unknown; updated_at: unknown; updated_at_ms: unknown }>;
+
+        for (const row of rows) {
+            const id = asNonEmptyString(row.id);
+            const title = asNonEmptyString(row.title);
+            if (!id || !title) {
+                continue;
+            }
+            titles.set(id, {
+                title: formatCodexSessionTitle(title) ?? title,
+                updatedAt: parseIndexUpdatedAt(row.updated_at_ms ?? row.updated_at)
+            });
+        }
+    } catch {
+        return titles;
+    } finally {
+        db?.close(false);
+    }
+    return titles;
+}
+
+async function parseSessionFile(filePath: string): Promise<RawSession | null> {
+    let stat: Stats;
+    let lines: string[] | null;
+    try {
+        [stat, lines] = await Promise.all([
+            fs.stat(filePath),
+            readJsonlLines(filePath)
+        ]);
+    } catch {
+        return null;
+    }
+    if (!lines) {
+        return null;
+    }
+
     let id: string | null = null;
     let title: string | null = null;
+    let titleSource: TitleSource = 'fallback';
     let path: string | null = null;
     let model: string | null = null;
 
-    for (const line of lines) {
+    for (const line of lines.slice(0, 400)) {
         const parsed = parseSessionLine(line);
         if (!parsed) {
             continue;
@@ -153,8 +318,9 @@ async function parseSessionFile(filePath: string): Promise<RawSession | null> {
         if (!id && parsed.id) {
             id = parsed.id;
         }
-        if (!title && parsed.title) {
+        if (parsed.title && (!title || titleSourcePriority(parsed.titleSource) > titleSourcePriority(titleSource))) {
             title = parsed.title;
+            titleSource = parsed.titleSource ?? titleSource;
         }
         if (!path && parsed.path) {
             path = parsed.path;
@@ -173,10 +339,57 @@ async function parseSessionFile(filePath: string): Promise<RawSession | null> {
     return {
         id: resolvedId,
         title: title ?? resolvedId,
+        titleSource: title ? titleSource : 'fallback',
         updatedAt: Math.max(0, Math.floor(stat.mtimeMs)),
         path,
         model
     };
+}
+
+export async function findCodexSessionFile(sessionId: string): Promise<string | null> {
+    if (!sessionId.trim()) {
+        return null;
+    }
+
+    const sessionsDir = join(readCodexHome(), 'sessions');
+    const files = await walkJsonlFiles(sessionsDir, 5000);
+    for (const filePath of files) {
+        const lines = await readJsonlLines(filePath);
+        if (!lines) {
+            continue;
+        }
+        for (const line of lines.slice(0, 400)) {
+            const parsed = parseSessionLine(line);
+            if (parsed?.id === sessionId) {
+                return filePath;
+            }
+        }
+    }
+    return null;
+}
+
+export async function findCodexSessionTitle(sessionId: string): Promise<string | null> {
+    if (!sessionId.trim()) {
+        return null;
+    }
+
+    const indexedTitle = (await readCodexSessionIndex()).get(sessionId)?.title;
+    if (indexedTitle) {
+        return indexedTitle;
+    }
+
+    const sessionFile = await findCodexSessionFile(sessionId);
+    const parsedSession = sessionFile ? await parseSessionFile(sessionFile) : null;
+    if (parsedSession?.titleSource === 'generated') {
+        return parsedSession.title;
+    }
+
+    const threadTitle = (await readCodexThreadTitles()).get(sessionId)?.title;
+    if (threadTitle) {
+        return threadTitle;
+    }
+
+    return parsedSession?.title ?? null;
 }
 
 export async function listCodexSessions(request: ListCodexSessionsRequest = {}): Promise<{ sessions: CodexSessionSummary[]; nextCursor: string | null }> {
@@ -192,7 +405,11 @@ export async function listCodexSessions(request: ListCodexSessionsRequest = {}):
         : 0;
 
     const sessionsDir = join(readCodexHome(), 'sessions');
-    const files = await walkJsonlFiles(sessionsDir, 5000);
+    const [files, indexedTitles, threadTitles] = await Promise.all([
+        walkJsonlFiles(sessionsDir, 5000),
+        readCodexSessionIndex(),
+        readCodexThreadTitles()
+    ]);
     const raw = (await Promise.all(files.map((filePath) => parseSessionFile(filePath))))
         .filter((entry): entry is RawSession => entry !== null);
 
@@ -209,7 +426,10 @@ export async function listCodexSessions(request: ListCodexSessionsRequest = {}):
         .sort((a, b) => b.updatedAt - a.updatedAt)
         .map((entry) => ({
             id: entry.id,
-            title: entry.title,
+            title: indexedTitles.get(entry.id)?.title
+                ?? (entry.titleSource === 'generated' ? entry.title : undefined)
+                ?? threadTitles.get(entry.id)?.title
+                ?? entry.title,
             updatedAt: entry.updatedAt,
             path: entry.path,
             model: entry.model,

@@ -19,6 +19,7 @@ import type { ReasoningEffort } from './appServerTypes';
 import { parseCodexSpecialCommand } from './codexSpecialCommands';
 import { listSlashCommands } from '@/modules/common/slashCommands';
 import { resolveCodexSlashCommand } from './utils/slashCommands';
+import { importCodexSessionHistory } from './importHistory';
 
 export { emitReadyIfIdle } from './utils/emitReadyIfIdle';
 
@@ -29,6 +30,7 @@ export async function runCodex(opts: {
     codexArgs?: string[];
     permissionMode?: PermissionMode;
     resumeSessionId?: string;
+    importHistory?: boolean;
     model?: string;
     modelReasoningEffort?: ReasoningEffort;
     serviceTier?: string;
@@ -100,6 +102,31 @@ export async function runCodex(opts: {
     lifecycle.registerProcessHandlers();
     registerKillSessionHandler(session.rpcHandlerManager, lifecycle.cleanupAndExit);
     registerLocalHandoffHandler(session.rpcHandlerManager, lifecycle);
+
+    if (opts.importHistory && opts.resumeSessionId) {
+        try {
+            const importedHistory = await importCodexSessionHistory({
+                session,
+                codexSessionId: opts.resumeSessionId
+            });
+            if (!opts.model && importedHistory.model) {
+                currentModel = importedHistory.model;
+            }
+            if (
+                !opts.modelReasoningEffort
+                && importedHistory.modelReasoningEffort
+                && REASONING_EFFORTS.has(importedHistory.modelReasoningEffort as ReasoningEffort)
+            ) {
+                currentModelReasoningEffort = importedHistory.modelReasoningEffort as ReasoningEffort;
+            }
+        } catch (error) {
+            logger.debug('[codex] Failed to import Codex session history:', error);
+            session.sendAgentMessage({
+                type: 'message',
+                message: `Failed to import Codex session history: ${error instanceof Error ? error.message : String(error)}`
+            });
+        }
+    }
 
     const applyCurrentConfigToSession = (options?: { syncModel?: boolean }) => {
         const sessionInstance = sessionWrapperRef.current;
@@ -412,6 +439,7 @@ export async function runCodex(opts: {
             collaborationMode: currentCollaborationMode,
             resumeSessionId: opts.resumeSessionId,
             replayTranscriptHistoryOnStart,
+            importHistory: opts.importHistory,
             onModeChange: createModeChangeHandler(session),
             onSessionReady: (instance) => {
                 sessionWrapperRef.current = instance;

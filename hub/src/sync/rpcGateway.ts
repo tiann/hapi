@@ -133,6 +133,7 @@ export class RpcGateway {
         sessionType?: 'simple' | 'worktree',
         worktreeName?: string,
         resumeSessionId?: string,
+        importHistory?: boolean,
         effort?: string,
         permissionMode?: PermissionMode,
         serviceTier?: string
@@ -141,7 +142,7 @@ export class RpcGateway {
             const result = await this.machineRpc(
                 machineId,
                 RPC_METHODS.SpawnHappySession,
-                { type: 'spawn-in-directory', directory, agent, model, modelReasoningEffort, yolo, sessionType, worktreeName, resumeSessionId, effort, permissionMode, serviceTier }
+                { type: 'spawn-in-directory', directory, agent, model, modelReasoningEffort, yolo, sessionType, worktreeName, resumeSessionId, importHistory, effort, permissionMode, serviceTier }
             )
             if (result && typeof result === 'object') {
                 const obj = result as Record<string, unknown>

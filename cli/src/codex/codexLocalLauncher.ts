@@ -85,6 +85,7 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
             transcriptPath,
             // 中文注释：导入模式下允许 scanner 首次回放 transcript 全量内容，补齐 Codex 客户端里已有但 Hapi 还未看到的消息。
             replayExistingHistory: session.replayTranscriptHistoryOnStart,
+            replayExistingEvents: session.importHistory,
             onSessionId: (sessionId) => {
                 if (!isPrimarySessionId(sessionId)) {
                     logger.debug(`[codex-local]: Ignoring transcript session id ${sessionId}; primary is ${primarySessionId}`);

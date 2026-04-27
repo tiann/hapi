@@ -589,7 +589,8 @@ export function NewSession(props: {
                 yolo: yoloMode,
                 sessionType,
                 worktreeName: sessionType === 'worktree' ? (worktreeName.trim() || undefined) : undefined,
-                resumeSessionId: agent === 'codex' && selectedCodexSessionId ? selectedCodexSessionId : undefined
+                resumeSessionId: agent === 'codex' && selectedCodexSessionId ? selectedCodexSessionId : undefined,
+                importHistory: agent === 'codex' && Boolean(selectedCodexSessionId)
             })
 
             if (result.type === 'success') {
