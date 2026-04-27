@@ -49,7 +49,7 @@ export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Ho
             parsed.data.yolo,
             parsed.data.sessionType,
             parsed.data.worktreeName,
-            undefined,
+            parsed.data.resumeSessionId,
             parsed.data.effort,
             parsed.data.permissionMode
         )
