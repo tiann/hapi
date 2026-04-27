@@ -16,6 +16,7 @@ import { isRequestUserInputToolName } from '@/components/ToolCard/requestUserInp
 import { getToolPresentation } from '@/components/ToolCard/knownTools'
 import { getToolFullViewComponent, getToolViewComponent } from '@/components/ToolCard/views/_all'
 import { getToolResultViewComponent } from '@/components/ToolCard/views/_results'
+import { formatTaskChildLabel, TaskStateIcon } from '@/components/ToolCard/helpers'
 import { usePointerFocusRing } from '@/hooks/usePointerFocusRing'
 import { getInputString, getInputStringAny, truncate } from '@/lib/toolInputUtils'
 import { cn } from '@/lib/utils'
@@ -42,36 +43,6 @@ function ElapsedView(props: { from: number; active: boolean }) {
             {elapsed.toFixed(1)}s
         </span>
     )
-}
-
-function formatTaskChildLabel(child: ToolCallBlock, metadata: SessionMetadataSummary | null): string {
-    const presentation = getToolPresentation({
-        toolName: child.tool.name,
-        input: child.tool.input,
-        result: child.tool.result,
-        childrenCount: child.children.length,
-        description: child.tool.description,
-        metadata
-    })
-
-    if (presentation.subtitle) {
-        return truncate(`${presentation.title}: ${presentation.subtitle}`, 140)
-    }
-
-    return presentation.title
-}
-
-function TaskStateIcon(props: { state: ToolCallBlock['tool']['state'] }) {
-    if (props.state === 'completed') {
-        return <span className="text-emerald-600">✓</span>
-    }
-    if (props.state === 'error') {
-        return <span className="text-red-600">✕</span>
-    }
-    if (props.state === 'pending') {
-        return <span className="text-amber-600">🔐</span>
-    }
-    return <span className="text-amber-600 animate-pulse">●</span>
 }
 
 function getTaskSummaryChildren(block: ToolCallBlock): { visible: ToolCallBlock[]; remaining: number } | null {
