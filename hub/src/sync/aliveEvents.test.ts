@@ -109,7 +109,8 @@ describe('alive incremental events', () => {
             expect(emittedSocketUpdates.length).toBeGreaterThan(0)
 
             const update = events.find(
-                (event) => event.type === 'session-updated' && 'thinking' in (event.data ?? {})
+                (event): event is Extract<SyncEvent, { type: 'session-updated' }> =>
+                    event.type === 'session-updated' && (event.data as { thinking?: boolean }).thinking === true
             )
             expect(update).toBeDefined()
             if (!update || update.type !== 'session-updated') {
