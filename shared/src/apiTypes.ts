@@ -579,6 +579,7 @@ export const SpawnSessionRequestSchema = z.object({
     permissionMode: PermissionModeSchema.optional(),
     sessionType: z.enum(['simple', 'worktree']).optional(),
     worktreeName: z.string().optional(),
+    resumeSessionId: z.string().optional(),
     serviceTier: z.enum(['fast', 'standard']).optional(),
     collaborationMode: CodexCollaborationModeSchema.optional(),
     copilotAgentMode: CopilotAgentModeSchema.optional(),
