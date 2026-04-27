@@ -591,9 +591,16 @@ export function convertCodexEvent(rawEvent: unknown): CodexEventProjection | nul
         }
 
         if (eventType === 'token_count') {
-            const info = asRecord(payloadRecord.info);
+            const rawInfo = asRecord(payloadRecord.info);
+            const info = rawInfo ? { ...rawInfo } : null;
             if (!info) {
                 return null;
+            }
+            if (info.rate_limits === undefined && info.rateLimits === undefined) {
+                const rateLimits = payloadRecord.rate_limits ?? payloadRecord.rateLimits;
+                if (rateLimits !== undefined) {
+                    info.rate_limits = rateLimits;
+                }
             }
             return {
                 messages: [{
