@@ -186,6 +186,9 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
                     session.notifyUserActivity();
                 }
                 for (const message of converted?.messages ?? []) {
+                    if (message.type === 'token_count') {
+                        session.recordCodexUsage(message);
+                    }
                     if (message.type === 'proposed_plan') {
                         // Codex may complete the Plan item before emitting its final text preface.
                         pendingPlansByTurnId.set(message.turnId, message);

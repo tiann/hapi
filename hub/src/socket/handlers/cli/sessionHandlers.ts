@@ -1,7 +1,7 @@
 import type { ClientToServerEvents } from '@hapi/protocol'
 import { z } from 'zod'
 import { randomUUID } from 'node:crypto'
-import type { CodexCollaborationMode, PermissionMode } from '@hapi/protocol/types'
+import type { CodexCollaborationMode, Metadata, PermissionMode } from '@hapi/protocol/types'
 import { isRedundantGoalStatusEventContent } from '@hapi/protocol/messages'
 import type { Store, StoredSession } from '../../../store'
 import type { SyncEvent } from '../../../sync/syncEngine'
@@ -220,7 +220,14 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
                 }
             }
             socket.to(`session:${sid}`).emit('update', update)
-            onWebappEvent?.({ type: 'session-updated', sessionId: sid })
+            onWebappEvent?.({
+                type: 'session-updated',
+                sessionId: sid,
+                data: {
+                    metadata: result.value as Metadata | null,
+                    metadataVersion: result.version
+                }
+            })
         }
     }
 

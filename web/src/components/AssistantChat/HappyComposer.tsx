@@ -13,6 +13,7 @@ import {
     useState
 } from 'react'
 import type { AgentState, CodexCollaborationMode, PermissionMode, PiModelSummary, ThreadGoal } from '@/types/api'
+import type { CodexUsage } from '@hapi/protocol/types'
 import type { Suggestion } from '@/hooks/useActiveSuggestions'
 import type { ConversationStatus } from '@/realtime/types'
 import { useActiveWord } from '@/hooks/useActiveWord'
@@ -150,6 +151,7 @@ export function HappyComposer(props: {
     contextSize?: number
     contextCacheRead?: number
     contextWindow?: number | null
+    codexUsage?: CodexUsage | null
     controlledByUser?: boolean
     agentFlavor?: string | null
     availableModelOptions?: Array<{ value: string | null; label: string }>
@@ -221,6 +223,7 @@ export function HappyComposer(props: {
         contextSize,
         contextCacheRead,
         contextWindow,
+        codexUsage,
         controlledByUser = false,
         agentFlavor,
         availableModelOptions,
@@ -1380,6 +1383,7 @@ export function HappyComposer(props: {
                             scratchlistMode={props.scratchlistMode}
                             scratchlistCount={props.scratchlistCount}
                             onScratchlistToggle={props.onScratchlistToggle}
+                            codexUsage={agentFlavor === 'codex' ? codexUsage : undefined}
                         />
                     </div>
                 </ComposerPrimitive.Root>
