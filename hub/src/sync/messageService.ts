@@ -27,7 +27,8 @@ export class MessageService {
             seq: message.seq,
             localId: message.localId,
             content: message.content,
-            createdAt: message.createdAt
+            createdAt: message.createdAt,
+            invokedAt: message.invokedAt
         }))
 
         let oldestSeq: number | null = null
@@ -60,7 +61,8 @@ export class MessageService {
             seq: message.seq,
             localId: message.localId,
             content: message.content,
-            createdAt: message.createdAt
+            createdAt: message.createdAt,
+            invokedAt: message.invokedAt
         }))
     }
 

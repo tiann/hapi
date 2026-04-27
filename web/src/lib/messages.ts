@@ -26,8 +26,12 @@ function compareMessages(a: DecryptedMessage, b: DecryptedMessage): number {
         return aSeq - bSeq
     }
 
-    if (a.createdAt !== b.createdAt) {
-        return a.createdAt - b.createdAt
+    // Use invokedAt as position anchor for invoked user messages; fall back to createdAt.
+    const aTime = a.invokedAt ?? a.createdAt
+    const bTime = b.invokedAt ?? b.createdAt
+
+    if (aTime !== bTime) {
+        return aTime - bTime
     }
     return a.id.localeCompare(b.id)
 }
@@ -67,8 +71,8 @@ export function mergeMessages(existing: DecryptedMessage[], incoming: DecryptedM
                 if (msg.status) {
                     optimisticStatusByLocalId.set(msg.localId, msg.status)
                 }
-                if ('invokedAt' in msg) {
-                    optimisticInvokedAtByLocalId.set(msg.localId, (msg as any).invokedAt)
+                if (msg.invokedAt !== undefined) {
+                    optimisticInvokedAtByLocalId.set(msg.localId, msg.invokedAt)
                 }
             }
         }
@@ -85,8 +89,11 @@ export function mergeMessages(existing: DecryptedMessage[], incoming: DecryptedM
                 if (optimisticStatusByLocalId.has(msg.localId) && !msg.status) {
                     update.status = optimisticStatusByLocalId.get(msg.localId)
                 }
-                if (optimisticInvokedAtByLocalId.has(msg.localId) && !('invokedAt' in msg)) {
-                    ;(update as any).invokedAt = optimisticInvokedAtByLocalId.get(msg.localId)
+                if (optimisticInvokedAtByLocalId.has(msg.localId) && msg.invokedAt == null) {
+                    const optimisticInvokedAt = optimisticInvokedAtByLocalId.get(msg.localId)
+                    if (optimisticInvokedAt != null) {
+                        update.invokedAt = optimisticInvokedAt
+                    }
                 }
                 if (Object.keys(update).length > 0) {
                     return { ...msg, ...update }

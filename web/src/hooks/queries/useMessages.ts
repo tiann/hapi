@@ -12,7 +12,7 @@ import {
     type MessageWindowState,
 } from '@/lib/message-window-store'
 
-const EMPTY_STATE: MessageWindowState = {
+export const EMPTY_STATE: MessageWindowState = {
     sessionId: 'unknown',
     messages: [],
     pending: [],
