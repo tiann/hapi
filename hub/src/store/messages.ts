@@ -51,11 +51,16 @@ export function addMessage(
     const id = randomUUID()
     const json = JSON.stringify(content)
 
+    // Messages without a localId have no ack path (markMessagesInvoked matches by localId).
+    // Treat them as already-invoked at insert time so they land in the thread normally instead
+    // of being stuck in the queued floating bar forever.
+    const invokedAt = localId ? null : now
+
     db.prepare(`
         INSERT INTO messages (
             id, session_id, content, created_at, seq, local_id, invoked_at
         ) VALUES (
-            @id, @session_id, @content, @created_at, @seq, @local_id, NULL
+            @id, @session_id, @content, @created_at, @seq, @local_id, @invoked_at
         )
     `).run({
         id,
@@ -63,7 +68,8 @@ export function addMessage(
         content: json,
         created_at: now,
         seq: msgSeq,
-        local_id: localId ?? null
+        local_id: localId ?? null,
+        invoked_at: invokedAt
     })
 
     const row = db.prepare('SELECT * FROM messages WHERE id = ?').get(id) as DbMessageRow | undefined

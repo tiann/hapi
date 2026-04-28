@@ -552,13 +552,23 @@ export function markMessagesConsumed(sessionId: string, localIds: string[], invo
                 if (!message.localId || !idSet.has(message.localId)) {
                     return message
                 }
-                // Only update if not already in a terminal state
-                if (message.status === 'sent' || message.status === 'failed') {
+                if (message.status === 'failed') {
+                    return message
+                }
+                // Apply the ack even if the message is already 'sent' (optimistic) — otherwise
+                // a message that flipped to 'sent' before the consume event arrives would
+                // never receive `invokedAt` and keep sorting by send time.
+                const needsStatus = message.status !== 'sent'
+                const needsInvokedAt = invokedAt != null && message.invokedAt !== invokedAt
+                if (!needsStatus && !needsInvokedAt) {
                     return message
                 }
                 changed = true
-                const update: Partial<DecryptedMessage> = { status: 'sent' as MessageStatus }
-                if (invokedAt != null) {
+                const update: Partial<DecryptedMessage> = {}
+                if (needsStatus) {
+                    update.status = 'sent' as MessageStatus
+                }
+                if (needsInvokedAt) {
                     update.invokedAt = invokedAt
                 }
                 return { ...message, ...update }

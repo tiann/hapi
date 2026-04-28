@@ -182,11 +182,18 @@ describe('Store V7→V8 migration: invoked_at column', () => {
         expect(msgs[0].invokedAt).toBe(ts2)
     })
 
-    it('addMessage sets invoked_at to NULL by default', () => {
+    it('addMessage with localId leaves invoked_at NULL (ack path is messages-consumed)', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('test', { path: '/tmp' }, null, 'default')
+        const msg = store.messages.addMessage(session.id, 'content', 'local-1')
+        expect(msg.invokedAt).toBeNull()
+    })
+
+    it('addMessage without localId sets invoked_at = created_at (no ack path)', () => {
         const store = new Store(':memory:')
         const session = store.sessions.getOrCreateSession('test', { path: '/tmp' }, null, 'default')
         const msg = store.messages.addMessage(session.id, 'content')
-        expect(msg.invokedAt).toBeNull()
+        expect(msg.invokedAt).toBe(msg.createdAt)
     })
 })
 
