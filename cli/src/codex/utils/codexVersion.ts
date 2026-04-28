@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process'
+import spawn from 'cross-spawn'
 import { withBunRuntimeEnv } from '@/utils/bunRuntime'
 
 export const MIN_CODEX_HOOKS_VERSION = '0.124.0'
@@ -54,29 +54,38 @@ export function isCodexVersionAtLeast(version: string, minimum: string): boolean
 export function assertCodexLocalSupported(): void {
     let output: string
 
-    try {
-        output = execFileSync('codex', ['--version'], {
-            encoding: 'utf8',
-            env: withBunRuntimeEnv(),
-            shell: process.platform === 'win32'
-        }).trim()
-    } catch (error) {
-        const maybeError = error as NodeJS.ErrnoException
+    const result = spawn.sync('codex', ['--version'], {
+        encoding: 'utf8',
+        env: withBunRuntimeEnv()
+    })
+
+    if (result.error) {
+        const maybeError = result.error as NodeJS.ErrnoException
         const message = maybeError?.message ? ` ${maybeError.message}` : ''
 
         if (maybeError?.code === 'ENOENT') {
             throw new Error(
                 `${getLocalModeRequirementMessage()} Codex was not found on PATH. Please install or upgrade Codex and retry.`,
-                { cause: error }
+                { cause: result.error }
             )
         }
 
         throw new Error(
             `Could not determine Codex CLI version.${message} ` +
             `${getLocalModeRequirementMessage()} Please upgrade Codex and retry.`,
-            { cause: error }
+            { cause: result.error }
         )
     }
+
+    if (result.status !== 0) {
+        const detail = result.stderr ? ` ${result.stderr.trim()}` : ''
+        throw new Error(
+            `Could not determine Codex CLI version.${detail} ` +
+            `${getLocalModeRequirementMessage()} Please upgrade Codex and retry.`
+        )
+    }
+
+    output = result.stdout.trim()
 
     const version = parseCodexVersion(output)
     if (!version) {

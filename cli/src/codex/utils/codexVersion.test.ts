@@ -1,11 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { execFileSyncMock } = vi.hoisted(() => ({
-    execFileSyncMock: vi.fn()
+const { spawnSyncMock } = vi.hoisted(() => ({
+    spawnSyncMock: vi.fn()
 }))
 
-vi.mock('node:child_process', () => ({
-    execFileSync: execFileSyncMock
+vi.mock('cross-spawn', () => ({
+    default: {
+        sync: spawnSyncMock
+    }
 }))
 
 import {
@@ -17,7 +19,7 @@ import {
 
 describe('codexVersion', () => {
     beforeEach(() => {
-        execFileSyncMock.mockReset()
+        spawnSyncMock.mockReset()
     })
 
     describe('parseCodexVersion', () => {
@@ -47,16 +49,24 @@ describe('codexVersion', () => {
 
     describe('assertCodexLocalSupported', () => {
         it('passes when codex is new enough', () => {
-            execFileSyncMock.mockReturnValueOnce('codex-cli 0.124.0\n')
+            spawnSyncMock.mockReturnValueOnce({
+                status: 0,
+                stdout: 'codex-cli 0.124.0\n',
+                stderr: ''
+            })
 
             expect(() => assertCodexLocalSupported()).not.toThrow()
-            expect(execFileSyncMock).toHaveBeenCalledWith('codex', ['--version'], expect.objectContaining({
+            expect(spawnSyncMock).toHaveBeenCalledWith('codex', ['--version'], expect.objectContaining({
                 encoding: 'utf8'
             }))
         })
 
         it('fails when codex is too old', () => {
-            execFileSyncMock.mockReturnValueOnce('codex-cli 0.123.9\n')
+            spawnSyncMock.mockReturnValueOnce({
+                status: 0,
+                stdout: 'codex-cli 0.123.9\n',
+                stderr: ''
+            })
 
             expect(() => assertCodexLocalSupported()).toThrow(
                 'Codex CLI 0.124.0+ is required for hapi codex local mode because HAPI depends on stable hooks. Detected: 0.123.9. Please upgrade Codex and retry.'
@@ -64,7 +74,11 @@ describe('codexVersion', () => {
         })
 
         it('fails when the version output cannot be parsed', () => {
-            execFileSyncMock.mockReturnValueOnce('codex-cli version unknown\n')
+            spawnSyncMock.mockReturnValueOnce({
+                status: 0,
+                stdout: 'codex-cli version unknown\n',
+                stderr: ''
+            })
 
             expect(() => assertCodexLocalSupported()).toThrow(
                 'Could not determine Codex CLI version. Codex CLI 0.124.0+ is required for hapi codex local mode because HAPI depends on stable hooks. Please upgrade Codex and retry.'
@@ -74,12 +88,27 @@ describe('codexVersion', () => {
         it('fails when codex is not available on PATH', () => {
             const error = new Error('spawnSync codex ENOENT') as NodeJS.ErrnoException
             error.code = 'ENOENT'
-            execFileSyncMock.mockImplementationOnce(() => {
-                throw error
+            spawnSyncMock.mockReturnValueOnce({
+                status: null,
+                stdout: '',
+                stderr: '',
+                error
             })
 
             expect(() => assertCodexLocalSupported()).toThrow(
                 'Codex CLI 0.124.0+ is required for hapi codex local mode because HAPI depends on stable hooks. Codex was not found on PATH. Please install or upgrade Codex and retry.'
+            )
+        })
+
+        it('fails when codex version exits unsuccessfully', () => {
+            spawnSyncMock.mockReturnValueOnce({
+                status: 1,
+                stdout: '',
+                stderr: 'codex failed'
+            })
+
+            expect(() => assertCodexLocalSupported()).toThrow(
+                'Could not determine Codex CLI version. codex failed Codex CLI 0.124.0+ is required for hapi codex local mode because HAPI depends on stable hooks. Please upgrade Codex and retry.'
             )
         })
     })

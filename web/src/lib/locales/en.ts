@@ -41,6 +41,10 @@ export default {
   // Sessions page
   'sessions.count': '{n} sessions in {m} projects',
   'sessions.new': 'New Session',
+  'sessions.empty.title': 'No sessions yet',
+  'sessions.empty.hint': 'Start a coding session in any folder under your workspace, or browse the tree first.',
+  'sessions.empty.startSession': 'Start a session',
+  'sessions.empty.browse': 'Browse workspace',
 
   // Session list
   'session.item.path': 'path',
@@ -57,6 +61,12 @@ export default {
   // Session header
   'session.title': 'Files',
   'session.more': 'More actions',
+  'session.outline.open': 'Conversation outline',
+  'session.outline.close': 'Close outline',
+  'session.outline.title': 'Outline',
+  'session.outline.loadOlder': 'Load earlier',
+  'session.outline.empty': 'No outline items in loaded messages',
+  'session.outline.kind.user': 'User',
 
   // Session actions
   'session.action.rename': 'Rename',
@@ -94,6 +104,7 @@ export default {
   'newSession.machine': 'Machine',
   'newSession.directory': 'Directory',
   'newSession.placeholder': '/path/to/project',
+  'newSession.browse': 'Browse',
   'newSession.recent': 'Recent paths',
   'newSession.type': 'Session type',
   'newSession.type.simple': 'Simple',
@@ -177,6 +188,8 @@ export default {
   'tool.exitPlan': 'Exit Plan Mode',
   'tool.patch': 'Patch',
   'tool.input': 'Input',
+  'tool.trace': 'Trace',
+  'tool.trace.callsSuffix': 'calls',
   'tool.result': 'Result',
   'tool.questionsAnswers': 'Questions & Answers',
   'tool.submit': 'Submit',
@@ -275,6 +288,18 @@ export default {
   'settings.about.website': 'Website',
   'settings.about.appVersion': 'App Version',
   'settings.about.protocolVersion': 'Protocol Version',
+
+  // Browse / Workspace
+  'browse.title': 'Browse',
+  'browse.goUp': 'Go up',
+  'browse.empty': 'No subdirectories found',
+  'browse.refresh': 'Refresh',
+  'browse.startSession': 'Start Session',
+  'browse.nav': 'Browse',
+  'browse.noRootTitle': 'Workspace browsing is off',
+  'browse.noRootHint': 'Browsing is opt-in. Restart the runner with a workspace root to enable file-tree navigation and scoped session spawning.',
+  'browse.noRootFooter': 'You can still create sessions from the “New Session” page.',
+  'browse.noMachinesConnected': 'No CLI connected. Run `hapi runner start --workspace-root /path` on a machine to get started.',
 
   // Misc
   'misc.noMachines': 'No machines available',

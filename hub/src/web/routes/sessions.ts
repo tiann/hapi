@@ -10,6 +10,10 @@ const permissionModeSchema = z.object({
     mode: PermissionModeSchema
 })
 
+const resumeBodySchema = z.object({
+    permissionMode: PermissionModeSchema.optional()
+})
+
 const collaborationModeSchema = z.object({
     mode: CodexCollaborationModeSchema
 })
@@ -106,8 +110,26 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return sessionResult
         }
 
+        const body = await c.req.json().catch(() => null)
+        const parsed = body ? resumeBodySchema.safeParse(body) : { success: true as const, data: {} }
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid body' }, 400)
+        }
+
+        const { permissionMode } = parsed.data
+        if (permissionMode !== undefined) {
+            const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
+            if (!isPermissionModeAllowedForFlavor(permissionMode, flavor)) {
+                return c.json({ error: 'Invalid permission mode for session flavor' }, 400)
+            }
+        }
+
         const namespace = c.get('namespace')
-        const result = await engine.resumeSession(sessionResult.sessionId, namespace)
+        const result = await engine.resumeSession(
+            sessionResult.sessionId,
+            namespace,
+            permissionMode !== undefined ? { permissionMode } : undefined
+        )
         if (result.type === 'error') {
             const status = result.code === 'no_machine_online' ? 503
                 : result.code === 'access_denied' ? 403
@@ -236,7 +258,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return engine
         }
 
-        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        const sessionResult = requireSessionFromParam(c, engine)
         if (sessionResult instanceof Response) {
             return sessionResult
         }

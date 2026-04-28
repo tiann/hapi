@@ -95,7 +95,6 @@ export async function codexLocal(opts: {
         spawnName: 'codex',
         installHint: 'Codex CLI',
         includeCause: true,
-        logExit: true,
-        shell: process.platform === 'win32'
+        logExit: true
     });
 }

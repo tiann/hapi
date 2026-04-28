@@ -4,15 +4,17 @@ import { EventEmitter } from 'node:events';
 // Create a fake child process emitter for each test
 let childEmitter: EventEmitter & { exitCode: number | null; killed: boolean; pid: number };
 
-vi.mock('node:child_process', () => ({
-    spawn: vi.fn(() => {
-        childEmitter = Object.assign(new EventEmitter(), {
-            exitCode: null,
-            killed: false,
-            pid: 12345,
-        });
-        return childEmitter;
-    }),
+const spawnMock = vi.hoisted(() => vi.fn(() => {
+    childEmitter = Object.assign(new EventEmitter(), {
+        exitCode: null,
+        killed: false,
+        pid: 12345,
+    });
+    return childEmitter;
+}));
+
+vi.mock('cross-spawn', () => ({
+    default: spawnMock
 }));
 
 vi.mock('@/ui/logger', () => ({

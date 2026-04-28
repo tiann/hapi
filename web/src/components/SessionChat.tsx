@@ -15,6 +15,7 @@ import type { Suggestion } from '@/hooks/useActiveSuggestions'
 import { normalizeDecryptedMessage } from '@/chat/normalize'
 import { reduceChatBlocks } from '@/chat/reducer'
 import { reconcileChatBlocks } from '@/chat/reconcile'
+import { buildConversationOutline } from '@/chat/outline'
 import { HappyComposer } from '@/components/AssistantChat/HappyComposer'
 import { HappyThread } from '@/components/AssistantChat/HappyThread'
 import { useHappyRuntime } from '@/lib/assistant-runtime'
@@ -30,6 +31,19 @@ import { useCodexModels } from '@/hooks/queries/useCodexModels'
 import { useVoiceOptional } from '@/lib/voice-context'
 import { RealtimeVoiceSession, registerSessionStore, registerVoiceHooksStore, voiceHooks } from '@/realtime'
 import { isRemoteTerminalSupported } from '@/utils/terminalSupport'
+
+function getOutlineTitle(session: Session): string {
+    if (session.metadata?.name) {
+        return session.metadata.name
+    }
+    if (session.metadata?.summary?.text) {
+        return session.metadata.summary.text
+    }
+    if (session.metadata?.path) {
+        return session.metadata.path
+    }
+    return session.id.slice(0, 8)
+}
 
 export function SessionChat(props: {
     api: ApiClient
@@ -61,6 +75,7 @@ export function SessionChat(props: {
     const normalizedCacheRef = useRef<Map<string, { source: DecryptedMessage; normalized: NormalizedMessage | null }>>(new Map())
     const blocksByIdRef = useRef<Map<string, ChatBlock>>(new Map())
     const [forceScrollToken, setForceScrollToken] = useState(0)
+    const [outlineOpen, setOutlineOpen] = useState(false)
     const agentFlavor = props.session.metadata?.flavor ?? null
     const controlledByUser = props.session.agentState?.controlledByUser === true
     const codexCollaborationModeSupported = agentFlavor === 'codex' && !controlledByUser
@@ -194,6 +209,7 @@ export function SessionChat(props: {
     useEffect(() => {
         normalizedCacheRef.current.clear()
         blocksByIdRef.current.clear()
+        setOutlineOpen(false)
     }, [props.session.id])
 
     const normalizedMessages: NormalizedMessage[] = useMemo(() => {
@@ -238,6 +254,16 @@ export function SessionChat(props: {
     useEffect(() => {
         blocksByIdRef.current = reconciled.byId
     }, [reconciled.byId])
+
+    const outlineItems = useMemo(
+        () => buildConversationOutline(reconciled.blocks),
+        [reconciled.blocks]
+    )
+
+    const outlineTitle = useMemo(
+        () => getOutlineTitle(props.session),
+        [props.session]
+    )
 
     // Permission mode change handler
     const handlePermissionModeChange = useCallback(async (mode: PermissionMode) => {
@@ -367,6 +393,7 @@ export function SessionChat(props: {
                 session={props.session}
                 onBack={props.onBack}
                 onViewFiles={props.session.metadata?.path ? handleViewFiles : undefined}
+                onOpenOutline={() => setOutlineOpen(true)}
                 api={props.api}
                 onSessionDeleted={props.onBack}
             />
@@ -405,6 +432,10 @@ export function SessionChat(props: {
                         normalizedMessagesCount={normalizedMessages.length}
                         messagesVersion={props.messagesVersion}
                         forceScrollToken={forceScrollToken}
+                        outlineOpen={outlineOpen}
+                        outlineTitle={outlineTitle}
+                        outlineItems={outlineItems}
+                        onOutlineOpenChange={setOutlineOpen}
                     />
 
                     {codexCollaborationModeSupported && codexModelsState.error ? (

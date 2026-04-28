@@ -172,6 +172,14 @@ export class RpcGateway {
         }
     }
 
+    async listMachineDirectory(machineId: string, path: string): Promise<RpcListDirectoryResponse> {
+        const result = await this.machineRpc(machineId, 'list-directory', { path }) as RpcListDirectoryResponse | unknown
+        if (!result || typeof result !== 'object') {
+            return { success: false, error: 'Unexpected list-directory result' }
+        }
+        return result as RpcListDirectoryResponse
+    }
+
     async checkPathsExist(machineId: string, paths: string[]): Promise<Record<string, boolean>> {
         const result = await this.machineRpc(machineId, 'path-exists', { paths }) as RpcPathExistsResponse | unknown
         if (!result || typeof result !== 'object') {

@@ -12,6 +12,8 @@ import { BaseLocalLauncher } from '@/modules/common/launcher/BaseLocalLauncher';
 
 export async function codexLocalLauncher(session: CodexSession): Promise<'switch' | 'exit'> {
     const resumeSessionId = session.sessionId;
+    let primarySessionId = resumeSessionId;
+    let primaryTranscriptPath: string | null = null;
     let scanner: CodexSessionScanner | null = null;
     let hookReady = false;
     let shuttingDown = false;
@@ -31,20 +33,6 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
     const { server: happyServer, mcpServers } = await buildHapiMcpBridge(session.client);
     logger.debug(`[codex-local]: Started hapi MCP bridge server at ${happyServer.url}`);
 
-    const hookServer = await startHookServer({
-        onSessionHook: (sessionId, data) => {
-            if (shuttingDown) {
-                return;
-            }
-            session.onSessionFound(sessionId);
-            if (typeof data.transcript_path === 'string' && data.transcript_path.length > 0) {
-                hookReady = true;
-                session.onTranscriptPathFound(data.transcript_path);
-            }
-        }
-    });
-    logger.debug(`[codex-local]: Started Codex SessionStart hook server on port ${hookServer.port}`);
-
     const reportTranscriptSyncFailure = (transcriptPath: string, error: unknown): void => {
         const detail = error instanceof Error ? error.message : String(error);
         const message = `Codex transcript sync failed for ${transcriptPath}: ${detail}`;
@@ -55,13 +43,38 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
         });
     };
 
-    const handleSessionFound = (sessionId: string) => {
+    const handleSessionFound = (sessionId: string, allowSwitch = false): void => {
+        if (primarySessionId && primarySessionId !== sessionId && !allowSwitch) {
+            logger.debug(`[codex-local]: Ignoring non-primary Codex session id ${sessionId}; primary is ${primarySessionId}`);
+            return;
+        }
+        primarySessionId = sessionId;
         session.onSessionFound(sessionId);
+    };
+
+    const isPrimarySessionId = (sessionId: string): boolean => {
+        return primarySessionId === null || primarySessionId === sessionId;
+    };
+
+    const bindPrimarySession = (sessionId: string, transcriptPath: string, allowSwitch = false): void => {
+        if (primarySessionId && primarySessionId !== sessionId && !allowSwitch) {
+            logger.debug(`[codex-local]: Ignoring non-primary SessionStart hook ${sessionId}; primary is ${primarySessionId}`);
+            return;
+        }
+        primarySessionId = sessionId;
+        primaryTranscriptPath = transcriptPath;
+        session.onSessionFound(sessionId);
+        hookReady = true;
+        session.onTranscriptPathFound(transcriptPath);
     };
 
     const processTranscriptPath = async (transcriptPath: string): Promise<void> => {
         hookReady = true;
         if (shuttingDown) {
+            return;
+        }
+        if (primaryTranscriptPath && transcriptPath !== primaryTranscriptPath) {
+            logger.debug(`[codex-local]: Ignoring non-primary transcript path ${transcriptPath}; primary is ${primaryTranscriptPath}`);
             return;
         }
         if (scanner) {
@@ -71,11 +84,19 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
         const createdScanner = await createCodexSessionScanner({
             transcriptPath,
             onSessionId: (sessionId) => {
+                if (!isPrimarySessionId(sessionId)) {
+                    logger.debug(`[codex-local]: Ignoring transcript session id ${sessionId}; primary is ${primarySessionId}`);
+                    return;
+                }
                 session.onSessionFound(sessionId);
             },
             onEvent: (event) => {
                 const converted = convertCodexEvent(event);
                 if (converted?.sessionId) {
+                    if (!isPrimarySessionId(converted.sessionId)) {
+                        logger.debug(`[codex-local]: Ignoring converted session id ${converted.sessionId}; primary is ${primarySessionId}`);
+                        return;
+                    }
                     session.onSessionFound(converted.sessionId);
                 }
                 if (converted?.userMessage) {
@@ -107,6 +128,35 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
         });
         return pendingScannerSetup;
     };
+
+    const handleSessionHook = (sessionId: string, data: Record<string, unknown>): void => {
+        if (shuttingDown) {
+            return;
+        }
+
+        const transcriptPath = typeof data.transcript_path === 'string' && data.transcript_path.length > 0
+            ? data.transcript_path
+            : null;
+        const hookSource = typeof data.source === 'string' ? data.source : null;
+        const shouldAllowSessionSwitch = hookSource === 'clear';
+
+        if (!transcriptPath) {
+            handleSessionFound(sessionId, shouldAllowSessionSwitch);
+            return;
+        }
+
+        bindPrimarySession(sessionId, transcriptPath, shouldAllowSessionSwitch);
+    };
+
+    const hookServer = await startHookServer({
+        onSessionHook: (sessionId, data) => {
+            if (shuttingDown) {
+                return;
+            }
+            handleSessionHook(sessionId, data);
+        }
+    });
+    logger.debug(`[codex-local]: Started Codex SessionStart hook server on port ${hookServer.port}`);
 
     const launcher = new BaseLocalLauncher({
         label: 'codex-local',

@@ -22,6 +22,7 @@ import { startRunnerControlServer } from './controlServer';
 import { createWorktree, removeWorktree, type WorktreeInfo } from './worktree';
 import { join } from 'path';
 import { buildMachineMetadata } from '@/agent/sessionFactory';
+import { resolveWorkspaceRoot } from '@/utils/workspaceRoot';
 import { hashRunnerCliApiToken } from './runnerIdentity';
 
 const CLAUDE_BUILT_IN_MODEL_ALIASES = new Set(['opus', 'opus[1m]', 'sonnet', 'sonnet[1m]']);
@@ -34,7 +35,7 @@ export function shouldSetClaudeHaikuModelEnv(agent: string, model?: string): boo
   return Boolean(normalizedModel && !CLAUDE_BUILT_IN_MODEL_ALIASES.has(normalizedModel));
 }
 
-export async function startRunner(): Promise<void> {
+export async function startRunner(options: { workspaceRoot?: string } = {}): Promise<void> {
   // We don't have cleanup function at the time of server construction
   // Control flow is:
   // 1. Create promise that will resolve when shutdown is requested
@@ -701,11 +702,14 @@ export async function startRunner(): Promise<void> {
     // Create API client
     const api = await ApiClient.create();
 
+    const workspaceRoot = resolveWorkspaceRoot(options.workspaceRoot);
+    logger.debug(`[RUNNER RUN] Workspace root: ${workspaceRoot ?? '(not set)'}`);
+
     // Get or create machine (with retry for transient connection errors)
     const machine = await withRetry(
       () => api.getOrCreateMachine({
         machineId,
-        metadata: buildMachineMetadata(),
+        metadata: buildMachineMetadata({ workspaceRoot }),
         runnerState: initialRunnerState
       }),
       {
@@ -722,7 +726,7 @@ export async function startRunner(): Promise<void> {
     logger.debug(`[RUNNER RUN] Machine registered: ${machine.id}`);
 
     // Create realtime machine session
-    const apiMachine = api.machineSyncClient(machine);
+    const apiMachine = api.machineSyncClient(machine, { workspaceRoot });
 
     // Set RPC handlers
     apiMachine.setRPCHandlers({
@@ -733,6 +737,17 @@ export async function startRunner(): Promise<void> {
 
     // Connect to server
     apiMachine.connect();
+
+    // Visible startup banner. Use console.log so it always appears on stdout,
+    // regardless of the verbose/quiet logger setting.
+    console.log('');
+    console.log('Hapi runner started.');
+    console.log(`  Workspace root: ${workspaceRoot ?? '(not set — browse disabled; pass --workspace-root to enable)'}`);
+    console.log(`  Hub URL:        ${configuration.apiUrl}`);
+    console.log(`  Machine ID:     ${machine.id}`);
+    console.log(`  Control port:   ${controlPort}`);
+    console.log('Waiting for sessions. Press Ctrl+C to stop.');
+    console.log('');
 
     reportSpawnOutcomeToHub = (outcome) => {
       void apiMachine.updateRunnerState((state: RunnerState | null) => {

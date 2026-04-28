@@ -41,6 +41,10 @@ export default {
   // Sessions page
   'sessions.count': '{n} 个会话，{m} 个项目',
   'sessions.new': '新建会话',
+  'sessions.empty.title': '还没有会话',
+  'sessions.empty.hint': '在 workspace 下任意目录启动一个会话，或先浏览目录树看看。',
+  'sessions.empty.startSession': '启动会话',
+  'sessions.empty.browse': '浏览 workspace',
 
   // Session list
   'session.item.path': '路径',
@@ -57,6 +61,12 @@ export default {
   // Session header
   'session.title': '文件',
   'session.more': '更多操作',
+  'session.outline.open': '会话大纲',
+  'session.outline.close': '关闭大纲',
+  'session.outline.title': '大纲',
+  'session.outline.loadOlder': '加载更早',
+  'session.outline.empty': '已加载消息中暂无大纲项',
+  'session.outline.kind.user': '用户',
 
   // Session actions
   'session.action.rename': '重命名',
@@ -96,6 +106,7 @@ export default {
   'newSession.machine': '机器',
   'newSession.directory': '目录',
   'newSession.placeholder': '/path/to/project',
+  'newSession.browse': '浏览',
   'newSession.recent': '最近路径',
   'newSession.type': '会话类型',
   'newSession.type.simple': '简单',
@@ -179,6 +190,8 @@ export default {
   'tool.exitPlan': '退出计划模式',
   'tool.patch': '补丁',
   'tool.input': '输入',
+  'tool.trace': '追踪',
+  'tool.trace.callsSuffix': '次调用',
   'tool.result': '结果',
   'tool.questionsAnswers': '问答',
   'tool.submit': '提交',
@@ -277,6 +290,18 @@ export default {
   'settings.about.website': '官方网站',
   'settings.about.appVersion': '应用版本',
   'settings.about.protocolVersion': '协议版本',
+
+  // Browse / Workspace
+  'browse.title': '浏览',
+  'browse.goUp': '返回上层',
+  'browse.empty': '未找到子目录',
+  'browse.refresh': '刷新',
+  'browse.startSession': '启动会话',
+  'browse.nav': '浏览',
+  'browse.noRootTitle': '未启用 workspace 浏览',
+  'browse.noRootHint': '浏览功能是可选的。带 --workspace-root 参数重启 runner，即可启用文件树浏览和受限的会话启动。',
+  'browse.noRootFooter': '你仍然可以在「新建会话」页面直接创建会话。',
+  'browse.noMachinesConnected': '没有已连接的 CLI。在某台机器上运行 `hapi runner start --workspace-root /path` 来开始。',
 
   // Misc
   'misc.noMachines': '无可用机器',
