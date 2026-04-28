@@ -154,7 +154,7 @@ function RawJsonDevOnly(props: { value: unknown }) {
                 Raw JSON
             </summary>
             <div className="mt-2">
-                <CodeBlock code={safeStringify(props.value)} language="json" collapseLongContent />
+                <CodeBlock code={safeStringify(props.value)} language="json" />
             </div>
         </details>
     )
