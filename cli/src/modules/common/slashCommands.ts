@@ -1,5 +1,5 @@
-import { readdir, readFile } from 'fs/promises';
-import { join } from 'path';
+import { access, readdir, readFile } from 'fs/promises';
+import { dirname, join, resolve } from 'path';
 import { homedir } from 'os';
 import { parse as parseYaml } from 'yaml';
 
@@ -32,7 +32,18 @@ const BUILTIN_COMMANDS: Record<string, SlashCommand[]> = {
         { name: 'cost', description: 'Show session cost', source: 'builtin' },
         { name: 'plan', description: 'Toggle plan mode', source: 'builtin' },
     ],
-    codex: [],
+    codex: [
+        { name: 'help', description: 'Show supported HAPI Codex slash commands', source: 'builtin' },
+        { name: 'plan', description: 'Enable plan mode; use /plan off to return to default', source: 'builtin' },
+        { name: 'default', description: 'Return Codex collaboration mode to default', source: 'builtin' },
+        { name: 'execute', description: 'Return Codex collaboration mode to default', source: 'builtin' },
+        { name: 'status', description: 'Show current Codex session config', source: 'builtin' },
+        { name: 'model', description: 'Show or set Codex model, e.g. /model gpt-5.5', source: 'builtin' },
+        { name: 'reasoning', description: 'Show or set reasoning effort', source: 'builtin' },
+        { name: 'effort', description: 'Alias for /reasoning', source: 'builtin' },
+        { name: 'permissions', description: 'Show or set permission mode', source: 'builtin' },
+        { name: 'permission', description: 'Alias for /permissions', source: 'builtin' },
+    ],
     gemini: [
         { name: 'about', description: 'About Gemini', source: 'builtin' },
         { name: 'clear', description: 'Clear conversation', source: 'builtin' },
@@ -112,6 +123,43 @@ function getProjectCommandsDir(agent: string, projectDir: string): string | null
         default:
             // Gemini and other agents don't have project commands
             return null;
+    }
+}
+
+async function pathExists(path: string): Promise<boolean> {
+    try {
+        await access(path);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+async function listProjectCommandDirs(agent: string, projectDir?: string): Promise<string[]> {
+    if (!projectDir) {
+        return [];
+    }
+
+    const resolvedProjectDir = resolve(projectDir);
+    const directories = [resolvedProjectDir];
+    let currentDirectory = resolvedProjectDir;
+
+    while (true) {
+        if (await pathExists(join(currentDirectory, '.git'))) {
+            return [...directories]
+                .reverse()
+                .map((directory) => getProjectCommandsDir(agent, directory))
+                .filter((directory): directory is string => directory !== null);
+        }
+
+        const parentDirectory = dirname(currentDirectory);
+        if (parentDirectory === currentDirectory) {
+            const dir = getProjectCommandsDir(agent, resolvedProjectDir);
+            return dir ? [dir] : [];
+        }
+
+        currentDirectory = parentDirectory;
+        directories.push(currentDirectory);
     }
 }
 
@@ -199,16 +247,9 @@ async function scanUserCommands(agent: string): Promise<SlashCommand[]> {
  * Scan project-defined commands from <projectDir>/.claude/commands/ or equivalent.
  */
 async function scanProjectCommands(agent: string, projectDir?: string): Promise<SlashCommand[]> {
-    if (!projectDir) {
-        return [];
-    }
-
-    const dir = getProjectCommandsDir(agent, projectDir);
-    if (!dir) {
-        return [];
-    }
-
-    return scanCommandsDir(dir, 'project');
+    const dirs = await listProjectCommandDirs(agent, projectDir);
+    const commands = await Promise.all(dirs.map(async (dir) => await scanCommandsDir(dir, 'project')));
+    return commands.flat();
 }
 
 /**

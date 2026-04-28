@@ -199,20 +199,12 @@ export function HappyComposer(props: {
             markSkillUsed(suggestion.text.slice(1))
         }
 
-        // For Codex user prompts with content, expand the content instead of command name
-        let textToInsert = suggestion.text
-        let addSpace = true
-        if (agentFlavor === 'codex' && suggestion.source !== 'builtin' && suggestion.content) {
-            textToInsert = suggestion.content
-            addSpace = false
-        }
-
         const result = applySuggestion(
             inputState.text,
             inputState.selection,
-            textToInsert,
+            suggestion.text,
             autocompletePrefixes,
-            addSpace
+            true
         )
 
         api.composer().setText(result.text)
@@ -233,7 +225,7 @@ export function HappyComposer(props: {
         }, 0)
 
         haptic('light')
-    }, [api, suggestions, inputState, autocompletePrefixes, haptic, agentFlavor])
+    }, [api, suggestions, inputState, autocompletePrefixes, haptic])
 
     const abortDisabled = controlsDisabled || isAborting || !threadIsRunning
     const switchDisabled = controlsDisabled || isSwitching || !controlledByUser

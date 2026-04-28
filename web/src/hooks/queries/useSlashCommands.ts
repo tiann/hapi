@@ -49,16 +49,18 @@ export function useSlashCommands(
         retry: false, // Don't retry RPC failures
     })
 
-    // Merge built-in commands with user-defined and plugin commands from API
+    // Merge local built-ins with commands discovered by the active CLI.
+    // The CLI can expose agent-specific built-ins plus user/plugin/project commands;
+    // keep local built-ins as an offline fallback, then append/override from RPC.
     const commands = useMemo(() => {
         const builtin = getBuiltinSlashCommands(agentType)
 
-        // If API succeeded, add user-defined and plugin commands
         if (query.data?.success && query.data.commands) {
-            const extraCommands = query.data.commands.filter(
-                cmd => cmd.source === 'user' || cmd.source === 'plugin' || cmd.source === 'project'
-            )
-            return [...builtin, ...extraCommands]
+            const commandMap = new Map<string, SlashCommand>()
+            for (const command of [...builtin, ...query.data.commands]) {
+                commandMap.set(command.name, command)
+            }
+            return Array.from(commandMap.values())
         }
 
         // Fallback to built-in commands only

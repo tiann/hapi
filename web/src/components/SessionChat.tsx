@@ -20,8 +20,6 @@ import { HappyComposer } from '@/components/AssistantChat/HappyComposer'
 import { HappyThread } from '@/components/AssistantChat/HappyThread'
 import { useHappyRuntime } from '@/lib/assistant-runtime'
 import { createAttachmentAdapter } from '@/lib/attachmentAdapter'
-import { findUnsupportedCodexBuiltinSlashCommand } from '@/lib/codexSlashCommands'
-import { useToast } from '@/lib/toast-context'
 import { useTranslation } from '@/lib/use-translation'
 import { SessionHeader } from '@/components/SessionHeader'
 import { TeamPanel } from '@/components/TeamPanel'
@@ -67,7 +65,6 @@ export function SessionChat(props: {
     availableSlashCommands?: readonly SlashCommand[]
 }) {
     const { haptic } = usePlatform()
-    const { addToast } = useToast()
     const { t } = useTranslation()
     const navigate = useNavigate()
     const sessionInactive = !props.session.active
@@ -349,26 +346,9 @@ export function SessionChat(props: {
     }, [navigate, props.session.id])
 
     const handleSend = useCallback((text: string, attachments?: AttachmentMetadata[]) => {
-        if (agentFlavor === 'codex') {
-            const unsupportedCommand = findUnsupportedCodexBuiltinSlashCommand(
-                text,
-                props.availableSlashCommands ?? []
-            )
-            if (unsupportedCommand) {
-                haptic.notification('error')
-                addToast({
-                    title: t('composer.codexSlashUnsupported.title'),
-                    body: t('composer.codexSlashUnsupported.body', { command: `/${unsupportedCommand}` }),
-                    sessionId: props.session.id,
-                    url: `/sessions/${props.session.id}`
-                })
-                return
-            }
-        }
-
         props.onSend(text, attachments)
         setForceScrollToken((token) => token + 1)
-    }, [agentFlavor, props.availableSlashCommands, props.onSend, props.session.id, addToast, haptic, t])
+    }, [props.onSend])
 
     const attachmentAdapter = useMemo(() => {
         if (!props.session.active) {

@@ -3,8 +3,13 @@ import { findUnsupportedCodexBuiltinSlashCommand, getBuiltinSlashCommands } from
 
 describe('getBuiltinSlashCommands', () => {
     it('exposes HAPI-supported codex built-ins in remote web mode', () => {
-        expect(getBuiltinSlashCommands('codex').map((command) => command.name)).toContain('plan')
-        expect(getBuiltinSlashCommands('codex').map((command) => command.name)).toContain('status')
+        expect(getBuiltinSlashCommands('codex').map((command) => command.name)).toEqual(expect.arrayContaining([
+            'plan',
+            'status',
+            'execute',
+            'effort',
+            'permission',
+        ]))
     })
 })
 
