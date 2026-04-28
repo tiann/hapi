@@ -165,6 +165,7 @@ export default {
 
   // Code block
   'code.copy': '复制',
+  'code.truncated': '预览已截断 — 打开详情查看完整输出',
 
   // Diff view
   'diff.title': '差异',

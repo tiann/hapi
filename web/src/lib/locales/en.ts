@@ -163,6 +163,7 @@ export default {
 
   // Code block
   'code.copy': 'Copy',
+  'code.truncated': 'Preview truncated — open details for full output',
 
   // Diff view
   'diff.title': 'Diff',

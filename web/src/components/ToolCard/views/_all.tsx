@@ -17,6 +17,7 @@ import { getInputStringAny } from '@/lib/toolInputUtils'
 export type ToolViewProps = {
     block: ToolCallBlock
     metadata: SessionMetadataSummary | null
+    surface?: 'inline' | 'dialog'
 }
 
 export type ToolViewComponent = ComponentType<ToolViewProps>
