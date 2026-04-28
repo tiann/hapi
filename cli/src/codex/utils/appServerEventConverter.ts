@@ -535,6 +535,39 @@ export class AppServerEventConverter {
                 return events;
             }
 
+            if (itemType === 'mcptoolcall') {
+                const server = asString(item.server ?? item.serverName ?? item.server_name);
+                const tool = asString(item.tool ?? item.toolName ?? item.tool_name ?? item.name);
+                const input = item.arguments ?? item.input ?? {};
+
+                if (method === 'item/started') {
+                    events.push({
+                        type: 'mcp_tool_call_begin',
+                        call_id: itemId,
+                        server,
+                        tool,
+                        invocation: {
+                            server,
+                            tool,
+                            arguments: input
+                        }
+                    });
+                }
+
+                if (method === 'item/completed') {
+                    const error = item.error;
+                    events.push({
+                        type: 'mcp_tool_call_end',
+                        call_id: itemId,
+                        server,
+                        tool,
+                        result: error ? { Err: error } : item.result
+                    });
+                }
+
+                return events;
+            }
+
             if (itemType === 'filechange') {
                 if (method === 'item/started') {
                     const changes = extractChanges(item.changes ?? item.change ?? item.diff);

@@ -100,6 +100,75 @@ describe('AppServerEventConverter', () => {
         }]);
     });
 
+    it('maps MCP tool call items', () => {
+        const converter = new AppServerEventConverter();
+
+        const started = converter.handleNotification('item/started', {
+            item: {
+                id: 'call-1',
+                type: 'mcpToolCall',
+                server: 'hapi',
+                tool: 'change_title',
+                arguments: { title: 'MCP Title' }
+            }
+        });
+        expect(started).toEqual([{
+            type: 'mcp_tool_call_begin',
+            call_id: 'call-1',
+            server: 'hapi',
+            tool: 'change_title',
+            invocation: {
+                server: 'hapi',
+                tool: 'change_title',
+                arguments: { title: 'MCP Title' }
+            }
+        }]);
+
+        const completed = converter.handleNotification('item/completed', {
+            item: {
+                id: 'call-1',
+                type: 'mcpToolCall',
+                server: 'hapi',
+                tool: 'change_title',
+                result: {
+                    content: [{ type: 'text', text: 'done' }]
+                }
+            }
+        });
+
+        expect(completed).toEqual([{
+            type: 'mcp_tool_call_end',
+            call_id: 'call-1',
+            server: 'hapi',
+            tool: 'change_title',
+            result: {
+                content: [{ type: 'text', text: 'done' }]
+            }
+        }]);
+    });
+
+    it('maps MCP tool call item errors', () => {
+        const converter = new AppServerEventConverter();
+
+        const completed = converter.handleNotification('item/completed', {
+            item: {
+                id: 'call-1',
+                type: 'mcpToolCall',
+                server: 'hapi',
+                tool: 'change_title',
+                error: 'boom'
+            }
+        });
+
+        expect(completed).toEqual([{
+            type: 'mcp_tool_call_end',
+            call_id: 'call-1',
+            server: 'hapi',
+            tool: 'change_title',
+            result: { Err: 'boom' }
+        }]);
+    });
+
     it('maps reasoning deltas', () => {
         const converter = new AppServerEventConverter();
 
