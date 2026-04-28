@@ -3,11 +3,13 @@
  * Placed between Input and Result sections.
  */
 import { useState } from 'react'
-import { isObject } from '@hapi/protocol'
+import { isObject, safeStringify } from '@hapi/protocol'
 import type { ToolCallBlock } from '@/chat/types'
 import type { SessionMetadataSummary } from '@/types/api'
+import { getToolFullViewComponent } from '@/components/ToolCard/views/_all'
 import { getToolResultViewComponent } from '@/components/ToolCard/views/_results'
 import { formatTaskChildLabel, TaskStateIcon } from '@/components/ToolCard/helpers'
+import { CodeBlock } from '@/components/CodeBlock'
 import { useTranslation } from '@/lib/use-translation'
 
 // ---------------------------------------------------------------------------
@@ -194,7 +196,9 @@ type TraceChildRowProps = {
 }
 
 function TraceChildRow({ child, metadata, expanded, onToggle }: TraceChildRowProps) {
+    const { t } = useTranslation()
     const label = formatTaskChildLabel(child, metadata)
+    const FullInputView = getToolFullViewComponent(child.tool.name)
     const ResultView = getToolResultViewComponent(child.tool.name)
 
     return (
@@ -213,7 +217,18 @@ function TraceChildRow({ child, metadata, expanded, onToggle }: TraceChildRowPro
 
             {expanded && (
                 <div className="ml-8 flex flex-col gap-2 rounded border border-[var(--app-border)] p-2">
-                    <ResultView block={child} metadata={metadata} />
+                    <div>
+                        <div className="mb-1 text-xs font-medium text-[var(--app-hint)]">{t('tool.input')}</div>
+                        {FullInputView ? (
+                            <FullInputView block={child} metadata={metadata} />
+                        ) : (
+                            <CodeBlock code={safeStringify(child.tool.input)} language="json" />
+                        )}
+                    </div>
+                    <div>
+                        <div className="mb-1 text-xs font-medium text-[var(--app-hint)]">{t('tool.result')}</div>
+                        <ResultView block={child} metadata={metadata} />
+                    </div>
                 </div>
             )}
         </div>

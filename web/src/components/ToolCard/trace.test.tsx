@@ -14,11 +14,32 @@ vi.mock('@/lib/use-translation', () => ({
             const map: Record<string, string> = {
                 'tool.trace': 'Trace',
                 'tool.trace.callsSuffix': 'calls',
+                'tool.input': 'Input',
+                'tool.result': 'Result',
             }
             return map[key] ?? key
         },
     }),
 }))
+
+// getToolFullViewComponent returns null by default (no special view for generic tools)
+vi.mock('@/components/ToolCard/views/_all', () => ({
+    getToolFullViewComponent: () => null,
+}))
+
+// CodeBlock renders a simple pre element
+vi.mock('@/components/CodeBlock', () => ({
+    CodeBlock: ({ code }: { code: string }) => <pre data-testid="code-block">{code}</pre>,
+}))
+
+// safeStringify from @hapi/protocol
+vi.mock('@hapi/protocol', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@hapi/protocol')>()
+    return {
+        ...actual,
+        safeStringify: (v: unknown) => JSON.stringify(v),
+    }
+})
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -228,5 +249,22 @@ describe('TraceSection', () => {
         render(<TraceSection block={block} metadata={null} />)
         // summary shown in header
         expect(screen.getByText(/3 calls/)).toBeInTheDocument()
+    })
+
+    it('shows Input section when a child row is expanded', () => {
+        const block = makeTaskBlock([makeChild('c1', 'Bash')], 'running')
+        const { container } = render(<TraceSection block={block} metadata={null} />)
+
+        // child list visible (running → default open)
+        const childBtns = container.querySelectorAll('.border-l button')
+        expect(childBtns.length).toBeGreaterThanOrEqual(1)
+
+        // click the child row to expand it
+        fireEvent.click(childBtns[0])
+
+        // Input section label must be present in the expanded box
+        expect(screen.getByText('Input')).toBeInTheDocument()
+        // Result section label must also be present
+        expect(screen.getByText('Result')).toBeInTheDocument()
     })
 })
