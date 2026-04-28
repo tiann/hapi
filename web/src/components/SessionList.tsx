@@ -91,7 +91,7 @@ function getGroupDisplayName(directory: string): string {
 }
 
 export const UNKNOWN_MACHINE_ID = '__unknown__'
-const GROUP_SESSION_PREVIEW_LIMIT = 8
+export const GROUP_SESSION_PREVIEW_LIMIT = 8
 
 export function deduplicateSessionsByAgentId(sessions: SessionSummary[], selectedSessionId?: string | null): SessionSummary[] {
     const byAgentId = new Map<string, SessionSummary[]>()
@@ -351,7 +351,7 @@ function ChevronIcon(props: { className?: string; collapsed?: boolean }) {
     )
 }
 
-function getSessionTitle(session: SessionSummary): string {
+export function getSessionTitle(session: SessionSummary): string {
     if (session.metadata?.name) {
         return session.metadata.name
     }
@@ -371,11 +371,11 @@ function getTodoProgress(session: SessionSummary): { completed: number; total: n
     return session.todoProgress
 }
 
-function normalizeSearch(value: string | null | undefined): string {
+export function normalizeSearch(value: string | null | undefined): string {
     return (value ?? '').trim().toLowerCase()
 }
 
-function sessionMatchesQuery(session: SessionSummary, query: string, machineLabel: string): boolean {
+export function sessionMatchesQuery(session: SessionSummary, query: string, machineLabel: string): boolean {
     if (!query) return true
     const searchable = [
         getSessionTitle(session),
@@ -391,6 +391,44 @@ function sessionMatchesQuery(session: SessionSummary, query: string, machineLabe
         .join('\n')
         .toLowerCase()
     return searchable.includes(query)
+}
+
+
+export function getVisibleSessionPreview(
+    sessions: SessionSummary[],
+    options: {
+        expanded?: boolean
+        selectedSessionId?: string | null
+        limit?: number
+    } = {}
+): SessionSummary[] {
+    const limit = options.limit ?? GROUP_SESSION_PREVIEW_LIMIT
+    if (options.expanded || sessions.length <= limit) return sessions
+
+    const included = new Set<string>()
+    const visible: SessionSummary[] = []
+    const addSession = (session: SessionSummary) => {
+        if (included.has(session.id)) return
+        included.add(session.id)
+        visible.push(session)
+    }
+
+    const selectedSession = options.selectedSessionId
+        ? sessions.find(session => session.id === options.selectedSessionId)
+        : undefined
+    if (selectedSession) addSession(selectedSession)
+
+    for (const session of sessions) {
+        if (visible.length >= limit) break
+        if (session.active) addSession(session)
+    }
+
+    for (const session of sessions) {
+        if (visible.length >= limit) break
+        addSession(session)
+    }
+
+    return visible
 }
 
 function SessionListSearch(props: {
@@ -708,32 +746,13 @@ export function SessionList(props: {
     }
 
     const getVisibleGroupSessions = (group: SessionGroup): SessionSummary[] => {
-        if (isSessionGroupExpanded(group)) return group.sessions
-
-        const included = new Set<string>()
-        const visible: SessionSummary[] = []
-        const addSession = (session: SessionSummary) => {
-            if (included.has(session.id)) return
-            included.add(session.id)
-            visible.push(session)
-        }
-
-        const selectedSession = selectedSessionId
-            ? group.sessions.find(session => session.id === selectedSessionId)
-            : undefined
-        if (selectedSession) addSession(selectedSession)
-
-        for (const session of group.sessions) {
-            if (visible.length >= GROUP_SESSION_PREVIEW_LIMIT) break
-            if (session.active) addSession(session)
-        }
-
-        for (const session of group.sessions) {
-            if (visible.length >= GROUP_SESSION_PREVIEW_LIMIT) break
-            addSession(session)
-        }
-
-        return visible
+        return getVisibleSessionPreview(
+            group.sessions,
+            {
+                expanded: isSessionGroupExpanded(group),
+                selectedSessionId
+            }
+        )
     }
 
     const machineGroups = useMemo(
