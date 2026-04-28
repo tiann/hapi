@@ -118,7 +118,8 @@ export class MessageService {
                 seq: msg.seq,
                 localId: msg.localId,
                 content: msg.content,
-                createdAt: msg.createdAt
+                createdAt: msg.createdAt,
+                invokedAt: msg.invokedAt
             }
         })
     }
