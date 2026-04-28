@@ -34,6 +34,7 @@ export const codexCommand: CommandDefinition = {
                 codexArgs?: string[]
                 permissionMode?: CodexPermissionMode
                 resumeSessionId?: string
+                importHistory?: boolean
                 model?: string
                 modelReasoningEffort?: ReasoningEffort
             } = {}
@@ -76,6 +77,8 @@ export const codexCommand: CommandDefinition = {
                         throw new Error('Missing --model-reasoning-effort value')
                     }
                     options.modelReasoningEffort = parseReasoningEffort(effort)
+                } else if (arg === '--hapi-import-history') {
+                    options.importHistory = true
                 } else {
                     unknownArgs.push(arg)
                 }

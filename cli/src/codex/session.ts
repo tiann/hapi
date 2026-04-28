@@ -5,6 +5,7 @@ import type { EnhancedMode, PermissionMode } from './loop';
 import type { CodexCliOverrides } from './utils/codexCliOverrides';
 import type { LocalLaunchExitReason } from '@/agent/localLaunchPolicy';
 import type { SessionModel, SessionModelReasoningEffort } from '@/api/types';
+import { normalizeCodexUsage } from './utils/codexUsage';
 
 type LocalLaunchFailure = {
     message: string;
@@ -38,6 +39,7 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
         model?: SessionModel;
         modelReasoningEffort?: SessionModelReasoningEffort;
         collaborationMode?: EnhancedMode['collaborationMode'];
+        importHistory?: boolean;
     }) {
         super({
             api: opts.api,
@@ -68,7 +70,10 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
         this.model = opts.model;
         this.modelReasoningEffort = opts.modelReasoningEffort;
         this.collaborationMode = opts.collaborationMode;
+        this.importHistory = opts.importHistory === true;
     }
+
+    readonly importHistory: boolean;
 
     onTranscriptPathFound(path: string): void {
         if (this.transcriptPath === path) {
@@ -105,6 +110,17 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
 
     setModelReasoningEffort = (modelReasoningEffort: SessionModelReasoningEffort): void => {
         this.modelReasoningEffort = modelReasoningEffort;
+    };
+
+    recordCodexUsage = (payload: unknown): void => {
+        const codexUsage = normalizeCodexUsage(payload);
+        if (!codexUsage) {
+            return;
+        }
+        this.client.updateMetadata((metadata) => ({
+            ...metadata,
+            codexUsage
+        }));
     };
 
     setCollaborationMode = (mode: EnhancedMode['collaborationMode']): void => {

@@ -80,6 +80,16 @@ describe('codexCommand', () => {
         })
     })
 
+    it('parses the internal history import flag', async () => {
+        await codexCommand.run(createCommandContext(['resume', 'session-123', '--hapi-import-history', '--started-by', 'runner']))
+
+        expect(runCodexMock).toHaveBeenCalledWith({
+            resumeSessionId: 'session-123',
+            importHistory: true,
+            startedBy: 'runner'
+        })
+    })
+
     it('prints the upgrade error and exits when the local version check fails', async () => {
         const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
         const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {

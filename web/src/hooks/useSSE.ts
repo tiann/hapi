@@ -30,7 +30,7 @@ const RECONNECT_MAX_DELAY_MS = 30_000
 const RECONNECT_JITTER_MS = 500
 const INVALIDATION_BATCH_MS = 16
 
-type SessionPatch = Partial<Pick<Session, 'active' | 'thinking' | 'activeAt' | 'updatedAt' | 'model' | 'modelReasoningEffort' | 'effort' | 'permissionMode' | 'collaborationMode'>>
+type SessionPatch = Partial<Pick<Session, 'active' | 'thinking' | 'activeAt' | 'updatedAt' | 'metadata' | 'metadataVersion' | 'model' | 'modelReasoningEffort' | 'effort' | 'permissionMode' | 'collaborationMode'>>
 
 function sortSessionSummaries(left: SessionSummary, right: SessionSummary): number {
     if (left.active !== right.active) {
@@ -81,6 +81,14 @@ function getSessionPatch(value: unknown): SessionPatch | null {
         patch.updatedAt = value.updatedAt
         hasKnownPatch = true
     }
+    if (value.metadata === null || hasRecordShape(value.metadata)) {
+        patch.metadata = value.metadata as Session['metadata']
+        hasKnownPatch = true
+    }
+    if (typeof value.metadataVersion === 'number') {
+        patch.metadataVersion = value.metadataVersion
+        hasKnownPatch = true
+    }
     if (value.model === null || typeof value.model === 'string') {
         patch.model = value.model
         hasKnownPatch = true
@@ -109,7 +117,7 @@ function hasUnknownSessionPatchKeys(value: unknown): boolean {
     if (!hasRecordShape(value)) {
         return false
     }
-    const knownKeys = new Set(['active', 'thinking', 'activeAt', 'updatedAt', 'model', 'modelReasoningEffort', 'effort', 'permissionMode', 'collaborationMode'])
+    const knownKeys = new Set(['active', 'thinking', 'activeAt', 'updatedAt', 'metadata', 'metadataVersion', 'model', 'modelReasoningEffort', 'effort', 'permissionMode', 'collaborationMode'])
     return Object.keys(value).some((key) => !knownKeys.has(key))
 }
 
@@ -523,6 +531,9 @@ export function useSSE(options: {
                             queueSessionDetailInvalidation(event.sessionId)
                         }
                         if (!summaryPatched) {
+                            queueSessionListInvalidation()
+                        }
+                        if (Object.prototype.hasOwnProperty.call(patch, 'metadata')) {
                             queueSessionListInvalidation()
                         }
                         if (hasUnknownSessionPatchKeys(event.data)) {

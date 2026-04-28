@@ -13,6 +13,7 @@ import { CodexCollaborationModeSchema, PermissionModeSchema } from '@hapi/protoc
 import { formatMessageWithAttachments } from '@/utils/attachmentFormatter';
 import { getInvokedCwd } from '@/utils/invokedCwd';
 import type { ReasoningEffort } from './appServerTypes';
+import { importCodexSessionHistory } from './importHistory';
 
 export { emitReadyIfIdle } from './utils/emitReadyIfIdle';
 
@@ -23,6 +24,7 @@ export async function runCodex(opts: {
     codexArgs?: string[];
     permissionMode?: PermissionMode;
     resumeSessionId?: string;
+    importHistory?: boolean;
     model?: string;
     modelReasoningEffort?: ReasoningEffort;
 }): Promise<void> {
@@ -70,6 +72,31 @@ export async function runCodex(opts: {
 
     lifecycle.registerProcessHandlers();
     registerKillSessionHandler(session.rpcHandlerManager, lifecycle.cleanupAndExit);
+
+    if (opts.importHistory && opts.resumeSessionId) {
+        try {
+            const importedHistory = await importCodexSessionHistory({
+                session,
+                codexSessionId: opts.resumeSessionId
+            });
+            if (!opts.model && importedHistory.model) {
+                currentModel = importedHistory.model;
+            }
+            if (
+                !opts.modelReasoningEffort
+                && importedHistory.modelReasoningEffort
+                && REASONING_EFFORTS.has(importedHistory.modelReasoningEffort as ReasoningEffort)
+            ) {
+                currentModelReasoningEffort = importedHistory.modelReasoningEffort as ReasoningEffort;
+            }
+        } catch (error) {
+            logger.debug('[codex] Failed to import Codex session history:', error);
+            session.sendAgentMessage({
+                type: 'message',
+                message: `Failed to import Codex session history: ${error instanceof Error ? error.message : String(error)}`
+            });
+        }
+    }
 
     const applyCurrentConfigToSession = (options?: { syncModel?: boolean }) => {
         const sessionInstance = sessionWrapperRef.current;
@@ -231,6 +258,7 @@ export async function runCodex(opts: {
             modelReasoningEffort: currentModelReasoningEffort,
             collaborationMode: currentCollaborationMode,
             resumeSessionId: opts.resumeSessionId,
+            importHistory: opts.importHistory,
             onModeChange: createModeChangeHandler(session),
             onSessionReady: (instance) => {
                 sessionWrapperRef.current = instance;

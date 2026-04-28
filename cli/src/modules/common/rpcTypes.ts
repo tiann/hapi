@@ -3,6 +3,7 @@ export interface SpawnSessionOptions {
     directory: string
     sessionId?: string
     resumeSessionId?: string
+    importHistory?: boolean
     approvedNewDirectoryCreation?: boolean
     agent?: 'claude' | 'codex' | 'cursor' | 'gemini' | 'opencode'
     model?: string

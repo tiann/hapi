@@ -38,6 +38,14 @@ export function useCodexModels(args: {
         retry: false,
     })
 
+    if (!enabled) {
+        return {
+            models: [],
+            isLoading: false,
+            error: null,
+        }
+    }
+
     return {
         models: query.data?.models ?? [],
         isLoading: query.isLoading,

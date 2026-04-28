@@ -19,6 +19,41 @@ export const WorktreeMetadataSchema = z.object({
 
 export type WorktreeMetadata = z.infer<typeof WorktreeMetadataSchema>
 
+export const CodexTokenUsageSchema = z.object({
+    inputTokens: z.number(),
+    cachedInputTokens: z.number(),
+    outputTokens: z.number(),
+    reasoningOutputTokens: z.number(),
+    totalTokens: z.number()
+})
+
+export type CodexTokenUsage = z.infer<typeof CodexTokenUsageSchema>
+
+export const CodexUsageRateLimitSchema = z.object({
+    usedPercent: z.number(),
+    windowMinutes: z.number(),
+    resetAt: z.number().optional()
+})
+
+export type CodexUsageRateLimit = z.infer<typeof CodexUsageRateLimitSchema>
+
+export const CodexUsageSchema = z.object({
+    contextWindow: z.object({
+        usedTokens: z.number(),
+        limitTokens: z.number(),
+        percent: z.number(),
+        updatedAt: z.number()
+    }).optional(),
+    rateLimits: z.object({
+        fiveHour: CodexUsageRateLimitSchema.optional(),
+        weekly: CodexUsageRateLimitSchema.optional()
+    }).optional().default({}),
+    totalTokenUsage: CodexTokenUsageSchema.optional(),
+    lastTokenUsage: CodexTokenUsageSchema.optional()
+})
+
+export type CodexUsage = z.infer<typeof CodexUsageSchema>
+
 export const MetadataSchema = z.object({
     path: z.string(),
     host: z.string(),
@@ -46,7 +81,8 @@ export const MetadataSchema = z.object({
     archivedBy: z.string().optional(),
     archiveReason: z.string().optional(),
     flavor: z.string().nullish(),
-    worktree: WorktreeMetadataSchema.optional()
+    worktree: WorktreeMetadataSchema.optional(),
+    codexUsage: CodexUsageSchema.optional()
 })
 
 export type Metadata = z.infer<typeof MetadataSchema>

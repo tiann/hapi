@@ -463,6 +463,7 @@ export function SessionChat(props: {
                         agentState={props.session.agentState}
                         backgroundTaskCount={props.session.backgroundTaskCount}
                         contextSize={reduced.latestUsage?.contextSize}
+                        codexUsage={agentFlavor === 'codex' ? props.session.metadata?.codexUsage : undefined}
                         controlledByUser={controlledByUser}
                         onCollaborationModeChange={
                             codexCollaborationModeSupported && props.session.active && !controlledByUser
