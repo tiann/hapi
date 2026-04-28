@@ -24,7 +24,7 @@ describe('normalizeCodexUsage', () => {
                 primary: {
                     used_percent: 42.5,
                     window_minutes: 300,
-                    resets_in_seconds: 600
+                    resets_at: 1777393005
                 },
                 secondary: {
                     used_percent: 9,
@@ -45,7 +45,7 @@ describe('normalizeCodexUsage', () => {
                 fiveHour: {
                     usedPercent: 42.5,
                     windowMinutes: 300,
-                    resetAt: 1_600_000
+                    resetAt: 1777393005_000
                 },
                 weekly: {
                     usedPercent: 9,

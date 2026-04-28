@@ -53,7 +53,7 @@ function normalizeTokenUsage(value: unknown): CodexTokenUsage | undefined {
 }
 
 function parseResetAt(record: Record<string, unknown>, now: number): number | undefined {
-    const direct = record.reset_at ?? record.resetAt;
+    const direct = record.reset_at ?? record.resetAt ?? record.resets_at ?? record.resetsAt;
     if (typeof direct === 'string') {
         const parsed = Date.parse(direct);
         if (Number.isFinite(parsed)) return parsed;

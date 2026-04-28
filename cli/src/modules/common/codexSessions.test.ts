@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { mkdir, writeFile, utimes } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { findCodexSessionTitle, listCodexSessions } from './codexSessions'
+import { findCodexSessionFile, findCodexSessionTitle, listCodexSessions } from './codexSessions'
 
 describe('listCodexSessions', () => {
     const originalCodexHome = process.env.CODEX_HOME
@@ -99,5 +99,12 @@ describe('listCodexSessions', () => {
         const result = await listCodexSessions({ includeOld: true })
         expect(result.sessions[0]?.title).toBe('first user message fallback')
         await expect(findCodexSessionTitle('thread-untitled')).resolves.toBe('first user message fallback')
+    })
+
+    it('finds a session file by rollout filename before session_meta is readable', async () => {
+        const sessionPath = join(codexHome, 'sessions', 'rollout-2026-04-28T20-41-46-thread-from-name.jsonl')
+        await writeFile(sessionPath, '')
+
+        await expect(findCodexSessionFile('thread-from-name')).resolves.toBe(sessionPath)
     })
 })

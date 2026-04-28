@@ -290,6 +290,40 @@ async function readCodexThreadTitles(): Promise<Map<string, IndexedSessionTitle>
     return titles;
 }
 
+async function findCodexSessionFileFromSqlite(sessionId: string): Promise<string | null> {
+    const Database = await loadBunSqliteDatabase();
+    if (!Database) {
+        return null;
+    }
+
+    let db: InstanceType<SqliteDatabaseConstructor> | null = null;
+    try {
+        db = new Database(join(readCodexHome(), 'state_5.sqlite'), { readonly: true });
+        const rows = db.query(`
+            SELECT rollout_path
+            FROM threads
+            WHERE id = '${sessionId.replace(/'/g, "''")}'
+            LIMIT 1
+        `).all() as Array<{ rollout_path: unknown }>;
+
+        const rolloutPath = asNonEmptyString(rows[0]?.rollout_path);
+        if (!rolloutPath) {
+            return null;
+        }
+
+        try {
+            await fs.access(rolloutPath);
+            return rolloutPath;
+        } catch {
+            return null;
+        }
+    } catch {
+        return null;
+    } finally {
+        db?.close(false);
+    }
+}
+
 async function parseSessionFile(filePath: string): Promise<RawSession | null> {
     let stat: Stats;
     let lines: string[] | null;
@@ -352,9 +386,17 @@ export async function findCodexSessionFile(sessionId: string): Promise<string | 
         return null;
     }
 
+    const sqlitePath = await findCodexSessionFileFromSqlite(sessionId);
+    if (sqlitePath) {
+        return sqlitePath;
+    }
+
     const sessionsDir = join(readCodexHome(), 'sessions');
     const files = await walkJsonlFiles(sessionsDir, 5000);
     for (const filePath of files) {
+        if (basename(filePath).includes(sessionId)) {
+            return filePath;
+        }
         const lines = await readJsonlLines(filePath);
         if (!lines) {
             continue;
