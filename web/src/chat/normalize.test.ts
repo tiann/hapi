@@ -373,6 +373,36 @@ describe('normalizeDecryptedMessage', () => {
         })
     })
 
+    it('preserves Codex tool-call-result errors for timeline state', () => {
+        const message = makeMessage({
+            role: 'agent',
+            content: {
+                type: 'codex',
+                data: {
+                    type: 'tool-call-result',
+                    callId: 'call-1',
+                    output: 'tool failed',
+                    is_error: true,
+                    id: 'result-1'
+                }
+            }
+        })
+
+        const normalized = normalizeDecryptedMessage(message)
+
+        expect(normalized).toMatchObject({
+            role: 'agent',
+            content: [
+                {
+                    type: 'tool-result',
+                    tool_use_id: 'call-1',
+                    content: 'tool failed',
+                    is_error: true
+                }
+            ]
+        })
+    })
+
     it('normalizes Codex plan updates as completed update_plan snapshots', () => {
         const message = makeMessage({
             role: 'agent',

@@ -493,7 +493,7 @@ export function normalizeAgentRecord(
                     type: 'tool-result',
                     tool_use_id: data.callId,
                     content: data.output,
-                    is_error: false,
+                    is_error: Boolean(data.is_error),
                     uuid,
                     parentUUID: null
                 }],
