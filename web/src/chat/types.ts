@@ -20,7 +20,39 @@ export type AgentEvent =
     | { type: 'compact-started'; trigger: string; preTokens: number }
     | { type: 'microcompact'; trigger: string; preTokens: number; tokensSaved: number }
     | { type: 'compact'; trigger: string; preTokens: number }
+    | CodexSubagentActionEvent
+    | CodexSubagentOutputEvent
     | ({ type: string } & Record<string, unknown>)
+
+export type CodexSubagentAgent = {
+    threadId: string
+    agentId?: string
+    nickname?: string
+    role?: string
+    model?: string
+    status?: string
+    message?: string
+    prompt?: string
+}
+
+export type CodexSubagentActionEvent = {
+    type: 'codex_subagent_action'
+    tool: string
+    status: string
+    itemId?: string
+    receiverThreadIds: string[]
+    agents: CodexSubagentAgent[]
+}
+
+export type CodexSubagentOutputEvent = {
+    type: 'codex_subagent_output'
+    threadId: string
+    agentId?: string
+    role: 'assistant' | 'reasoning' | 'tool' | 'result' | 'status'
+    text: string
+    itemId?: string
+    toolName?: string
+}
 
 export type ToolResultPermission = {
     date: number
@@ -162,6 +194,15 @@ export type AgentEventBlock = {
     meta?: unknown
 }
 
+export type CodexSubagentBlock = {
+    kind: 'codex-subagents'
+    id: string
+    createdAt: number
+    action: CodexSubagentActionEvent
+    outputsByThreadId: Record<string, CodexSubagentOutputEvent[]>
+    meta?: unknown
+}
+
 export type ToolCallBlock = {
     kind: 'tool-call'
     id: string
@@ -172,4 +213,4 @@ export type ToolCallBlock = {
     meta?: unknown
 }
 
-export type ChatBlock = UserTextBlock | AgentTextBlock | AgentReasoningBlock | CliOutputBlock | ToolCallBlock | AgentEventBlock
+export type ChatBlock = UserTextBlock | AgentTextBlock | AgentReasoningBlock | CliOutputBlock | ToolCallBlock | AgentEventBlock | CodexSubagentBlock

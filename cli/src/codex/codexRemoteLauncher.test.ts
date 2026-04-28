@@ -14,6 +14,7 @@ const harness = vi.hoisted(() => ({
     startTurnParams: [] as Array<Record<string, unknown>>,
     startTurnErrors: [] as Error[],
     remainingThreadSystemErrors: 0,
+    extraTurnNotifications: [] as Array<{ method: string; params: unknown }>,
     transcriptPathByThreadId: new Map<string, string>(),
     scannerStarts: [] as Array<{ transcriptPath: string | null; replayExistingEvents?: boolean }>,
     scannerCleanups: 0,
@@ -69,6 +70,11 @@ vi.mock('./codexAppServerClient', () => {
             const started = { turn: { id: turnId } };
             harness.notifications.push({ method: 'turn/started', params: started });
             this.notificationHandler?.('turn/started', started);
+
+            for (const notification of harness.extraTurnNotifications) {
+                harness.notifications.push(notification);
+                this.notificationHandler?.(notification.method, notification.params);
+            }
 
             if (harness.remainingThreadSystemErrors > 0) {
                 harness.remainingThreadSystemErrors -= 1;
@@ -264,6 +270,7 @@ describe('codexRemoteLauncher', () => {
         harness.startTurnParams = [];
         harness.startTurnErrors = [];
         harness.remainingThreadSystemErrors = 0;
+        harness.extraTurnNotifications = [];
         harness.transcriptPathByThreadId = new Map();
         harness.scannerStarts = [];
         harness.scannerCleanups = 0;
@@ -371,6 +378,69 @@ describe('codexRemoteLauncher', () => {
             message: 'transcript duplicate'
         }));
         expect(harness.scannerCleanups).toBe(1);
+    });
+
+    it('routes child thread agent messages to subagent output instead of main assistant messages', async () => {
+        harness.extraTurnNotifications = [
+            {
+                method: 'item/agentMessage/delta',
+                params: { itemId: 'child-msg-1', delta: 'child says hi' }
+            },
+            {
+                method: 'item/completed',
+                params: {
+                    threadId: 'child-thread-1',
+                    item: { id: 'child-msg-1', type: 'agentMessage' }
+                }
+            }
+        ];
+        const { session, codexMessages } = createSessionStub();
+
+        const exitReason = await codexRemoteLauncher(session as never);
+
+        expect(exitReason).toBe('exit');
+        expect(codexMessages).toContainEqual(expect.objectContaining({
+            type: 'codex_subagent_output',
+            threadId: 'child-thread-1',
+            role: 'assistant',
+            text: 'child says hi'
+        }));
+        expect(codexMessages).not.toContainEqual(expect.objectContaining({
+            type: 'message',
+            message: 'child says hi'
+        }));
+    });
+
+    it('forwards subagent action events as timeline messages', async () => {
+        harness.extraTurnNotifications = [
+            {
+                method: 'item/started',
+                params: {
+                    item: {
+                        id: 'collab-1',
+                        type: 'collabToolCall',
+                        tool: 'spawnAgent',
+                        receiverThreadIds: ['child-thread-1'],
+                        receiverAgents: [{ threadId: 'child-thread-1', agentNickname: 'Locke', agentRole: 'explorer' }]
+                    }
+                }
+            }
+        ];
+        const { session, codexMessages } = createSessionStub();
+
+        const exitReason = await codexRemoteLauncher(session as never);
+
+        expect(exitReason).toBe('exit');
+        expect(codexMessages).toContainEqual(expect.objectContaining({
+            type: 'codex_subagent_action',
+            tool: 'spawnAgent',
+            receiverThreadIds: ['child-thread-1'],
+            agents: [expect.objectContaining({
+                threadId: 'child-thread-1',
+                nickname: 'Locke',
+                role: 'explorer'
+            })]
+        }));
     });
 
     it('retries plan turns without collaborationMode when the runtime rejects the field', async () => {

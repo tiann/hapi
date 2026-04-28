@@ -78,6 +78,49 @@ function withoutServiceTier<T extends { serviceTier?: unknown }>(params: T): T {
     return next;
 }
 
+function subagentOutputFromEvent(msg: Record<string, unknown>, threadId: string): Record<string, unknown> | null {
+    const msgType = asString(msg.type);
+    if (!msgType) return null;
+
+    if (msgType === 'agent_message') {
+        const text = asString(msg.message);
+        return text ? { role: 'assistant', text } : null;
+    }
+    if (msgType === 'agent_reasoning' || msgType === 'agent_reasoning_delta') {
+        const text = asString(msg.text ?? msg.delta);
+        return text ? { role: 'reasoning', text } : null;
+    }
+    if (msgType === 'exec_command_begin') {
+        const command = msg.command;
+        const text = typeof command === 'string'
+            ? command
+            : Array.isArray(command)
+                ? command.filter((part): part is string => typeof part === 'string').join(' ')
+                : 'command';
+        return { role: 'tool', text, toolName: 'CodexBash' };
+    }
+    if (msgType === 'exec_command_end') {
+        const raw = msg.output ?? msg.error ?? 'Command completed';
+        const text = typeof raw === 'string' ? raw : JSON.stringify(raw);
+        return { role: 'result', text };
+    }
+    if (msgType === 'task_started') {
+        return { role: 'status', text: 'Starting task...' };
+    }
+    if (msgType === 'task_complete') {
+        return { role: 'status', text: 'Task completed' };
+    }
+    if (msgType === 'turn_aborted') {
+        return { role: 'status', text: 'Turn aborted' };
+    }
+    if (msgType === 'task_failed') {
+        const error = asString(msg.error);
+        return { role: 'status', text: error ? `Task failed: ${error}` : 'Task failed' };
+    }
+
+    return null;
+}
+
 function responseContainsPlanCollaborationMode(response: unknown): boolean {
     const record = response && typeof response === 'object' ? response as Record<string, unknown> : null;
     const candidates = [
@@ -461,6 +504,28 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 } else if (!this.currentTurnId) {
                     allowAnonymousTerminalEvent = true;
                 }
+            }
+
+            if (msgType === 'codex_subagent_action') {
+                session.sendAgentMessage({
+                    ...msg,
+                    id: randomUUID()
+                });
+                return;
+            }
+
+            if (eventThreadId && this.currentThreadId && eventThreadId !== this.currentThreadId) {
+                const output = subagentOutputFromEvent(msg, eventThreadId);
+                if (output) {
+                    session.sendAgentMessage({
+                        type: 'codex_subagent_output',
+                        threadId: eventThreadId,
+                        itemId: asString(msg.item_id ?? msg.itemId) ?? undefined,
+                        ...output,
+                        id: randomUUID()
+                    });
+                }
+                return;
             }
 
             const isThreadStatusFailure = msgType === 'task_failed' && msg.terminal_source === 'thread_status';

@@ -41,6 +41,11 @@ function extractItem(params: Record<string, unknown>): Record<string, unknown> |
     return item ?? params;
 }
 
+function extractThreadId(params: Record<string, unknown>, item?: Record<string, unknown> | null): string | null {
+    return asString(params.threadId ?? params.thread_id)
+        ?? asString(item?.threadId ?? item?.thread_id);
+}
+
 function normalizeItemType(value: unknown): string | null {
     const raw = asString(value);
     if (!raw) return null;
@@ -100,6 +105,188 @@ function extractTextFromContent(value: unknown): string | null {
     }
 
     return chunks.join('');
+}
+
+function firstStringValue(record: Record<string, unknown> | null | undefined, keys: string[]): string | null {
+    if (!record) return null;
+    for (const key of keys) {
+        const value = asString(record[key]);
+        if (value) return value;
+    }
+    return null;
+}
+
+function normalizedIdentifier(value: unknown): string | undefined {
+    const text = asString(value);
+    if (!text) return undefined;
+    const trimmed = text.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function compactName(value: unknown): string | null {
+    const text = asString(value);
+    return text ? text.toLowerCase().replace(/[\s_-]/g, '') : null;
+}
+
+function subagentToolFromItem(item: Record<string, unknown>): string | null {
+    const explicit = firstStringValue(item, ['tool', 'name']);
+    if (explicit) return explicit;
+
+    const type = compactName(item.type ?? item.itemType ?? item.kind);
+    if (!type) return null;
+    if (type.includes('spawn')) return 'spawnAgent';
+    if (type.includes('wait')) return 'waitAgent';
+    if (type.includes('sendinput') || type.includes('interaction')) return 'sendInput';
+    if (type.includes('close')) return 'closeAgent';
+    if (type.includes('resume')) return 'resumeAgent';
+    if (type === 'collabtoolcall' || type === 'collabagenttoolcall') return 'spawnAgent';
+    return null;
+}
+
+function isSubagentItem(item: Record<string, unknown>): boolean {
+    const itemType = compactName(item.type ?? item.itemType ?? item.kind);
+    const tool = compactName(item.tool ?? item.name);
+    return itemType === 'collabtoolcall'
+        || itemType === 'collabagenttoolcall'
+        || tool === 'spawnagent'
+        || tool === 'waitagent'
+        || tool === 'sendinput'
+        || tool === 'closeagent'
+        || tool === 'resumeagent';
+}
+
+function uniqueStrings(values: Array<string | undefined>): string[] {
+    const result: string[] = [];
+    for (const value of values) {
+        if (value && !result.includes(value)) {
+            result.push(value);
+        }
+    }
+    return result;
+}
+
+function decodeSubagentReceiverThreadIds(item: Record<string, unknown>): string[] {
+    const plural = item.receiverThreadIds ?? item.receiver_thread_ids ?? item.threadIds ?? item.thread_ids;
+    if (Array.isArray(plural)) {
+        const ids = uniqueStrings(plural.map(normalizedIdentifier));
+        if (ids.length > 0) return ids;
+    }
+
+    return uniqueStrings([
+        normalizedIdentifier(firstStringValue(item, [
+            'receiverThreadId',
+            'receiver_thread_id',
+            'threadId',
+            'thread_id',
+            'newThreadId',
+            'new_thread_id'
+        ]))
+    ]);
+}
+
+function decodeSubagentStates(item: Record<string, unknown>): Record<string, { status?: string; message?: string }> {
+    const raw = item.statuses ?? item.agentStates ?? item.agent_states ?? item.agentsStates ?? item.agents_states;
+    const result: Record<string, { status?: string; message?: string }> = {};
+
+    const rawRecord = asRecord(raw);
+    if (rawRecord) {
+        for (const [threadId, value] of Object.entries(rawRecord)) {
+            const stateRecord = asRecord(value);
+            result[threadId] = {
+                status: firstStringValue(stateRecord, ['status']) ?? undefined,
+                message: firstStringValue(stateRecord, ['message', 'text', 'delta', 'summary']) ?? undefined
+            };
+        }
+    }
+
+    if (Array.isArray(raw)) {
+        for (const value of raw) {
+            const stateRecord = asRecord(value);
+            const threadId = normalizedIdentifier(firstStringValue(stateRecord, ['threadId', 'thread_id']));
+            if (!threadId) continue;
+            result[threadId] = {
+                status: firstStringValue(stateRecord, ['status']) ?? undefined,
+                message: firstStringValue(stateRecord, ['message', 'text', 'delta', 'summary']) ?? undefined
+            };
+        }
+    }
+
+    return result;
+}
+
+function decodeSubagentAgents(
+    item: Record<string, unknown>,
+    fallbackThreadIds: string[],
+    fallbackModel?: string
+): Array<Record<string, unknown>> {
+    const rawAgents = item.receiverAgents ?? item.receiver_agents ?? item.agents;
+    const states = decodeSubagentStates(item);
+
+    const buildAgent = (source: Record<string, unknown>, fallbackThreadId?: string): Record<string, unknown> | null => {
+        const threadId = normalizedIdentifier(firstStringValue(source, [
+            'threadId',
+            'thread_id',
+            'receiverThreadId',
+            'receiver_thread_id',
+            'newThreadId',
+            'new_thread_id'
+        ]) ?? fallbackThreadId);
+        if (!threadId) return null;
+
+        const state = states[threadId] ?? {};
+        const agent: Record<string, unknown> = {
+            threadId
+        };
+        const agentId = normalizedIdentifier(firstStringValue(source, ['agentId', 'agent_id', 'receiverAgentId', 'receiver_agent_id', 'newAgentId', 'new_agent_id', 'id']));
+        const nickname = normalizedIdentifier(firstStringValue(source, ['agentNickname', 'agent_nickname', 'receiverAgentNickname', 'receiver_agent_nickname', 'newAgentNickname', 'new_agent_nickname', 'nickname', 'name']));
+        const role = normalizedIdentifier(firstStringValue(source, ['agentRole', 'agent_role', 'receiverAgentRole', 'receiver_agent_role', 'newAgentRole', 'new_agent_role', 'agentType', 'agent_type']));
+        const model = normalizedIdentifier(firstStringValue(source, ['modelProvider', 'model_provider', 'modelProviderId', 'model_provider_id', 'modelName', 'model_name', 'model']) ?? fallbackModel);
+        const prompt = normalizedIdentifier(firstStringValue(source, ['prompt', 'instructions', 'instruction', 'task', 'message']));
+        if (agentId) agent.agentId = agentId;
+        if (nickname) agent.nickname = nickname;
+        if (role) agent.role = role;
+        if (model) agent.model = model;
+        if (prompt) agent.prompt = prompt;
+        if (state.status) agent.status = state.status;
+        if (state.message) agent.message = state.message;
+        return agent;
+    };
+
+    if (Array.isArray(rawAgents) && rawAgents.length > 0) {
+        return rawAgents.flatMap((entry, index) => {
+            const record = asRecord(entry);
+            const agent = record ? buildAgent(record, fallbackThreadIds[index]) : null;
+            return agent ? [agent] : [];
+        });
+    }
+
+    return fallbackThreadIds.flatMap((threadId) => {
+        const agent = buildAgent(item, threadId);
+        return agent ? [agent] : [];
+    });
+}
+
+function buildSubagentActionEvent(item: Record<string, unknown>, itemId: string | null): ConvertedEvent | null {
+    if (!isSubagentItem(item)) return null;
+
+    const receiverThreadIds = decodeSubagentReceiverThreadIds(item);
+    const model = normalizedIdentifier(firstStringValue(item, ['model', 'modelName', 'model_name', 'requestedModel', 'requested_model']));
+    const agents = decodeSubagentAgents(item, receiverThreadIds, model);
+    const threadIds = uniqueStrings([
+        ...receiverThreadIds,
+        ...agents.map((agent) => normalizedIdentifier(agent.threadId))
+    ]);
+
+    if (threadIds.length === 0 && agents.length === 0) return null;
+
+    return {
+        type: 'codex_subagent_action',
+        tool: subagentToolFromItem(item) ?? 'spawnAgent',
+        status: firstStringValue(item, ['status']) ?? 'in_progress',
+        ...(itemId ? { itemId } : {}),
+        receiverThreadIds: threadIds,
+        agents
+    };
 }
 
 function extractItemText(item: Record<string, unknown>): string | null {
@@ -453,6 +640,12 @@ export class AppServerEventConverter {
                 return events;
             }
 
+            const subagentAction = buildSubagentActionEvent(item, itemId);
+            if (subagentAction) {
+                events.push(subagentAction);
+                return events;
+            }
+
             if (itemType === 'agentmessage') {
                 if (method === 'item/completed') {
                     if (this.completedAgentMessageItems.has(itemId)) {
@@ -460,7 +653,12 @@ export class AppServerEventConverter {
                     }
                     const text = extractItemText(item) ?? this.agentMessageBuffers.get(itemId);
                     if (text) {
-                        events.push({ type: 'agent_message', message: text });
+                        const threadId = extractThreadId(paramsRecord, item);
+                        events.push({
+                            type: 'agent_message',
+                            message: text,
+                            ...(threadId ? { thread_id: threadId } : {})
+                        });
                         this.completedAgentMessageItems.add(itemId);
                         this.agentMessageBuffers.delete(itemId);
                     }

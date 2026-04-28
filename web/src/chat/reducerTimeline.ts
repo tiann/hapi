@@ -1,4 +1,4 @@
-import type { ChatBlock, ToolCallBlock, ToolPermission } from '@/chat/types'
+import type { ChatBlock, CodexSubagentActionEvent, CodexSubagentOutputEvent, ToolCallBlock, ToolPermission } from '@/chat/types'
 import type { TracedMessage } from '@/chat/tracer'
 import { createCliOutputBlock, isCliOutputText, mergeCliOutputBlocks } from '@/chat/reducerCliOutput'
 import { parseMessageAsEvent } from '@/chat/reducerEvents'
@@ -16,6 +16,7 @@ export function reduceTimeline(
 ): { blocks: ChatBlock[]; toolBlocksById: Map<string, ToolCallBlock>; hasReadyEvent: boolean } {
     const blocks: ChatBlock[] = []
     const toolBlocksById = new Map<string, ToolCallBlock>()
+    const subagentBlocksByThreadId = new Map<string, Extract<ChatBlock, { kind: 'codex-subagents' }>>()
     let hasReadyEvent = false
 
     // Pre-scan: collect UUIDs of system-injected user turns (sidechain
@@ -36,6 +37,52 @@ export function reduceTimeline(
         if (msg.role === 'event') {
             if (msg.content.type === 'ready') {
                 hasReadyEvent = true
+                continue
+            }
+            if (msg.content.type === 'codex_subagent_action') {
+                const action = msg.content as CodexSubagentActionEvent
+                const block: Extract<ChatBlock, { kind: 'codex-subagents' }> = {
+                    kind: 'codex-subagents',
+                    id: msg.id,
+                    createdAt: msg.createdAt,
+                    action,
+                    outputsByThreadId: {},
+                    meta: msg.meta
+                }
+                blocks.push(block)
+                for (const threadId of action.receiverThreadIds) {
+                    subagentBlocksByThreadId.set(threadId, block)
+                }
+                for (const agent of action.agents) {
+                    subagentBlocksByThreadId.set(agent.threadId, block)
+                }
+                continue
+            }
+            if (msg.content.type === 'codex_subagent_output') {
+                const output = msg.content as CodexSubagentOutputEvent
+                let block = subagentBlocksByThreadId.get(output.threadId)
+                if (!block) {
+                    const action: CodexSubagentActionEvent = {
+                        type: 'codex_subagent_action',
+                        tool: 'subagentOutput',
+                        status: 'in_progress',
+                        receiverThreadIds: [output.threadId],
+                        agents: [{ threadId: output.threadId, agentId: output.agentId }]
+                    }
+                    block = {
+                        kind: 'codex-subagents',
+                        id: `${msg.id}:subagents`,
+                        createdAt: msg.createdAt,
+                        action,
+                        outputsByThreadId: {},
+                        meta: msg.meta
+                    }
+                    blocks.push(block)
+                    subagentBlocksByThreadId.set(output.threadId, block)
+                }
+                const existing = block.outputsByThreadId[output.threadId] ?? []
+                existing.push(output)
+                block.outputsByThreadId[output.threadId] = existing
                 continue
             }
             blocks.push({

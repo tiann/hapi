@@ -351,6 +351,20 @@ export function normalizeAgentRecord(
         const data = isObject(content.data) ? content.data : null
         if (!data || typeof data.type !== 'string') return null
 
+        if (data.type === 'codex_subagent_action' || data.type === 'codex_subagent_output') {
+            const event = normalizeAgentEvent(data)
+            if (!event) return null
+            return {
+                id: messageId,
+                localId,
+                createdAt,
+                role: 'event',
+                content: event,
+                isSidechain: false,
+                meta
+            }
+        }
+
         if (data.type === 'message' && typeof data.message === 'string') {
             return {
                 id: messageId,

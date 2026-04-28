@@ -13,6 +13,56 @@ function makeMessage(content: unknown): DecryptedMessage {
 }
 
 describe('normalizeDecryptedMessage', () => {
+    it('normalizes Codex subagent action payloads as events', () => {
+        const message = makeMessage({
+            role: 'agent',
+            content: {
+                type: 'codex',
+                data: {
+                    type: 'codex_subagent_action',
+                    tool: 'spawnAgent',
+                    status: 'in_progress',
+                    receiverThreadIds: ['child-1'],
+                    agents: [{ threadId: 'child-1', nickname: 'Locke' }]
+                }
+            }
+        })
+
+        expect(normalizeDecryptedMessage(message)).toMatchObject({
+            role: 'event',
+            content: {
+                type: 'codex_subagent_action',
+                tool: 'spawnAgent',
+                receiverThreadIds: ['child-1']
+            }
+        })
+    })
+
+    it('normalizes Codex subagent output payloads as events', () => {
+        const message = makeMessage({
+            role: 'agent',
+            content: {
+                type: 'codex',
+                data: {
+                    type: 'codex_subagent_output',
+                    threadId: 'child-1',
+                    role: 'assistant',
+                    text: 'child answer'
+                }
+            }
+        })
+
+        expect(normalizeDecryptedMessage(message)).toMatchObject({
+            role: 'event',
+            content: {
+                type: 'codex_subagent_output',
+                threadId: 'child-1',
+                role: 'assistant',
+                text: 'child answer'
+            }
+        })
+    })
+
     it('drops unsupported Claude system output records', () => {
         const message = makeMessage({
             role: 'agent',

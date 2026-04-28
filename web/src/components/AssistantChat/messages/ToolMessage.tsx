@@ -1,5 +1,5 @@
 import type { ToolCallMessagePartProps } from '@assistant-ui/react'
-import type { ChatBlock } from '@/chat/types'
+import type { ChatBlock, CodexSubagentBlock, CodexSubagentOutputEvent } from '@/chat/types'
 import type { ToolCallBlock } from '@/chat/types'
 import { isObject, safeStringify } from '@hapi/protocol'
 import { getEventPresentation } from '@/chat/presentation'
@@ -24,6 +24,104 @@ function isToolCallBlock(value: unknown): value is ToolCallBlock {
     if (value.tool.description !== null && typeof value.tool.description !== 'string') return false
     if (value.tool.state !== 'pending' && value.tool.state !== 'running' && value.tool.state !== 'completed' && value.tool.state !== 'error') return false
     return true
+}
+
+function isCodexSubagentBlock(value: unknown): value is CodexSubagentBlock {
+    if (!isObject(value)) return false
+    if (value.kind !== 'codex-subagents') return false
+    if (typeof value.id !== 'string') return false
+    if (typeof value.createdAt !== 'number') return false
+    if (!isObject(value.action)) return false
+    if (!isObject(value.outputsByThreadId)) return false
+    return true
+}
+
+function getSubagentLabel(block: CodexSubagentBlock, threadId: string): string {
+    const agent = block.action.agents.find((candidate) => candidate.threadId === threadId)
+    if (!agent) return threadId.length > 14 ? `Agent ${threadId.slice(-8)}` : threadId
+    if (agent.nickname && agent.role) return `${agent.nickname} [${agent.role}]`
+    return agent.nickname ?? agent.role ?? (threadId.length > 14 ? `Agent ${threadId.slice(-8)}` : threadId)
+}
+
+function subagentSummary(block: CodexSubagentBlock): string {
+    const count = Math.max(1, block.action.receiverThreadIds.length, block.action.agents.length)
+    const noun = count === 1 ? 'agent' : 'agents'
+    const tool = block.action.tool.toLowerCase().replace(/[\s_-]/g, '')
+    if (tool === 'spawnagent') return `Spawning ${count} ${noun}`
+    if (tool === 'waitagent' || tool === 'wait') return `Waiting on ${count} ${noun}`
+    if (tool === 'sendinput') return count === 1 ? 'Updating agent' : 'Updating agents'
+    if (tool === 'closeagent') return `Closing ${count} ${noun}`
+    if (tool === 'resumeagent') return `Resuming ${count} ${noun}`
+    return count === 1 ? 'Agent activity' : `Agent activity (${count})`
+}
+
+function outputPrefix(output: CodexSubagentOutputEvent): string {
+    if (output.role === 'assistant') return 'Assistant'
+    if (output.role === 'reasoning') return 'Thinking'
+    if (output.role === 'tool') return 'Tool'
+    if (output.role === 'result') return 'Result'
+    return 'Status'
+}
+
+function CodexSubagentCard(props: { block: CodexSubagentBlock }) {
+    const block = props.block
+    const threadIds = Array.from(new Set([
+        ...block.action.receiverThreadIds,
+        ...block.action.agents.map((agent) => agent.threadId),
+        ...Object.keys(block.outputsByThreadId)
+    ]))
+
+    return (
+        <div className="py-1 min-w-0 max-w-full overflow-x-hidden">
+            <div className="rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] shadow-sm">
+                <details>
+                    <summary className="cursor-pointer list-none p-3">
+                        <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                                <div className="flex items-center gap-2 text-sm font-medium">
+                                    <span aria-hidden="true">🧩</span>
+                                    <span>Subagents</span>
+                                </div>
+                                <div className="mt-1 font-mono text-xs text-[var(--app-hint)]">
+                                    {subagentSummary(block)}
+                                </div>
+                            </div>
+                            <span className="text-xs text-[var(--app-hint)]">Details</span>
+                        </div>
+                    </summary>
+                    <div className="border-t border-[var(--app-border)] px-3 pb-3">
+                        <div className="mt-3 flex flex-col gap-3">
+                            {threadIds.map((threadId) => {
+                                const outputs = block.outputsByThreadId[threadId] ?? []
+                                const agent = block.action.agents.find((candidate) => candidate.threadId === threadId)
+                                return (
+                                    <div key={threadId} className="rounded-md bg-[var(--app-secondary-bg)] p-2">
+                                        <div className="flex flex-wrap items-center gap-2 text-xs">
+                                            <span className="font-medium">{getSubagentLabel(block, threadId)}</span>
+                                            {agent?.model ? <span className="font-mono text-[var(--app-hint)]">{agent.model}</span> : null}
+                                            {agent?.status ? <span className="text-[var(--app-hint)]">{agent.status}</span> : null}
+                                        </div>
+                                        {outputs.length > 0 ? (
+                                            <div className="mt-2 flex flex-col gap-2">
+                                                {outputs.map((output, index) => (
+                                                    <div key={`${threadId}:${index}`} className="text-xs">
+                                                        <span className="font-mono text-[var(--app-hint)]">{outputPrefix(output)}: </span>
+                                                        <span className="whitespace-pre-wrap break-words">{output.text}</span>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        ) : (
+                                            <div className="mt-2 text-xs text-[var(--app-hint)]">No output yet</div>
+                                        )}
+                                    </div>
+                                )
+                            })}
+                        </div>
+                    </div>
+                </details>
+            </div>
+        </div>
+    )
 }
 
 function isPendingPermissionBlock(block: ChatBlock): boolean {
@@ -151,6 +249,10 @@ function HappyNestedBlockList(props: {
                     )
                 }
 
+                if (block.kind === 'codex-subagents') {
+                    return <CodexSubagentCard key={`subagents:${block.id}`} block={block} />
+                }
+
                 return null
             })}
         </div>
@@ -160,6 +262,10 @@ function HappyNestedBlockList(props: {
 export function HappyToolMessage(props: ToolCallMessagePartProps) {
     const ctx = useHappyChatContext()
     const artifact = props.artifact
+
+    if (isCodexSubagentBlock(artifact)) {
+        return <CodexSubagentCard block={artifact} />
+    }
 
     if (!isToolCallBlock(artifact)) {
         const argsText = typeof props.argsText === 'string' ? props.argsText.trim() : ''

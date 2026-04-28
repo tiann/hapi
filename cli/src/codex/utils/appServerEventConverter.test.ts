@@ -59,6 +59,22 @@ describe('AppServerEventConverter', () => {
         expect(completed).toEqual([{ type: 'agent_message', message: 'Hello world' }]);
     });
 
+    it('preserves thread id on completed agent messages', () => {
+        const converter = new AppServerEventConverter();
+
+        converter.handleNotification('item/agentMessage/delta', { itemId: 'msg-child', delta: 'Child output' });
+        const completed = converter.handleNotification('item/completed', {
+            threadId: 'child-thread',
+            item: { id: 'msg-child', type: 'agentMessage' }
+        });
+
+        expect(completed).toEqual([{
+            type: 'agent_message',
+            message: 'Child output',
+            thread_id: 'child-thread'
+        }]);
+    });
+
     it('deduplicates repeated agent message completions for the same item', () => {
         const converter = new AppServerEventConverter();
 
@@ -97,6 +113,104 @@ describe('AppServerEventConverter', () => {
             command: 'ls',
             output: 'ok',
             exit_code: 0
+        }]);
+    });
+
+    it('maps collab tool calls to subagent action events', () => {
+        const converter = new AppServerEventConverter();
+
+        const events = converter.handleNotification('item/started', {
+            item: {
+                id: 'collab-1',
+                type: 'collabToolCall',
+                tool: 'spawnAgent',
+                status: 'in_progress',
+                model: 'gpt-5.3-codex',
+                receiverAgents: [
+                    {
+                        threadId: 'child-1',
+                        agentId: 'agent-1',
+                        agentNickname: 'Locke',
+                        agentRole: 'explorer',
+                        prompt: 'Inspect routing'
+                    },
+                    {
+                        thread_id: 'child-2',
+                        agent_id: 'agent-2',
+                        nickname: 'Dalton',
+                        agent_type: 'worker'
+                    }
+                ],
+                agentsStates: {
+                    'child-1': { status: 'running', message: 'Scanning modules' },
+                    'child-2': { status: 'pending_init' }
+                }
+            }
+        });
+
+        expect(events).toEqual([{
+            type: 'codex_subagent_action',
+            tool: 'spawnAgent',
+            status: 'in_progress',
+            itemId: 'collab-1',
+            receiverThreadIds: ['child-1', 'child-2'],
+            agents: [
+                {
+                    threadId: 'child-1',
+                    agentId: 'agent-1',
+                    nickname: 'Locke',
+                    role: 'explorer',
+                    model: 'gpt-5.3-codex',
+                    prompt: 'Inspect routing',
+                    status: 'running',
+                    message: 'Scanning modules'
+                },
+                {
+                    threadId: 'child-2',
+                    agentId: 'agent-2',
+                    nickname: 'Dalton',
+                    role: 'worker',
+                    model: 'gpt-5.3-codex',
+                    status: 'pending_init'
+                }
+            ]
+        }]);
+    });
+
+    it('maps singular collab agent calls to subagent action events', () => {
+        const converter = new AppServerEventConverter();
+
+        const events = converter.handleNotification('codex/event/item_completed', {
+            msg: {
+                type: 'item_completed',
+                item_id: 'collab-2',
+                item: {
+                    id: 'collab-2',
+                    type: 'collabAgentToolCall',
+                    name: 'waitAgent',
+                    status: 'completed',
+                    receiver_thread_id: 'child-3',
+                    receiver_agent_id: 'agent-3',
+                    receiver_agent_nickname: 'Nash',
+                    receiver_agent_role: 'reviewer',
+                    model_name: 'gpt-5.4'
+                }
+            }
+        });
+
+        expect(events).toEqual([{
+            type: 'codex_subagent_action',
+            tool: 'waitAgent',
+            status: 'completed',
+            itemId: 'collab-2',
+            receiverThreadIds: ['child-3'],
+            agents: [{
+                threadId: 'child-3',
+                agentId: 'agent-3',
+                nickname: 'Nash',
+                role: 'reviewer',
+                model: 'gpt-5.4'
+            }]
         }]);
     });
 

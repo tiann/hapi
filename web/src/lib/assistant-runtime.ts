@@ -3,7 +3,7 @@ import type { AppendMessage, AttachmentAdapter, ThreadMessageLike } from '@assis
 import { useExternalMessageConverter, useExternalStoreRuntime } from '@assistant-ui/react'
 import { safeStringify } from '@hapi/protocol'
 import { renderEventLabel } from '@/chat/presentation'
-import type { ChatBlock, CliOutputBlock } from '@/chat/types'
+import type { ChatBlock, CliOutputBlock, CodexSubagentBlock } from '@/chat/types'
 import type { AgentEvent, ToolCallBlock } from '@/chat/types'
 import type { AttachmentMetadata, MessageStatus as HappyMessageStatus, Session } from '@/types/api'
 
@@ -86,6 +86,28 @@ function toThreadMessageLike(block: ChatBlock): ThreadMessageLike {
             content: [{ type: 'text', text: block.text }],
             metadata: {
                 custom: { kind: 'cli-output', source: block.source } satisfies HappyChatMessageMetadata
+            }
+        }
+    }
+
+    if (block.kind === 'codex-subagents') {
+        const messageId = `subagents:${block.id}`
+        const inputText = safeStringify(block.action)
+        return {
+            role: 'assistant',
+            id: messageId,
+            createdAt: new Date(block.createdAt),
+            content: [{
+                type: 'tool-call',
+                toolCallId: block.id,
+                toolName: 'CodexSubagents',
+                argsText: inputText,
+                result: block.outputsByThreadId,
+                isError: false,
+                artifact: block satisfies CodexSubagentBlock
+            }],
+            metadata: {
+                custom: { kind: 'tool', toolCallId: block.id } satisfies HappyChatMessageMetadata
             }
         }
     }
