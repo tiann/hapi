@@ -326,8 +326,10 @@ export class Store {
         const columns = this.getMessageColumnNames()
         if (!columns.has('invoked_at')) {
             this.db.exec('ALTER TABLE messages ADD COLUMN invoked_at INTEGER')
-            this.db.exec('UPDATE messages SET invoked_at = created_at WHERE invoked_at IS NULL')
         }
+        // Idempotent (WHERE invoked_at IS NULL); safe to re-run if a previous attempt
+        // crashed between ALTER and UPDATE before user_version was bumped.
+        this.db.exec('UPDATE messages SET invoked_at = created_at WHERE invoked_at IS NULL')
     }
 
     private getSessionColumnNames(): Set<string> {

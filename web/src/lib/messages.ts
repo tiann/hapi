@@ -19,19 +19,18 @@ function isOptimisticMessage(msg: DecryptedMessage): boolean {
 }
 
 function compareMessages(a: DecryptedMessage, b: DecryptedMessage): number {
-    const aSeq = typeof a.seq === 'number' ? a.seq : null
-    const bSeq = typeof b.seq === 'number' ? b.seq : null
-
-    if (aSeq !== null && bSeq !== null && aSeq !== bSeq) {
-        return aSeq - bSeq
-    }
-
-    // Use invokedAt as position anchor for invoked user messages; fall back to createdAt.
     const aTime = a.invokedAt ?? a.createdAt
     const bTime = b.invokedAt ?? b.createdAt
 
     if (aTime !== bTime) {
         return aTime - bTime
+    }
+
+    const aSeq = typeof a.seq === 'number' ? a.seq : null
+    const bSeq = typeof b.seq === 'number' ? b.seq : null
+
+    if (aSeq !== null && bSeq !== null && aSeq !== bSeq) {
+        return aSeq - bSeq
     }
     return a.id.localeCompare(b.id)
 }
