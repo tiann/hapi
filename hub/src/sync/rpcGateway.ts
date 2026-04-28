@@ -58,6 +58,23 @@ export type RpcListCodexModelsResponse = {
     error?: string
 }
 
+
+export type RpcCodexSession = {
+    id: string
+    title: string
+    updatedAt: number
+    path: string | null
+    model: string | null
+    isOld: boolean
+}
+
+export type RpcListCodexSessionsResponse = {
+    success: boolean
+    sessions?: RpcCodexSession[]
+    nextCursor?: string | null
+    error?: string
+}
+
 export class RpcGateway {
     constructor(
         private readonly io: Server,
@@ -130,6 +147,7 @@ export class RpcGateway {
         sessionType?: 'simple' | 'worktree',
         worktreeName?: string,
         resumeSessionId?: string,
+        importHistory?: boolean,
         effort?: string,
         permissionMode?: PermissionMode
     ): Promise<{ type: 'success'; sessionId: string } | { type: 'error'; message: string }> {
@@ -137,7 +155,7 @@ export class RpcGateway {
             const result = await this.machineRpc(
                 machineId,
                 'spawn-happy-session',
-                { type: 'spawn-in-directory', directory, agent, model, modelReasoningEffort, yolo, sessionType, worktreeName, resumeSessionId, effort, permissionMode }
+                { type: 'spawn-in-directory', directory, agent, model, modelReasoningEffort, yolo, sessionType, worktreeName, resumeSessionId, importHistory, effort, permissionMode }
             )
             if (result && typeof result === 'object') {
                 const obj = result as Record<string, unknown>
@@ -260,6 +278,13 @@ export class RpcGateway {
 
     async listCodexModelsForMachine(machineId: string): Promise<RpcListCodexModelsResponse> {
         return await this.machineRpc(machineId, 'listCodexModels', {}) as RpcListCodexModelsResponse
+    }
+
+    async listCodexSessionsForMachine(
+        machineId: string,
+        options?: { includeOld?: boolean; olderThanDays?: number; limit?: number; cursor?: string }
+    ): Promise<RpcListCodexSessionsResponse> {
+        return await this.machineRpc(machineId, 'listCodexSessions', options ?? {}) as RpcListCodexSessionsResponse
     }
 
     private async sessionRpc(sessionId: string, method: string, params: unknown): Promise<unknown> {

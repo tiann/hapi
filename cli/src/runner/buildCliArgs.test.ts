@@ -61,4 +61,14 @@ describe('buildCliArgs', () => {
             expect(args).toContain(mode)
         }
     })
+
+    it('adds Codex history import flag only for Codex resume', () => {
+        const args = buildCliArgs('codex', {
+            directory: '/tmp',
+            resumeSessionId: 'thread-1',
+            importHistory: true,
+        })
+
+        expect(args).toEqual(expect.arrayContaining(['codex', 'resume', 'thread-1', '--hapi-import-history']))
+    })
 })

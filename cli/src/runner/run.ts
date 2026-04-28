@@ -918,6 +918,9 @@ export function buildCliArgs(
   if (options.resumeSessionId) {
     if (agent === 'codex') {
       args.push('resume', options.resumeSessionId);
+      if (options.importHistory) {
+        args.push('--hapi-import-history');
+      }
     } else if (agent === 'cursor') {
       args.push('--resume', options.resumeSessionId);
     } else {

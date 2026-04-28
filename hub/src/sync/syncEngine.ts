@@ -22,6 +22,7 @@ import {
     type RpcDeleteUploadResponse,
     type RpcListDirectoryResponse,
     type RpcListCodexModelsResponse,
+    type RpcListCodexSessionsResponse,
     type RpcPathExistsResponse,
     type RpcReadFileResponse,
     type RpcUploadFileResponse
@@ -289,8 +290,8 @@ export class SyncEngine {
             sentFrom?: 'telegram-bot' | 'webapp'
         }
     ): Promise<void> {
-        await this.messageService.sendMessage(sessionId, payload)
         this.sessionCache.markMessageQueued(sessionId)
+        await this.messageService.sendMessage(sessionId, payload)
     }
 
     async approvePermission(
@@ -374,6 +375,7 @@ export class SyncEngine {
         sessionType?: 'simple' | 'worktree',
         worktreeName?: string,
         resumeSessionId?: string,
+        importHistory?: boolean,
         effort?: string,
         permissionMode?: PermissionMode
     ): Promise<{ type: 'success'; sessionId: string } | { type: 'error'; message: string }> {
@@ -387,6 +389,7 @@ export class SyncEngine {
             sessionType,
             worktreeName,
             resumeSessionId,
+            importHistory,
             effort,
             permissionMode
         )
@@ -460,6 +463,7 @@ export class SyncEngine {
             undefined,
             undefined,
             resumeToken,
+            false,
             session.effort ?? undefined,
             session.permissionMode ?? undefined
         )
@@ -586,4 +590,13 @@ export class SyncEngine {
     async listCodexModelsForMachine(machineId: string): Promise<RpcListCodexModelsResponse> {
         return await this.rpcGateway.listCodexModelsForMachine(machineId)
     }
+
+
+    async listCodexSessionsForMachine(
+        machineId: string,
+        options?: { includeOld?: boolean; olderThanDays?: number; limit?: number; cursor?: string }
+    ): Promise<RpcListCodexSessionsResponse> {
+        return await this.rpcGateway.listCodexSessionsForMachine(machineId, options)
+    }
+
 }

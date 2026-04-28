@@ -12,6 +12,7 @@ import type {
     MachinesResponse,
     MessagesResponse,
     CodexModelsResponse,
+    CodexSessionsResponse,
     PermissionMode,
     PushSubscriptionPayload,
     PushUnsubscribePayload,
@@ -414,12 +415,39 @@ export class ApiClient {
         yolo?: boolean,
         sessionType?: 'simple' | 'worktree',
         worktreeName?: string,
-        effort?: string
+        effort?: string,
+        resumeSessionId?: string,
+        importHistory?: boolean
     ): Promise<SpawnResponse> {
         return await this.request<SpawnResponse>(`/api/machines/${encodeURIComponent(machineId)}/spawn`, {
             method: 'POST',
-            body: JSON.stringify({ directory, agent, model, modelReasoningEffort, yolo, sessionType, worktreeName, effort })
+            body: JSON.stringify({ directory, agent, model, modelReasoningEffort, yolo, sessionType, worktreeName, effort, resumeSessionId, importHistory })
         })
+    }
+
+
+    async getMachineCodexSessions(
+        machineId: string,
+        options?: { includeOld?: boolean; olderThanDays?: number; limit?: number; cursor?: string }
+    ): Promise<CodexSessionsResponse> {
+        const params = new URLSearchParams()
+        if (options?.includeOld !== undefined) {
+            params.set('includeOld', options.includeOld ? '1' : '0')
+        }
+        if (options?.olderThanDays !== undefined) {
+            params.set('olderThanDays', String(options.olderThanDays))
+        }
+        if (options?.limit !== undefined) {
+            params.set('limit', String(options.limit))
+        }
+        if (options?.cursor) {
+            params.set('cursor', options.cursor)
+        }
+
+        const query = params.toString()
+        return await this.request<CodexSessionsResponse>(
+            `/api/machines/${encodeURIComponent(machineId)}/codex-sessions${query ? `?${query}` : ''}`
+        )
     }
 
     async getMachineCodexModels(machineId: string): Promise<CodexModelsResponse> {

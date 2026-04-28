@@ -56,4 +56,51 @@ describe('machines routes', () => {
             ]
         })
     })
+
+    it('returns Codex sessions for an online machine', async () => {
+        const machine = createMachine()
+        const engine = {
+            getMachine: () => machine,
+            getMachineByNamespace: () => machine,
+            listCodexSessionsForMachine: async () => ({
+                success: true,
+                sessions: [
+                    {
+                        id: 'thread-1',
+                        title: 'Fix auth bug',
+                        updatedAt: 100,
+                        path: '/repo',
+                        model: 'gpt-5',
+                        isOld: false
+                    }
+                ],
+                nextCursor: null
+            })
+        } as Partial<SyncEngine>
+
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createMachinesRoutes(() => engine as SyncEngine))
+
+        const response = await app.request('/api/machines/machine-1/codex-sessions?includeOld=1&limit=20')
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({
+            success: true,
+            sessions: [
+                {
+                    id: 'thread-1',
+                    title: 'Fix auth bug',
+                    updatedAt: 100,
+                    path: '/repo',
+                    model: 'gpt-5',
+                    isOld: false
+                }
+            ],
+            nextCursor: null
+        })
+    })
 })

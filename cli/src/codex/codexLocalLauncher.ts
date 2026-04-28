@@ -83,6 +83,7 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
         }
         const createdScanner = await createCodexSessionScanner({
             transcriptPath,
+            replayExistingEvents: session.importHistory,
             onSessionId: (sessionId) => {
                 if (!isPrimarySessionId(sessionId)) {
                     logger.debug(`[codex-local]: Ignoring transcript session id ${sessionId}; primary is ${primarySessionId}`);

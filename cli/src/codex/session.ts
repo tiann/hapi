@@ -38,6 +38,7 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
         model?: SessionModel;
         modelReasoningEffort?: SessionModelReasoningEffort;
         collaborationMode?: EnhancedMode['collaborationMode'];
+        importHistory?: boolean;
     }) {
         super({
             api: opts.api,
@@ -68,7 +69,10 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
         this.model = opts.model;
         this.modelReasoningEffort = opts.modelReasoningEffort;
         this.collaborationMode = opts.collaborationMode;
+        this.importHistory = opts.importHistory === true;
     }
+
+    readonly importHistory: boolean;
 
     onTranscriptPathFound(path: string): void {
         if (this.transcriptPath === path) {
