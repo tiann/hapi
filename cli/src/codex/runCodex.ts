@@ -138,32 +138,31 @@ export async function runCodex(opts: {
         userMessageChain = userMessageChain.then(async () => {
             try {
                 syncCurrentConfigFromSession();
-                let text = formatMessageWithAttachments(message.content.text, message.content.attachments);
-                if (!message.content.attachments || message.content.attachments.length === 0) {
-                    const commands = await listSlashCommands('codex', workingDirectory).catch(() => []);
-                    const slash = resolveCodexSlashCommand(text, {
-                        commands,
-                        permissionMode: currentPermissionMode,
-                        collaborationMode: currentCollaborationMode,
-                        model: currentModel,
-                        modelReasoningEffort: currentModelReasoningEffort
-                    });
-                    if (slash.kind !== 'passthrough') {
-                        applySlashUpdates(slash.updates);
-                        if (slash.message) {
-                            session.sendAgentMessage({
-                                type: 'message',
-                                message: slash.message,
-                                id: randomUUID()
-                            });
-                        }
-                        if (slash.kind === 'handled') {
-                            if (localId) session.emitMessagesConsumed([localId]);
-                            return;
-                        }
-                        text = slash.text;
+                let text = message.content.text;
+                const commands = await listSlashCommands('codex', workingDirectory).catch(() => []);
+                const slash = resolveCodexSlashCommand(text, {
+                    commands,
+                    permissionMode: currentPermissionMode,
+                    collaborationMode: currentCollaborationMode,
+                    model: currentModel,
+                    modelReasoningEffort: currentModelReasoningEffort
+                });
+                if (slash.kind !== 'passthrough') {
+                    applySlashUpdates(slash.updates);
+                    if (slash.message) {
+                        session.sendAgentMessage({
+                            type: 'message',
+                            message: slash.message,
+                            id: randomUUID()
+                        });
                     }
+                    if (slash.kind === 'handled') {
+                        if (localId) session.emitMessagesConsumed([localId]);
+                        return;
+                    }
+                    text = slash.text;
                 }
+                text = formatMessageWithAttachments(text, message.content.attachments);
 
                 const messagePermissionMode = currentPermissionMode;
                 logger.debug(

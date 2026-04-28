@@ -59,6 +59,13 @@ describe('resolveCodexSlashCommand', () => {
         });
     });
 
+    it('handles unsupported Codex built-in commands instead of sending them to the model', () => {
+        expect(resolveCodexSlashCommand('/diff', state)).toEqual({
+            kind: 'handled',
+            message: '/diff is a Codex CLI command that is not supported in HAPI sessions yet.'
+        });
+    });
+
     it('passes unknown slash commands through', () => {
         expect(resolveCodexSlashCommand('/unknown', state)).toEqual({ kind: 'passthrough' });
     });

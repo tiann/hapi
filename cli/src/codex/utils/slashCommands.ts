@@ -6,6 +6,21 @@ import type { SlashCommand } from '@/modules/common/slashCommands';
 
 const REASONING_EFFORTS = new Set<ReasoningEffort>(['none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
 
+const UNSUPPORTED_CODEX_BUILTIN_COMMANDS = new Set([
+    'clear',
+    'compact',
+    'diff',
+    'init',
+    'login',
+    'logout',
+    'mcp',
+    'new',
+    'prompts',
+    'quit',
+    'redo',
+    'undo'
+]);
+
 export type CodexSlashResolution =
     | { kind: 'passthrough' }
     | {
@@ -169,6 +184,13 @@ export function resolveCodexSlashCommand(
                 '/permissions [default|read-only|safe-yolo|yolo] — show or set permission mode',
                 'Custom /commands from .codex/prompts are expanded before sending.'
             ].join('\n')
+        };
+    }
+
+    if (UNSUPPORTED_CODEX_BUILTIN_COMMANDS.has(command)) {
+        return {
+            kind: 'handled',
+            message: `/${command} is a Codex CLI command that is not supported in HAPI sessions yet.`
         };
     }
 
