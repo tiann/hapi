@@ -274,7 +274,7 @@ function SessionPage() {
                 return currentSessionId
             }
             try {
-                return await api.resumeSession(currentSessionId)
+                return await api.resumeSession(currentSessionId, { permissionMode: session.permissionMode ?? undefined })
             } catch (error) {
                 const message = error instanceof Error ? error.message : 'Resume failed'
                 addToast({
