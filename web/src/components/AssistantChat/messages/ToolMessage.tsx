@@ -184,13 +184,13 @@ export function HappyToolMessage(props: ToolCallMessagePartProps) {
 
                     {hasArgsText ? (
                         <div className="mt-2">
-                            <CodeBlock code={argsText} language="json" collapseLongContent />
+                            <CodeBlock code={argsText} language="json" />
                         </div>
                     ) : null}
 
                     {hasResult ? (
                         <div className="mt-2">
-                            <CodeBlock code={resultText} language={typeof props.result === 'string' ? 'text' : 'json'} collapseLongContent />
+                            <CodeBlock code={resultText} language={typeof props.result === 'string' ? 'text' : 'json'} />
                         </div>
                     ) : null}
                 </div>
