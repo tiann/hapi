@@ -626,6 +626,20 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             session.onThinkingChange(false);
         };
 
+        const interruptActiveTurn = async () => {
+            const threadId = this.currentThreadId;
+            const turnId = this.currentTurnId;
+            if (!threadId || !turnId) {
+                return;
+            }
+
+            try {
+                await appServerClient.interruptTurn({ threadId, turnId });
+            } catch (error) {
+                logger.debug('[Codex] Error interrupting app-server turn for slash command:', error);
+            }
+        };
+
         const resumeExistingThreadForCompact = async (mode: EnhancedMode): Promise<string | null> => {
             if (this.currentThreadId && this.currentThreadId !== invalidThreadId) {
                 hasThread = true;
@@ -675,12 +689,14 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             }
 
             if (specialCommand.type === 'invalid') {
+                await interruptActiveTurn();
                 resetCurrentTurnState();
                 sendVisibleStatus(specialCommand.message);
                 return true;
             }
 
             if (specialCommand.type === 'clear') {
+                await interruptActiveTurn();
                 resetCurrentTurnState();
                 this.currentThreadId = null;
                 invalidThreadId = null;
@@ -690,6 +706,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 return true;
             }
 
+            await interruptActiveTurn();
             resetCurrentTurnState();
             const threadId = await resumeExistingThreadForCompact(message.mode);
             if (!threadId) {
