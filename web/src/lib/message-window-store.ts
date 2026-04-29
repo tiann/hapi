@@ -638,8 +638,12 @@ export function markMessagesConsumed(sessionId: string, localIds: string[], invo
                 // Apply the ack even if the message is already 'sent' (optimistic) — otherwise
                 // a message that flipped to 'sent' before the consume event arrives would
                 // never receive `invokedAt` and keep sorting by send time.
+                // First-write-wins on `invokedAt`: mirror the hub's UPDATE guard so a
+                // duplicate `messages-consumed` (e.g. CLI re-emit) doesn't restamp a
+                // message and shuffle its byPosition slot on live clients while the
+                // DB still holds the original timestamp.
                 const needsStatus = message.status !== 'sent'
-                const needsInvokedAt = message.invokedAt !== effectiveInvokedAt
+                const needsInvokedAt = message.invokedAt == null
                 if (!needsStatus && !needsInvokedAt) {
                     return message
                 }
