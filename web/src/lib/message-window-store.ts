@@ -456,6 +456,12 @@ export async function fetchLatestMessages(api: ApiClient, sessionId: string): Pr
                 pendingVisibleCount: pendingResult.pendingVisibleCount,
                 pendingOverflowCount: pendingResult.pendingOverflowCount,
                 pendingOverflowVisibleCount: pendingResult.pendingOverflowVisibleCount,
+                // Persist the V8 cursor pair on the non-at-bottom path too. Without this
+                // a refresh while scrolled up dropped the composite cursor and the next
+                // loadMore fell back to V7 seq mode against a V8 hub — the same
+                // asymmetric class of bug the at-bottom branch already guards against.
+                oldestPositionAt: isV8Cursor ? nextBeforeAt : null,
+                oldestPositionSeq: isV8Cursor ? nextBeforeSeq : null,
                 isLoading: false,
                 warning: pendingResult.warning,
             })
@@ -643,7 +649,10 @@ export function markMessagesConsumed(sessionId: string, localIds: string[], invo
                 // message and shuffle its byPosition slot on live clients while the
                 // DB still holds the original timestamp.
                 const needsStatus = message.status !== 'sent'
-                const needsInvokedAt = message.invokedAt == null
+                // Strict null to stay consistent with isQueuedForInvocation and the rest
+                // of this file. The idSet filter already shields V7-stamped rows from
+                // this path, but the strict-null contract should not vary by call site.
+                const needsInvokedAt = message.invokedAt === null
                 if (!needsStatus && !needsInvokedAt) {
                     return message
                 }

@@ -1,5 +1,4 @@
-import type { InfiniteData } from '@tanstack/react-query'
-import type { DecryptedMessage, MessagesResponse } from '@/types/api'
+import type { DecryptedMessage } from '@/types/api'
 import { randomId } from '@/lib/randomId'
 
 export function makeClientSideId(prefix: string): string {
@@ -137,40 +136,4 @@ export function mergeMessages(existing: DecryptedMessage[], incoming: DecryptedM
 
     result.sort(compareMessages)
     return result
-}
-
-export function upsertMessagesInCache(
-    data: InfiniteData<MessagesResponse> | undefined,
-    incoming: DecryptedMessage[],
-): InfiniteData<MessagesResponse> {
-    const mergedIncoming = mergeMessages([], incoming)
-
-    if (!data || data.pages.length === 0) {
-        return {
-            pages: [
-                {
-                    messages: mergedIncoming,
-                    page: {
-                        limit: 50,
-                        beforeSeq: null,
-                        nextBeforeSeq: null,
-                        hasMore: false,
-                    },
-                },
-            ],
-            pageParams: [null],
-        }
-    }
-
-    const pages = data.pages.slice()
-    const first = pages[0]
-    pages[0] = {
-        ...first,
-        messages: mergeMessages(first.messages, mergedIncoming),
-    }
-
-    return {
-        ...data,
-        pages,
-    }
 }

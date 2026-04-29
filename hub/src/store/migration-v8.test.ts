@@ -219,6 +219,39 @@ describe('Store V7→V8 migration: invoked_at column', () => {
         expect(sent.invokedAt).toBeNull()  // value at insert; row has been updated since
         expect(store.messages.getUninvokedLocalMessages(session.id)).toEqual([])
     })
+
+    // Mirrors the session-end handler's auto-invoke contract at the store
+    // layer: when a CLI exits, we sweep every queued message for the session
+    // (getUninvokedLocalMessages) and stamp them with a single timestamp
+    // (markMessagesInvoked). After the sweep, no queued ghosts may remain —
+    // otherwise the floating bar would survive across reloads even though the
+    // CLI is no longer running.
+    it('session-end pattern: getUninvokedLocalMessages + markMessagesInvoked clears all queued', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('test', { path: '/tmp' }, null, 'default')
+        store.messages.addMessage(session.id, 'q1', 'local-1')
+        store.messages.addMessage(session.id, 'q2', 'local-2')
+        store.messages.addMessage(session.id, 'q3', 'local-3')
+
+        const queuedBefore = store.messages.getUninvokedLocalMessages(session.id)
+        expect(queuedBefore).toHaveLength(3)
+        const localIds = queuedBefore
+            .map(m => m.localId)
+            .filter((id): id is string => id !== null)
+        expect(localIds).toHaveLength(3)
+
+        const ts = Date.now()
+        store.messages.markMessagesInvoked(session.id, localIds, ts)
+
+        const queuedAfter = store.messages.getUninvokedLocalMessages(session.id)
+        expect(queuedAfter).toHaveLength(0)
+        // And every row now carries the same invokedAt — a partial sweep would
+        // leave the floating bar half-cleared on the web client.
+        const allMessages = store.messages.getMessages(session.id)
+        for (const msg of allMessages) {
+            expect(msg.invokedAt).toBe(ts)
+        }
+    })
 })
 
 describe('Store V8 byPosition pagination', () => {
@@ -362,6 +395,56 @@ describe('Store V8 byPosition pagination', () => {
         } finally {
             rmSync(dir, { recursive: true, force: true })
         }
+    })
+
+    // The web client renders queued messages from the union of the latest
+    // page (getMessagesByPosition) and the uninvoked-local set
+    // (getUninvokedLocalMessages). This test pins that contract at the store
+    // layer: a low-position queued row must NOT appear in the latest page once
+    // it's been pushed out, but it must still be discoverable via the
+    // uninvoked set so the floating bar can render it.
+    it('latest page + uninvoked union: queued rows pushed out of the page are still surfaced', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('test', { path: '/tmp' }, null, 'default')
+
+        // Queued message lands first → low createdAt; invoked_at stays NULL,
+        // so its position_at = createdAt (the lowest in the session).
+        const queued = store.messages.addMessage(session.id, 'queued', 'local-q')
+
+        // Add enough later (auto-invoked) messages to push the queued row out
+        // of a 3-row latest page.
+        for (let i = 0; i < 5; i++) {
+            store.messages.addMessage(session.id, `later-${i}`)
+        }
+
+        const pageRows = store.messages.getMessagesByPosition(session.id, 3)
+        expect(pageRows).toHaveLength(3)
+        expect(pageRows.find(m => m.id === queued.id)).toBeUndefined()
+
+        // ...but the uninvoked union still surfaces it.
+        const queuedRows = store.messages.getUninvokedLocalMessages(session.id)
+        expect(queuedRows.map(m => m.id)).toContain(queued.id)
+    })
+
+    // Pins the latest-page ordering contract used as the cursor anchor on the
+    // web side: page rows are returned in ascending position order, so
+    // pageRows[0] is the oldest row in the page and is the correct anchor for
+    // the next older fetch.
+    it('getMessagesByPosition ascending order: pageRows[0] is the oldest in the page', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('test', { path: '/tmp' }, null, 'default')
+        const m1 = store.messages.addMessage(session.id, 'm1')
+        const m2 = store.messages.addMessage(session.id, 'm2')
+        const m3 = store.messages.addMessage(session.id, 'm3')
+
+        const page = store.messages.getMessagesByPosition(session.id, 10)
+        expect(page).toHaveLength(3)
+        // Ascending by position_at, with seq as the tiebreaker — m1 is oldest,
+        // m3 is newest. If this ever flips, the web client's
+        // `oldestPositionAt = pageRows[0].position` would anchor to the wrong
+        // end of the page and the next loadMore would either gap or duplicate.
+        expect(page[0].id).toBe(m1.id)
+        expect(page[2].id).toBe(m3.id)
     })
 
     it('legacy DB (user_version=0 with V7-shape tables): step ladder backfills invoked_at and index', () => {
