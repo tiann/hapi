@@ -233,6 +233,25 @@ export async function startRunner(options: { workspaceRoot?: string } = {}): Pro
     const spawnSession = async (options: SpawnSessionOptions): Promise<SpawnSessionResult> => {
       logger.debugLargeJson('[RUNNER RUN] Spawning session', options);
 
+      // Spawn guard: prevent duplicate agent processes for the same resume session
+      if (options.resumeSessionId) {
+        for (const [existingPid, tracked] of pidToTrackedSession.entries()) {
+          if (tracked.resumeSessionId === options.resumeSessionId) {
+            if (isProcessAlive(existingPid)) {
+              logger.debug(`[RUNNER RUN] Spawn guard: session ${options.resumeSessionId} already running (PID ${existingPid}), rejecting duplicate spawn`);
+              return {
+                type: 'error',
+                errorMessage: `Agent session is already running (PID ${existingPid}). Cannot spawn duplicate.`
+              };
+            } else {
+              // Process is dead but tracking entry remains — clean it up
+              logger.debug(`[RUNNER RUN] Spawn guard: stale tracking entry for PID ${existingPid}, cleaning up`);
+              pidToTrackedSession.delete(existingPid);
+            }
+          }
+        }
+      }
+
       const { directory, sessionId, machineId, approvedNewDirectoryCreation = true } = options;
       const agent = options.agent ?? 'claude';
       const yolo = options.yolo === true;
@@ -479,7 +498,8 @@ export async function startRunner(options: { workspaceRoot?: string } = {}): Pro
           pid,
           childProcess: happyProcess,
           directoryCreated,
-          message: directoryCreated ? `The path '${directory}' did not exist. We created a new folder and spawned a new session there.` : undefined
+          message: directoryCreated ? `The path '${directory}' did not exist. We created a new folder and spawned a new session there.` : undefined,
+          resumeSessionId: options.resumeSessionId
         };
 
         pidToTrackedSession.set(pid, trackedSession);

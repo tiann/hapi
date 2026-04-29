@@ -30,7 +30,12 @@ function createWrapper() {
     }
 }
 
-function createMockApi(sendMessage: (...args: unknown[]) => Promise<void> = async () => {}): ApiClient {
+function createMockApi(
+    sendMessage: (...args: unknown[]) => Promise<{ status: string; sessionId: string }> = async (...args) => ({
+        status: 'sent',
+        sessionId: (args[0] as string) ?? 'session-A'
+    })
+): ApiClient {
     return { sendMessage } as unknown as ApiClient
 }
 

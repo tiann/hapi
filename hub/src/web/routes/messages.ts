@@ -43,11 +43,13 @@ export function createMessagesRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return engine
         }
 
-        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        // Allow inactive sessions — auto-resume will handle them
+        const sessionResult = requireSessionFromParam(c, engine)
         if (sessionResult instanceof Response) {
             return sessionResult
         }
         const sessionId = sessionResult.sessionId
+        const session = sessionResult.session
 
         const body = await c.req.json().catch(() => null)
         const parsed = sendMessageBodySchema.safeParse(body)
@@ -60,13 +62,36 @@ export function createMessagesRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return c.json({ error: 'Message requires text or attachments' }, 400)
         }
 
+        // Auto-resume: if session is inactive, trigger resume and return 202
+        if (!session.active) {
+            const namespace = c.get('namespace')
+            const canResume = engine.canAutoResume(sessionId)
+
+            if (!canResume) {
+                return c.json({
+                    error: engine.getAutoResumeRejectionReason(sessionId),
+                    inactive: true
+                }, 409)
+            }
+
+            // Fire-and-forget: trigger resume in background
+            engine.triggerAutoResume(sessionId, namespace).catch(() => {
+                // Resume errors are logged inside triggerAutoResume
+            })
+
+            return c.json({
+                status: 'resuming',
+                sessionId
+            }, 202)
+        }
+
         await engine.sendMessage(sessionId, {
             text: parsed.data.text,
             localId: parsed.data.localId,
             attachments: parsed.data.attachments,
             sentFrom: 'webapp'
         })
-        return c.json({ ok: true })
+        return c.json({ ok: true, sessionId })
     })
 
     return app

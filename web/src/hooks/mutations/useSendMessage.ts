@@ -1,5 +1,5 @@
 import { useMutation } from '@tanstack/react-query'
-import { useRef, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import type { ApiClient } from '@/api/client'
 import type { AttachmentMetadata, DecryptedMessage } from '@/types/api'
 import { makeClientSideId } from '@/lib/messages'
@@ -78,23 +78,33 @@ export function useSendMessage(
     const isSessionThinkingRef = useRef(options?.isSessionThinking ?? false)
     isSessionThinkingRef.current = options?.isSessionThinking ?? false
 
+    const retryTimersRef = useRef<Map<string, { timer: ReturnType<typeof setTimeout>; count: number }>>(new Map())
+    const MAX_RESUME_RETRIES = 10
+    const RESUME_RETRY_INTERVAL_MS = 3_000
+
     const mutation = useMutation({
         mutationFn: async (input: SendMessageInput) => {
             if (!api) {
                 throw new Error('API unavailable')
             }
-            await api.sendMessage(input.sessionId, input.text, input.localId, input.attachments)
+            return await api.sendMessage(input.sessionId, input.text, input.localId, input.attachments)
         },
         onMutate: async (input) => {
             const status = isSessionThinkingRef.current ? 'queued' as const : 'sending' as const
             appendOptimisticMessage(input.sessionId, createOptimisticMessage(input, status))
             return { status }
         },
-        onSuccess: (_, input, context) => {
+        onSuccess: (result, input) => {
+            if (result.status === 'resuming') {
+                // Session is resuming — keep message as queued and schedule retry
+                updateMessageStatus(input.sessionId, input.localId, 'queued')
+                scheduleResumeRetry(input, 0)
+                return
+            }
             updateMessageStatus(
                 input.sessionId,
                 input.localId,
-                context?.status === 'queued' ? 'queued' : 'sent'
+                'sent'
             )
             haptic.notification('success')
             options?.onSuccess?.(input.sessionId)
@@ -104,6 +114,39 @@ export function useSendMessage(
             haptic.notification('error')
         },
     })
+
+    const scheduleResumeRetry = useCallback((input: SendMessageInput, count: number) => {
+        const timers = retryTimersRef.current
+        const existing = timers.get(input.localId)
+        if (existing) {
+            clearTimeout(existing.timer)
+        }
+        const timer = setTimeout(async () => {
+            timers.delete(input.localId)
+            if (!api) return
+            const nextCount = count + 1
+            if (nextCount > MAX_RESUME_RETRIES) {
+                updateMessageStatus(input.sessionId, input.localId, 'failed')
+                haptic.notification('error')
+                return
+            }
+            try {
+                const result = await api.sendMessage(input.sessionId, input.text, input.localId, input.attachments)
+                if (result.status === 'resuming') {
+                    // Still resuming — retry again
+                    scheduleResumeRetry(input, nextCount)
+                } else {
+                    updateMessageStatus(input.sessionId, input.localId, 'sent')
+                    haptic.notification('success')
+                    options?.onSuccess?.(input.sessionId)
+                }
+            } catch {
+                updateMessageStatus(input.sessionId, input.localId, 'failed')
+                haptic.notification('error')
+            }
+        }, RESUME_RETRY_INTERVAL_MS)
+        timers.set(input.localId, { timer, count })
+    }, [api, haptic, options])
 
     const sendMessage = (text: string, attachments?: AttachmentMetadata[]) => {
         if (!api) {

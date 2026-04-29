@@ -46,6 +46,8 @@ export type ResumeSessionResult =
     | { type: 'success'; sessionId: string }
     | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'no_machine_online' | 'resume_unavailable' | 'resume_failed' }
 
+const MAX_AUTO_RESUME_ATTEMPTS = 3
+
 export class SyncEngine {
     private readonly eventPublisher: EventPublisher
     private readonly sessionCache: SessionCache
@@ -53,6 +55,9 @@ export class SyncEngine {
     private readonly messageService: MessageService
     private readonly rpcGateway: RpcGateway
     private inactivityTimer: NodeJS.Timeout | null = null
+    private readonly resumeAttempts = new Map<string, number>()
+    private readonly resumingSessionIds = new Set<string>()
+    private readonly sessionEndReasons = new Map<string, 'completed' | 'terminated' | 'error' | 'timeout'>()
 
     constructor(
         store: Store,
@@ -212,10 +217,19 @@ export class SyncEngine {
     }): void {
         this.sessionCache.handleSessionAlive(payload)
         this.triggerDedupIfNeeded(payload.sid)
+        this.resetAutoResumeAttempts(payload.sid)
+        this.sessionEndReasons.delete(payload.sid)
     }
 
     handleSessionEnd(payload: { sid: string; time: number; reason?: 'completed' | 'terminated' | 'error' }): void {
         this.sessionCache.handleSessionEnd(payload)
+        // Track end reason for auto-resume decisions
+        if (payload.reason) {
+            this.sessionEndReasons.set(payload.sid, payload.reason)
+        } else {
+            // No reason = heartbeat timeout (crash/disconnect)
+            this.sessionEndReasons.set(payload.sid, 'timeout')
+        }
         this.eventPublisher.emit({
             type: 'session-ended',
             sessionId: payload.sid,
@@ -240,6 +254,10 @@ export class SyncEngine {
 
     private expireInactive(): void {
         const expired = this.sessionCache.expireInactive()
+        // Mark heartbeat-expired sessions as timeout (eligible for auto-resume)
+        for (const id of expired) {
+            this.sessionEndReasons.set(id, 'timeout')
+        }
         // Sort by most recent first so dedup keeps the newest session when multiple
         // duplicates for the same agent thread expire in the same sweep.
         const sorted = expired
@@ -318,7 +336,7 @@ export class SyncEngine {
 
     async archiveSession(sessionId: string): Promise<void> {
         await this.rpcGateway.killSession(sessionId)
-        this.handleSessionEnd({ sid: sessionId, time: Date.now() })
+        this.handleSessionEnd({ sid: sessionId, time: Date.now(), reason: 'terminated' })
     }
 
     async switchSession(sessionId: string, to: 'remote' | 'local'): Promise<void> {
@@ -595,5 +613,67 @@ export class SyncEngine {
 
     async listCodexModelsForMachine(machineId: string): Promise<RpcListCodexModelsResponse> {
         return await this.rpcGateway.listCodexModelsForMachine(machineId)
+    }
+
+    // -----------------------------------------------------------------------
+    // Auto-resume: lightweight crash recovery
+    // -----------------------------------------------------------------------
+
+    canAutoResume(sessionId: string): boolean {
+        // Don't auto-resume if session ended intentionally
+        const endReason = this.sessionEndReasons.get(sessionId)
+        if (endReason === 'completed' || endReason === 'terminated') {
+            return false
+        }
+        if (this.resumingSessionIds.has(sessionId)) {
+            return true // already resuming, frontend can watch
+        }
+        const attempts = this.resumeAttempts.get(sessionId) ?? 0
+        return attempts < MAX_AUTO_RESUME_ATTEMPTS
+    }
+
+    getAutoResumeRejectionReason(sessionId: string): string {
+        const endReason = this.sessionEndReasons.get(sessionId)
+        if (endReason === 'completed') {
+            return 'Session completed naturally and cannot be auto-resumed'
+        }
+        if (endReason === 'terminated') {
+            return 'Session was archived/stopped and cannot be auto-resumed'
+        }
+        return 'Session cannot be auto-resumed (max attempts exceeded)'
+    }
+
+    async triggerAutoResume(sessionId: string, namespace: string): Promise<void> {
+        // Dedup: don't resume twice
+        if (this.resumingSessionIds.has(sessionId)) {
+            return
+        }
+
+        const attempts = this.resumeAttempts.get(sessionId) ?? 0
+        if (attempts >= MAX_AUTO_RESUME_ATTEMPTS) {
+            return
+        }
+
+        this.resumingSessionIds.add(sessionId)
+        this.resumeAttempts.set(sessionId, attempts + 1)
+
+        try {
+            const result = await this.resumeSession(sessionId, namespace)
+
+            if (result.type === 'success') {
+                // Reset attempts on success
+                this.resumeAttempts.delete(sessionId)
+            }
+            // On failure, attempts counter stays — next try will increment
+        } catch (error) {
+            // Unexpected error during resume — logged but not thrown
+            void error
+        } finally {
+            this.resumingSessionIds.delete(sessionId)
+        }
+    }
+
+    resetAutoResumeAttempts(sessionId: string): void {
+        this.resumeAttempts.delete(sessionId)
     }
 }

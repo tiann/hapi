@@ -281,15 +281,37 @@ export class ApiClient {
         return response.sessionId
     }
 
-    async sendMessage(sessionId: string, text: string, localId?: string | null, attachments?: AttachmentMetadata[]): Promise<void> {
-        await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/messages`, {
+    async sendMessage(
+        sessionId: string,
+        text: string,
+        localId?: string | null,
+        attachments?: AttachmentMetadata[]
+    ): Promise<{ status: 'sent'; sessionId: string } | { status: 'resuming'; sessionId: string }> {
+        const res = await fetch(this.buildUrl(`/api/sessions/${encodeURIComponent(sessionId)}/messages`), {
             method: 'POST',
+            headers: {
+                'content-type': 'application/json',
+                'authorization': `Bearer ${(this.getToken ? this.getToken() : null) ?? this.token}`
+            },
             body: JSON.stringify({
                 text,
                 localId: localId ?? undefined,
                 attachments: attachments ?? undefined
             })
         })
+
+        if (res.status === 202) {
+            const body = await res.json().catch(() => null) as { sessionId?: string } | null
+            return { status: 'resuming', sessionId: body?.sessionId ?? sessionId }
+        }
+
+        if (!res.ok) {
+            const body = await res.text().catch(() => '')
+            throw new Error(`HTTP ${res.status} ${res.statusText}: ${body}`)
+        }
+
+        const body = await res.json().catch(() => null) as { sessionId?: string } | null
+        return { status: 'sent', sessionId: body?.sessionId ?? sessionId }
     }
 
     async abortSession(sessionId: string): Promise<void> {
