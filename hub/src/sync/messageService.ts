@@ -67,7 +67,26 @@ export class MessageService {
         }
     } {
         const before = options.before ?? undefined
-        const stored = this.store.messages.getMessagesByPosition(sessionId, options.limit, before)
+        const pageRows = this.store.messages.getMessagesByPosition(sessionId, options.limit, before)
+
+        // Latest-page request (no cursor): also include uninvoked local user messages
+        // out-of-band, so refresh / secondary clients can still see queued rows even
+        // when their position key (createdAt) places them outside the latest page.
+        // The cursor stays anchored to pageRows so out-of-band rows don't affect
+        // pagination of older pages.
+        const queuedRows = before === undefined
+            ? this.store.messages.getUninvokedLocalMessages(sessionId)
+            : []
+
+        const byId = new Map<string, typeof pageRows[number]>()
+        for (const row of pageRows) byId.set(row.id, row)
+        for (const row of queuedRows) byId.set(row.id, row)
+
+        const stored = [...byId.values()].sort((a, b) => {
+            const at = (a.invokedAt ?? a.createdAt) - (b.invokedAt ?? b.createdAt)
+            return at !== 0 ? at : a.seq - b.seq
+        })
+
         const messages: DecryptedMessage[] = stored.map((message) => ({
             id: message.id,
             seq: message.seq,
@@ -77,10 +96,10 @@ export class MessageService {
             invokedAt: message.invokedAt
         }))
 
-        // The page is in ascending position order (oldest first), so the cursor for
-        // the next older fetch is the first row — picking the smallest `seq` instead
-        // would land on the wrong row whenever a low-seq row was invoked late.
-        const oldest = stored[0] ?? null
+        // The cursor is the oldest row in the actual position-ordered page (pageRows[0]).
+        // Out-of-band queued rows are not part of the cursor — they are pinned to
+        // every latest-page response.
+        const oldest = pageRows[0] ?? null
         const oldestSeq: number | null = oldest?.seq ?? null
         const oldestPositionAt: number | null = oldest
             ? oldest.invokedAt ?? oldest.createdAt

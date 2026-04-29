@@ -143,6 +143,20 @@ export function getMessagesByPosition(
     return rows.reverse().map(toStoredMessage)
 }
 
+/** Returns user messages that have a localId but no invoked_at.
+ *  Used to surface queued messages on refresh / secondary clients even when they
+ *  fall outside the latest position-ordered page (their position key is the send
+ *  time, but the floating bar still needs to render them). */
+export function getUninvokedLocalMessages(
+    db: Database,
+    sessionId: string
+): StoredMessage[] {
+    const rows = db.prepare(
+        'SELECT * FROM messages WHERE session_id = ? AND invoked_at IS NULL AND local_id IS NOT NULL ORDER BY seq ASC'
+    ).all(sessionId) as DbMessageRow[]
+    return rows.map(toStoredMessage)
+}
+
 export function getMaxSeq(db: Database, sessionId: string): number {
     const row = db.prepare(
         'SELECT COALESCE(MAX(seq), 0) AS maxSeq FROM messages WHERE session_id = ?'

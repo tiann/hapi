@@ -195,6 +195,28 @@ describe('Store V7→V8 migration: invoked_at column', () => {
         const msg = store.messages.addMessage(session.id, 'content')
         expect(msg.invokedAt).toBe(msg.createdAt)
     })
+
+    it('getUninvokedLocalMessages returns rows with localId and null invoked_at', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('test', { path: '/tmp' }, null, 'default')
+        const queued = store.messages.addMessage(session.id, 'q', 'local-q')
+        store.messages.addMessage(session.id, 'no-localid')          // invoked_at = createdAt, excluded
+        store.messages.addMessage(session.id, 'invoked', 'local-i')
+        store.messages.markMessagesInvoked(session.id, ['local-i'], Date.now())
+
+        const uninvoked = store.messages.getUninvokedLocalMessages(session.id)
+        expect(uninvoked.map(m => m.id)).toEqual([queued.id])
+    })
+
+    it('getUninvokedLocalMessages returns empty for session with no queued messages', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('test', { path: '/tmp' }, null, 'default')
+        store.messages.addMessage(session.id, 'plain')                                // invoked_at set
+        const sent = store.messages.addMessage(session.id, 'sent', 'local-s')
+        store.messages.markMessagesInvoked(session.id, ['local-s'], Date.now())
+        expect(sent.invokedAt).toBeNull()  // value at insert; row has been updated since
+        expect(store.messages.getUninvokedLocalMessages(session.id)).toEqual([])
+    })
 })
 
 describe('Store V8 byPosition pagination', () => {
