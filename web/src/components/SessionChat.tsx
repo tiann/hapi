@@ -382,13 +382,50 @@ export function SessionChat(props: {
                 <TeamPanel teamState={props.session.teamState} />
             )}
 
-            {sessionInactive ? (
-                <div className="px-3 pt-3">
-                    <div className="mx-auto w-full max-w-content rounded-md bg-[var(--app-subtle-bg)] p-3 text-sm text-[var(--app-hint)]">
-                        Session is inactive. Sending will resume it automatically.
+
+            {sessionInactive ? (() => {
+                const meta = props.session.metadata
+                const hasResumeToken = !!(
+                    meta?.claudeSessionId ||
+                    meta?.codexSessionId ||
+                    meta?.geminiSessionId ||
+                    meta?.opencodeSessionId ||
+                    meta?.cursorSessionId
+                )
+                if (!hasResumeToken) {
+                    return (
+                        <div className="px-3 pt-3">
+                            <div className="mx-auto w-full max-w-content rounded-md bg-[var(--app-subtle-bg)] p-3 text-sm flex items-center justify-between gap-3">
+                                <p className="text-[var(--app-hint)]">
+                                    This session cannot be resumed — no agent session token was saved.
+                                </p>
+                                <button
+                                    type="button"
+                                    style={{ background: 'rgb(99,102,241)', color: '#fff', whiteSpace: 'nowrap' }}
+                                    className="shrink-0 rounded-md px-3 py-1.5 text-xs font-semibold hover:opacity-90 transition-opacity cursor-pointer"
+                                    onClick={() => void navigate({
+                                        to: '/sessions/new',
+                                        search: (prev) => ({
+                                            ...prev,
+                                            ...(meta?.path ? { directory: meta.path } : {})
+                                        })
+                                    })}
+                                >
+                                    + New Session
+                                </button>
+                            </div>
+                        </div>
+                    )
+                }
+                return (
+                    <div className="px-3 pt-3">
+                        <div className="mx-auto w-full max-w-content rounded-md bg-[var(--app-subtle-bg)] p-3 text-sm text-[var(--app-hint)]">
+                            Session is inactive. Sending will resume it automatically.
+                        </div>
                     </div>
-                </div>
-            ) : null}
+                )
+            })() : null}
+
 
             <AssistantRuntimeProvider runtime={runtime}>
                 <div className="relative flex min-h-0 flex-1 flex-col">

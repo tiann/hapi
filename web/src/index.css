@@ -357,3 +357,14 @@ html[data-theme="dark"] .shiki span {
   bottom: 50% !important;
   transform: translateY(50%);
 }
+
+/* ─── Mobile Density ─────────────────────────────────────────────────────────
+ * Reduce rem base on mobile so all Tailwind utility classes (p-3, gap-3,
+ * text-base, text-sm…) scale down proportionally — no component changes needed.
+ * text-base: 16px → ~14px; p-3: 12px → ~10.5px; gap-2: 8px → ~7px
+ * ─────────────────────────────────────────────────────────────────────────── */
+@media (max-width: 600px) {
+    html {
+        font-size: calc(87.5% * var(--app-font-scale, 1));
+    }
+}
