@@ -176,6 +176,36 @@ function groupSessionsByDirectory(sessions: SessionSummary[]): SessionGroup[] {
         })
 }
 
+
+export function expandSelectedSessionCollapseOverrides(
+    overrides: Map<string, boolean>,
+    group: { key: string; machineId: string | null }
+): Map<string, boolean> {
+    const next = new Map(overrides)
+    let changed = false
+
+    // Expand project group if collapsed. Project and machine keys use true = collapsed.
+    if (overrides.has(group.key) && overrides.get(group.key)) {
+        next.delete(group.key)
+        changed = true
+    }
+
+    // Session preview keys use inverted semantics: false = expanded, true/missing = collapsed.
+    const sessionPreviewKey = `sessions::${group.key}`
+    if (overrides.get(sessionPreviewKey) !== false) {
+        next.set(sessionPreviewKey, false)
+        changed = true
+    }
+
+    const machineKey = `machine::${group.machineId ?? UNKNOWN_MACHINE_ID}`
+    if (overrides.has(machineKey) && overrides.get(machineKey)) {
+        next.delete(machineKey)
+        changed = true
+    }
+
+    return changed ? next : overrides
+}
+
 function groupByMachine(
     groups: SessionGroup[],
     resolveMachineLabel: (id: string | null) => string
@@ -398,7 +428,6 @@ export function getVisibleSessionPreview(
     sessions: SessionSummary[],
     options: {
         expanded?: boolean
-        selectedSessionId?: string | null
         limit?: number
     } = {}
 ): SessionSummary[] {
@@ -412,11 +441,6 @@ export function getVisibleSessionPreview(
         included.add(session.id)
         visible.push(session)
     }
-
-    const selectedSession = options.selectedSessionId
-        ? sessions.find(session => session.id === options.selectedSessionId)
-        : undefined
-    if (selectedSession) addSession(selectedSession)
 
     for (const session of sessions) {
         if (visible.length >= limit) break
@@ -438,19 +462,21 @@ function SessionListSearch(props: {
     const { t } = useTranslation()
     return (
         <div className="relative px-3 pb-2">
-            <SearchIcon className="pointer-events-none absolute left-5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--app-hint)]" />
+            <div className="pointer-events-none absolute inset-y-0 left-5 flex items-center pb-2 text-[var(--app-hint)]">
+                <SearchIcon className="h-3.5 w-3.5" />
+            </div>
             <input
                 type="search"
                 value={props.value}
                 onChange={(event) => props.onChange(event.target.value)}
                 placeholder={t('sessions.search.placeholder')}
-                className="w-full rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] py-1.5 pl-8 pr-8 text-sm text-[var(--app-fg)] outline-none transition-colors placeholder:text-[var(--app-hint)] focus:border-[var(--app-link)]"
+                className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] py-1.5 pl-8 pr-8 text-sm text-[var(--app-fg)] outline-none transition-colors placeholder:text-[var(--app-hint)] focus:border-[var(--app-link)] [&::-webkit-search-cancel-button]:hidden [&::-webkit-search-decoration]:hidden"
             />
             {props.value ? (
                 <button
                     type="button"
                     onClick={() => props.onChange('')}
-                    className="absolute right-5 top-1/2 -translate-y-1/2 rounded p-0.5 text-[var(--app-hint)] hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)]"
+                    className="absolute inset-y-0 right-5 flex items-center pb-2 rounded p-0.5 text-[var(--app-hint)] hover:text-[var(--app-fg)]"
                     title={t('sessions.search.clear')}
                 >
                     <XIcon className="h-3.5 w-3.5" />
@@ -749,8 +775,7 @@ export function SessionList(props: {
         return getVisibleSessionPreview(
             group.sessions,
             {
-                expanded: isSessionGroupExpanded(group),
-                selectedSessionId
+                expanded: isSessionGroupExpanded(group)
             }
         )
     }
@@ -789,20 +814,7 @@ export function SessionList(props: {
                 g.sessions.some(s => s.id === selectedSessionId)
             )
             if (!group) return prev
-            const next = new Map(prev)
-            let changed = false
-            // Expand project group if collapsed
-            if (prev.has(group.key) && prev.get(group.key)) {
-                next.delete(group.key)
-                changed = true
-            }
-            // Expand machine group if collapsed
-            const machineKey = `machine::${group.machineId ?? UNKNOWN_MACHINE_ID}`
-            if (prev.has(machineKey) && prev.get(machineKey)) {
-                next.delete(machineKey)
-                changed = true
-            }
-            return changed ? next : prev
+            return expandSelectedSessionCollapseOverrides(prev, group)
         })
     }, [selectedSessionId, allGroups])
 
