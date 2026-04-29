@@ -176,6 +176,8 @@ export class Store {
             );
             CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, seq);
             CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_local_id ON messages(session_id, local_id) WHERE local_id IS NOT NULL;
+            CREATE INDEX IF NOT EXISTS idx_messages_session_position
+                ON messages(session_id, COALESCE(invoked_at, created_at) DESC, seq DESC);
 
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -330,6 +332,11 @@ export class Store {
         // Idempotent (WHERE invoked_at IS NULL); safe to re-run if a previous attempt
         // crashed between ALTER and UPDATE before user_version was bumped.
         this.db.exec('UPDATE messages SET invoked_at = created_at WHERE invoked_at IS NULL')
+        // Position index for byPosition pagination — idempotent via IF NOT EXISTS.
+        this.db.exec(`
+            CREATE INDEX IF NOT EXISTS idx_messages_session_position
+                ON messages(session_id, COALESCE(invoked_at, created_at) DESC, seq DESC)
+        `)
     }
 
     private getSessionColumnNames(): Set<string> {

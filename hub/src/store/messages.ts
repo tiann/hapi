@@ -114,6 +114,35 @@ export function getMessagesAfter(
     return rows.map(toStoredMessage)
 }
 
+/** Paginate messages by COALESCE(invoked_at, created_at) DESC, seq DESC.
+ *  Used for V8 byPosition mode.  Results are returned in ascending display order. */
+export function getMessagesByPosition(
+    db: Database,
+    sessionId: string,
+    limit: number,
+    before?: { at: number; seq: number }
+): StoredMessage[] {
+    const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.min(200, limit)) : 200
+    const beforeClause = before
+        ? 'AND (COALESCE(invoked_at, created_at) < @beforeAt OR (COALESCE(invoked_at, created_at) = @beforeAt AND seq < @beforeSeq))'
+        : ''
+    const rows = db.prepare(`
+        SELECT *, COALESCE(invoked_at, created_at) AS position_at
+        FROM messages
+        WHERE session_id = @sessionId
+          ${beforeClause}
+        ORDER BY position_at DESC, seq DESC
+        LIMIT @limit
+    `).all({
+        sessionId,
+        beforeAt: before?.at ?? null,
+        beforeSeq: before?.seq ?? null,
+        limit: safeLimit
+    }) as DbMessageRow[]
+    // Reverse so results are in ascending display order (oldest first)
+    return rows.reverse().map(toStoredMessage)
+}
+
 export function getMaxSeq(db: Database, sessionId: string): number {
     const row = db.prepare(
         'SELECT COALESCE(MAX(seq), 0) AS maxSeq FROM messages WHERE session_id = ?'

@@ -197,6 +197,150 @@ describe('Store V7→V8 migration: invoked_at column', () => {
     })
 })
 
+describe('Store V8 byPosition pagination', () => {
+    it('getMessagesByPosition returns messages in ascending order', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('test', { path: '/tmp' }, null, 'default')
+        const msg1 = store.messages.addMessage(session.id, 'a', 'loc-1')
+        const msg2 = store.messages.addMessage(session.id, 'b', 'loc-2')
+        const msg3 = store.messages.addMessage(session.id, 'c', 'loc-3')
+        // All start with null invokedAt; set different invokedAt values
+        store.messages.markMessagesInvoked(session.id, ['loc-1'], 1000)
+        store.messages.markMessagesInvoked(session.id, ['loc-2'], 2000)
+        store.messages.markMessagesInvoked(session.id, ['loc-3'], 3000)
+
+        const result = store.messages.getMessagesByPosition(session.id, 50)
+        expect(result.map(m => m.id)).toEqual([msg1.id, msg2.id, msg3.id])
+    })
+
+    it('getMessagesByPosition sorts by invokedAt DESC, seq DESC (latest first, reversed to ascending)', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('test', { path: '/tmp' }, null, 'default')
+        // Insert 3 messages: msg1 has low seq but high invokedAt (queued message that was consumed late)
+        const msg1 = store.messages.addMessage(session.id, 'queued', 'loc-q')
+        const msg2 = store.messages.addMessage(session.id, 'normal-1')  // no localId → invokedAt = createdAt
+        const msg3 = store.messages.addMessage(session.id, 'normal-2')  // no localId → invokedAt = createdAt
+
+        // Simulate: msg1 (seq=1) is invoked much later than msg2 and msg3
+        store.messages.markMessagesInvoked(session.id, ['loc-q'], msg3.createdAt + 10_000)
+
+        const result = store.messages.getMessagesByPosition(session.id, 50)
+        // Expected order by position_at ASC: msg2, msg3, msg1 (msg1 has highest invokedAt)
+        expect(result[result.length - 1].id).toBe(msg1.id)
+        expect(result[0].id).toBe(msg2.id)
+    })
+
+    it('getMessagesByPosition composite cursor: second page has no gap or duplicate', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('test', { path: '/tmp' }, null, 'default')
+        // Add 5 messages with distinct invokedAt timestamps
+        const messages = []
+        for (let i = 0; i < 5; i++) {
+            const msg = store.messages.addMessage(session.id, `msg-${i}`)
+            messages.push(msg)
+        }
+
+        // First page: limit=3 (gets last 3 by position DESC, reversed to ASC)
+        const page1 = store.messages.getMessagesByPosition(session.id, 3)
+        expect(page1).toHaveLength(3)
+
+        // Derive cursor from oldest in page1 (first element after reverse)
+        const oldest = page1[0]
+        const cursorAt = oldest.invokedAt ?? oldest.createdAt
+        const cursorSeq = oldest.seq
+
+        // Second page
+        const page2 = store.messages.getMessagesByPosition(session.id, 3, { at: cursorAt, seq: cursorSeq })
+        expect(page2).toHaveLength(2)
+
+        // No overlap between pages
+        const page1Ids = new Set(page1.map(m => m.id))
+        const page2Ids = new Set(page2.map(m => m.id))
+        for (const id of page2Ids) {
+            expect(page1Ids.has(id)).toBe(false)
+        }
+
+        // Together they cover all 5 messages
+        expect(page1Ids.size + page2Ids.size).toBe(5)
+    })
+
+    it('long session: low-seq late-invokedAt message appears in first page', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('test', { path: '/tmp' }, null, 'default')
+        // Insert many normal messages first (low invokedAt)
+        for (let i = 0; i < 10; i++) {
+            store.messages.addMessage(session.id, `normal-${i}`)
+        }
+        // Insert a queued message (low seq, but invoked much later)
+        const queued = store.messages.addMessage(session.id, 'queued', 'loc-q')
+        store.messages.markMessagesInvoked(session.id, ['loc-q'], Date.now() + 1_000_000)
+
+        // The queued message should appear in first page (highest position_at)
+        const page1 = store.messages.getMessagesByPosition(session.id, 5)
+        const ids = page1.map(m => m.id)
+        expect(ids).toContain(queued.id)
+        // It should be the last (most recent) in ascending result
+        expect(ids[ids.length - 1]).toBe(queued.id)
+    })
+
+    it('V7 mode getMessages is unchanged after V8 migration', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'hapi-v7-compat-'))
+        const dbPath = join(dir, 'test.db')
+        try {
+            const db = new Database(dbPath, { create: true, readwrite: true, strict: true })
+            db.exec('PRAGMA journal_mode = WAL')
+            db.exec('PRAGMA foreign_keys = ON')
+            createV7Schema(db)
+            db.exec('PRAGMA user_version = 7')
+            db.exec(`INSERT INTO sessions (id, namespace, created_at, updated_at, seq)
+                     VALUES ('s1', 'default', 1000, 1000, 0)`)
+            db.exec(`INSERT INTO messages (id, session_id, content, created_at, seq)
+                     VALUES ('m1', 's1', '"hello"', 1000, 1), ('m2', 's1', '"world"', 2000, 2)`)
+            db.close()
+
+            const store = new Store(dbPath)
+            // V7 getMessages (seq-based) must still work
+            const msgs = store.messages.getMessages('s1')
+            expect(msgs).toHaveLength(2)
+            expect(msgs[0].seq).toBe(1)
+            expect(msgs[1].seq).toBe(2)
+        } finally {
+            rmSync(dir, { recursive: true, force: true })
+        }
+    })
+
+    it('idx_messages_session_position index exists on fresh DB', () => {
+        const store = new Store(':memory:')
+        const db: Database = (store as any).db
+        const rows = db.prepare(
+            "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_messages_session_position'"
+        ).all() as Array<{ name: string }>
+        expect(rows).toHaveLength(1)
+    })
+
+    it('idx_messages_session_position index exists after V7→V8 migration', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'hapi-index-v7-v8-'))
+        const dbPath = join(dir, 'test.db')
+        try {
+            const db = new Database(dbPath, { create: true, readwrite: true, strict: true })
+            db.exec('PRAGMA journal_mode = WAL')
+            db.exec('PRAGMA foreign_keys = ON')
+            createV7Schema(db)
+            db.exec('PRAGMA user_version = 7')
+            db.close()
+
+            const store = new Store(dbPath)
+            const db2: Database = (store as any).db
+            const rows = db2.prepare(
+                "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_messages_session_position'"
+            ).all() as Array<{ name: string }>
+            expect(rows).toHaveLength(1)
+        } finally {
+            rmSync(dir, { recursive: true, force: true })
+        }
+    })
+})
+
 function getMessageColumns(store: Store): string[] {
     // Access internal db via reflection — safe for test only
     const db: Database = (store as any).db

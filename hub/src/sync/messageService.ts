@@ -54,6 +54,64 @@ export class MessageService {
         }
     }
 
+    getMessagesPageByPosition(
+        sessionId: string,
+        options: { limit: number; before?: { at: number; seq: number } | null }
+    ): {
+        messages: DecryptedMessage[]
+        page: {
+            limit: number
+            nextBeforeSeq: number | null
+            nextBeforeAt: number | null
+            hasMore: boolean
+        }
+    } {
+        const before = options.before ?? undefined
+        const stored = this.store.messages.getMessagesByPosition(sessionId, options.limit, before)
+        const messages: DecryptedMessage[] = stored.map((message) => ({
+            id: message.id,
+            seq: message.seq,
+            localId: message.localId,
+            content: message.content,
+            createdAt: message.createdAt,
+            invokedAt: message.invokedAt
+        }))
+
+        // oldest entry is at index 0 (ascending order after reverse)
+        let oldestSeq: number | null = null
+        let oldestPositionAt: number | null = null
+        for (const message of messages) {
+            if (typeof message.seq !== 'number') continue
+            if (oldestSeq === null || message.seq < oldestSeq) {
+                oldestSeq = message.seq
+                // position_at = invokedAt ?? createdAt
+                const raw = stored.find((s) => s.seq === message.seq)
+                if (raw) {
+                    oldestPositionAt = raw.invokedAt ?? raw.createdAt
+                }
+            }
+        }
+
+        const hasMore = oldestSeq !== null
+            && this.store.messages.getMessagesByPosition(
+                sessionId,
+                1,
+                oldestPositionAt !== null && oldestSeq !== null
+                    ? { at: oldestPositionAt, seq: oldestSeq }
+                    : undefined
+            ).length > 0
+
+        return {
+            messages,
+            page: {
+                limit: options.limit,
+                nextBeforeSeq: oldestSeq,
+                nextBeforeAt: oldestPositionAt,
+                hasMore
+            }
+        }
+    }
+
     getMessagesAfter(sessionId: string, options: { afterSeq: number; limit: number }): DecryptedMessage[] {
         const stored = this.store.messages.getMessagesAfter(sessionId, options.afterSeq, options.limit)
         return stored.map((message) => ({

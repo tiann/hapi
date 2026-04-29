@@ -27,6 +27,8 @@ type InternalState = MessageWindowState & {
     pendingOverflowCount: number
     pendingVisibleCount: number
     pendingOverflowVisibleCount: number
+    // V8 composite cursor: defined when hub responded with nextBeforeAt
+    oldestPositionAt: number | null
 }
 
 type PendingVisibilityCacheEntry = {
@@ -138,6 +140,7 @@ function createState(sessionId: string): InternalState {
         pendingOverflowVisibleCount: 0,
         hasMore: false,
         oldestSeq: null,
+        oldestPositionAt: null,
         newestSeq: null,
         isLoading: false,
         isLoadingMore: false,
@@ -214,6 +217,7 @@ function buildState(
         pendingVisibleCount?: number
         pendingOverflowVisibleCount?: number
         hasMore?: boolean
+        oldestPositionAt?: number | null
         isLoading?: boolean
         isLoadingMore?: boolean
         warning?: string | null
@@ -245,6 +249,7 @@ function buildState(
         pendingOverflowVisibleCount,
         pendingCount,
         oldestSeq,
+        oldestPositionAt: updates.oldestPositionAt !== undefined ? updates.oldestPositionAt : prev.oldestPositionAt,
         newestSeq,
         hasMore: updates.hasMore !== undefined ? updates.hasMore : prev.hasMore,
         isLoading: updates.isLoading !== undefined ? updates.isLoading : prev.isLoading,
@@ -360,6 +365,7 @@ export function seedMessageWindowFromSession(fromSessionId: string, toSessionId:
         pendingOverflowCount: source.pendingOverflowCount,
         pendingOverflowVisibleCount: source.pendingOverflowVisibleCount,
         hasMore: source.hasMore,
+        oldestPositionAt: source.oldestPositionAt,
         warning: source.warning,
         atBottom: source.atBottom,
         isLoading: false,
@@ -376,7 +382,15 @@ export async function fetchLatestMessages(api: ApiClient, sessionId: string): Pr
     updateState(sessionId, (prev) => buildState(prev, { isLoading: true, warning: null }))
 
     try {
-        const response = await api.getMessages(sessionId, { limit: PAGE_SIZE, beforeSeq: null })
+        // Always request byPosition mode (V8). If the hub is V7 it ignores byPosition and
+        // returns the standard seq-based response (no nextBeforeAt field) — we fall back
+        // to seq-cursor mode seamlessly.
+        const response = await api.getMessages(sessionId, { byPosition: true, limit: PAGE_SIZE })
+        // Derive composite cursor if hub responded with nextBeforeAt (V8 mode)
+        const nextBeforeAt = response.page.nextBeforeAt ?? null
+        const nextBeforeSeq = response.page.nextBeforeSeq ?? null
+        const oldestPositionAt = nextBeforeAt !== null ? nextBeforeAt : null
+
         updateState(sessionId, (prev) => {
             if (prev.atBottom) {
                 const merged = mergeMessages(prev.messages, [...prev.pending, ...response.messages])
@@ -388,6 +402,7 @@ export async function fetchLatestMessages(api: ApiClient, sessionId: string): Pr
                     pendingVisibleCount: 0,
                     pendingOverflowVisibleCount: 0,
                     hasMore: response.page.hasMore,
+                    oldestPositionAt: nextBeforeSeq !== null ? oldestPositionAt : null,
                     isLoading: false,
                     warning: null,
                 })
@@ -419,13 +434,27 @@ export async function fetchOlderMessages(api: ApiClient, sessionId: string): Pro
     updateState(sessionId, (prev) => buildState(prev, { isLoadingMore: true }))
 
     try {
-        const response = await api.getMessages(sessionId, { limit: PAGE_SIZE, beforeSeq: initial.oldestSeq })
+        // Use composite cursor (V8 mode) when oldestPositionAt is available from previous response.
+        // Fall back to seq-only cursor for V7 hubs (oldestPositionAt === null).
+        const response = initial.oldestPositionAt !== null
+            ? await api.getMessages(sessionId, {
+                byPosition: true,
+                beforeAt: initial.oldestPositionAt,
+                beforeSeq: initial.oldestSeq,
+                limit: PAGE_SIZE
+            })
+            : await api.getMessages(sessionId, { beforeSeq: initial.oldestSeq, limit: PAGE_SIZE })
+
+        const nextBeforeAt = response.page.nextBeforeAt ?? null
+        const nextBeforeSeq = response.page.nextBeforeSeq ?? null
+
         updateState(sessionId, (prev) => {
             const merged = mergeMessages(response.messages, prev.messages)
             const trimmed = trimVisible(merged, 'prepend')
             return buildState(prev, {
                 messages: trimmed,
                 hasMore: response.page.hasMore,
+                oldestPositionAt: nextBeforeSeq !== null && nextBeforeAt !== null ? nextBeforeAt : null,
                 isLoadingMore: false,
             })
         })
