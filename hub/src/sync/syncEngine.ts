@@ -22,6 +22,7 @@ import {
     type RpcDeleteUploadResponse,
     type RpcListDirectoryResponse,
     type RpcListCodexModelsResponse,
+    type RpcListCodexSessionsResponse,
     type RpcPathExistsResponse,
     type RpcReadFileResponse,
     type RpcUploadFileResponse
@@ -596,4 +597,13 @@ export class SyncEngine {
     async listCodexModelsForMachine(machineId: string): Promise<RpcListCodexModelsResponse> {
         return await this.rpcGateway.listCodexModelsForMachine(machineId)
     }
+
+
+    async listCodexSessionsForMachine(
+        machineId: string,
+        options?: { includeOld?: boolean; olderThanDays?: number; limit?: number; cursor?: string }
+    ): Promise<RpcListCodexSessionsResponse> {
+        return await this.rpcGateway.listCodexSessionsForMachine(machineId, options)
+    }
+
 }

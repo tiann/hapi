@@ -12,7 +12,8 @@ const spawnBodySchema = z.object({
     modelReasoningEffort: z.string().optional(),
     yolo: z.boolean().optional(),
     sessionType: z.enum(['simple', 'worktree']).optional(),
-    worktreeName: z.string().optional()
+    worktreeName: z.string().optional(),
+    resumeSessionId: z.string().optional()
 })
 
 const pathsExistsSchema = z.object({
@@ -60,7 +61,7 @@ export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Ho
             parsed.data.yolo,
             parsed.data.sessionType,
             parsed.data.worktreeName,
-            undefined,
+            parsed.data.resumeSessionId,
             parsed.data.effort
         )
         return c.json(result)
@@ -120,6 +121,47 @@ export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return c.json({ exists })
         } catch (error) {
             return c.json({ error: error instanceof Error ? error.message : 'Failed to check paths' }, 500)
+        }
+    })
+
+
+    app.get('/machines/:id/codex-sessions', async (c) => {
+        const engine = getSyncEngine()
+        if (!engine) {
+            return c.json({ success: false, error: 'Not connected' }, 503)
+        }
+
+        const machineId = c.req.param('id')
+        const machine = requireMachine(c, engine, machineId)
+        if (machine instanceof Response) {
+            return machine
+        }
+
+        const query = c.req.query()
+        const includeOld = query.includeOld === '1' || query.includeOld === 'true'
+        const olderThanDays = Number.isFinite(Number(query.olderThanDays))
+            ? Number(query.olderThanDays)
+            : undefined
+        const limit = Number.isFinite(Number(query.limit))
+            ? Number(query.limit)
+            : undefined
+        const cursor = typeof query.cursor === 'string' && query.cursor.length > 0
+            ? query.cursor
+            : undefined
+
+        try {
+            const result = await engine.listCodexSessionsForMachine(machineId, {
+                includeOld,
+                olderThanDays,
+                limit,
+                cursor
+            })
+            return c.json(result)
+        } catch (error) {
+            return c.json({
+                success: false,
+                error: error instanceof Error ? error.message : 'Failed to list Codex sessions'
+            }, 500)
         }
     })
 

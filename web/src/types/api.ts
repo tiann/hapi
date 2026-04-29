@@ -223,6 +223,23 @@ export type CodexModelsResponse = {
     error?: string
 }
 
+
+export type CodexSessionSummary = {
+    id: string
+    title: string
+    updatedAt: number
+    path: string | null
+    model: string | null
+    isOld: boolean
+}
+
+export type CodexSessionsResponse = {
+    success: boolean
+    sessions?: CodexSessionSummary[]
+    nextCursor?: string | null
+    error?: string
+}
+
 export type PushSubscriptionKeys = {
     p256dh: string
     auth: string

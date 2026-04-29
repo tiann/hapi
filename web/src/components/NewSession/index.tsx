@@ -5,6 +5,7 @@ import { usePlatform } from '@/hooks/usePlatform'
 import { useMachinePathsExists } from '@/hooks/useMachinePathsExists'
 import { useSpawnSession } from '@/hooks/mutations/useSpawnSession'
 import { useCodexModels } from '@/hooks/queries/useCodexModels'
+import { useCodexSessions } from '@/hooks/queries/useCodexSessions'
 import { useSessions } from '@/hooks/queries/useSessions'
 import { useActiveSuggestions, type Suggestion } from '@/hooks/useActiveSuggestions'
 import { useDirectorySuggestions } from '@/hooks/useDirectorySuggestions'
@@ -17,6 +18,7 @@ import { DirectorySection } from './DirectorySection'
 import { MachineSelector } from './MachineSelector'
 import { ModelSelector } from './ModelSelector'
 import { ClaudeEffortSelector } from './ClaudeEffortSelector'
+import { CodexSessionSelector } from './CodexSessionSelector'
 import { ReasoningEffortSelector } from './ReasoningEffortSelector'
 import {
     loadPreferredAgent,
@@ -53,6 +55,8 @@ export function NewSession(props: {
     const [model, setModel] = useState('auto')
     const [effort, setEffort] = useState<ClaudeEffort>('auto')
     const [modelReasoningEffort, setModelReasoningEffort] = useState<CodexReasoningEffort>('default')
+    const [showOldCodexSessions, setShowOldCodexSessions] = useState(false)
+    const [selectedCodexSessionId, setSelectedCodexSessionId] = useState('')
     const [yoloMode, setYoloMode] = useState(loadPreferredYoloMode)
     const [sessionType, setSessionType] = useState<SessionType>('simple')
     const [worktreeName, setWorktreeName] = useState('')
@@ -69,6 +73,9 @@ export function NewSession(props: {
     useEffect(() => {
         setModel('auto')
         setEffort('auto')
+        if (agent !== 'codex') {
+            setSelectedCodexSessionId('')
+        }
     }, [agent])
 
     useEffect(() => {
@@ -104,6 +111,13 @@ export function NewSession(props: {
     const codexModelsState = useCodexModels({
         api: props.api,
         machineId,
+        enabled: agent === 'codex' && Boolean(machineId)
+    })
+
+    const codexSessionsState = useCodexSessions({
+        api: props.api,
+        machineId,
+        includeOld: showOldCodexSessions,
         enabled: agent === 'codex' && Boolean(machineId)
     })
     const runnerSpawnError = useMemo(
@@ -191,6 +205,7 @@ export function NewSession(props: {
 
     const handleMachineChange = useCallback((newMachineId: string) => {
         setMachineId(newMachineId)
+        setSelectedCodexSessionId('')
         const paths = getRecentPaths(newMachineId)
         if (paths[0]) {
             setDirectory(paths[0])
@@ -291,7 +306,8 @@ export function NewSession(props: {
                 modelReasoningEffort: resolvedModelReasoningEffort,
                 yolo: yoloMode,
                 sessionType,
-                worktreeName: sessionType === 'worktree' ? (worktreeName.trim() || undefined) : undefined
+                worktreeName: sessionType === 'worktree' ? (worktreeName.trim() || undefined) : undefined,
+                resumeSessionId: agent === 'codex' && selectedCodexSessionId ? selectedCodexSessionId : undefined
             })
 
             if (result.type === 'success') {
@@ -371,6 +387,18 @@ export function NewSession(props: {
                 effort={effort}
                 isDisabled={isFormDisabled}
                 onEffortChange={setEffort}
+            />
+
+            <CodexSessionSelector
+                enabled={agent === 'codex'}
+                includeOld={showOldCodexSessions}
+                sessions={codexSessionsState.sessions}
+                selectedSessionId={selectedCodexSessionId}
+                isLoading={codexSessionsState.isLoading}
+                isDisabled={isFormDisabled}
+                error={codexSessionsState.error}
+                onToggleIncludeOld={setShowOldCodexSessions}
+                onSelectSession={setSelectedCodexSessionId}
             />
             <ReasoningEffortSelector
                 agent={agent}

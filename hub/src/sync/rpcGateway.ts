@@ -58,6 +58,23 @@ export type RpcListCodexModelsResponse = {
     error?: string
 }
 
+
+export type RpcCodexSession = {
+    id: string
+    title: string
+    updatedAt: number
+    path: string | null
+    model: string | null
+    isOld: boolean
+}
+
+export type RpcListCodexSessionsResponse = {
+    success: boolean
+    sessions?: RpcCodexSession[]
+    nextCursor?: string | null
+    error?: string
+}
+
 export class RpcGateway {
     constructor(
         private readonly io: Server,
@@ -260,6 +277,13 @@ export class RpcGateway {
 
     async listCodexModelsForMachine(machineId: string): Promise<RpcListCodexModelsResponse> {
         return await this.machineRpc(machineId, 'listCodexModels', {}) as RpcListCodexModelsResponse
+    }
+
+    async listCodexSessionsForMachine(
+        machineId: string,
+        options?: { includeOld?: boolean; olderThanDays?: number; limit?: number; cursor?: string }
+    ): Promise<RpcListCodexSessionsResponse> {
+        return await this.machineRpc(machineId, 'listCodexSessions', options ?? {}) as RpcListCodexSessionsResponse
     }
 
     private async sessionRpc(sessionId: string, method: string, params: unknown): Promise<unknown> {
