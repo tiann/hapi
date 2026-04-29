@@ -54,6 +54,8 @@ export function HappyComposer(props: {
     agentState?: AgentState | null
     backgroundTaskCount?: number
     contextSize?: number
+    contextCacheRead?: number
+    contextWindow?: number | null
     controlledByUser?: boolean
     agentFlavor?: string | null
     availableModelOptions?: Array<{ value: string | null; label: string }>
@@ -88,6 +90,8 @@ export function HappyComposer(props: {
         agentState,
         backgroundTaskCount,
         contextSize,
+        contextCacheRead,
+        contextWindow,
         controlledByUser = false,
         agentFlavor,
         availableModelOptions,
@@ -754,7 +758,10 @@ export function HappyComposer(props: {
                         agentState={agentState}
                         backgroundTaskCount={backgroundTaskCount}
                         contextSize={contextSize}
+                        contextCacheRead={contextCacheRead}
+                        contextWindow={contextWindow}
                         model={model}
+                        modelReasoningEffort={modelReasoningEffort}
                         permissionMode={permissionMode}
                         collaborationMode={collaborationMode}
                         agentFlavor={agentFlavor}

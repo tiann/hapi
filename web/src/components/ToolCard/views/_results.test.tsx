@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { extractTextFromResult, getMutationResultRenderMode, getToolResultViewComponent } from '@/components/ToolCard/views/_results'
+import { extractCodexBashDisplay, extractTextFromResult, getMutationResultRenderMode, getToolResultViewComponent } from '@/components/ToolCard/views/_results'
 
 describe('extractTextFromResult', () => {
     it('returns string directly', () => {
@@ -79,6 +79,35 @@ describe('getMutationResultRenderMode', () => {
     })
 })
 
+describe('extractCodexBashDisplay', () => {
+    it('prefers stdout and keeps command metadata out of displayed output', () => {
+        expect(extractCodexBashDisplay({
+            command: '/bin/bash -lc pwd',
+            cwd: '/tmp/project',
+            stdout: '/tmp/project\n',
+            exit_code: 0,
+            status: 'completed'
+        })).toEqual({
+            stdout: '/tmp/project\n',
+            stderr: null,
+            exitCode: 0,
+            status: 'completed'
+        })
+    })
+
+    it('accepts legacy output as stdout fallback', () => {
+        expect(extractCodexBashDisplay({
+            output: 'ok\n',
+            exitCode: 0
+        })).toEqual({
+            stdout: 'ok\n',
+            stderr: null,
+            exitCode: 0,
+            status: null
+        })
+    })
+})
+
 describe('getToolResultViewComponent registry', () => {
     it('uses the same view for Write, Edit, MultiEdit, NotebookEdit', () => {
         const writeView = getToolResultViewComponent('Write')
@@ -95,5 +124,9 @@ describe('getToolResultViewComponent registry', () => {
         const unknownView = getToolResultViewComponent('SomeUnknownTool')
         // Both should fall back to GenericResultView
         expect(mcpView).toBe(unknownView)
+    })
+
+    it('uses a dedicated result view for CodexBash', () => {
+        expect(getToolResultViewComponent('CodexBash')).not.toBe(getToolResultViewComponent('SomeUnknownTool'))
     })
 })

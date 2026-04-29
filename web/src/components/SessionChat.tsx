@@ -443,6 +443,8 @@ export function SessionChat(props: {
                         agentState={props.session.agentState}
                         backgroundTaskCount={props.session.backgroundTaskCount}
                         contextSize={reduced.latestUsage?.contextSize}
+                        contextCacheRead={reduced.latestUsage?.cacheRead}
+                        contextWindow={reduced.latestUsage?.contextWindow}
                         controlledByUser={controlledByUser}
                         onCollaborationModeChange={
                             codexCollaborationModeSupported && props.session.active && !controlledByUser
