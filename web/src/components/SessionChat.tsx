@@ -217,10 +217,11 @@ export function SessionChat(props: {
     // Exclude user messages that haven't been invoked yet — those appear in the
     // QueuedMessagesBar above the composer, not in the thread timeline. `invokedAt`
     // is the source of truth: `status === 'sent'` only means the REST write returned,
-    // not that the CLI consumed the message.
+    // not that the CLI consumed the message. Strict null check so a pre-V8 hub
+    // response that omits the field (`undefined`) is treated as already-invoked.
     const visibleMessages = useMemo(
         () => props.messages.filter(
-            (m) => !(isUserMessage(m) && m.invokedAt == null && m.status !== 'failed')
+            (m) => !(isUserMessage(m) && m.invokedAt === null && m.status !== 'failed')
         ),
         [props.messages]
     )

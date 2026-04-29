@@ -38,12 +38,14 @@ function useQueuedMessages(sessionId: string): DecryptedMessage[] {
 
     // `invokedAt` is the source of truth for invocation. `status === 'sent'` only
     // means the REST write to the hub returned, not that the CLI consumed it; an
-    // optimistic 'sent' message with no `invokedAt` is still queued.
+    // optimistic 'sent' message with no `invokedAt` is still queued. Strict null
+    // check so a pre-V8 hub response that omits the field (`undefined`) is
+    // treated as already-invoked and stays out of the bar.
     const allMessages = [...state.messages, ...state.pending]
     return allMessages.filter(
         (m) =>
             isUserMessage(m) &&
-            m.invokedAt == null &&
+            m.invokedAt === null &&
             m.status !== 'failed'
     )
 }

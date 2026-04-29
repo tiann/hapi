@@ -269,7 +269,10 @@ function buildState(
 }
 
 function isQueuedForInvocation(message: DecryptedMessage): boolean {
-    return isUserMessage(message) && message.invokedAt == null && message.status !== 'failed'
+    // Strict null: a pre-V8 hub response that omits the field (undefined) is
+    // treated as already-invoked. Optimistic messages set invokedAt: null
+    // explicitly to opt into the queued state.
+    return isUserMessage(message) && message.invokedAt === null && message.status !== 'failed'
 }
 
 function trimVisible(messages: DecryptedMessage[], mode: 'append' | 'prepend'): DecryptedMessage[] {
@@ -602,10 +605,14 @@ export function updateMessageStatus(sessionId: string, localId: string, status: 
 /** Transition the queued messages whose localIds match to 'sent' and record invokedAt.
  *  Driven by the CLI ack (messages-consumed). Unmatched messages remain queued.
  *  Also handles server-loaded messages (status=undefined) that have a matching localId.
- *  If invokedAt is undefined (V7 hub compat), only status is updated. */
+ *  V7 hub compat: if `invokedAt` is undefined the SyncEvent had no server timestamp,
+ *  so we fall back to client time — without it the row would stay queued forever
+ *  under the strict-null filter. The fallback only affects display ordering on
+ *  this client; the persisted server value is the authoritative one when present. */
 export function markMessagesConsumed(sessionId: string, localIds: string[], invokedAt: number | undefined): void {
     if (localIds.length === 0) return
     const idSet = new Set(localIds)
+    const effectiveInvokedAt = invokedAt ?? Date.now()
     updateState(sessionId, (prev) => {
         let changed = false
         const updateList = (list: DecryptedMessage[]) => {
@@ -620,7 +627,7 @@ export function markMessagesConsumed(sessionId: string, localIds: string[], invo
                 // a message that flipped to 'sent' before the consume event arrives would
                 // never receive `invokedAt` and keep sorting by send time.
                 const needsStatus = message.status !== 'sent'
-                const needsInvokedAt = invokedAt != null && message.invokedAt !== invokedAt
+                const needsInvokedAt = message.invokedAt !== effectiveInvokedAt
                 if (!needsStatus && !needsInvokedAt) {
                     return message
                 }
@@ -630,7 +637,7 @@ export function markMessagesConsumed(sessionId: string, localIds: string[], invo
                     update.status = 'sent' as MessageStatus
                 }
                 if (needsInvokedAt) {
-                    update.invokedAt = invokedAt
+                    update.invokedAt = effectiveInvokedAt
                 }
                 return { ...message, ...update }
             })
