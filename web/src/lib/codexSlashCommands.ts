@@ -14,6 +14,16 @@ const BUILTIN_COMMANDS: Record<string, SlashCommand[]> = {
     codex: [
         { name: 'clear', description: 'Clear current Codex thread context', source: 'builtin' },
         { name: 'compact', description: 'Compact current Codex thread context', source: 'builtin' },
+        { name: 'help', description: 'Show supported HAPI Codex slash commands', source: 'builtin' },
+        { name: 'plan', description: 'Enable plan mode; use /plan off to return to default', source: 'builtin' },
+        { name: 'default', description: 'Return Codex collaboration mode to default', source: 'builtin' },
+        { name: 'execute', description: 'Return Codex collaboration mode to default', source: 'builtin' },
+        { name: 'status', description: 'Show current Codex session config', source: 'builtin' },
+        { name: 'model', description: 'Show or set Codex model, e.g. /model gpt-5.5', source: 'builtin' },
+        { name: 'reasoning', description: 'Show or set reasoning effort', source: 'builtin' },
+        { name: 'effort', description: 'Alias for /reasoning', source: 'builtin' },
+        { name: 'permissions', description: 'Show or set permission mode', source: 'builtin' },
+        { name: 'permission', description: 'Alias for /permissions', source: 'builtin' },
     ],
     gemini: [
         { name: 'about', description: 'Show version info', source: 'builtin' },
@@ -30,7 +40,6 @@ const UNSUPPORTED_CODEX_BUILTIN_COMMANDS = new Set([
     'compat',
     'undo',
     'diff',
-    'status',
 ])
 
 export function getBuiltinSlashCommands(agentType: string): SlashCommand[] {

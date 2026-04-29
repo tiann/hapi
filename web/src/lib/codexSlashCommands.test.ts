@@ -7,8 +7,16 @@ import {
 } from './codexSlashCommands'
 
 describe('getBuiltinSlashCommands', () => {
-    it('exposes supported codex built-ins in remote web mode', () => {
-        expect(getBuiltinSlashCommands('codex').map(command => command.name)).toEqual(['clear', 'compact'])
+    it('exposes HAPI-supported codex built-ins in remote web mode', () => {
+        expect(getBuiltinSlashCommands('codex').map((command) => command.name)).toEqual(expect.arrayContaining([
+            'clear',
+            'compact',
+            'plan',
+            'status',
+            'execute',
+            'effort',
+            'permission',
+        ]))
     })
 })
 
@@ -49,7 +57,6 @@ describe('findCodexCustomPromptExpansion', () => {
 
 describe('findUnsupportedCodexBuiltinSlashCommand', () => {
     it('detects unsupported codex built-ins', () => {
-        expect(findUnsupportedCodexBuiltinSlashCommand('/status', [])).toBe('status')
         expect(findUnsupportedCodexBuiltinSlashCommand('  /diff ', [])).toBe('diff')
     })
 

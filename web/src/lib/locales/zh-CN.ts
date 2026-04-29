@@ -45,6 +45,12 @@ export default {
   'sessions.empty.hint': '在 workspace 下任意目录启动一个会话，或先浏览目录树看看。',
   'sessions.empty.startSession': '启动会话',
   'sessions.empty.browse': '浏览 workspace',
+  'sessions.search.placeholder': '搜索会话…',
+  'sessions.search.clear': '清除搜索',
+  'sessions.search.count': '{n} / {total} 个会话',
+  'sessions.search.noResults': '没有匹配的会话。',
+  'sessions.group.showMore': '再显示 {n} 个',
+  'sessions.group.showLess': '收起',
 
   // Session list
   'session.item.path': '路径',
@@ -165,6 +171,7 @@ export default {
 
   // Code block
   'code.copy': '复制',
+  'code.truncated': '预览已截断 — 打开详情查看完整输出',
 
   // Diff view
   'diff.title': '差异',

@@ -110,10 +110,18 @@ describe('listSlashCommands', () => {
         await expect(listSlashCommands('claude', nonExistentProjectDir)).resolves.toBeDefined()
     })
 
-    it('lists supported codex built-ins', async () => {
+    it('exposes HAPI-supported Codex built-ins', async () => {
         const commands = await listSlashCommands('codex', projectDir)
 
-        expect(commands.filter(cmd => cmd.source === 'builtin').map(cmd => cmd.name)).toEqual(['clear', 'compact'])
+        expect(commands.map((command) => command.name)).toEqual(expect.arrayContaining([
+            'clear',
+            'compact',
+            'plan',
+            'status',
+            'model',
+            'reasoning',
+            'permissions',
+        ]))
     })
 
     it('lets project codex prompts override same-name built-ins', async () => {
@@ -129,5 +137,56 @@ describe('listSlashCommands', () => {
         expect(clearCommands[0]?.source).toBe('project')
         expect(clearCommands[0]?.description).toBe('Project clear')
         expect(clearCommands[0]?.content).toBe('Project clear prompt')
+    })
+
+    it('loads Codex global and project prompts', async () => {
+        await writeFile(
+            join(codexHome, 'prompts', 'global-prompt.md'),
+            ['---', 'description: Global Codex prompt', '---', '', 'Global Codex body'].join('\n')
+        )
+        await writeFile(
+            join(projectDir, '.codex', 'prompts', 'project-prompt.md'),
+            ['---', 'description: Project Codex prompt', '---', '', 'Project Codex body'].join('\n')
+        )
+
+        const commands = await listSlashCommands('codex', projectDir)
+
+        expect(commands.find(cmd => cmd.name === 'global-prompt')).toMatchObject({
+            source: 'user',
+            description: 'Global Codex prompt',
+            content: 'Global Codex body',
+        })
+        expect(commands.find(cmd => cmd.name === 'project-prompt')).toMatchObject({
+            source: 'project',
+            description: 'Project Codex prompt',
+            content: 'Project Codex body',
+        })
+    })
+
+    it('loads Codex project prompts from cwd up to repo root with nearest override', async () => {
+        const repoRoot = join(sandboxDir, 'repo')
+        const workingDirectory = join(repoRoot, 'apps', 'web')
+        await mkdir(join(repoRoot, '.git'), { recursive: true })
+        await mkdir(join(repoRoot, '.codex', 'prompts'), { recursive: true })
+        await mkdir(join(workingDirectory, '.codex', 'prompts'), { recursive: true })
+
+        await writeFile(
+            join(repoRoot, '.codex', 'prompts', 'shared.md'),
+            ['---', 'description: Root prompt', '---', '', 'Root body'].join('\n')
+        )
+        await writeFile(
+            join(workingDirectory, '.codex', 'prompts', 'shared.md'),
+            ['---', 'description: Local prompt', '---', '', 'Local body'].join('\n')
+        )
+
+        const commands = await listSlashCommands('codex', workingDirectory)
+        const sharedCommands = commands.filter(cmd => cmd.name === 'shared')
+
+        expect(sharedCommands).toHaveLength(1)
+        expect(sharedCommands[0]).toMatchObject({
+            source: 'project',
+            description: 'Local prompt',
+            content: 'Local body',
+        })
     })
 })

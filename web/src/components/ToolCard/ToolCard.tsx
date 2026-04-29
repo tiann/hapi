@@ -114,7 +114,8 @@ function renderExitPlanModeInput(input: unknown): ReactNode | null {
     return <MarkdownRenderer content={plan} />
 }
 
-function renderToolInput(block: ToolCallBlock): ReactNode {
+function renderToolInput(block: ToolCallBlock, surface: 'inline' | 'dialog' = 'inline'): ReactNode {
+    const collapseLongContent = surface === 'inline'
     const toolName = block.tool.name
     const input = block.tool.input
 
@@ -170,14 +171,14 @@ function renderToolInput(block: ToolCallBlock): ReactNode {
                     <div className="text-xs text-[var(--app-hint)] font-mono break-all">
                         {filePath}
                     </div>
-                    <CodeBlock code={content} language="text" />
+                    <CodeBlock code={content} language="text" collapseLongContent={collapseLongContent} />
                 </div>
             )
         }
     }
 
     if (toolName === 'CodexDiff' && isObject(input) && typeof input.unified_diff === 'string') {
-        return <CodeBlock code={input.unified_diff} language="diff" />
+        return <CodeBlock code={input.unified_diff} language="diff" collapseLongContent={collapseLongContent} />
     }
 
     if (toolName === 'ExitPlanMode' || toolName === 'exit_plan_mode') {
@@ -191,11 +192,11 @@ function renderToolInput(block: ToolCallBlock): ReactNode {
             ? commandArray.filter((part) => typeof part === 'string').join(' ')
             : getInputStringAny(input, ['command', 'cmd'])
         if (cmd) {
-            return <CodeBlock code={cmd} language="bash" />
+            return <CodeBlock code={cmd} language="bash" collapseLongContent={collapseLongContent} />
         }
     }
 
-    return <CodeBlock code={safeStringify(input)} language="json" />
+    return <CodeBlock code={safeStringify(input)} language="json" collapseLongContent={collapseLongContent} />
 }
 
 function StatusIcon(props: { state: ToolCallBlock['tool']['state'] }) {
@@ -359,16 +360,16 @@ function ToolCardInner(props: ToolCardProps) {
                                             {isQuestionToolWithAnswers ? t('tool.questionsAnswers') : t('tool.input')}
                                         </div>
                                         {FullToolView ? (
-                                            <FullToolView block={props.block} metadata={props.metadata} />
+                                            <FullToolView block={props.block} metadata={props.metadata} surface="dialog" />
                                         ) : (
-                                            renderToolInput(props.block)
+                                            renderToolInput(props.block, 'dialog')
                                         )}
                                     </div>
                                     <TraceSection block={props.block} metadata={props.metadata} />
                                     {!isQuestionToolWithAnswers && (
                                         <div>
                                             <div className="mb-1 text-xs font-medium text-[var(--app-hint)]">{t('tool.result')}</div>
-                                            <ResultToolView block={props.block} metadata={props.metadata} />
+                                            <ResultToolView block={props.block} metadata={props.metadata} surface="dialog" />
                                         </div>
                                     )}
                                 </div>
@@ -389,17 +390,17 @@ function ToolCardInner(props: ToolCardProps) {
                     {showInline ? (
                         CompactToolView ? (
                             <div className="mt-3">
-                                <CompactToolView block={props.block} metadata={props.metadata} />
+                                <CompactToolView block={props.block} metadata={props.metadata} surface="inline" />
                             </div>
                         ) : (
                             <div className="mt-3 flex flex-col gap-3">
                                 <div>
                                     <div className="mb-1 text-xs font-medium text-[var(--app-hint)]">{t('tool.input')}</div>
-                                    {renderToolInput(props.block)}
+                                    {renderToolInput(props.block, 'inline')}
                                 </div>
                                 <div>
                                     <div className="mb-1 text-xs font-medium text-[var(--app-hint)]">{t('tool.result')}</div>
-                                    <ResultToolView block={props.block} metadata={props.metadata} />
+                                    <ResultToolView block={props.block} metadata={props.metadata} surface="inline" />
                                 </div>
                             </div>
                         )
