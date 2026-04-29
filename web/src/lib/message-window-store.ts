@@ -268,14 +268,30 @@ function buildState(
     }
 }
 
+function isQueuedForInvocation(message: DecryptedMessage): boolean {
+    return isUserMessage(message) && message.invokedAt == null && message.status !== 'failed'
+}
+
 function trimVisible(messages: DecryptedMessage[], mode: 'append' | 'prepend'): DecryptedMessage[] {
     if (messages.length <= VISIBLE_WINDOW_SIZE) {
         return messages
     }
-    if (mode === 'prepend') {
-        return messages.slice(0, VISIBLE_WINDOW_SIZE)
+    // Queued messages must survive trimming. The `messages-consumed` SSE only
+    // carries localIds, so if a queued row is dropped before invocation the
+    // client cannot restore or reposition it without a full refetch.
+    const queued = messages.filter(isQueuedForInvocation)
+    if (queued.length === 0) {
+        return mode === 'prepend'
+            ? messages.slice(0, VISIBLE_WINDOW_SIZE)
+            : messages.slice(messages.length - VISIBLE_WINDOW_SIZE)
     }
-    return messages.slice(messages.length - VISIBLE_WINDOW_SIZE)
+    const queuedIds = new Set(queued.map((message) => message.id))
+    const regular = messages.filter((message) => !queuedIds.has(message.id))
+    const budget = Math.max(0, VISIBLE_WINDOW_SIZE - queued.length)
+    const trimmedRegular = mode === 'prepend'
+        ? regular.slice(0, budget)
+        : regular.slice(Math.max(0, regular.length - budget))
+    return mergeMessages(trimmedRegular, queued)
 }
 
 function trimPending(
