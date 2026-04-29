@@ -1,0 +1,35 @@
+module.exports = {
+    apps: [
+        {
+            name: 'hapi-hub-new',
+            script: 'bun',
+            args: 'run start',
+            cwd: './hub',
+            interpreter: 'none',
+            autorestart: true,
+            max_restarts: 10,
+            restart_delay: 3000,
+        },
+        {
+            name: 'hapi-runner-new',
+            script: './hapi',
+            args: 'runner start-sync --workspace-root ~/',
+            cwd: './cli/dist-exe/bun-linux-x64-baseline',
+            interpreter: 'none',
+            autorestart: true,
+            max_restarts: 10,
+            restart_delay: 3000,
+            depends_on: ['hapi-hub-new'],
+        },
+        {
+            name: 'hapi-web-new',
+            script: 'bun',
+            args: 'run preview',
+            cwd: './web',
+            interpreter: 'none',
+            autorestart: true,
+            max_restarts: 10,
+            restart_delay: 3000,
+        },
+    ],
+};

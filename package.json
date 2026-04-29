@@ -1,7 +1,14 @@
 {
     "name": "hapi",
     "private": true,
-    "workspaces": ["cli", "shared", "hub", "web", "website", "docs"],
+    "workspaces": [
+        "cli",
+        "shared",
+        "hub",
+        "web",
+        "website",
+        "docs"
+    ],
     "scripts": {
         "build:site": "bun run --cwd website build && bun run --cwd docs docs:build && cp -r docs/.vitepress/dist website/dist/public/docs",
         "dev": "concurrently \"bun run dev:hub\" \"bun run dev:web\" --kill-others-on-exit",
@@ -14,6 +21,9 @@
         "build:web": "cd web && bun run build",
         "dev:hub": "cd hub && bun run dev",
         "dev:web": "cd web && bun run dev",
+        "preview:hub": "cd hub && bun run start",
+        "preview:web": "cd web && bun run preview",
+        "preview:cli": "cd cli/dist-exe/bun-linux-x64-baseline && ./hapi runner start --workspace-root ~/",
         "typecheck": "bun run typecheck:cli && bun run typecheck:web && bun run typecheck:hub",
         "typecheck:cli": "cd cli && bun run typecheck",
         "typecheck:hub": "cd hub && bun run typecheck",
