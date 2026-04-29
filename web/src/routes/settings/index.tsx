@@ -10,6 +10,7 @@ import { PROTOCOL_VERSION } from '@hapi/protocol'
 const locales: { value: Locale; nativeLabel: string }[] = [
     { value: 'en', nativeLabel: 'English' },
     { value: 'zh-CN', nativeLabel: '简体中文' },
+    { value: 'vi-VN', nativeLabel: 'Tiếng Việt' },
 ]
 
 const voiceLanguages = getElevenLabsSupportedLanguages()

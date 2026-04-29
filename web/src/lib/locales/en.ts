@@ -94,6 +94,14 @@ export default {
   'dialog.delete.description': 'Are you sure you want to delete "{name}"? This action cannot be undone.',
   'dialog.delete.confirm': 'Delete',
   'dialog.delete.confirming': 'Deleting…',
+  'dialog.archiveAll.title': 'Archive All Sessions',
+  'dialog.archiveAll.description': 'This will disconnect and archive all {n} active sessions. Continue?',
+  'dialog.archiveAll.confirm': 'Archive All',
+  'dialog.archiveAll.confirming': 'Archiving…',
+  'dialog.deleteArchived.title': 'Delete Archived Sessions',
+  'dialog.deleteArchived.description': 'Permanently delete all {n} archived (inactive) sessions? This cannot be undone.',
+  'dialog.deleteArchived.confirm': 'Delete All',
+  'dialog.deleteArchived.confirming': 'Deleting…',
   'dialog.error.default': 'Operation failed. Please try again.',
 
   // Common buttons
@@ -274,6 +282,7 @@ export default {
   'language.title': 'Language',
   'language.english': 'English',
   'language.chinese': '简体中文',
+  'language.vietnamese': 'Tiếng Việt',
 
   // Settings page
   'settings.title': 'Settings',

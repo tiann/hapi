@@ -85,6 +85,52 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         return c.json({ sessions })
     })
 
+    app.post('/sessions/archive-all', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const namespace = c.get('namespace')
+        const sessions = engine.getSessionsByNamespace(namespace)
+        const activeSessions = sessions.filter(s => s.active)
+
+        let archived = 0
+        for (const s of activeSessions) {
+            try {
+                await engine.archiveSession(s.id)
+                archived++
+            } catch {
+                // Skip sessions that fail to archive (e.g. already archived)
+            }
+        }
+
+        return c.json({ ok: true, archived })
+    })
+
+    app.delete('/sessions/archived', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const namespace = c.get('namespace')
+        const sessions = engine.getSessionsByNamespace(namespace)
+        const inactiveSessions = sessions.filter(s => !s.active)
+
+        let deleted = 0
+        for (const s of inactiveSessions) {
+            try {
+                await engine.deleteSession(s.id)
+                deleted++
+            } catch {
+                // Skip sessions that fail to delete
+            }
+        }
+
+        return c.json({ ok: true, deleted })
+    })
+
     app.get('/sessions/:id', (c) => {
         const engine = requireSyncEngine(c, getSyncEngine)
         if (engine instanceof Response) {

@@ -1,9 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { SessionSummary } from '@/types/api'
 import type { ApiClient } from '@/api/client'
 import { useLongPress } from '@/hooks/useLongPress'
 import { usePlatform } from '@/hooks/usePlatform'
 import { useSessionActions } from '@/hooks/mutations/useSessionActions'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { queryKeys } from '@/lib/query-keys'
+import { clearMessageWindow } from '@/lib/message-window-store'
 import { SessionActionMenu } from '@/components/SessionActionMenu'
 import { RenameSessionDialog } from '@/components/RenameSessionDialog'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
@@ -307,6 +310,28 @@ function LoaderIcon(props: { className?: string }) {
             <line x1="18" y1="12" x2="22" y2="12" />
             <line x1="4.93" y1="19.07" x2="7.76" y2="16.24" />
             <line x1="16.24" y1="7.76" x2="19.07" y2="4.93" />
+        </svg>
+    )
+}
+
+function ArchiveBoxIcon(props: { className?: string }) {
+    return (
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={props.className}>
+            <rect x="2" y="3" width="20" height="5" rx="1" />
+            <path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8" />
+            <path d="M10 12h4" />
+        </svg>
+    )
+}
+
+function TrashIcon(props: { className?: string }) {
+    return (
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={props.className}>
+            <path d="M3 6h18" />
+            <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" />
+            <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
+            <line x1="10" y1="11" x2="10" y2="17" />
+            <line x1="14" y1="11" x2="14" y2="17" />
         </svg>
     )
 }
@@ -656,6 +681,108 @@ function SessionItem(props: {
     )
 }
 
+function ProjectGroupActions(props: {
+    group: SessionGroup
+    api: ApiClient | null
+}) {
+    const { group, api } = props
+    const { t } = useTranslation()
+    const queryClient = useQueryClient()
+    const [archiveAllOpen, setArchiveAllOpen] = useState(false)
+    const [deleteArchivedOpen, setDeleteArchivedOpen] = useState(false)
+
+    const activeSessions = useMemo(() => group.sessions.filter(s => s.active), [group.sessions])
+    const inactiveSessions = useMemo(() => group.sessions.filter(s => !s.active), [group.sessions])
+
+    const archiveAllMutation = useMutation({
+        mutationFn: async () => {
+            if (!api) throw new Error('API unavailable')
+            for (const s of activeSessions) {
+                try { await api.archiveSession(s.id) } catch { /* skip */ }
+            }
+        },
+        onSuccess: () => {
+            void queryClient.invalidateQueries({ queryKey: queryKeys.sessions })
+        },
+    })
+
+    const deleteArchivedMutation = useMutation({
+        mutationFn: async () => {
+            if (!api) throw new Error('API unavailable')
+            for (const s of inactiveSessions) {
+                try {
+                    await api.deleteSession(s.id)
+                    clearMessageWindow(s.id)
+                } catch { /* skip */ }
+            }
+        },
+        onSuccess: () => {
+            void queryClient.invalidateQueries({ queryKey: queryKeys.sessions })
+        },
+    })
+
+    const handleArchiveAll = useCallback(async () => {
+        await archiveAllMutation.mutateAsync()
+    }, [archiveAllMutation])
+
+    const handleDeleteArchived = useCallback(async () => {
+        await deleteArchivedMutation.mutateAsync()
+    }, [deleteArchivedMutation])
+
+    if (activeSessions.length === 0 && inactiveSessions.length === 0) return null
+
+    return (
+        <>
+            <div className="flex items-center gap-0 opacity-0 group-hover/project:opacity-100 transition-opacity duration-150 shrink-0">
+                {activeSessions.length > 0 ? (
+                    <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); setArchiveAllOpen(true) }}
+                        className="p-1 rounded text-[var(--app-hint)] hover:text-[var(--app-fg)] hover:bg-[var(--app-subtle-bg)] transition-colors"
+                        title={t('dialog.archiveAll.title')}
+                    >
+                        <ArchiveBoxIcon className="h-3.5 w-3.5" />
+                    </button>
+                ) : null}
+                {inactiveSessions.length > 0 ? (
+                    <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); setDeleteArchivedOpen(true) }}
+                        className="p-1 rounded text-[var(--app-hint)] hover:text-red-500 hover:bg-[var(--app-subtle-bg)] transition-colors"
+                        title={t('dialog.deleteArchived.title')}
+                    >
+                        <TrashIcon className="h-3.5 w-3.5" />
+                    </button>
+                ) : null}
+            </div>
+
+            <ConfirmDialog
+                isOpen={archiveAllOpen}
+                onClose={() => setArchiveAllOpen(false)}
+                title={t('dialog.archiveAll.title')}
+                description={t('dialog.archiveAll.description', { n: activeSessions.length })}
+                confirmLabel={t('dialog.archiveAll.confirm')}
+                confirmingLabel={t('dialog.archiveAll.confirming')}
+                onConfirm={handleArchiveAll}
+                isPending={archiveAllMutation.isPending}
+                destructive
+            />
+
+            <ConfirmDialog
+                isOpen={deleteArchivedOpen}
+                onClose={() => setDeleteArchivedOpen(false)}
+                title={t('dialog.deleteArchived.title')}
+                description={t('dialog.deleteArchived.description', { n: inactiveSessions.length })}
+                confirmLabel={t('dialog.deleteArchived.confirm')}
+                confirmingLabel={t('dialog.deleteArchived.confirming')}
+                onConfirm={handleDeleteArchived}
+                isPending={deleteArchivedMutation.isPending}
+                destructive
+            />
+        </>
+    )
+}
+
 export function SessionList(props: {
     sessions: SessionSummary[]
     onSelect: (sessionId: string) => void
@@ -906,6 +1033,10 @@ export function SessionList(props: {
                                                     <span className="text-[11px] tabular-nums text-[var(--app-hint)] shrink-0">
                                                         ({group.sessions.length})
                                                     </span>
+                                                    <ProjectGroupActions
+                                                        group={group}
+                                                        api={api}
+                                                    />
                                                 </div>
 
                                                 {/* Level 3: Sessions */}

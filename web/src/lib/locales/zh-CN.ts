@@ -96,6 +96,14 @@ export default {
   'dialog.delete.description': '确定要删除 "{name}" 吗？此操作无法撤销。',
   'dialog.delete.confirm': '删除',
   'dialog.delete.confirming': '删除中…',
+  'dialog.archiveAll.title': '归档所有会话',
+  'dialog.archiveAll.description': '将断开并归档所有 {n} 个活跃会话。继续吗？',
+  'dialog.archiveAll.confirm': '全部归档',
+  'dialog.archiveAll.confirming': '归档中…',
+  'dialog.deleteArchived.title': '删除已归档会话',
+  'dialog.deleteArchived.description': '永久删除所有 {n} 个已归档（非活跃）会话？此操作无法撤销。',
+  'dialog.deleteArchived.confirm': '全部删除',
+  'dialog.deleteArchived.confirming': '删除中…',
   'dialog.error.default': '操作失败，请重试。',
 
   // Common buttons
@@ -276,6 +284,7 @@ export default {
   'language.title': '语言',
   'language.english': 'English',
   'language.chinese': '简体中文',
+  'language.vietnamese': 'Tiếng Việt',
 
   // Settings page
   'settings.title': '设置',

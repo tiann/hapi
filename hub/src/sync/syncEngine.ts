@@ -335,7 +335,11 @@ export class SyncEngine {
     }
 
     async archiveSession(sessionId: string): Promise<void> {
-        await this.rpcGateway.killSession(sessionId)
+        try {
+            await this.rpcGateway.killSession(sessionId)
+        } catch {
+            // Best-effort: CLI may already be disconnected — still mark session ended
+        }
         this.handleSessionEnd({ sid: sessionId, time: Date.now(), reason: 'terminated' })
     }
 

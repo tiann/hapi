@@ -1,7 +1,7 @@
 import { createContext, useEffect, useState, useCallback, type ReactNode } from 'react'
-import { en, zhCN } from './locales'
+import { en, zhCN, viVN } from './locales'
 
-export type Locale = 'en' | 'zh-CN'
+export type Locale = 'en' | 'zh-CN' | 'vi-VN'
 
 export type Translations = Record<string, string>
 
@@ -13,7 +13,7 @@ export type I18nContextValue = {
 
 export const I18nContext = createContext<I18nContextValue | null>(null)
 
-const locales: Record<Locale, Translations> = { en, 'zh-CN': zhCN }
+const locales: Record<Locale, Translations> = { en, 'zh-CN': zhCN, 'vi-VN': viVN }
 
 function interpolate(str: string, params?: Record<string, string | number>): string {
   if (!params) return str
@@ -26,7 +26,7 @@ function interpolate(str: string, params?: Record<string, string | number>): str
 export function I18nProvider({ children }: { children: ReactNode }) {
   const [locale, setLocaleState] = useState<Locale>(() => {
     const saved = localStorage.getItem('hapi-lang')
-    return (saved === 'en' || saved === 'zh-CN') ? saved : 'en'
+    return (saved === 'en' || saved === 'zh-CN' || saved === 'vi-VN') ? saved : 'en'
   })
 
   const setLocale = useCallback((newLocale: Locale) => {

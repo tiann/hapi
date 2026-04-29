@@ -486,6 +486,19 @@ export class ApiClient {
         })
     }
 
+    async archiveAllSessions(): Promise<{ archived: number }> {
+        return await this.request('/api/sessions/archive-all', {
+            method: 'POST',
+            body: JSON.stringify({})
+        })
+    }
+
+    async deleteArchivedSessions(): Promise<{ deleted: number }> {
+        return await this.request('/api/sessions/archived', {
+            method: 'DELETE'
+        })
+    }
+
     async fetchVoiceToken(options?: { customAgentId?: string; customApiKey?: string }): Promise<{
         allowed: boolean
         token?: string

@@ -4,6 +4,7 @@ import { useTranslation, type Locale } from '@/lib/use-translation'
 const locales: { value: Locale; label: string }[] = [
   { value: 'en', label: 'English' },
   { value: 'zh-CN', label: '简体中文' },
+  { value: 'vi-VN', label: 'Tiếng Việt' },
 ]
 
 function LanguageIcon() {
