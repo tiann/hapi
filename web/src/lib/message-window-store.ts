@@ -603,8 +603,11 @@ export function markMessagesConsumed(sessionId: string, localIds: string[], invo
                 return { ...message, ...update }
             })
         }
-        const messages = updateList(prev.messages)
-        const pending = updateList(prev.pending)
+        // After update, re-merge to re-sort by the position key (`invokedAt ?? createdAt`):
+        // a queued message that just received `invokedAt` should move to its invocation
+        // position, not stay at its original send-time slot until the next fetch.
+        const messages = mergeMessages([], updateList(prev.messages))
+        const pending = mergeMessages([], updateList(prev.pending))
         if (!changed) {
             return prev
         }

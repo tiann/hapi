@@ -77,28 +77,20 @@ export class MessageService {
             invokedAt: message.invokedAt
         }))
 
-        // oldest entry is at index 0 (ascending order after reverse)
-        let oldestSeq: number | null = null
-        let oldestPositionAt: number | null = null
-        for (const message of messages) {
-            if (typeof message.seq !== 'number') continue
-            if (oldestSeq === null || message.seq < oldestSeq) {
-                oldestSeq = message.seq
-                // position_at = invokedAt ?? createdAt
-                const raw = stored.find((s) => s.seq === message.seq)
-                if (raw) {
-                    oldestPositionAt = raw.invokedAt ?? raw.createdAt
-                }
-            }
-        }
+        // The page is in ascending position order (oldest first), so the cursor for
+        // the next older fetch is the first row — picking the smallest `seq` instead
+        // would land on the wrong row whenever a low-seq row was invoked late.
+        const oldest = stored[0] ?? null
+        const oldestSeq: number | null = oldest?.seq ?? null
+        const oldestPositionAt: number | null = oldest
+            ? oldest.invokedAt ?? oldest.createdAt
+            : null
 
-        const hasMore = oldestSeq !== null
+        const hasMore = oldestSeq !== null && oldestPositionAt !== null
             && this.store.messages.getMessagesByPosition(
                 sessionId,
                 1,
-                oldestPositionAt !== null && oldestSeq !== null
-                    ? { at: oldestPositionAt, seq: oldestSeq }
-                    : undefined
+                { at: oldestPositionAt, seq: oldestSeq }
             ).length > 0
 
         return {
