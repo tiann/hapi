@@ -29,6 +29,11 @@ type InternalState = MessageWindowState & {
     pendingOverflowVisibleCount: number
     // V8 composite cursor: defined when hub responded with nextBeforeAt
     oldestPositionAt: number | null
+    // Paired with oldestPositionAt — the server returns both as a cursor; keep them
+    // together so we don't accidentally combine `nextBeforeAt` from the server with
+    // a recomputed minimum `seq` from the local window (those can refer to
+    // different rows after a low-seq message is invoked late).
+    oldestPositionSeq: number | null
 }
 
 type PendingVisibilityCacheEntry = {
@@ -141,6 +146,7 @@ function createState(sessionId: string): InternalState {
         hasMore: false,
         oldestSeq: null,
         oldestPositionAt: null,
+        oldestPositionSeq: null,
         newestSeq: null,
         isLoading: false,
         isLoadingMore: false,
@@ -218,6 +224,7 @@ function buildState(
         pendingOverflowVisibleCount?: number
         hasMore?: boolean
         oldestPositionAt?: number | null
+        oldestPositionSeq?: number | null
         isLoading?: boolean
         isLoadingMore?: boolean
         warning?: string | null
@@ -250,6 +257,7 @@ function buildState(
         pendingCount,
         oldestSeq,
         oldestPositionAt: updates.oldestPositionAt !== undefined ? updates.oldestPositionAt : prev.oldestPositionAt,
+        oldestPositionSeq: updates.oldestPositionSeq !== undefined ? updates.oldestPositionSeq : prev.oldestPositionSeq,
         newestSeq,
         hasMore: updates.hasMore !== undefined ? updates.hasMore : prev.hasMore,
         isLoading: updates.isLoading !== undefined ? updates.isLoading : prev.isLoading,
@@ -366,6 +374,7 @@ export function seedMessageWindowFromSession(fromSessionId: string, toSessionId:
         pendingOverflowVisibleCount: source.pendingOverflowVisibleCount,
         hasMore: source.hasMore,
         oldestPositionAt: source.oldestPositionAt,
+        oldestPositionSeq: source.oldestPositionSeq,
         warning: source.warning,
         atBottom: source.atBottom,
         isLoading: false,
@@ -386,10 +395,12 @@ export async function fetchLatestMessages(api: ApiClient, sessionId: string): Pr
         // returns the standard seq-based response (no nextBeforeAt field) — we fall back
         // to seq-cursor mode seamlessly.
         const response = await api.getMessages(sessionId, { byPosition: true, limit: PAGE_SIZE })
-        // Derive composite cursor if hub responded with nextBeforeAt (V8 mode)
+        // Derive composite cursor pair from server response. Both values come from
+        // the same row on the server; we keep them paired so the next older fetch
+        // doesn't mix `beforeAt` from the server with a recomputed minimum `seq`.
         const nextBeforeAt = response.page.nextBeforeAt ?? null
         const nextBeforeSeq = response.page.nextBeforeSeq ?? null
-        const oldestPositionAt = nextBeforeAt !== null ? nextBeforeAt : null
+        const isV8Cursor = nextBeforeAt !== null && nextBeforeSeq !== null
 
         updateState(sessionId, (prev) => {
             if (prev.atBottom) {
@@ -402,7 +413,8 @@ export async function fetchLatestMessages(api: ApiClient, sessionId: string): Pr
                     pendingVisibleCount: 0,
                     pendingOverflowVisibleCount: 0,
                     hasMore: response.page.hasMore,
-                    oldestPositionAt: nextBeforeSeq !== null ? oldestPositionAt : null,
+                    oldestPositionAt: isV8Cursor ? nextBeforeAt : null,
+                    oldestPositionSeq: isV8Cursor ? nextBeforeSeq : null,
                     isLoading: false,
                     warning: null,
                 })
@@ -434,19 +446,22 @@ export async function fetchOlderMessages(api: ApiClient, sessionId: string): Pro
     updateState(sessionId, (prev) => buildState(prev, { isLoadingMore: true }))
 
     try {
-        // Use composite cursor (V8 mode) when oldestPositionAt is available from previous response.
-        // Fall back to seq-only cursor for V7 hubs (oldestPositionAt === null).
-        const response = initial.oldestPositionAt !== null
+        // V8 mode: use the server-provided cursor pair as-is. Mixing `beforeAt` from
+        // the server with a recomputed minimum `seq` from the local window can refer
+        // to different rows after a low-seq message is invoked late.
+        const useV8Cursor = initial.oldestPositionAt !== null && initial.oldestPositionSeq !== null
+        const response = useV8Cursor
             ? await api.getMessages(sessionId, {
                 byPosition: true,
-                beforeAt: initial.oldestPositionAt,
-                beforeSeq: initial.oldestSeq,
+                beforeAt: initial.oldestPositionAt!,
+                beforeSeq: initial.oldestPositionSeq!,
                 limit: PAGE_SIZE
             })
             : await api.getMessages(sessionId, { beforeSeq: initial.oldestSeq, limit: PAGE_SIZE })
 
         const nextBeforeAt = response.page.nextBeforeAt ?? null
         const nextBeforeSeq = response.page.nextBeforeSeq ?? null
+        const isV8Cursor = nextBeforeAt !== null && nextBeforeSeq !== null
 
         updateState(sessionId, (prev) => {
             const merged = mergeMessages(response.messages, prev.messages)
@@ -454,7 +469,8 @@ export async function fetchOlderMessages(api: ApiClient, sessionId: string): Pro
             return buildState(prev, {
                 messages: trimmed,
                 hasMore: response.page.hasMore,
-                oldestPositionAt: nextBeforeSeq !== null && nextBeforeAt !== null ? nextBeforeAt : null,
+                oldestPositionAt: isV8Cursor ? nextBeforeAt : null,
+                oldestPositionSeq: isV8Cursor ? nextBeforeSeq : null,
                 isLoadingMore: false,
             })
         })

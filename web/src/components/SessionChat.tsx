@@ -214,12 +214,13 @@ export function SessionChat(props: {
         setOutlineOpen(false)
     }, [props.session.id])
 
-    // Exclude user messages that haven't been invoked yet (invokedAt == null, not sent/failed).
-    // Those appear in the QueuedMessagesBar above the composer, not in the thread timeline.
-    // This covers both optimistic (status='queued') and server-loaded (status=undefined, invokedAt=null) cases.
+    // Exclude user messages that haven't been invoked yet — those appear in the
+    // QueuedMessagesBar above the composer, not in the thread timeline. `invokedAt`
+    // is the source of truth: `status === 'sent'` only means the REST write returned,
+    // not that the CLI consumed the message.
     const visibleMessages = useMemo(
         () => props.messages.filter(
-            (m) => !(isUserMessage(m) && m.invokedAt == null && m.status !== 'sent' && m.status !== 'failed')
+            (m) => !(isUserMessage(m) && m.invokedAt == null && m.status !== 'failed')
         ),
         [props.messages]
     )
