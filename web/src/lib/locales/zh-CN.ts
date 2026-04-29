@@ -42,6 +42,16 @@ export default {
   'sessions.count': '{n} 个会话，{m} 个项目',
   'sessions.archived': '已归档 ({n})',
   'sessions.new': '新建会话',
+  'sessions.empty.title': '还没有会话',
+  'sessions.empty.hint': '在 workspace 下任意目录启动一个会话，或先浏览目录树看看。',
+  'sessions.empty.startSession': '启动会话',
+  'sessions.empty.browse': '浏览 workspace',
+  'sessions.search.placeholder': '搜索会话…',
+  'sessions.search.clear': '清除搜索',
+  'sessions.search.count': '{n} / {total} 个会话',
+  'sessions.search.noResults': '没有匹配的会话。',
+  'sessions.group.showMore': '再显示 {n} 个',
+  'sessions.group.showLess': '收起',
 
   // Session list
   'session.item.path': '路径',
@@ -58,6 +68,12 @@ export default {
   // Session header
   'session.title': '文件',
   'session.more': '更多操作',
+  'session.outline.open': '会话大纲',
+  'session.outline.close': '关闭大纲',
+  'session.outline.title': '大纲',
+  'session.outline.loadOlder': '加载更早',
+  'session.outline.empty': '已加载消息中暂无大纲项',
+  'session.outline.kind.user': '用户',
 
   // Session actions
   'session.action.rename': '重命名',
@@ -97,6 +113,7 @@ export default {
   'newSession.machine': '机器',
   'newSession.directory': '目录',
   'newSession.placeholder': '/path/to/project',
+  'newSession.browse': '浏览',
   'newSession.recent': '最近路径',
   'newSession.type': '会话类型',
   'newSession.type.simple': '简单',
@@ -108,6 +125,7 @@ export default {
   'newSession.model': '模型',
   'newSession.effort': '思考强度',
   'newSession.model.optional': '可选',
+  'newSession.model.loadFailed': '加载 Codex 模型失败',
   'newSession.reasoningEffort': '推理强度',
   'newSession.yolo': 'YOLO 模式',
   'newSession.yolo.title': '跳过审批和沙箱',
@@ -127,6 +145,7 @@ export default {
   'session.directoryMissingSimple': '目录不存在，创建会话时将自动创建。',
   'session.directoryMissingSimpleConfirm': '目录不存在。再次点击按钮将自动新建该目录。',
   'session.directoryMissingWorktree': 'worktree 需要已存在的仓库目录。',
+  'session.codexModelsLoadFailed': '加载 Codex 模型失败',
   'session.createAndCreateDirectory': '创建并新建目录',
 
   // Machine
@@ -153,6 +172,7 @@ export default {
 
   // Code block
   'code.copy': '复制',
+  'code.truncated': '预览已截断 — 打开详情查看完整输出',
 
   // Diff view
   'diff.title': '差异',
@@ -176,6 +196,8 @@ export default {
   'tool.exitPlan': '退出计划模式',
   'tool.patch': '补丁',
   'tool.input': '输入',
+  'tool.trace': '追踪',
+  'tool.trace.callsSuffix': '次调用',
   'tool.result': '结果',
   'tool.questionsAnswers': '问答',
   'tool.submit': '提交',
@@ -274,6 +296,18 @@ export default {
   'settings.about.website': '官方网站',
   'settings.about.appVersion': '应用版本',
   'settings.about.protocolVersion': '协议版本',
+
+  // Browse / Workspace
+  'browse.title': '浏览',
+  'browse.goUp': '返回上层',
+  'browse.empty': '未找到子目录',
+  'browse.refresh': '刷新',
+  'browse.startSession': '启动会话',
+  'browse.nav': '浏览',
+  'browse.noRootTitle': '未启用 workspace 浏览',
+  'browse.noRootHint': '浏览功能是可选的。带 --workspace-root 参数重启 runner，即可启用文件树浏览和受限的会话启动。',
+  'browse.noRootFooter': '你仍然可以在「新建会话」页面直接创建会话。',
+  'browse.noMachinesConnected': '没有已连接的 CLI。在某台机器上运行 `hapi runner start --workspace-root /path` 来开始。',
 
   // Misc
   'misc.noMachines': '无可用机器',

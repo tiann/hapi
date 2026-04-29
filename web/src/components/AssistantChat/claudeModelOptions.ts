@@ -17,7 +17,7 @@ function normalizeClaudeComposerModel(model?: string | null): string | null {
 export function getClaudeComposerModelOptions(currentModel?: string | null): ClaudeComposerModelOption[] {
     const normalizedCurrentModel = normalizeClaudeComposerModel(currentModel)
     const options: ClaudeComposerModelOption[] = [
-        { value: null, label: 'Auto' }
+        { value: null, label: 'Default' }
     ]
 
     if (

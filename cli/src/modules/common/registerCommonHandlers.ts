@@ -1,5 +1,6 @@
 import type { RpcHandlerManager } from '@/api/rpc/RpcHandlerManager'
 import { registerBashHandlers } from './handlers/bash'
+import { registerCodexModelHandlers } from './handlers/codexModels'
 import { registerDirectoryHandlers } from './handlers/directories'
 import { registerDifftasticHandlers } from './handlers/difftastic'
 import { registerFileHandlers } from './handlers/files'
@@ -11,6 +12,7 @@ import { registerUploadHandlers } from './handlers/uploads'
 
 export function registerCommonHandlers(rpcHandlerManager: RpcHandlerManager, workingDirectory: string): void {
     registerBashHandlers(rpcHandlerManager, workingDirectory)
+    registerCodexModelHandlers(rpcHandlerManager)
     registerFileHandlers(rpcHandlerManager, workingDirectory)
     registerDirectoryHandlers(rpcHandlerManager, workingDirectory)
     registerRipgrepHandlers(rpcHandlerManager, workingDirectory)

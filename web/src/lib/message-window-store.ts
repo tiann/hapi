@@ -1,7 +1,7 @@
 import type { ApiClient } from '@/api/client'
 import type { DecryptedMessage, MessageStatus } from '@/types/api'
 import { normalizeDecryptedMessage } from '@/chat/normalize'
-import { isUserMessage, mergeMessages } from '@/lib/messages'
+import { isQueuedForInvocation, isUserMessage, mergeMessages } from '@/lib/messages'
 
 export type MessageWindowState = {
     sessionId: string
@@ -27,6 +27,13 @@ type InternalState = MessageWindowState & {
     pendingOverflowCount: number
     pendingVisibleCount: number
     pendingOverflowVisibleCount: number
+    // V8 composite cursor: defined when hub responded with nextBeforeAt
+    oldestPositionAt: number | null
+    // Paired with oldestPositionAt — the server returns both as a cursor; keep them
+    // together so we don't accidentally combine `nextBeforeAt` from the server with
+    // a recomputed minimum `seq` from the local window (those can refer to
+    // different rows after a low-seq message is invoked late).
+    oldestPositionSeq: number | null
 }
 
 type PendingVisibilityCacheEntry = {
@@ -138,6 +145,8 @@ function createState(sessionId: string): InternalState {
         pendingOverflowVisibleCount: 0,
         hasMore: false,
         oldestSeq: null,
+        oldestPositionAt: null,
+        oldestPositionSeq: null,
         newestSeq: null,
         isLoading: false,
         isLoadingMore: false,
@@ -214,6 +223,8 @@ function buildState(
         pendingVisibleCount?: number
         pendingOverflowVisibleCount?: number
         hasMore?: boolean
+        oldestPositionAt?: number | null
+        oldestPositionSeq?: number | null
         isLoading?: boolean
         isLoadingMore?: boolean
         warning?: string | null
@@ -245,6 +256,8 @@ function buildState(
         pendingOverflowVisibleCount,
         pendingCount,
         oldestSeq,
+        oldestPositionAt: updates.oldestPositionAt !== undefined ? updates.oldestPositionAt : prev.oldestPositionAt,
+        oldestPositionSeq: updates.oldestPositionSeq !== undefined ? updates.oldestPositionSeq : prev.oldestPositionSeq,
         newestSeq,
         hasMore: updates.hasMore !== undefined ? updates.hasMore : prev.hasMore,
         isLoading: updates.isLoading !== undefined ? updates.isLoading : prev.isLoading,
@@ -255,14 +268,44 @@ function buildState(
     }
 }
 
+/** Trim `messages` down to `limit` while preserving every queued user message.
+ *  Queued rows must survive trimming on both windows: the `messages-consumed`
+ *  SSE only carries localIds, so a dropped queued row cannot be restored or
+ *  repositioned without a full refetch.  Returns the kept slice plus the list
+ *  of regular (non-queued) rows that were dropped, so the pending-overflow
+ *  warning counter can be advanced symmetrically. */
+function trimPreservingQueued(
+    messages: DecryptedMessage[],
+    limit: number,
+    mode: 'append' | 'prepend'
+): { kept: DecryptedMessage[]; dropped: DecryptedMessage[] } {
+    if (messages.length <= limit) {
+        return { kept: messages, dropped: [] }
+    }
+    const queued = messages.filter(isQueuedForInvocation)
+    if (queued.length === 0) {
+        const kept = mode === 'prepend'
+            ? messages.slice(0, limit)
+            : messages.slice(messages.length - limit)
+        const dropped = mode === 'prepend'
+            ? messages.slice(limit)
+            : messages.slice(0, messages.length - limit)
+        return { kept, dropped }
+    }
+    const queuedIds = new Set(queued.map((message) => message.id))
+    const regular = messages.filter((message) => !queuedIds.has(message.id))
+    const budget = Math.max(0, limit - queued.length)
+    const trimmedRegular = mode === 'prepend'
+        ? regular.slice(0, budget)
+        : regular.slice(Math.max(0, regular.length - budget))
+    const droppedRegular = mode === 'prepend'
+        ? regular.slice(budget)
+        : regular.slice(0, Math.max(0, regular.length - budget))
+    return { kept: mergeMessages(trimmedRegular, queued), dropped: droppedRegular }
+}
+
 function trimVisible(messages: DecryptedMessage[], mode: 'append' | 'prepend'): DecryptedMessage[] {
-    if (messages.length <= VISIBLE_WINDOW_SIZE) {
-        return messages
-    }
-    if (mode === 'prepend') {
-        return messages.slice(0, VISIBLE_WINDOW_SIZE)
-    }
-    return messages.slice(messages.length - VISIBLE_WINDOW_SIZE)
+    return trimPreservingQueued(messages, VISIBLE_WINDOW_SIZE, mode).kept
 }
 
 function trimPending(
@@ -272,11 +315,12 @@ function trimPending(
     if (messages.length <= PENDING_WINDOW_SIZE) {
         return { pending: messages, dropped: 0, droppedVisible: 0 }
     }
-    const cutoff = messages.length - PENDING_WINDOW_SIZE
-    const droppedMessages = messages.slice(0, cutoff)
-    const pending = messages.slice(cutoff)
-    const droppedVisible = countVisiblePendingMessages(sessionId, droppedMessages)
-    return { pending, dropped: droppedMessages.length, droppedVisible }
+    // Symmetric with trimVisible: agents that overflow the pending window
+    // (200) must not evict queued user messages — the floating bar holds the
+    // only client-visible reference to them until the CLI ack arrives.
+    const { kept, dropped } = trimPreservingQueued(messages, PENDING_WINDOW_SIZE, 'append')
+    const droppedVisible = countVisiblePendingMessages(sessionId, dropped)
+    return { pending: kept, dropped: dropped.length, droppedVisible }
 }
 
 function filterPendingAgainstVisible(pending: DecryptedMessage[], visible: DecryptedMessage[]): DecryptedMessage[] {
@@ -360,6 +404,8 @@ export function seedMessageWindowFromSession(fromSessionId: string, toSessionId:
         pendingOverflowCount: source.pendingOverflowCount,
         pendingOverflowVisibleCount: source.pendingOverflowVisibleCount,
         hasMore: source.hasMore,
+        oldestPositionAt: source.oldestPositionAt,
+        oldestPositionSeq: source.oldestPositionSeq,
         warning: source.warning,
         atBottom: source.atBottom,
         isLoading: false,
@@ -376,7 +422,17 @@ export async function fetchLatestMessages(api: ApiClient, sessionId: string): Pr
     updateState(sessionId, (prev) => buildState(prev, { isLoading: true, warning: null }))
 
     try {
-        const response = await api.getMessages(sessionId, { limit: PAGE_SIZE, beforeSeq: null })
+        // Always request byPosition mode (V8). If the hub is V7 it ignores byPosition and
+        // returns the standard seq-based response (no nextBeforeAt field) — we fall back
+        // to seq-cursor mode seamlessly.
+        const response = await api.getMessages(sessionId, { byPosition: true, limit: PAGE_SIZE })
+        // Derive composite cursor pair from server response. Both values come from
+        // the same row on the server; we keep them paired so the next older fetch
+        // doesn't mix `beforeAt` from the server with a recomputed minimum `seq`.
+        const nextBeforeAt = response.page.nextBeforeAt ?? null
+        const nextBeforeSeq = response.page.nextBeforeSeq ?? null
+        const isV8Cursor = nextBeforeAt !== null && nextBeforeSeq !== null
+
         updateState(sessionId, (prev) => {
             if (prev.atBottom) {
                 const merged = mergeMessages(prev.messages, [...prev.pending, ...response.messages])
@@ -388,6 +444,8 @@ export async function fetchLatestMessages(api: ApiClient, sessionId: string): Pr
                     pendingVisibleCount: 0,
                     pendingOverflowVisibleCount: 0,
                     hasMore: response.page.hasMore,
+                    oldestPositionAt: isV8Cursor ? nextBeforeAt : null,
+                    oldestPositionSeq: isV8Cursor ? nextBeforeSeq : null,
                     isLoading: false,
                     warning: null,
                 })
@@ -398,6 +456,12 @@ export async function fetchLatestMessages(api: ApiClient, sessionId: string): Pr
                 pendingVisibleCount: pendingResult.pendingVisibleCount,
                 pendingOverflowCount: pendingResult.pendingOverflowCount,
                 pendingOverflowVisibleCount: pendingResult.pendingOverflowVisibleCount,
+                // Persist the V8 cursor pair on the non-at-bottom path too. Without this
+                // a refresh while scrolled up dropped the composite cursor and the next
+                // loadMore fell back to V7 seq mode against a V8 hub — the same
+                // asymmetric class of bug the at-bottom branch already guards against.
+                oldestPositionAt: isV8Cursor ? nextBeforeAt : null,
+                oldestPositionSeq: isV8Cursor ? nextBeforeSeq : null,
                 isLoading: false,
                 warning: pendingResult.warning,
             })
@@ -419,13 +483,31 @@ export async function fetchOlderMessages(api: ApiClient, sessionId: string): Pro
     updateState(sessionId, (prev) => buildState(prev, { isLoadingMore: true }))
 
     try {
-        const response = await api.getMessages(sessionId, { limit: PAGE_SIZE, beforeSeq: initial.oldestSeq })
+        // V8 mode: use the server-provided cursor pair as-is. Mixing `beforeAt` from
+        // the server with a recomputed minimum `seq` from the local window can refer
+        // to different rows after a low-seq message is invoked late.
+        const useV8Cursor = initial.oldestPositionAt !== null && initial.oldestPositionSeq !== null
+        const response = useV8Cursor
+            ? await api.getMessages(sessionId, {
+                byPosition: true,
+                beforeAt: initial.oldestPositionAt!,
+                beforeSeq: initial.oldestPositionSeq!,
+                limit: PAGE_SIZE
+            })
+            : await api.getMessages(sessionId, { beforeSeq: initial.oldestSeq, limit: PAGE_SIZE })
+
+        const nextBeforeAt = response.page.nextBeforeAt ?? null
+        const nextBeforeSeq = response.page.nextBeforeSeq ?? null
+        const isV8Cursor = nextBeforeAt !== null && nextBeforeSeq !== null
+
         updateState(sessionId, (prev) => {
             const merged = mergeMessages(response.messages, prev.messages)
             const trimmed = trimVisible(merged, 'prepend')
             return buildState(prev, {
                 messages: trimmed,
                 hasMore: response.page.hasMore,
+                oldestPositionAt: isV8Cursor ? nextBeforeAt : null,
+                oldestPositionSeq: isV8Cursor ? nextBeforeSeq : null,
                 isLoadingMore: false,
             })
         })
@@ -531,6 +613,85 @@ export function updateMessageStatus(sessionId: string, localId: string, status: 
         }
         const messages = updateList(prev.messages)
         const pending = updateList(prev.pending)
+        if (!changed) {
+            return prev
+        }
+        return buildState(prev, { messages, pending })
+    })
+}
+
+/** Transition the queued messages whose localIds match to 'sent' and record invokedAt.
+ *  Driven by the CLI ack (messages-consumed). Unmatched messages remain queued.
+ *  Also handles server-loaded messages (status=undefined) that have a matching localId.
+ *  V7 hub compat: if `invokedAt` is undefined the SyncEvent had no server timestamp,
+ *  so we fall back to client time — without it the row would stay queued forever
+ *  under the strict-null filter. The fallback only affects display ordering on
+ *  this client; the persisted server value is the authoritative one when present. */
+export function markMessagesConsumed(sessionId: string, localIds: string[], invokedAt: number | undefined): void {
+    if (localIds.length === 0) return
+    const idSet = new Set(localIds)
+    const effectiveInvokedAt = invokedAt ?? Date.now()
+    updateState(sessionId, (prev) => {
+        let changed = false
+        const updateList = (list: DecryptedMessage[]) => {
+            return list.map((message) => {
+                if (!message.localId || !idSet.has(message.localId)) {
+                    return message
+                }
+                if (message.status === 'failed') {
+                    return message
+                }
+                // Apply the ack even if the message is already 'sent' (optimistic) — otherwise
+                // a message that flipped to 'sent' before the consume event arrives would
+                // never receive `invokedAt` and keep sorting by send time.
+                // First-write-wins on `invokedAt`: mirror the hub's UPDATE guard so a
+                // duplicate `messages-consumed` (e.g. CLI re-emit) doesn't restamp a
+                // message and shuffle its byPosition slot on live clients while the
+                // DB still holds the original timestamp.
+                const needsStatus = message.status !== 'sent'
+                // Strict null to stay consistent with isQueuedForInvocation and the rest
+                // of this file. The idSet filter already shields V7-stamped rows from
+                // this path, but the strict-null contract should not vary by call site.
+                const needsInvokedAt = message.invokedAt === null
+                if (!needsStatus && !needsInvokedAt) {
+                    return message
+                }
+                changed = true
+                const update: Partial<DecryptedMessage> = {}
+                if (needsStatus) {
+                    update.status = 'sent' as MessageStatus
+                }
+                if (needsInvokedAt) {
+                    update.invokedAt = effectiveInvokedAt
+                }
+                return { ...message, ...update }
+            })
+        }
+        // Migrate just-acked pending entries into the visible thread. Without
+        // this step, an at-bottom=false user that is stuck in pending never
+        // sees their own message at the invocation slot — it stays in the
+        // pending bucket until they scroll, even though the floating bar
+        // already cleared.  Identifying the migrated rows by (localId,
+        // invokedAt = effectiveInvokedAt) ensures we only move rows whose
+        // ack just arrived, not unrelated pending entries.
+        const updatedPending = updateList(prev.pending)
+        const consumedFromPending: DecryptedMessage[] = []
+        const remainingPending = updatedPending.filter((message) => {
+            if (
+                message.localId &&
+                idSet.has(message.localId) &&
+                message.invokedAt === effectiveInvokedAt
+            ) {
+                consumedFromPending.push(message)
+                return false
+            }
+            return true
+        })
+        // After update, re-merge to re-sort by the position key (`invokedAt ?? createdAt`):
+        // a queued message that just received `invokedAt` should move to its invocation
+        // position, not stay at its original send-time slot until the next fetch.
+        const messages = mergeMessages(updateList(prev.messages), consumedFromPending)
+        const pending = mergeMessages([], remainingPending)
         if (!changed) {
             return prev
         }

@@ -7,7 +7,8 @@ export class MessageService {
     constructor(
         private readonly store: Store,
         private readonly io: Server,
-        private readonly publisher: EventPublisher
+        private readonly publisher: EventPublisher,
+        private readonly onSessionActivity?: (sessionId: string, updatedAt: number) => void
     ) {
     }
 
@@ -26,7 +27,8 @@ export class MessageService {
             seq: message.seq,
             localId: message.localId,
             content: message.content,
-            createdAt: message.createdAt
+            createdAt: message.createdAt,
+            invokedAt: message.invokedAt
         }))
 
         let oldestSeq: number | null = null
@@ -52,6 +54,75 @@ export class MessageService {
         }
     }
 
+    getMessagesPageByPosition(
+        sessionId: string,
+        options: { limit: number; before?: { at: number; seq: number } | null }
+    ): {
+        messages: DecryptedMessage[]
+        page: {
+            limit: number
+            nextBeforeSeq: number | null
+            nextBeforeAt: number | null
+            hasMore: boolean
+        }
+    } {
+        const before = options.before ?? undefined
+        const pageRows = this.store.messages.getMessagesByPosition(sessionId, options.limit, before)
+
+        // Latest-page request (no cursor): also include uninvoked local user messages
+        // out-of-band, so refresh / secondary clients can still see queued rows even
+        // when their position key (createdAt) places them outside the latest page.
+        // The cursor stays anchored to pageRows so out-of-band rows don't affect
+        // pagination of older pages.
+        const queuedRows = before === undefined
+            ? this.store.messages.getUninvokedLocalMessages(sessionId)
+            : []
+
+        const byId = new Map<string, typeof pageRows[number]>()
+        for (const row of pageRows) byId.set(row.id, row)
+        for (const row of queuedRows) byId.set(row.id, row)
+
+        const stored = [...byId.values()].sort((a, b) => {
+            const at = (a.invokedAt ?? a.createdAt) - (b.invokedAt ?? b.createdAt)
+            return at !== 0 ? at : a.seq - b.seq
+        })
+
+        const messages: DecryptedMessage[] = stored.map((message) => ({
+            id: message.id,
+            seq: message.seq,
+            localId: message.localId,
+            content: message.content,
+            createdAt: message.createdAt,
+            invokedAt: message.invokedAt
+        }))
+
+        // The cursor is the oldest row in the actual position-ordered page (pageRows[0]).
+        // Out-of-band queued rows are not part of the cursor — they are pinned to
+        // every latest-page response.
+        const oldest = pageRows[0] ?? null
+        const oldestSeq: number | null = oldest?.seq ?? null
+        const oldestPositionAt: number | null = oldest
+            ? oldest.invokedAt ?? oldest.createdAt
+            : null
+
+        const hasMore = oldestSeq !== null && oldestPositionAt !== null
+            && this.store.messages.getMessagesByPosition(
+                sessionId,
+                1,
+                { at: oldestPositionAt, seq: oldestSeq }
+            ).length > 0
+
+        return {
+            messages,
+            page: {
+                limit: options.limit,
+                nextBeforeSeq: oldestSeq,
+                nextBeforeAt: oldestPositionAt,
+                hasMore
+            }
+        }
+    }
+
     getMessagesAfter(sessionId: string, options: { afterSeq: number; limit: number }): DecryptedMessage[] {
         const stored = this.store.messages.getMessagesAfter(sessionId, options.afterSeq, options.limit)
         return stored.map((message) => ({
@@ -59,7 +130,8 @@ export class MessageService {
             seq: message.seq,
             localId: message.localId,
             content: message.content,
-            createdAt: message.createdAt
+            createdAt: message.createdAt,
+            invokedAt: message.invokedAt
         }))
     }
 
@@ -87,6 +159,7 @@ export class MessageService {
         }
 
         const msg = this.store.messages.addMessage(sessionId, content, payload.localId ?? undefined)
+        this.onSessionActivity?.(sessionId, msg.createdAt)
 
         const update = {
             id: msg.id,
@@ -114,7 +187,8 @@ export class MessageService {
                 seq: msg.seq,
                 localId: msg.localId,
                 content: msg.content,
-                createdAt: msg.createdAt
+                createdAt: msg.createdAt,
+                invokedAt: msg.invokedAt
             }
         })
     }

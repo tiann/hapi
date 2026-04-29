@@ -7,9 +7,11 @@ import type {
     FileReadResponse,
     FileSearchResponse,
     GitCommandResponse,
+    MachineListDirectoryResponse,
     MachinePathsExistsResponse,
     MachinesResponse,
     MessagesResponse,
+    CodexModelsResponse,
     PermissionMode,
     PushSubscriptionPayload,
     PushUnsubscribePayload,
@@ -189,8 +191,22 @@ export class ApiClient {
         return await this.request<SessionResponse>(`/api/sessions/${encodeURIComponent(sessionId)}`)
     }
 
-    async getMessages(sessionId: string, options: { beforeSeq?: number | null; limit?: number }): Promise<MessagesResponse> {
+    async getMessages(
+        sessionId: string,
+        options: {
+            beforeSeq?: number | null
+            beforeAt?: number | null
+            byPosition?: boolean
+            limit?: number
+        }
+    ): Promise<MessagesResponse> {
         const params = new URLSearchParams()
+        if (options.byPosition || options.beforeAt !== undefined && options.beforeAt !== null) {
+            params.set('byPosition', '1')
+        }
+        if (options.beforeAt !== undefined && options.beforeAt !== null) {
+            params.set('beforeAt', `${options.beforeAt}`)
+        }
         if (options.beforeSeq !== undefined && options.beforeSeq !== null) {
             params.set('beforeSeq', `${options.beforeSeq}`)
         }
@@ -266,10 +282,15 @@ export class ApiClient {
         })
     }
 
-    async resumeSession(sessionId: string): Promise<string> {
+    async resumeSession(sessionId: string, opts?: { permissionMode?: string }): Promise<string> {
         const response = await this.request<{ sessionId: string }>(
             `/api/sessions/${encodeURIComponent(sessionId)}/resume`,
-            { method: 'POST' }
+            {
+                method: 'POST',
+                ...(opts?.permissionMode !== undefined && {
+                    body: JSON.stringify({ permissionMode: opts.permissionMode })
+                })
+            }
         )
         return response.sessionId
     }
@@ -377,6 +398,19 @@ export class ApiClient {
         return await this.request<MachinesResponse>('/api/machines')
     }
 
+    async listMachineDirectory(
+        machineId: string,
+        path: string
+    ): Promise<MachineListDirectoryResponse> {
+        return await this.request<MachineListDirectoryResponse>(
+            `/api/machines/${encodeURIComponent(machineId)}/list-directory`,
+            {
+                method: 'POST',
+                body: JSON.stringify({ path })
+            }
+        )
+    }
+
     async checkMachinePathsExists(
         machineId: string,
         paths: string[]
@@ -405,6 +439,18 @@ export class ApiClient {
             method: 'POST',
             body: JSON.stringify({ directory, agent, model, modelReasoningEffort, yolo, sessionType, worktreeName, effort })
         })
+    }
+
+    async getMachineCodexModels(machineId: string): Promise<CodexModelsResponse> {
+        return await this.request<CodexModelsResponse>(
+            `/api/machines/${encodeURIComponent(machineId)}/codex-models`
+        )
+    }
+
+    async getSessionCodexModels(sessionId: string): Promise<CodexModelsResponse> {
+        return await this.request<CodexModelsResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/codex-models`
+        )
     }
 
     async getSlashCommands(sessionId: string): Promise<SlashCommandsResponse> {

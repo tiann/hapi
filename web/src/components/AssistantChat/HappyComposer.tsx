@@ -54,8 +54,11 @@ export function HappyComposer(props: {
     agentState?: AgentState | null
     backgroundTaskCount?: number
     contextSize?: number
+    contextCacheRead?: number
+    contextWindow?: number | null
     controlledByUser?: boolean
     agentFlavor?: string | null
+    availableModelOptions?: Array<{ value: string | null; label: string }>
     onCollaborationModeChange?: (mode: CodexCollaborationMode) => void
     onPermissionModeChange?: (mode: PermissionMode) => void
     onModelChange?: (model: string | null) => void
@@ -87,8 +90,11 @@ export function HappyComposer(props: {
         agentState,
         backgroundTaskCount,
         contextSize,
+        contextCacheRead,
+        contextWindow,
         controlledByUser = false,
         agentFlavor,
+        availableModelOptions,
         onCollaborationModeChange,
         onPermissionModeChange,
         onModelChange,
@@ -197,20 +203,12 @@ export function HappyComposer(props: {
             markSkillUsed(suggestion.text.slice(1))
         }
 
-        // For Codex user prompts with content, expand the content instead of command name
-        let textToInsert = suggestion.text
-        let addSpace = true
-        if (agentFlavor === 'codex' && suggestion.source !== 'builtin' && suggestion.content) {
-            textToInsert = suggestion.content
-            addSpace = false
-        }
-
         const result = applySuggestion(
             inputState.text,
             inputState.selection,
-            textToInsert,
+            suggestion.text,
             autocompletePrefixes,
-            addSpace
+            true
         )
 
         api.composer().setText(result.text)
@@ -231,7 +229,7 @@ export function HappyComposer(props: {
         }, 0)
 
         haptic('light')
-    }, [api, suggestions, inputState, autocompletePrefixes, haptic, agentFlavor])
+    }, [api, suggestions, inputState, autocompletePrefixes, haptic])
 
     const abortDisabled = controlsDisabled || isAborting || !threadIsRunning
     const switchDisabled = controlsDisabled || isSwitching || !controlledByUser
@@ -278,9 +276,9 @@ export function HappyComposer(props: {
         () => agentFlavor === 'codex' ? getCodexCollaborationModeOptions() : [],
         [agentFlavor]
     )
-    const claudeModelOptions = useMemo(
-        () => getModelOptionsForFlavor(agentFlavor, model),
-        [agentFlavor, model]
+    const modelOptions = useMemo(
+        () => getModelOptionsForFlavor(agentFlavor, model, availableModelOptions),
+        [agentFlavor, model, availableModelOptions]
     )
     const codexReasoningEffortOptions = useMemo(
         () => agentFlavor === 'codex' ? getCodexComposerReasoningEffortOptions(modelReasoningEffort) : [],
@@ -385,14 +383,14 @@ export function HappyComposer(props: {
         const handleGlobalKeyDown = (e: globalThis.KeyboardEvent) => {
             if (e.key === 'm' && (e.metaKey || e.ctrlKey) && onModelChange && supportsModelChange(agentFlavor)) {
                 e.preventDefault()
-                onModelChange(getNextModelForFlavor(agentFlavor, model))
+                onModelChange(getNextModelForFlavor(agentFlavor, model, availableModelOptions))
                 haptic('light')
             }
         }
 
         window.addEventListener('keydown', handleGlobalKeyDown)
         return () => window.removeEventListener('keydown', handleGlobalKeyDown)
-    }, [model, onModelChange, haptic, agentFlavor])
+    }, [model, onModelChange, haptic, agentFlavor, availableModelOptions])
 
     const handleChange = useCallback((e: ReactChangeEvent<HTMLTextAreaElement>) => {
         const selection = {
@@ -477,7 +475,7 @@ export function HappyComposer(props: {
 
     const showCollaborationSettings = Boolean(onCollaborationModeChange && collaborationModeOptions.length > 0)
     const showPermissionSettings = Boolean(onPermissionModeChange && permissionModeOptions.length > 0)
-    const showModelSettings = Boolean(onModelChange && supportsModelChange(agentFlavor))
+    const showModelSettings = Boolean(onModelChange && supportsModelChange(agentFlavor) && modelOptions.length > 0)
     const showModelReasoningEffortSettings = Boolean(onModelReasoningEffortChange && codexReasoningEffortOptions.length > 0)
     const showEffortSettings = Boolean(onEffortChange && supportsEffort(agentFlavor))
     const showSettingsButton = Boolean(
@@ -586,7 +584,7 @@ export function HappyComposer(props: {
                                 <div className="px-3 pb-1 text-xs font-semibold text-[var(--app-hint)]">
                                     {t('misc.model')}
                                 </div>
-                                {claudeModelOptions.map((option) => (
+                                {modelOptions.map((option) => (
                                     <button
                                         key={option.value ?? 'auto'}
                                         type="button"
@@ -726,7 +724,7 @@ export function HappyComposer(props: {
         showModelSettings,
         showModelReasoningEffortSettings,
         showEffortSettings,
-        claudeModelOptions,
+        modelOptions,
         codexReasoningEffortOptions,
         claudeEffortOptions,
         suggestions,
@@ -760,7 +758,10 @@ export function HappyComposer(props: {
                         agentState={agentState}
                         backgroundTaskCount={backgroundTaskCount}
                         contextSize={contextSize}
+                        contextCacheRead={contextCacheRead}
+                        contextWindow={contextWindow}
                         model={model}
+                        modelReasoningEffort={modelReasoningEffort}
                         permissionMode={permissionMode}
                         collaborationMode={collaborationMode}
                         agentFlavor={agentFlavor}

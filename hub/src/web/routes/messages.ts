@@ -7,7 +7,9 @@ import { requireSessionFromParam, requireSyncEngine } from './guards'
 
 const querySchema = z.object({
     limit: z.coerce.number().int().min(1).max(200).optional(),
-    beforeSeq: z.coerce.number().int().min(1).optional()
+    beforeSeq: z.coerce.number().int().min(1).optional(),
+    byPosition: z.string().optional(),
+    beforeAt: z.coerce.number().int().min(0).optional(),
 })
 
 const sendMessageBodySchema = z.object({
@@ -33,6 +35,18 @@ export function createMessagesRoutes(getSyncEngine: () => SyncEngine | null): Ho
 
         const parsed = querySchema.safeParse(c.req.query())
         const limit = parsed.success ? (parsed.data.limit ?? 50) : 50
+
+        // V8 byPosition mode: use composite (position_at, seq) cursor
+        if (parsed.success && parsed.data.byPosition === '1') {
+            const beforeAt = parsed.data.beforeAt
+            const beforeSeq = parsed.data.beforeSeq
+            const before = (beforeAt !== undefined && beforeSeq !== undefined)
+                ? { at: beforeAt, seq: beforeSeq }
+                : null
+            return c.json(engine.getMessagesPageByPosition(sessionId, { limit, before }))
+        }
+
+        // V7-compatible path: seq-based cursor
         const beforeSeq = parsed.success ? (parsed.data.beforeSeq ?? null) : null
         return c.json(engine.getMessagesPage(sessionId, { limit, beforeSeq }))
     })

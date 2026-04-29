@@ -7,6 +7,7 @@ import { CopyIcon, CheckIcon } from '@/components/icons'
 import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
 import type { HappyChatMessageMetadata } from '@/lib/assistant-runtime'
 import { getAssistantCopyText } from '@/components/AssistantChat/messages/assistantCopyText'
+import { getConversationMessageAnchorId } from '@/chat/outline'
 
 const TOOL_COMPONENTS = {
     Fallback: HappyToolMessage
@@ -21,6 +22,7 @@ const MESSAGE_PART_COMPONENTS = {
 
 export function HappyAssistantMessage() {
     const { copied, copy } = useCopyToClipboard()
+    const messageId = useAssistantState(({ message }) => message.id)
     const isCliOutput = useAssistantState(({ message }) => {
         const custom = message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
         return custom?.kind === 'cli-output'
@@ -45,14 +47,20 @@ export function HappyAssistantMessage() {
 
     if (isCliOutput) {
         return (
-            <MessagePrimitive.Root className="px-1 min-w-0 max-w-full overflow-x-hidden">
+            <MessagePrimitive.Root
+                id={getConversationMessageAnchorId(messageId)}
+                className="scroll-mt-4 px-1 min-w-0 max-w-full overflow-x-hidden"
+            >
                 <CliOutputBlock text={cliText} />
             </MessagePrimitive.Root>
         )
     }
 
     return (
-        <MessagePrimitive.Root className={`${rootClass} ${copyText ? 'group/msg' : ''}`}>
+        <MessagePrimitive.Root
+            id={getConversationMessageAnchorId(messageId)}
+            className={`${rootClass} ${copyText ? 'group/msg' : ''} scroll-mt-4`}
+        >
             <div className="min-w-0">
                 <MessagePrimitive.Content components={MESSAGE_PART_COMPONENTS} />
             </div>

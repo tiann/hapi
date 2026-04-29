@@ -1,4 +1,5 @@
 import type { ApiSessionClient } from '@/api/apiSession'
+import type { SessionEndReason } from '@hapi/protocol'
 import { logger } from '@/ui/logger'
 import { restoreTerminalState } from '@/ui/terminalState'
 
@@ -13,6 +14,7 @@ type RunnerLifecycleOptions = {
 export type RunnerLifecycle = {
     setExitCode: (code: number) => void
     setArchiveReason: (reason: string) => void
+    setSessionEndReason: (reason: SessionEndReason) => void
     markCrash: (error: unknown) => void
     cleanup: () => Promise<void>
     cleanupAndExit: (codeOverride?: number) => Promise<void>
@@ -22,6 +24,7 @@ export type RunnerLifecycle = {
 export function createRunnerLifecycle(options: RunnerLifecycleOptions): RunnerLifecycle {
     let exitCode = 0
     let archiveReason = 'User terminated'
+    let sessionEndReason: SessionEndReason = 'terminated'
     let cleanupStarted = false
     let cleanupPromise: Promise<void> | null = null
 
@@ -36,7 +39,7 @@ export function createRunnerLifecycle(options: RunnerLifecycleOptions): RunnerLi
             archiveReason
         }))
 
-        options.session.sendSessionDeath()
+        options.session.sendSessionDeath(sessionEndReason)
         await options.session.flush()
         await options.session.close()
     }
@@ -90,10 +93,15 @@ export function createRunnerLifecycle(options: RunnerLifecycleOptions): RunnerLi
         archiveReason = reason
     }
 
+    const setSessionEndReason = (reason: SessionEndReason) => {
+        sessionEndReason = reason
+    }
+
     const markCrash = (error: unknown) => {
         logger.debug(`${logPrefix} Unhandled error:`, error)
         exitCode = 1
         archiveReason = 'Session crashed'
+        sessionEndReason = 'error'
     }
 
     const registerProcessHandlers = () => {
@@ -119,6 +127,7 @@ export function createRunnerLifecycle(options: RunnerLifecycleOptions): RunnerLi
     return {
         setExitCode,
         setArchiveReason,
+        setSessionEndReason,
         markCrash,
         cleanup,
         cleanupAndExit,

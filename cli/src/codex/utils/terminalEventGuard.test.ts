@@ -44,6 +44,32 @@ describe('shouldIgnoreTerminalEvent', () => {
         expect(ignored).toBe(true);
     });
 
+    it('accepts thread-level terminal events for the current thread when explicitly allowed', () => {
+        const ignored = shouldIgnoreTerminalEvent({
+            eventTurnId: null,
+            currentTurnId: 'turn-1',
+            turnInFlight: true,
+            eventThreadId: 'thread-1',
+            currentThreadId: 'thread-1',
+            allowMatchingThreadIdTerminalEvent: true
+        });
+
+        expect(ignored).toBe(false);
+    });
+
+    it('ignores thread-level terminal events for a different thread', () => {
+        const ignored = shouldIgnoreTerminalEvent({
+            eventTurnId: null,
+            currentTurnId: 'turn-1',
+            turnInFlight: true,
+            eventThreadId: 'thread-old',
+            currentThreadId: 'thread-1',
+            allowMatchingThreadIdTerminalEvent: true
+        });
+
+        expect(ignored).toBe(true);
+    });
+
     it('ignores stale terminal events from another turn', () => {
         const ignored = shouldIgnoreTerminalEvent({
             eventTurnId: 'turn-old',

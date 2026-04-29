@@ -16,6 +16,7 @@ import { AppServerEventConverter } from './utils/appServerEventConverter';
 import { registerAppServerPermissionHandlers } from './utils/appServerPermissionAdapter';
 import { buildThreadStartParams, buildTurnStartParams } from './utils/appServerConfig';
 import { shouldIgnoreTerminalEvent } from './utils/terminalEventGuard';
+import { parseCodexSpecialCommand } from './codexSpecialCommands';
 import {
     RemoteLauncherBase,
     type RemoteLauncherDisplayContext,
@@ -241,11 +242,13 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         let clearReadyAfterTurnTimer: (() => void) | null = null;
         let turnInFlight = false;
         let allowAnonymousTerminalEvent = false;
+        let invalidThreadId: string | null = null;
 
         const handleCodexEvent = (msg: Record<string, unknown>) => {
             const msgType = asString(msg.type);
             if (!msgType) return;
             const eventTurnId = asString(msg.turn_id ?? msg.turnId);
+            const eventThreadId = asString(msg.thread_id ?? msg.threadId);
             const isTerminalEvent = msgType === 'task_complete' || msgType === 'turn_aborted' || msgType === 'task_failed';
 
             if (msgType === 'thread_started') {
@@ -267,22 +270,33 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 }
             }
 
+            const isThreadStatusFailure = msgType === 'task_failed' && msg.terminal_source === 'thread_status';
+
             if (isTerminalEvent) {
                 if (shouldIgnoreTerminalEvent({
                     eventTurnId,
                     currentTurnId: this.currentTurnId,
                     turnInFlight,
-                    allowAnonymousTerminalEvent
+                    allowAnonymousTerminalEvent,
+                    eventThreadId,
+                    currentThreadId: this.currentThreadId,
+                    allowMatchingThreadIdTerminalEvent: msg.terminal_source === 'thread_status'
                 })) {
                     logger.debug(
                         `[Codex] Ignoring terminal event ${msgType} without matching turn context; ` +
                         `eventTurnId=${eventTurnId ?? 'none'}, activeTurn=${this.currentTurnId ?? 'none'}, ` +
+                        `eventThreadId=${eventThreadId ?? 'none'}, activeThread=${this.currentThreadId ?? 'none'}, ` +
                         `turnInFlight=${turnInFlight}, allowAnonymous=${allowAnonymousTerminalEvent}`
                     );
                     return;
                 }
                 this.currentTurnId = null;
                 allowAnonymousTerminalEvent = false;
+                if (isThreadStatusFailure) {
+                    invalidThreadId = eventThreadId ?? this.currentThreadId;
+                    this.currentThreadId = null;
+                    hasThread = false;
+                }
             }
 
             if (msgType === 'agent_message') {
@@ -314,7 +328,9 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 messageBuffer.addMessage('Turn aborted', 'status');
             } else if (msgType === 'task_failed') {
                 const error = asString(msg.error);
-                messageBuffer.addMessage(error ? `Task failed: ${error}` : 'Task failed', 'status');
+                const message = error ? `Task failed: ${error}` : 'Task failed';
+                messageBuffer.addMessage(message, 'status');
+                session.sendSessionEvent({ type: 'message', message });
             }
 
             if (msgType === 'task_started') {
@@ -394,6 +410,8 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     delete output.type;
                     delete output.call_id;
                     delete output.callId;
+                    output.stdout = output.output;
+                    delete output.output;
 
                     session.sendAgentMessage({
                         type: 'tool-call-result',
@@ -406,6 +424,28 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             if (msgType === 'token_count') {
                 session.sendAgentMessage({
                     ...msg,
+                    id: randomUUID()
+                });
+            }
+            if (msgType === 'plan_update') {
+                session.sendAgentMessage({
+                    type: 'tool-call',
+                    name: 'update_plan',
+                    callId: 'codex-plan-state',
+                    input: {
+                        plan: Array.isArray(msg.plan) ? msg.plan : [],
+                        source: 'codex'
+                    },
+                    id: randomUUID()
+                });
+                session.sendAgentMessage({
+                    type: 'tool-call-result',
+                    callId: 'codex-plan-state',
+                    output: {
+                        plan: Array.isArray(msg.plan) ? msg.plan : [],
+                        source: 'codex',
+                        status: 'updated'
+                    },
                     id: randomUUID()
                 });
             }
@@ -594,6 +634,123 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             readyAfterTurnTimer.unref?.();
         };
 
+        const sendVisibleStatus = (message: string) => {
+            messageBuffer.addMessage(message, 'status');
+            session.sendSessionEvent({ type: 'message', message });
+        };
+
+        const resetCurrentTurnState = () => {
+            turnInFlight = false;
+            allowAnonymousTerminalEvent = false;
+            this.currentTurnId = null;
+            permissionHandler.reset();
+            reasoningProcessor.abort();
+            diffProcessor.reset();
+            appServerEventConverter.reset();
+            session.onThinkingChange(false);
+        };
+
+        const interruptActiveTurn = async () => {
+            const threadId = this.currentThreadId;
+            const turnId = this.currentTurnId;
+            if (!threadId || !turnId) {
+                return;
+            }
+
+            try {
+                await appServerClient.interruptTurn({ threadId, turnId });
+            } catch (error) {
+                logger.debug('[Codex] Error interrupting app-server turn for slash command:', error);
+            }
+        };
+
+        const resumeExistingThreadForCompact = async (mode: EnhancedMode): Promise<string | null> => {
+            if (this.currentThreadId && this.currentThreadId !== invalidThreadId) {
+                hasThread = true;
+                return this.currentThreadId;
+            }
+
+            const resumeCandidate = session.sessionId && session.sessionId !== invalidThreadId
+                ? session.sessionId
+                : null;
+            if (!resumeCandidate) {
+                return null;
+            }
+
+            const threadParams = buildThreadStartParams({
+                cwd: session.path,
+                mode,
+                mcpServers,
+                cliOverrides: session.codexCliOverrides
+            });
+
+            try {
+                const resumeResponse = await appServerClient.resumeThread({
+                    threadId: resumeCandidate,
+                    ...threadParams
+                }, {
+                    signal: this.abortController.signal
+                });
+                const resumeRecord = asRecord(resumeResponse);
+                const resumeThread = resumeRecord ? asRecord(resumeRecord.thread) : null;
+                const threadId = asString(resumeThread?.id) ?? resumeCandidate;
+                applyResolvedModel(resumeRecord?.model);
+                this.currentThreadId = threadId;
+                session.onSessionFound(threadId);
+                hasThread = true;
+                logger.debug(`[Codex] Resumed app-server thread ${threadId} for /compact`);
+                return threadId;
+            } catch (error) {
+                logger.warn(`[Codex] Failed to resume app-server thread ${resumeCandidate} for /compact`, error);
+                return null;
+            }
+        };
+
+        const handleSpecialCommand = async (message: QueuedMessage): Promise<boolean> => {
+            const specialCommand = parseCodexSpecialCommand(message.message);
+            if (!specialCommand.type) {
+                return false;
+            }
+
+            if (specialCommand.type === 'invalid') {
+                await interruptActiveTurn();
+                resetCurrentTurnState();
+                sendVisibleStatus(specialCommand.message);
+                return true;
+            }
+
+            if (specialCommand.type === 'clear') {
+                await interruptActiveTurn();
+                resetCurrentTurnState();
+                this.currentThreadId = null;
+                invalidThreadId = null;
+                hasThread = false;
+                session.resetCodexThread();
+                sendVisibleStatus('Context was reset');
+                return true;
+            }
+
+            await interruptActiveTurn();
+            resetCurrentTurnState();
+            const threadId = await resumeExistingThreadForCompact(message.mode);
+            if (!threadId) {
+                sendVisibleStatus('Nothing to compact');
+                return true;
+            }
+
+            sendVisibleStatus('Compaction started');
+            try {
+                await appServerClient.compactThread({ threadId }, {
+                    signal: this.abortController.signal
+                });
+                sendVisibleStatus('Compaction completed');
+            } catch (error) {
+                const detail = error instanceof Error ? error.message : String(error);
+                sendVisibleStatus(`Compaction failed: ${detail}`);
+            }
+            return true;
+        };
+
         while (!this.shouldExit) {
             logActiveHandles('loop-top');
             let message: QueuedMessage | null = pending;
@@ -619,6 +776,10 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             messageBuffer.addMessage(message.message, 'user');
 
             try {
+                if (await handleSpecialCommand(message)) {
+                    continue;
+                }
+
                 if (!hasThread) {
                     const threadParams = buildThreadStartParams({
                         cwd: session.path,
@@ -627,7 +788,9 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                         cliOverrides: session.codexCliOverrides
                     });
 
-                    const resumeCandidate = session.sessionId;
+                    const resumeCandidate = session.sessionId && session.sessionId !== invalidThreadId
+                        ? session.sessionId
+                        : null;
                     let threadId: string | null = null;
 
                     if (resumeCandidate) {
@@ -695,10 +858,12 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 const turnRecord = asRecord(turnResponse);
                 const turn = turnRecord ? asRecord(turnRecord.turn) : null;
                 const turnId = asString(turn?.id);
-                if (turnId) {
-                    this.currentTurnId = turnId;
-                } else if (!this.currentTurnId) {
-                    allowAnonymousTerminalEvent = true;
+                if (turnInFlight) {
+                    if (turnId) {
+                        this.currentTurnId = turnId;
+                    } else if (!this.currentTurnId) {
+                        allowAnonymousTerminalEvent = true;
+                    }
                 }
             } catch (error) {
                 logger.warn('Error in codex session:', error);

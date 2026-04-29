@@ -4,6 +4,7 @@ import type { Machine } from '@/types/api'
 import { usePlatform } from '@/hooks/usePlatform'
 import { useMachinePathsExists } from '@/hooks/useMachinePathsExists'
 import { useSpawnSession } from '@/hooks/mutations/useSpawnSession'
+import { useCodexModels } from '@/hooks/queries/useCodexModels'
 import { useSessions } from '@/hooks/queries/useSessions'
 import { useActiveSuggestions, type Suggestion } from '@/hooks/useActiveSuggestions'
 import { useDirectorySuggestions } from '@/hooks/useDirectorySuggestions'
@@ -33,6 +34,9 @@ export function NewSession(props: {
     isLoading?: boolean
     onSuccess: (sessionId: string) => void
     onCancel: () => void
+    onChooseFolder?: (args: { machineId: string | null; directory: string }) => void
+    initialDirectory?: string
+    initialMachineId?: string
 }) {
     const { haptic } = usePlatform()
     const { t } = useTranslation()
@@ -41,8 +45,8 @@ export function NewSession(props: {
     const isFormDisabled = Boolean(isPending || props.isLoading)
     const { getRecentPaths, addRecentPath, getLastUsedMachineId, setLastUsedMachineId } = useRecentPaths()
 
-    const [machineId, setMachineId] = useState<string | null>(null)
-    const [directory, setDirectory] = useState('')
+    const [machineId, setMachineId] = useState<string | null>(props.initialMachineId ?? null)
+    const [directory, setDirectory] = useState(props.initialDirectory ?? '')
     const [suppressSuggestions, setSuppressSuggestions] = useState(false)
     const [isDirectoryFocused, setIsDirectoryFocused] = useState(false)
     const [agent, setAgent] = useState<AgentType>(loadPreferredAgent)
@@ -84,21 +88,41 @@ export function NewSession(props: {
 
         if (foundLast) {
             setMachineId(foundLast.id)
-            const paths = getRecentPaths(foundLast.id)
-            if (paths[0]) setDirectory(paths[0])
+            if (!props.initialDirectory) {
+                const paths = getRecentPaths(foundLast.id)
+                if (paths[0]) setDirectory(paths[0])
+            }
         } else if (props.machines[0]) {
             setMachineId(props.machines[0].id)
         }
-    }, [props.machines, machineId, getLastUsedMachineId, getRecentPaths])
+    }, [props.machines, machineId, getLastUsedMachineId, getRecentPaths, props.initialDirectory])
 
     const selectedMachine = useMemo(
         () => (machineId ? props.machines.find((machine) => machine.id === machineId) ?? null : null),
         [machineId, props.machines]
     )
+    const codexModelsState = useCodexModels({
+        api: props.api,
+        machineId,
+        enabled: agent === 'codex' && Boolean(machineId)
+    })
     const runnerSpawnError = useMemo(
         () => formatRunnerSpawnError(selectedMachine),
         [selectedMachine]
     )
+    const codexModelOptions = useMemo(() => {
+        const options = [{ value: 'auto', label: 'Default' }]
+        for (const codexModel of codexModelsState.models) {
+            options.push({
+                value: codexModel.id,
+                label: codexModel.displayName
+            })
+        }
+        if (model !== 'auto' && !options.some((option) => option.value === model)) {
+            options.splice(1, 0, { value: model, label: model })
+        }
+        return options
+    }, [codexModelsState.models, model])
 
     const recentPaths = useMemo(
         () => getRecentPaths(machineId),
@@ -227,6 +251,13 @@ export function NewSession(props: {
         }
     }, [suggestions, selectedIndex, moveUp, moveDown, clearSuggestions, handleSuggestionSelect])
 
+    const chooseFolderCallback = props.onChooseFolder
+    const workspaceRootAvailable = Boolean(selectedMachine?.metadata?.workspaceRoot)
+    const handleChooseFolder = useMemo(() => {
+        if (!chooseFolderCallback || !workspaceRootAvailable) return undefined
+        return () => chooseFolderCallback({ machineId, directory: trimmedDirectory })
+    }, [chooseFolderCallback, workspaceRootAvailable, machineId, trimmedDirectory])
+
     async function handleCreate() {
         if (!machineId || !trimmedDirectory) return
 
@@ -309,6 +340,7 @@ export function NewSession(props: {
                 onDirectoryKeyDown={handleDirectoryKeyDown}
                 onSuggestionSelect={handleSuggestionSelect}
                 onPathClick={handlePathClick}
+                onChooseFolder={handleChooseFolder}
             />
             <SessionTypeSelector
                 sessionType={sessionType}
@@ -326,7 +358,12 @@ export function NewSession(props: {
             <ModelSelector
                 agent={agent}
                 model={model}
-                isDisabled={isFormDisabled}
+                options={agent === 'codex' ? codexModelOptions : undefined}
+                isDisabled={isFormDisabled || (agent === 'codex' && Boolean(codexModelsState.error))}
+                isLoading={agent === 'codex' && codexModelsState.isLoading}
+                error={agent === 'codex' && codexModelsState.error
+                    ? `${t('newSession.model.loadFailed')}: ${codexModelsState.error}`
+                    : null}
                 onModelChange={setModel}
             />
             <ClaudeEffortSelector

@@ -136,6 +136,23 @@ export class AcpSdkBackend implements AgentBackend {
         return sessionId;
     }
 
+    async setModel(sessionId: string, modelId: string): Promise<void> {
+        if (!this.transport) {
+            throw new Error('ACP transport not initialized');
+        }
+
+        // The launcher serializes setModel between turns, but defensively wait for any
+        // in-flight prompt to drain so we never interleave a switch with a session/prompt.
+        await this.waitForResponseComplete();
+
+        // Errors (including JSON-RPC 'method not found') propagate as rejections
+        // from the transport; the launcher's catch block handles them.
+        await this.transport.sendRequest('session/set_model', {
+            sessionId,
+            modelId
+        });
+    }
+
     async prompt(
         sessionId: string,
         content: PromptContent[],

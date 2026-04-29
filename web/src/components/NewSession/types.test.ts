@@ -5,7 +5,7 @@ import { CLAUDE_EFFORT_OPTIONS, MODEL_OPTIONS } from './types'
 describe('Claude model options', () => {
     it('includes 1m model options in the expected order', () => {
         expect(MODEL_OPTIONS.claude).toEqual([
-            { value: 'auto', label: 'Auto' },
+            { value: 'auto', label: 'Default' },
             { value: 'opus', label: 'Opus' },
             { value: 'opus[1m]', label: 'Opus 1M' },
             { value: 'sonnet', label: 'Sonnet' },

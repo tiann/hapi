@@ -5,11 +5,14 @@ import { useTranslation } from '@/lib/use-translation'
 export function ModelSelector(props: {
     agent: AgentType
     model: string
+    options?: Array<{ value: string; label: string }>
     isDisabled: boolean
+    isLoading?: boolean
+    error?: string | null
     onModelChange: (value: string) => void
 }) {
     const { t } = useTranslation()
-    const options = MODEL_OPTIONS[props.agent]
+    const options = props.options ?? MODEL_OPTIONS[props.agent]
     if (options.length === 0) {
         return null
     }
@@ -23,7 +26,7 @@ export function ModelSelector(props: {
             <select
                 value={props.model}
                 onChange={(e) => props.onModelChange(e.target.value)}
-                disabled={props.isDisabled}
+                disabled={props.isDisabled || props.isLoading}
                 className="w-full px-3 py-2 text-sm rounded-lg border border-[var(--app-divider)] bg-[var(--app-bg)] text-[var(--app-text)] focus:outline-none focus:ring-2 focus:ring-[var(--app-link)] disabled:opacity-50"
             >
                 {options.map((option) => (
@@ -32,6 +35,11 @@ export function ModelSelector(props: {
                     </option>
                 ))}
             </select>
+            {props.error ? (
+                <div className="text-xs text-red-600">
+                    {props.error}
+                </div>
+            ) : null}
         </div>
     )
 }

@@ -77,13 +77,13 @@ export async function runCursor(opts: {
         logger.debug(`[cursor] Synced session permission mode: ${currentPermissionMode}`);
     };
 
-    session.onUserMessage((message) => {
+    session.onUserMessage((message, localId) => {
         const enhancedMode: EnhancedMode = {
             permissionMode: currentPermissionMode ?? 'default',
             model: currentModel
         };
         const formattedText = formatMessageWithAttachments(message.content.text, message.content.attachments);
-        messageQueue.push(formattedText, enhancedMode);
+        messageQueue.push(formattedText, enhancedMode, localId);
     });
 
     const resolvePermissionMode = (value: unknown): PermissionMode => {
@@ -108,6 +108,8 @@ export async function runCursor(opts: {
         return { applied: { permissionMode: currentPermissionMode } };
     });
 
+    let crashed = false;
+
     try {
         await loop({
             path: workingDirectory,
@@ -127,6 +129,7 @@ export async function runCursor(opts: {
             }
         });
     } catch (error) {
+        crashed = true;
         lifecycle.markCrash(error);
         logger.debug('[cursor] Loop error:', error);
     } finally {
@@ -134,6 +137,9 @@ export async function runCursor(opts: {
         if (localFailure?.exitReason === 'exit') {
             lifecycle.setExitCode(1);
             lifecycle.setArchiveReason(`Local launch failed: ${formatFailureReason(localFailure.message)}`);
+            lifecycle.setSessionEndReason('error');
+        } else if (!crashed) {
+            lifecycle.setSessionEndReason('completed');
         }
         await lifecycle.cleanupAndExit();
     }

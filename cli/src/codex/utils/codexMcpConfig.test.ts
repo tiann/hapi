@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { buildMcpServerConfigArgs, buildDeveloperInstructionsArg } from './codexMcpConfig';
+import {
+    buildMcpServerConfigArgs,
+    buildDeveloperInstructionsArg,
+    buildSessionStartHookConfigArgs
+} from './codexMcpConfig';
 
 describe('codexMcpConfig', () => {
     describe('buildMcpServerConfigArgs', () => {
@@ -88,6 +92,17 @@ describe('codexMcpConfig', () => {
             const args = buildDeveloperInstructionsArg(instructions);
 
             expect(args[1]).toContain('\\\\');
+        });
+    });
+
+    describe('buildSessionStartHookConfigArgs', () => {
+        it('builds a SessionStart hook config override', () => {
+            const args = buildSessionStartHookConfigArgs(4312, 'secret-token');
+
+            expect(args[0]).toBe('-c');
+            expect(args[1]).toContain('hooks.SessionStart=[');
+            expect(args[1]).toContain('type = "command"');
+            expect(args[1]).toContain('hook-forwarder --port 4312 --token secret-token');
         });
     });
 });

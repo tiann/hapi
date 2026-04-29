@@ -38,6 +38,9 @@ export function reduceTimeline(
                 hasReadyEvent = true
                 continue
             }
+            if (msg.content.type === 'token-count') {
+                continue
+            }
             blocks.push({
                 kind: 'agent-event',
                 id: msg.id,

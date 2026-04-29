@@ -19,6 +19,31 @@ export interface InitializeResponse {
     [key: string]: unknown;
 }
 
+export interface ModelListParams {
+    includeHidden?: boolean;
+}
+
+export interface ModelListItem {
+    id: string;
+    model?: string;
+    displayName?: string;
+    description?: string;
+    hidden?: boolean;
+    supportedReasoningEfforts?: Array<{
+        reasoningEffort?: string;
+        description?: string;
+    }>;
+    defaultReasoningEffort?: string | null;
+    isDefault?: boolean;
+    [key: string]: unknown;
+}
+
+export interface ModelListResponse {
+    data?: ModelListItem[];
+    nextCursor?: string | null;
+    [key: string]: unknown;
+}
+
 export interface ThreadStartParams {
     model?: string;
     modelProvider?: string;
@@ -142,5 +167,13 @@ export interface TurnInterruptParams {
 
 export interface TurnInterruptResponse {
     ok: boolean;
+    [key: string]: unknown;
+}
+
+export interface ThreadCompactStartParams {
+    threadId: string;
+}
+
+export interface ThreadCompactStartResponse {
     [key: string]: unknown;
 }

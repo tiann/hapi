@@ -11,7 +11,7 @@ describe('getModelOptionsForFlavor', () => {
 
     it('returns Claude model options for claude flavor', () => {
         const options = getModelOptionsForFlavor('claude')
-        expect(options[0]).toEqual({ value: null, label: 'Auto' })
+        expect(options[0]).toEqual({ value: null, label: 'Default' })
         expect(options.some((o) => o.value === 'sonnet')).toBe(true)
         expect(options.some((o) => o.value === 'opus')).toBe(true)
     })
@@ -26,6 +26,16 @@ describe('getModelOptionsForFlavor', () => {
         const flashCount = options.filter((o) => o.value === 'gemini-2.5-flash').length
         expect(flashCount).toBe(1)
     })
+
+    it('includes the current custom model when it is missing from explicit options', () => {
+        const options = getModelOptionsForFlavor('codex', 'gpt-legacy', [
+            { value: 'gpt-5.5', label: 'GPT-5.5' }
+        ])
+        expect(options).toEqual([
+            { value: 'gpt-legacy', label: 'gpt-legacy' },
+            { value: 'gpt-5.5', label: 'GPT-5.5' }
+        ])
+    })
 })
 
 describe('getNextModelForFlavor', () => {
@@ -37,5 +47,21 @@ describe('getNextModelForFlavor', () => {
     it('cycles Claude models', () => {
         const next = getNextModelForFlavor('claude', null)
         expect(next).not.toBeNull()
+    })
+
+    it('cycles explicit model options', () => {
+        const next = getNextModelForFlavor('codex', 'gpt-5.5', [
+            { value: 'gpt-5.5', label: 'GPT-5.5' },
+            { value: 'gpt-5.4', label: 'GPT-5.4' }
+        ])
+        expect(next).toBe('gpt-5.4')
+    })
+
+    it('does not choose auto when cycling explicit Codex model options from an unknown current model', () => {
+        const next = getNextModelForFlavor('codex', 'gpt-legacy', [
+            { value: 'gpt-5.5', label: 'GPT-5.5' },
+            { value: 'gpt-5.4', label: 'GPT-5.4' }
+        ])
+        expect(next).toBe('gpt-5.5')
     })
 })

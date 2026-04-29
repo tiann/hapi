@@ -156,7 +156,7 @@ export class SSEManager {
         }
 
         if (event.type === 'message-received') {
-            return connection.sessionId === event.sessionId
+            return connection.all || connection.sessionId === event.sessionId
         }
 
         if (event.type === 'connection-changed') {

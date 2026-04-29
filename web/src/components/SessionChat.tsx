@@ -15,20 +15,35 @@ import type { Suggestion } from '@/hooks/useActiveSuggestions'
 import { normalizeDecryptedMessage } from '@/chat/normalize'
 import { reduceChatBlocks } from '@/chat/reducer'
 import { reconcileChatBlocks } from '@/chat/reconcile'
+import { buildConversationOutline } from '@/chat/outline'
+import { isQueuedForInvocation } from '@/lib/messages'
 import { HappyComposer } from '@/components/AssistantChat/HappyComposer'
 import { HappyThread } from '@/components/AssistantChat/HappyThread'
+import { QueuedMessagesBar } from '@/components/AssistantChat/QueuedMessagesBar'
 import { useHappyRuntime } from '@/lib/assistant-runtime'
 import { createAttachmentAdapter } from '@/lib/attachmentAdapter'
-import { findUnsupportedCodexBuiltinSlashCommand } from '@/lib/codexSlashCommands'
-import { useToast } from '@/lib/toast-context'
 import { useTranslation } from '@/lib/use-translation'
 import { SessionHeader } from '@/components/SessionHeader'
 import { TeamPanel } from '@/components/TeamPanel'
 import { usePlatform } from '@/hooks/usePlatform'
 import { useSessionActions } from '@/hooks/mutations/useSessionActions'
+import { useCodexModels } from '@/hooks/queries/useCodexModels'
 import { useVoiceOptional } from '@/lib/voice-context'
 import { RealtimeVoiceSession, registerSessionStore, registerVoiceHooksStore, voiceHooks } from '@/realtime'
 import { isRemoteTerminalSupported } from '@/utils/terminalSupport'
+
+function getOutlineTitle(session: Session): string {
+    if (session.metadata?.name) {
+        return session.metadata.name
+    }
+    if (session.metadata?.summary?.text) {
+        return session.metadata.summary.text
+    }
+    if (session.metadata?.path) {
+        return session.metadata.path
+    }
+    return session.id.slice(0, 8)
+}
 
 export function SessionChat(props: {
     api: ApiClient
@@ -52,7 +67,6 @@ export function SessionChat(props: {
     availableSlashCommands?: readonly SlashCommand[]
 }) {
     const { haptic } = usePlatform()
-    const { addToast } = useToast()
     const { t } = useTranslation()
     const navigate = useNavigate()
     const sessionInactive = !props.session.active
@@ -60,9 +74,29 @@ export function SessionChat(props: {
     const normalizedCacheRef = useRef<Map<string, { source: DecryptedMessage; normalized: NormalizedMessage | null }>>(new Map())
     const blocksByIdRef = useRef<Map<string, ChatBlock>>(new Map())
     const [forceScrollToken, setForceScrollToken] = useState(0)
+    const [outlineOpen, setOutlineOpen] = useState(false)
     const agentFlavor = props.session.metadata?.flavor ?? null
     const controlledByUser = props.session.agentState?.controlledByUser === true
     const codexCollaborationModeSupported = agentFlavor === 'codex' && !controlledByUser
+    const codexModelsState = useCodexModels({
+        api: props.api,
+        sessionId: props.session.id,
+        enabled: agentFlavor === 'codex' && props.session.active && !controlledByUser
+    })
+    const codexModelOptions = useMemo(() => {
+        if (agentFlavor !== 'codex') {
+            return undefined
+        }
+
+        const options: Array<{ value: string | null; label: string }> = []
+        for (const codexModel of codexModelsState.models) {
+            options.push({
+                value: codexModel.id,
+                label: codexModel.displayName
+            })
+        }
+        return options
+    }, [agentFlavor, codexModelsState.models])
     const {
         abortSession,
         switchSession,
@@ -174,7 +208,17 @@ export function SessionChat(props: {
     useEffect(() => {
         normalizedCacheRef.current.clear()
         blocksByIdRef.current.clear()
+        setOutlineOpen(false)
     }, [props.session.id])
+
+    // Exclude user messages that haven't been invoked yet — those appear in the
+    // QueuedMessagesBar above the composer, not in the thread timeline. The
+    // `isQueuedForInvocation` predicate is shared with the window store and the
+    // floating bar so the three views never disagree about queued state.
+    const visibleMessages = useMemo(
+        () => props.messages.filter((m) => !isQueuedForInvocation(m)),
+        [props.messages]
+    )
 
     const normalizedMessages: NormalizedMessage[] = useMemo(() => {
         // Clear caches immediately when session changes (before useEffect runs)
@@ -187,7 +231,7 @@ export function SessionChat(props: {
         const cache = normalizedCacheRef.current
         const normalized: NormalizedMessage[] = []
         const seen = new Set<string>()
-        for (const message of props.messages) {
+        for (const message of visibleMessages) {
             seen.add(message.id)
             const cached = cache.get(message.id)
             if (cached && cached.source === message) {
@@ -204,7 +248,7 @@ export function SessionChat(props: {
             }
         }
         return normalized
-    }, [props.messages])
+    }, [visibleMessages])
 
     const reduced = useMemo(
         () => reduceChatBlocks(normalizedMessages, props.session.agentState),
@@ -218,6 +262,16 @@ export function SessionChat(props: {
     useEffect(() => {
         blocksByIdRef.current = reconciled.byId
     }, [reconciled.byId])
+
+    const outlineItems = useMemo(
+        () => buildConversationOutline(reconciled.blocks),
+        [reconciled.blocks]
+    )
+
+    const outlineTitle = useMemo(
+        () => getOutlineTitle(props.session),
+        [props.session]
+    )
 
     // Permission mode change handler
     const handlePermissionModeChange = useCallback(async (mode: PermissionMode) => {
@@ -303,26 +357,9 @@ export function SessionChat(props: {
     }, [navigate, props.session.id])
 
     const handleSend = useCallback((text: string, attachments?: AttachmentMetadata[]) => {
-        if (agentFlavor === 'codex') {
-            const unsupportedCommand = findUnsupportedCodexBuiltinSlashCommand(
-                text,
-                props.availableSlashCommands ?? []
-            )
-            if (unsupportedCommand) {
-                haptic.notification('error')
-                addToast({
-                    title: t('composer.codexSlashUnsupported.title'),
-                    body: t('composer.codexSlashUnsupported.body', { command: `/${unsupportedCommand}` }),
-                    sessionId: props.session.id,
-                    url: `/sessions/${props.session.id}`
-                })
-                return
-            }
-        }
-
         props.onSend(text, attachments)
         setForceScrollToken((token) => token + 1)
-    }, [agentFlavor, props.availableSlashCommands, props.onSend, props.session.id, addToast, haptic, t])
+    }, [props.onSend])
 
     const attachmentAdapter = useMemo(() => {
         if (!props.session.active) {
@@ -347,6 +384,7 @@ export function SessionChat(props: {
                 session={props.session}
                 onBack={props.onBack}
                 onViewFiles={props.session.metadata?.path ? handleViewFiles : undefined}
+                onOpenOutline={() => setOutlineOpen(true)}
                 api={props.api}
                 onSessionDeleted={props.onBack}
             />
@@ -381,11 +419,27 @@ export function SessionChat(props: {
                         isLoadingMoreMessages={props.isLoadingMoreMessages}
                         onLoadMore={props.onLoadMore}
                         pendingCount={props.pendingCount}
-                        rawMessagesCount={props.messages.length}
+                        rawMessagesCount={visibleMessages.length}
                         normalizedMessagesCount={normalizedMessages.length}
                         messagesVersion={props.messagesVersion}
                         forceScrollToken={forceScrollToken}
+                        outlineOpen={outlineOpen}
+                        outlineTitle={outlineTitle}
+                        outlineItems={outlineItems}
+                        onOutlineOpenChange={setOutlineOpen}
                     />
+
+                    {codexCollaborationModeSupported && codexModelsState.error ? (
+                        <div className="px-3 pb-2">
+                            <div className="mx-auto w-full max-w-content rounded-md bg-[var(--app-subtle-bg)] p-3 text-sm text-red-600">
+                                {t('session.codexModelsLoadFailed')}: {codexModelsState.error}
+                            </div>
+                        </div>
+                    ) : null}
+
+                    <div className="px-3">
+                        <QueuedMessagesBar sessionId={props.session.id} />
+                    </div>
 
                     <HappyComposer
                         key={props.session.id}
@@ -397,12 +451,15 @@ export function SessionChat(props: {
                         modelReasoningEffort={agentFlavor === 'codex' ? props.session.modelReasoningEffort : undefined}
                         effort={props.session.effort}
                         agentFlavor={agentFlavor}
+                        availableModelOptions={agentFlavor === 'codex' ? codexModelOptions : undefined}
                         active={props.session.active}
                         allowSendWhenInactive
                         thinking={props.session.thinking}
                         agentState={props.session.agentState}
                         backgroundTaskCount={props.session.backgroundTaskCount}
                         contextSize={reduced.latestUsage?.contextSize}
+                        contextCacheRead={reduced.latestUsage?.cacheRead}
+                        contextWindow={reduced.latestUsage?.contextWindow}
                         controlledByUser={controlledByUser}
                         onCollaborationModeChange={
                             codexCollaborationModeSupported && props.session.active && !controlledByUser
@@ -410,7 +467,11 @@ export function SessionChat(props: {
                                 : undefined
                         }
                         onPermissionModeChange={handlePermissionModeChange}
-                        onModelChange={handleModelChange}
+                        onModelChange={
+                            agentFlavor === 'codex'
+                                ? (props.session.active && !controlledByUser && !codexModelsState.error ? handleModelChange : undefined)
+                                : handleModelChange
+                        }
                         onModelReasoningEffortChange={
                             agentFlavor === 'codex' && props.session.active && !controlledByUser
                                 ? handleModelReasoningEffortChange

@@ -39,6 +39,10 @@ export async function runGemini(opts: {
 
     const machineDefault = resolveGeminiRuntimeConfig().model;
     const runtimeConfig = resolveGeminiRuntimeConfig({ model: opts.model });
+    // Persist only when the user (or env/local config) chose the model. The hardcoded
+    // default remains undefined in the DB so it floats with the machine config across
+    // gemini-cli upgrades. Mid-session selections are persisted by the hub via the
+    // set-session-config RPC, not by this initial bootstrap.
     const persistedModel = runtimeConfig.modelSource === 'default'
         ? undefined
         : runtimeConfig.model;
@@ -108,16 +112,20 @@ export async function runGemini(opts: {
         }
         sessionInstance.setPermissionMode(currentPermissionMode);
         sessionInstance.setModel(sessionModel);
+
+        // Notify hub immediately to reflect changes in UI
+        sessionInstance.pushKeepAlive();
+
         logger.debug(`[gemini] Synced session config for keepalive: permissionMode=${currentPermissionMode}, model=${resolvedModel}`);
     };
 
-    session.onUserMessage((message) => {
+    session.onUserMessage((message, localId) => {
         const formattedText = formatMessageWithAttachments(message.content.text, message.content.attachments);
         const mode: GeminiMode = {
             permissionMode: currentPermissionMode,
             model: resolvedModel
         };
-        messageQueue.push(formattedText, mode);
+        messageQueue.push(formattedText, mode, localId);
     });
 
     const resolvePermissionMode = (value: unknown): PermissionMode => {
@@ -160,6 +168,8 @@ export async function runGemini(opts: {
         return { applied };
     });
 
+    let crashed = false;
+
     try {
         await geminiLoop({
             path: workingDirectory,
@@ -179,6 +189,7 @@ export async function runGemini(opts: {
             }
         });
     } catch (error) {
+        crashed = true;
         lifecycle.markCrash(error);
         logger.debug('[gemini] Loop error:', error);
     } finally {
@@ -186,6 +197,9 @@ export async function runGemini(opts: {
         if (localFailure?.exitReason === 'exit') {
             lifecycle.setExitCode(1);
             lifecycle.setArchiveReason(`Local launch failed: ${localFailure.message.slice(0, 200)}`);
+            lifecycle.setSessionEndReason('error');
+        } else if (!crashed) {
+            lifecycle.setSessionEndReason('completed');
         }
         await lifecycle.cleanupAndExit();
     }

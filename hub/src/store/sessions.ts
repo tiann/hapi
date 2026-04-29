@@ -342,6 +342,32 @@ export function setSessionEffort(
     }
 }
 
+export function touchSessionUpdatedAt(
+    db: Database,
+    id: string,
+    updatedAt: number,
+    namespace: string
+): boolean {
+    try {
+        const result = db.prepare(`
+            UPDATE sessions
+            SET updated_at = @updated_at,
+                seq = seq + 1
+            WHERE id = @id
+              AND namespace = @namespace
+              AND updated_at < @updated_at
+        `).run({
+            id,
+            namespace,
+            updated_at: updatedAt
+        })
+
+        return result.changes === 1
+    } catch {
+        return false
+    }
+}
+
 export function getSession(db: Database, id: string): StoredSession | null {
     const row = db.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as DbSessionRow | undefined
     return row ? toStoredSession(row) : null

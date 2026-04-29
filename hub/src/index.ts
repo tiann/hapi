@@ -24,6 +24,7 @@ import { PushNotificationChannel } from './push/pushNotificationChannel'
 import { VisibilityTracker } from './visibility/visibilityTracker'
 import { TunnelManager } from './tunnel'
 import { waitForTunnelTlsReady } from './tunnel/tlsGate'
+import { ServerChanChannel } from './serverchan/channel'
 import QRCode from 'qrcode'
 import type { Server as BunServer } from 'bun'
 import type { WebSocketData } from '@socket.io/bun-engine'
@@ -149,6 +150,14 @@ async function main() {
         const notificationSource = formatSource(config.sources.telegramNotification)
         console.log(`[Hub] Telegram notifications: ${config.telegramNotification ? 'enabled' : 'disabled'} (${notificationSource})`)
     }
+    if (config.serverChanSendKey) {
+        const source = formatSource(config.sources.serverChanSendKey)
+        const notificationSource = formatSource(config.sources.serverChanNotification)
+        console.log(`[Hub] ServerChan: enabled (${source})`)
+        console.log(`[Hub] ServerChan notifications: ${config.serverChanNotification ? 'enabled' : 'disabled'} (${notificationSource})`)
+    } else {
+        console.log('[Hub] ServerChan: disabled (no SERVERCHAN_SENDKEY)')
+    }
 
     // Display tunnel status
     if (relayFlag.enabled) {
@@ -180,7 +189,8 @@ async function main() {
         onSessionAlive: (payload) => syncEngine?.handleSessionAlive(payload),
         onSessionEnd: (payload) => syncEngine?.handleSessionEnd(payload),
         onMachineAlive: (payload) => syncEngine?.handleMachineAlive(payload),
-        onBackgroundTaskDelta: (sessionId, delta) => syncEngine?.handleBackgroundTaskDelta(sessionId, delta)
+        onBackgroundTaskDelta: (sessionId, delta) => syncEngine?.handleBackgroundTaskDelta(sessionId, delta),
+        onSessionActivity: (sessionId, updatedAt) => syncEngine?.recordSessionActivity(sessionId, updatedAt)
     })
 
     syncEngine = new SyncEngine(store, socketServer.io, socketServer.rpcRegistry, sseManager)
@@ -188,6 +198,10 @@ async function main() {
     const notificationChannels: NotificationChannel[] = [
         new PushNotificationChannel(pushService, sseManager, visibilityTracker, config.publicUrl)
     ]
+
+    if (config.serverChanSendKey && config.serverChanNotification) {
+        notificationChannels.push(new ServerChanChannel(config.serverChanSendKey, config.publicUrl))
+    }
 
     // Initialize Telegram bot (optional)
     if (config.telegramEnabled && config.telegramBotToken) {

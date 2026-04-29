@@ -9,6 +9,8 @@
  * - CLI_API_TOKEN: Shared secret for hapi CLI authentication (auto-generated if not set)
  * - TELEGRAM_BOT_TOKEN: Telegram Bot API token from @BotFather
  * - TELEGRAM_NOTIFICATION: Enable/disable Telegram notifications (default: true)
+ * - SERVERCHAN_SENDKEY: Server酱 SendKey/AppKey for push notifications
+ * - SERVERCHAN_NOTIFICATION: Enable/disable Server酱 notifications (default: true)
  * - HAPI_LISTEN_HOST: Host/IP to bind the HTTP service (default: 127.0.0.1)
  * - HAPI_LISTEN_PORT: Port for HTTP service (default: 3006)
  * - HAPI_PUBLIC_URL: Public URL for external access (e.g., Telegram Mini App)
@@ -33,6 +35,8 @@ export type ConfigSource = 'env' | 'file' | 'default'
 export interface ConfigSources {
     telegramBotToken: ConfigSource
     telegramNotification: ConfigSource
+    serverChanSendKey: ConfigSource
+    serverChanNotification: ConfigSource
     listenHost: ConfigSource
     listenPort: ConfigSource
     publicUrl: ConfigSource
@@ -49,6 +53,12 @@ class Configuration {
 
     /** Telegram notifications enabled */
     public readonly telegramNotification: boolean
+
+    /** Server酱 SendKey/AppKey */
+    public readonly serverChanSendKey: string | null
+
+    /** Server酱 notifications enabled */
+    public readonly serverChanNotification: boolean
 
     /** CLI auth token (shared secret) */
     public cliApiToken: string
@@ -98,6 +108,8 @@ class Configuration {
         this.telegramBotToken = serverSettings.telegramBotToken
         this.telegramEnabled = Boolean(this.telegramBotToken)
         this.telegramNotification = serverSettings.telegramNotification
+        this.serverChanSendKey = serverSettings.serverChanSendKey
+        this.serverChanNotification = serverSettings.serverChanNotification
         this.listenHost = serverSettings.listenHost
         this.listenPort = serverSettings.listenPort
         this.publicUrl = serverSettings.publicUrl

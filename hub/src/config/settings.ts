@@ -14,6 +14,8 @@ export interface Settings {
     // Server configuration (persisted from environment variables)
     telegramBotToken?: string
     telegramNotification?: boolean
+    serverChanSendKey?: string
+    serverChanNotification?: boolean
     listenHost?: string
     listenPort?: number
     publicUrl?: string

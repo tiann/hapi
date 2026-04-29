@@ -16,6 +16,21 @@ describe('AppServerEventConverter', () => {
         expect(events).toEqual([{ type: 'thread_started', thread_id: 'thread-2' }]);
     });
 
+    it('maps thread systemError to a task failure', () => {
+        const converter = new AppServerEventConverter();
+        const events = converter.handleNotification('thread/status/changed', {
+            thread: { id: 'thread-1' },
+            status: { type: 'systemError' }
+        });
+
+        expect(events).toEqual([{
+            type: 'task_failed',
+            thread_id: 'thread-1',
+            terminal_source: 'thread_status',
+            error: 'Codex thread entered systemError'
+        }]);
+    });
+
     it('maps turn/started and completed statuses', () => {
         const converter = new AppServerEventConverter();
 
@@ -85,6 +100,75 @@ describe('AppServerEventConverter', () => {
         }]);
     });
 
+    it('maps MCP tool call items', () => {
+        const converter = new AppServerEventConverter();
+
+        const started = converter.handleNotification('item/started', {
+            item: {
+                id: 'call-1',
+                type: 'mcpToolCall',
+                server: 'hapi',
+                tool: 'change_title',
+                arguments: { title: 'MCP Title' }
+            }
+        });
+        expect(started).toEqual([{
+            type: 'mcp_tool_call_begin',
+            call_id: 'call-1',
+            server: 'hapi',
+            tool: 'change_title',
+            invocation: {
+                server: 'hapi',
+                tool: 'change_title',
+                arguments: { title: 'MCP Title' }
+            }
+        }]);
+
+        const completed = converter.handleNotification('item/completed', {
+            item: {
+                id: 'call-1',
+                type: 'mcpToolCall',
+                server: 'hapi',
+                tool: 'change_title',
+                result: {
+                    content: [{ type: 'text', text: 'done' }]
+                }
+            }
+        });
+
+        expect(completed).toEqual([{
+            type: 'mcp_tool_call_end',
+            call_id: 'call-1',
+            server: 'hapi',
+            tool: 'change_title',
+            result: {
+                content: [{ type: 'text', text: 'done' }]
+            }
+        }]);
+    });
+
+    it('maps MCP tool call item errors', () => {
+        const converter = new AppServerEventConverter();
+
+        const completed = converter.handleNotification('item/completed', {
+            item: {
+                id: 'call-1',
+                type: 'mcpToolCall',
+                server: 'hapi',
+                tool: 'change_title',
+                error: 'boom'
+            }
+        });
+
+        expect(completed).toEqual([{
+            type: 'mcp_tool_call_end',
+            call_id: 'call-1',
+            server: 'hapi',
+            tool: 'change_title',
+            result: { Err: 'boom' }
+        }]);
+    });
+
     it('maps reasoning deltas', () => {
         const converter = new AppServerEventConverter();
 
@@ -127,6 +211,51 @@ describe('AppServerEventConverter', () => {
 
         expect(first).toEqual([{ type: 'agent_reasoning', text: 'Plan' }]);
         expect(second).toEqual([]);
+    });
+
+
+
+    it('maps turn plan updates into update_plan events', () => {
+        const converter = new AppServerEventConverter();
+
+        const events = converter.handleNotification('turn/plan/updated', {
+            plan: [
+                { step: 'Inspect Codex events', status: 'completed' },
+                { content: 'Render plan state', status: 'in_progress' },
+                { title: 'Verify web DOM', status: 'pending' }
+            ]
+        });
+
+        expect(events).toEqual([{
+            type: 'plan_update',
+            plan: [
+                { step: 'Inspect Codex events', status: 'completed' },
+                { step: 'Render plan state', status: 'in_progress' },
+                { step: 'Verify web DOM', status: 'pending' }
+            ]
+        }]);
+    });
+
+    it('unwraps wrapped codex plan updates', () => {
+        const converter = new AppServerEventConverter();
+
+        const events = converter.handleNotification('codex/event/plan_update', {
+            msg: {
+                type: 'plan_update',
+                update: {
+                    items: [
+                        { text: 'Plan from wrapped event', status: 'completed' }
+                    ]
+                }
+            }
+        });
+
+        expect(events).toEqual([{
+            type: 'plan_update',
+            plan: [
+                { step: 'Plan from wrapped event', status: 'completed' }
+            ]
+        }]);
     });
 
     it('maps diff updates', () => {

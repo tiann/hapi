@@ -28,6 +28,7 @@ export type PlanItem = {
 
 export type AgentMessage =
     | { type: 'text'; text: string }
+    | { type: 'reasoning'; text: string }
     | { type: 'tool_call'; id: string; name: string; input: unknown; status: 'pending' | 'in_progress' | 'completed' | 'failed' }
     | { type: 'tool_result'; id: string; output: unknown; status: 'completed' | 'failed' }
     | { type: 'plan'; items: PlanItem[] }
@@ -58,6 +59,7 @@ export type PermissionResponse =
 export interface AgentBackend {
     initialize(): Promise<void>;
     newSession(config: AgentSessionConfig): Promise<string>;
+    setModel?(sessionId: string, modelId: string): Promise<void>;
     prompt(sessionId: string, content: PromptContent[], onUpdate: (msg: AgentMessage) => void): Promise<void>;
     cancelPrompt(sessionId: string): Promise<void>;
     respondToPermission(sessionId: string, request: PermissionRequest, response: PermissionResponse): Promise<void>;

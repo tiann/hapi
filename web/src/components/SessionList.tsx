@@ -8,6 +8,7 @@ import { SessionActionMenu } from '@/components/SessionActionMenu'
 import { RenameSessionDialog } from '@/components/RenameSessionDialog'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { CopyIcon, CheckIcon } from '@/components/icons'
+import { cn } from '@/lib/utils'
 import { useTranslation } from '@/lib/use-translation'
 
 type SessionGroup = {
@@ -18,6 +19,58 @@ type SessionGroup = {
     sessions: SessionSummary[]
     latestUpdatedAt: number
     hasActiveSession: boolean
+}
+
+function SessionsEmptyState(props: {
+    onNewSession: () => void
+    onBrowse?: () => void
+}) {
+    const { t } = useTranslation()
+    return (
+        <div className="flex flex-col items-center justify-center gap-3 px-6 py-16 text-center">
+            <svg
+                xmlns="http://www.w3.org/2000/svg"
+                width="44"
+                height="44"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className="text-[var(--app-hint)] opacity-60"
+            >
+                <rect x="3" y="4" width="18" height="16" rx="2" />
+                <path d="M3 9h18" />
+                <path d="M8 14h8" />
+                <path d="M8 17h5" />
+            </svg>
+            <div className="text-base font-medium text-[var(--app-fg)]">
+                {t('sessions.empty.title')}
+            </div>
+            <div className="max-w-sm text-sm text-[var(--app-hint)]">
+                {t('sessions.empty.hint')}
+            </div>
+            <div className="flex items-center gap-2 mt-2">
+                <button
+                    type="button"
+                    onClick={props.onNewSession}
+                    className="px-4 py-1.5 text-sm rounded-lg bg-[var(--app-button)] text-[var(--app-button-text)] font-medium hover:opacity-90 transition-opacity"
+                >
+                    {t('sessions.empty.startSession')}
+                </button>
+                {props.onBrowse && (
+                    <button
+                        type="button"
+                        onClick={props.onBrowse}
+                        className="px-4 py-1.5 text-sm rounded-lg border border-[var(--app-border)] text-[var(--app-fg)] hover:bg-[var(--app-subtle-bg)] transition-colors"
+                    >
+                        {t('sessions.empty.browse')}
+                    </button>
+                )}
+            </div>
+        </div>
+    )
 }
 
 type MachineGroup = {
@@ -38,6 +91,7 @@ function getGroupDisplayName(directory: string): string {
 }
 
 export const UNKNOWN_MACHINE_ID = '__unknown__'
+export const GROUP_SESSION_PREVIEW_LIMIT = 8
 
 export function deduplicateSessionsByAgentId(sessions: SessionSummary[], selectedSessionId?: string | null): SessionSummary[] {
     const byAgentId = new Map<string, SessionSummary[]>()
@@ -181,6 +235,47 @@ function CopyPathButton({ path, className }: { path: string; className?: string 
     )
 }
 
+
+function SearchIcon(props: { className?: string }) {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={props.className}
+        >
+            <circle cx="11" cy="11" r="8" />
+            <path d="m21 21-4.35-4.35" />
+        </svg>
+    )
+}
+
+function XIcon(props: { className?: string }) {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={props.className}
+        >
+            <path d="M18 6 6 18" />
+            <path d="m6 6 12 12" />
+        </svg>
+    )
+}
+
 function PlusIcon(props: { className?: string }) {
     return (
         <svg
@@ -256,7 +351,7 @@ function ChevronIcon(props: { className?: string; collapsed?: boolean }) {
     )
 }
 
-function getSessionTitle(session: SessionSummary): string {
+export function getSessionTitle(session: SessionSummary): string {
     if (session.metadata?.name) {
         return session.metadata.name
     }
@@ -274,6 +369,95 @@ function getTodoProgress(session: SessionSummary): { completed: number; total: n
     if (!session.todoProgress) return null
     if (session.todoProgress.completed === session.todoProgress.total) return null
     return session.todoProgress
+}
+
+export function normalizeSearch(value: string | null | undefined): string {
+    return (value ?? '').trim().toLowerCase()
+}
+
+export function sessionMatchesQuery(session: SessionSummary, query: string, machineLabel: string): boolean {
+    if (!query) return true
+    const searchable = [
+        getSessionTitle(session),
+        session.id,
+        session.metadata?.path,
+        session.metadata?.worktree?.basePath,
+        session.metadata?.name,
+        session.metadata?.summary?.text,
+        session.metadata?.flavor,
+        machineLabel,
+    ]
+        .filter((part): part is string => typeof part === 'string' && part.length > 0)
+        .join('\n')
+        .toLowerCase()
+    return searchable.includes(query)
+}
+
+
+export function getVisibleSessionPreview(
+    sessions: SessionSummary[],
+    options: {
+        expanded?: boolean
+        selectedSessionId?: string | null
+        limit?: number
+    } = {}
+): SessionSummary[] {
+    const limit = options.limit ?? GROUP_SESSION_PREVIEW_LIMIT
+    if (options.expanded || sessions.length <= limit) return sessions
+
+    const included = new Set<string>()
+    const visible: SessionSummary[] = []
+    const addSession = (session: SessionSummary) => {
+        if (included.has(session.id)) return
+        included.add(session.id)
+        visible.push(session)
+    }
+
+    const selectedSession = options.selectedSessionId
+        ? sessions.find(session => session.id === options.selectedSessionId)
+        : undefined
+    if (selectedSession) addSession(selectedSession)
+
+    for (const session of sessions) {
+        if (visible.length >= limit) break
+        if (session.active) addSession(session)
+    }
+
+    for (const session of sessions) {
+        if (visible.length >= limit) break
+        addSession(session)
+    }
+
+    return visible
+}
+
+function SessionListSearch(props: {
+    value: string
+    onChange: (value: string) => void
+}) {
+    const { t } = useTranslation()
+    return (
+        <div className="relative px-3 pb-2">
+            <SearchIcon className="pointer-events-none absolute left-5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--app-hint)]" />
+            <input
+                type="search"
+                value={props.value}
+                onChange={(event) => props.onChange(event.target.value)}
+                placeholder={t('sessions.search.placeholder')}
+                className="w-full rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] py-1.5 pl-8 pr-8 text-sm text-[var(--app-fg)] outline-none transition-colors placeholder:text-[var(--app-hint)] focus:border-[var(--app-link)]"
+            />
+            {props.value ? (
+                <button
+                    type="button"
+                    onClick={() => props.onChange('')}
+                    className="absolute right-5 top-1/2 -translate-y-1/2 rounded p-0.5 text-[var(--app-hint)] hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)]"
+                    title={t('sessions.search.clear')}
+                >
+                    <XIcon className="h-3.5 w-3.5" />
+                </button>
+            ) : null}
+        </div>
+    )
 }
 
 const FLAVOR_BADGES: Record<string, { label: string; colors: string }> = {
@@ -472,60 +656,11 @@ function SessionItem(props: {
     )
 }
 
-function ProjectGroupItem(props: {
-    group: SessionGroup
-    isCollapsed: boolean
-    onToggle: () => void
-    onSelect: (sessionId: string) => void
-    api: ApiClient | null
-    selectedSessionId?: string | null
-}) {
-    const { group, isCollapsed, onToggle, onSelect, api, selectedSessionId } = props
-    return (
-        <div>
-            <div className="group/project sticky top-0 z-10 flex items-center gap-2 px-1 py-1.5 rounded-lg transition-colors hover:bg-[var(--app-subtle-bg)] min-w-0 w-full select-none">
-                <button
-                    type="button"
-                    className="flex min-w-0 flex-1 items-center gap-2 text-left cursor-pointer"
-                    onClick={onToggle}
-                    title={group.directory}
-                    aria-expanded={!isCollapsed}
-                >
-                    <ChevronIcon className="h-3.5 w-3.5 text-[var(--app-hint)] shrink-0" collapsed={isCollapsed} />
-                    <span className="font-medium text-sm truncate flex-1">
-                        {group.displayName}
-                    </span>
-                    <span className="text-[11px] tabular-nums text-[var(--app-hint)] shrink-0">
-                        ({group.sessions.length})
-                    </span>
-                </button>
-                <CopyPathButton path={group.directory} className="opacity-0 group-hover/project:opacity-100 transition-opacity duration-150" />
-            </div>
-
-            <div className="collapsible-panel" data-open={!isCollapsed || undefined}>
-                <div className="collapsible-inner">
-                <div className="flex flex-col gap-0.5 ml-3 pl-1 pr-1 py-1">
-                    {group.sessions.map((s) => (
-                        <SessionItem
-                            key={s.id}
-                            session={s}
-                            onSelect={onSelect}
-                            showPath={false}
-                            api={api}
-                            selected={s.id === selectedSessionId}
-                        />
-                    ))}
-                </div>
-                </div>
-            </div>
-        </div>
-    )
-}
-
 export function SessionList(props: {
     sessions: SessionSummary[]
     onSelect: (sessionId: string) => void
     onNewSession: () => void
+    onBrowse?: () => void
     onRefresh: () => void
     isLoading: boolean
     renderHeader?: boolean
@@ -535,9 +670,41 @@ export function SessionList(props: {
 }) {
     const { t } = useTranslation()
     const { renderHeader = true, api, selectedSessionId, machineLabelsById = {} } = props
-    const groups = useMemo(
-        () => groupSessionsByDirectory(deduplicateSessionsByAgentId(props.sessions, selectedSessionId)),
+    const [searchQuery, setSearchQuery] = useState('')
+    const normalizedQuery = normalizeSearch(searchQuery)
+    const isSearching = normalizedQuery.length > 0
+
+    const resolveMachineLabel = (machineId: string | null): string => {
+        if (machineId && machineLabelsById[machineId]) {
+            return machineLabelsById[machineId]
+        }
+        if (machineId) {
+            return machineId.slice(0, 8)
+        }
+        return t('machine.unknown')
+    }
+
+    const allSessions = useMemo(
+        () => deduplicateSessionsByAgentId(props.sessions, selectedSessionId),
         [props.sessions, selectedSessionId]
+    )
+    const visibleSessions = useMemo(
+        () => isSearching
+            ? allSessions.filter(session => sessionMatchesQuery(
+                session,
+                normalizedQuery,
+                resolveMachineLabel(session.metadata?.machineId ?? null)
+            ))
+            : allSessions,
+        [allSessions, isSearching, normalizedQuery, machineLabelsById] // eslint-disable-line react-hooks/exhaustive-deps
+    )
+    const allGroups = useMemo(
+        () => groupSessionsByDirectory(allSessions),
+        [allSessions]
+    )
+    const groups = useMemo(
+        () => groupSessionsByDirectory(visibleSessions),
+        [visibleSessions]
     )
     const [collapseOverrides, setCollapseOverrides] = useState<Map<string, boolean>>(
         () => new Map()
@@ -557,6 +724,7 @@ export function SessionList(props: {
         })
     }
     const isGroupCollapsed = (group: SessionGroup): boolean => {
+        if (isSearching) return false
         const override = collapseOverrides.get(group.key)
         if (override !== undefined) return override
         const hasSelectedSession = selectedSessionId
@@ -573,14 +741,32 @@ export function SessionList(props: {
         })
     }
 
-    const resolveMachineLabel = (machineId: string | null): string => {
-        if (machineId && machineLabelsById[machineId]) {
-            return machineLabelsById[machineId]
-        }
-        if (machineId) {
-            return machineId.slice(0, 8)
-        }
-        return t('machine.unknown')
+    const isSessionGroupExpanded = (group: SessionGroup): boolean => {
+        if (isSearching || group.sessions.length <= GROUP_SESSION_PREVIEW_LIMIT) return true
+        const key = `sessions::${group.key}`
+        const override = collapseOverrides.get(key)
+        if (override !== undefined) return !override
+        return false
+    }
+
+    const toggleSessionGroup = (group: SessionGroup) => {
+        const key = `sessions::${group.key}`
+        const expanded = isSessionGroupExpanded(group)
+        setCollapseOverrides(prev => {
+            const next = new Map(prev)
+            next.set(key, expanded)
+            return next
+        })
+    }
+
+    const getVisibleGroupSessions = (group: SessionGroup): SessionSummary[] => {
+        return getVisibleSessionPreview(
+            group.sessions,
+            {
+                expanded: isSessionGroupExpanded(group),
+                selectedSessionId
+            }
+        )
     }
 
     const machineGroups = useMemo(
@@ -589,6 +775,7 @@ export function SessionList(props: {
     )
 
     const isMachineCollapsed = (mg: MachineGroup): boolean => {
+        if (isSearching) return false
         const key = `machine::${mg.machineId ?? UNKNOWN_MACHINE_ID}`
         const override = collapseOverrides.get(key)
         if (override !== undefined) return override
@@ -641,7 +828,7 @@ export function SessionList(props: {
                 return next
             })
         }
-    }, [selectedSessionId, groups])
+    }, [selectedSessionId, allGroups])
 
     // Clean up stale collapse overrides
     useEffect(() => {
@@ -649,8 +836,9 @@ export function SessionList(props: {
             if (prev.size === 0) return prev
             const next = new Map(prev)
             const knownKeys = new Set<string>()
-            for (const g of groups) {
+            for (const g of allGroups) {
                 knownKeys.add(g.key)
+                knownKeys.add(`sessions::${g.key}`)
                 knownKeys.add(`machine::${g.machineId ?? UNKNOWN_MACHINE_ID}`)
             }
             let changed = false
@@ -664,7 +852,7 @@ export function SessionList(props: {
         })
         setArchivedCollapsed(prev => {
             if (prev.size === 0) return prev
-            const knownMachines = new Set(groups.map(g => g.machineId ?? UNKNOWN_MACHINE_ID))
+            const knownMachines = new Set(allGroups.map(g => g.machineId ?? UNKNOWN_MACHINE_ID))
             const next = new Map(prev)
             let changed = false
             for (const key of next.keys()) {
@@ -675,14 +863,16 @@ export function SessionList(props: {
             }
             return changed ? next : prev
         })
-    }, [groups])
+    }, [allGroups])
 
     return (
         <div className="mx-auto w-full max-w-content flex flex-col">
             {renderHeader ? (
                 <div className="flex items-center justify-between px-3 py-1">
                     <div className="text-xs text-[var(--app-hint)]">
-                        {t('sessions.count', { n: props.sessions.length, m: groups.length })}
+                        {isSearching
+                            ? t('sessions.search.count', { n: visibleSessions.length, total: allSessions.length })
+                            : t('sessions.count', { n: props.sessions.length, m: allGroups.length })}
                     </div>
                     <button
                         type="button"
@@ -692,6 +882,23 @@ export function SessionList(props: {
                     >
                         <PlusIcon className="h-5 w-5" />
                     </button>
+                </div>
+            ) : null}
+
+            {props.sessions.length > 0 ? (
+                <SessionListSearch value={searchQuery} onChange={setSearchQuery} />
+            ) : null}
+
+            {props.sessions.length === 0 && (
+                <SessionsEmptyState
+                    onNewSession={props.onNewSession}
+                    onBrowse={props.onBrowse}
+                />
+            )}
+
+            {props.sessions.length > 0 && isSearching && visibleSessions.length === 0 ? (
+                <div className="px-4 py-8 text-center text-sm text-[var(--app-hint)]">
+                    {t('sessions.search.noResults')}
                 </div>
             ) : null}
 
@@ -724,22 +931,66 @@ export function SessionList(props: {
                                         const archivedHidden = showArchivedSection && isArchivedSectionCollapsed(machineKey)
                                         const visibleGroups = showArchivedSection ? activeProjectGroups : mg.projectGroups
 
+                                        const renderProjectGroup = (group: SessionGroup) => {
+                                            const isCollapsed = isGroupCollapsed(group)
+                                            const visibleGroupSessions = getVisibleGroupSessions(group)
+                                            const hiddenSessionCount = group.sessions.length - visibleGroupSessions.length
+                                            const sessionGroupExpanded = isSessionGroupExpanded(group)
+                                            return (
+                                                <div key={group.key}>
+                                                    <div
+                                                        className="group/project sticky top-0 z-10 flex items-center gap-2 px-1 py-1.5 text-left rounded-lg transition-colors hover:bg-[var(--app-subtle-bg)] cursor-pointer min-w-0 w-full select-none"
+                                                        onClick={() => toggleGroup(group.key, isCollapsed)}
+                                                        title={group.directory}
+                                                    >
+                                                        <ChevronIcon className="h-3.5 w-3.5 text-[var(--app-hint)] shrink-0" collapsed={isCollapsed} />
+                                                        <span className="font-medium text-sm truncate flex-1">
+                                                            {group.displayName}
+                                                        </span>
+                                                        <CopyPathButton path={group.directory} className="opacity-0 group-hover/project:opacity-100 transition-opacity duration-150" />
+                                                        <span className="text-[11px] tabular-nums text-[var(--app-hint)] shrink-0">
+                                                            ({group.sessions.length})
+                                                        </span>
+                                                    </div>
+
+                                                    {/* Level 3: Sessions */}
+                                                    <div className="collapsible-panel" data-open={!isCollapsed || undefined}>
+                                                        <div className="collapsible-inner">
+                                                        <div className="flex flex-col gap-0.5 ml-3 pl-1 pr-1 py-1">
+                                                            {visibleGroupSessions.map((s) => (
+                                                                <SessionItem
+                                                                    key={s.id}
+                                                                    session={s}
+                                                                    onSelect={props.onSelect}
+                                                                    showPath={false}
+                                                                    api={api}
+                                                                    selected={s.id === selectedSessionId}
+                                                                />
+                                                            ))}
+                                                            {!isSearching && group.sessions.length > GROUP_SESSION_PREVIEW_LIMIT && (sessionGroupExpanded || hiddenSessionCount > 0) ? (
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => toggleSessionGroup(group)}
+                                                                    className={cn(
+                                                                        'mx-2 my-1 rounded-md px-2 py-1 text-left text-xs text-[var(--app-hint)] transition-colors hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)]',
+                                                                        hiddenSessionCount > 0 && 'border border-dashed border-[var(--app-border)]'
+                                                                    )}
+                                                                >
+                                                                    {sessionGroupExpanded
+                                                                        ? t('sessions.group.showLess')
+                                                                        : t('sessions.group.showMore', { n: hiddenSessionCount })}
+                                                                </button>
+                                                            ) : null}
+                                                        </div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            )
+                                        }
+
                                         return (
                                             <>
-                                                {visibleGroups.map((group) => {
-                                                    const isCollapsed = isGroupCollapsed(group)
-                                                    return (
-                                                        <ProjectGroupItem
-                                                            key={group.key}
-                                                            group={group}
-                                                            isCollapsed={isCollapsed}
-                                                            onToggle={() => toggleGroup(group.key, isCollapsed)}
-                                                            onSelect={props.onSelect}
-                                                            api={api}
-                                                            selectedSessionId={selectedSessionId}
-                                                        />
-                                                    )
-                                                })}
+                                                {visibleGroups.map(renderProjectGroup)}
                                                 {showArchivedSection ? (
                                                     <>
                                                         <button
@@ -753,20 +1004,7 @@ export function SessionList(props: {
                                                         </button>
                                                         <div className="collapsible-panel" data-open={!archivedHidden || undefined}>
                                                             <div className="collapsible-inner">
-                                                                {archivedProjectGroups.map((group) => {
-                                                                    const isCollapsed = isGroupCollapsed(group)
-                                                                    return (
-                                                                        <ProjectGroupItem
-                                                                            key={group.key}
-                                                                            group={group}
-                                                                            isCollapsed={isCollapsed}
-                                                                            onToggle={() => toggleGroup(group.key, isCollapsed)}
-                                                                            onSelect={props.onSelect}
-                                                                            api={api}
-                                                                            selectedSessionId={selectedSessionId}
-                                                                        />
-                                                                    )
-                                                                })}
+                                                                {archivedProjectGroups.map(renderProjectGroup)}
                                                             </div>
                                                         </div>
                                                     </>

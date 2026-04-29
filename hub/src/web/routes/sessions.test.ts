@@ -50,14 +50,25 @@ function createSession(overrides?: Partial<Session>): Session {
     }
 }
 
-function createApp(session: Session) {
+function createApp(session: Session, opts?: {
+    resumeSession?: (sessionId: string, namespace: string, resumeOpts?: { permissionMode?: string }) => Promise<{ type: string; sessionId?: string; message?: string; code?: string }>
+}) {
     const applySessionConfigCalls: Array<[string, Record<string, unknown>]> = []
     const applySessionConfig = async (sessionId: string, config: Record<string, unknown>) => {
         applySessionConfigCalls.push([sessionId, config])
     }
+    const listCodexModelsForSession = async () => ({
+        success: true,
+        models: [
+            { id: 'gpt-5.5', displayName: 'GPT-5.5', isDefault: true }
+        ]
+    })
+    const resumeSession = opts?.resumeSession ?? (async (sessionId: string) => ({ type: 'success', sessionId }))
     const engine = {
         resolveSessionAccess: () => ({ ok: true, sessionId: session.id, session }),
-        applySessionConfig
+        applySessionConfig,
+        listCodexModelsForSession,
+        resumeSession
     } as Partial<SyncEngine>
 
     const app = new Hono<WebAppEnv>()
@@ -195,6 +206,45 @@ describe('sessions routes', () => {
         ])
     })
 
+    it('applies model changes for remote Codex sessions', async () => {
+        const { app, applySessionConfigCalls } = createApp(createSession())
+
+        const response = await app.request('/api/sessions/session-1/model', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model: 'gpt-5.5' })
+        })
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({ ok: true })
+        expect(applySessionConfigCalls).toEqual([
+            ['session-1', { model: 'gpt-5.5' }]
+        ])
+    })
+
+    it('rejects model changes for local Codex sessions', async () => {
+        const session = createSession({
+            agentState: {
+                controlledByUser: true,
+                requests: {},
+                completedRequests: {}
+            }
+        })
+        const { app, applySessionConfigCalls } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/model', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model: 'gpt-5.5' })
+        })
+
+        expect(response.status).toBe(409)
+        expect(await response.json()).toEqual({
+            error: 'Model selection can only be changed for remote Codex sessions'
+        })
+        expect(applySessionConfigCalls).toEqual([])
+    })
+
     it('rejects effort changes for non-Claude sessions', async () => {
         const { app, applySessionConfigCalls } = createApp(createSession())
 
@@ -232,5 +282,78 @@ describe('sessions routes', () => {
         expect(applySessionConfigCalls).toEqual([
             ['session-1', { effort: 'max' }]
         ])
+    })
+
+    it('returns Codex models for active Codex sessions', async () => {
+        const { app } = createApp(createSession())
+
+        const response = await app.request('/api/sessions/session-1/codex-models')
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({
+            success: true,
+            models: [
+                { id: 'gpt-5.5', displayName: 'GPT-5.5', isDefault: true }
+            ]
+        })
+    })
+
+    it('applies permission mode changes for inactive sessions', async () => {
+        const session = createSession({
+            active: false,
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'claude' }
+        })
+        const { app, applySessionConfigCalls } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/permission-mode', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ mode: 'bypassPermissions' })
+        })
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({ ok: true })
+        expect(applySessionConfigCalls).toEqual([
+            ['session-1', { permissionMode: 'bypassPermissions' }]
+        ])
+    })
+
+    it('rejects unsupported permission mode for flavor via resume body', async () => {
+        const session = createSession({
+            active: false,
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'codex' }
+        })
+        const { app } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/resume', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ permissionMode: 'bypassPermissions' })
+        })
+
+        expect(response.status).toBe(400)
+    })
+
+    it('passes permissionMode from resume body to resumeSession', async () => {
+        const session = createSession({
+            active: false,
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'claude' }
+        })
+        let capturedResumeOpts: { permissionMode?: string } | undefined
+        const { app } = createApp(session, {
+            resumeSession: async (sessionId, _namespace, resumeOpts) => {
+                capturedResumeOpts = resumeOpts
+                return { type: 'success', sessionId }
+            }
+        })
+
+        const response = await app.request('/api/sessions/session-1/resume', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ permissionMode: 'bypassPermissions' })
+        })
+
+        expect(response.status).toBe(200)
+        expect(capturedResumeOpts).toEqual({ permissionMode: 'bypassPermissions' })
     })
 })

@@ -81,8 +81,11 @@ describe('SettingsPage', () => {
             getItem: vi.fn(() => 'en'),
             setItem: vi.fn(),
             removeItem: vi.fn(),
+            clear: vi.fn(),
+            key: vi.fn(() => null),
+            length: 0,
         }
-        Object.defineProperty(window, 'localStorage', { value: localStorageMock })
+        Object.defineProperty(window, 'localStorage', { value: localStorageMock, configurable: true })
     })
 
     it('renders the About section', () => {

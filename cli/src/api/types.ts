@@ -36,7 +36,8 @@ export const MachineMetadataSchema = z.object({
     displayName: z.string().optional(),
     homeDir: z.string(),
     happyHomeDir: z.string(),
-    happyLibDir: z.string()
+    happyLibDir: z.string(),
+    workspaceRoot: z.string().optional()
 })
 
 export type MachineMetadata = z.infer<typeof MachineMetadataSchema>
