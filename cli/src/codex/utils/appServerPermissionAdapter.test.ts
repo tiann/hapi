@@ -77,4 +77,31 @@ describe('registerAppServerPermissionHandlers', () => {
             decision: 'cancel'
         });
     });
+
+    it('forwards generic tool approval requests with the app-server tool name', async () => {
+        const { client, handlers } = createClient();
+        const permissionHandler = {
+            handleToolCall: vi.fn(async () => ({ decision: 'approved' }))
+        };
+
+        registerAppServerPermissionHandlers({
+            client: client as never,
+            permissionHandler: permissionHandler as never
+        });
+
+        const handler = handlers.get('item/tool/requestApproval');
+        expect(handler).toBeTypeOf('function');
+
+        await expect(handler?.({
+            itemId: 'tool-123',
+            toolName: 'exit_plan_mode',
+            input: { plan: '1. Edit files' }
+        })).resolves.toEqual({ decision: 'accept' });
+
+        expect(permissionHandler.handleToolCall).toHaveBeenCalledWith(
+            'tool-123',
+            'exit_plan_mode',
+            { plan: '1. Edit files' }
+        );
+    });
 });

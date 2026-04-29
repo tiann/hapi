@@ -21,6 +21,15 @@ function asString(value: unknown): string | undefined {
     return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
+function pickToolName(record: Record<string, unknown>): string {
+    return asString(record.toolName)
+        ?? asString(record.tool_name)
+        ?? asString(record.tool)
+        ?? asString(record.name)
+        ?? asString(record.permission)
+        ?? 'CodexTool';
+}
+
 function mapDecision(decision: PermissionDecision): { decision: string } {
     switch (decision) {
         case 'approved':
@@ -77,6 +86,20 @@ export function registerAppServerPermissionHandlers(args: {
                 message: reason,
                 grantRoot
             }
+        ) as PermissionResult;
+
+        return mapDecision(result.decision);
+    });
+
+    client.registerRequestHandler('item/tool/requestApproval', async (params) => {
+        const record = asRecord(params) ?? {};
+        const toolCallId = asString(record.itemId) ?? asString(record.item_id) ?? randomUUID();
+        const toolName = pickToolName(record);
+
+        const result = await permissionHandler.handleToolCall(
+            toolCallId,
+            toolName,
+            record.input ?? record.arguments ?? params
         ) as PermissionResult;
 
         return mapDecision(result.decision);

@@ -236,4 +236,17 @@ describe('appServerConfig', () => {
         });
         expect(params.model).toBeUndefined();
     });
+
+    it('can suppress collaboration mode while preserving top-level model', () => {
+        const params = buildTurnStartParams({
+            threadId: 'thread-1',
+            message: 'hello',
+            cwd: '/workspace/project',
+            mode: { permissionMode: 'default', model: 'o3', collaborationMode: 'plan' },
+            overrides: { suppressCollaborationMode: true }
+        });
+
+        expect(params.collaborationMode).toBeUndefined();
+        expect(params.model).toBe('o3');
+    });
 });

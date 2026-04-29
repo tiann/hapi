@@ -44,6 +44,14 @@ export interface ModelListResponse {
     [key: string]: unknown;
 }
 
+export interface CollaborationModeListResponse {
+    data?: Array<{ mode?: string; name?: string; id?: string } | string>;
+    modes?: Array<{ mode?: string; name?: string; id?: string } | string>;
+    collaborationModes?: Array<{ mode?: string; name?: string; id?: string } | string>;
+    items?: Array<{ mode?: string; name?: string; id?: string } | string>;
+    [key: string]: unknown;
+}
+
 export interface ThreadStartParams {
     model?: string;
     modelProvider?: string;
