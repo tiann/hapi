@@ -279,10 +279,14 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         try {
             store.messages.markMessagesInvoked(data.sid, localIds, invokedAt)
             onSessionActivity?.(data.sid, invokedAt)
+            // Emit only after the DB write succeeds. Otherwise a transient SQLite
+            // failure would broadcast an `invokedAt` that was never persisted —
+            // live clients would hide the queued rows while a refresh / secondary
+            // client would see them as queued again, diverging the state.
+            onWebappEvent?.({ type: 'messages-consumed', sessionId: data.sid, localIds, invokedAt })
         } catch (err) {
             console.error('markMessagesInvoked failed', err)
         }
-        onWebappEvent?.({ type: 'messages-consumed', sessionId: data.sid, localIds, invokedAt })
     })
 
     socket.on('session-end', (data: SessionEndPayload) => {

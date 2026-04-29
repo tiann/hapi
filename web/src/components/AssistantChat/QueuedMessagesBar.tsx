@@ -48,7 +48,18 @@ function getTextFromMessage(msg: DecryptedMessage): string {
     if (!normalized || normalized.role !== 'user') {
         return ''
     }
-    return normalized.content.text ?? ''
+    const text = (normalized.content.text ?? '').trim()
+    if (text) {
+        return text
+    }
+    // Attachment-only sends: the composer / POST /messages allow empty text
+    // when attachments are present. Fall back to the filenames so the chip
+    // is not blank.
+    const attachments = normalized.content.attachments ?? []
+    if (attachments.length === 0) {
+        return ''
+    }
+    return attachments.map((a) => a.filename ?? 'attachment').join(', ')
 }
 
 /**
