@@ -1,7 +1,7 @@
 import type { ApiClient } from '@/api/client'
 import type { DecryptedMessage, MessageStatus } from '@/types/api'
 import { normalizeDecryptedMessage } from '@/chat/normalize'
-import { isUserMessage, mergeMessages } from '@/lib/messages'
+import { isQueuedForInvocation, isUserMessage, mergeMessages } from '@/lib/messages'
 
 export type MessageWindowState = {
     sessionId: string
@@ -268,33 +268,44 @@ function buildState(
     }
 }
 
-function isQueuedForInvocation(message: DecryptedMessage): boolean {
-    // Strict null: a pre-V8 hub response that omits the field (undefined) is
-    // treated as already-invoked. Optimistic messages set invokedAt: null
-    // explicitly to opt into the queued state.
-    return isUserMessage(message) && message.invokedAt === null && message.status !== 'failed'
-}
-
-function trimVisible(messages: DecryptedMessage[], mode: 'append' | 'prepend'): DecryptedMessage[] {
-    if (messages.length <= VISIBLE_WINDOW_SIZE) {
-        return messages
+/** Trim `messages` down to `limit` while preserving every queued user message.
+ *  Queued rows must survive trimming on both windows: the `messages-consumed`
+ *  SSE only carries localIds, so a dropped queued row cannot be restored or
+ *  repositioned without a full refetch.  Returns the kept slice plus the list
+ *  of regular (non-queued) rows that were dropped, so the pending-overflow
+ *  warning counter can be advanced symmetrically. */
+function trimPreservingQueued(
+    messages: DecryptedMessage[],
+    limit: number,
+    mode: 'append' | 'prepend'
+): { kept: DecryptedMessage[]; dropped: DecryptedMessage[] } {
+    if (messages.length <= limit) {
+        return { kept: messages, dropped: [] }
     }
-    // Queued messages must survive trimming. The `messages-consumed` SSE only
-    // carries localIds, so if a queued row is dropped before invocation the
-    // client cannot restore or reposition it without a full refetch.
     const queued = messages.filter(isQueuedForInvocation)
     if (queued.length === 0) {
-        return mode === 'prepend'
-            ? messages.slice(0, VISIBLE_WINDOW_SIZE)
-            : messages.slice(messages.length - VISIBLE_WINDOW_SIZE)
+        const kept = mode === 'prepend'
+            ? messages.slice(0, limit)
+            : messages.slice(messages.length - limit)
+        const dropped = mode === 'prepend'
+            ? messages.slice(limit)
+            : messages.slice(0, messages.length - limit)
+        return { kept, dropped }
     }
     const queuedIds = new Set(queued.map((message) => message.id))
     const regular = messages.filter((message) => !queuedIds.has(message.id))
-    const budget = Math.max(0, VISIBLE_WINDOW_SIZE - queued.length)
+    const budget = Math.max(0, limit - queued.length)
     const trimmedRegular = mode === 'prepend'
         ? regular.slice(0, budget)
         : regular.slice(Math.max(0, regular.length - budget))
-    return mergeMessages(trimmedRegular, queued)
+    const droppedRegular = mode === 'prepend'
+        ? regular.slice(budget)
+        : regular.slice(0, Math.max(0, regular.length - budget))
+    return { kept: mergeMessages(trimmedRegular, queued), dropped: droppedRegular }
+}
+
+function trimVisible(messages: DecryptedMessage[], mode: 'append' | 'prepend'): DecryptedMessage[] {
+    return trimPreservingQueued(messages, VISIBLE_WINDOW_SIZE, mode).kept
 }
 
 function trimPending(
@@ -304,11 +315,12 @@ function trimPending(
     if (messages.length <= PENDING_WINDOW_SIZE) {
         return { pending: messages, dropped: 0, droppedVisible: 0 }
     }
-    const cutoff = messages.length - PENDING_WINDOW_SIZE
-    const droppedMessages = messages.slice(0, cutoff)
-    const pending = messages.slice(cutoff)
-    const droppedVisible = countVisiblePendingMessages(sessionId, droppedMessages)
-    return { pending, dropped: droppedMessages.length, droppedVisible }
+    // Symmetric with trimVisible: agents that overflow the pending window
+    // (200) must not evict queued user messages — the floating bar holds the
+    // only client-visible reference to them until the CLI ack arrives.
+    const { kept, dropped } = trimPreservingQueued(messages, PENDING_WINDOW_SIZE, 'append')
+    const droppedVisible = countVisiblePendingMessages(sessionId, dropped)
+    return { pending: kept, dropped: dropped.length, droppedVisible }
 }
 
 function filterPendingAgainstVisible(pending: DecryptedMessage[], visible: DecryptedMessage[]): DecryptedMessage[] {
@@ -642,11 +654,31 @@ export function markMessagesConsumed(sessionId: string, localIds: string[], invo
                 return { ...message, ...update }
             })
         }
+        // Migrate just-acked pending entries into the visible thread. Without
+        // this step, an at-bottom=false user that is stuck in pending never
+        // sees their own message at the invocation slot — it stays in the
+        // pending bucket until they scroll, even though the floating bar
+        // already cleared.  Identifying the migrated rows by (localId,
+        // invokedAt = effectiveInvokedAt) ensures we only move rows whose
+        // ack just arrived, not unrelated pending entries.
+        const updatedPending = updateList(prev.pending)
+        const consumedFromPending: DecryptedMessage[] = []
+        const remainingPending = updatedPending.filter((message) => {
+            if (
+                message.localId &&
+                idSet.has(message.localId) &&
+                message.invokedAt === effectiveInvokedAt
+            ) {
+                consumedFromPending.push(message)
+                return false
+            }
+            return true
+        })
         // After update, re-merge to re-sort by the position key (`invokedAt ?? createdAt`):
         // a queued message that just received `invokedAt` should move to its invocation
         // position, not stay at its original send-time slot until the next fetch.
-        const messages = mergeMessages([], updateList(prev.messages))
-        const pending = mergeMessages([], updateList(prev.pending))
+        const messages = mergeMessages(updateList(prev.messages), consumedFromPending)
+        const pending = mergeMessages([], remainingPending)
         if (!changed) {
             return prev
         }

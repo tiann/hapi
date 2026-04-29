@@ -165,7 +165,10 @@ export function getMaxSeq(db: Database, sessionId: string): number {
 }
 
 /** Mark messages as invoked at the given server timestamp.
- *  Only updates rows whose local_id is in localIds. */
+ *  Only updates rows whose local_id is in localIds.
+ *  First-write-wins: rows with a non-NULL invoked_at are not updated.  A duplicate
+ *  ack (e.g. a CLI re-emit) would otherwise re-stamp the timestamp and shuffle
+ *  the message's position in the byPosition-ordered thread. */
 export function markMessagesInvoked(
     db: Database,
     sessionId: string,
@@ -175,7 +178,11 @@ export function markMessagesInvoked(
     if (localIds.length === 0) return
     const placeholders = localIds.map(() => '?').join(', ')
     db.prepare(
-        `UPDATE messages SET invoked_at = ? WHERE session_id = ? AND local_id IN (${placeholders})`
+        `UPDATE messages
+         SET invoked_at = ?
+         WHERE session_id = ?
+           AND local_id IN (${placeholders})
+           AND invoked_at IS NULL`
     ).run(invokedAt, sessionId, ...localIds)
 }
 
@@ -211,8 +218,15 @@ export function mergeSessionMessages(
         if (collisions.length > 0) {
             const localIds = collisions.map((row) => row.local_id)
             const placeholders = localIds.map(() => '?').join(', ')
+            // Force-invoke the older copy: clearing local_id severs its ack path
+            // (markMessagesInvoked matches by local_id), so leaving invoked_at
+            // NULL would strand the row in the queued floating bar forever.
+            // Use COALESCE so an already-invoked row keeps its server timestamp.
             db.prepare(
-                `UPDATE messages SET local_id = NULL WHERE session_id = ? AND local_id IN (${placeholders})`
+                `UPDATE messages
+                 SET local_id = NULL,
+                     invoked_at = COALESCE(invoked_at, created_at)
+                 WHERE session_id = ? AND local_id IN (${placeholders})`
             ).run(fromSessionId, ...localIds)
         }
 

@@ -294,6 +294,30 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             emitAccessError('session', data.sid, sessionAccess.reason)
             return
         }
+
+        // Force-invoke any user messages that are still queued at session end.
+        // Without this, the floating bar pins the queued rows after the CLI is
+        // gone — there is no longer an ack path (no CLI to emit
+        // messages-consumed) so they would stay queued forever.
+        try {
+            const queued = store.messages.getUninvokedLocalMessages(data.sid)
+            const localIds = queued
+                .map((m) => m.localId)
+                .filter((id): id is string => typeof id === 'string')
+            if (localIds.length > 0) {
+                const invokedAt = Date.now()
+                store.messages.markMessagesInvoked(data.sid, localIds, invokedAt)
+                onWebappEvent?.({
+                    type: 'messages-consumed',
+                    sessionId: data.sid,
+                    localIds,
+                    invokedAt
+                })
+            }
+        } catch (err) {
+            console.error('session-end markMessagesInvoked failed', err)
+        }
+
         onSessionEnd?.(data)
     })
 }

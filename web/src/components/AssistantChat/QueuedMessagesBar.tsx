@@ -1,6 +1,6 @@
 import { useCallback, useSyncExternalStore } from 'react'
 import { getMessageWindowState, subscribeMessageWindow } from '@/lib/message-window-store'
-import { isUserMessage } from '@/lib/messages'
+import { isQueuedForInvocation } from '@/lib/messages'
 import { EMPTY_STATE } from '@/hooks/queries/useMessages'
 import { normalizeDecryptedMessage } from '@/chat/normalize'
 import type { DecryptedMessage } from '@/types/api'
@@ -36,18 +36,11 @@ function useQueuedMessages(sessionId: string): DecryptedMessage[] {
         () => EMPTY_STATE
     )
 
-    // `invokedAt` is the source of truth for invocation. `status === 'sent'` only
-    // means the REST write to the hub returned, not that the CLI consumed it; an
-    // optimistic 'sent' message with no `invokedAt` is still queued. Strict null
-    // check so a pre-V8 hub response that omits the field (`undefined`) is
-    // treated as already-invoked and stays out of the bar.
+    // `invokedAt` is the source of truth for invocation; see isQueuedForInvocation
+    // (lib/messages) for the shared predicate used by the thread filter and the
+    // window store trim helpers.
     const allMessages = [...state.messages, ...state.pending]
-    return allMessages.filter(
-        (m) =>
-            isUserMessage(m) &&
-            m.invokedAt === null &&
-            m.status !== 'failed'
-    )
+    return allMessages.filter(isQueuedForInvocation)
 }
 
 function getTextFromMessage(msg: DecryptedMessage): string {

@@ -167,7 +167,7 @@ describe('Store V7→V8 migration: invoked_at column', () => {
         expect(m2.invokedAt).toBeNull()
     })
 
-    it('markMessagesInvoked is idempotent (repeated call updates timestamp)', () => {
+    it('markMessagesInvoked is first-write-wins (subsequent calls are no-ops)', () => {
         const store = new Store(':memory:')
         const session = store.sessions.getOrCreateSession('test', { path: '/tmp' }, null, 'default')
         store.messages.addMessage(session.id, 'hi', 'local-x')
@@ -175,11 +175,13 @@ describe('Store V7→V8 migration: invoked_at column', () => {
         const ts1 = 1000
         const ts2 = 2000
         store.messages.markMessagesInvoked(session.id, ['local-x'], ts1)
-        // calling again with different ts should overwrite (UPDATE is idempotent-safe)
+        // A duplicate ack (CLI re-emit) must not overwrite the original timestamp:
+        // re-stamping invoked_at would shuffle the message in the byPosition-ordered
+        // thread for every subscribed client.
         store.messages.markMessagesInvoked(session.id, ['local-x'], ts2)
 
         const msgs = store.messages.getMessages(session.id)
-        expect(msgs[0].invokedAt).toBe(ts2)
+        expect(msgs[0].invokedAt).toBe(ts1)
     })
 
     it('addMessage with localId leaves invoked_at NULL (ack path is messages-consumed)', () => {
@@ -352,6 +354,45 @@ describe('Store V8 byPosition pagination', () => {
             db.close()
 
             const store = new Store(dbPath)
+            const db2: Database = (store as any).db
+            const rows = db2.prepare(
+                "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_messages_session_position'"
+            ).all() as Array<{ name: string }>
+            expect(rows).toHaveLength(1)
+        } finally {
+            rmSync(dir, { recursive: true, force: true })
+        }
+    })
+
+    it('legacy DB (user_version=0 with V7-shape tables): step ladder backfills invoked_at and index', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'hapi-legacy-v0-'))
+        const dbPath = join(dir, 'test.db')
+        try {
+            // Build a V7-shape schema but leave user_version = 0 (legacy DB
+            // predating the version stamping).  The legacy branch in initSchema
+            // must run the step ladder so the messages table picks up
+            // invoked_at + idx_messages_session_position.
+            const db = new Database(dbPath, { create: true, readwrite: true, strict: true })
+            db.exec('PRAGMA journal_mode = WAL')
+            db.exec('PRAGMA foreign_keys = ON')
+            createV7Schema(db)
+            // Intentionally do NOT set user_version — leaves it at 0.
+            db.exec(`INSERT INTO sessions (id, namespace, created_at, updated_at, seq)
+                     VALUES ('s1', 'default', 1000, 1000, 0)`)
+            db.exec(`INSERT INTO messages (id, session_id, content, created_at, seq)
+                     VALUES ('m1', 's1', '"hi"', 1500, 1)`)
+            db.close()
+
+            const store = new Store(dbPath)
+            const cols = getMessageColumns(store)
+            expect(cols).toContain('invoked_at')
+
+            // Backfill should have happened via V7→V8 step running in the legacy branch.
+            const msgs = store.messages.getMessages('s1')
+            expect(msgs).toHaveLength(1)
+            expect(msgs[0].invokedAt).toBe(1500)
+
+            // The position index must exist for byPosition pagination to work.
             const db2: Database = (store as any).db
             const rows = db2.prepare(
                 "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_messages_session_position'"

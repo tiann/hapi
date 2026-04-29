@@ -16,7 +16,7 @@ import { normalizeDecryptedMessage } from '@/chat/normalize'
 import { reduceChatBlocks } from '@/chat/reducer'
 import { reconcileChatBlocks } from '@/chat/reconcile'
 import { buildConversationOutline } from '@/chat/outline'
-import { isUserMessage } from '@/lib/messages'
+import { isQueuedForInvocation } from '@/lib/messages'
 import { HappyComposer } from '@/components/AssistantChat/HappyComposer'
 import { HappyThread } from '@/components/AssistantChat/HappyThread'
 import { QueuedMessagesBar } from '@/components/AssistantChat/QueuedMessagesBar'
@@ -215,14 +215,11 @@ export function SessionChat(props: {
     }, [props.session.id])
 
     // Exclude user messages that haven't been invoked yet — those appear in the
-    // QueuedMessagesBar above the composer, not in the thread timeline. `invokedAt`
-    // is the source of truth: `status === 'sent'` only means the REST write returned,
-    // not that the CLI consumed the message. Strict null check so a pre-V8 hub
-    // response that omits the field (`undefined`) is treated as already-invoked.
+    // QueuedMessagesBar above the composer, not in the thread timeline. The
+    // `isQueuedForInvocation` predicate is shared with the window store and the
+    // floating bar so the three views never disagree about queued state.
     const visibleMessages = useMemo(
-        () => props.messages.filter(
-            (m) => !(isUserMessage(m) && m.invokedAt === null && m.status !== 'failed')
-        ),
+        () => props.messages.filter((m) => !isQueuedForInvocation(m)),
         [props.messages]
     )
 

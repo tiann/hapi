@@ -14,6 +14,15 @@ export function isUserMessage(msg: DecryptedMessage): boolean {
     return false
 }
 
+/** A user message that is still waiting for the CLI ack (messages-consumed).
+ *  Strict null on `invokedAt` so a pre-V8 hub response that omits the field
+ *  (`undefined`) is treated as already-invoked; only optimistic / V8-loaded
+ *  rows that explicitly carry `invokedAt: null` are queued. `failed` rows are
+ *  not queued either — they're surfaced as send errors, not pending work. */
+export function isQueuedForInvocation(msg: DecryptedMessage): boolean {
+    return isUserMessage(msg) && msg.invokedAt === null && msg.status !== 'failed'
+}
+
 function isOptimisticMessage(msg: DecryptedMessage): boolean {
     return Boolean(msg.localId && msg.id === msg.localId)
 }
@@ -110,9 +119,14 @@ export function mergeMessages(existing: DecryptedMessage[], incoming: DecryptedM
 
     for (const optimistic of optimisticMessages) {
         if (optimistic.status === 'sent') {
+            // Compare by the position key (invokedAt ?? createdAt). A late ack can
+            // attach `invokedAt` long after `createdAt`, so the optimistic copy and
+            // the server echo end up at the same byPosition slot — using
+            // `createdAt` alone misses that match and renders both as duplicates.
+            const optimisticTime = optimistic.invokedAt ?? optimistic.createdAt
             const hasServerUserMessage = nonOptimisticMessages.some((m) =>
                 isUserMessage(m) &&
-                Math.abs(m.createdAt - optimistic.createdAt) < 10_000
+                Math.abs((m.invokedAt ?? m.createdAt) - optimisticTime) < 10_000
             )
             if (hasServerUserMessage) {
                 continue
