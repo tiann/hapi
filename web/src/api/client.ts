@@ -489,4 +489,37 @@ export class ApiClient {
             body: JSON.stringify(options || {})
         })
     }
+
+    /** Return the current auth token (for WebSocket query-param auth). */
+    getAuthToken(): string | null {
+        return this.getToken ? this.getToken() : this.token
+    }
+
+    async fetchVoiceBackend(): Promise<{ backend: string }> {
+        return await this.request('/api/voice/backend')
+    }
+
+    async fetchQwenToken(): Promise<{
+        allowed: boolean
+        wsUrl?: string
+        error?: string
+    }> {
+        return await this.request('/api/voice/qwen-token', {
+            method: 'POST',
+            body: JSON.stringify({})
+        })
+    }
+
+    async fetchGeminiToken(): Promise<{
+        allowed: boolean
+        apiKey?: string
+        wsUrl?: string
+        baseUrl?: string
+        error?: string
+    }> {
+        return await this.request('/api/voice/gemini-token', {
+            method: 'POST',
+            body: JSON.stringify({})
+        })
+    }
 }

@@ -4,8 +4,10 @@ import type { WebAppEnv } from '../middleware/auth'
 import {
     ELEVENLABS_API_BASE,
     VOICE_AGENT_NAME,
-    buildVoiceAgentConfig
+    buildVoiceAgentConfig,
+    DEFAULT_VOICE_BACKEND
 } from '@hapi/protocol/voice'
+import type { VoiceBackendType } from '@hapi/protocol/voice'
 
 const tokenRequestSchema = z.object({
     customAgentId: z.string().optional(),
@@ -115,6 +117,65 @@ async function getOrCreateAgentId(apiKey: string): Promise<string | null> {
 
 export function createVoiceRoutes(): Hono<WebAppEnv> {
     const app = new Hono<WebAppEnv>()
+
+    // Return the configured voice backend type
+    app.get('/voice/backend', (c) => {
+        const raw = process.env.VOICE_BACKEND
+        const backend: VoiceBackendType =
+            raw === 'gemini-live' ? 'gemini-live'
+            : raw === 'qwen-realtime' ? 'qwen-realtime'
+            : DEFAULT_VOICE_BACKEND
+        return c.json({ backend })
+    })
+
+    // Get Gemini API key for Gemini Live voice sessions
+    // Gemini Live API does not support ephemeral tokens, so we proxy the key.
+    // The key is short-lived in the browser session and never persisted client-side.
+    app.post('/voice/gemini-token', async (c) => {
+        const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY
+        if (!apiKey) {
+            return c.json({
+                allowed: false,
+                error: 'Gemini API key not configured (set GEMINI_API_KEY or GOOGLE_API_KEY)'
+            }, 400)
+        }
+
+        // Use server-side WS proxy to avoid region restrictions.
+        // The proxy at /api/voice/gemini-ws handles the API key server-side.
+        // Derive wsUrl from the request origin so remote browsers connect back to the hub,
+        // not to localhost. HAPI_PUBLIC_URL overrides when set (e.g. behind a reverse proxy).
+        const requestOrigin = new URL(c.req.url).origin
+        const publicUrl = process.env.HAPI_PUBLIC_URL || requestOrigin
+        const wsProxyUrl = publicUrl.replace(/^http/, 'ws') + '/api/voice/gemini-ws'
+
+        return c.json({
+            allowed: true,
+            apiKey: 'proxied', // Dummy — key is handled server-side
+            wsUrl: wsProxyUrl, // Always proxy — env WS URLs are upstream-only (server-side)
+            baseUrl: process.env.GEMINI_API_BASE || undefined
+        })
+    })
+
+    // Check Qwen (DashScope) availability for Qwen Realtime voice sessions
+    // The actual API key is never sent to the browser — it stays server-side in the WS proxy.
+    app.post('/voice/qwen-token', async (c) => {
+        const apiKey = process.env.DASHSCOPE_API_KEY || process.env.QWEN_API_KEY
+        if (!apiKey) {
+            return c.json({
+                allowed: false,
+                error: 'DashScope API key not configured (set DASHSCOPE_API_KEY or QWEN_API_KEY)'
+            }, 400)
+        }
+
+        const requestOrigin = new URL(c.req.url).origin
+        const publicUrl = process.env.HAPI_PUBLIC_URL || requestOrigin
+        const wsProxyUrl = publicUrl.replace(/^http/, 'ws') + '/api/voice/qwen-ws'
+
+        return c.json({
+            allowed: true,
+            wsUrl: wsProxyUrl // Always proxy — env WS URLs are upstream-only (server-side)
+        })
+    })
 
     // Get ElevenLabs ConvAI conversation token
     app.post('/voice/token', async (c) => {
