@@ -926,7 +926,7 @@ export function SessionList(props: {
                                     {(() => {
                                         const activeProjectGroups = mg.projectGroups.filter(g => g.hasActiveSession)
                                         const archivedProjectGroups = mg.projectGroups.filter(g => !g.hasActiveSession)
-                                        const showArchivedSection = activeProjectGroups.length > 0 && archivedProjectGroups.length > 0
+                                        const showArchivedSection = !isSearching && activeProjectGroups.length > 0 && archivedProjectGroups.length > 0
                                         const machineKey = mg.machineId ?? UNKNOWN_MACHINE_ID
                                         const archivedHidden = showArchivedSection && isArchivedSectionCollapsed(machineKey)
                                         const visibleGroups = showArchivedSection ? activeProjectGroups : mg.projectGroups
