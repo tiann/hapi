@@ -19,9 +19,11 @@ describe('EditorTerminal', () => {
             <EditorTerminal
                 tabs={[tabs[0]]}
                 activeTabId="file-1"
+                isCollapsed={false}
                 onSelectTab={vi.fn()}
                 onCloseTab={vi.fn()}
                 onOpenTerminal={vi.fn()}
+                onToggleCollapsed={vi.fn()}
             />
         )
 
@@ -32,14 +34,17 @@ describe('EditorTerminal', () => {
         const onSelectTab = vi.fn()
         const onCloseTab = vi.fn()
         const onOpenTerminal = vi.fn()
+        const onToggleCollapsed = vi.fn()
 
         render(
             <EditorTerminal
                 tabs={tabs}
                 activeTabId="term-2"
+                isCollapsed={false}
                 onSelectTab={onSelectTab}
                 onCloseTab={onCloseTab}
                 onOpenTerminal={onOpenTerminal}
+                onToggleCollapsed={onToggleCollapsed}
             />
         )
 
@@ -56,5 +61,25 @@ describe('EditorTerminal', () => {
 
         fireEvent.click(screen.getByRole('button', { name: 'Open terminal' }))
         expect(onOpenTerminal).toHaveBeenCalledWith()
+
+        fireEvent.click(screen.getByRole('button', { name: 'Collapse terminal' }))
+        expect(onToggleCollapsed).toHaveBeenCalledWith()
+    })
+
+    it('hides terminal body content when collapsed and exposes expand action', () => {
+        render(
+            <EditorTerminal
+                tabs={tabs}
+                activeTabId="term-2"
+                isCollapsed={true}
+                onSelectTab={vi.fn()}
+                onCloseTab={vi.fn()}
+                onOpenTerminal={vi.fn()}
+                onToggleCollapsed={vi.fn()}
+            />
+        )
+
+        expect(screen.queryByText('Machine terminal placeholder for zsh')).not.toBeInTheDocument()
+        expect(screen.getByRole('button', { name: 'Expand terminal' })).toBeInTheDocument()
     })
 })

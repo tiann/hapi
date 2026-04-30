@@ -80,7 +80,7 @@ export function useEditorState(initialMachine?: string, initialProject?: string)
     }, [setActiveTabId, setTabs])
 
     const openTerminal = useCallback((shell?: string) => {
-        const shellName = shell || 'bash'
+        const shellName = typeof shell === 'string' && shell.trim() ? shell : 'bash'
         const terminalCount = tabsRef.current.filter((tab) => tab.type === 'terminal').length
         const newTab: EditorTab = {
             id: generateTabId(),

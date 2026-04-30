@@ -54,6 +54,20 @@ describe('useEditorState', () => {
         expect(result.current.activeTabId).toBe(result.current.tabs[1].id)
     })
 
+    it('does not use accidental click event objects as terminal labels', () => {
+        const { result } = renderHook(() => useEditorState())
+
+        act(() => {
+            result.current.openTerminal({ type: 'click' } as unknown as string)
+        })
+
+        expect(result.current.tabs[0]).toMatchObject({
+            type: 'terminal',
+            label: 'Terminal: bash',
+            shell: 'bash'
+        })
+    })
+
     it('chooses a neighboring active tab when closing the active tab', () => {
         const { result } = renderHook(() => useEditorState())
 

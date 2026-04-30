@@ -201,7 +201,7 @@ export function EditorTabs(props: {
     activeTabId: string | null
     onSelectTab: (tabId: string) => void
     onCloseTab: (tabId: string) => void
-    onOpenTerminal: () => void
+    onNewFile: () => void
     onDirtyChange?: (tabId: string, dirty: boolean) => void
     onSaveFile?: (path: string, content: string) => Promise<void>
 }) {
@@ -323,10 +323,10 @@ export function EditorTabs(props: {
                 })}
                 <button
                     type="button"
-                    aria-label="New Terminal"
+                    aria-label="New File"
                     className="px-2.5 py-1.5 text-[var(--app-hint)] hover:text-[var(--app-fg)] hover:bg-[var(--app-subtle-bg)] transition-colors text-sm font-light"
-                    onClick={() => props.onOpenTerminal()}
-                    title="New Terminal"
+                    onClick={() => props.onNewFile()}
+                    title="New File"
                 >
                     +
                 </button>
@@ -377,7 +377,7 @@ export function EditorTabs(props: {
                         <div className="text-4xl opacity-30">📂</div>
                         <div className="text-sm">Open a file from the explorer</div>
                         <div className="text-xs">
-                            or press <kbd className="px-1.5 py-0.5 rounded bg-[var(--app-subtle-bg)] border border-[var(--app-border)]">+</kbd> to open a terminal
+                            or press <kbd className="px-1.5 py-0.5 rounded bg-[var(--app-subtle-bg)] border border-[var(--app-border)]">+</kbd> to create a file
                         </div>
                     </div>
                 )}

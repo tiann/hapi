@@ -129,17 +129,17 @@ describe('EditorTabs', () => {
                 activeTabId={null}
                 onSelectTab={vi.fn()}
                 onCloseTab={vi.fn()}
-                onOpenTerminal={vi.fn()}
+                onNewFile={vi.fn()}
             />
         )
 
         expect(screen.getByText('Open a file from the explorer')).toBeInTheDocument()
     })
 
-    it('renders tabs and emits select, close, and new terminal actions', () => {
+    it('renders tabs and emits select, close, and new file actions', () => {
         const onSelectTab = vi.fn()
         const onCloseTab = vi.fn()
-        const onOpenTerminal = vi.fn()
+        const onNewFile = vi.fn()
 
         render(
             <EditorTabs
@@ -149,7 +149,7 @@ describe('EditorTabs', () => {
                 activeTabId="tab-file"
                 onSelectTab={onSelectTab}
                 onCloseTab={onCloseTab}
-                onOpenTerminal={onOpenTerminal}
+                onNewFile={onNewFile}
             />
         )
 
@@ -160,8 +160,8 @@ describe('EditorTabs', () => {
         expect(onCloseTab).toHaveBeenCalledWith('tab-file')
         expect(onSelectTab).not.toHaveBeenCalledWith('tab-file')
 
-        fireEvent.click(screen.getByRole('button', { name: 'New Terminal' }))
-        expect(onOpenTerminal).toHaveBeenCalledWith()
+        fireEvent.click(screen.getByRole('button', { name: 'New File' }))
+        expect(onNewFile).toHaveBeenCalledWith()
     })
 
     it('loads active file content into an editable CodeMirror view', async () => {
@@ -175,7 +175,7 @@ describe('EditorTabs', () => {
                 activeTabId="tab-file"
                 onSelectTab={vi.fn()}
                 onCloseTab={vi.fn()}
-                onOpenTerminal={vi.fn()}
+                onNewFile={vi.fn()}
             />
         )
 
@@ -201,7 +201,7 @@ describe('EditorTabs', () => {
                 activeTabId="tab-file"
                 onSelectTab={vi.fn()}
                 onCloseTab={vi.fn()}
-                onOpenTerminal={vi.fn()}
+                onNewFile={vi.fn()}
                 onDirtyChange={onDirtyChange}
             />
         )
@@ -226,7 +226,7 @@ describe('EditorTabs', () => {
                 activeTabId="tab-file"
                 onSelectTab={vi.fn()}
                 onCloseTab={vi.fn()}
-                onOpenTerminal={vi.fn()}
+                onNewFile={vi.fn()}
                 onDirtyChange={onDirtyChange}
             />
         )
@@ -244,7 +244,7 @@ describe('EditorTabs', () => {
                 activeTabId="tab-file"
                 onSelectTab={vi.fn()}
                 onCloseTab={vi.fn()}
-                onOpenTerminal={vi.fn()}
+                onNewFile={vi.fn()}
                 onDirtyChange={onDirtyChange}
             />
         )
@@ -265,7 +265,7 @@ describe('EditorTabs', () => {
                 activeTabId="tab-file"
                 onSelectTab={vi.fn()}
                 onCloseTab={vi.fn()}
-                onOpenTerminal={vi.fn()}
+                onNewFile={vi.fn()}
             />
         )
 
@@ -286,7 +286,7 @@ describe('EditorTabs', () => {
                 activeTabId="tab-file"
                 onSelectTab={vi.fn()}
                 onCloseTab={vi.fn()}
-                onOpenTerminal={vi.fn()}
+                onNewFile={vi.fn()}
                 onDirtyChange={onDirtyChange}
                 onSaveFile={onSaveFile}
             />
@@ -316,7 +316,7 @@ describe('EditorTabs', () => {
                 activeTabId="tab-file"
                 onSelectTab={vi.fn()}
                 onCloseTab={vi.fn()}
-                onOpenTerminal={vi.fn()}
+                onNewFile={vi.fn()}
                 onSaveFile={onSaveFile}
             />
         )
@@ -335,7 +335,7 @@ describe('EditorTabs', () => {
                 activeTabId="tab-file"
                 onSelectTab={vi.fn()}
                 onCloseTab={vi.fn()}
-                onOpenTerminal={vi.fn()}
+                onNewFile={vi.fn()}
             />
         )
 
@@ -359,7 +359,7 @@ describe('EditorTabs', () => {
                 activeTabId="tab-file"
                 onSelectTab={vi.fn()}
                 onCloseTab={vi.fn()}
-                onOpenTerminal={vi.fn()}
+                onNewFile={vi.fn()}
             />
         )
 
@@ -374,7 +374,7 @@ describe('EditorTabs', () => {
                 activeTabId="tab-file"
                 onSelectTab={vi.fn()}
                 onCloseTab={vi.fn()}
-                onOpenTerminal={vi.fn()}
+                onNewFile={vi.fn()}
             />
         )
 
@@ -395,7 +395,7 @@ describe('EditorTabs', () => {
                 activeTabId="tab-file"
                 onSelectTab={vi.fn()}
                 onCloseTab={vi.fn()}
-                onOpenTerminal={vi.fn()}
+                onNewFile={vi.fn()}
             />
         )
 
@@ -410,7 +410,7 @@ describe('EditorTabs', () => {
                 activeTabId="tab-file"
                 onSelectTab={vi.fn()}
                 onCloseTab={vi.fn()}
-                onOpenTerminal={vi.fn()}
+                onNewFile={vi.fn()}
             />
         )
 
@@ -426,7 +426,7 @@ describe('EditorTabs', () => {
                 activeTabId="tab-terminal"
                 onSelectTab={vi.fn()}
                 onCloseTab={vi.fn()}
-                onOpenTerminal={vi.fn()}
+                onNewFile={vi.fn()}
             />
         )
 

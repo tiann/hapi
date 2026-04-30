@@ -4,9 +4,11 @@ import type { EditorTab } from '@/hooks/useEditorState'
 export function EditorTerminal(props: {
     tabs: EditorTab[]
     activeTabId: string | null
+    isCollapsed: boolean
     onSelectTab: (tabId: string) => void
     onCloseTab: (tabId: string) => void
     onOpenTerminal: () => void
+    onToggleCollapsed: () => void
 }) {
     const terminalTabs = useMemo(
         () => props.tabs.filter((tab) => tab.type === 'terminal'),
@@ -17,6 +19,15 @@ export function EditorTerminal(props: {
     return (
         <div className="flex h-full min-h-0 flex-col border-t border-[var(--app-border)] bg-[var(--app-bg)]">
             <div className="flex h-8 shrink-0 items-center border-b border-[var(--app-border)] bg-[var(--app-subtle-bg)]">
+                <button
+                    type="button"
+                    aria-label={props.isCollapsed ? 'Expand terminal' : 'Collapse terminal'}
+                    className="flex h-full w-7 items-center justify-center text-xs text-[var(--app-hint)] hover:bg-[var(--app-secondary-bg)] hover:text-[var(--app-fg)]"
+                    onClick={() => props.onToggleCollapsed()}
+                    title={props.isCollapsed ? 'Expand terminal' : 'Collapse terminal'}
+                >
+                    {props.isCollapsed ? '›' : '⌄'}
+                </button>
                 <div className="px-2 text-xs font-medium text-[var(--app-hint)]">Terminal</div>
                 <div className="flex min-w-0 flex-1 items-center overflow-x-auto">
                     {terminalTabs.map((tab) => {
@@ -59,16 +70,18 @@ export function EditorTerminal(props: {
                 </button>
             </div>
 
-            <div className="flex min-h-0 flex-1 items-center justify-center p-4 text-xs text-[var(--app-hint)]">
-                {activeTerminal ? (
-                    <div className="text-center">
-                        <div className="mb-1 font-medium text-[var(--app-fg)]">{activeTerminal.label}</div>
-                        <div>Machine terminal placeholder for {activeTerminal.shell ?? 'bash'}</div>
-                    </div>
-                ) : (
-                    <div>No terminal open</div>
-                )}
-            </div>
+            {!props.isCollapsed && (
+                <div className="flex min-h-0 flex-1 items-center justify-center p-4 text-xs text-[var(--app-hint)]">
+                    {activeTerminal ? (
+                        <div className="text-center">
+                            <div className="mb-1 font-medium text-[var(--app-fg)]">{activeTerminal.label}</div>
+                            <div>Machine terminal placeholder for {activeTerminal.shell ?? 'bash'}</div>
+                        </div>
+                    ) : (
+                        <div>No terminal open</div>
+                    )}
+                </div>
+            )}
         </div>
     )
 }

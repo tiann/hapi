@@ -28,6 +28,7 @@ export function EditorLayout(props: {
     const queryClient = useQueryClient()
     const [pendingDraftText, setPendingDraftText] = useState<string | undefined>(undefined)
     const [newFileTargetPath, setNewFileTargetPath] = useState<string | null>(null)
+    const [isTerminalCollapsed, setIsTerminalCollapsed] = useState(false)
     const pendingFileAfterSessionRef = useRef<string | null>(null)
     const activeFilePath = editor.tabs.find((tab) => (
         tab.id === editor.activeTabId && tab.type === 'file'
@@ -66,6 +67,10 @@ export function EditorLayout(props: {
     const handleNewFile = useCallback((targetPath: string) => {
         setNewFileTargetPath(targetPath)
     }, [])
+
+    const handleNewFileFromTabs = useCallback(() => {
+        setNewFileTargetPath(activeFilePath ?? editor.projectPath)
+    }, [activeFilePath, editor.projectPath])
 
     const handleCancelNewFile = useCallback(() => {
         setNewFileTargetPath(null)
@@ -155,23 +160,27 @@ export function EditorLayout(props: {
                             activeTabId={editor.activeTabId}
                             onSelectTab={editor.setActiveTabId}
                             onCloseTab={editor.closeTab}
-                            onOpenTerminal={editor.openTerminal}
+                            onNewFile={handleNewFileFromTabs}
                             onDirtyChange={editor.setTabDirty}
                         />
                     </div>
-                    <div
-                        role="separator"
-                        aria-label="Resize terminal panel"
-                        className="h-1 shrink-0 cursor-row-resize hover:bg-[var(--app-border)]"
-                        onPointerDown={panes.onTerminalResizePointerDown}
-                    />
-                    <div className="shrink-0" style={{ height: panes.terminalHeight }}>
+                    {!isTerminalCollapsed && (
+                        <div
+                            role="separator"
+                            aria-label="Resize terminal panel"
+                            className="h-1 shrink-0 cursor-row-resize hover:bg-[var(--app-border)]"
+                            onPointerDown={panes.onTerminalResizePointerDown}
+                        />
+                    )}
+                    <div className="shrink-0" style={{ height: isTerminalCollapsed ? 32 : panes.terminalHeight }}>
                         <EditorTerminal
                             tabs={editor.tabs}
                             activeTabId={editor.activeTabId}
+                            isCollapsed={isTerminalCollapsed}
                             onSelectTab={editor.setActiveTabId}
                             onCloseTab={editor.closeTab}
                             onOpenTerminal={editor.openTerminal}
+                            onToggleCollapsed={() => setIsTerminalCollapsed((current) => !current)}
                         />
                     </div>
                 </main>

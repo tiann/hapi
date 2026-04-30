@@ -42,16 +42,22 @@ vi.mock('./EditorFileTree', () => ({
 }))
 
 vi.mock('./EditorTabs', () => ({
-    EditorTabs: (props: { tabs: Array<{ label: string }>; onOpenTerminal: () => void }) => (
+    EditorTabs: (props: { tabs: Array<{ label: string }>; onNewFile: () => void }) => (
         <div data-testid="editor-tabs">
             Tabs: {props.tabs.map((tab) => tab.label).join(',')}
-            <button type="button" onClick={props.onOpenTerminal}>Mock open terminal</button>
+            <button type="button" onClick={() => props.onNewFile()}>Mock new file tab</button>
         </div>
     )
 }))
 
 vi.mock('./EditorTerminal', () => ({
-    EditorTerminal: () => <div data-testid="editor-terminal">Terminal</div>
+    EditorTerminal: (props: { onOpenTerminal: () => void; isCollapsed: boolean; onToggleCollapsed: () => void }) => (
+        <div data-testid="editor-terminal">
+            Terminal collapsed: {props.isCollapsed ? 'yes' : 'no'}
+            <button type="button" onClick={() => props.onOpenTerminal()}>Mock open terminal</button>
+            <button type="button" onClick={() => props.onToggleCollapsed()}>Mock toggle terminal</button>
+        </div>
+    )
 }))
 
 vi.mock('./EditorSessionList', () => ({
@@ -169,6 +175,32 @@ describe('EditorLayout', () => {
 
         expect(screen.getByTestId('editor-tabs')).toHaveTextContent('App.tsx')
         expect(screen.getByTestId('editor-file-tree')).toHaveTextContent('Active file: /repo/src/App.tsx')
+    })
+
+    it('starts new-file flow from the editor tab plus using active file or project root', () => {
+        renderEditorLayout({} as ApiClient)
+
+        fireEvent.click(screen.getByText('Mock new file tab'))
+        expect(screen.getByTestId('editor-file-tree')).toHaveTextContent('New file target: /repo')
+
+        fireEvent.click(screen.getByText('Mock open file'))
+        fireEvent.click(screen.getByText('Mock new file tab'))
+        expect(screen.getByTestId('editor-file-tree')).toHaveTextContent('New file target: /repo/src/App.tsx')
+    })
+
+    it('opens terminal only from terminal plus and toggles terminal collapse', () => {
+        renderEditorLayout({} as ApiClient)
+
+        fireEvent.click(screen.getByText('Mock open terminal'))
+        expect(screen.getByTestId('editor-tabs')).toHaveTextContent('Terminal: bash')
+
+        expect(screen.getByTestId('editor-terminal')).toHaveTextContent('Terminal collapsed: no')
+        expect(screen.getByTestId('editor-terminal').parentElement).toHaveStyle({ height: '210px' })
+
+        fireEvent.click(screen.getByText('Mock toggle terminal'))
+
+        expect(screen.getByTestId('editor-terminal')).toHaveTextContent('Terminal collapsed: yes')
+        expect(screen.getByTestId('editor-terminal').parentElement).toHaveStyle({ height: '32px' })
     })
 
     it('starts inline new-file flow and opens the created file', async () => {
