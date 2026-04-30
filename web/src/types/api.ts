@@ -247,3 +247,40 @@ export type VisibilityPayload = {
 }
 
 export type SyncEvent = ProtocolSyncEvent
+
+// ─── Editor Mode Types ────────────────────────────────────────────────────────
+
+export type EditorDirectoryResponse = {
+    success: boolean
+    entries?: Array<{
+        name: string
+        type: 'file' | 'directory' | 'other'
+        size?: number
+        modified?: number
+        gitStatus?: 'modified' | 'added' | 'deleted' | 'renamed' | 'untracked'
+    }>
+    error?: string
+}
+
+export type EditorFileResponse = {
+    success: boolean
+    content?: string    // base64 encoded
+    size?: number
+    error?: string
+}
+
+export type EditorProjectsResponse = {
+    success: boolean
+    projects?: Array<{
+        path: string
+        name: string
+        hasGit: boolean
+    }>
+    error?: string
+}
+
+export type EditorGitStatusResponse = {
+    success: boolean
+    status?: GitStatusFiles
+    error?: string
+}
