@@ -325,7 +325,7 @@ export function EditorTabs(props: {
                     type="button"
                     aria-label="New Terminal"
                     className="px-2.5 py-1.5 text-[var(--app-hint)] hover:text-[var(--app-fg)] hover:bg-[var(--app-subtle-bg)] transition-colors text-sm font-light"
-                    onClick={props.onOpenTerminal}
+                    onClick={() => props.onOpenTerminal()}
                     title="New Terminal"
                 >
                     +

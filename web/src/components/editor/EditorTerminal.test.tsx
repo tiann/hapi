@@ -55,6 +55,6 @@ describe('EditorTerminal', () => {
         expect(onCloseTab).toHaveBeenCalledWith('term-2')
 
         fireEvent.click(screen.getByRole('button', { name: 'Open terminal' }))
-        expect(onOpenTerminal).toHaveBeenCalled()
+        expect(onOpenTerminal).toHaveBeenCalledWith()
     })
 })

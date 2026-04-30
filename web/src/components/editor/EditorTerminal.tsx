@@ -52,7 +52,7 @@ export function EditorTerminal(props: {
                     type="button"
                     aria-label="Open terminal"
                     className="h-full px-3 text-sm text-[var(--app-hint)] hover:bg-[var(--app-secondary-bg)] hover:text-[var(--app-fg)]"
-                    onClick={props.onOpenTerminal}
+                    onClick={() => props.onOpenTerminal()}
                     title="Open terminal"
                 >
                     +

@@ -161,7 +161,7 @@ describe('EditorTabs', () => {
         expect(onSelectTab).not.toHaveBeenCalledWith('tab-file')
 
         fireEvent.click(screen.getByRole('button', { name: 'New Terminal' }))
-        expect(onOpenTerminal).toHaveBeenCalled()
+        expect(onOpenTerminal).toHaveBeenCalledWith()
     })
 
     it('loads active file content into an editable CodeMirror view', async () => {
