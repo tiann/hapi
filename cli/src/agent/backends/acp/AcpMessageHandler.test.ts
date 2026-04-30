@@ -1134,6 +1134,50 @@ describe('AcpMessageHandler', () => {
             expect(toolCall!.input).toBeNull();
         });
 
+        it('derives { file_path } from edit kind + locations[0].path (write/edit case)', () => {
+            // Gemini emits write_file / replace under kind="edit" with rawInput
+            // absent. The path lives on `locations[0].path` from the very first
+            // tool_call event (title is prose like "Writing to foo.txt", which
+            // is not a file_path candidate).
+            const messages: AgentMessage[] = [];
+            const handler = new AcpMessageHandler((message) => messages.push(message));
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+                toolCallId: 'fb-edit',
+                title: 'Writing to foo.txt',
+                kind: 'edit',
+                locations: [{ path: '/abs/path/foo.txt' }],
+                status: 'in_progress'
+            });
+
+            const toolCall = messages.find(
+                (m): m is Extract<AgentMessage, { type: 'tool_call' }> => m.type === 'tool_call'
+            );
+            expect(toolCall!.input).toEqual({ file_path: '/abs/path/foo.txt' });
+        });
+
+        it('keeps input null for edit kind when locations is empty (no path to derive)', () => {
+            // Title like "Writing to foo.txt" is prose, not a file path —
+            // synthesizing a file_path from it would be misleading.
+            const messages: AgentMessage[] = [];
+            const handler = new AcpMessageHandler((message) => messages.push(message));
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+                toolCallId: 'fb-edit-no-loc',
+                title: 'Writing to foo.txt',
+                kind: 'edit',
+                locations: [],
+                status: 'in_progress'
+            });
+
+            const toolCall = messages.find(
+                (m): m is Extract<AgentMessage, { type: 'tool_call' }> => m.type === 'tool_call'
+            );
+            expect(toolCall!.input).toBeNull();
+        });
+
         it('rawInput wins over kind+title fallback (regression guard)', () => {
             const messages: AgentMessage[] = [];
             const handler = new AcpMessageHandler((message) => messages.push(message));
@@ -1215,6 +1259,23 @@ describe('AcpMessageHandler', () => {
                 file: `${fixtureDir}/gemini-3-flash-preview-run-shell.json`,
                 expectedMinToolCalls: 1,
                 expectedMinReasoning: 1,
+                hasMessageChunks: true,
+            },
+            {
+                // write_file: kind=edit, locations carries the file path.
+                // Same shape (and zero thought chunks) as read_file.
+                name: 'gemini-3-flash-preview / write_file',
+                file: `${fixtureDir}/gemini-3-flash-preview-write-file.json`,
+                expectedMinToolCalls: 2,
+                expectedMinReasoning: 0,
+                hasMessageChunks: true,
+            },
+            {
+                // replace (in-place edit): same kind=edit + locations pattern.
+                name: 'gemini-3-flash-preview / edit_file',
+                file: `${fixtureDir}/gemini-3-flash-preview-edit-file.json`,
+                expectedMinToolCalls: 2,
+                expectedMinReasoning: 0,
                 hasMessageChunks: true,
             },
         ] as const;

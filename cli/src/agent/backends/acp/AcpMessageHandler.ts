@@ -25,20 +25,32 @@ function deriveToolNameFromUpdate(update: Record<string, unknown>): DerivedToolN
 /**
  * Fallback for ACP agents that omit `rawInput` and emit prose thoughts
  * (no JSON-form to hoist). The `tool_call` event still carries a
- * human-readable `title` plus a structural `kind`. For known kinds we
- * synthesize a minimal input object so the UI does not display "Input:
- * null" while the title shows "README.md" / "ls -la /tmp".
+ * human-readable `title`, a structural `kind`, and (for file-touching tools)
+ * a `locations` array. For known kinds we synthesize a minimal input object
+ * so the UI does not display "Input: null" while the title shows
+ * "README.md" / "ls -la /tmp".
  *
  * Conservative on purpose:
- * - Only well-defined kinds derive (`read`, `execute`, `search`).
- * - `think` deliberately stays null — its title carries topic-update prose
- *   with no clean argument mapping; fabricating one would mislead.
+ * - `read` / `execute` / `search` derive from `title`, which in those kinds
+ *   is the verbatim path / command / pattern.
+ * - `edit` (file-write / file-replace) derives from `locations[0].path`;
+ *   its title is prose ("Writing to foo.txt"), so the path must come from
+ *   the structured locations field, not the title.
+ * - `think` stays null — its title carries topic-update prose with no clean
+ *   argument mapping; fabricating one would mislead.
  * - Unknown kinds fall through to null rather than guessing a shape.
  */
 function deriveInputFromKindAndTitle(
     kind: string | null,
-    title: string | null
+    title: string | null,
+    locations: unknown
 ): Record<string, unknown> | null {
+    if (kind === 'edit') {
+        const arr = Array.isArray(locations) ? locations : [];
+        const first = arr[0];
+        const path = isObject(first) ? asString(first.path) : null;
+        return path ? { file_path: path } : null;
+    }
     if (!title) return null;
     switch (kind) {
         case 'read':
@@ -358,7 +370,7 @@ export class AcpMessageHandler {
         // Use `in` to distinguish "rawInput key absent" from "rawInput is {}".
         const input = 'rawInput' in update
             ? update.rawInput
-            : deriveInputFromKindAndTitle(asString(update.kind), asString(update.title));
+            : deriveInputFromKindAndTitle(asString(update.kind), asString(update.title), update.locations);
         const status = normalizeStatus(update.status);
 
         this.toolCalls.set(toolCallId, { name, input });
@@ -398,7 +410,7 @@ export class AcpMessageHandler {
             let input = existing.input;
             let name = existing.name;
             if (input == null) {
-                const fallback = deriveInputFromKindAndTitle(asString(update.kind), asString(update.title));
+                const fallback = deriveInputFromKindAndTitle(asString(update.kind), asString(update.title), update.locations);
                 if (fallback) {
                     input = fallback;
                     const derivedName = deriveToolNameFromUpdate(update);
