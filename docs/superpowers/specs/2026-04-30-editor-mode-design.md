@@ -33,7 +33,7 @@ Editor Mode coexists with the existing Agent Mode (`/sessions/...`). Users switc
 7. Create new sessions with the "+ New" button in the session list.
 8. Switch between sessions by clicking in the list; chat panel updates to show that session.
 
-## 3. Layout
+## 3. Layout (updated v4)
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -41,42 +41,37 @@ Editor Mode coexists with the existing Agent Mode (`/sessions/...`). Users switc
 ├────────────┬──────────────────────────┬──────────────────────┤
 │ File Tree  │ Tab Bar                  │ Session List         │
 │            │ ┌──────────────────────┐ │ ┌──────────────────┐ │
-│ src/       │ │ App.tsx  ✕│ route…  ✕│ │ │ 💬 Refactor  🟢  │ │
-│ ├─ comp/   │ │ Terminal: bash     ✕│ │ │ 💬 Fix types  ⚪  │ │
-│ │ ├─ App   │ ├──────────────────────┤ │ │ + New             │ │
-│ │ ├─ Sess… │ │                      │ │ └──────────────────┘ │
-│ │ └─ File… │ │  code content        │ │                      │
-│ ├─ hooks/  │ │  (syntax highlighted) │ │ Chat Panel           │
-│ └─ lib/    │ │                      │ │ ┌──────────────────┐ │
-│ README.md M│ │                      │ │ │ AI: I'll refactor│ │
-│ package.js │ │                      │ │ │ …                │ │
-│            │ └──────────────────────┘ │ └──────────────────┘ │
-│            │ Status bar: lang, enc, ln│ │ [📎][mode][model]  │ │
-│            │                          │ │ [________] [Send]  │ │
+│ src/       │ │ App.tsx  ✕│route…  ✕│ │ │ 💬 Refactor  🟢  │ │
+│ ├─ comp/   │ ├──────────────────────┤ │ │ 💬 Fix types  ⚪  │ │
+│ ├─ hooks/  │ │  code content        │ │ │ + New             │ │
+│ └─ lib/    │ │  (syntax highlighted) │ │ └──────────────────┘ │
+│ README.md M│ └──────────────────────┘ │                      │
+│            │ Status: lang, Ln 1,Col 1 │ Chat Panel           │
+│            ├──────────────────────────┤ ┌──────────────────┐ │
+│            │ Terminal Tab Bar         │ │ AI: I'll refactor│ │
+│            │ 💻 bash │ 💻 zsh │ +    │ │ …                │ │
+│            ├──────────────────────────┤ └──────────────────┘ │
+│            │ Terminal content         │ [📎][mode][model]    │ │
+│            │ $ bun run dev            │ [________] [Send]    │ │
+│            │ ▊                        │                      │
 └────────────┴──────────────────────────┴──────────────────────┘
 ```
 
-### Column Sizing
+The center column is split vertically:
+- **Upper**: Editor tabs + content (flex: 1, min-height: 200px)
+- **Resize handle**: Draggable divider between editor and terminal
+- **Lower**: Terminal panel (default ~160px, min-height: 60px) with its own tab bar
 
-| Column | Default | Min | Behavior |
-|--------|---------|-----|----------|
-| File Tree | 260px | 180px | Resizable via drag handle |
-| Editor | flex:1 | 300px | Absorbs remaining space |
+The file tree (left) and sessions+chat (right) both span the **full height** — terminal does NOT extend into those panels.
+
+### Column / Section Sizing
+
+| Section | Default | Min | Behavior |
+|---------|---------|-----|----------|
+| File Tree (left) | 260px | 180px | Resizable via drag handle |
+| Editor (center-upper) | flex:1 | 200px | Absorbs remaining space |
+| Terminal (center-lower) | 160px | 60px | Resizable via drag handle |
 | Right Panel | 380px | 280px | Resizable via drag handle |
-
-### Resize Handles
-
-Reuse `useSidebarResize.ts` (already used in Dashboard). Two handles:
-- Between tree → editor
-- Between editor → right panel
-
-### Mobile Fallback
-
-Viewport < 1024px: Show a centered message "Editor mode requires a larger screen" with a button to return to Agent Mode. No responsive layout for Phase 1.
-
-### Dark/Light Theme
-
-Follow system preference via CSS variables inherited from Dashboard. No separate theme implementation needed — variables already handle both themes.
 
 ## 4. Components
 
@@ -352,8 +347,11 @@ Uses existing terminal infrastructure via Socket.IO, but keyed to machine + edit
 | CodeMirror 6 bundle size | Low | CodeMirror 6 is modular (~200KB gzipped for basic setup). Far smaller than Monaco (~5MB). |
 | Two separate pages (Agent vs Editor) feel disconnected | Low | "Open in Editor" / "Agent Mode →" buttons provide bidirectional navigation. Shared data (sessions, messages) keeps context. |
 
-## 12. Open Questions
+## 12. Confirmed Design Decisions
 
-1. **Editor session for file ops**: Use a dedicated lightweight session or session-less RPC? Leaning toward session-less RPC for simplicity (editor mode shouldn't require a running agent).
-2. **Project discovery**: Should the project selector show only git repos (like WorkspaceBrowser) or any directory? Decision: show git repos for initial release (reuses WorkspaceBrowser logic).
-3. **File changes by AI while viewing in editor**: How to notify user that the file they're viewing was modified by an AI session? Show a subtle banner "This file was modified by [session name] — [Reload]".
+| # | Decision | Rationale |
+|---|----------|-----------|
+| 1 | **File ops via session-less RPC** | Editor mode shouldn't require a running agent. Directory listing and file reading use direct RPC from hub to CLI on the selected machine. |
+| 2 | **Project selector shows git repos only** | Reuses existing WorkspaceBrowser logic which already lists git repos. Any directory can be reached by typing a path manually (future). |
+| 3 | **AI-modified file notification** | When a file open in the editor is modified by an AI session (via chat in the right panel), show a subtle banner: "This file was modified by [session name] — [Reload]" with a reload button. |
+| 4 | **Terminal is a panel under the editor only** | Terminal sits below the center editor column, with its own tab bar. It does NOT extend into the file tree or sessions+chat panels. The panels on left and right span full height.
