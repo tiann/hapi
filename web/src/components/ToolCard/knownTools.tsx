@@ -478,7 +478,7 @@ export function getToolPresentation(opts: Omit<ToolOpts, 'metadata'> & { metadat
     return {
         icon: <WrenchIcon className={DEFAULT_ICON_CLASS} />,
         title: opts.toolName,
-        subtitle: subtitle ? truncate(subtitle, 80) : null,
+        subtitle: subtitle && subtitle !== opts.toolName ? truncate(subtitle, 80) : null,
         minimal: true
     }
 }
