@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { basicSetup, EditorView } from 'codemirror'
 import { oneDark } from '@codemirror/theme-one-dark'
 import { javascript } from '@codemirror/lang-javascript'
@@ -77,7 +77,8 @@ function getFileExtensionLabel(filePath: string): string {
 function useCodeMirror(
     containerRef: React.RefObject<HTMLDivElement | null>,
     content: string | null,
-    filePath: string | null
+    filePath: string | null,
+    onChange?: (content: string) => void
 ): void {
     const viewRef = useRef<EditorView | null>(null)
     const contentReady = content !== null
@@ -96,7 +97,12 @@ function useCodeMirror(
             basicSetup,
             oneDark,
             editorScrollTheme,
-            EditorView.editable.of(false),
+            EditorView.editable.of(true),
+            EditorView.updateListener.of((update) => {
+                if (update.docChanged) {
+                    onChange?.(update.state.doc.toString())
+                }
+            }),
         ]
         if (langExt) {
             extensions.push(langExt)
@@ -116,7 +122,7 @@ function useCodeMirror(
                 viewRef.current = null
             }
         }
-    }, [containerRef, filePath, contentReady])
+    }, [containerRef, filePath, contentReady, onChange])
 
     useEffect(() => {
         const view = viewRef.current
@@ -137,11 +143,23 @@ function useCodeMirror(
 function FileTabContent(props: {
     api: ApiClient | null
     machineId: string | null
+    tabId: string
     filePath: string
+    onContentLoaded: (tabId: string, content: string) => void
+    onContentChanged: (tabId: string, content: string) => void
 }) {
     const containerRef = useRef<HTMLDivElement>(null)
     const { content, isLoading, error } = useEditorFile(props.api, props.machineId, props.filePath)
-    useCodeMirror(containerRef, content, props.filePath)
+    const handleChange = useCallback((nextContent: string) => {
+        props.onContentChanged(props.tabId, nextContent)
+    }, [props.onContentChanged, props.tabId])
+    useCodeMirror(containerRef, content, props.filePath, handleChange)
+
+    useEffect(() => {
+        if (content !== null) {
+            props.onContentLoaded(props.tabId, content)
+        }
+    }, [content, props.onContentLoaded, props.tabId])
 
     if (isLoading) {
         return (
@@ -170,11 +188,75 @@ export function EditorTabs(props: {
     onSelectTab: (tabId: string) => void
     onCloseTab: (tabId: string) => void
     onOpenTerminal: () => void
+    onDirtyChange?: (tabId: string, dirty: boolean) => void
+    onSaveFile?: (path: string, content: string) => Promise<void>
 }) {
+    const fileContentsRef = useRef<Map<string, string>>(new Map())
+    const [savingTabId, setSavingTabId] = useState<string | null>(null)
+    const [saveError, setSaveError] = useState<string | null>(null)
     const activeTab = useMemo(
         () => props.tabs.find((tab) => tab.id === props.activeTabId) ?? null,
         [props.activeTabId, props.tabs]
     )
+
+    useEffect(() => {
+        const openTabIds = new Set(props.tabs.map((tab) => tab.id))
+        for (const tabId of fileContentsRef.current.keys()) {
+            if (!openTabIds.has(tabId)) {
+                fileContentsRef.current.delete(tabId)
+            }
+        }
+    }, [props.tabs])
+
+    const handleContentLoaded = useCallback((tabId: string, content: string) => {
+        if (!fileContentsRef.current.has(tabId)) {
+            fileContentsRef.current.set(tabId, content)
+        }
+    }, [])
+
+    const handleContentChanged = useCallback((tabId: string, content: string) => {
+        fileContentsRef.current.set(tabId, content)
+        props.onDirtyChange?.(tabId, true)
+    }, [props.onDirtyChange])
+
+    const saveActiveFile = useCallback(async () => {
+        if (!activeTab || activeTab.type !== 'file' || !activeTab.path || !activeTab.dirty) {
+            return
+        }
+
+        const content = fileContentsRef.current.get(activeTab.id) ?? ''
+        const saveFile = props.onSaveFile ?? (async (path: string, nextContent: string) => {
+            if (!props.api || !props.machineId) {
+                throw new Error('Cannot save file: API or machine is not available')
+            }
+            const response = await props.api.writeEditorFile(props.machineId, path, nextContent)
+            if (!response.success) {
+                throw new Error(response.error ?? 'Failed to save file')
+            }
+        })
+
+        setSavingTabId(activeTab.id)
+        setSaveError(null)
+        try {
+            await saveFile(activeTab.path, content)
+            props.onDirtyChange?.(activeTab.id, false)
+        } catch (error) {
+            setSaveError(error instanceof Error ? error.message : 'Failed to save file')
+        } finally {
+            setSavingTabId(null)
+        }
+    }, [activeTab, props])
+
+    useEffect(() => {
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
+                event.preventDefault()
+                void saveActiveFile()
+            }
+        }
+        window.addEventListener('keydown', handleKeyDown)
+        return () => window.removeEventListener('keydown', handleKeyDown)
+    }, [saveActiveFile])
 
     return (
         <div data-testid="editor-tabs-root" className="flex h-full min-h-0 flex-col overflow-hidden">
@@ -203,6 +285,9 @@ export function EditorTabs(props: {
                             {tab.type === 'file' && tab.path && <FileIcon fileName={tab.path} size={13} />}
                             {tab.type === 'terminal' && <span aria-hidden="true">💻</span>}
                             <span className="truncate max-w-[160px]">{tab.label}</span>
+                            {tab.type === 'file' && tab.dirty && (
+                                <span className="text-[#f59e0b]" aria-label={`${tab.label} has unsaved changes`}>●</span>
+                            )}
                             <button
                                 type="button"
                                 aria-label={`Close tab ${tab.label}`}
@@ -236,6 +321,18 @@ export function EditorTabs(props: {
                 <span className="flex-1" />
                 {activeTab?.type === 'file' && activeTab.path && (
                     <div className="flex items-center gap-2 px-3 text-[10px] text-[var(--app-hint)] border-l border-[var(--app-border)]">
+                        {activeTab.dirty && (
+                            <button
+                                type="button"
+                                aria-label={`Save ${activeTab.label}`}
+                                className="rounded border border-[var(--app-border)] px-2 py-0.5 text-[var(--app-fg)] hover:bg-[var(--app-subtle-bg)] disabled:opacity-50"
+                                disabled={savingTabId === activeTab.id}
+                                onClick={() => { void saveActiveFile() }}
+                            >
+                                {savingTabId === activeTab.id ? 'Saving...' : 'Save'}
+                            </button>
+                        )}
+                        {saveError && <span className="text-red-500">{saveError}</span>}
                         {getFileExtensionLabel(activeTab.path)}
                     </div>
                 )}
@@ -246,7 +343,10 @@ export function EditorTabs(props: {
                     <FileTabContent
                         api={props.api}
                         machineId={props.machineId}
+                        tabId={activeTab.id}
                         filePath={activeTab.path}
+                        onContentLoaded={handleContentLoaded}
+                        onContentChanged={handleContentChanged}
                     />
                 )}
                 {activeTab?.type === 'file' && !props.machineId && (

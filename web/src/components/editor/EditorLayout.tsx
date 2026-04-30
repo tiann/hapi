@@ -113,6 +113,7 @@ export function EditorLayout(props: {
                             onSelectTab={editor.setActiveTabId}
                             onCloseTab={editor.closeTab}
                             onOpenTerminal={editor.openTerminal}
+                            onDirtyChange={editor.setTabDirty}
                         />
                     </div>
                     <div

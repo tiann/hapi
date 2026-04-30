@@ -5,14 +5,37 @@ import type { EditorTab } from '@/hooks/useEditorState'
 import { EditorTabs } from './EditorTabs'
 
 const cmMocks = vi.hoisted(() => ({
-    editorViews: [] as Array<{ doc: string; destroyed: boolean; dispatch: ReturnType<typeof vi.fn> }>,
-    EditorView: vi.fn(function EditorView(this: { state: { doc: { toString: () => string; length: number } }; destroy: () => void; dispatch: ReturnType<typeof vi.fn> }, config: { doc?: string; parent?: Element }) {
+    editorViews: [] as Array<{
+        doc: string
+        destroyed: boolean
+        dispatch: ReturnType<typeof vi.fn>
+        simulateChange: (content: string) => void
+    }>,
+    editableOf: vi.fn((value: boolean) => ({ type: 'editable', value })),
+    updateListenerOf: vi.fn((callback: (update: { docChanged: boolean; state: { doc: { toString: () => string } } }) => void) => ({ type: 'update-listener', callback })),
+    EditorView: vi.fn(function EditorView(this: { state: { doc: { toString: () => string; length: number } }; destroy: () => void; dispatch: ReturnType<typeof vi.fn> }, config: { doc?: string; parent?: Element; extensions?: unknown[] }) {
         const view = {
             doc: config.doc ?? '',
             destroyed: false,
             dispatch: vi.fn((payload: { changes?: { insert?: string } }) => {
                 view.doc = payload.changes?.insert ?? view.doc
-            })
+            }),
+            simulateChange: (content: string) => {
+                view.doc = content
+                const update = {
+                    docChanged: true,
+                    state: {
+                        doc: {
+                            toString: () => content
+                        }
+                    }
+                }
+                for (const extension of config.extensions ?? []) {
+                    if (extension && typeof extension === 'object' && 'type' in extension && extension.type === 'update-listener') {
+                        (extension as unknown as { callback: (next: typeof update) => void }).callback(update)
+                    }
+                }
+            }
         }
         cmMocks.editorViews.push(view)
         if (config.parent) {
@@ -39,9 +62,11 @@ const cmMocks = vi.hoisted(() => ({
 vi.mock('codemirror', () => {
     const editorView = cmMocks.EditorView as typeof cmMocks.EditorView & {
         editable: { of: ReturnType<typeof vi.fn> }
+        updateListener: { of: ReturnType<typeof vi.fn> }
         theme: ReturnType<typeof vi.fn>
     }
-    editorView.editable = { of: vi.fn(() => 'editable-extension') }
+    editorView.editable = { of: cmMocks.editableOf }
+    editorView.updateListener = { of: cmMocks.updateListenerOf }
     editorView.theme = vi.fn(() => 'editor-theme')
     return {
         basicSetup: 'basic-setup',
@@ -73,6 +98,8 @@ describe('EditorTabs', () => {
     beforeEach(() => {
         vi.clearAllMocks()
         cmMocks.editorViews.length = 0
+        cmMocks.editableOf.mockClear()
+        cmMocks.updateListenerOf.mockClear()
         useEditorFileMock.mockReturnValue({ content: 'console.log("hi")', error: null, isLoading: false, refetch: vi.fn() })
     })
 
@@ -124,7 +151,7 @@ describe('EditorTabs', () => {
         expect(onOpenTerminal).toHaveBeenCalled()
     })
 
-    it('loads active file content into a read-only CodeMirror view', async () => {
+    it('loads active file content into an editable CodeMirror view', async () => {
         const api = {} as ApiClient
 
         render(
@@ -146,7 +173,101 @@ describe('EditorTabs', () => {
         expect(cmMocks.editorViews[0].doc).toBe('console.log("hi")')
         expect(screen.getByTestId('codemirror-view')).toBeInTheDocument()
         expect(screen.getByText('TSX')).toBeInTheDocument()
+        expect(cmMocks.editableOf).toHaveBeenCalledWith(true)
         expect(cmMocks.language).toHaveBeenCalledWith('javascript', { jsx: true, typescript: true })
+    })
+
+    it('marks the active file tab dirty when CodeMirror content changes', async () => {
+        const onDirtyChange = vi.fn()
+
+        render(
+            <EditorTabs
+                api={{} as ApiClient}
+                machineId="machine-1"
+                tabs={tabs}
+                activeTabId="tab-file"
+                onSelectTab={vi.fn()}
+                onCloseTab={vi.fn()}
+                onOpenTerminal={vi.fn()}
+                onDirtyChange={onDirtyChange}
+            />
+        )
+
+        await waitFor(() => {
+            expect(cmMocks.editorViews[0]).toBeDefined()
+        })
+        cmMocks.editorViews[0].simulateChange('console.log("changed")')
+
+        expect(onDirtyChange).toHaveBeenCalledWith('tab-file', true)
+    })
+
+    it('shows a dirty marker and save button for dirty file tabs', () => {
+        render(
+            <EditorTabs
+                api={{} as ApiClient}
+                machineId="machine-1"
+                tabs={[{ ...tabs[0], dirty: true }]}
+                activeTabId="tab-file"
+                onSelectTab={vi.fn()}
+                onCloseTab={vi.fn()}
+                onOpenTerminal={vi.fn()}
+            />
+        )
+
+        expect(screen.getByText('●')).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: 'Save App.tsx' })).toBeInTheDocument()
+    })
+
+    it('saves the active file with Ctrl+S and clears dirty state on success', async () => {
+        const onSaveFile = vi.fn(async () => {})
+        const onDirtyChange = vi.fn()
+
+        render(
+            <EditorTabs
+                api={{} as ApiClient}
+                machineId="machine-1"
+                tabs={[{ ...tabs[0], dirty: true }]}
+                activeTabId="tab-file"
+                onSelectTab={vi.fn()}
+                onCloseTab={vi.fn()}
+                onOpenTerminal={vi.fn()}
+                onDirtyChange={onDirtyChange}
+                onSaveFile={onSaveFile}
+            />
+        )
+
+        await waitFor(() => {
+            expect(cmMocks.editorViews[0]).toBeDefined()
+        })
+        fireEvent.keyDown(window, { key: 's', ctrlKey: true })
+
+        await waitFor(() => {
+            expect(onSaveFile).toHaveBeenCalledWith('/repo/src/App.tsx', 'console.log("hi")')
+        })
+        expect(onDirtyChange).toHaveBeenCalledWith('tab-file', false)
+    })
+
+    it('shows a save error when saving fails', async () => {
+        const onSaveFile = vi.fn(async () => {
+            throw new Error('disk full')
+        })
+
+        render(
+            <EditorTabs
+                api={{} as ApiClient}
+                machineId="machine-1"
+                tabs={[{ ...tabs[0], dirty: true }]}
+                activeTabId="tab-file"
+                onSelectTab={vi.fn()}
+                onCloseTab={vi.fn()}
+                onOpenTerminal={vi.fn()}
+                onSaveFile={onSaveFile}
+            />
+        )
+
+        fireEvent.click(screen.getByRole('button', { name: 'Save App.tsx' }))
+
+        expect(await screen.findByText('disk full')).toBeInTheDocument()
     })
 
     it('keeps the editor viewport constrained so CodeMirror owns scrolling', async () => {
