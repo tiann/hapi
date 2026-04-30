@@ -5,7 +5,10 @@ import { EditorLayout } from './EditorLayout'
 
 const mocks = vi.hoisted(() => ({
     createSession: vi.fn(),
-    lastNewSessionArgs: null as null | { onCreated: (sessionId: string) => void }
+    lastNewSessionArgs: null as null | { onCreated: (sessionId: string) => void },
+    onLeftResizePointerDown: vi.fn(),
+    onRightResizePointerDown: vi.fn(),
+    onTerminalResizePointerDown: vi.fn()
 }))
 
 vi.mock('./EditorHeader', () => ({
@@ -79,6 +82,17 @@ vi.mock('@/hooks/mutations/useEditorNewSession', () => ({
     }
 }))
 
+vi.mock('@/hooks/useEditorPaneResize', () => ({
+    useEditorPaneResize: () => ({
+        leftWidth: 321,
+        rightWidth: 432,
+        terminalHeight: 210,
+        onLeftResizePointerDown: mocks.onLeftResizePointerDown,
+        onRightResizePointerDown: mocks.onRightResizePointerDown,
+        onTerminalResizePointerDown: mocks.onTerminalResizePointerDown
+    })
+}))
+
 describe('EditorLayout', () => {
     beforeEach(() => {
         vi.clearAllMocks()
@@ -98,6 +112,22 @@ describe('EditorLayout', () => {
         expect(screen.getByTestId('editor-terminal')).toBeInTheDocument()
         expect(screen.getByTestId('editor-session-list')).toBeInTheDocument()
         expect(screen.getByTestId('editor-chat-panel')).toBeInTheDocument()
+    })
+
+    it('wires pane resize sizes and handlers', () => {
+        render(<EditorLayout api={{} as ApiClient} initialMachineId="machine-1" initialProjectPath="/repo" />)
+
+        expect(screen.getByTestId('editor-file-tree').closest('aside')).toHaveStyle({ width: '321px' })
+        expect(screen.getByTestId('editor-session-list').closest('aside')).toHaveStyle({ width: '432px' })
+        expect(screen.getByTestId('editor-terminal').parentElement).toHaveStyle({ height: '210px' })
+
+        fireEvent.pointerDown(screen.getByRole('separator', { name: 'Resize file tree' }))
+        fireEvent.pointerDown(screen.getByRole('separator', { name: 'Resize sessions panel' }))
+        fireEvent.pointerDown(screen.getByRole('separator', { name: 'Resize terminal panel' }))
+
+        expect(mocks.onLeftResizePointerDown).toHaveBeenCalledTimes(1)
+        expect(mocks.onRightResizePointerDown).toHaveBeenCalledTimes(1)
+        expect(mocks.onTerminalResizePointerDown).toHaveBeenCalledTimes(1)
     })
 
     it('opens files from the tree into editor tabs', () => {

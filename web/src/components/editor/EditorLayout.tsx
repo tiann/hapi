@@ -1,6 +1,7 @@
 import { useCallback, useRef, useState } from 'react'
 import type { ApiClient } from '@/api/client'
 import { appendEditorChatDraft } from '@/lib/editor-chat-draft'
+import { useEditorPaneResize } from '@/hooks/useEditorPaneResize'
 import { useEditorState } from '@/hooks/useEditorState'
 import { useEditorNewSession } from '@/hooks/mutations/useEditorNewSession'
 import { EditorChatPanel } from './EditorChatPanel'
@@ -17,6 +18,7 @@ export function EditorLayout(props: {
     initialProjectPath?: string
 }) {
     const editor = useEditorState(props.initialMachineId, props.initialProjectPath)
+    const panes = useEditorPaneResize()
     const [pendingDraftText, setPendingDraftText] = useState<string | undefined>(undefined)
     const pendingFileAfterSessionRef = useRef<string | null>(null)
 
@@ -85,7 +87,7 @@ export function EditorLayout(props: {
             />
 
             <div className="flex min-h-0 flex-1">
-                <aside className="min-h-0 shrink-0 border-r border-[var(--app-border)]" style={{ width: 260 }}>
+                <aside className="min-h-0 shrink-0 border-r border-[var(--app-border)]" style={{ width: panes.leftWidth }}>
                     <EditorFileTree
                         api={props.api}
                         machineId={editor.machineId}
@@ -94,6 +96,12 @@ export function EditorLayout(props: {
                         onContextMenu={editor.showContextMenu}
                     />
                 </aside>
+                <div
+                    role="separator"
+                    aria-label="Resize file tree"
+                    className="w-1 shrink-0 cursor-col-resize hover:bg-[var(--app-border)]"
+                    onPointerDown={panes.onLeftResizePointerDown}
+                />
 
                 <main className="flex min-w-0 flex-1 flex-col">
                     <div className="min-h-0 flex-1">
@@ -107,7 +115,13 @@ export function EditorLayout(props: {
                             onOpenTerminal={editor.openTerminal}
                         />
                     </div>
-                    <div className="shrink-0" style={{ height: 160 }}>
+                    <div
+                        role="separator"
+                        aria-label="Resize terminal panel"
+                        className="h-1 shrink-0 cursor-row-resize hover:bg-[var(--app-border)]"
+                        onPointerDown={panes.onTerminalResizePointerDown}
+                    />
+                    <div className="shrink-0" style={{ height: panes.terminalHeight }}>
                         <EditorTerminal
                             tabs={editor.tabs}
                             activeTabId={editor.activeTabId}
@@ -118,7 +132,13 @@ export function EditorLayout(props: {
                     </div>
                 </main>
 
-                <aside className="flex min-h-0 shrink-0 flex-col border-l border-[var(--app-border)]" style={{ width: 380 }}>
+                <div
+                    role="separator"
+                    aria-label="Resize sessions panel"
+                    className="w-1 shrink-0 cursor-col-resize hover:bg-[var(--app-border)]"
+                    onPointerDown={panes.onRightResizePointerDown}
+                />
+                <aside className="flex min-h-0 shrink-0 flex-col border-l border-[var(--app-border)]" style={{ width: panes.rightWidth }}>
                     <div className="min-h-0 flex-[0_0_220px]">
                         <EditorSessionList
                             api={props.api}
