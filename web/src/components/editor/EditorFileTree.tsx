@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState, type MouseEvent } from 'react'
+import { useCallback, useEffect, useMemo, useState, type MouseEvent } from 'react'
 import type { ApiClient } from '@/api/client'
 import type { EditorDirectoryResponse } from '@/types/api'
 import { FileIcon } from '@/components/FileIcon'
@@ -194,7 +194,13 @@ export function EditorFileTree(props: {
     onOpenFile: (filePath: string) => void
     onContextMenu: (filePath: string, x: number, y: number) => void
 }) {
-    const [expanded, setExpanded] = useState<Set<string>>(new Set())
+    const [expanded, setExpanded] = useState<Set<string>>(() => (
+        props.projectPath ? new Set([props.projectPath]) : new Set()
+    ))
+
+    useEffect(() => {
+        setExpanded(props.projectPath ? new Set([props.projectPath]) : new Set())
+    }, [props.projectPath])
 
     const handleToggle = useCallback((path: string) => {
         setExpanded((prev) => {

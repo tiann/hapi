@@ -57,7 +57,7 @@ describe('EditorFileTree', () => {
         expect(useProjectDirectoryMock).not.toHaveBeenCalled()
     })
 
-    it('renders project root and lazy-loads children when expanded', () => {
+    it('renders project root expanded by default', () => {
         const api = {} as ApiClient
         render(
             <EditorFileTree
@@ -70,10 +70,6 @@ describe('EditorFileTree', () => {
         )
 
         expect(screen.getAllByText('repo').length).toBeGreaterThan(0)
-        expect(screen.queryByText('README.md')).not.toBeInTheDocument()
-
-        fireEvent.click(screen.getByRole('button', { name: 'Toggle directory repo' }))
-
         expect(screen.getByText('README.md')).toBeInTheDocument()
         expect(screen.getByText('src')).toBeInTheDocument()
         expect(useProjectDirectoryMock).toHaveBeenCalledWith(api, 'machine-1', '/repo')
@@ -91,7 +87,6 @@ describe('EditorFileTree', () => {
             />
         )
 
-        fireEvent.click(screen.getByRole('button', { name: 'Toggle directory repo' }))
         fireEvent.click(screen.getByRole('button', { name: 'Open file README.md' }))
         expect(onOpenFile).toHaveBeenCalledWith('/repo/README.md')
 
@@ -112,7 +107,6 @@ describe('EditorFileTree', () => {
             />
         )
 
-        fireEvent.click(screen.getByRole('button', { name: 'Toggle directory repo' }))
         expect(screen.getByTitle('modified')).toBeInTheDocument()
 
         fireEvent.contextMenu(screen.getByRole('button', { name: 'Open file README.md' }), {
