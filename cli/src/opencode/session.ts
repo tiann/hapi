@@ -73,6 +73,10 @@ export class OpencodeSession extends AgentSessionBase<OpencodeMode> {
         this.permissionMode = mode;
     };
 
+    setModel = (model: string | null): void => {
+        this.model = model;
+    };
+
     recordLocalLaunchFailure = (message: string, exitReason: LocalLaunchExitReason): void => {
         this.localLaunchFailure = { message, exitReason };
     };

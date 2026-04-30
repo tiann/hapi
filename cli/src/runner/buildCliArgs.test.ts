@@ -51,6 +51,15 @@ describe('buildCliArgs', () => {
         expect(args).not.toContain('--permission-mode')
     })
 
+    it('passes --model through for opencode (mid-session model change support)', () => {
+        const args = buildCliArgs('opencode', {
+            directory: '/tmp',
+            model: 'ollama/exaone:4.5-33b-q8',
+        })
+        expect(args).toContain('--model')
+        expect(args).toContain('ollama/exaone:4.5-33b-q8')
+    })
+
     it('validates all known permission modes', () => {
         for (const mode of ['default', 'acceptEdits', 'bypassPermissions', 'plan', 'ask', 'read-only', 'safe-yolo', 'yolo']) {
             const args = buildCliArgs('claude', {

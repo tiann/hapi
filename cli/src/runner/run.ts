@@ -925,7 +925,7 @@ export function buildCliArgs(
     }
   }
   args.push('--hapi-starting-mode', 'remote', '--started-by', 'runner');
-  if (options.model && agent !== 'opencode') {
+  if (options.model) {
     args.push('--model', options.model);
   }
   if (options.effort && agent === 'claude') {
