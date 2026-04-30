@@ -23,6 +23,17 @@ type PushPayload = {
 
 precacheAndRoute(self.__WB_MANIFEST)
 
+// Force the new service worker to take over immediately instead of waiting
+// for all tabs to close. This ensures PWA installs on mobile always get
+// the latest version after a deployment.
+self.addEventListener('install', () => {
+    void self.skipWaiting()
+})
+
+self.addEventListener('activate', (event) => {
+    event.waitUntil(self.clients.claim())
+})
+
 registerRoute(
     ({ url }) => url.pathname === '/api/sessions',
     new NetworkFirst({

@@ -309,6 +309,10 @@ export class SyncEngine {
     ): Promise<void> {
         await this.messageService.sendMessage(sessionId, payload)
         this.sessionCache.markMessageQueued(sessionId)
+        // Best-effort: persist last user request for title fallback (non-critical)
+        if (payload.text.trim()) {
+            this.sessionCache.updateLastUserRequest(sessionId, payload.text.trim())
+        }
     }
 
     async approvePermission(

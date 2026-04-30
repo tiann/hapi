@@ -14,6 +14,7 @@ import { clearDraftsAfterSend } from '@/lib/clearDraftsAfterSend'
 import { SessionChat } from '@/components/SessionChat'
 import type { ApiClient } from '@/api/client'
 import type { SessionSummary, AttachmentMetadata } from '@/types/api'
+import { useTranslation } from '@/lib/use-translation'
 import './dashboard.css'
 
 // ─── Icons ────────────────────────────────────────────────────────────────────
@@ -85,8 +86,10 @@ function getProjectName(session: SessionSummary): string {
 }
 
 function getSessionTitle(session: SessionSummary): string {
+    // Priority: user/agent-set name > AI summary > last user request (truncated) > session ID
     if (session.metadata?.name) return session.metadata.name
     if (session.metadata?.summary?.text) return session.metadata.summary.text.substring(0, 60)
+    if (session.metadata?.lastUserRequest) return session.metadata.lastUserRequest.substring(0, 60)
     return `Session ${session.id.substring(0, 6)}`
 }
 
@@ -140,6 +143,7 @@ interface PinnedPanelProps {
 }
 
 function PinnedPanel({ sessionId, api, onUnpin, onSessionResolved, pinIndex, compact, isActive, onFocus }: PinnedPanelProps) {
+    const { t } = useTranslation()
     const queryClient = useQueryClient()
     const { session, refetch: refetchSession } = useSession(api, sessionId)
     const {
@@ -206,7 +210,7 @@ function PinnedPanel({ sessionId, api, onUnpin, onSessionResolved, pinIndex, com
     if (!session) {
         return (
             <div className="db-pinned db-pinned--loading">
-                <div className="db-pinned__log-hint">Loading session…</div>
+                <div className="db-pinned__log-hint">{t('dashboard.loading')}</div>
             </div>
         )
     }
@@ -264,6 +268,7 @@ interface SessionCardProps {
 }
 
 function SessionCard({ session, status, isPinned, pinIndex, pinDisabled, compact, isAddedArchived, isHighlighted, onSelect, onDetach, onFocusCapture }: SessionCardProps) {
+    const { t } = useTranslation()
     const agent = getAgentLabel(session)
     const elapsed = formatElapsed(session.updatedAt)
     const title = getSessionTitle(session)
@@ -298,7 +303,7 @@ function SessionCard({ session, status, isPinned, pinIndex, pinDisabled, compact
             tabIndex={0}
             onFocusCapture={onFocusCapture}
             onKeyDown={(e) => { if (e.key === 'Enter') onSelect() }}
-            title={isPinned ? 'Click to unpin' : 'Click to pin & chat'}
+            title={isPinned ? t('dashboard.clickToUnpin') : t('dashboard.clickToPin')}
         >
             <div className={`db-card__glow-bar db-card__glow-bar--${status}`} />
 
@@ -312,7 +317,7 @@ function SessionCard({ session, status, isPinned, pinIndex, pinDisabled, compact
                     type="button"
                     className="db-card__detach"
                     onClick={e => { e.stopPropagation(); onDetach() }}
-                    title="Remove from dashboard"
+                    title={t('dashboard.removeFromDashboard')}
                 >
                     <XIcon />
                 </button>
@@ -326,7 +331,7 @@ function SessionCard({ session, status, isPinned, pinIndex, pinDisabled, compact
                         type="button"
                         className={`db-card__pin-btn ${isPinned ? 'db-card__pin-btn--active' : ''}`}
                         onClick={e => { e.stopPropagation(); onSelect(e) }}
-                        title={isPinned ? 'Unpin session' : 'Pin session'}
+                        title={isPinned ? t('dashboard.unpinSession') : t('dashboard.pinSession')}
                     >
                         <PinIcon filled={isPinned} />
                     </button>
@@ -340,7 +345,7 @@ function SessionCard({ session, status, isPinned, pinIndex, pinDisabled, compact
                     {status === 'thinking' && (
                         <div className="db-card__thinking">
                             <span className="thinking-dot" /><span className="thinking-dot" /><span className="thinking-dot" />
-                            <span className="db-card__thinking-label">Thinking</span>
+                            <span className="db-card__thinking-label">{t('dashboard.thinking')}</span>
                             {requestDuration && (
                                 <span className="db-card__thinking-dur" title="Time since request sent">
                                     {requestDuration}
@@ -354,7 +359,7 @@ function SessionCard({ session, status, isPinned, pinIndex, pinDisabled, compact
                         </div>
                     )}
                     {status === 'waiting' && (
-                        <span className="db-status-badge db-status-badge--waiting">⚠ Waiting</span>
+                        <span className="db-status-badge db-status-badge--waiting">{t('dashboard.waiting')}</span>
                     )}
                     {status === 'done' && <span className="db-status-badge db-status-badge--done">✓ Done</span>}
                     {status === 'error' && <span className="db-status-badge db-status-badge--error">✕ Error</span>}
@@ -397,6 +402,7 @@ interface PinnedSessionContextMenuProps {
 }
 
 function PinnedSessionContextMenu({ sessionTitle, x, y, onFocus, onUnpin, onCancel }: PinnedSessionContextMenuProps) {
+    const { t } = useTranslation()
     const menuRef = useRef<HTMLDivElement>(null)
     const [pos, setPos] = useState({ left: x, top: y })
 
@@ -450,7 +456,7 @@ function PinnedSessionContextMenu({ sessionTitle, x, y, onFocus, onUnpin, onCanc
                 onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
                 onClick={onFocus}
             >
-                Focus Session
+                {t('dashboard.focus')}
             </button>
             <button 
                 type="button"
@@ -459,7 +465,7 @@ function PinnedSessionContextMenu({ sessionTitle, x, y, onFocus, onUnpin, onCanc
                 onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
                 onClick={onUnpin}
             >
-                Unpin Session
+                {t('dashboard.unpinSession')}
             </button>
         </div>
     )
@@ -475,18 +481,19 @@ interface ReplacePinModalProps {
 }
 
 function ReplacePinModal({ sessionToPinId, pinnedSessions, onReplace, onCancel }: ReplacePinModalProps) {
+    const { t } = useTranslation()
     return (
         <div className="db-modal-overlay" onClick={onCancel}>
             <div className="db-modal" onClick={e => e.stopPropagation()}>
                 <div className="db-modal__header">
-                    <h2 className="db-modal__title">Replace Pinned Session</h2>
+                    <h2 className="db-modal__title">{t('dashboard.replacePinTitle')}</h2>
                     <button type="button" className="db-modal__close" onClick={onCancel}>
                         <XIcon />
                     </button>
                 </div>
                 <div className="db-modal__body">
                     <p style={{ fontSize: 13, color: 'var(--app-hint)', marginBottom: 12, lineHeight: 1.5 }}>
-                        You have reached the maximum of 4 pinned sessions. Select a session to unpin and replace:
+                        {t('dashboard.replacePinBody')}
                     </p>
                     <div className="db__replace-pin-list" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                         {pinnedSessions.map((session, idx) => (
@@ -706,6 +713,7 @@ interface DashboardProps {
 }
 
 export function Dashboard({ api, initialPinnedIds }: DashboardProps) {
+    const { t } = useTranslation()
     const queryClient = useQueryClient()
     const navigate = useNavigate()
     const search = useSearch({ strict: false }) as RootSearch
@@ -1005,7 +1013,7 @@ export function Dashboard({ api, initialPinnedIds }: DashboardProps) {
                     <button
                         type="button"
                         className="db__topbar-btn"
-                        title="Browse workspace"
+                        title={t('dashboard.browseWorkspace')}
                         onClick={() => void navigate({ search: (prev: any) => ({ ...prev, modal: 'browser' }) } as any)}
                     >
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
@@ -1014,7 +1022,7 @@ export function Dashboard({ api, initialPinnedIds }: DashboardProps) {
                     <button
                         type="button"
                         className="db__topbar-btn"
-                        title="Settings"
+                        title={t('dashboard.settings')}
                         onClick={() => void navigate({ search: (prev: any) => ({ ...prev, modal: 'settings' }) } as any)}
                     >
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
@@ -1023,7 +1031,7 @@ export function Dashboard({ api, initialPinnedIds }: DashboardProps) {
                     <button
                         type="button"
                         className="db__topbar-btn db__topbar-btn--primary"
-                        title="New session"
+                        title={t('dashboard.newSession')}
                         onClick={() => void navigate({ search: (prev: any) => ({ ...prev, modal: 'new-session' }) } as any)}
                     >
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
@@ -1046,12 +1054,14 @@ export function Dashboard({ api, initialPinnedIds }: DashboardProps) {
                         type="button"
                         className="db__pin-tab db__pin-tab--overview-trigger"
                         onClick={() => setShowOverviewDrawer(true)}
-                        title="View all sessions"
+                        title={t('dashboard.viewAllSessions')}
                     >
                         {thinkingCount > 0 && <span className="db-card__dot db-card__dot--thinking" />}
                         {waitingCount > 0 && <span className="db-card__dot db-card__dot--waiting" />}
                         {thinkingCount === 0 && waitingCount === 0 && doneCount > 0 && <span className="db-card__dot db-card__dot--done" />}
-                        <span className="db__pin-tab-title">All {sessions.length}</span>
+                        {/* Short label on mobile, full label on desktop */}
+                        <span className="db__pin-tab-label--short">{t('dashboard.allSessionsShort', { n: sessions.length })}</span>
+                        <span className="db__pin-tab-label--long">{t('dashboard.allSessions', { n: sessions.length })}</span>
                     </button>
 
                     {pinnedIds.map((id, idx) => {
@@ -1123,7 +1133,7 @@ export function Dashboard({ api, initialPinnedIds }: DashboardProps) {
                         {pinnedSessions.length === 3 && (
                             <div className="db__pinned-placeholder">
                                 <div className="db__pinned-placeholder-header">
-                                    <span className="db__pinned-placeholder-title">Select 4th session to pin</span>
+                                    <span className="db__pinned-placeholder-title">{t('dashboard.selectToPin', { n: 4, suffix: 'th' })}</span>
                                 </div>
                                 <div className="db__pinned-placeholder-content app-scroll-y">
                                     <div className="db__groups db__groups--compact">
@@ -1167,7 +1177,7 @@ export function Dashboard({ api, initialPinnedIds }: DashboardProps) {
                 {/* Session card grid — sidebar when 1-2 pins, hidden when 3-4 pins */}
                 {(pinCount === 0 || hasOverflowSidebar) && (
                     <div className={`db__grid-area ${hasPins ? 'db__grid-area--sidebar' : ''}`}>
-                        {isLoading && <div className="db__loading">Loading sessions…</div>}
+                        {isLoading && <div className="db__loading">{t('dashboard.loadingSessions')}</div>}
 
                         {!isLoading && visibleSessions.length === 0 && !hasPins && (
                             <div className="db__empty">
@@ -1195,34 +1205,36 @@ export function Dashboard({ api, initialPinnedIds }: DashboardProps) {
                                                     <span className="db__group-count">{groupSessions.length}</span>
                                                 </div>
                                                 <div className="db__group-actions">
-                                                    <button type="button" className="db__group-action" title={`New session in ${project}`} onClick={() => handleNewInGroup(groupSessions)}>
+                                                    <button type="button" className="db__group-action" title={t('dashboard.newSessionIn', { project })} onClick={() => handleNewInGroup(groupSessions)}>
                                                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
                                                         <span className="db__label">New</span>
                                                     </button>
-                                                    <button type="button" className="db__group-action" title="Copy project path" onClick={() => handleCopyPath(project, groupSessions)}>
+                                                    <button type="button" className="db__group-action" title={t('dashboard.copyPath')} onClick={() => handleCopyPath(project, groupSessions)}>
                                                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
                                                         <span className="db__label">Copy Path</span>
                                                     </button>
                                                     {pendingConfirm?.project === project ? (
                                                         <div className={`db__inline-confirm ${pendingConfirm.action === 'delete' ? 'db__inline-confirm--danger' : ''}`}>
                                                             <span className="db__inline-confirm-text">
-                                                                {pendingConfirm.action === 'archive' ? `Archive ${pendingConfirm.targetSessions.length} session(s)?` : `Delete ${pendingConfirm.targetSessions.length} archived session(s)?`}
+                                                                {pendingConfirm.action === 'archive'
+                                                                    ? t('dashboard.confirmArchive', { n: pendingConfirm.targetSessions.length })
+                                                                    : t('dashboard.confirmDelete', { n: pendingConfirm.targetSessions.length })}
                                                             </span>
-                                                            <button type="button" className="db__inline-confirm-yes" onClick={() => void handleExecuteConfirm()}>Confirm</button>
-                                                            <button type="button" className="db__inline-confirm-no" onClick={() => setPendingConfirm(null)}>Cancel</button>
+                                                            <button type="button" className="db__inline-confirm-yes" onClick={() => void handleExecuteConfirm()}>{t('dashboard.confirm')}</button>
+                                                            <button type="button" className="db__inline-confirm-no" onClick={() => setPendingConfirm(null)}>{t('dashboard.cancel')}</button>
                                                         </div>
                                                     ) : (
                                                         <>
                                                             {groupSessions.some(s => s.active) && (
-                                                                <button type="button" className="db__group-action db__group-action--warning" title="Archive all active" onClick={() => handleRequestArchiveAll(project, groupSessions)}>
+                                                                <button type="button" className="db__group-action db__group-action--warning" title={t('dashboard.archiveAllTitle')} onClick={() => handleRequestArchiveAll(project, groupSessions)}>
                                                                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/></svg>
-                                                                    <span className="db__label">Archive All</span>
+                                                                    <span className="db__label">{t('dashboard.archiveAll')}</span>
                                                                 </button>
                                                             )}
                                                             {groupSessions.some(s => !s.active) && (
-                                                                <button type="button" className="db__group-action db__group-action--danger" title="Delete all archived" onClick={() => handleRequestDeleteAll(project, groupSessions)}>
+                                                                <button type="button" className="db__group-action db__group-action--danger" title={t('dashboard.deleteAllTitle')} onClick={() => handleRequestDeleteAll(project, groupSessions)}>
                                                                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
-                                                                    <span className="db__label">Delete Archived</span>
+                                                                    <span className="db__label">{t('dashboard.deleteArchived')}</span>
                                                                 </button>
                                                             )}
                                                         </>
@@ -1265,7 +1277,7 @@ export function Dashboard({ api, initialPinnedIds }: DashboardProps) {
                     <div className="db__overview-overlay" onClick={() => setShowOverviewDrawer(false)}>
                         <div className="db__overview-drawer" onClick={e => e.stopPropagation()}>
                             <div className="db__overview-header">
-                                <span className="db__overview-title">Sessions ({sessions.length})</span>
+                                <span className="db__overview-title">{t('dashboard.sessions', { n: sessions.length })}</span>
                                 <button type="button" className="db__overview-close" onClick={() => setShowOverviewDrawer(false)}><XIcon /></button>
                             </div>
                             {renderMiniSessionList()}

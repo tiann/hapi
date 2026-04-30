@@ -29,6 +29,26 @@ function NewMessagesIndicator(props: { count: number; onClick: () => void }) {
     )
 }
 
+function ScrollToBottomButton(props: { visible: boolean; onClick: () => void }) {
+    const { t } = useTranslation()
+    if (!props.visible) return null
+
+    return (
+        <button
+            type="button"
+            onClick={props.onClick}
+            title={t('misc.scrollToBottom')}
+            aria-label={t('misc.scrollToBottom')}
+            className="absolute bottom-4 right-4 z-10 flex h-8 w-8 items-center justify-center rounded-full border border-[var(--app-border)] bg-[var(--app-secondary-bg)] text-[var(--app-hint)] opacity-70 shadow-md transition-opacity hover:opacity-100"
+        >
+            {/* Down chevron icon */}
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path d="M4 6l4 4 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+        </button>
+    )
+}
+
 function MessageSkeleton() {
     const { t } = useTranslation()
     const rows = [
@@ -442,6 +462,7 @@ export function HappyThread(props: {
                     </div>
                 </ThreadPrimitive.Viewport>
                 <NewMessagesIndicator count={props.pendingCount} onClick={scrollToBottom} />
+                <ScrollToBottomButton visible={!autoScrollEnabled && props.pendingCount === 0} onClick={scrollToBottom} />
                 {props.outlineOpen ? (
                     <>
                         <button

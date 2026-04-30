@@ -458,6 +458,29 @@ export class SessionCache {
         this.refreshSession(sessionId)
     }
 
+    /** Best-effort: store the last user request text for title fallback. Never throws. */
+    updateLastUserRequest(sessionId: string, text: string): void {
+        const session = this.sessions.get(sessionId)
+        if (!session) return
+
+        const truncated = text.slice(0, 120).trimEnd()
+        const currentMetadata = session.metadata ?? { path: '', host: '' }
+        const newMetadata = { ...currentMetadata, lastUserRequest: truncated }
+
+        const result = this.store.sessions.updateSessionMetadata(
+            sessionId,
+            newMetadata,
+            session.metadataVersion,
+            session.namespace,
+            { touchUpdatedAt: false }
+        )
+
+        // Refresh cache on success, but never throw — title is non-critical
+        if (result.result === 'success') {
+            this.refreshSession(sessionId)
+        }
+    }
+
     async deleteSession(sessionId: string): Promise<void> {
         const session = this.sessions.get(sessionId)
         if (!session) {
