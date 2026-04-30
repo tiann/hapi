@@ -1,4 +1,5 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ApiClient } from '@/api/client'
 import { EditorLayout } from './EditorLayout'
@@ -22,11 +23,18 @@ vi.mock('./EditorHeader', () => ({
 }))
 
 vi.mock('./EditorFileTree', () => ({
-    EditorFileTree: (props: { onOpenFile: (path: string) => void; onContextMenu: (path: string, x: number, y: number) => void }) => (
+    EditorFileTree: (props: {
+        onOpenFile: (path: string) => void
+        onContextMenu: (path: string, x: number, y: number) => void
+        newFileTargetPath?: string | null
+        onCreateFile?: (parentPath: string, fileName: string) => Promise<unknown>
+    }) => (
         <div data-testid="editor-file-tree">
             FileTree
             <button type="button" onClick={() => props.onOpenFile('/repo/src/App.tsx')}>Mock open file</button>
             <button type="button" onClick={() => props.onContextMenu('/repo/src/App.tsx', 12, 34)}>Mock context menu</button>
+            <div>New file target: {props.newFileTargetPath ?? ''}</div>
+            <button type="button" onClick={() => { void props.onCreateFile?.('/repo/src', 'New.ts') }}>Mock create file</button>
         </div>
     )
 }))
@@ -64,11 +72,13 @@ vi.mock('./EditorContextMenu', () => ({
     EditorContextMenu: (props: {
         filePath: string | null
         onOpen: (path: string) => void
+        onNewFile: (path: string) => void
         onAddToChat: (path: string) => void
         onCopyPath: (path: string) => void | Promise<void>
     }) => props.filePath ? (
         <div data-testid="editor-context-menu">
             <button type="button" onClick={() => props.onOpen(props.filePath!)}>Context open</button>
+            <button type="button" onClick={() => props.onNewFile(props.filePath!)}>Context new file</button>
             <button type="button" onClick={() => props.onAddToChat(props.filePath!)}>Context add</button>
             <button type="button" onClick={() => { void props.onCopyPath(props.filePath!) }}>Context copy</button>
         </div>
@@ -93,6 +103,17 @@ vi.mock('@/hooks/useEditorPaneResize', () => ({
     })
 }))
 
+function renderEditorLayout(api: ApiClient) {
+    const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false }, mutations: { retry: false } }
+    })
+    return render(
+        <QueryClientProvider client={queryClient}>
+            <EditorLayout api={api} initialMachineId="machine-1" initialProjectPath="/repo" />
+        </QueryClientProvider>
+    )
+}
+
 describe('EditorLayout', () => {
     beforeEach(() => {
         vi.clearAllMocks()
@@ -104,7 +125,7 @@ describe('EditorLayout', () => {
     })
 
     it('renders editor regions', () => {
-        render(<EditorLayout api={{} as ApiClient} initialMachineId="machine-1" initialProjectPath="/repo" />)
+        renderEditorLayout({} as ApiClient)
 
         expect(screen.getByTestId('editor-header')).toBeInTheDocument()
         expect(screen.getByTestId('editor-file-tree')).toBeInTheDocument()
@@ -115,7 +136,7 @@ describe('EditorLayout', () => {
     })
 
     it('wires pane resize sizes and handlers', () => {
-        render(<EditorLayout api={{} as ApiClient} initialMachineId="machine-1" initialProjectPath="/repo" />)
+        renderEditorLayout({} as ApiClient)
 
         expect(screen.getByTestId('editor-file-tree').closest('aside')).toHaveStyle({ width: '321px' })
         expect(screen.getByTestId('editor-session-list').closest('aside')).toHaveStyle({ width: '432px' })
@@ -131,7 +152,7 @@ describe('EditorLayout', () => {
     })
 
     it('constrains editor columns so the page body does not own editor scrolling', () => {
-        render(<EditorLayout api={{} as ApiClient} initialMachineId="machine-1" initialProjectPath="/repo" />)
+        renderEditorLayout({} as ApiClient)
 
         expect(screen.getByTestId('editor-layout-root')).toHaveClass('overflow-hidden')
         expect(screen.getByTestId('editor-layout-body')).toHaveClass('overflow-hidden')
@@ -140,11 +161,29 @@ describe('EditorLayout', () => {
     })
 
     it('opens files from the tree into editor tabs', () => {
-        render(<EditorLayout api={{} as ApiClient} initialMachineId="machine-1" initialProjectPath="/repo" />)
+        renderEditorLayout({} as ApiClient)
 
         fireEvent.click(screen.getByText('Mock open file'))
 
         expect(screen.getByTestId('editor-tabs')).toHaveTextContent('App.tsx')
+    })
+
+    it('starts inline new-file flow and opens the created file', async () => {
+        const api = {
+            createEditorFile: vi.fn(async () => ({ success: true, path: '/repo/src/New.ts', size: 0 }))
+        } as unknown as ApiClient
+        renderEditorLayout(api)
+
+        fireEvent.click(screen.getByText('Mock context menu'))
+        fireEvent.click(screen.getByText('Context new file'))
+        expect(screen.getByTestId('editor-file-tree')).toHaveTextContent('New file target: /repo/src/App.tsx')
+
+        fireEvent.click(screen.getByText('Mock create file'))
+
+        await waitFor(() => {
+            expect(api.createEditorFile).toHaveBeenCalledWith('machine-1', '/repo/src/New.ts', '')
+        })
+        expect(screen.getByTestId('editor-tabs')).toHaveTextContent('New.ts')
     })
 
     it('copies context menu file paths to the clipboard', async () => {
@@ -153,7 +192,7 @@ describe('EditorLayout', () => {
             configurable: true,
             value: { writeText }
         })
-        render(<EditorLayout api={{} as ApiClient} initialMachineId="machine-1" initialProjectPath="/repo" />)
+        renderEditorLayout({} as ApiClient)
 
         fireEvent.click(screen.getByText('Mock context menu'))
         fireEvent.click(screen.getByText('Context copy'))
@@ -164,7 +203,7 @@ describe('EditorLayout', () => {
     })
 
     it('adds a file to the active chat draft', () => {
-        render(<EditorLayout api={{} as ApiClient} initialMachineId="machine-1" initialProjectPath="/repo" />)
+        renderEditorLayout({} as ApiClient)
 
         fireEvent.click(screen.getByText('Select session'))
         fireEvent.click(screen.getByText('Mock context menu'))
@@ -175,7 +214,7 @@ describe('EditorLayout', () => {
     })
 
     it('creates a session before adding a file when no session is active', () => {
-        render(<EditorLayout api={{} as ApiClient} initialMachineId="machine-1" initialProjectPath="/repo" />)
+        renderEditorLayout({} as ApiClient)
 
         fireEvent.click(screen.getByText('Mock context menu'))
         fireEvent.click(screen.getByText('Context add'))

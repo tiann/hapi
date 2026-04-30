@@ -1,6 +1,8 @@
 import { useCallback, useRef, useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import type { ApiClient } from '@/api/client'
 import { appendEditorChatDraft } from '@/lib/editor-chat-draft'
+import { queryKeys } from '@/lib/query-keys'
 import { useEditorPaneResize } from '@/hooks/useEditorPaneResize'
 import { useEditorState } from '@/hooks/useEditorState'
 import { useEditorNewSession } from '@/hooks/mutations/useEditorNewSession'
@@ -12,6 +14,10 @@ import { EditorSessionList } from './EditorSessionList'
 import { EditorTabs } from './EditorTabs'
 import { EditorTerminal } from './EditorTerminal'
 
+function joinPath(base: string, name: string): string {
+    return base.endsWith('/') ? `${base}${name}` : `${base}/${name}`
+}
+
 export function EditorLayout(props: {
     api: ApiClient | null
     initialMachineId?: string
@@ -19,7 +25,9 @@ export function EditorLayout(props: {
 }) {
     const editor = useEditorState(props.initialMachineId, props.initialProjectPath)
     const panes = useEditorPaneResize()
+    const queryClient = useQueryClient()
     const [pendingDraftText, setPendingDraftText] = useState<string | undefined>(undefined)
+    const [newFileTargetPath, setNewFileTargetPath] = useState<string | null>(null)
     const pendingFileAfterSessionRef = useRef<string | null>(null)
 
     const newSession = useEditorNewSession({
@@ -51,6 +59,34 @@ export function EditorLayout(props: {
         pendingFileAfterSessionRef.current = filePath
         newSession.createSession()
     }, [editor.activeSessionId, newSession])
+
+    const handleNewFile = useCallback((targetPath: string) => {
+        setNewFileTargetPath(targetPath)
+    }, [])
+
+    const handleCancelNewFile = useCallback(() => {
+        setNewFileTargetPath(null)
+    }, [])
+
+    const handleCreateFile = useCallback(async (parentPath: string, fileName: string) => {
+        if (!props.api || !editor.machineId) {
+            return { success: false, error: 'Select a machine before creating files' }
+        }
+
+        const targetPath = joinPath(parentPath, fileName)
+        const response = await props.api.createEditorFile(editor.machineId, targetPath, '')
+        if (!response.success) {
+            return { success: false, error: response.error ?? 'Failed to create file' }
+        }
+
+        const createdPath = response.path ?? targetPath
+        await queryClient.invalidateQueries({
+            queryKey: queryKeys.editorDirectory(editor.machineId, parentPath)
+        })
+        setNewFileTargetPath(null)
+        editor.openFile(createdPath)
+        return { success: true, path: createdPath }
+    }, [editor, props.api, queryClient])
 
     const handleSelectSession = useCallback((sessionId: string) => {
         editor.setActiveSessionId(sessionId)
@@ -94,6 +130,9 @@ export function EditorLayout(props: {
                         projectPath={editor.projectPath}
                         onOpenFile={editor.openFile}
                         onContextMenu={editor.showContextMenu}
+                        newFileTargetPath={newFileTargetPath}
+                        onCreateFile={handleCreateFile}
+                        onCancelNewFile={handleCancelNewFile}
                     />
                 </aside>
                 <div
@@ -170,6 +209,7 @@ export function EditorLayout(props: {
                 filePath={editor.contextMenuFile}
                 position={editor.contextMenuPosition}
                 onOpen={editor.openFile}
+                onNewFile={handleNewFile}
                 onAddToChat={handleAddToChat}
                 onCopyPath={handleCopyPath}
                 onClose={editor.hideContextMenu}

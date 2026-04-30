@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type MouseEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type FocusEvent, type KeyboardEvent, type MouseEvent } from 'react'
 import type { ApiClient } from '@/api/client'
 import type { EditorDirectoryResponse } from '@/types/api'
 import { FileIcon } from '@/components/FileIcon'
@@ -8,6 +8,105 @@ type TreeEntry = NonNullable<EditorDirectoryResponse['entries']>[number]
 
 function joinPath(base: string, name: string): string {
     return base.endsWith('/') ? `${base}${name}` : `${base}/${name}`
+}
+
+function getParentPath(path: string): string {
+    const trimmed = path.replace(/\/+$/, '')
+    const index = trimmed.lastIndexOf('/')
+    if (index <= 0) return '/'
+    return trimmed.slice(0, index)
+}
+
+function validateNewFileName(value: string): string | null {
+    const trimmed = value.trim()
+    if (!trimmed) return 'File name is required'
+    if (trimmed.startsWith('/') || /^[A-Za-z]:[\\/]/.test(trimmed)) {
+        return 'Use a relative path inside this folder'
+    }
+    const segments = trimmed.split(/[\\/]+/)
+    if (segments.some((segment) => segment === '..')) {
+        return 'Parent directory segments are not allowed'
+    }
+    return null
+}
+
+function NewFileInput(props: {
+    parentPath: string
+    indent: number
+    onCreateFile?: (parentPath: string, fileName: string) => Promise<{ success: boolean; path?: string; error?: string } | unknown>
+    onCancel?: () => void
+}) {
+    const inputRef = useRef<HTMLInputElement | null>(null)
+    const [value, setValue] = useState('')
+    const [error, setError] = useState<string | null>(null)
+    const [isCreating, setIsCreating] = useState(false)
+
+    useEffect(() => {
+        inputRef.current?.focus()
+    }, [])
+
+    const submit = useCallback(async () => {
+        const trimmed = value.trim()
+        const validationError = validateNewFileName(trimmed)
+        if (validationError) {
+            setError(validationError)
+            return
+        }
+        if (!props.onCreateFile) {
+            props.onCancel?.()
+            return
+        }
+
+        setIsCreating(true)
+        setError(null)
+        try {
+            const result = await props.onCreateFile(props.parentPath, trimmed)
+            if (result && typeof result === 'object' && 'success' in result && result.success === false) {
+                const message = 'error' in result && typeof result.error === 'string'
+                    ? result.error
+                    : 'Failed to create file'
+                setError(message)
+                return
+            }
+        } catch (error) {
+            setError(error instanceof Error ? error.message : 'Failed to create file')
+        } finally {
+            setIsCreating(false)
+        }
+    }, [props, value])
+
+    const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+        if (event.key === 'Enter') {
+            event.preventDefault()
+            void submit()
+        } else if (event.key === 'Escape') {
+            event.preventDefault()
+            props.onCancel?.()
+        }
+    }
+
+    const handleBlur = (_event: FocusEvent<HTMLInputElement>) => {
+        if (!isCreating) {
+            props.onCancel?.()
+        }
+    }
+
+    return (
+        <div className="px-2 py-1" style={{ paddingLeft: props.indent }}>
+            <input
+                ref={inputRef}
+                aria-label="New file name"
+                value={value}
+                disabled={isCreating}
+                onChange={(event) => setValue(event.target.value)}
+                onKeyDown={handleKeyDown}
+                onBlur={handleBlur}
+                placeholder="new-file.ts"
+                className="w-full rounded border border-[#6366f1] bg-[var(--app-bg)] px-2 py-1 text-xs text-[var(--app-fg)] outline-none"
+            />
+            {error ? <div className="mt-1 text-[10px] text-red-500">{error}</div> : null}
+        </div>
+    )
 }
 
 function ChevronIcon(props: { collapsed: boolean }) {
@@ -91,6 +190,9 @@ function DirectoryNode(props: {
     onContextMenu: (filePath: string, x: number, y: number) => void
     expanded: Set<string>
     onToggle: (path: string) => void
+    newFileTargetPath?: string | null
+    onCreateFile?: (parentPath: string, fileName: string) => Promise<{ success: boolean; path?: string; error?: string } | unknown>
+    onCancelNewFile?: () => void
 }) {
     const isExpanded = props.expanded.has(props.path)
     const { entries, error, isLoading } = useProjectDirectory(props.api, props.machineId, isExpanded ? props.path : null)
@@ -100,6 +202,8 @@ function DirectoryNode(props: {
 
     const dirs = useMemo(() => entries.filter((entry) => entry.type === 'directory'), [entries])
     const files = useMemo(() => entries.filter((entry) => entry.type === 'file'), [entries])
+    const shouldShowNewFileInput = props.newFileTargetPath === props.path
+        || files.some((entry) => joinPath(props.path, entry.name) === props.newFileTargetPath)
 
     const handleContextMenu = useCallback((event: MouseEvent, filePath: string) => {
         event.preventDefault()
@@ -121,6 +225,9 @@ function DirectoryNode(props: {
                 onContextMenu={props.onContextMenu}
                 expanded={props.expanded}
                 onToggle={props.onToggle}
+                newFileTargetPath={props.newFileTargetPath}
+                onCreateFile={props.onCreateFile}
+                onCancelNewFile={props.onCancelNewFile}
             />
         )
     }, [childDepth, props])
@@ -169,6 +276,14 @@ function DirectoryNode(props: {
                         <DirectoryErrorRow indent={childIndent} message={error} />
                     ) : (
                         <>
+                            {shouldShowNewFileInput && (
+                                <NewFileInput
+                                    parentPath={props.path}
+                                    indent={childIndent}
+                                    onCreateFile={props.onCreateFile}
+                                    onCancel={props.onCancelNewFile}
+                                />
+                            )}
                             {dirs.map(renderDirectory)}
                             {files.map(renderFile)}
                             {dirs.length === 0 && files.length === 0 && (
@@ -193,6 +308,9 @@ export function EditorFileTree(props: {
     projectPath: string | null
     onOpenFile: (filePath: string) => void
     onContextMenu: (filePath: string, x: number, y: number) => void
+    newFileTargetPath?: string | null
+    onCreateFile?: (parentPath: string, fileName: string) => Promise<{ success: boolean; path?: string; error?: string } | unknown>
+    onCancelNewFile?: () => void
 }) {
     const [expanded, setExpanded] = useState<Set<string>>(() => (
         props.projectPath ? new Set([props.projectPath]) : new Set()
@@ -201,6 +319,16 @@ export function EditorFileTree(props: {
     useEffect(() => {
         setExpanded(props.projectPath ? new Set([props.projectPath]) : new Set())
     }, [props.projectPath])
+
+    useEffect(() => {
+        if (!props.newFileTargetPath) return
+        setExpanded((prev) => {
+            const next = new Set(prev)
+            next.add(props.newFileTargetPath!)
+            next.add(getParentPath(props.newFileTargetPath!))
+            return next
+        })
+    }, [props.newFileTargetPath])
 
     const handleToggle = useCallback((path: string) => {
         setExpanded((prev) => {
@@ -241,6 +369,9 @@ export function EditorFileTree(props: {
                     onContextMenu={props.onContextMenu}
                     expanded={expanded}
                     onToggle={handleToggle}
+                    newFileTargetPath={props.newFileTargetPath}
+                    onCreateFile={props.onCreateFile}
+                    onCancelNewFile={props.onCancelNewFile}
                 />
             </div>
         </div>

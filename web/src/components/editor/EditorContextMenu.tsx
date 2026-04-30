@@ -4,6 +4,7 @@ export function EditorContextMenu(props: {
     filePath: string | null
     position: { x: number; y: number } | null
     onOpen: (filePath: string) => void
+    onNewFile: (filePath: string) => void
     onAddToChat: (filePath: string) => void
     onCopyPath: (filePath: string) => void | Promise<void>
     onClose: () => void
@@ -49,6 +50,11 @@ export function EditorContextMenu(props: {
         props.onClose()
     }
 
+    const handleNewFile = () => {
+        props.onNewFile(filePath)
+        props.onClose()
+    }
+
     const handleCopyPath = async () => {
         await props.onCopyPath(filePath)
         props.onClose()
@@ -68,6 +74,14 @@ export function EditorContextMenu(props: {
                 className="block w-full px-3 py-1.5 text-left hover:bg-[var(--app-subtle-bg)]"
             >
                 Open in Editor
+            </button>
+            <button
+                type="button"
+                role="menuitem"
+                onClick={handleNewFile}
+                className="block w-full px-3 py-1.5 text-left hover:bg-[var(--app-subtle-bg)]"
+            >
+                New File
             </button>
             <button
                 type="button"
