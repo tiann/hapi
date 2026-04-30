@@ -18,6 +18,7 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
     let hookReady = false;
     let shuttingDown = false;
     let pendingScannerSetup: Promise<void> | null = null;
+    let hasSummary = false;
     const permissionMode = session.getPermissionMode();
     const managedPermissionMode = permissionMode === 'read-only' || permissionMode === 'safe-yolo' || permissionMode === 'yolo'
         ? permissionMode
@@ -104,6 +105,24 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
                 }
                 if (converted?.message) {
                     session.sendAgentMessage(converted.message);
+
+                    // Auto-update session summary from first agent message
+                    if (!hasSummary && converted.message.type === 'message') {
+                        hasSummary = true;
+                        const firstLine = converted.message.message.split('\n')[0].trim();
+                        const summaryText = firstLine.length > 120
+                            ? firstLine.slice(0, 117) + '\u2026'
+                            : firstLine;
+                        if (summaryText.length > 0) {
+                            session.client.updateMetadata((metadata) => ({
+                                ...metadata,
+                                summary: {
+                                    text: summaryText,
+                                    updatedAt: Date.now()
+                                }
+                            }));
+                        }
+                    }
                 }
             }
         });

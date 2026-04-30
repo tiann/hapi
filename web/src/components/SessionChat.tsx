@@ -63,6 +63,10 @@ export function SessionChat(props: {
     onRetryMessage?: (localId: string) => void
     autocompleteSuggestions?: (query: string) => Promise<Suggestion[]>
     availableSlashCommands?: readonly SlashCommand[]
+    disableVoice?: boolean
+    hideHeader?: boolean
+    compactMode?: boolean
+    pinIndex?: number
 }) {
     const { haptic } = usePlatform()
     const { t } = useTranslation()
@@ -81,6 +85,7 @@ export function SessionChat(props: {
         sessionId: props.session.id,
         enabled: agentFlavor === 'codex' && props.session.active && !controlledByUser
     })
+    const [codexErrorDismissed, setCodexErrorDismissed] = useState(false)
     const codexModelOptions = useMemo(() => {
         if (agentFlavor !== 'codex') {
             return undefined
@@ -110,8 +115,9 @@ export function SessionChat(props: {
         codexCollaborationModeSupported
     )
 
-    // Voice assistant integration
-    const voice = useVoiceOptional()
+    // Voice assistant integration — disabled in multi-pin mode to avoid conflicts
+    const voiceRaw = useVoiceOptional()
+    const voice = props.disableVoice ? null : voiceRaw
 
     // Register session store for voice client tools
     useEffect(() => {
@@ -369,14 +375,18 @@ export function SessionChat(props: {
 
     return (
         <div className="flex h-full min-h-0 flex-col">
-            <SessionHeader
-                session={props.session}
-                onBack={props.onBack}
-                onViewFiles={props.session.metadata?.path ? handleViewFiles : undefined}
-                onOpenOutline={() => setOutlineOpen(true)}
-                api={props.api}
-                onSessionDeleted={props.onBack}
-            />
+            {!props.hideHeader && (
+                <SessionHeader
+                    session={props.session}
+                    onBack={props.onBack}
+                    onViewFiles={terminalSupported ? handleViewFiles : undefined}
+                    onOpenOutline={() => setOutlineOpen(true)}
+                    api={props.api}
+                    onSessionDeleted={props.onBack}
+                    compactMode={props.compactMode}
+                    pinIndex={props.pinIndex}
+                />
+            )}
 
             {props.session.teamState && (
                 <TeamPanel teamState={props.session.teamState} />
@@ -404,12 +414,13 @@ export function SessionChat(props: {
                                     style={{ background: 'rgb(99,102,241)', color: '#fff', whiteSpace: 'nowrap' }}
                                     className="shrink-0 rounded-md px-3 py-1.5 text-xs font-semibold hover:opacity-90 transition-opacity cursor-pointer"
                                     onClick={() => void navigate({
-                                        to: '/sessions/new',
-                                        search: (prev) => ({
+                                        search: (prev: any) => ({
                                             ...prev,
+                                            modal: 'new-session',
+                                            modalReplaceSessionId: props.session.id,
                                             ...(meta?.path ? { directory: meta.path } : {})
                                         })
-                                    })}
+                                    } as any)}
                                 >
                                     + New Session
                                 </button>
@@ -455,10 +466,19 @@ export function SessionChat(props: {
                         onOutlineOpenChange={setOutlineOpen}
                     />
 
-                    {codexCollaborationModeSupported && codexModelsState.error ? (
+                    {codexCollaborationModeSupported && codexModelsState.error && !codexErrorDismissed ? (
                         <div className="px-3 pb-2">
-                            <div className="mx-auto w-full max-w-content rounded-md bg-[var(--app-subtle-bg)] p-3 text-sm text-red-600">
-                                {t('session.codexModelsLoadFailed')}: {codexModelsState.error}
+                            <div className="mx-auto w-full max-w-content rounded-md bg-[var(--app-subtle-bg)] p-3 text-sm text-red-500 flex items-center justify-between gap-3">
+                                <span className="flex-1 min-w-0">
+                                    {t('session.codexModelsLoadFailed')}: {codexModelsState.error}
+                                </span>
+                                <button
+                                    type="button"
+                                    className="shrink-0 text-xs px-2 py-1 rounded border border-[var(--app-border)] hover:bg-[var(--app-subtle-bg)] text-[var(--app-hint)] transition-colors"
+                                    onClick={() => setCodexErrorDismissed(true)}
+                                >
+                                    Dismiss
+                                </button>
                             </div>
                         </div>
                     ) : null}
@@ -511,7 +531,7 @@ export function SessionChat(props: {
             </AssistantRuntimeProvider>
 
             {/* Voice session component - renders nothing but initializes ElevenLabs */}
-            {voice && (
+            {voice && !props.disableVoice && (
                 <RealtimeVoiceSession
                     api={props.api}
                     micMuted={voice.micMuted}

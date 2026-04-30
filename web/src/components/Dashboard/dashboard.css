@@ -93,16 +93,104 @@
     min-height: 0;
     display: flex;
     overflow: hidden;
+    position: relative;
 }
 
-/* Grid-only mode */
+/* Grid-only mode (0 pins) */
 .db__content--grid {
     flex-direction: column;
 }
 
-/* Split mode: pinned panel left + card grid right */
-.db__content--split {
+/* 1 pin: main panel + sidebar */
+.db__content--split-1 {
     flex-direction: row;
+}
+
+/* 2 pins: 2 main panels + sidebar */
+.db__content--split-2 {
+    flex-direction: row;
+}
+
+/* 3 pins: 2 small top + 1 large bottom */
+.db__content--split-3 {
+    flex-direction: column;
+}
+
+/* 4 pins: 2x2 grid */
+.db__content--split-4 {
+    flex-direction: column;
+}
+
+/* ─── Pinned Area ────────────────────────────────────────────────────────── */
+
+.db__pinned-area {
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    overflow: hidden;
+}
+
+/* 3 pins: 2 top + 1 bottom spanning full width */
+.db__content--split-3 .db__pinned-area {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: 1fr 1fr;
+    flex: 1;
+}
+
+/* 4 pins: 2x2 grid */
+.db__content--split-4 .db__pinned-area {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: 1fr 1fr;
+    flex: 1;
+}
+
+.db__pinned-panel {
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    border-right: 1px solid var(--app-border);
+    overflow: hidden;
+}
+
+.db__pinned-panel:last-child {
+    border-right: none;
+}
+
+.db__pinned-placeholder {
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    background: var(--app-secondary-bg);
+    border: 1px dashed var(--app-border);
+    border-radius: 8px;
+    margin: 4px;
+    overflow: hidden;
+}
+
+.db__pinned-placeholder-header {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 12px;
+    border-bottom: 1px solid var(--app-border);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--app-hint);
+}
+
+.db__pinned-placeholder-content {
+    flex: 1;
+    min-height: 0;
+    padding: 12px;
+    overflow-y: auto;
 }
 
 /* ─── Grid Area ──────────────────────────────────────────────────────────── */
@@ -123,6 +211,288 @@
     border-left: 1px solid var(--app-border);
     background: var(--app-bg);
     padding: 8px;
+    overflow-y: auto;
+}
+
+/* ─── Tab Strip ───────────────────────────────────────────────────── */
+
+.db__pinned-tabs {
+    display: flex;
+    gap: 6px;
+    padding: 8px 10px;
+    overflow-x: auto;
+    border-bottom: 1px solid var(--app-border);
+    flex-shrink: 0;
+    scrollbar-width: none;
+}
+
+.db__pinned-tabs::-webkit-scrollbar { display: none; }
+
+.db__pin-tab {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 5px 8px;
+    border-radius: 8px;
+    border: 1px solid var(--app-border);
+    background: var(--app-secondary-bg);
+    color: var(--app-hint);
+    font-size: 11px;
+    font-weight: 500;
+    cursor: pointer;
+    white-space: nowrap;
+    flex-shrink: 0;
+    transition: border-color 0.15s, color 0.15s, box-shadow 0.15s;
+}
+
+.db__pin-tab--active {
+    border-color: rgba(99, 102, 241, 0.6);
+    color: var(--app-fg);
+    background: rgba(99, 102, 241, 0.08);
+    box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.2);
+}
+
+.db__pin-tab--overview-trigger {
+    border-color: rgba(99, 102, 241, 0.3);
+    color: var(--app-fg);
+    background: rgba(99, 102, 241, 0.05);
+    font-weight: 600;
+}
+
+.db__pin-tab--overview-trigger:hover {
+    border-color: rgba(99, 102, 241, 0.6);
+    background: rgba(99, 102, 241, 0.1);
+}
+
+.db__pin-tab-title {
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.db__pin-tab-close {
+    display: flex;
+    align-items: center;
+    padding: 1px;
+    border-radius: 3px;
+    cursor: pointer;
+    opacity: 0.5;
+    transition: opacity 0.15s;
+}
+
+.db__pin-tab-close:hover { opacity: 1; }
+
+/* ─── Overview Trigger & Drawer (3-4 pins) ───────────────────────────────── */
+
+.db__overview-trigger {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 8px 14px;
+    border-radius: 20px;
+    background: var(--app-secondary-bg);
+    border: 1px solid var(--app-border);
+    color: var(--app-hint);
+    font-size: 11px;
+    font-weight: 500;
+    cursor: pointer;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.2);
+    transition: color 0.15s, border-color 0.15s, box-shadow 0.15s;
+    z-index: 50;
+}
+
+.db__overview-trigger:hover {
+    color: var(--app-fg);
+    border-color: rgba(99,102,241,0.5);
+    box-shadow: 0 4px 20px rgba(99,102,241,0.2);
+}
+
+.db__overview-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    background: rgba(0,0,0,0.3);
+}
+
+.db__overview-drawer {
+    position: absolute;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    width: 280px;
+    background: var(--app-bg);
+    border-left: 1px solid var(--app-border);
+    display: flex;
+    flex-direction: column;
+    animation: drawer-in 0.2s ease;
+}
+
+@keyframes drawer-in {
+    from { transform: translateX(100%); opacity: 0; }
+    to   { transform: translateX(0);    opacity: 1; }
+}
+
+.db__overview-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--app-border);
+    flex-shrink: 0;
+}
+
+.db__overview-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--app-fg);
+}
+
+.db__overview-close {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    border-radius: 6px;
+    border: none;
+    background: transparent;
+    color: var(--app-hint);
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+}
+
+.db__overview-close:hover {
+    background: var(--app-secondary-bg);
+    color: var(--app-fg);
+}
+
+.db__overview-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.db__overview-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--app-fg);
+    font-size: 11px;
+    cursor: pointer;
+    text-align: left;
+    transition: background 0.12s, border-color 0.12s;
+    width: 100%;
+}
+
+.db__overview-item:hover:not(:disabled) {
+    background: var(--app-secondary-bg);
+    border-color: var(--app-border);
+}
+
+.db__overview-item:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.db__overview-item--pinned {
+    background: rgba(99,102,241,0.08);
+    border-color: rgba(99,102,241,0.3);
+}
+
+.db__overview-item-pin-index {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    background: #6366f1;
+    color: #fff;
+    border-radius: 12px;
+    padding: 2px 6px;
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1;
+}
+
+.db__overview-item-pin-index svg {
+    width: 10px;
+    height: 10px;
+}
+
+.db__overview-item-title {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.db__overview-group {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 12px;
+}
+
+.db__overview-group:last-child {
+    margin-bottom: 0;
+}
+
+.db__overview-group-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--app-hint);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    user-select: none;
+}
+
+
+/* ─── Mobile Responsive ──────────────────────────────────────────────────── */
+
+@media (max-width: 768px) {
+    /* Override grid layouts on mobile */
+    .db__content--split-2,
+    .db__content--split-3,
+    .db__content--split-4 {
+        flex-direction: column;
+    }
+
+    .db__content--split-3 .db__pinned-area,
+    .db__content--split-4 .db__pinned-area {
+        display: flex;
+        flex-direction: column;
+        grid-template-columns: unset;
+        grid-template-rows: unset;
+    }
+
+    /* Only show active panel on mobile */
+    .db__pinned-panel--mobile-hidden,
+    .db__pinned-placeholder {
+        display: none;
+    }
+
+    /* Sidebar hidden on mobile when pinned */
+    .db__grid-area--sidebar {
+        display: none;
+    }
+
+    /* Overview trigger moves to tab strip on mobile, so hide the desktop one */
+    .db__overview-trigger {
+        display: none;
+    }
 }
 
 @media (max-width: 600px) {
@@ -130,6 +500,8 @@
         display: none;
     }
 }
+
+
 
 .db__grid {
     display: grid;
@@ -152,48 +524,7 @@
     font-size: 13px;
 }
 
-/* ─── Filter Bar ─────────────────────────────────────────────────────────── */
 
-.db__filter-bar {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 8px 14px;
-    border-bottom: 1px solid var(--app-border);
-    flex-shrink: 0;
-}
-
-.db__filter-btn {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    padding: 4px 10px;
-    border-radius: 20px;
-    border: 1px solid var(--app-border);
-    background: transparent;
-    color: var(--app-hint);
-    font-size: 12px;
-    font-weight: 500;
-    cursor: pointer;
-    transition: color 0.15s, border-color 0.15s, background 0.15s;
-}
-
-.db__filter-btn:hover {
-    color: var(--app-fg);
-    border-color: rgba(99,102,241,0.4);
-}
-
-.db__filter-btn--active {
-    background: rgba(99,102,241,0.12);
-    border-color: rgba(99,102,241,0.5);
-    color: rgb(99,102,241);
-}
-
-.db__filter-count {
-    font-size: 10px;
-    opacity: 0.65;
-    font-weight: 600;
-}
 
 /* ─── Inline Confirm ─────────────────────────────────────────────────────── */
 
@@ -345,6 +676,44 @@
     border-bottom: 1px solid var(--app-border);
     margin-bottom: 2px;
 }
+
+/* Compact group header in sidebar mode (1-2 pins) — name + count only */
+.db__group-header--sidebar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 4px 4px;
+    border-bottom: 1px solid var(--app-border);
+    margin-bottom: 3px;
+    position: sticky;
+    top: 0;
+    background: var(--app-bg);
+    z-index: 1;
+}
+
+.db__group-header--sidebar .db__group-name {
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--app-hint);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+}
+
+.db__group-header--sidebar .db__group-count {
+    font-size: 10px;
+    font-weight: 500;
+    background: rgba(99, 102, 241, 0.12);
+    color: #818cf8;
+    padding: 1px 5px;
+    border-radius: 8px;
+    flex-shrink: 0;
+}
+
+
 
 .db__group-header-left {
     display: flex;
@@ -511,6 +880,46 @@
     border-color: rgba(248,113,113,0.4);
 }
 
+/* Pin button — hover reveal, always visible when pinned */
+.db-card__pin-btn {
+    width: 20px;
+    height: 20px;
+    border-radius: 4px;
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--app-hint);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.15s, color 0.15s, background 0.15s;
+    z-index: 1;
+}
+
+.db-card:hover .db-card__pin-btn {
+    opacity: 1;
+}
+
+.db-card__pin-btn--active {
+    opacity: 1 !important;
+    color: #818cf8;
+    background: rgba(99,102,241,0.1);
+    border-color: rgba(99,102,241,0.3);
+}
+
+.db-card__pin-btn:hover:not(:disabled) {
+    color: #818cf8;
+    background: rgba(99,102,241,0.12);
+}
+
+.db-card__pin-btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.3;
+}
+
+
+
 .db-card--compact {
     min-height: auto;
     padding: 7px 9px;
@@ -553,6 +962,10 @@
     flex: 1;
     min-width: 0;
     line-height: 1.4;
+}
+
+.db-card--pinned .db-card__title {
+    text-indent: 18px; /* avoid overlap with top-left badge */
 }
 
 .db-card__meta-row {
@@ -658,9 +1071,9 @@
 .db-card__dot--done     { background: #4ade80; }
 .db-card__dot--thinking { background: #818cf8; animation: dot-pulse 1.5s ease-in-out infinite; }
 .db-card__dot--waiting  { background: #f59e0b; animation: dot-pulse 1s ease-in-out infinite; }
-.db-card__dot--active   { background: #64748b; }
+.db-card__dot--active   { background: #22c55e; }
 .db-card__dot--error    { background: #f87171; }
-.db-card__dot--archived { background: #334155; }
+.db-card__dot--archived { background: #475569; }
 
 .db-card__model {
     font-size: 10px;
@@ -780,11 +1193,186 @@
     background: var(--app-bg);
 }
 
+/* Compact mode: used in 3-4 panel grid layout */
+.db-pinned--compact {
+    border-right: none;
+}
+
+
+
+/* Compact header — replaces SessionHeader in 3-4 panel mode */
+.db-pinned__compact-header {
+    display: flex;
+    flex-direction: column;
+    padding: 4px 10px;
+    flex-shrink: 0;
+    border-bottom: 1px solid var(--app-border);
+    background: var(--app-bg);
+    overflow: hidden;
+    gap: 1px;
+}
+
+.db-pinned__compact-row1 {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: 26px;
+}
+
+.db-pinned__compact-path {
+    font-size: 9px;
+    font-family: var(--font-mono, monospace);
+    color: var(--app-hint);
+    opacity: 0.65;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    padding-left: 24px; /* indent past index badge */
+    padding-bottom: 3px;
+}
+
+/* ────────────────────────────────────────────────────────────────────────────
+ * Compact Mode Overrides (Scrollbars, Spacing, Text Size)
+ * ────────────────────────────────────────────────────────────────────────── */
+
+/* Elegant thin scrollbars in compact mode to avoid big black blocks */
+.db-pinned--compact *::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+.db-pinned--compact *::-webkit-scrollbar-track {
+    background: transparent;
+}
+.db-pinned--compact *::-webkit-scrollbar-thumb {
+    background: var(--app-border);
+    border-radius: 4px;
+}
+.db-pinned--compact *::-webkit-scrollbar-thumb:hover {
+    background: var(--app-hint);
+}
+
+/* Reduce padding and gaps in compact view to maximize space */
+.db-pinned--compact .p-3 { padding: 0.5rem !important; }
+.db-pinned--compact .px-3 { padding-left: 0.5rem !important; padding-right: 0.5rem !important; }
+.db-pinned--compact .px-4 { padding-left: 0.5rem !important; padding-right: 0.5rem !important; }
+.db-pinned--compact .py-3 { padding-top: 0.5rem !important; padding-bottom: 0.5rem !important; }
+.db-pinned--compact .pt-3 { padding-top: 0.5rem !important; }
+.db-pinned--compact .pb-3 { padding-bottom: 0.5rem !important; }
+.db-pinned--compact .gap-3 { gap: 0.5rem !important; }
+.db-pinned--compact .gap-4 { gap: 0.5rem !important; }
+
+/* Scale down markdown content and standard texts slightly */
+.db-pinned--compact .markdown-content {
+    font-size: 0.85em;
+}
+.db-pinned--compact .text-sm {
+    font-size: 0.75rem !important;
+    line-height: 1.1rem !important;
+}
+.db-pinned--compact .text-base {
+    font-size: 0.8125rem !important;
+    line-height: 1.15rem !important;
+}
+
+/* Adjust inactive/error banners */
+.db-pinned--compact .max-w-content {
+    max-width: 100%;
+}
+
+
+
+.db-pinned__index-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    border-radius: 5px;
+    background: rgba(99, 102, 241, 0.15);
+    color: #818cf8;
+    font-size: 10px;
+    font-weight: 700;
+    flex-shrink: 0;
+    letter-spacing: 0;
+}
+
+.db-pinned__compact-title {
+    flex: 1;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--app-fg);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+}
+
+.db-pinned__compact-action {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    border-radius: 4px;
+    border: none;
+    background: transparent;
+    color: var(--app-hint);
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: color 0.15s, background 0.15s;
+}
+
+.db-pinned__compact-action:hover {
+    color: var(--app-fg);
+    background: var(--app-secondary-bg);
+}
+
+.db-pinned__unpin-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    border-radius: 4px;
+    border: none;
+    background: transparent;
+    color: var(--app-hint);
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: color 0.15s, background 0.15s;
+}
+
+.db-pinned__unpin-btn:hover {
+    color: #f87171;
+    background: rgba(248, 113, 113, 0.1);
+}
+
 /* Status accent top bar */
 .db-pinned--done     { border-top: 2px solid #4ade80; }
 .db-pinned--thinking { border-top: 2px solid #818cf8; }
 .db-pinned--error    { border-top: 2px solid #f87171; }
 .db-pinned--active   { border-top: 2px solid var(--app-border); }
+
+/* Pin index badge on session cards */
+.db-card__pin-index {
+    position: absolute;
+    top: 6px;
+    left: 6px;
+    width: 16px;
+    height: 16px;
+    border-radius: 4px;
+    background: rgba(99, 102, 241, 0.85);
+    color: #fff;
+    font-size: 9px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 2;
+    pointer-events: none;
+}
+
+
 
 .db-pinned__header {
     display: flex;
@@ -946,7 +1534,14 @@
 }
 
 .db-pinned__input:focus {
+    border-color: rgba(99, 102, 241, 0.6);
+    box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.15);
+}
+
+/* When the panel is the active/focused one, keep the input highlighted even without :focus */
+.db-pinned--active .db-pinned__input {
     border-color: rgba(99, 102, 241, 0.5);
+    box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.1);
 }
 
 .db-pinned__input::placeholder {

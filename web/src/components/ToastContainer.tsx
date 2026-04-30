@@ -2,6 +2,17 @@ import { useNavigate } from '@tanstack/react-router'
 import { Toast } from '@/components/ui/Toast'
 import { useToast } from '@/lib/toast-context'
 
+/** Dispatches a custom event for Mission Control to intercept.
+ *  Dashboard listens for this and handles pin/focus logic in-place.
+ *  Falls back to normal navigation if Dashboard is not mounted. */
+function dispatchFocusSession(sessionId: string): void {
+    const event = new CustomEvent('hapi:focus-session', {
+        bubbles: true,
+        detail: { sessionId }
+    })
+    document.dispatchEvent(event)
+}
+
 export function ToastContainer() {
     const navigate = useNavigate()
     const { toasts, removeToast } = useToast()
@@ -24,10 +35,10 @@ export function ToastContainer() {
                     onClick={() => {
                         removeToast(toast.id)
                         if (toast.sessionId) {
-                            void navigate({
-                                to: '/sessions/$sessionId',
-                                params: { sessionId: toast.sessionId }
-                            })
+                            // Dispatch custom event — Dashboard intercepts to pin/focus in-place.
+                            // If Dashboard is not mounted (e.g. user is on another route), this is a no-op
+                            // and the user stays on the current page; a separate listener in App can navigate if needed.
+                            dispatchFocusSession(toast.sessionId)
                             return
                         }
                         if (toast.url) {

@@ -602,8 +602,32 @@ function SessionItem(props: {
                 style={{ WebkitTouchCallout: 'none' }}
                 aria-current={selected ? 'page' : undefined}
             >
-                <div className={`flex items-center justify-between gap-3 ${!s.active ? 'opacity-50' : ''}`}>
+                <div className="flex items-center justify-between gap-3">
                     <div className="flex items-center gap-2 min-w-0">
+                        {/* Status dot */}
+                        <span
+                            className="shrink-0 inline-block rounded-full"
+                            style={{
+                                width: 7,
+                                height: 7,
+                                background: !s.active
+                                    ? '#475569'
+                                    : s.thinking
+                                        ? '#818cf8'
+                                        : s.pendingRequestsCount > 0
+                                            ? '#f59e0b'
+                                            : '#22c55e',
+                                animation: s.active && (s.thinking || s.pendingRequestsCount > 0)
+                                    ? 'sl-dot-pulse 1.4s ease-in-out infinite'
+                                    : undefined,
+                            }}
+                            title={
+                                !s.active ? 'Archived'
+                                    : s.thinking ? 'Thinking…'
+                                        : s.pendingRequestsCount > 0 ? `Waiting (${s.pendingRequestsCount})`
+                                            : 'Active'
+                            }
+                        />
                         <FlavorIcon flavor={s.metadata?.flavor} className="h-4 w-4 shrink-0" />
                         <div className={`truncate text-sm font-medium ${s.active ? 'text-[var(--app-fg)]' : 'text-[var(--app-hint)]'}`}>
                             {sessionName}

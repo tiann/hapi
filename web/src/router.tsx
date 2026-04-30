@@ -204,7 +204,7 @@ function SessionPage() {
             isSending={isSending}
             pendingCount={pendingCount}
             messagesVersion={messagesVersion}
-            onBack={() => navigate({ to: '/sessions', search: { sessionId } })}
+            onBack={() => navigate({ to: '/sessions' })}
             onRefresh={refreshSelectedSession}
             onLoadMore={loadMoreMessages}
             onSend={sendMessage}
@@ -242,7 +242,7 @@ function NewSessionPage() {
     const handleSuccess = useCallback((sessionId: string) => {
         void queryClient.invalidateQueries({ queryKey: queryKeys.sessions })
         // Always return to dashboard with new session pinned
-        navigate({ to: '/sessions', search: { sessionId }, replace: true })
+        navigate({ to: '/sessions', search: { pins: sessionId }, replace: true })
     }, [navigate, queryClient])
 
     const handleChooseFolder = useCallback((args: { machineId: string | null; directory: string }) => {
@@ -339,8 +339,39 @@ function BrowsePage() {
     )
 }
 
+export type RootSearch = {
+    modal?: 'new-session' | 'files' | 'terminal' | 'settings' | 'browser' | 'replace-pin'
+    modalSessionId?: string
+    modalPath?: string
+    modalMachineId?: string
+    modalReplaceSessionId?: string
+    modalNewSessionId?: string
+}
+
 const rootRoute = createRootRoute({
     component: App,
+    validateSearch: (search: Record<string, unknown>): RootSearch => {
+        const result: RootSearch = {}
+        if (typeof search.modal === 'string' && ['new-session', 'files', 'terminal', 'settings', 'browser', 'replace-pin'].includes(search.modal)) {
+            result.modal = search.modal as RootSearch['modal']
+        }
+        if (typeof search.modalSessionId === 'string') {
+            result.modalSessionId = search.modalSessionId
+        }
+        if (typeof search.modalPath === 'string') {
+            result.modalPath = search.modalPath
+        }
+        if (typeof search.modalMachineId === 'string') {
+            result.modalMachineId = search.modalMachineId
+        }
+        if (typeof search.modalReplaceSessionId === 'string') {
+            result.modalReplaceSessionId = search.modalReplaceSessionId
+        }
+        if (typeof search.modalNewSessionId === 'string') {
+            result.modalNewSessionId = search.modalNewSessionId
+        }
+        return result
+    }
 })
 
 const indexRoute = createRoute({
@@ -358,9 +389,9 @@ const sessionsRoute = createRoute({
 const sessionsIndexRoute = createRoute({
     getParentRoute: () => sessionsRoute,
     path: '/',
-    validateSearch: (search: Record<string, unknown>): { sessionId?: string } => {
-        if (typeof search.sessionId === 'string' && search.sessionId) {
-            return { sessionId: search.sessionId }
+    validateSearch: (search: Record<string, unknown>): { pins?: string } => {
+        if (typeof search.pins === 'string' && search.pins) {
+            return { pins: search.pins }
         }
         return {}
     },

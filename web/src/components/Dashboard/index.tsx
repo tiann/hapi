@@ -1,6 +1,7 @@
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { useNavigate } from '@tanstack/react-router'
+import { useNavigate, useSearch } from '@tanstack/react-router'
+import type { RootSearch } from '@/router'
 import { useSessions } from '@/hooks/queries/useSessions'
 import { useSession } from '@/hooks/queries/useSession'
 import { useMessages } from '@/hooks/queries/useMessages'
@@ -132,9 +133,13 @@ interface PinnedPanelProps {
     api: ApiClient | null
     onUnpin: () => void
     onSessionResolved?: (newSessionId: string) => void
+    pinIndex: number      // 1-based display index
+    compact?: boolean     // true when 3-4 panels (collapse mode)
+    isActive?: boolean
+    onFocus?: () => void
 }
 
-function PinnedPanel({ sessionId, api, onUnpin, onSessionResolved }: PinnedPanelProps) {
+function PinnedPanel({ sessionId, api, onUnpin, onSessionResolved, pinIndex, compact, isActive, onFocus }: PinnedPanelProps) {
     const queryClient = useQueryClient()
     const { session, refetch: refetchSession } = useSession(api, sessionId)
     const {
@@ -188,7 +193,6 @@ function PinnedPanel({ sessionId, api, onUnpin, onSessionResolved }: PinnedPanel
                         ])
                     } catch { /* ignore */ }
                 }
-                // Instead of navigating, notify Dashboard to update pinnedId
                 onSessionResolved?.(resolvedSessionId)
             })()
         },
@@ -208,7 +212,12 @@ function PinnedPanel({ sessionId, api, onUnpin, onSessionResolved }: PinnedPanel
     }
 
     return (
-        <div className="db-pinned">
+        <div 
+            className={`db-pinned db-pinned--compact ${isActive ? 'db-pinned--active' : ''}`}
+            onFocus={onFocus}
+            onClick={onFocus}
+            onFocusCapture={onFocus}
+        >
             <SessionChat
                 api={api!}
                 session={session}
@@ -229,7 +238,11 @@ function PinnedPanel({ sessionId, api, onUnpin, onSessionResolved }: PinnedPanel
                 onRetryMessage={retryMessage}
                 autocompleteSuggestions={getAutocompleteSuggestions}
                 availableSlashCommands={slashCommands}
+                disableVoice
+                compactMode={true}
+                pinIndex={pinIndex}
             />
+
         </div>
     )
 }
@@ -240,13 +253,17 @@ interface SessionCardProps {
     session: SessionSummary
     status: SessionStatus
     isPinned: boolean
+    pinIndex?: number     // 1-based index if pinned
+    pinDisabled?: boolean
     compact?: boolean
     isAddedArchived?: boolean
-    onSelect: () => void
+    isHighlighted?: boolean
+    onSelect: (e?: React.MouseEvent) => void
     onDetach?: () => void
+    onFocusCapture?: () => void
 }
 
-function SessionCard({ session, status, isPinned, compact, isAddedArchived, onSelect, onDetach }: SessionCardProps) {
+function SessionCard({ session, status, isPinned, pinIndex, pinDisabled, compact, isAddedArchived, isHighlighted, onSelect, onDetach, onFocusCapture }: SessionCardProps) {
     const agent = getAgentLabel(session)
     const elapsed = formatElapsed(session.updatedAt)
     const title = getSessionTitle(session)
@@ -262,9 +279,8 @@ function SessionCard({ session, status, isPinned, compact, isAddedArchived, onSe
         const id = setInterval(() => tick(n => n + 1), 1000)
         return () => clearInterval(id)
     }, [status])
-    // Time since last request (updatedAt ~ when thinking started)
+
     const requestDuration = status === 'thinking' ? formatDuration(session.updatedAt) : null
-    // Total session run time
     const sessionDuration = status === 'thinking' ? formatDuration(session.activeAt) : null
 
     return (
@@ -275,14 +291,21 @@ function SessionCard({ session, status, isPinned, compact, isAddedArchived, onSe
                 isPinned ? 'db-card--pinned' : '',
                 compact ? 'db-card--compact' : '',
                 isAddedArchived ? 'db-card--archived-added' : '',
+                isHighlighted ? 'ring-2 ring-[var(--app-button)]' : ''
             ].filter(Boolean).join(' ')}
-            onClick={onSelect}
+            onClick={(e) => onSelect(e)}
             role="button"
             tabIndex={0}
+            onFocusCapture={onFocusCapture}
             onKeyDown={(e) => { if (e.key === 'Enter') onSelect() }}
             title={isPinned ? 'Click to unpin' : 'Click to pin & chat'}
         >
             <div className={`db-card__glow-bar db-card__glow-bar--${status}`} />
+
+            {/* Pin index badge — shown when card is pinned */}
+            {isPinned && pinIndex !== undefined && (
+                <span className="db-card__pin-index">{pinIndex}</span>
+            )}
 
             {isAddedArchived && onDetach && (
                 <button
@@ -299,7 +322,14 @@ function SessionCard({ session, status, isPinned, compact, isAddedArchived, onSe
             <div className="db-card__header">
                 <div className="db-card__title">{title}</div>
                 <div className="db-card__meta-row">
-                    {isPinned && <span className="db-card__pin-icon"><PinIcon filled /></span>}
+                    <button
+                        type="button"
+                        className={`db-card__pin-btn ${isPinned ? 'db-card__pin-btn--active' : ''}`}
+                        onClick={e => { e.stopPropagation(); onSelect(e) }}
+                        title={isPinned ? 'Unpin session' : 'Pin session'}
+                    >
+                        <PinIcon filled={isPinned} />
+                    </button>
                     <span className="db-card__elapsed">{elapsed}</span>
                 </div>
             </div>
@@ -350,6 +380,129 @@ function SessionCard({ session, status, isPinned, compact, isAddedArchived, onSe
                     </span>
                 )}
                 <span className={`db-card__dot db-card__dot--${status}`} />
+            </div>
+        </div>
+    )
+}
+
+// ─── Pinned Session Context Menu ──────────────────────────────────────────────
+
+interface PinnedSessionContextMenuProps {
+    sessionTitle: string
+    x: number
+    y: number
+    onFocus: () => void
+    onUnpin: () => void
+    onCancel: () => void
+}
+
+function PinnedSessionContextMenu({ sessionTitle, x, y, onFocus, onUnpin, onCancel }: PinnedSessionContextMenuProps) {
+    const menuRef = useRef<HTMLDivElement>(null)
+    const [pos, setPos] = useState({ left: x, top: y })
+
+    useEffect(() => {
+        if (menuRef.current) {
+            const rect = menuRef.current.getBoundingClientRect()
+            let newX = x
+            let newY = y
+            if (x + rect.width > window.innerWidth) newX = window.innerWidth - rect.width - 10
+            if (y + rect.height > window.innerHeight) newY = window.innerHeight - rect.height - 10
+            setPos({ left: newX, top: newY })
+        }
+    }, [x, y])
+
+    useEffect(() => {
+        const handleClickOutside = () => onCancel()
+        const timer = setTimeout(() => document.addEventListener('mousedown', handleClickOutside), 10)
+        return () => {
+            clearTimeout(timer)
+            document.removeEventListener('mousedown', handleClickOutside)
+        }
+    }, [onCancel])
+
+    return (
+        <div 
+            ref={menuRef}
+            className="db__context-menu" 
+            style={{ 
+                position: 'fixed', 
+                left: pos.left, 
+                top: pos.top, 
+                zIndex: 9999, 
+                background: 'var(--app-bg)', 
+                border: '1px solid var(--app-border)', 
+                borderRadius: 6, 
+                boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+                display: 'flex',
+                flexDirection: 'column',
+                minWidth: 160,
+                padding: '4px 0'
+            }}
+            onMouseDown={e => e.stopPropagation()} 
+        >
+            <div style={{ padding: '8px 12px', fontSize: 12, opacity: 0.5, borderBottom: '1px solid var(--app-border)', marginBottom: 4, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                {sessionTitle}
+            </div>
+            <button 
+                type="button"
+                style={{ textAlign: 'left', padding: '8px 12px', background: 'transparent', border: 'none', color: 'inherit', cursor: 'pointer', fontSize: 13 }}
+                onMouseEnter={e => e.currentTarget.style.background = 'var(--app-hover)'}
+                onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                onClick={onFocus}
+            >
+                Focus Session
+            </button>
+            <button 
+                type="button"
+                style={{ textAlign: 'left', padding: '8px 12px', background: 'transparent', border: 'none', color: '#ef4444', cursor: 'pointer', fontSize: 13 }}
+                onMouseEnter={e => e.currentTarget.style.background = 'rgba(239, 68, 68, 0.1)'}
+                onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                onClick={onUnpin}
+            >
+                Unpin Session
+            </button>
+        </div>
+    )
+}
+
+// ─── Replace Pin Modal ────────────────────────────────────────────────────────
+
+interface ReplacePinModalProps {
+    sessionToPinId: string
+    pinnedSessions: SessionSummary[]
+    onReplace: (oldId: string) => void
+    onCancel: () => void
+}
+
+function ReplacePinModal({ sessionToPinId, pinnedSessions, onReplace, onCancel }: ReplacePinModalProps) {
+    return (
+        <div className="db-modal-overlay" onClick={onCancel}>
+            <div className="db-modal" onClick={e => e.stopPropagation()}>
+                <div className="db-modal__header">
+                    <h2 className="db-modal__title">Replace Pinned Session</h2>
+                    <button type="button" className="db-modal__close" onClick={onCancel}>
+                        <XIcon />
+                    </button>
+                </div>
+                <div className="db-modal__body">
+                    <p style={{ fontSize: 13, color: 'var(--app-hint)', marginBottom: 12, lineHeight: 1.5 }}>
+                        You have reached the maximum of 4 pinned sessions. Select a session to unpin and replace:
+                    </p>
+                    <div className="db__replace-pin-list" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                        {pinnedSessions.map((session, idx) => (
+                            <button
+                                key={session.id}
+                                type="button"
+                                className="db__pin-tab"
+                                style={{ width: '100%', justifyContent: 'flex-start', padding: '10px 12px' }}
+                                onClick={() => onReplace(session.id)}
+                            >
+                                <span className="db__pin-tab-index" style={{ opacity: 0.5, marginRight: 8, fontWeight: 600 }}>{idx + 1}</span>
+                                <span className="db__pin-tab-title">{getSessionTitle(session)}</span>
+                            </button>
+                        ))}
+                    </div>
+                </div>
             </div>
         </div>
     )
@@ -544,102 +697,217 @@ function AddArchivedCard({ archivedCount, addedCount, onClick }: { archivedCount
 
 // ─── Main Dashboard ───────────────────────────────────────────────────────────
 
+const MAX_PINS = 4
+const LS_PINS_KEY = 'mc-pinned-ids'
+
 interface DashboardProps {
     api: ApiClient | null
-    initialPinnedId?: string | null
+    initialPinnedIds: string[]
 }
 
-export function Dashboard({ api, initialPinnedId }: DashboardProps) {
+export function Dashboard({ api, initialPinnedIds }: DashboardProps) {
     const queryClient = useQueryClient()
     const navigate = useNavigate()
+    const search = useSearch({ strict: false }) as RootSearch
+    const modalNewSessionId = search.modalNewSessionId
     const { sessions, isLoading } = useSessions(api)
-    const [showArchived, setShowArchived] = useState(false)
-    // IDs of archived sessions the user has added to the dashboard
     const [addedArchivedIds, setAddedArchivedIds] = useState<Set<string>>(new Set())
+    const [showOverviewDrawer, setShowOverviewDrawer] = useState(false)
+    const [activePinIndex, setActivePinIndex] = useState(0)
+    const [pendingReplacePin, setPendingReplacePin] = useState<string | null>(null)
+    const [pinnedAction, setPinnedAction] = useState<{ id: string, x: number, y: number } | null>(null)
 
-    // B: Filter by session status — persist to localStorage, default 'active'
-    const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'archived'>(() => {
-        const saved = localStorage.getItem('dashboard-status-filter')
-        return (saved === 'all' || saved === 'active' || saved === 'archived') ? saved : 'active'
-    })
-    useEffect(() => {
-        localStorage.setItem('dashboard-status-filter', statusFilter)
-    }, [statusFilter])
-
-    // A: Inline confirm state (replaces window.confirm)
+    // ── Inline confirm ────────────────────────────────────────────────────────
     const [pendingConfirm, setPendingConfirm] = useState<{
         project: string
         action: 'archive' | 'delete'
         targetSessions: SessionSummary[]
     } | null>(null)
 
-    // URL is the single source of truth for pinnedId
-    const pinnedId = initialPinnedId ?? null
+    // ── Pinned IDs — URL is source of truth, localStorage is secondary ────────
+    const [pinnedIds, setPinnedIds] = useState<string[]>(() => {
+        // URL takes priority
+        if (initialPinnedIds.length > 0) return initialPinnedIds.slice(0, MAX_PINS)
+        // Fallback to localStorage
+        try {
+            const saved = localStorage.getItem(LS_PINS_KEY)
+            if (saved) return (JSON.parse(saved) as string[]).slice(0, MAX_PINS)
+        } catch { /* ignore */ }
+        return []
+    })
 
-    // Compute statuses for ALL sessions
+    // Sync initialPinnedIds → pinnedIds when URL changes (e.g. after modal navigation)
+    // This is needed because useState only reads initialPinnedIds once on mount.
+    // When the modal navigates to /sessions?pins=..., the prop changes but state doesn't.
+    useEffect(() => {
+        const incoming = initialPinnedIds.join(',')
+        const current = pinnedIds.join(',')
+        if (incoming !== current && incoming !== '') {
+            setPinnedIds(initialPinnedIds.slice(0, MAX_PINS))
+        }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [initialPinnedIds.join(',')])
+
+    // Sync pinnedIds → URL + localStorage
+    useEffect(() => {
+        localStorage.setItem(LS_PINS_KEY, JSON.stringify(pinnedIds))
+        const pinsParam = pinnedIds.length > 0 ? pinnedIds.join(',') : undefined
+        void navigate({ to: '/sessions', search: (prev) => ({ ...prev, pins: pinsParam }), replace: true })
+    }, [pinnedIds, navigate])
+
+    // Clamp activePinIndex when pins shrink
+    useEffect(() => {
+        if (activePinIndex >= pinnedIds.length) setActivePinIndex(Math.max(0, pinnedIds.length - 1))
+    }, [pinnedIds.length, activePinIndex])
+
+    // Auto-focus newly created session if it gets pinned
+    useEffect(() => {
+        if (modalNewSessionId && pinnedIds.includes(modalNewSessionId)) {
+            const index = pinnedIds.indexOf(modalNewSessionId)
+            if (activePinIndex !== index) {
+                setActivePinIndex(index)
+            }
+        }
+    }, [modalNewSessionId, pinnedIds, activePinIndex])
+
+    // ── Listen for toast notification clicks ─────────────────────────────────
+    // ToastContainer dispatches 'hapi:focus-session' instead of navigating.
+    // Dashboard handles it: focus if pinned, pin+focus if slot available, or open replace modal.
+    useEffect(() => {
+        const handleFocusSession = (e: Event) => {
+            const sessionId = (e as CustomEvent<{ sessionId: string }>).detail?.sessionId
+            if (!sessionId) return
+
+            // Use functional updates so this always has current state
+            setPinnedIds(prev => {
+                const idx = prev.indexOf(sessionId)
+                if (idx !== -1) {
+                    // Already pinned — just focus it
+                    setActivePinIndex(idx)
+                    return prev
+                }
+                if (prev.length < MAX_PINS) {
+                    // Slot available — pin and focus
+                    setActivePinIndex(prev.length)
+                    return [...prev, sessionId]
+                }
+                // Full — open replace modal
+                setPendingReplacePin(sessionId)
+                return prev
+            })
+        }
+
+        document.addEventListener('hapi:focus-session', handleFocusSession)
+        return () => document.removeEventListener('hapi:focus-session', handleFocusSession)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [])
+
+
     const statuses = new Map<string, SessionStatus>()
-    for (const s of sessions) {
-        statuses.set(s.id, getSessionStatus(s))
-    }
+    for (const s of sessions) statuses.set(s.id, getSessionStatus(s))
 
-    const activeSessions = sessions.filter(s => s.active)
     const archivedSessions = sessions.filter(s => !s.active)
 
-    // B: Apply status filter, C: sort by priority then updatedAt desc
     const visibleSessions = [...sessions]
-        .filter(s => {
-            if (statusFilter === 'active') return s.active
-            if (statusFilter === 'archived') return !s.active
-            return true
-        })
         .sort((a, b) => {
+            if (modalNewSessionId) {
+                if (a.id === modalNewSessionId) return -1
+                if (b.id === modalNewSessionId) return 1
+            }
             const pa = getStatusPriority(statuses.get(a.id) ?? 'active')
             const pb = getStatusPriority(statuses.get(b.id) ?? 'active')
-            // C: same priority → newer first
             return pa !== pb ? pa - pb : b.updatedAt - a.updatedAt
         })
-    const projectGroups = groupByProject(visibleSessions)
+    const projectGroups = groupByProject(visibleSessions).sort((a, b) => {
+        const aHasPin = a.sessions.some(s => pinnedIds.includes(s.id))
+        const bHasPin = b.sessions.some(s => pinnedIds.includes(s.id))
+        if (aHasPin && !bHasPin) return -1
+        if (!aHasPin && bHasPin) return 1
+        return a.project.localeCompare(b.project)
+    })
 
-    // Pinned session lookup across ALL sessions (including archived)
-    const pinnedSession = pinnedId ? sessions.find(s => s.id === pinnedId) ?? null : null
+    const pinnedSessions = pinnedIds
+        .map(id => sessions.find(s => s.id === id))
+        .filter((s): s is SessionSummary => s !== undefined)
 
-    const handlePin = useCallback((sessionId: string) => {
-        const next = pinnedId === sessionId ? null : sessionId
-        if (next) {
-            void navigate({ to: '/sessions', search: (prev) => ({ ...prev, sessionId: next }) })
-        } else {
-            void navigate({ to: '/sessions', search: (prev) => ({ ...prev, sessionId: undefined }) })
+    const thinkingCount = [...statuses.values()].filter(s => s === 'thinking').length
+    const doneCount = [...statuses.values()].filter(s => s === 'done').length
+    const waitingCount = [...statuses.values()].filter(s => s === 'waiting').length
+
+    const pinCount = pinnedIds.length
+    const hasPins = pinCount > 0
+    const hasOverflowSidebar = pinCount <= 2
+    const unarchivedCount = archivedSessions.length - addedArchivedIds.size
+    const sidebarCardLimit = pinCount === 1 ? 8 : 4
+
+    // Layout class
+    const layoutClass = pinCount === 0 ? 'db__content--grid'
+        : pinCount === 1 ? 'db__content--split-1'
+        : pinCount === 2 ? 'db__content--split-2'
+        : pinCount === 3 ? 'db__content--split-3'
+        : 'db__content--split-4'
+
+    // ── Handlers ─────────────────────────────────────────────────────────────
+    const clearNewSessionHighlight = useCallback(() => {
+        if (!modalNewSessionId) return
+        void navigate({
+            search: (prev: any) => {
+                const newSearch = { ...prev }
+                delete newSearch.modalNewSessionId
+                return newSearch
+            },
+            replace: true
+        } as any)
+    }, [navigate, modalNewSessionId])
+
+    const handlePin = useCallback((sessionId: string, e?: React.MouseEvent) => {
+        if (pinnedIds.includes(sessionId)) {
+            if (e) {
+                setPinnedAction({ id: sessionId, x: e.clientX, y: e.clientY })
+            } else {
+                setPinnedAction({ id: sessionId, x: window.innerWidth / 2, y: window.innerHeight / 2 })
+            }
+            return
         }
-    }, [navigate, pinnedId])
+        if (pinnedIds.length >= MAX_PINS) {
+            setPendingReplacePin(sessionId)
+            return
+        }
+        setPinnedIds(prev => [...prev, sessionId])
+        setActivePinIndex(pinnedIds.length)
+        // If they pin a new session, we can optionally close the overview drawer here:
+        setShowOverviewDrawer(false)
+    }, [pinnedIds])
 
-    const handleUnpin = useCallback(() => {
-        void navigate({ to: '/sessions', search: (prev) => ({ ...prev, sessionId: undefined }) })
-    }, [navigate])
+    const handleUnpin = useCallback((sessionId: string) => {
+        setPinnedIds(prev => prev.filter(id => id !== sessionId))
+    }, [])
+
+    const handleReplacePin = useCallback((oldSessionId: string) => {
+        if (!pendingReplacePin) return
+        setPinnedIds(prev => {
+            const next = [...prev]
+            const idx = next.indexOf(oldSessionId)
+            if (idx !== -1) {
+                next[idx] = pendingReplacePin
+                setActivePinIndex(idx)
+            }
+            return next
+        })
+        setPendingReplacePin(null)
+    }, [pendingReplacePin])
+
+    const handleUnpinAll = useCallback(() => setPinnedIds([]), [])
 
     const handleAddArchived = useCallback((ids: string[]) => {
         setAddedArchivedIds(prev => new Set([...prev, ...ids]))
     }, [])
 
     const handleDetach = useCallback((sessionId: string) => {
-        setAddedArchivedIds(prev => {
-            const next = new Set(prev)
-            next.delete(sessionId)
-            return next
-        })
-        if (pinnedId === sessionId) {
-            void navigate({ to: '/sessions', search: (prev) => ({ ...prev, sessionId: undefined }) })
-        }
-    }, [navigate, pinnedId])
+        setAddedArchivedIds(prev => { const n = new Set(prev); n.delete(sessionId); return n })
+        setPinnedIds(prev => prev.filter(id => id !== sessionId))
+    }, [])
 
-    // Stats for topbar
-    const thinkingCount = [...statuses.values()].filter(s => s === 'thinking').length
-    const doneCount = [...statuses.values()].filter(s => s === 'done').length
-
-    const isPinned = pinnedId !== null
-    const unarchivedCount = archivedSessions.length - addedArchivedIds.size
-
-
-    // A: Bulk group actions — request confirm (no window.confirm)
     const handleRequestArchiveAll = useCallback((project: string, groupSessions: SessionSummary[]) => {
         const active = groupSessions.filter(s => s.active)
         if (!api || active.length === 0) return
@@ -671,8 +939,49 @@ export function Dashboard({ api, initialPinnedId }: DashboardProps) {
 
     const handleNewInGroup = useCallback((groupSessions: SessionSummary[]) => {
         const path = groupSessions[0]?.metadata?.worktree?.basePath ?? groupSessions[0]?.metadata?.path
-        void navigate({ to: '/sessions/new', search: path ? { directory: path } : {} })
+        // @ts-expect-error tanstack router navigate generic types are too complex here
+        void navigate({ search: (prev: any) => ({ ...prev, modal: 'new-session', modalPath: path }) })
     }, [navigate])
+
+    const renderMiniSessionList = () => (
+        <div className="db__overview-list">
+            {projectGroups.map(({ project, sessions: groupSessions }) => (
+                <div key={project} className="db__overview-group">
+                    <div className="db__overview-group-header">
+                        <span className="db__group-name">{project}</span>
+                        <span className="db__group-count">{groupSessions.length}</span>
+                    </div>
+                    {groupSessions.map(s => {
+                        const isHighlighted = s.id === modalNewSessionId
+                        return (
+                            <button
+                                key={s.id}
+                                type="button"
+                                className={`db__overview-item ${pinnedIds.includes(s.id) ? 'db__overview-item--pinned' : ''} ${isHighlighted ? 'ring-2 ring-[var(--app-button)]' : ''}`}
+                                onClick={(e) => { 
+                                    if (isHighlighted) clearNewSessionHighlight()
+                                    handlePin(s.id, e)
+                                }}
+                                onFocusCapture={() => {
+                                    if (isHighlighted) clearNewSessionHighlight()
+                                }}
+                            >
+                                <span className={`db-card__dot db-card__dot--${statuses.get(s.id) ?? 'active'}`} />
+                                <span className="db__overview-item-title">{getSessionTitle(s)}</span>
+                                <span className={`db-card__agent db-card__agent--${s.metadata?.flavor ?? 'claude'}`}>{getAgentLabel(s)}</span>
+                                {pinnedIds.includes(s.id) && (
+                                    <span className="db__overview-item-pin-index">
+                                        <PinIcon filled />
+                                        <span className="db__overview-item-pin-number">{pinnedIds.indexOf(s.id) + 1}</span>
+                                    </span>
+                                )}
+                            </button>
+                        )
+                    })}
+                </div>
+            ))}
+        </div>
+    )
 
     return (
         <div className="db">
@@ -697,7 +1006,7 @@ export function Dashboard({ api, initialPinnedId }: DashboardProps) {
                         type="button"
                         className="db__topbar-btn"
                         title="Browse workspace"
-                        onClick={() => void navigate({ to: '/browse' })}
+                        onClick={() => void navigate({ search: (prev: any) => ({ ...prev, modal: 'browser' }) } as any)}
                     >
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
                         <span className="db__label">Browse</span>
@@ -706,7 +1015,7 @@ export function Dashboard({ api, initialPinnedId }: DashboardProps) {
                         type="button"
                         className="db__topbar-btn"
                         title="Settings"
-                        onClick={() => void navigate({ to: '/settings' })}
+                        onClick={() => void navigate({ search: (prev: any) => ({ ...prev, modal: 'settings' }) } as any)}
                     >
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
                         <span className="db__label">Settings</span>
@@ -715,177 +1024,283 @@ export function Dashboard({ api, initialPinnedId }: DashboardProps) {
                         type="button"
                         className="db__topbar-btn db__topbar-btn--primary"
                         title="New session"
-                        onClick={() => void navigate({ to: '/sessions/new' })}
+                        onClick={() => void navigate({ search: (prev: any) => ({ ...prev, modal: 'new-session' }) } as any)}
                     >
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
                         <span className="db__label">New Session</span>
                     </button>
-                    {isPinned && (
-                        <button type="button" className="db__unpin-all" onClick={handleUnpin}>
-                            <XIcon /> Unpin
+                    {hasPins && (
+                        <button type="button" className="db__unpin-all" onClick={handleUnpinAll}>
+                            <XIcon /> Unpin All ({pinCount})
                         </button>
                     )}
                 </div>
             </div>
 
-            {/* B: Filter bar */}
-            <div className="db__filter-bar">
-                <button
-                    type="button"
-                    className={`db__filter-btn ${statusFilter === 'all' ? 'db__filter-btn--active' : ''}`}
-                    onClick={() => setStatusFilter('all')}
-                >
-                    All
-                    <span className="db__filter-count">{sessions.length}</span>
-                </button>
-                <button
-                    type="button"
-                    className={`db__filter-btn ${statusFilter === 'active' ? 'db__filter-btn--active' : ''}`}
-                    onClick={() => setStatusFilter('active')}
-                >
-                    Active
-                    <span className="db__filter-count">{activeSessions.length}</span>
-                </button>
-                <button
-                    type="button"
-                    className={`db__filter-btn ${statusFilter === 'archived' ? 'db__filter-btn--active' : ''}`}
-                    onClick={() => setStatusFilter('archived')}
-                >
-                    Archived
-                    <span className="db__filter-count">{archivedSessions.length}</span>
-                </button>
-            </div>
 
-            {/* Main content: single unified layout */}
-            <div className={`db__content ${isPinned ? 'db__content--split' : 'db__content--grid'}`}>
 
-                {/* Pinned panel — shown on the left when a session is pinned */}
-                {isPinned && pinnedSession && (
-                    <PinnedPanel
-                        key={pinnedSession.id}
-                        sessionId={pinnedSession.id}
-                        api={api}
-                        onUnpin={handleUnpin}
-                        onSessionResolved={(newId) => void navigate({ to: '/sessions', search: (prev) => ({ ...prev, sessionId: newId }) })}
-                    />
-                )}
+            {/* Mobile tab strip — shown on mobile when pinned sessions exist */}
+            {hasPins && (
+                <div className="db__pinned-tabs">
+                    <button
+                        type="button"
+                        className="db__pin-tab db__pin-tab--overview-trigger"
+                        onClick={() => setShowOverviewDrawer(true)}
+                        title="View all sessions"
+                    >
+                        {thinkingCount > 0 && <span className="db-card__dot db-card__dot--thinking" />}
+                        {waitingCount > 0 && <span className="db-card__dot db-card__dot--waiting" />}
+                        {thinkingCount === 0 && waitingCount === 0 && doneCount > 0 && <span className="db-card__dot db-card__dot--done" />}
+                        <span className="db__pin-tab-title">All {sessions.length}</span>
+                    </button>
 
-                {/* Grid of session cards — always visible, shrinks to sidebar when pinned */}
-                <div className={`db__grid-area ${isPinned ? 'db__grid-area--sidebar' : ''}`}>
-                    {isLoading && <div className="db__loading">Loading sessions…</div>}
+                    {pinnedIds.map((id, idx) => {
+                        const s = sessions.find(x => x.id === id)
+                        const status = statuses.get(id) ?? 'active'
+                        const title = s ? getSessionTitle(s) : id.slice(0, 8)
+                        return (
+                            <button
+                                key={id}
+                                type="button"
+                                className={`db__pin-tab ${idx === activePinIndex ? 'db__pin-tab--active' : ''}`}
+                                onClick={() => setActivePinIndex(idx)}
+                            >
+                                <span className="db__pin-tab-index" style={{ opacity: 0.5, fontSize: 10, fontWeight: 700 }}>{idx + 1}</span>
+                                <span className={`db-card__dot db-card__dot--${status}`} />
+                                <span className="db__pin-tab-title">{title}</span>
+                                <span
+                                    className="db__pin-tab-close"
+                                    role="button"
+                                    tabIndex={0}
+                                    onClick={e => { e.stopPropagation(); handleUnpin(id) }}
+                                    onKeyDown={e => { if (e.key === 'Enter') { e.stopPropagation(); handleUnpin(id) } }}
+                                >
+                                    <XIcon />
+                                </span>
+                            </button>
+                        )
+                    })}
+                </div>
+            )}
 
-                    {!isLoading && visibleSessions.length === 0 && !isPinned && (
-                        <div className="db__empty">
-                            <p>No active sessions</p>
-                            <p style={{ fontSize: 12, opacity: 0.5, marginTop: 4 }}>
-                                Start a session from the Sessions tab
-                            </p>
-                        </div>
-                    )}
+            {/* Main content area */}
+            <div className={`db__content ${layoutClass}`}>
 
-                    <div className={`db__groups ${isPinned ? 'db__groups--compact' : ''}`}>
-                        {projectGroups.map(({ project, sessions: groupSessions }) => (
-                            <div key={project} className="db__group">
-                                {!isPinned && (
-                                    <div className="db__group-header">
-                                        <div className="db__group-header-left">
-                                            <span className="db__group-name">{project}</span>
-                                            <span className="db__group-count">{groupSessions.length}</span>
-                                        </div>
-                                        <div className="db__group-actions">
-                                            <button
-                                                type="button"
-                                                className="db__group-action"
-                                                title={`New session in ${project}`}
-                                                onClick={() => handleNewInGroup(groupSessions)}
-                                            >
-                                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-                                                <span className="db__label">New</span>
-                                            </button>
-                                            <button
-                                                type="button"
-                                                className="db__group-action"
-                                                title="Copy project path"
-                                                onClick={() => handleCopyPath(project, groupSessions)}
-                                            >
-                                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-                                                <span className="db__label">Copy Path</span>
-                                            </button>
-                                            {/* A: Inline confirm OR action buttons */}
-                                            {pendingConfirm?.project === project ? (
-                                                <div className={`db__inline-confirm ${pendingConfirm.action === 'delete' ? 'db__inline-confirm--danger' : ''}`}>
-                                                    <span className="db__inline-confirm-text">
-                                                        {pendingConfirm.action === 'archive'
-                                                            ? `Archive ${pendingConfirm.targetSessions.length} session(s)?`
-                                                            : `Delete ${pendingConfirm.targetSessions.length} archived session(s)?`
-                                                        }
-                                                    </span>
-                                                    <button
-                                                        type="button"
-                                                        className="db__inline-confirm-yes"
-                                                        onClick={() => void handleExecuteConfirm()}
-                                                    >
-                                                        Confirm
-                                                    </button>
-                                                    <button
-                                                        type="button"
-                                                        className="db__inline-confirm-no"
-                                                        onClick={() => setPendingConfirm(null)}
-                                                    >
-                                                        Cancel
-                                                    </button>
-                                                </div>
-                                            ) : (
-                                                <>
-                                                    {groupSessions.some(s => s.active) && (
-                                                        <button
-                                                            type="button"
-                                                            className="db__group-action db__group-action--warning"
-                                                            title="Archive all active sessions in this group"
-                                                            onClick={() => handleRequestArchiveAll(project, groupSessions)}
-                                                        >
-                                                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/></svg>
-                                                            <span className="db__label">Archive All</span>
-                                                        </button>
-                                                    )}
-                                                    {groupSessions.some(s => !s.active) && (
-                                                        <button
-                                                            type="button"
-                                                            className="db__group-action db__group-action--danger"
-                                                            title="Delete all archived sessions in this group"
-                                                            onClick={() => handleRequestDeleteAll(project, groupSessions)}
-                                                        >
-                                                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
-                                                            <span className="db__label">Delete Archived</span>
-                                                        </button>
-                                                    )}
-                                                </>
-                                            )}
-                                        </div>
-                                    </div>
-                                )}
-                                <div className={`db__grid ${isPinned ? 'db__grid--compact' : ''}`}>
-                                    {groupSessions.map(session => {
-                                        const isArchived = statuses.get(session.id) === 'archived'
-                                        return (
-                                            <SessionCard
-                                                key={session.id}
-                                                session={session}
-                                                status={statuses.get(session.id) ?? 'archived'}
-                                                isPinned={session.id === pinnedId}
-                                                compact={isPinned}
-                                                isAddedArchived={isArchived}
-                                                onSelect={() => handlePin(session.id)}
-                                            />
-                                        )
-                                    })}
-                                </div>
+                {/* Pinned panels area */}
+                {hasPins && (
+                    <div className="db__pinned-area">
+                        {pinnedSessions.map((s, idx) => (
+                            <div
+                                key={s.id}
+                                className={[
+                                    'db__pinned-panel',
+                                    pinnedIds.length >= 2 ? `db__pinned-panel--mobile-${idx === activePinIndex ? 'active' : 'hidden'}` : '',
+                                    s.id === modalNewSessionId ? 'ring-2 ring-[var(--app-button)]' : ''
+                                ].filter(Boolean).join(' ')}
+                                onClick={() => {
+                                    if (s.id === modalNewSessionId) clearNewSessionHighlight()
+                                }}
+                                onFocusCapture={() => {
+                                    if (s.id === modalNewSessionId) clearNewSessionHighlight()
+                                }}
+                            >
+                                <PinnedPanel
+                                    sessionId={s.id}
+                                    api={api}
+                                    onUnpin={() => handleUnpin(s.id)}
+                                    onSessionResolved={(newId) => {
+                                        setPinnedIds(prev => prev.map(id => id === s.id ? newId : id))
+                                    }}
+                                    pinIndex={idx + 1}
+                                    compact={true}
+                                    isActive={activePinIndex === idx}
+                                    onFocus={() => setActivePinIndex(idx)}
+                                />
                             </div>
                         ))}
+
+                        {/* 4th cell placeholder for 3-pin mode */}
+                        {pinnedSessions.length === 3 && (
+                            <div className="db__pinned-placeholder">
+                                <div className="db__pinned-placeholder-header">
+                                    <span className="db__pinned-placeholder-title">Select 4th session to pin</span>
+                                </div>
+                                <div className="db__pinned-placeholder-content app-scroll-y">
+                                    <div className="db__groups db__groups--compact">
+                                        {projectGroups.map(({ project, sessions: groupSessions }) => (
+                                            <div key={project} className="db__group">
+                                                <div className="db__group-header db__group-header--sidebar">
+                                                    <span className="db__group-name">{project}</span>
+                                                    <span className="db__group-count">{groupSessions.length}</span>
+                                                </div>
+                                                <div className="db__grid db__grid--compact">
+                                                    {groupSessions.map(session => (
+                                                        <SessionCard
+                                                            key={session.id}
+                                                            session={session}
+                                                            status={statuses.get(session.id) ?? 'archived'}
+                                                            isPinned={pinnedIds.includes(session.id)}
+                                                            pinIndex={pinnedIds.includes(session.id) ? pinnedIds.indexOf(session.id) + 1 : undefined}
+                                                            pinDisabled={pinnedIds.length >= MAX_PINS}
+                                                            compact={true}
+                                                            isAddedArchived={statuses.get(session.id) === 'archived'}
+                                                            isHighlighted={session.id === modalNewSessionId}
+                                                            onSelect={(e) => {
+                                                                if (session.id === modalNewSessionId) clearNewSessionHighlight()
+                                                                handlePin(session.id, e)
+                                                            }}
+                                                            onFocusCapture={() => {
+                                                                if (session.id === modalNewSessionId) clearNewSessionHighlight()
+                                                            }}
+                                                        />
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            </div>
+                        )}
                     </div>
-                </div>
+                )}
+
+                {/* Session card grid — sidebar when 1-2 pins, hidden when 3-4 pins */}
+                {(pinCount === 0 || hasOverflowSidebar) && (
+                    <div className={`db__grid-area ${hasPins ? 'db__grid-area--sidebar' : ''}`}>
+                        {isLoading && <div className="db__loading">Loading sessions…</div>}
+
+                        {!isLoading && visibleSessions.length === 0 && !hasPins && (
+                            <div className="db__empty">
+                                <p>No active sessions</p>
+                                <p style={{ fontSize: 12, opacity: 0.5, marginTop: 4 }}>Start a session from the Sessions tab</p>
+                            </div>
+                        )}
+
+                        <div className={`db__groups ${hasPins ? 'db__groups--compact' : ''}`}>
+                            {projectGroups.map(({ project, sessions: groupSessions }) => {
+                                // In sidebar mode, limit cards shown
+                                const displaySessions = hasPins ? groupSessions.slice(0, sidebarCardLimit) : groupSessions
+                                return (
+                                    <div key={project} className="db__group">
+                                        {/* Always show group header — compact version in sidebar mode */}
+                                        {hasPins ? (
+                                            <div className="db__group-header db__group-header--sidebar">
+                                                <span className="db__group-name">{project}</span>
+                                                <span className="db__group-count">{groupSessions.length}</span>
+                                            </div>
+                                        ) : (
+                                            <div className="db__group-header">
+                                                <div className="db__group-header-left">
+                                                    <span className="db__group-name">{project}</span>
+                                                    <span className="db__group-count">{groupSessions.length}</span>
+                                                </div>
+                                                <div className="db__group-actions">
+                                                    <button type="button" className="db__group-action" title={`New session in ${project}`} onClick={() => handleNewInGroup(groupSessions)}>
+                                                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                                                        <span className="db__label">New</span>
+                                                    </button>
+                                                    <button type="button" className="db__group-action" title="Copy project path" onClick={() => handleCopyPath(project, groupSessions)}>
+                                                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                                                        <span className="db__label">Copy Path</span>
+                                                    </button>
+                                                    {pendingConfirm?.project === project ? (
+                                                        <div className={`db__inline-confirm ${pendingConfirm.action === 'delete' ? 'db__inline-confirm--danger' : ''}`}>
+                                                            <span className="db__inline-confirm-text">
+                                                                {pendingConfirm.action === 'archive' ? `Archive ${pendingConfirm.targetSessions.length} session(s)?` : `Delete ${pendingConfirm.targetSessions.length} archived session(s)?`}
+                                                            </span>
+                                                            <button type="button" className="db__inline-confirm-yes" onClick={() => void handleExecuteConfirm()}>Confirm</button>
+                                                            <button type="button" className="db__inline-confirm-no" onClick={() => setPendingConfirm(null)}>Cancel</button>
+                                                        </div>
+                                                    ) : (
+                                                        <>
+                                                            {groupSessions.some(s => s.active) && (
+                                                                <button type="button" className="db__group-action db__group-action--warning" title="Archive all active" onClick={() => handleRequestArchiveAll(project, groupSessions)}>
+                                                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/></svg>
+                                                                    <span className="db__label">Archive All</span>
+                                                                </button>
+                                                            )}
+                                                            {groupSessions.some(s => !s.active) && (
+                                                                <button type="button" className="db__group-action db__group-action--danger" title="Delete all archived" onClick={() => handleRequestDeleteAll(project, groupSessions)}>
+                                                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+                                                                    <span className="db__label">Delete Archived</span>
+                                                                </button>
+                                                            )}
+                                                        </>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        )}
+                                        <div className={`db__grid ${hasPins ? 'db__grid--compact' : ''}`}>
+                                            {displaySessions.map(session => (
+                                                <SessionCard
+                                                    key={session.id}
+                                                    session={session}
+                                                    status={statuses.get(session.id) ?? 'archived'}
+                                                    isPinned={pinnedIds.includes(session.id)}
+                                                    pinIndex={pinnedIds.includes(session.id) ? pinnedIds.indexOf(session.id) + 1 : undefined}
+                                                    pinDisabled={pinnedIds.length >= MAX_PINS}
+                                                    compact={hasPins}
+                                                    isAddedArchived={statuses.get(session.id) === 'archived'}
+                                                    isHighlighted={session.id === modalNewSessionId}
+                                                    onSelect={() => {
+                                                        if (session.id === modalNewSessionId) clearNewSessionHighlight()
+                                                        handlePin(session.id)
+                                                    }}
+                                                    onFocusCapture={() => {
+                                                        if (session.id === modalNewSessionId) clearNewSessionHighlight()
+                                                    }}
+                                                />
+                                            ))}
+                                        </div>
+                                    </div>
+                                )
+                            })}
+                        </div>
+                    </div>
+                )}
+
+
+
+                {showOverviewDrawer && (
+                    <div className="db__overview-overlay" onClick={() => setShowOverviewDrawer(false)}>
+                        <div className="db__overview-drawer" onClick={e => e.stopPropagation()}>
+                            <div className="db__overview-header">
+                                <span className="db__overview-title">Sessions ({sessions.length})</span>
+                                <button type="button" className="db__overview-close" onClick={() => setShowOverviewDrawer(false)}><XIcon /></button>
+                            </div>
+                            {renderMiniSessionList()}
+                        </div>
+                    </div>
+                )}
             </div>
 
+            {pendingReplacePin && (
+                <ReplacePinModal
+                    sessionToPinId={pendingReplacePin}
+                    pinnedSessions={pinnedSessions}
+                    onReplace={handleReplacePin}
+                    onCancel={() => setPendingReplacePin(null)}
+                />
+            )}
+
+            {pinnedAction && (
+                <PinnedSessionContextMenu
+                    sessionTitle={getSessionTitle(sessions.find(s => s.id === pinnedAction.id) || { id: pinnedAction.id } as any)}
+                    x={pinnedAction.x}
+                    y={pinnedAction.y}
+                    onFocus={() => {
+                        const idx = pinnedIds.indexOf(pinnedAction.id)
+                        if (idx !== -1) setActivePinIndex(idx)
+                        setPinnedAction(null)
+                        setShowOverviewDrawer(false)
+                    }}
+                    onUnpin={() => {
+                        setPinnedIds(prev => prev.filter(id => id !== pinnedAction.id))
+                        setPinnedAction(null)
+                    }}
+                    onCancel={() => setPinnedAction(null)}
+                />
+            )}
         </div>
     )
 }

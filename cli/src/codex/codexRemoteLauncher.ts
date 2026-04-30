@@ -242,6 +242,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         let clearReadyAfterTurnTimer: (() => void) | null = null;
         let turnInFlight = false;
         let allowAnonymousTerminalEvent = false;
+        let hasSummary = false;
         let invalidThreadId: string | null = null;
 
         const handleCodexEvent = (msg: Record<string, unknown>) => {
@@ -384,6 +385,24 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                         message,
                         id: randomUUID()
                     });
+
+                    // Auto-update session summary from first agent message
+                    if (!hasSummary) {
+                        hasSummary = true;
+                        const firstLine = message.split('\n')[0].trim();
+                        const summaryText = firstLine.length > 120
+                            ? firstLine.slice(0, 117) + '…'
+                            : firstLine;
+                        if (summaryText.length > 0) {
+                            session.client.updateMetadata((metadata) => ({
+                                ...metadata,
+                                summary: {
+                                    text: summaryText,
+                                    updatedAt: Date.now()
+                                }
+                            }));
+                        }
+                    }
                 }
             }
             if (msgType === 'exec_command_begin' || msgType === 'exec_approval_request') {
@@ -701,6 +720,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 this.currentThreadId = null;
                 invalidThreadId = null;
                 hasThread = false;
+                hasSummary = false;
                 session.resetCodexThread();
                 sendVisibleStatus('Context was reset');
                 return true;

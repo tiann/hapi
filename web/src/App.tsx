@@ -27,6 +27,7 @@ import { VoiceErrorBanner } from '@/components/VoiceErrorBanner'
 import { LoadingState } from '@/components/LoadingState'
 import { ToastContainer } from '@/components/ToastContainer'
 import { ToastProvider, useToast } from '@/lib/toast-context'
+import { GlobalModalManager } from '@/components/GlobalModalManager'
 import type { SyncEvent } from '@/types/api'
 
 type ToastEvent = Extract<SyncEvent, { type: 'toast' }>
@@ -363,6 +364,7 @@ function AppInner() {
                 <div className="h-full min-h-0 flex flex-col">
                     <Outlet />
                 </div>
+                <GlobalModalManager />
                 <ToastContainer />
                 <InstallPrompt />
             </VoiceProvider>

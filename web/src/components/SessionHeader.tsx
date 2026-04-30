@@ -1,4 +1,5 @@
 import { useId, useMemo, useRef, useState } from 'react'
+import { useNavigate } from '@tanstack/react-router'
 import type { Session } from '@/types/api'
 import type { ApiClient } from '@/api/client'
 import { isTelegramApp } from '@/hooks/useTelegram'
@@ -84,6 +85,45 @@ function MoreVerticalIcon(props: { className?: string }) {
     )
 }
 
+function FolderIcon(props: { className?: string }) {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={props.className}
+        >
+            <path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z" />
+        </svg>
+    )
+}
+
+function TerminalIcon(props: { className?: string }) {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={props.className}
+        >
+            <polyline points="4 17 10 11 4 5" />
+            <line x1="12" y1="19" x2="20" y2="19" />
+        </svg>
+    )
+}
+
 export function SessionHeader(props: {
     session: Session
     onBack: () => void
@@ -91,12 +131,17 @@ export function SessionHeader(props: {
     onOpenOutline?: () => void
     api: ApiClient | null
     onSessionDeleted?: () => void
+    compactMode?: boolean
+    pinIndex?: number
 }) {
     const { t } = useTranslation()
-    const { session, api, onSessionDeleted } = props
+    const navigate = useNavigate()
+    const { session, api, onSessionDeleted, compactMode, pinIndex } = props
     const title = useMemo(() => getSessionTitle(session), [session])
     const worktreeBranch = session.metadata?.worktree?.branch
     const modelLabel = getSessionModelLabel(session)
+    const agentFlavor = session.metadata?.flavor ?? 'claude'
+    const sessionStatus = session.thinking ? 'thinking' : !session.active ? 'archived' : 'active'
 
     const [menuOpen, setMenuOpen] = useState(false)
     const [menuAnchorPoint, setMenuAnchorPoint] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
@@ -128,6 +173,71 @@ export function SessionHeader(props: {
     // In Telegram, don't render header (Telegram provides its own)
     if (isTelegramApp()) {
         return null
+    }
+
+    if (compactMode) {
+        return (
+            <>
+                <div className="db-pinned__compact-header">
+                    <div className="db-pinned__compact-row1">
+                        {pinIndex !== undefined && <span className="db-pinned__index-badge">{pinIndex}</span>}
+                        <span className={`db-card__dot db-card__dot--${sessionStatus}`} />
+                        <span className="db-pinned__compact-title">{title}</span>
+                        <span className={`db-card__agent db-card__agent--${agentFlavor}`}>{agentFlavor}</span>
+                        
+                        <div className="db-pinned__compact-actions flex items-center gap-1 ml-auto">
+                            <button type="button" className="db-pinned__compact-action" onClick={() => navigate({ search: (prev: any) => ({ ...prev, modal: 'files', modalSessionId: session.id }) } as any)} title="Files">
+                                <FolderIcon className="w-4 h-4" />
+                            </button>
+                            <button type="button" className="db-pinned__compact-action" onClick={() => navigate({ search: (prev: any) => ({ ...prev, modal: 'terminal', modalSessionId: session.id }) } as any)} title="Terminal">
+                                <TerminalIcon className="w-4 h-4" />
+                            </button>
+                            <button
+                                type="button"
+                                onClick={handleMenuToggle}
+                                onPointerDown={(e) => e.stopPropagation()}
+                                ref={menuAnchorRef}
+                                className="db-pinned__compact-action"
+                                title={t('session.more')}
+                            >
+                                <MoreVerticalIcon className="w-4 h-4" />
+                            </button>
+                            <button
+                                type="button"
+                                className="db-pinned__unpin-btn"
+                                onClick={props.onBack}
+                                title="Unpin this session"
+                            >
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                    <line x1="18" y1="6" x2="6" y2="18"></line>
+                                    <line x1="6" y1="6" x2="18" y2="18"></line>
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+                    {session.metadata?.path && (
+                        <div className="db-pinned__compact-path" title={session.metadata.path}>
+                            {session.metadata.path.split('/').filter(Boolean).slice(-2).join('/')}
+                        </div>
+                    )}
+                </div>
+
+                <SessionActionMenu
+                    isOpen={menuOpen}
+                    onClose={() => setMenuOpen(false)}
+                    sessionActive={session.active}
+                    onRename={() => setRenameOpen(true)}
+                    onArchive={() => setArchiveOpen(true)}
+                    onDelete={() => setDeleteOpen(true)}
+                    anchorPoint={menuAnchorPoint}
+                    menuId={menuId}
+                />
+
+                <RenameSessionDialog isOpen={renameOpen} onClose={() => setRenameOpen(false)} currentName={title} onRename={renameSession} isPending={isPending} />
+                <ConfirmDialog isOpen={archiveOpen} onClose={() => setArchiveOpen(false)} title={t('dialog.archive.title')} description={t('dialog.archive.description', { name: title })} confirmLabel={t('dialog.archive.confirm')} confirmingLabel={t('dialog.archive.confirming')} onConfirm={archiveSession} isPending={isPending} destructive />
+                <ConfirmDialog isOpen={deleteOpen} onClose={() => setDeleteOpen(false)} title={t('dialog.delete.title')} description={t('dialog.delete.description', { name: title })} confirmLabel={t('dialog.delete.confirm')} confirmingLabel={t('dialog.delete.confirming')} onConfirm={handleDelete} isPending={isPending} destructive />
+            </>
+        )
     }
 
     return (
@@ -173,19 +283,31 @@ export function SessionHeader(props: {
                             {worktreeBranch ? (
                                 <span>{t('session.item.worktree')}: {worktreeBranch}</span>
                             ) : null}
+                            {session.metadata?.path ? (
+                                <span className="truncate font-mono opacity-70" title={session.metadata.path}>
+                                    {session.metadata.path.split('/').filter(Boolean).slice(-2).join('/')}
+                                </span>
+                            ) : null}
                         </div>
                     </div>
 
-                    {props.onViewFiles ? (
-                        <button
-                            type="button"
-                            onClick={props.onViewFiles}
-                            className="flex h-8 w-8 items-center justify-center rounded-full text-[var(--app-hint)] transition-colors hover:bg-[var(--app-secondary-bg)] hover:text-[var(--app-fg)]"
-                            title={t('session.title')}
-                        >
-                            <FilesIcon />
-                        </button>
-                    ) : null}
+
+                    <button
+                        type="button"
+                        className="flex h-8 w-8 items-center justify-center rounded-full text-[var(--app-hint)] transition-colors hover:bg-[var(--app-secondary-bg)] hover:text-[var(--app-fg)]"
+                        title={t('button.files')}
+                        onClick={() => navigate({ search: (prev: any) => ({ ...prev, modal: 'files', modalSessionId: session.id }) } as any)}
+                    >
+                        <FolderIcon className="w-5 h-5" />
+                    </button>
+                    <button
+                        type="button"
+                        className="flex h-8 w-8 items-center justify-center rounded-full text-[var(--app-hint)] transition-colors hover:bg-[var(--app-secondary-bg)] hover:text-[var(--app-fg)]"
+                        title={t('button.terminal')}
+                        onClick={() => navigate({ search: (prev: any) => ({ ...prev, modal: 'terminal', modalSessionId: session.id }) } as any)}
+                    >
+                        <TerminalIcon className="w-5 h-5" />
+                    </button>
 
                     {props.onOpenOutline ? (
                         <button

@@ -4,6 +4,7 @@ import { useSearch } from '@tanstack/react-router'
 
 export default function DashboardPage() {
     const { api } = useAppContext()
-    const { sessionId } = useSearch({ from: '/sessions/' })
-    return <Dashboard api={api} initialPinnedId={sessionId ?? null} />
+    const { pins } = useSearch({ from: '/sessions/' })
+    const initialPinnedIds = pins ? pins.split(',').filter(Boolean) : []
+    return <Dashboard api={api} initialPinnedIds={initialPinnedIds} />
 }
