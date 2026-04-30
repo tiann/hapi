@@ -35,6 +35,7 @@ import FilePage from '@/routes/sessions/file'
 import TerminalPage from '@/routes/sessions/terminal'
 import SettingsPage from '@/routes/settings'
 import DashboardPage from '@/routes/dashboard'
+import EditorPage from '@/routes/editor'
 
 
 function BackIcon(props: { className?: string }) {
@@ -499,6 +500,27 @@ const browseRoute = createRoute({
     component: BrowsePage,
 })
 
+type EditorSearch = {
+    machine?: string
+    project?: string
+}
+
+const editorRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: '/editor',
+    validateSearch: (search: Record<string, unknown>): EditorSearch => {
+        const result: EditorSearch = {}
+        if (typeof search.machine === 'string' && search.machine) {
+            result.machine = search.machine
+        }
+        if (typeof search.project === 'string' && search.project) {
+            result.project = search.project
+        }
+        return result
+    },
+    component: EditorPage,
+})
+
 const settingsRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: '/settings',
@@ -518,6 +540,7 @@ export const routeTree = rootRoute.addChildren([
         ]),
     ]),
     browseRoute,
+    editorRoute,
     settingsRoute,
 ])
 
