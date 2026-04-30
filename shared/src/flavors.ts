@@ -14,7 +14,7 @@ const FLAVOR_CAPS: Record<AgentFlavor, ReadonlySet<Capability>> = {
     gemini: new Set([Capabilities.ModelChange]),
     codex: new Set([Capabilities.ModelChange]),
     cursor: new Set([]),
-    opencode: new Set([]),
+    opencode: new Set([Capabilities.ModelChange]),
 }
 
 // --- Flavor display names ---
