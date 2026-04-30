@@ -1,0 +1,357 @@
+{
+  "model": "gemini-3-flash-preview",
+  "scenario": "read_file",
+  "prompt": "Please read the README.md file in the current directory and tell me what it contains.",
+  "captured_at": "2026-04-30T01:38:59.842Z",
+  "updates": [
+    {
+      "sessionUpdate": "available_commands_update",
+      "availableCommands": [
+        {
+          "name": "memory",
+          "description": "Manage memory."
+        },
+        {
+          "name": "memory show",
+          "description": "Shows the current memory contents."
+        },
+        {
+          "name": "memory refresh",
+          "description": "Refreshes the memory from the source."
+        },
+        {
+          "name": "memory list",
+          "description": "Lists the paths of the GEMINI.md files in use."
+        },
+        {
+          "name": "memory add",
+          "description": "Add content to the memory."
+        },
+        {
+          "name": "memory inbox",
+          "description": "Lists skills extracted from past sessions that are pending review."
+        },
+        {
+          "name": "extensions",
+          "description": "Manage extensions."
+        },
+        {
+          "name": "extensions list",
+          "description": "Lists all installed extensions."
+        },
+        {
+          "name": "extensions explore",
+          "description": "Explore available extensions."
+        },
+        {
+          "name": "extensions enable",
+          "description": "Enable an extension."
+        },
+        {
+          "name": "extensions disable",
+          "description": "Disable an extension."
+        },
+        {
+          "name": "extensions install",
+          "description": "Install an extension from a git repo or local path."
+        },
+        {
+          "name": "extensions link",
+          "description": "Link an extension from a local path."
+        },
+        {
+          "name": "extensions uninstall",
+          "description": "Uninstall an extension."
+        },
+        {
+          "name": "extensions restart",
+          "description": "Restart an extension."
+        },
+        {
+          "name": "extensions update",
+          "description": "Update an extension."
+        },
+        {
+          "name": "init",
+          "description": "Analyzes the project and creates a tailored GEMINI.md file"
+        },
+        {
+          "name": "restore",
+          "description": "Restore to a previous checkpoint, or list available checkpoints to restore. This will reset the conversation and file history to the state it was in when the checkpoint was created"
+        },
+        {
+          "name": "restore list",
+          "description": "Lists all available checkpoints."
+        },
+        {
+          "name": "about",
+          "description": "Show version and environment info"
+        },
+        {
+          "name": "help",
+          "description": "Show available commands"
+        }
+      ]
+    },
+    {
+      "sessionUpdate": "agent_thought_chunk",
+      "content": {
+        "type": "text",
+        "text": "**Reviewing Initial Instructions**\n\nI'm starting by diving into the `README.md` file, as the instructions stipulate. However, I need to check `AGENTS.md` first, according to the guidance in `~/.gemini/GEMINI.md`. This is my first step to understanding the overall structure.\n\n\n"
+      }
+    },
+    {
+      "sessionUpdate": "tool_call",
+      "toolCallId": "update_topic-1777513103531-1",
+      "status": "in_progress",
+      "title": "Update topic to: \"Researching Project Overview\"",
+      "content": [],
+      "locations": [],
+      "kind": "think"
+    },
+    {
+      "sessionUpdate": "tool_call_update",
+      "toolCallId": "update_topic-1777513103531-1",
+      "status": "completed",
+      "title": "Update topic to: \"Researching Project Overview\"",
+      "content": [
+        {
+          "type": "content",
+          "content": {
+            "type": "text",
+            "text": "## \ud83d\udcc2 Topic: **Researching Project Overview**\n\n**Summary:**\nI am starting by reading AGENTS.md as mandated by the global configuration, then I will read the README.md file in the root directory to provide a summary of the project as requested by the user.\n\n> [!STRATEGY]\n> **Intent:** Initial research to understand the project and fulfill the user request."
+          }
+        }
+      ],
+      "locations": [],
+      "kind": "think"
+    },
+    {
+      "sessionUpdate": "tool_call",
+      "toolCallId": "read_file-1777513103560-2",
+      "status": "in_progress",
+      "title": "AGENTS.md",
+      "content": [],
+      "locations": [
+        {
+          "path": "/home/lupin/workspace/hapi-fix-gemini-display/AGENTS.md"
+        }
+      ],
+      "kind": "read"
+    },
+    {
+      "sessionUpdate": "tool_call_update",
+      "toolCallId": "read_file-1777513103560-2",
+      "status": "completed",
+      "title": "AGENTS.md",
+      "content": [],
+      "locations": [
+        {
+          "path": "/home/lupin/workspace/hapi-fix-gemini-display/AGENTS.md"
+        }
+      ],
+      "kind": "read"
+    },
+    {
+      "sessionUpdate": "tool_call",
+      "toolCallId": "read_file-1777513103570-3",
+      "status": "in_progress",
+      "title": "README.md",
+      "content": [],
+      "locations": [
+        {
+          "path": "/home/lupin/workspace/hapi-fix-gemini-display/README.md"
+        }
+      ],
+      "kind": "read"
+    },
+    {
+      "sessionUpdate": "tool_call_update",
+      "toolCallId": "read_file-1777513103570-3",
+      "status": "completed",
+      "title": "README.md",
+      "content": [],
+      "locations": [
+        {
+          "path": "/home/lupin/workspace/hapi-fix-gemini-display/README.md"
+        }
+      ],
+      "kind": "read"
+    },
+    {
+      "sessionUpdate": "agent_thought_chunk",
+      "content": {
+        "type": "text",
+        "text": "**Summarizing README Content**\n\nI've digested the information in the `README.md` file. It appears to be a concise overview. The project, HAPI, is clearly defined as a local-first platform. This is a crucial starting point for understanding the project's purpose.\n\n\n"
+      }
+    },
+    {
+      "sessionUpdate": "agent_thought_chunk",
+      "content": {
+        "type": "text",
+        "text": "**Delivering README Summary**\n\nI've synthesized the `README.md` and `AGENTS.md` content and can now provide a detailed summary of `README.md`. The document outlines HAPI as a local-first platform for AI coding agents. It details key features like seamless handoff, native-first experience, remote approval, multiple agent support, terminal access, voice control, and workspace browsing. Instructions are provided for hub and agent startup, alongside links to comprehensive documentation and build instructions.\n\n\n"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "`README.md` \ud30c\uc77c\uc740 **HAPI"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "** \ud504\ub85c\uc81d\ud2b8\uc5d0 \ub300\ud55c \uc804\ubc18\uc801\uc778 \uc18c\uac1c\uc640 \uc8fc\uc694 \uae30\ub2a5\uc744 \ub2f4\uace0 \uc788\uc2b5\ub2c8\ub2e4. \uc8fc\uc694 \ub0b4\uc6a9\uc740 \ub2e4\uc74c\uacfc \uac19\uc2b5\ub2c8\ub2e4:\n\n### **1. \ud504\ub85c\uc81d\ud2b8"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": " \uac1c\uc694**\n*   **HAPI (\u54c8\u76ae):** \ub85c\uceec\uc5d0\uc11c \uc2e4\ud589\ub418\ub294 AI \ucf54\ub529 \uc5d0\uc774\uc804"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "\ud2b8(Claude Code, Codex, Gemini, OpenCode \ub4f1)\ub97c \uc6f9, PWA, \ud154\ub808\uadf8\ub7a8 \ubbf8"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "\ub2c8 \uc571\uc744 \ud1b5\ud574 \uc6d0\uaca9\uc73c\ub85c \uc81c\uc5b4\ud560 \uc218 \uc788\uac8c \ud574\uc8fc\ub294 \ub85c\uceec \uc6b0\uc120(local-first) \ud50c\ub7ab\ud3fc\uc785\ub2c8\ub2e4.\n*"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "   [Happy](https://github.com/slopus/happy) \ud504\ub85c\uc81d\ud2b8\uc758 \ub300\uc548\uc73c\ub85c \uac1c\ubc1c\ub418\uc5c8\uc2b5\ub2c8\ub2e4.\n\n###"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": " **2. \uc8fc\uc694 \uae30\ub2a5**\n*   **Seamless Handoff:** \ub85c\uceec\uacfc \uc6d0\uaca9 \uc81c\uc5b4 \uc0ac\uc774\ub97c \ub9e5"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "\ub77d \uc190\uc2e4 \uc5c6\uc774 \uc790\uc720\ub86d\uac8c \uc804\ud658\ud560 \uc218 \uc788\uc2b5\ub2c8\ub2e4.\n*   **Native First:** \uae30\uc874 AI \uc5d0\uc774\uc804\ud2b8\ub97c"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": " \ub798\ud551\ud558\uc5ec \ub3d9\uc77c\ud55c \ud130\ubbf8\ub110 \uacbd\ud5d8\uacfc \uadfc\uc721 \uae30\uc5b5\uc744 \uc720\uc9c0\ud569\ub2c8\ub2e4.\n*   **\uc6d0\uaca9 \uc2b9"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "\uc778:** \uc790\ub9ac\ub97c \ube44\uc6b4 \uc0c1\ud0dc\uc5d0\uc11c\ub3c4 \uc2a4\ub9c8\ud2b8\ud3f0\uc73c\ub85c AI\uc758 \uc694\uccad\uc744 \uc2b9\uc778\ud560 \uc218 \uc788\uc2b5\ub2c8\ub2e4.\n*   "
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "**\ub2e4\uc591\ud55c \uc5d0\uc774\uc804\ud2b8 \uc9c0\uc6d0:** Claude Code, Codex, Cursor Agent, Gemini, OpenCode \ub4f1\uc744 \ud558\ub098\uc758"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": " \ud1b5\ud569\ub41c \uc6cc\ud06c\ud50c\ub85c\uc6b0\ub85c \uc9c0\uc6d0\ud569\ub2c8\ub2e4.\n*   **\uc6d0\uaca9 \ud130\ubbf8\ub110 & \uc74c\uc131 \uc81c\uc5b4:**"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": " \ube0c\ub77c\uc6b0\uc800/\uc2a4\ub9c8\ud2b8\ud3f0\uc5d0\uc11c \uba85\ub839\uc5b4\ub97c \uc2e4\ud589\ud558\uac70\ub098 \uc74c\uc131\uc73c\ub85c \ub300\ud654\ud560 \uc218 \uc788\uc2b5\ub2c8\ub2e4.\n*   "
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "**\uc6cc\ud06c\uc2a4\ud398\uc774\uc2a4 \ube0c\ub77c\uc6b0\uc800:** \uc6f9\uc5d0\uc11c \ud30c\uc77c \ud2b8\ub9ac\ub97c \ud0d0\uc0c9\ud558\uace0 \uc6d0\ud558\ub294 \ub514\ub809\ud1a0\ub9ac\uc5d0\uc11c \uc138\uc158\uc744 \uc2dc\uc791\ud560 \uc218"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": " \uc788\uc2b5\ub2c8\ub2e4.\n\n### **3. \uc2dc\uc791\ud558\uae30**\n*   `npx @twsxtd/hapi hub --relay"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "`: E2E \uc554\ud638\ud654 \ub9b4\ub808\uc774\uc640 \ud568\uaed8 \ud5c8\ube0c\ub97c \uc2dc\uc791\ud569\ub2c8\ub2e4.\n*   `npx @tws"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "xtd/hapi`: Claude Code \uc138\uc158\uc744 \uc2e4\ud589\ud569\ub2c8\ub2e4.\n*   \ud130\ubbf8\ub110\uc5d0 \ud45c\uc2dc\ub418\ub294 URL\uc774\ub098 QR \ucf54"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "\ub4dc\ub97c \ud1b5\ud574 \uc6d0\uaca9 \uc81c\uc5b4 \ud654\uba74\uc5d0 \uc811\uc18d\ud560 \uc218 \uc788\uc2b5\ub2c8\ub2e4.\n\n### **4. \uae30\ud0c0 \uc815\ubcf4**\n*   "
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "**\ubcf4\uc548:** WireGuard\uc640 TLS\ub97c \uc0ac\uc6a9\ud55c \uc885\ub2e8\uac04(E2E) \uc554\ud638\ud654\ub97c \uc81c\uacf5\ud569\ub2c8\ub2e4.\n"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "*   **\ube4c\ub4dc:** `bun`\uc744 \uc0ac\uc6a9\ud558\uc5ec \uc18c\uc2a4\uc5d0\uc11c \ube4c\ub4dc\ud560 \uc218 \uc788\uc2b5\ub2c8\ub2e4 (`bun run build:single-"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "exe`).\n*   **\ubb38\uc11c \ub9c1\ud06c:** PWA \uc124\uce58, \uc791\ub3d9 \uc6d0\ub9ac, Cursor \uc5d0\uc774\uc804\ud2b8 \uc124\uc815"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": ", \uc74c\uc131 \ube44\uc11c \ub4f1\uc5d0 \ub300\ud55c \uc0c1\uc138 \uac00\uc774\ub4dc \ub9c1\ud06c\ub97c \ud3ec\ud568\ud558\uace0 \uc788\uc2b5\ub2c8\ub2e4.\n\n\ub354 \uc790\uc138\ud55c \ubd84\uc11d\uc774\ub098 \ud2b9\uc815 \ubd80\ubd84"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "\uc5d0 \ub300\ud55c \uc124\uba85\uc774 \ud544\uc694\ud558\uc2dc\uba74 \ub9d0\uc500\ud574 \uc8fc\uc138\uc694."
+      }
+    }
+  ]
+}

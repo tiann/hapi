@@ -1,0 +1,122 @@
+{
+  "model": "gemini-2.5-flash",
+  "scenario": "run_shell",
+  "prompt": "Please run `ls -la /tmp` and show me the output.",
+  "captured_at": "2026-04-30T01:46:23.275Z",
+  "updates": [
+    {
+      "sessionUpdate": "available_commands_update",
+      "availableCommands": [
+        {
+          "name": "memory",
+          "description": "Manage memory."
+        },
+        {
+          "name": "memory show",
+          "description": "Shows the current memory contents."
+        },
+        {
+          "name": "memory refresh",
+          "description": "Refreshes the memory from the source."
+        },
+        {
+          "name": "memory list",
+          "description": "Lists the paths of the GEMINI.md files in use."
+        },
+        {
+          "name": "memory add",
+          "description": "Add content to the memory."
+        },
+        {
+          "name": "memory inbox",
+          "description": "Lists skills extracted from past sessions that are pending review."
+        },
+        {
+          "name": "extensions",
+          "description": "Manage extensions."
+        },
+        {
+          "name": "extensions list",
+          "description": "Lists all installed extensions."
+        },
+        {
+          "name": "extensions explore",
+          "description": "Explore available extensions."
+        },
+        {
+          "name": "extensions enable",
+          "description": "Enable an extension."
+        },
+        {
+          "name": "extensions disable",
+          "description": "Disable an extension."
+        },
+        {
+          "name": "extensions install",
+          "description": "Install an extension from a git repo or local path."
+        },
+        {
+          "name": "extensions link",
+          "description": "Link an extension from a local path."
+        },
+        {
+          "name": "extensions uninstall",
+          "description": "Uninstall an extension."
+        },
+        {
+          "name": "extensions restart",
+          "description": "Restart an extension."
+        },
+        {
+          "name": "extensions update",
+          "description": "Update an extension."
+        },
+        {
+          "name": "init",
+          "description": "Analyzes the project and creates a tailored GEMINI.md file"
+        },
+        {
+          "name": "restore",
+          "description": "Restore to a previous checkpoint, or list available checkpoints to restore. This will reset the conversation and file history to the state it was in when the checkpoint was created"
+        },
+        {
+          "name": "restore list",
+          "description": "Lists all available checkpoints."
+        },
+        {
+          "name": "about",
+          "description": "Show version and environment info"
+        },
+        {
+          "name": "help",
+          "description": "Show available commands"
+        }
+      ]
+    },
+    {
+      "sessionUpdate": "agent_thought_chunk",
+      "content": {
+        "type": "text",
+        "text": "[current working directory /home/lupin/workspace/hapi-fix-gemini-display] (List all files and directories in /tmp with their permissions.)"
+      }
+    },
+    {
+      "sessionUpdate": "tool_call",
+      "toolCallId": "run_shell_command-1777513523136-1",
+      "status": "in_progress",
+      "title": "ls -la /tmp",
+      "content": [],
+      "locations": [],
+      "kind": "execute"
+    },
+    {
+      "sessionUpdate": "tool_call_update",
+      "toolCallId": "run_shell_command-1777513523136-1",
+      "status": "completed",
+      "title": "ls -la /tmp",
+      "content": [],
+      "locations": [],
+      "kind": "execute"
+    }
+  ]
+}

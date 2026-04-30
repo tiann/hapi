@@ -22,6 +22,36 @@ function deriveToolNameFromUpdate(update: Record<string, unknown>): DerivedToolN
     });
 }
 
+/**
+ * Fallback for ACP agents that omit `rawInput` and emit prose thoughts
+ * (no JSON-form to hoist). The `tool_call` event still carries a
+ * human-readable `title` plus a structural `kind`. For known kinds we
+ * synthesize a minimal input object so the UI does not display "Input:
+ * null" while the title shows "README.md" / "ls -la /tmp".
+ *
+ * Conservative on purpose:
+ * - Only well-defined kinds derive (`read`, `execute`, `search`).
+ * - `think` deliberately stays null — its title carries topic-update prose
+ *   with no clean argument mapping; fabricating one would mislead.
+ * - Unknown kinds fall through to null rather than guessing a shape.
+ */
+function deriveInputFromKindAndTitle(
+    kind: string | null,
+    title: string | null
+): Record<string, unknown> | null {
+    if (!title) return null;
+    switch (kind) {
+        case 'read':
+            return { file_path: title };
+        case 'execute':
+            return { command: title };
+        case 'search':
+            return { pattern: title };
+        default:
+            return null;
+    }
+}
+
 function extractTextContent(block: unknown): string | null {
     if (!isObject(block)) return null;
     if (block.type !== 'text') return null;
@@ -324,7 +354,11 @@ export class AcpMessageHandler {
 
         const derivedName = deriveToolNameFromUpdate(update);
         const name = derivedName.name;
-        const input = update.rawInput ?? null;
+        // Priority: rawInput > kind+title fallback.
+        // Use `in` to distinguish "rawInput key absent" from "rawInput is {}".
+        const input = 'rawInput' in update
+            ? update.rawInput
+            : deriveInputFromKindAndTitle(asString(update.kind), asString(update.title));
         const status = normalizeStatus(update.status);
 
         this.toolCalls.set(toolCallId, { name, input });
@@ -357,14 +391,31 @@ export class AcpMessageHandler {
                 input,
                 status
             });
-        } else if (existing && (status === 'in_progress' || status === 'pending')) {
-            this.onMessage({
-                type: 'tool_call',
-                id: toolCallId,
-                name: existing.name,
-                input: existing.input,
-                status
-            });
+        } else if (existing) {
+            // Enrich existing.input from update's kind+title when initial tool_call
+            // had neither rawInput nor a hoistable thought. Re-emit when we just
+            // enriched the input or when the call is still active.
+            let input = existing.input;
+            let name = existing.name;
+            if (input == null) {
+                const fallback = deriveInputFromKindAndTitle(asString(update.kind), asString(update.title));
+                if (fallback) {
+                    input = fallback;
+                    const derivedName = deriveToolNameFromUpdate(update);
+                    name = this.selectToolNameForUpdate(existing.name ?? null, derivedName);
+                    this.toolCalls.set(toolCallId, { name, input });
+                }
+            }
+            const justEnriched = existing.input == null && input != null;
+            if (status === 'in_progress' || status === 'pending' || justEnriched) {
+                this.onMessage({
+                    type: 'tool_call',
+                    id: toolCallId,
+                    name,
+                    input,
+                    status
+                });
+            }
         }
 
         if (status === 'completed' || status === 'failed') {
