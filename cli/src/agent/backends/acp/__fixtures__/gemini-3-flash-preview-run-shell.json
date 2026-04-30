@@ -1,195 +1,19 @@
 {
   "model": "gemini-3-flash-preview",
   "scenario": "run_shell",
-  "prompt": "Please run `ls -la /tmp` and show me the output.",
-  "captured_at": "2026-04-30T01:40:17.903Z",
+  "prompt": "Please list files in /tmp using ls -la /tmp",
+  "captured_at": "2026-04-30T03:18:23.000Z",
   "updates": [
     {
-      "sessionUpdate": "available_commands_update",
-      "availableCommands": [
-        {
-          "name": "memory",
-          "description": "Manage memory."
-        },
-        {
-          "name": "memory show",
-          "description": "Shows the current memory contents."
-        },
-        {
-          "name": "memory refresh",
-          "description": "Refreshes the memory from the source."
-        },
-        {
-          "name": "memory list",
-          "description": "Lists the paths of the GEMINI.md files in use."
-        },
-        {
-          "name": "memory add",
-          "description": "Add content to the memory."
-        },
-        {
-          "name": "memory inbox",
-          "description": "Lists skills extracted from past sessions that are pending review."
-        },
-        {
-          "name": "extensions",
-          "description": "Manage extensions."
-        },
-        {
-          "name": "extensions list",
-          "description": "Lists all installed extensions."
-        },
-        {
-          "name": "extensions explore",
-          "description": "Explore available extensions."
-        },
-        {
-          "name": "extensions enable",
-          "description": "Enable an extension."
-        },
-        {
-          "name": "extensions disable",
-          "description": "Disable an extension."
-        },
-        {
-          "name": "extensions install",
-          "description": "Install an extension from a git repo or local path."
-        },
-        {
-          "name": "extensions link",
-          "description": "Link an extension from a local path."
-        },
-        {
-          "name": "extensions uninstall",
-          "description": "Uninstall an extension."
-        },
-        {
-          "name": "extensions restart",
-          "description": "Restart an extension."
-        },
-        {
-          "name": "extensions update",
-          "description": "Update an extension."
-        },
-        {
-          "name": "init",
-          "description": "Analyzes the project and creates a tailored GEMINI.md file"
-        },
-        {
-          "name": "restore",
-          "description": "Restore to a previous checkpoint, or list available checkpoints to restore. This will reset the conversation and file history to the state it was in when the checkpoint was created"
-        },
-        {
-          "name": "restore list",
-          "description": "Lists all available checkpoints."
-        },
-        {
-          "name": "about",
-          "description": "Show version and environment info"
-        },
-        {
-          "name": "help",
-          "description": "Show available commands"
-        }
-      ]
-    },
-    {
       "sessionUpdate": "agent_thought_chunk",
       "content": {
         "type": "text",
-        "text": "**Analyzing the Task's Requirements**\n\nI'm starting to break down the initial prompt. My immediate goal is to understand the core directive: run a specific command, retrieve its output, and then present that output. Currently, I'm focusing on the necessity of reading the referenced documentation files to understand the operational context. The next step is to examine the `GEMINI.md` and `AGENTS.md` files.\n\n\n"
+        "text": "[current working directory /home/lupin/workspace/hapi-fix-gemini-display/cli] (Listing files in /tmp to see the current directory contents.)"
       }
     },
     {
       "sessionUpdate": "tool_call",
-      "toolCallId": "read_file-1777513172721-1",
-      "status": "in_progress",
-      "title": "obsidian/agents/AGENTS.md",
-      "content": [],
-      "locations": [
-        {
-          "path": "/home/lupin/workspace/hapi-fix-gemini-display/obsidian/agents/AGENTS.md"
-        }
-      ],
-      "kind": "read"
-    },
-    {
-      "sessionUpdate": "tool_call_update",
-      "toolCallId": "read_file-1777513172721-1",
-      "status": "failed",
-      "content": [
-        {
-          "type": "content",
-          "content": {
-            "type": "text",
-            "text": "File not found: /home/lupin/workspace/hapi-fix-gemini-display/obsidian/agents/AGENTS.md"
-          }
-        }
-      ],
-      "kind": "read"
-    },
-    {
-      "sessionUpdate": "tool_call",
-      "toolCallId": "glob-1777513178891-2",
-      "status": "in_progress",
-      "title": "'**/AGENTS.md'",
-      "content": [],
-      "locations": [],
-      "kind": "search"
-    },
-    {
-      "sessionUpdate": "tool_call_update",
-      "toolCallId": "glob-1777513178891-2",
-      "status": "completed",
-      "title": "'**/AGENTS.md'",
-      "content": [
-        {
-          "type": "content",
-          "content": {
-            "type": "text",
-            "text": "Found 1 matching file(s)"
-          }
-        }
-      ],
-      "locations": [],
-      "kind": "search"
-    },
-    {
-      "sessionUpdate": "tool_call",
-      "toolCallId": "read_file-1777513181421-3",
-      "status": "in_progress",
-      "title": "AGENTS.md",
-      "content": [],
-      "locations": [
-        {
-          "path": "/home/lupin/workspace/hapi-fix-gemini-display/AGENTS.md"
-        }
-      ],
-      "kind": "read"
-    },
-    {
-      "sessionUpdate": "tool_call_update",
-      "toolCallId": "read_file-1777513181421-3",
-      "status": "completed",
-      "title": "AGENTS.md",
-      "content": [],
-      "locations": [
-        {
-          "path": "/home/lupin/workspace/hapi-fix-gemini-display/AGENTS.md"
-        }
-      ],
-      "kind": "read"
-    },
-    {
-      "sessionUpdate": "agent_thought_chunk",
-      "content": {
-        "type": "text",
-        "text": "[current working directory /home/lupin/workspace/hapi-fix-gemini-display] (List all files and directories in the /tmp directory with detailed information.)"
-      }
-    },
-    {
-      "sessionUpdate": "tool_call",
-      "toolCallId": "run_shell_command-1777513183856-4",
+      "toolCallId": "run_shell_command-1777518846676-1",
       "status": "in_progress",
       "title": "ls -la /tmp",
       "content": [],
@@ -198,7 +22,7 @@
     },
     {
       "sessionUpdate": "tool_call_update",
-      "toolCallId": "run_shell_command-1777513183856-4",
+      "toolCallId": "run_shell_command-1777518846676-1",
       "status": "completed",
       "title": "ls -la /tmp",
       "content": [],
@@ -206,115 +30,31 @@
       "kind": "execute"
     },
     {
-      "sessionUpdate": "agent_thought_chunk",
+      "sessionUpdate": "agent_message_chunk",
       "content": {
         "type": "text",
-        "text": "**Inspecting Temporary Files**\n\nI've just finished examining the contents of the /tmp directory. The output from `ls -la /tmp` shows numerous temporary files, including several `hapi-dir-handler` and `gemini-shell` directories, alongside some error logs related to gemini. This confirms my suspicion of excessive temporary data.\n\n\n"
-      }
-    },
-    {
-      "sessionUpdate": "agent_thought_chunk",
-      "content": {
-        "type": "text",
-        "text": "**Reviewing Directory Contents**\n\nI've successfully displayed the output of the `ls -la /tmp` command. Now, I'm observing a multitude of temporary files. Among them, I see a pattern of numerous `hapi-dir-handler` and `gemini-shell` entries, plus some gemini error logs. It appears my analysis aligns with the user's initial assumptions regarding temporary data accumulation.\n\n\n"
+        "text": "The `/tmp` directory contains numerous files and subdirectories, many of which appear to be"
       }
     },
     {
       "sessionUpdate": "agent_message_chunk",
       "content": {
         "type": "text",
-        "text": "The output of `ls -la /tmp` shows"
+        "text": " related to `hapi`, `gemini`, and various E2E testing artifacts (e.g., `hapi-cli"
       }
     },
     {
       "sessionUpdate": "agent_message_chunk",
       "content": {
         "type": "text",
-        "text": " a large number of temporary files and directories. Notable entries include:\n\n*   **Gemini-related logs/errors:**\n"
+        "text": ".log`, `gemini-client-error-...json`, `hapi-e2e-...` directories). "
       }
     },
     {
       "sessionUpdate": "agent_message_chunk",
       "content": {
         "type": "text",
-        "text": "    *   `gemini-client-error-Turn.run-sendMessageStream-2026-04-"
-      }
-    },
-    {
-      "sessionUpdate": "agent_message_chunk",
-      "content": {
-        "type": "text",
-        "text": "30T00-12-23-444Z.json`\n    *   "
-      }
-    },
-    {
-      "sessionUpdate": "agent_message_chunk",
-      "content": {
-        "type": "text",
-        "text": "`gemini-client-error-Turn.run-sendMessageStream-2026-04-30"
-      }
-    },
-    {
-      "sessionUpdate": "agent_message_chunk",
-      "content": {
-        "type": "text",
-        "text": "T00-12-37-588Z.json`\n    *   `gemini-shell-"
-      }
-    },
-    {
-      "sessionUpdate": "agent_message_chunk",
-      "content": {
-        "type": "text",
-        "text": "h7MFNR/`\n*   **HAPI-related directories:**\n    *   Numerous `hapi-dir"
-      }
-    },
-    {
-      "sessionUpdate": "agent_message_chunk",
-      "content": {
-        "type": "text",
-        "text": "-handler-...` directories (likely from file system operations).\n    *   `hapi-real-gemini-"
-      }
-    },
-    {
-      "sessionUpdate": "agent_message_chunk",
-      "content": {
-        "type": "text",
-        "text": "2026-04-30/`\n    *   `hapi-e2e-...` ("
-      }
-    },
-    {
-      "sessionUpdate": "agent_message_chunk",
-      "content": {
-        "type": "text",
-        "text": "E2E test artifacts).\n*   **Other files:**\n    *   `capture-3flash-read."
-      }
-    },
-    {
-      "sessionUpdate": "agent_message_chunk",
-      "content": {
-        "type": "text",
-        "text": "json`, `capture-test-flash-read.json`\n    *   `acp-p1p"
-      }
-    },
-    {
-      "sessionUpdate": "agent_message_chunk",
-      "content": {
-        "type": "text",
-        "text": "3-backup.patch`\n    *   Various Python scripts (`add_resources.py`, `create_and"
-      }
-    },
-    {
-      "sessionUpdate": "agent_message_chunk",
-      "content": {
-        "type": "text",
-        "text": "_push.py`, etc.) and log files (`alive.log`, `hapi-cli.log`).\n\nThe"
-      }
-    },
-    {
-      "sessionUpdate": "agent_message_chunk",
-      "content": {
-        "type": "text",
-        "text": " directory contains a mix of active session data, test artifacts, and error logs from recent operations."
+        "text": "\n\nIs there a specific file or pattern you're looking for within these results?"
       }
     }
   ]

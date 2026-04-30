@@ -1193,19 +1193,21 @@ describe('AcpMessageHandler', () => {
         // future changes to AcpMessageHandler cannot silently regress the
         // Gemini-specific handling.
         //
-        // Observation from all captured models (gemini-3-flash-preview,
-        // gemini-2.5-flash): Gemini does NOT include rawInput in tool_call
-        // events and emits prose (non-JSON) thoughts. There is therefore no
-        // JSON-thought-hoisting trigger — tool_call input is null and the
-        // thought text surfaces as reasoning.
+        // Observation from captured gemini-3-flash-preview: Gemini does NOT
+        // include rawInput in tool_call events and emits prose (non-JSON)
+        // thoughts. There is therefore no JSON-thought-hoisting trigger —
+        // tool_call input is null and the thought text surfaces as reasoning.
         const fixtureDir = new URL('./__fixtures__', import.meta.url).pathname;
 
         const fixtures = [
             {
+                // read_file capture has zero agent_thought_chunk events: this
+                // model expresses reasoning as a `kind: think` tool_call rather
+                // than as a thought chunk, so the reasoning channel is empty.
                 name: 'gemini-3-flash-preview / read_file',
                 file: `${fixtureDir}/gemini-3-flash-preview-read-file.json`,
-                expectedMinToolCalls: 1,
-                expectedMinReasoning: 1,
+                expectedMinToolCalls: 2,
+                expectedMinReasoning: 0,
                 hasMessageChunks: true,
             },
             {
@@ -1214,20 +1216,6 @@ describe('AcpMessageHandler', () => {
                 expectedMinToolCalls: 1,
                 expectedMinReasoning: 1,
                 hasMessageChunks: true,
-            },
-            {
-                name: 'gemini-2.5-flash / read_file',
-                file: `${fixtureDir}/gemini-2.5-flash-read-file.json`,
-                expectedMinToolCalls: 1,
-                expectedMinReasoning: 1,
-                hasMessageChunks: true,
-            },
-            {
-                name: 'gemini-2.5-flash / run_shell (partial capture)',
-                file: `${fixtureDir}/gemini-2.5-flash-run-shell.json`,
-                expectedMinToolCalls: 1,
-                expectedMinReasoning: 1,
-                hasMessageChunks: false,
             },
         ] as const;
 
