@@ -136,7 +136,7 @@ describe('EditorTabs', () => {
         expect(screen.getByText('Open a file from the explorer')).toBeInTheDocument()
     })
 
-    it('renders tabs and emits select, close, and new file actions', () => {
+    it('renders only file tabs and emits select, close, and new file actions', () => {
         const onSelectTab = vi.fn()
         const onCloseTab = vi.fn()
         const onNewFile = vi.fn()
@@ -153,8 +153,7 @@ describe('EditorTabs', () => {
             />
         )
 
-        fireEvent.click(screen.getByRole('button', { name: 'Select tab Terminal: bash' }))
-        expect(onSelectTab).toHaveBeenCalledWith('tab-terminal')
+        expect(screen.queryByRole('button', { name: 'Select tab Terminal: bash' })).not.toBeInTheDocument()
 
         fireEvent.click(screen.getByRole('button', { name: 'Close tab App.tsx' }))
         expect(onCloseTab).toHaveBeenCalledWith('tab-file')
@@ -417,7 +416,7 @@ describe('EditorTabs', () => {
         expect(screen.getByText('Cannot read binary file')).toBeInTheDocument()
     })
 
-    it('shows terminal placeholder for terminal tabs', () => {
+    it('keeps the file editor visible when the global active tab is a terminal', async () => {
         render(
             <EditorTabs
                 api={null}
@@ -430,7 +429,10 @@ describe('EditorTabs', () => {
             />
         )
 
-        expect(screen.getByText('Terminal panel below')).toBeInTheDocument()
-        expect(useEditorFileMock).not.toHaveBeenCalled()
+        await waitFor(() => {
+            expect(cmMocks.EditorView).toHaveBeenCalled()
+        })
+        expect(screen.queryByText('Terminal panel below')).not.toBeInTheDocument()
+        expect(useEditorFileMock).toHaveBeenCalledWith(null, 'machine-1', '/repo/src/App.tsx', { refetchInterval: 2_000 })
     })
 })

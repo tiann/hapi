@@ -208,19 +208,23 @@ export function EditorTabs(props: {
     const fileContentsRef = useRef<Map<string, string>>(new Map())
     const [savingTabId, setSavingTabId] = useState<string | null>(null)
     const [saveError, setSaveError] = useState<string | null>(null)
+    const fileTabs = useMemo(
+        () => props.tabs.filter((tab) => tab.type === 'file'),
+        [props.tabs]
+    )
     const activeTab = useMemo(
-        () => props.tabs.find((tab) => tab.id === props.activeTabId) ?? null,
-        [props.activeTabId, props.tabs]
+        () => fileTabs.find((tab) => tab.id === props.activeTabId) ?? fileTabs[fileTabs.length - 1] ?? null,
+        [props.activeTabId, fileTabs]
     )
 
     useEffect(() => {
-        const openTabIds = new Set(props.tabs.map((tab) => tab.id))
+        const openTabIds = new Set(fileTabs.map((tab) => tab.id))
         for (const tabId of fileContentsRef.current.keys()) {
             if (!openTabIds.has(tabId)) {
                 fileContentsRef.current.delete(tabId)
             }
         }
-    }, [props.tabs])
+    }, [fileTabs])
 
     const handleContentLoaded = useCallback((tabId: string, content: string) => {
         fileContentsRef.current.set(tabId, content)
@@ -273,7 +277,7 @@ export function EditorTabs(props: {
     return (
         <div data-testid="editor-tabs-root" className="flex h-full min-h-0 flex-col overflow-hidden">
             <div className="flex items-center bg-[var(--app-subtle-bg)] border-b border-[var(--app-border)] overflow-x-auto shrink-0">
-                {props.tabs.map((tab) => {
+                {fileTabs.map((tab) => {
                     const isActive = tab.id === props.activeTabId
                     return (
                         <div
@@ -294,10 +298,9 @@ export function EditorTabs(props: {
                                 }
                             }}
                         >
-                            {tab.type === 'file' && tab.path && <FileIcon fileName={tab.path} size={13} />}
-                            {tab.type === 'terminal' && <span aria-hidden="true">💻</span>}
+                            {tab.path && <FileIcon fileName={tab.path} size={13} />}
                             <span className="truncate max-w-[160px]">{tab.label}</span>
-                            {tab.type === 'file' && tab.dirty && (
+                            {tab.dirty && (
                                 <span className="text-[#f59e0b]" aria-label={`${tab.label} has unsaved changes`}>●</span>
                             )}
                             <button
@@ -351,7 +354,7 @@ export function EditorTabs(props: {
             </div>
 
             <div data-testid="editor-tabs-content" className="min-h-0 flex-1 overflow-hidden">
-                {activeTab?.type === 'file' && activeTab.path && props.machineId && (
+                {activeTab?.path && props.machineId && (
                     <FileTabContent
                         api={props.api}
                         machineId={props.machineId}
@@ -362,14 +365,9 @@ export function EditorTabs(props: {
                         onContentChanged={handleContentChanged}
                     />
                 )}
-                {activeTab?.type === 'file' && !props.machineId && (
+                {activeTab?.path && !props.machineId && (
                     <div className="flex items-center justify-center h-full text-xs text-[var(--app-hint)]">
                         Select a machine to read files
-                    </div>
-                )}
-                {activeTab?.type === 'terminal' && (
-                    <div className="flex items-center justify-center h-full text-xs text-[var(--app-hint)]">
-                        Terminal panel below
                     </div>
                 )}
                 {!activeTab && (

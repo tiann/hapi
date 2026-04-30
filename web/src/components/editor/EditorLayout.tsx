@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import type { ApiClient } from '@/api/client'
 import { appendEditorChatDraft } from '@/lib/editor-chat-draft'
@@ -30,9 +30,24 @@ export function EditorLayout(props: {
     const [newFileTargetPath, setNewFileTargetPath] = useState<string | null>(null)
     const [isTerminalCollapsed, setIsTerminalCollapsed] = useState(false)
     const pendingFileAfterSessionRef = useRef<string | null>(null)
-    const activeFilePath = editor.tabs.find((tab) => (
-        tab.id === editor.activeTabId && tab.type === 'file'
-    ))?.path ?? null
+    const pendingTerminalAfterSessionRef = useRef(false)
+    const fileTabs = useMemo(
+        () => editor.tabs.filter((tab) => tab.type === 'file'),
+        [editor.tabs]
+    )
+    const terminalTabs = useMemo(
+        () => editor.tabs.filter((tab) => tab.type === 'terminal'),
+        [editor.tabs]
+    )
+    const activeFileTab = useMemo(
+        () => fileTabs.find((tab) => tab.id === editor.activeTabId) ?? fileTabs[fileTabs.length - 1] ?? null,
+        [editor.activeTabId, fileTabs]
+    )
+    const activeTerminalTab = useMemo(
+        () => terminalTabs.find((tab) => tab.id === editor.activeTabId) ?? terminalTabs[terminalTabs.length - 1] ?? null,
+        [editor.activeTabId, terminalTabs]
+    )
+    const activeFilePath = activeFileTab?.path ?? null
 
     const newSession = useEditorNewSession({
         api: props.api,
@@ -44,6 +59,10 @@ export function EditorLayout(props: {
             if (pendingFile) {
                 setPendingDraftText(appendEditorChatDraft('', pendingFile))
                 pendingFileAfterSessionRef.current = null
+            }
+            if (pendingTerminalAfterSessionRef.current) {
+                editor.openTerminal({ sessionId })
+                pendingTerminalAfterSessionRef.current = false
             }
         }
     })
@@ -71,6 +90,16 @@ export function EditorLayout(props: {
     const handleNewFileFromTabs = useCallback(() => {
         setNewFileTargetPath(activeFilePath ?? editor.projectPath)
     }, [activeFilePath, editor.projectPath])
+
+    const handleOpenTerminal = useCallback(() => {
+        if (editor.activeSessionId) {
+            editor.openTerminal({ sessionId: editor.activeSessionId })
+            return
+        }
+
+        pendingTerminalAfterSessionRef.current = true
+        newSession.createSession()
+    }, [editor, newSession])
 
     const handleCancelNewFile = useCallback(() => {
         setNewFileTargetPath(null)
@@ -103,12 +132,14 @@ export function EditorLayout(props: {
     const handleSelectMachine = useCallback((machineId: string) => {
         setPendingDraftText(undefined)
         pendingFileAfterSessionRef.current = null
+        pendingTerminalAfterSessionRef.current = false
         editor.selectMachine(machineId)
     }, [editor])
 
     const handleSelectProject = useCallback((projectPath: string) => {
         setPendingDraftText(undefined)
         pendingFileAfterSessionRef.current = null
+        pendingTerminalAfterSessionRef.current = false
         editor.selectProject(projectPath)
     }, [editor])
 
@@ -156,8 +187,8 @@ export function EditorLayout(props: {
                         <EditorTabs
                             api={props.api}
                             machineId={editor.machineId}
-                            tabs={editor.tabs}
-                            activeTabId={editor.activeTabId}
+                            tabs={fileTabs}
+                            activeTabId={activeFileTab?.id ?? null}
                             onSelectTab={editor.setActiveTabId}
                             onCloseTab={editor.closeTab}
                             onNewFile={handleNewFileFromTabs}
@@ -174,12 +205,13 @@ export function EditorLayout(props: {
                     )}
                     <div className="shrink-0" style={{ height: isTerminalCollapsed ? 32 : panes.terminalHeight }}>
                         <EditorTerminal
-                            tabs={editor.tabs}
-                            activeTabId={editor.activeTabId}
+                            api={props.api}
+                            tabs={terminalTabs}
+                            activeTabId={activeTerminalTab?.id ?? null}
                             isCollapsed={isTerminalCollapsed}
                             onSelectTab={editor.setActiveTabId}
                             onCloseTab={editor.closeTab}
-                            onOpenTerminal={editor.openTerminal}
+                            onOpenTerminal={handleOpenTerminal}
                             onToggleCollapsed={() => setIsTerminalCollapsed((current) => !current)}
                         />
                     </div>

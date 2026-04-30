@@ -6,7 +6,13 @@ export type EditorTab = {
     path?: string
     label: string
     shell?: string
+    sessionId?: string
     dirty?: boolean
+}
+
+export type OpenTerminalOptions = {
+    shell?: string
+    sessionId?: string
 }
 
 export type EditorState = {
@@ -24,7 +30,7 @@ export type UseEditorStateResult = EditorState & {
     selectProject: (path: string) => void
     setActiveSessionId: (sessionId: string | null) => void
     openFile: (filePath: string) => void
-    openTerminal: (shell?: string) => void
+    openTerminal: (options?: string | OpenTerminalOptions) => void
     closeTab: (tabId: string) => void
     setTabDirty: (tabId: string, dirty: boolean) => void
     setActiveTabId: (tabId: string | null) => void
@@ -79,14 +85,19 @@ export function useEditorState(initialMachine?: string, initialProject?: string)
         setActiveTabId(newTab.id)
     }, [setActiveTabId, setTabs])
 
-    const openTerminal = useCallback((shell?: string) => {
-        const shellName = typeof shell === 'string' && shell.trim() ? shell : 'bash'
+    const openTerminal = useCallback((options?: string | OpenTerminalOptions) => {
+        const shellCandidate = typeof options === 'string' ? options : options?.shell
+        const shellName = typeof shellCandidate === 'string' && shellCandidate.trim() ? shellCandidate : 'bash'
+        const sessionId = options && typeof options === 'object' && typeof options.sessionId === 'string' && options.sessionId.trim()
+            ? options.sessionId
+            : undefined
         const terminalCount = tabsRef.current.filter((tab) => tab.type === 'terminal').length
         const newTab: EditorTab = {
             id: generateTabId(),
             type: 'terminal',
             label: `Terminal: ${shellName}${terminalCount > 0 ? ` (${terminalCount + 1})` : ''}`,
-            shell: shellName
+            shell: shellName,
+            sessionId
         }
         setTabs([...tabsRef.current, newTab])
         setActiveTabId(newTab.id)
