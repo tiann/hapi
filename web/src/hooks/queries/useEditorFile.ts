@@ -11,7 +11,10 @@ function decodeBase64Utf8(content: string): string {
 export function useEditorFile(
     api: ApiClient | null,
     machineId: string | null,
-    filePath: string | null
+    filePath: string | null,
+    options?: {
+        refetchInterval?: number | false
+    }
 ): {
     content: string | null
     error: string | null
@@ -30,7 +33,7 @@ export function useEditorFile(
             }
 
             const response = await api.readEditorFile(machineId, filePath)
-            if (!response.success || !response.content) {
+            if (!response.success || response.content === undefined) {
                 return { content: null, error: response.error ?? 'Failed to read file' }
             }
 
@@ -41,6 +44,7 @@ export function useEditorFile(
             }
         },
         enabled,
+        refetchInterval: options?.refetchInterval,
     })
 
     return {

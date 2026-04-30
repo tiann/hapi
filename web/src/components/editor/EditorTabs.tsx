@@ -144,22 +144,29 @@ function FileTabContent(props: {
     api: ApiClient | null
     machineId: string | null
     tabId: string
+    isDirty: boolean
     filePath: string
     onContentLoaded: (tabId: string, content: string) => void
     onContentChanged: (tabId: string, content: string) => void
 }) {
     const containerRef = useRef<HTMLDivElement>(null)
-    const { content, isLoading, error } = useEditorFile(props.api, props.machineId, props.filePath)
+    const tab = props.tabId
+    const { content, isLoading, error } = useEditorFile(
+        props.api,
+        props.machineId,
+        props.filePath,
+        { refetchInterval: props.isDirty ? false : 2_000 }
+    )
     const handleChange = useCallback((nextContent: string) => {
-        props.onContentChanged(props.tabId, nextContent)
-    }, [props.onContentChanged, props.tabId])
+        props.onContentChanged(tab, nextContent)
+    }, [props.onContentChanged, tab])
     useCodeMirror(containerRef, content, props.filePath, handleChange)
 
     useEffect(() => {
         if (content !== null) {
-            props.onContentLoaded(props.tabId, content)
+            props.onContentLoaded(tab, content)
         }
-    }, [content, props.onContentLoaded, props.tabId])
+    }, [content, props.onContentLoaded, tab])
 
     if (isLoading) {
         return (
@@ -344,6 +351,7 @@ export function EditorTabs(props: {
                         api={props.api}
                         machineId={props.machineId}
                         tabId={activeTab.id}
+                        isDirty={activeTab.dirty === true}
                         filePath={activeTab.path}
                         onContentLoaded={handleContentLoaded}
                         onContentChanged={handleContentChanged}

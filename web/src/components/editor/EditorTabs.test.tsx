@@ -169,7 +169,7 @@ describe('EditorTabs', () => {
         await waitFor(() => {
             expect(cmMocks.EditorView).toHaveBeenCalled()
         })
-        expect(useEditorFileMock).toHaveBeenCalledWith(api, 'machine-1', '/repo/src/App.tsx')
+        expect(useEditorFileMock).toHaveBeenCalledWith(api, 'machine-1', '/repo/src/App.tsx', { refetchInterval: 2_000 })
         expect(cmMocks.editorViews[0].doc).toBe('console.log("hi")')
         expect(screen.getByTestId('codemirror-view')).toBeInTheDocument()
         expect(screen.getByText('TSX')).toBeInTheDocument()
@@ -202,9 +202,10 @@ describe('EditorTabs', () => {
     })
 
     it('shows a dirty marker and save button for dirty file tabs', () => {
+        const api = {} as ApiClient
         render(
             <EditorTabs
-                api={{} as ApiClient}
+                api={api}
                 machineId="machine-1"
                 tabs={[{ ...tabs[0], dirty: true }]}
                 activeTabId="tab-file"
@@ -216,6 +217,7 @@ describe('EditorTabs', () => {
 
         expect(screen.getByText('●')).toBeInTheDocument()
         expect(screen.getByRole('button', { name: 'Save App.tsx' })).toBeInTheDocument()
+        expect(useEditorFileMock).toHaveBeenCalledWith(api, 'machine-1', '/repo/src/App.tsx', { refetchInterval: false })
     })
 
     it('saves the active file with Ctrl+S and clears dirty state on success', async () => {

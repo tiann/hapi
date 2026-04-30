@@ -54,6 +54,22 @@ describe('useEditorFile', () => {
         expect(api.readEditorFile).toHaveBeenCalledWith('machine-1', '/repo/README.md')
     })
 
+    it('treats empty file content as a valid successful read', async () => {
+        const api = {
+            readEditorFile: vi.fn(async () => ({ success: true, content: '', size: 0 }))
+        } as unknown as ApiClient
+
+        const { result } = renderHook(
+            () => useEditorFile(api, 'machine-1', '/repo/empty.ts'),
+            { wrapper: createWrapper() }
+        )
+
+        await waitFor(() => {
+            expect(result.current.content).toBe('')
+        })
+        expect(result.current.error).toBeNull()
+    })
+
     it('surfaces read failures', async () => {
         const api = {
             readEditorFile: vi.fn(async () => ({ success: false, error: 'Cannot read binary file' }))
