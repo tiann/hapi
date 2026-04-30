@@ -28,6 +28,7 @@ import { TeamPanel } from '@/components/TeamPanel'
 import { usePlatform } from '@/hooks/usePlatform'
 import { useSessionActions } from '@/hooks/mutations/useSessionActions'
 import { useCodexModels } from '@/hooks/queries/useCodexModels'
+import { useOpencodeModels } from '@/hooks/queries/useOpencodeModels'
 import { useVoiceOptional } from '@/lib/voice-context'
 import { RealtimeVoiceSession, registerSessionStore, registerVoiceHooksStore, voiceHooks } from '@/realtime'
 import { isRemoteTerminalSupported } from '@/utils/terminalSupport'
@@ -97,6 +98,21 @@ export function SessionChat(props: {
         }
         return options
     }, [agentFlavor, codexModelsState.models])
+    const opencodeModelsState = useOpencodeModels({
+        api: props.api,
+        sessionId: props.session.id,
+        enabled: agentFlavor === 'opencode' && props.session.active
+    })
+    const opencodeModelOptions = useMemo(() => {
+        if (agentFlavor !== 'opencode') {
+            return undefined
+        }
+
+        return opencodeModelsState.availableModels.map((opencodeModel) => ({
+            value: opencodeModel.modelId,
+            label: opencodeModel.name ?? opencodeModel.modelId
+        }))
+    }, [agentFlavor, opencodeModelsState.availableModels])
     const {
         abortSession,
         switchSession,
@@ -451,7 +467,13 @@ export function SessionChat(props: {
                         modelReasoningEffort={agentFlavor === 'codex' ? props.session.modelReasoningEffort : undefined}
                         effort={props.session.effort}
                         agentFlavor={agentFlavor}
-                        availableModelOptions={agentFlavor === 'codex' ? codexModelOptions : undefined}
+                        availableModelOptions={
+                            agentFlavor === 'codex'
+                                ? codexModelOptions
+                                : agentFlavor === 'opencode'
+                                    ? opencodeModelOptions
+                                    : undefined
+                        }
                         active={props.session.active}
                         allowSendWhenInactive
                         thinking={props.session.thinking}

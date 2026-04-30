@@ -16,5 +16,6 @@ export const queryKeys = {
     ] as const,
     slashCommands: (sessionId: string) => ['slash-commands', sessionId] as const,
     sessionCodexModels: (sessionId: string) => ['session-codex-models', sessionId] as const,
+    sessionOpencodeModels: (sessionId: string) => ['session-opencode-models', sessionId] as const,
     skills: (sessionId: string) => ['skills', sessionId] as const,
 }

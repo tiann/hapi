@@ -12,6 +12,7 @@ import type {
     MachinesResponse,
     MessagesResponse,
     CodexModelsResponse,
+    OpencodeModelsResponse,
     PermissionMode,
     PushSubscriptionPayload,
     PushUnsubscribePayload,
@@ -450,6 +451,12 @@ export class ApiClient {
     async getSessionCodexModels(sessionId: string): Promise<CodexModelsResponse> {
         return await this.request<CodexModelsResponse>(
             `/api/sessions/${encodeURIComponent(sessionId)}/codex-models`
+        )
+    }
+
+    async getSessionOpencodeModels(sessionId: string): Promise<OpencodeModelsResponse> {
+        return await this.request<OpencodeModelsResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/opencode-models`
         )
     }
 

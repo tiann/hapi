@@ -225,6 +225,18 @@ export type CodexModelsResponse = {
     error?: string
 }
 
+export type OpencodeModelSummary = {
+    modelId: string
+    name?: string
+}
+
+export type OpencodeModelsResponse = {
+    success: boolean
+    availableModels?: OpencodeModelSummary[]
+    currentModelId?: string | null
+    error?: string
+}
+
 export type PushSubscriptionKeys = {
     p256dh: string
     auth: string

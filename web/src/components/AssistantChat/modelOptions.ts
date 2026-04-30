@@ -56,6 +56,12 @@ export function getModelOptionsForFlavor(
     if (flavor === 'gemini') {
         return getGeminiModelOptions(currentModel)
     }
+    // OpenCode discovers models dynamically via the listOpencodeModels RPC. Until
+    // those options arrive, render an empty list rather than the Claude fallback —
+    // the latter would surface unrelated Claude models in an OpenCode session.
+    if (flavor === 'opencode') {
+        return []
+    }
     return getClaudeComposerModelOptions(currentModel)
 }
 
