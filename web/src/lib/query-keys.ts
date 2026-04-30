@@ -8,6 +8,8 @@ export const queryKeys = {
     sessionFiles: (sessionId: string, query: string) => ['session-files', sessionId, query] as const,
     sessionDirectory: (sessionId: string, path: string) => ['session-directory', sessionId, path] as const,
     sessionFile: (sessionId: string, path: string) => ['session-file', sessionId, path] as const,
+    editorDirectory: (machineId: string, path: string) => ['editor', 'directory', machineId, path] as const,
+    editorFile: (machineId: string, path: string) => ['editor', 'file', machineId, path] as const,
     gitFileDiff: (sessionId: string, path: string, staged?: boolean) => [
         'git-file-diff',
         sessionId,
