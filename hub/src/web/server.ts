@@ -17,6 +17,7 @@ import { createPermissionsRoutes } from './routes/permissions'
 import { createMachinesRoutes } from './routes/machines'
 import { createGitRoutes } from './routes/git'
 import { createCliRoutes } from './routes/cli'
+import { createEditorRoutes } from './routes/editor'
 import { createPushRoutes } from './routes/push'
 import { createVoiceRoutes } from './routes/voice'
 import type { SSEManager } from '../sse/sseManager'
@@ -94,6 +95,7 @@ function createWebApp(options: {
     app.route('/api', createMessagesRoutes(options.getSyncEngine))
     app.route('/api', createPermissionsRoutes(options.getSyncEngine))
     app.route('/api', createMachinesRoutes(options.getSyncEngine))
+    app.route('/api', createEditorRoutes(options.getSyncEngine))
     app.route('/api', createGitRoutes(options.getSyncEngine))
     app.route('/api', createPushRoutes(options.store, options.vapidPublicKey))
     app.route('/api', createVoiceRoutes())
