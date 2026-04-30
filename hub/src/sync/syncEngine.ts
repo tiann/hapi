@@ -22,6 +22,8 @@ import {
     type RpcDeleteUploadResponse,
     type RpcListDirectoryResponse,
     type RpcListCodexModelsResponse,
+    type RpcListOpencodeModelsResponse,
+    type RpcOpencodeModel,
     type RpcPathExistsResponse,
     type RpcReadFileResponse,
     type RpcUploadFileResponse
@@ -37,6 +39,8 @@ export type {
     RpcDeleteUploadResponse,
     RpcListDirectoryResponse,
     RpcListCodexModelsResponse,
+    RpcListOpencodeModelsResponse,
+    RpcOpencodeModel,
     RpcPathExistsResponse,
     RpcReadFileResponse,
     RpcUploadFileResponse
@@ -610,5 +614,9 @@ export class SyncEngine {
 
     async listCodexModelsForMachine(machineId: string): Promise<RpcListCodexModelsResponse> {
         return await this.rpcGateway.listCodexModelsForMachine(machineId)
+    }
+
+    async listOpencodeModelsForSession(sessionId: string): Promise<RpcListOpencodeModelsResponse> {
+        return await this.rpcGateway.listOpencodeModelsForSession(sessionId)
     }
 }

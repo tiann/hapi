@@ -93,6 +93,20 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         const initialMetadata = backend.getSessionModelsMetadata?.(acpSessionId);
         this.currentBackendModel = initialMetadata?.currentModelId ?? null;
 
+        // Expose the cached models metadata via per-session RPC so the hub can
+        // forward it to the web UI's model selector without round-tripping ACP.
+        session.client.rpcHandlerManager.registerHandler('listOpencodeModels', async () => {
+            const metadata = backend.getSessionModelsMetadata?.(acpSessionId);
+            if (!metadata) {
+                return { success: true, availableModels: [], currentModelId: null };
+            }
+            return {
+                success: true,
+                availableModels: metadata.availableModels,
+                currentModelId: metadata.currentModelId
+            };
+        });
+
         this.permissionHandler = new OpencodePermissionHandler(
             session.client,
             backend,

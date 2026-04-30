@@ -209,6 +209,64 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         expect(harness.promptCount).toBe(2);
     });
 
+    it('registers a listOpencodeModels RPC handler that returns the backend cache', async () => {
+        // Override getSessionModelsMetadata for this run only.
+        const fixtureModels = [
+            { modelId: 'ollama/exaone:4.5-33b-q8', name: 'Ollama EXAONE' },
+            { modelId: 'mlx/qwen3:0.6b', name: 'MLX Qwen3' }
+        ];
+        const opencodeBackendModule = await import('./utils/opencodeBackend');
+        const factory = (opencodeBackendModule as unknown as { createOpencodeBackend: ReturnType<typeof vi.fn> }).createOpencodeBackend;
+        factory.mockImplementationOnce(() => ({
+            initialize: vi.fn(async () => {}),
+            newSession: vi.fn(async () => 'acp-session-1'),
+            loadSession: vi.fn(async () => 'acp-session-1'),
+            setModel: vi.fn(async () => {}),
+            prompt: vi.fn(async () => {}),
+            cancelPrompt: vi.fn(async () => {}),
+            respondToPermission: vi.fn(async () => {}),
+            onStderrError: vi.fn(),
+            onPermissionRequest: vi.fn(),
+            disconnect: vi.fn(async () => {}),
+            getSessionModelsMetadata: vi.fn((sessionId: string) => {
+                if (sessionId === 'acp-session-1') {
+                    return { availableModels: fixtureModels, currentModelId: 'ollama/exaone:4.5-33b-q8' };
+                }
+                return undefined;
+            })
+        }));
+
+        const { session, rpcHandlers } = createSessionStub([
+            { message: 'first', mode: createMode('ollama/exaone:4.5-33b-q8') }
+        ]);
+        await opencodeRemoteLauncher(session as never);
+
+        const handler = rpcHandlers.get('listOpencodeModels');
+        expect(handler).toBeDefined();
+        const result = await handler!(undefined) as Record<string, unknown>;
+        expect(result).toEqual({
+            success: true,
+            availableModels: fixtureModels,
+            currentModelId: 'ollama/exaone:4.5-33b-q8'
+        });
+    });
+
+    it('listOpencodeModels handler returns empty cache when backend has no metadata', async () => {
+        const { session, rpcHandlers } = createSessionStub([
+            { message: 'first', mode: createMode() }
+        ]);
+        await opencodeRemoteLauncher(session as never);
+
+        const handler = rpcHandlers.get('listOpencodeModels');
+        expect(handler).toBeDefined();
+        const result = await handler!(undefined) as Record<string, unknown>;
+        expect(result).toEqual({
+            success: true,
+            availableModels: [],
+            currentModelId: null
+        });
+    });
+
     it('serializes setModel after the previous prompt resolves', async () => {
         const { session } = createSessionStub([
             { message: 'first', mode: createMode('ollama/a') },

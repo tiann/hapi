@@ -1,4 +1,4 @@
-import { getPermissionModesForFlavor, isPermissionModeAllowedForFlavor, toSessionSummary } from '@hapi/protocol'
+import { getPermissionModesForFlavor, isPermissionModeAllowedForFlavor, supportsModelChange, toSessionSummary } from '@hapi/protocol'
 import { CodexCollaborationModeSchema, PermissionModeSchema } from '@hapi/protocol/schemas'
 import { Hono } from 'hono'
 import { z } from 'zod'
@@ -342,8 +342,8 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
 
         const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
-        if (flavor !== 'claude' && flavor !== 'gemini' && flavor !== 'codex') {
-            return c.json({ error: 'Model selection is only supported for Claude, Gemini, and Codex sessions' }, 400)
+        if (!supportsModelChange(flavor)) {
+            return c.json({ error: 'Model selection is not supported for this session' }, 400)
         }
         if (flavor === 'codex' && sessionResult.session.agentState?.controlledByUser === true) {
             return c.json({ error: 'Model selection can only be changed for remote Codex sessions' }, 409)
@@ -558,6 +558,36 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return c.json({
                 success: false,
                 error: error instanceof Error ? error.message : 'Failed to list Codex models'
+            }, 500)
+        }
+    })
+
+    app.get('/sessions/:id/opencode-models', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
+        if (flavor !== 'opencode') {
+            return c.json({
+                success: false,
+                error: 'OpenCode models are only available for OpenCode sessions'
+            }, 400)
+        }
+
+        try {
+            const result = await engine.listOpencodeModelsForSession(sessionResult.sessionId)
+            return c.json(result)
+        } catch (error) {
+            return c.json({
+                success: false,
+                error: error instanceof Error ? error.message : 'Failed to list OpenCode models'
             }, 500)
         }
     })

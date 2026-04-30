@@ -63,11 +63,20 @@ function createApp(session: Session, opts?: {
             { id: 'gpt-5.5', displayName: 'GPT-5.5', isDefault: true }
         ]
     })
+    const listOpencodeModelsForSession = async () => ({
+        success: true,
+        availableModels: [
+            { modelId: 'ollama/exaone:4.5-33b-q8', name: 'Ollama (SER8)/EXAONE 4.5 33B Q8' },
+            { modelId: 'mlx/qwen3:0.6b', name: 'MLX/Qwen3 0.6B' }
+        ],
+        currentModelId: 'ollama/exaone:4.5-33b-q8'
+    })
     const resumeSession = opts?.resumeSession ?? (async (sessionId: string) => ({ type: 'success', sessionId }))
     const engine = {
         resolveSessionAccess: () => ({ ok: true, sessionId: session.id, session }),
         applySessionConfig,
         listCodexModelsForSession,
+        listOpencodeModelsForSession,
         resumeSession
     } as Partial<SyncEngine>
 
@@ -245,6 +254,71 @@ describe('sessions routes', () => {
         expect(applySessionConfigCalls).toEqual([])
     })
 
+    it('applies model changes for OpenCode sessions', async () => {
+        const session = createSession({
+            metadata: {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'opencode'
+            }
+        })
+        const { app, applySessionConfigCalls } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/model', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model: 'ollama/exaone:4.5-33b-q8' })
+        })
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({ ok: true })
+        expect(applySessionConfigCalls).toEqual([
+            ['session-1', { model: 'ollama/exaone:4.5-33b-q8' }]
+        ])
+    })
+
+    it('applies model changes for Gemini sessions (regression: opencode addition does not break Gemini)', async () => {
+        const session = createSession({
+            metadata: {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'gemini'
+            }
+        })
+        const { app, applySessionConfigCalls } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/model', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model: 'gemini-2.5-pro' })
+        })
+
+        expect(response.status).toBe(200)
+        expect(applySessionConfigCalls).toEqual([
+            ['session-1', { model: 'gemini-2.5-pro' }]
+        ])
+    })
+
+    it('rejects model changes for Cursor sessions', async () => {
+        const session = createSession({
+            metadata: {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'cursor'
+            }
+        })
+        const { app, applySessionConfigCalls } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/model', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model: 'sonnet' })
+        })
+
+        expect(response.status).toBe(400)
+        expect(applySessionConfigCalls).toEqual([])
+    })
+
     it('rejects effort changes for non-Claude sessions', async () => {
         const { app, applySessionConfigCalls } = createApp(createSession())
 
@@ -296,6 +370,33 @@ describe('sessions routes', () => {
                 { id: 'gpt-5.5', displayName: 'GPT-5.5', isDefault: true }
             ]
         })
+    })
+
+    it('returns OpenCode models for active OpenCode sessions', async () => {
+        const session = createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'opencode' }
+        })
+        const { app } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/opencode-models')
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({
+            success: true,
+            availableModels: [
+                { modelId: 'ollama/exaone:4.5-33b-q8', name: 'Ollama (SER8)/EXAONE 4.5 33B Q8' },
+                { modelId: 'mlx/qwen3:0.6b', name: 'MLX/Qwen3 0.6B' }
+            ],
+            currentModelId: 'ollama/exaone:4.5-33b-q8'
+        })
+    })
+
+    it('rejects opencode-models for non-OpenCode sessions', async () => {
+        const { app } = createApp(createSession())
+
+        const response = await app.request('/api/sessions/session-1/opencode-models')
+
+        expect(response.status).toBe(400)
     })
 
     it('applies permission mode changes for inactive sessions', async () => {
