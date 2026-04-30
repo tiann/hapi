@@ -37,8 +37,12 @@ const cmMocks = vi.hoisted(() => ({
 }))
 
 vi.mock('codemirror', () => {
-    const editorView = cmMocks.EditorView as typeof cmMocks.EditorView & { editable: { of: ReturnType<typeof vi.fn> } }
+    const editorView = cmMocks.EditorView as typeof cmMocks.EditorView & {
+        editable: { of: ReturnType<typeof vi.fn> }
+        theme: ReturnType<typeof vi.fn>
+    }
     editorView.editable = { of: vi.fn(() => 'editable-extension') }
+    editorView.theme = vi.fn(() => 'editor-theme')
     return {
         basicSetup: 'basic-setup',
         EditorView: cmMocks.EditorView
@@ -143,6 +147,28 @@ describe('EditorTabs', () => {
         expect(screen.getByTestId('codemirror-view')).toBeInTheDocument()
         expect(screen.getByText('TSX')).toBeInTheDocument()
         expect(cmMocks.language).toHaveBeenCalledWith('javascript', { jsx: true, typescript: true })
+    })
+
+    it('keeps the editor viewport constrained so CodeMirror owns scrolling', async () => {
+        render(
+            <EditorTabs
+                api={{} as ApiClient}
+                machineId="machine-1"
+                tabs={tabs}
+                activeTabId="tab-file"
+                onSelectTab={vi.fn()}
+                onCloseTab={vi.fn()}
+                onOpenTerminal={vi.fn()}
+            />
+        )
+
+        await waitFor(() => {
+            expect(screen.getByTestId('editor-tabs-content')).toBeInTheDocument()
+        })
+
+        expect(screen.getByTestId('editor-tabs-root')).toHaveClass('overflow-hidden')
+        expect(screen.getByTestId('editor-tabs-content')).toHaveClass('overflow-hidden')
+        expect(screen.getByTestId('codemirror-host')).toHaveClass('h-full', 'min-h-0', 'overflow-hidden')
     })
 
     it('mounts CodeMirror when content arrives after the loading state', async () => {

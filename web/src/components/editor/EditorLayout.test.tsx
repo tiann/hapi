@@ -130,6 +130,15 @@ describe('EditorLayout', () => {
         expect(mocks.onTerminalResizePointerDown).toHaveBeenCalledTimes(1)
     })
 
+    it('constrains editor columns so the page body does not own editor scrolling', () => {
+        render(<EditorLayout api={{} as ApiClient} initialMachineId="machine-1" initialProjectPath="/repo" />)
+
+        expect(screen.getByTestId('editor-layout-root')).toHaveClass('overflow-hidden')
+        expect(screen.getByTestId('editor-layout-body')).toHaveClass('overflow-hidden')
+        expect(screen.getByTestId('editor-main-pane')).toHaveClass('min-h-0', 'overflow-hidden')
+        expect(screen.getByTestId('editor-tabs-region')).toHaveClass('overflow-hidden')
+    })
+
     it('opens files from the tree into editor tabs', () => {
         render(<EditorLayout api={{} as ApiClient} initialMachineId="machine-1" initialProjectPath="/repo" />)
 

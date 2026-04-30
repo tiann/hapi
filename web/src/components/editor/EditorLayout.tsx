@@ -77,7 +77,7 @@ export function EditorLayout(props: {
     }
 
     return (
-        <div className="flex h-full min-h-0 flex-col bg-[var(--app-bg)] text-[var(--app-fg)]">
+        <div data-testid="editor-layout-root" className="flex h-full min-h-0 flex-col overflow-hidden bg-[var(--app-bg)] text-[var(--app-fg)]">
             <EditorHeader
                 api={props.api}
                 machineId={editor.machineId}
@@ -86,8 +86,8 @@ export function EditorLayout(props: {
                 onSelectProject={handleSelectProject}
             />
 
-            <div className="flex min-h-0 flex-1">
-                <aside className="min-h-0 shrink-0 border-r border-[var(--app-border)]" style={{ width: panes.leftWidth }}>
+            <div data-testid="editor-layout-body" className="flex min-h-0 flex-1 overflow-hidden">
+                <aside className="min-h-0 shrink-0 overflow-hidden border-r border-[var(--app-border)]" style={{ width: panes.leftWidth }}>
                     <EditorFileTree
                         api={props.api}
                         machineId={editor.machineId}
@@ -103,8 +103,8 @@ export function EditorLayout(props: {
                     onPointerDown={panes.onLeftResizePointerDown}
                 />
 
-                <main className="flex min-w-0 flex-1 flex-col">
-                    <div className="min-h-0 flex-1">
+                <main data-testid="editor-main-pane" className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+                    <div data-testid="editor-tabs-region" className="min-h-0 flex-1 overflow-hidden">
                         <EditorTabs
                             api={props.api}
                             machineId={editor.machineId}
