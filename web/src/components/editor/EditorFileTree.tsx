@@ -17,6 +17,20 @@ function getParentPath(path: string): string {
     return trimmed.slice(0, index)
 }
 
+function getAncestorDirectories(filePath: string, rootPath: string): string[] {
+    const ancestors: string[] = []
+    let current = getParentPath(filePath)
+    const normalizedRoot = rootPath.replace(/\/+$/, '') || rootPath
+
+    while (current && current !== '/' && current.startsWith(normalizedRoot)) {
+        ancestors.push(current)
+        if (current === normalizedRoot) break
+        current = getParentPath(current)
+    }
+
+    return ancestors
+}
+
 function validateNewFileName(value: string): string | null {
     const trimmed = value.trim()
     if (!trimmed) return 'File name is required'
@@ -188,14 +202,21 @@ function DirectoryNode(props: {
     depth: number
     onOpenFile: (filePath: string) => void
     onContextMenu: (filePath: string, x: number, y: number) => void
+    activeFilePath?: string | null
     expanded: Set<string>
     onToggle: (path: string) => void
+    refreshSeq: number
     newFileTargetPath?: string | null
     onCreateFile?: (parentPath: string, fileName: string) => Promise<{ success: boolean; path?: string; error?: string } | unknown>
     onCancelNewFile?: () => void
 }) {
     const isExpanded = props.expanded.has(props.path)
-    const { entries, error, isLoading } = useProjectDirectory(props.api, props.machineId, isExpanded ? props.path : null)
+    const { entries, error, isLoading, refetch } = useProjectDirectory(
+        props.api,
+        props.machineId,
+        isExpanded ? props.path : null,
+        { refetchInterval: isExpanded ? 5_000 : false }
+    )
     const childDepth = props.depth + 1
     const indent = 8 + props.depth * 16
     const childIndent = indent + 16
@@ -204,6 +225,12 @@ function DirectoryNode(props: {
     const files = useMemo(() => entries.filter((entry) => entry.type === 'file'), [entries])
     const shouldShowNewFileInput = props.newFileTargetPath === props.path
         || files.some((entry) => joinPath(props.path, entry.name) === props.newFileTargetPath)
+
+    useEffect(() => {
+        if (props.refreshSeq > 0 && isExpanded) {
+            void refetch()
+        }
+    }, [isExpanded, props.refreshSeq, refetch])
 
     const handleContextMenu = useCallback((event: MouseEvent, filePath: string) => {
         event.preventDefault()
@@ -223,8 +250,10 @@ function DirectoryNode(props: {
                 depth={childDepth}
                 onOpenFile={props.onOpenFile}
                 onContextMenu={props.onContextMenu}
+                activeFilePath={props.activeFilePath}
                 expanded={props.expanded}
                 onToggle={props.onToggle}
+                refreshSeq={props.refreshSeq}
                 newFileTargetPath={props.newFileTargetPath}
                 onCreateFile={props.onCreateFile}
                 onCancelNewFile={props.onCancelNewFile}
@@ -234,14 +263,18 @@ function DirectoryNode(props: {
 
     const renderFile = useCallback((entry: TreeEntry) => {
         const filePath = joinPath(props.path, entry.name)
+        const isActive = props.activeFilePath === filePath
         return (
             <button
                 key={filePath}
                 type="button"
                 aria-label={`Open file ${entry.name}`}
+                aria-current={isActive ? 'page' : undefined}
                 onClick={() => props.onOpenFile(filePath)}
                 onContextMenu={(event) => handleContextMenu(event, filePath)}
-                className="flex w-full items-center gap-1.5 pl-1 pr-2 py-1 text-left hover:bg-[var(--app-subtle-bg)] transition-colors text-xs text-[var(--app-fg)]"
+                className={`flex w-full items-center gap-1.5 pl-1 pr-2 py-1 text-left transition-colors text-xs text-[var(--app-fg)] ${
+                    isActive ? 'bg-[var(--app-subtle-bg)] text-[var(--app-fg)]' : 'hover:bg-[var(--app-subtle-bg)]'
+                }`}
                 style={{ paddingLeft: indent + 14 }}
             >
                 <FileIcon fileName={entry.name} size={14} />
@@ -308,6 +341,7 @@ export function EditorFileTree(props: {
     projectPath: string | null
     onOpenFile: (filePath: string) => void
     onContextMenu: (filePath: string, x: number, y: number) => void
+    activeFilePath?: string | null
     newFileTargetPath?: string | null
     onCreateFile?: (parentPath: string, fileName: string) => Promise<{ success: boolean; path?: string; error?: string } | unknown>
     onCancelNewFile?: () => void
@@ -315,6 +349,7 @@ export function EditorFileTree(props: {
     const [expanded, setExpanded] = useState<Set<string>>(() => (
         props.projectPath ? new Set([props.projectPath]) : new Set()
     ))
+    const [refreshSeq, setRefreshSeq] = useState(0)
 
     useEffect(() => {
         setExpanded(props.projectPath ? new Set([props.projectPath]) : new Set())
@@ -329,6 +364,17 @@ export function EditorFileTree(props: {
             return next
         })
     }, [props.newFileTargetPath])
+
+    useEffect(() => {
+        if (!props.activeFilePath || !props.projectPath) return
+        setExpanded((prev) => {
+            const next = new Set(prev)
+            for (const ancestor of getAncestorDirectories(props.activeFilePath!, props.projectPath!)) {
+                next.add(ancestor)
+            }
+            return next
+        })
+    }, [props.activeFilePath, props.projectPath])
 
     const handleToggle = useCallback((path: string) => {
         setExpanded((prev) => {
@@ -357,6 +403,15 @@ export function EditorFileTree(props: {
             <div className="px-3 py-2 text-xs font-semibold text-[var(--app-fg)] border-b border-[var(--app-border)] shrink-0 flex items-center gap-1.5">
                 <FolderIcon open />
                 <span className="truncate">{projectName}</span>
+                <button
+                    type="button"
+                    aria-label="Refresh files"
+                    className="ml-auto rounded px-1.5 py-0.5 text-[10px] font-normal text-[var(--app-hint)] hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)]"
+                    onClick={() => setRefreshSeq((value) => value + 1)}
+                    title="Refresh files"
+                >
+                    ↻
+                </button>
             </div>
             <div className="flex-1 overflow-y-auto py-1">
                 <DirectoryNode
@@ -367,8 +422,10 @@ export function EditorFileTree(props: {
                     depth={0}
                     onOpenFile={props.onOpenFile}
                     onContextMenu={props.onContextMenu}
+                    activeFilePath={props.activeFilePath}
                     expanded={expanded}
                     onToggle={handleToggle}
+                    refreshSeq={refreshSeq}
                     newFileTargetPath={props.newFileTargetPath}
                     onCreateFile={props.onCreateFile}
                     onCancelNewFile={props.onCancelNewFile}

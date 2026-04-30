@@ -10,8 +10,13 @@ vi.mock('@/hooks/queries/useProjectDirectory', () => ({
 }))
 
 describe('EditorFileTree', () => {
+    let rootRefetch: ReturnType<typeof vi.fn>
+    let srcRefetch: ReturnType<typeof vi.fn>
+
     beforeEach(() => {
         vi.clearAllMocks()
+        rootRefetch = vi.fn()
+        srcRefetch = vi.fn()
         useProjectDirectoryMock.mockImplementation((_api, _machineId, path) => {
             if (path === '/repo') {
                 return {
@@ -21,7 +26,7 @@ describe('EditorFileTree', () => {
                     ],
                     isLoading: false,
                     error: null,
-                    refetch: vi.fn()
+                    refetch: rootRefetch
                 }
             }
             if (path === '/repo/src') {
@@ -31,7 +36,7 @@ describe('EditorFileTree', () => {
                     ],
                     isLoading: false,
                     error: null,
-                    refetch: vi.fn()
+                    refetch: srcRefetch
                 }
             }
             return { entries: [], isLoading: false, error: null, refetch: vi.fn() }
@@ -72,7 +77,62 @@ describe('EditorFileTree', () => {
         expect(screen.getAllByText('repo').length).toBeGreaterThan(0)
         expect(screen.getByText('README.md')).toBeInTheDocument()
         expect(screen.getByText('src')).toBeInTheDocument()
-        expect(useProjectDirectoryMock).toHaveBeenCalledWith(api, 'machine-1', '/repo')
+        expect(useProjectDirectoryMock).toHaveBeenCalledWith(api, 'machine-1', '/repo', { refetchInterval: 5_000 })
+    })
+
+    it('highlights the active file in the tree', () => {
+        render(
+            <EditorFileTree
+                api={{} as ApiClient}
+                machineId="machine-1"
+                projectPath="/repo"
+                activeFilePath="/repo/README.md"
+                onOpenFile={vi.fn()}
+                onContextMenu={vi.fn()}
+            />
+        )
+
+        expect(screen.getByRole('button', { name: 'Open file README.md' })).toHaveAttribute('aria-current', 'page')
+    })
+
+    it('expands parent directories to reveal the active file', () => {
+        render(
+            <EditorFileTree
+                api={{} as ApiClient}
+                machineId="machine-1"
+                projectPath="/repo"
+                activeFilePath="/repo/src/App.tsx"
+                onOpenFile={vi.fn()}
+                onContextMenu={vi.fn()}
+            />
+        )
+
+        expect(screen.getByRole('button', { name: 'Open file App.tsx' })).toHaveAttribute('aria-current', 'page')
+    })
+
+    it('polls expanded directories and supports manual refresh', async () => {
+        const api = {} as ApiClient
+        render(
+            <EditorFileTree
+                api={api}
+                machineId="machine-1"
+                projectPath="/repo"
+                onOpenFile={vi.fn()}
+                onContextMenu={vi.fn()}
+            />
+        )
+
+        fireEvent.click(screen.getByRole('button', { name: 'Toggle directory src' }))
+
+        expect(useProjectDirectoryMock).toHaveBeenCalledWith(api, 'machine-1', '/repo', { refetchInterval: 5_000 })
+        expect(useProjectDirectoryMock).toHaveBeenCalledWith(api, 'machine-1', '/repo/src', { refetchInterval: 5_000 })
+
+        fireEvent.click(screen.getByRole('button', { name: 'Refresh files' }))
+
+        await waitFor(() => {
+            expect(rootRefetch).toHaveBeenCalled()
+            expect(srcRefetch).toHaveBeenCalled()
+        })
     })
 
     it('opens files and nested directory files', () => {

@@ -6,7 +6,10 @@ import { queryKeys } from '@/lib/query-keys'
 export function useProjectDirectory(
     api: ApiClient | null,
     machineId: string | null,
-    path: string | null
+    path: string | null,
+    options?: {
+        refetchInterval?: number | false
+    }
 ): {
     entries: NonNullable<EditorDirectoryResponse['entries']>
     error: string | null
@@ -32,6 +35,7 @@ export function useProjectDirectory(
             return { entries: response.entries ?? [], error: null }
         },
         enabled,
+        refetchInterval: options?.refetchInterval,
     })
 
     const queryError = query.error instanceof Error

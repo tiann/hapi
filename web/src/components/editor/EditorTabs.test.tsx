@@ -19,6 +19,19 @@ const cmMocks = vi.hoisted(() => ({
             destroyed: false,
             dispatch: vi.fn((payload: { changes?: { insert?: string } }) => {
                 view.doc = payload.changes?.insert ?? view.doc
+                const update = {
+                    docChanged: true,
+                    state: {
+                        doc: {
+                            toString: () => view.doc
+                        }
+                    }
+                }
+                for (const extension of config.extensions ?? []) {
+                    if (extension && typeof extension === 'object' && 'type' in extension && extension.type === 'update-listener') {
+                        (extension as unknown as { callback: (next: typeof update) => void }).callback(update)
+                    }
+                }
             }),
             simulateChange: (content: string) => {
                 view.doc = content
@@ -199,6 +212,47 @@ describe('EditorTabs', () => {
         cmMocks.editorViews[0].simulateChange('console.log("changed")')
 
         expect(onDirtyChange).toHaveBeenCalledWith('tab-file', true)
+    })
+
+    it('does not mark a clean tab dirty when file content refreshes from disk', async () => {
+        const onDirtyChange = vi.fn()
+        let fileResult = { content: 'console.log("v1")', error: null, isLoading: false, refetch: vi.fn() }
+        useEditorFileMock.mockImplementation(() => fileResult)
+        const { rerender } = render(
+            <EditorTabs
+                api={{} as ApiClient}
+                machineId="machine-1"
+                tabs={tabs}
+                activeTabId="tab-file"
+                onSelectTab={vi.fn()}
+                onCloseTab={vi.fn()}
+                onOpenTerminal={vi.fn()}
+                onDirtyChange={onDirtyChange}
+            />
+        )
+
+        await waitFor(() => {
+            expect(cmMocks.editorViews[0]).toBeDefined()
+        })
+        fileResult = { content: 'console.log("v2")', error: null, isLoading: false, refetch: vi.fn() }
+
+        rerender(
+            <EditorTabs
+                api={{} as ApiClient}
+                machineId="machine-1"
+                tabs={tabs}
+                activeTabId="tab-file"
+                onSelectTab={vi.fn()}
+                onCloseTab={vi.fn()}
+                onOpenTerminal={vi.fn()}
+                onDirtyChange={onDirtyChange}
+            />
+        )
+
+        await waitFor(() => {
+            expect(cmMocks.editorViews[0].doc).toBe('console.log("v2")')
+        })
+        expect(onDirtyChange).not.toHaveBeenCalled()
     })
 
     it('shows a dirty marker and save button for dirty file tabs', () => {

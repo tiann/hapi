@@ -81,6 +81,7 @@ function useCodeMirror(
     onChange?: (content: string) => void
 ): void {
     const viewRef = useRef<EditorView | null>(null)
+    const suppressChangeRef = useRef(false)
     const contentReady = content !== null
 
     useEffect(() => {
@@ -99,6 +100,7 @@ function useCodeMirror(
             editorScrollTheme,
             EditorView.editable.of(true),
             EditorView.updateListener.of((update) => {
+                if (suppressChangeRef.current) return
                 if (update.docChanged) {
                     onChange?.(update.state.doc.toString())
                 }
@@ -129,13 +131,18 @@ function useCodeMirror(
         if (!view || content === null) return
         const currentContent = view.state.doc.toString()
         if (currentContent !== content) {
-            view.dispatch({
-                changes: {
-                    from: 0,
-                    to: view.state.doc.length,
-                    insert: content
-                }
-            })
+            suppressChangeRef.current = true
+            try {
+                view.dispatch({
+                    changes: {
+                        from: 0,
+                        to: view.state.doc.length,
+                        insert: content
+                    }
+                })
+            } finally {
+                suppressChangeRef.current = false
+            }
         }
     }, [content])
 }
@@ -216,9 +223,7 @@ export function EditorTabs(props: {
     }, [props.tabs])
 
     const handleContentLoaded = useCallback((tabId: string, content: string) => {
-        if (!fileContentsRef.current.has(tabId)) {
-            fileContentsRef.current.set(tabId, content)
-        }
+        fileContentsRef.current.set(tabId, content)
     }, [])
 
     const handleContentChanged = useCallback((tabId: string, content: string) => {

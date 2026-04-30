@@ -29,6 +29,9 @@ export function EditorLayout(props: {
     const [pendingDraftText, setPendingDraftText] = useState<string | undefined>(undefined)
     const [newFileTargetPath, setNewFileTargetPath] = useState<string | null>(null)
     const pendingFileAfterSessionRef = useRef<string | null>(null)
+    const activeFilePath = editor.tabs.find((tab) => (
+        tab.id === editor.activeTabId && tab.type === 'file'
+    ))?.path ?? null
 
     const newSession = useEditorNewSession({
         api: props.api,
@@ -130,6 +133,7 @@ export function EditorLayout(props: {
                         projectPath={editor.projectPath}
                         onOpenFile={editor.openFile}
                         onContextMenu={editor.showContextMenu}
+                        activeFilePath={activeFilePath}
                         newFileTargetPath={newFileTargetPath}
                         onCreateFile={handleCreateFile}
                         onCancelNewFile={handleCancelNewFile}

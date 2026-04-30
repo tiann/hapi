@@ -26,6 +26,7 @@ vi.mock('./EditorFileTree', () => ({
     EditorFileTree: (props: {
         onOpenFile: (path: string) => void
         onContextMenu: (path: string, x: number, y: number) => void
+        activeFilePath?: string | null
         newFileTargetPath?: string | null
         onCreateFile?: (parentPath: string, fileName: string) => Promise<unknown>
     }) => (
@@ -33,6 +34,7 @@ vi.mock('./EditorFileTree', () => ({
             FileTree
             <button type="button" onClick={() => props.onOpenFile('/repo/src/App.tsx')}>Mock open file</button>
             <button type="button" onClick={() => props.onContextMenu('/repo/src/App.tsx', 12, 34)}>Mock context menu</button>
+            <div>Active file: {props.activeFilePath ?? ''}</div>
             <div>New file target: {props.newFileTargetPath ?? ''}</div>
             <button type="button" onClick={() => { void props.onCreateFile?.('/repo/src', 'New.ts') }}>Mock create file</button>
         </div>
@@ -166,6 +168,7 @@ describe('EditorLayout', () => {
         fireEvent.click(screen.getByText('Mock open file'))
 
         expect(screen.getByTestId('editor-tabs')).toHaveTextContent('App.tsx')
+        expect(screen.getByTestId('editor-file-tree')).toHaveTextContent('Active file: /repo/src/App.tsx')
     })
 
     it('starts inline new-file flow and opens the created file', async () => {
