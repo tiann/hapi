@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { mkdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { RpcHandlerManager } from '@/api/rpc/RpcHandlerManager'
@@ -67,6 +67,42 @@ describe('editor RPC handlers', () => {
         })
     })
 
+    it('writes an existing text file inside the editor root', async () => {
+        const filePath = join(rootDir, 'README.md')
+
+        const parsed = await request(rpc, 'editor-write-file', {
+            path: filePath,
+            content: '# updated'
+        }) as { success: boolean; path?: string; size?: number }
+
+        expect(parsed).toEqual({
+            success: true,
+            path: filePath,
+            size: Buffer.byteLength('# updated')
+        })
+        await expect(readFile(filePath, 'utf8')).resolves.toBe('# updated')
+    })
+
+    it('creates nested text files without overwriting existing files', async () => {
+        const filePath = join(rootDir, 'src', 'components', 'Button.tsx')
+
+        const parsed = await request(rpc, 'editor-create-file', {
+            path: filePath,
+            content: 'export function Button() {}'
+        }) as { success: boolean; path?: string; size?: number }
+
+        expect(parsed).toEqual({
+            success: true,
+            path: filePath,
+            size: Buffer.byteLength('export function Button() {}')
+        })
+        await expect(readFile(filePath, 'utf8')).resolves.toBe('export function Button() {}')
+        await expect(request(rpc, 'editor-create-file', { path: filePath, content: '' })).resolves.toMatchObject({
+            success: false,
+            error: 'File already exists'
+        })
+    })
+
     it('rejects binary files and paths outside the editor root', async () => {
         await writeFile(join(rootDir, 'binary.bin'), Buffer.from([0, 1, 2, 3]))
 
@@ -75,6 +111,14 @@ describe('editor RPC handlers', () => {
             error: 'Cannot read binary file'
         })
         await expect(request(rpc, 'editor-read-file', { path: resolve(rootDir, '..', 'outside.txt') })).resolves.toMatchObject({
+            success: false,
+            error: 'Path outside editor root'
+        })
+        await expect(request(rpc, 'editor-write-file', { path: resolve(rootDir, '..', 'outside.txt'), content: 'nope' })).resolves.toMatchObject({
+            success: false,
+            error: 'Path outside editor root'
+        })
+        await expect(request(rpc, 'editor-create-file', { path: resolve(rootDir, '..', 'outside.txt'), content: 'nope' })).resolves.toMatchObject({
             success: false,
             error: 'Path outside editor root'
         })

@@ -1,8 +1,8 @@
 import type { RpcHandlerManager } from '@/api/rpc/RpcHandlerManager'
 import { execFile, type ExecFileOptions } from 'node:child_process'
 import type { Dirent } from 'node:fs'
-import { readdir, readFile, realpath, stat } from 'node:fs/promises'
-import { basename, isAbsolute, join, relative, resolve } from 'node:path'
+import { mkdir, readdir, readFile, realpath, stat, writeFile } from 'node:fs/promises'
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { promisify } from 'node:util'
 
 const execFileAsync = promisify(execFile)
@@ -29,6 +29,11 @@ type EditorReadFileRequest = {
     path?: string
 }
 
+type EditorFileMutationRequest = {
+    path?: string
+    content?: string
+}
+
 type EditorGitStatusRequest = {
     path?: string
 }
@@ -44,6 +49,13 @@ type EditorCommandResponse = {
 type EditorProjectsResponse = {
     success: boolean
     projects?: Array<{ path: string; name: string; hasGit: boolean }>
+    error?: string
+}
+
+type EditorFileMutationResponse = {
+    success: boolean
+    path?: string
+    size?: number
     error?: string
 }
 
@@ -84,6 +96,68 @@ async function resolveExistingInsideRoot(rawPath: string | undefined, rootDir: s
     }
 
     return { path: resolvedTarget }
+}
+
+async function findNearestExistingPath(path: string): Promise<string> {
+    let current = path
+    while (true) {
+        try {
+            await stat(current)
+            return current
+        } catch (error) {
+            const code = (error as NodeJS.ErrnoException).code
+            if (code !== 'ENOENT') {
+                throw error
+            }
+        }
+
+        const parent = dirname(current)
+        if (parent === current) {
+            return current
+        }
+        current = parent
+    }
+}
+
+async function resolveNewFileInsideRoot(rawPath: string | undefined, rootDir: string): Promise<{ path: string; error?: string }> {
+    if (!rawPath?.trim()) {
+        return { path: '', error: 'Path is required' }
+    }
+
+    const root = await normalizeRoot(rootDir)
+    const target = resolve(root, rawPath.trim())
+    if (!isWithinRoot(target, root)) {
+        return { path: target, error: 'Path outside editor root' }
+    }
+
+    try {
+        await stat(target)
+        return { path: target, error: 'File already exists' }
+    } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code
+        if (code !== 'ENOENT') {
+            return { path: target, error: getErrorMessage(error, 'Failed to check file') }
+        }
+    }
+
+    const parent = dirname(target)
+    try {
+        const nearestExisting = await findNearestExistingPath(parent)
+        const nearestReal = await realpath(nearestExisting)
+        if (!isWithinRoot(nearestReal, root)) {
+            return { path: target, error: 'Path outside editor root' }
+        }
+
+        await mkdir(parent, { recursive: true })
+        const parentReal = await realpath(parent)
+        if (!isWithinRoot(parentReal, root)) {
+            return { path: target, error: 'Path outside editor root' }
+        }
+    } catch (error) {
+        return { path: target, error: getErrorMessage(error, 'Failed to prepare parent directory') }
+    }
+
+    return { path: target }
 }
 
 function mapGitStatus(code: string): EditorGitStatus {
@@ -239,6 +313,72 @@ export function registerEditorRpcHandlers(rpcHandlerManager: RpcHandlerManager, 
             }
         } catch (error) {
             return rpcError(getErrorMessage(error, 'Failed to read file'))
+        }
+    })
+
+    rpcHandlerManager.registerHandler<EditorFileMutationRequest, EditorFileMutationResponse>('editor-write-file', async (data) => {
+        if (typeof data?.content !== 'string') {
+            return rpcError('Content must be a string')
+        }
+
+        const resolved = await resolveExistingInsideRoot(data.path, editorRoot)
+        if (resolved.error) {
+            return rpcError(resolved.error)
+        }
+
+        try {
+            const fileStat = await stat(resolved.path)
+            if (!fileStat.isFile()) {
+                return rpcError('Path is not a file')
+            }
+            const size = Buffer.byteLength(data.content, 'utf8')
+            if (size > MAX_FILE_BYTES) {
+                return rpcError('File is too large to write')
+            }
+
+            await writeFile(resolved.path, data.content, 'utf8')
+            return {
+                success: true,
+                path: resolved.path,
+                size
+            }
+        } catch (error) {
+            const code = (error as NodeJS.ErrnoException).code
+            if (code === 'ENOENT') {
+                return rpcError('File does not exist')
+            }
+            return rpcError(getErrorMessage(error, 'Failed to write file'))
+        }
+    })
+
+    rpcHandlerManager.registerHandler<EditorFileMutationRequest, EditorFileMutationResponse>('editor-create-file', async (data) => {
+        if (typeof data?.content !== 'string') {
+            return rpcError('Content must be a string')
+        }
+
+        const resolved = await resolveNewFileInsideRoot(data.path, editorRoot)
+        if (resolved.error) {
+            return rpcError(resolved.error)
+        }
+
+        try {
+            const size = Buffer.byteLength(data.content, 'utf8')
+            if (size > MAX_FILE_BYTES) {
+                return rpcError('File is too large to write')
+            }
+
+            await writeFile(resolved.path, data.content, { encoding: 'utf8', flag: 'wx' })
+            return {
+                success: true,
+                path: resolved.path,
+                size
+            }
+        } catch (error) {
+            const code = (error as NodeJS.ErrnoException).code
+            if (code === 'EEXIST') {
+                return rpcError('File already exists')
+            }
+            return rpcError(getErrorMessage(error, 'Failed to create file'))
         }
     })
 

@@ -23,6 +23,13 @@ export type RpcUploadFileResponse = {
     error?: string
 }
 
+export type RpcEditorFileMutationResponse = {
+    success: boolean
+    path?: string
+    size?: number
+    error?: string
+}
+
 export type RpcDeleteUploadResponse = {
     success: boolean
     error?: string
@@ -226,6 +233,22 @@ export class RpcGateway {
             return { success: false, error: 'Unexpected editor-git-status result' }
         }
         return result as RpcCommandResponse
+    }
+
+    async editorWriteFile(machineId: string, path: string, content: string): Promise<RpcEditorFileMutationResponse> {
+        const result = await this.machineRpc(machineId, 'editor-write-file', { path, content }) as RpcEditorFileMutationResponse | unknown
+        if (!result || typeof result !== 'object') {
+            return { success: false, error: 'Unexpected editor-write-file result' }
+        }
+        return result as RpcEditorFileMutationResponse
+    }
+
+    async editorCreateFile(machineId: string, path: string, content: string): Promise<RpcEditorFileMutationResponse> {
+        const result = await this.machineRpc(machineId, 'editor-create-file', { path, content }) as RpcEditorFileMutationResponse | unknown
+        if (!result || typeof result !== 'object') {
+            return { success: false, error: 'Unexpected editor-create-file result' }
+        }
+        return result as RpcEditorFileMutationResponse
     }
 
     async checkPathsExist(machineId: string, paths: string[]): Promise<Record<string, boolean>> {

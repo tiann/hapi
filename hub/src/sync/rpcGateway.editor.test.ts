@@ -109,6 +109,38 @@ describe('RpcGateway editor RPC', () => {
         })
     })
 
+    it('sends editor-write-file through machine-level RPC', async () => {
+        const expected = { success: true, path: '/repo/src/App.tsx', size: 12 }
+        const { gateway, calls } = createGateway(expected)
+
+        const result = await gateway.editorWriteFile('machine-1', '/repo/src/App.tsx', 'hello world!')
+
+        expect(result).toEqual(expected)
+        expect(calls[0]).toEqual({
+            event: 'rpc-request',
+            payload: {
+                method: 'machine-1:editor-write-file',
+                params: JSON.stringify({ path: '/repo/src/App.tsx', content: 'hello world!' })
+            }
+        })
+    })
+
+    it('sends editor-create-file through machine-level RPC', async () => {
+        const expected = { success: true, path: '/repo/src/New.tsx', size: 0 }
+        const { gateway, calls } = createGateway(expected)
+
+        const result = await gateway.editorCreateFile('machine-1', '/repo/src/New.tsx', '')
+
+        expect(result).toEqual(expected)
+        expect(calls[0]).toEqual({
+            event: 'rpc-request',
+            payload: {
+                method: 'machine-1:editor-create-file',
+                params: JSON.stringify({ path: '/repo/src/New.tsx', content: '' })
+            }
+        })
+    })
+
     it('returns an error response for unexpected editor RPC payloads', async () => {
         const { gateway } = createGateway(null)
 
@@ -127,6 +159,14 @@ describe('RpcGateway editor RPC', () => {
         await expect(gateway.editorGitStatus('machine-1', '/repo')).resolves.toEqual({
             success: false,
             error: 'Unexpected editor-git-status result'
+        })
+        await expect(gateway.editorWriteFile('machine-1', '/repo/file.ts', 'content')).resolves.toEqual({
+            success: false,
+            error: 'Unexpected editor-write-file result'
+        })
+        await expect(gateway.editorCreateFile('machine-1', '/repo/new.ts', '')).resolves.toEqual({
+            success: false,
+            error: 'Unexpected editor-create-file result'
         })
     })
 })

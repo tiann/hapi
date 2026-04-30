@@ -20,6 +20,7 @@ import {
     type RpcCodexModel,
     type RpcCommandResponse,
     type RpcDeleteUploadResponse,
+    type RpcEditorFileMutationResponse,
     type RpcEditorProjectsResponse,
     type RpcListDirectoryResponse,
     type RpcListCodexModelsResponse,
@@ -36,6 +37,7 @@ export type {
     RpcCodexModel,
     RpcCommandResponse,
     RpcDeleteUploadResponse,
+    RpcEditorFileMutationResponse,
     RpcEditorProjectsResponse,
     RpcListDirectoryResponse,
     RpcListCodexModelsResponse,
@@ -583,6 +585,14 @@ export class SyncEngine {
 
     async getEditorGitStatus(machineId: string, path: string): Promise<RpcCommandResponse> {
         return await this.rpcGateway.editorGitStatus(machineId, path)
+    }
+
+    async writeEditorFile(machineId: string, path: string, content: string): Promise<RpcEditorFileMutationResponse> {
+        return await this.rpcGateway.editorWriteFile(machineId, path, content)
+    }
+
+    async createEditorFile(machineId: string, path: string, content: string): Promise<RpcEditorFileMutationResponse> {
+        return await this.rpcGateway.editorCreateFile(machineId, path, content)
     }
 
     async getGitStatus(sessionId: string, cwd?: string): Promise<RpcCommandResponse> {

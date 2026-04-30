@@ -2,6 +2,7 @@ import type {
     AttachmentMetadata,
     EditorDirectoryResponse,
     EditorFileResponse,
+    EditorFileMutationResponse,
     EditorGitStatusResponse,
     EditorProjectsResponse,
     AuthResponse,
@@ -500,6 +501,34 @@ export class ApiClient {
             {
                 method: "POST",
                 body: JSON.stringify({ machineId, path })
+            }
+        )
+    }
+
+    async writeEditorFile(
+        machineId: string,
+        path: string,
+        content: string
+    ): Promise<EditorFileMutationResponse> {
+        return await this.request<EditorFileMutationResponse>(
+            `/api/editor/file/write`,
+            {
+                method: "POST",
+                body: JSON.stringify({ machineId, path, content })
+            }
+        )
+    }
+
+    async createEditorFile(
+        machineId: string,
+        path: string,
+        content: string = ''
+    ): Promise<EditorFileMutationResponse> {
+        return await this.request<EditorFileMutationResponse>(
+            `/api/editor/file/create`,
+            {
+                method: "POST",
+                body: JSON.stringify({ machineId, path, content })
             }
         )
     }

@@ -6,6 +6,8 @@ type EditorRpcGatewayStub = {
     editorReadFile: (machineId: string, path: string) => Promise<unknown>
     editorListProjects: (machineId: string) => Promise<unknown>
     editorGitStatus: (machineId: string, path: string) => Promise<unknown>
+    editorWriteFile: (machineId: string, path: string, content: string) => Promise<unknown>
+    editorCreateFile: (machineId: string, path: string, content: string) => Promise<unknown>
 }
 
 type SyncEngineWithEditorRpc = {
@@ -14,6 +16,8 @@ type SyncEngineWithEditorRpc = {
     readEditorFile(machineId: string, path: string): Promise<unknown>
     listEditorProjects(machineId: string): Promise<unknown>
     getEditorGitStatus(machineId: string, path: string): Promise<unknown>
+    writeEditorFile(machineId: string, path: string, content: string): Promise<unknown>
+    createEditorFile(machineId: string, path: string, content: string): Promise<unknown>
 }
 
 describe('SyncEngine editor RPC methods', () => {
@@ -35,6 +39,14 @@ describe('SyncEngine editor RPC methods', () => {
             editorGitStatus: async (...args) => {
                 calls.push({ method: 'editorGitStatus', args })
                 return { success: true, stdout: '' }
+            },
+            editorWriteFile: async (...args) => {
+                calls.push({ method: 'editorWriteFile', args })
+                return { success: true, path: '/repo/a.ts', size: 7 }
+            },
+            editorCreateFile: async (...args) => {
+                calls.push({ method: 'editorCreateFile', args })
+                return { success: true, path: '/repo/new.ts', size: 0 }
             }
         }
         const engine = Object.create(SyncEngine.prototype) as SyncEngineWithEditorRpc
@@ -44,12 +56,16 @@ describe('SyncEngine editor RPC methods', () => {
         await expect(engine.readEditorFile('machine-1', '/repo/a.ts')).resolves.toEqual({ success: true, content: 'YQ==', size: 1 })
         await expect(engine.listEditorProjects('machine-1')).resolves.toEqual({ success: true, projects: [] })
         await expect(engine.getEditorGitStatus('machine-1', '/repo')).resolves.toEqual({ success: true, stdout: '' })
+        await expect(engine.writeEditorFile('machine-1', '/repo/a.ts', 'updated')).resolves.toEqual({ success: true, path: '/repo/a.ts', size: 7 })
+        await expect(engine.createEditorFile('machine-1', '/repo/new.ts', '')).resolves.toEqual({ success: true, path: '/repo/new.ts', size: 0 })
 
         expect(calls).toEqual([
             { method: 'editorListDirectory', args: ['machine-1', '/repo'] },
             { method: 'editorReadFile', args: ['machine-1', '/repo/a.ts'] },
             { method: 'editorListProjects', args: ['machine-1'] },
-            { method: 'editorGitStatus', args: ['machine-1', '/repo'] }
+            { method: 'editorGitStatus', args: ['machine-1', '/repo'] },
+            { method: 'editorWriteFile', args: ['machine-1', '/repo/a.ts', 'updated'] },
+            { method: 'editorCreateFile', args: ['machine-1', '/repo/new.ts', ''] }
         ])
     })
 })

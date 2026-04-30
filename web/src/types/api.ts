@@ -269,6 +269,13 @@ export type EditorFileResponse = {
     error?: string
 }
 
+export type EditorFileMutationResponse = {
+    success: boolean
+    path?: string
+    size?: number
+    error?: string
+}
+
 export type EditorProjectsResponse = {
     success: boolean
     projects?: Array<{
