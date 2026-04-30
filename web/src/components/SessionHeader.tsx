@@ -104,6 +104,28 @@ function FolderIcon(props: { className?: string }) {
     )
 }
 
+
+function EditorIcon(props: { className?: string }) {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={props.className}
+        >
+            <rect x="3" y="4" width="18" height="16" rx="2" />
+            <path d="m8 10 3 3-3 3" />
+            <path d="M13 16h3" />
+        </svg>
+    )
+}
+
 function TerminalIcon(props: { className?: string }) {
     return (
         <svg
@@ -142,6 +164,9 @@ export function SessionHeader(props: {
     const modelLabel = getSessionModelLabel(session)
     const agentFlavor = session.metadata?.flavor ?? 'claude'
     const sessionStatus = session.thinking ? 'thinking' : !session.active ? 'archived' : 'active'
+    const editorSearch = session.metadata?.machineId && session.metadata?.path
+        ? { machine: session.metadata.machineId, project: session.metadata.path }
+        : null
 
     const [menuOpen, setMenuOpen] = useState(false)
     const [menuAnchorPoint, setMenuAnchorPoint] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
@@ -186,6 +211,17 @@ export function SessionHeader(props: {
                         <span className={`db-card__agent db-card__agent--${agentFlavor}`}>{agentFlavor}</span>
                         
                         <div className="db-pinned__compact-actions flex items-center gap-1 ml-auto">
+                            {editorSearch ? (
+                                <button
+                                    type="button"
+                                    className="db-pinned__compact-action"
+                                    onClick={() => navigate({ to: '/editor', search: editorSearch })}
+                                    title="Open in Editor"
+                                    aria-label="Open in Editor"
+                                >
+                                    <EditorIcon className="w-4 h-4" />
+                                </button>
+                            ) : null}
                             <button type="button" className="db-pinned__compact-action" onClick={() => navigate({ search: (prev: any) => ({ ...prev, modal: 'files', modalSessionId: session.id }) } as any)} title="Files">
                                 <FolderIcon className="w-4 h-4" />
                             </button>
@@ -291,6 +327,18 @@ export function SessionHeader(props: {
                         </div>
                     </div>
 
+
+                    {editorSearch ? (
+                        <button
+                            type="button"
+                            className="flex h-8 w-8 items-center justify-center rounded-full text-[var(--app-hint)] transition-colors hover:bg-[var(--app-secondary-bg)] hover:text-[var(--app-fg)]"
+                            title="Open in Editor"
+                            aria-label="Open in Editor"
+                            onClick={() => navigate({ to: '/editor', search: editorSearch })}
+                        >
+                            <EditorIcon className="w-5 h-5" />
+                        </button>
+                    ) : null}
 
                     <button
                         type="button"

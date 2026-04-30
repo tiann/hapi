@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate } from '@tanstack/react-router'
 import type { SessionSummary } from '@/types/api'
 import type { ApiClient } from '@/api/client'
 import { useLongPress } from '@/hooks/useLongPress'
@@ -310,6 +311,17 @@ function LoaderIcon(props: { className?: string }) {
             <line x1="18" y1="12" x2="22" y2="12" />
             <line x1="4.93" y1="19.07" x2="7.76" y2="16.24" />
             <line x1="16.24" y1="7.76" x2="19.07" y2="4.93" />
+        </svg>
+    )
+}
+
+
+function EditorIcon(props: { className?: string }) {
+    return (
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={props.className}>
+            <rect x="3" y="4" width="18" height="16" rx="2" />
+            <path d="m8 10 3 3-3 3" />
+            <path d="M13 16h3" />
         </svg>
     )
 }
@@ -711,12 +723,15 @@ function ProjectGroupActions(props: {
 }) {
     const { group, api } = props
     const { t } = useTranslation()
+    const navigate = useNavigate()
     const queryClient = useQueryClient()
     const [archiveAllOpen, setArchiveAllOpen] = useState(false)
     const [deleteArchivedOpen, setDeleteArchivedOpen] = useState(false)
 
     const activeSessions = useMemo(() => group.sessions.filter(s => s.active), [group.sessions])
     const inactiveSessions = useMemo(() => group.sessions.filter(s => !s.active), [group.sessions])
+    const editorProjectLabel = group.displayName.split(/[\\/]+/).filter(Boolean).pop() ?? group.displayName
+    const canOpenInEditor = Boolean(group.machineId && group.directory && group.directory !== 'Other')
 
     const archiveAllMutation = useMutation({
         mutationFn: async () => {
@@ -758,6 +773,20 @@ function ProjectGroupActions(props: {
     return (
         <>
             <div className="flex items-center gap-0 opacity-0 group-hover/project:opacity-100 transition-opacity duration-150 shrink-0">
+                {canOpenInEditor ? (
+                    <button
+                        type="button"
+                        onClick={(e) => {
+                            e.stopPropagation()
+                            navigate({ to: '/editor', search: { machine: group.machineId!, project: group.directory } })
+                        }}
+                        className="p-1 rounded text-[var(--app-hint)] hover:text-[var(--app-fg)] hover:bg-[var(--app-subtle-bg)] transition-colors"
+                        title="Open in Editor"
+                        aria-label={`Open ${editorProjectLabel} in Editor`}
+                    >
+                        <EditorIcon className="h-3.5 w-3.5" />
+                    </button>
+                ) : null}
                 {activeSessions.length > 0 ? (
                     <button
                         type="button"
