@@ -2,40 +2,9 @@ import { useMemo } from 'react'
 import type { ApiClient } from '@/api/client'
 import type { SessionSummary } from '@/types/api'
 import { useSessions } from '@/hooks/queries/useSessions'
+import { filterSessionsForEditorProject, sessionBelongsToEditorProject } from '@/lib/editor-session-filter'
 
-function normalizePath(path: string): string {
-    return path.replace(/\/+$/, '') || '/'
-}
-
-function isSameOrChildPath(candidate: string | null | undefined, projectPath: string): boolean {
-    if (!candidate) return false
-    const normalizedCandidate = normalizePath(candidate)
-    const normalizedProject = normalizePath(projectPath)
-    return normalizedCandidate === normalizedProject || normalizedCandidate.startsWith(`${normalizedProject}/`)
-}
-
-function getWorktreeBasePath(session: SessionSummary): string | null {
-    const worktree = session.metadata?.worktree
-    if (!worktree || typeof worktree !== 'object') return null
-    const basePath = (worktree as { basePath?: unknown }).basePath
-    return typeof basePath === 'string' ? basePath : null
-}
-
-export function sessionBelongsToProject(
-    session: SessionSummary,
-    machineId: string,
-    projectPath: string
-): boolean {
-    if (session.metadata?.machineId && session.metadata.machineId !== machineId) {
-        return false
-    }
-    if (!session.metadata?.machineId) {
-        return false
-    }
-    return isSameOrChildPath(session.metadata?.path, projectPath)
-        || isSameOrChildPath(getWorktreeBasePath(session), projectPath)
-}
-
+export const sessionBelongsToProject = sessionBelongsToEditorProject
 function getSessionTitle(session: SessionSummary): string {
     if (session.metadata?.name) return session.metadata.name
     if (session.metadata?.summary?.text) return session.metadata.summary.text
@@ -144,9 +113,7 @@ function SelectedEditorSessionList(props: {
 }) {
     const { sessions, isLoading, error } = useSessions(props.api)
     const projectSessions = useMemo(() => {
-        return sessions
-            .filter((session) => sessionBelongsToProject(session, props.machineId, props.projectPath))
-            .sort((a, b) => Number(b.active) - Number(a.active) || b.updatedAt - a.updatedAt)
+        return filterSessionsForEditorProject(sessions, props.machineId, props.projectPath)
     }, [props.machineId, props.projectPath, sessions])
 
     return (
