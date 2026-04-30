@@ -15,6 +15,7 @@ import { backoff } from '@/utils/time'
 import { getInvokedCwd } from '@/utils/invokedCwd'
 import { RpcHandlerManager } from './rpc/RpcHandlerManager'
 import { registerCommonHandlers } from '../modules/common/registerCommonHandlers'
+import { registerEditorRpcHandlers } from '../modules/editorRpc'
 import type { SpawnSessionOptions, SpawnSessionResult } from '../modules/common/rpcTypes'
 import { applyVersionedAck } from './versionedUpdate'
 import { buildSocketIoExtraHeaderOptions } from './hubExtraHeaders'
@@ -117,6 +118,7 @@ export class ApiMachineClient {
         })
 
         registerCommonHandlers(this.rpcHandlerManager, getInvokedCwd())
+        registerEditorRpcHandlers(this.rpcHandlerManager, this.workspaceRoot ?? this.machine.metadata?.homeDir ?? getInvokedCwd())
 
         this.rpcHandlerManager.registerHandler<PathExistsRequest, PathExistsResponse>('path-exists', async (params) => {
             const rawPaths = Array.isArray(params?.paths) ? params.paths : []
