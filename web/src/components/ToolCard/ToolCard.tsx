@@ -59,7 +59,11 @@ function getTaskSummaryChildren(block: ToolCallBlock): { visible: ToolCallBlock[
     return { visible, remaining: children.length - visible.length }
 }
 
-function renderTaskSummary(block: ToolCallBlock, metadata: SessionMetadataSummary | null): ReactNode | null {
+function renderTaskSummary(
+    block: ToolCallBlock,
+    metadata: SessionMetadataSummary | null,
+    t: (key: string, params?: Record<string, string | number>) => string,
+): ReactNode | null {
     const summary = getTaskSummaryChildren(block)
     if (!summary) return null
 
@@ -76,7 +80,7 @@ function renderTaskSummary(block: ToolCallBlock, metadata: SessionMetadataSummar
                                 <TaskStateIcon state={child.tool.state} />
                             </span>
                             <span className="align-middle break-all">
-                                {formatTaskChildLabel(child, metadata)}
+                                {formatTaskChildLabel(child, metadata, t)}
                             </span>
                         </div>
                     </div>
@@ -265,19 +269,20 @@ function ToolCardInner(props: ToolCardProps) {
         childrenCount: props.block.children.length,
         description: props.block.tool.description,
         metadata: props.metadata
-    }), [
+    }, t), [
         props.block.tool.name,
         props.block.tool.input,
         props.block.tool.result,
         props.block.children.length,
         props.block.tool.description,
-        props.metadata
+        props.metadata,
+        t
     ])
 
     const toolName = props.block.tool.name
     const toolTitle = presentation.title
     const subtitle = presentation.subtitle ?? props.block.tool.description
-    const taskSummary = renderTaskSummary(props.block, props.metadata)
+    const taskSummary = renderTaskSummary(props.block, props.metadata, t)
     const runningFrom = props.block.tool.startedAt ?? props.block.tool.createdAt
     const showInline = !presentation.minimal && toolName !== 'Task'
     const CompactToolView = showInline ? getToolViewComponent(toolName) : null

@@ -197,7 +197,7 @@ type TraceChildRowProps = {
 
 function TraceChildRow({ child, metadata, expanded, onToggle }: TraceChildRowProps) {
     const { t } = useTranslation()
-    const label = formatTaskChildLabel(child, metadata)
+    const label = formatTaskChildLabel(child, metadata, t)
     const FullInputView = getToolFullViewComponent(child.tool.name)
     const ResultView = getToolResultViewComponent(child.tool.name)
 

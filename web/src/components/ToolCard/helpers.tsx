@@ -11,6 +11,7 @@ import { truncate } from '@/lib/toolInputUtils'
 export function formatTaskChildLabel(
     child: ToolCallBlock,
     metadata: SessionMetadataSummary | null,
+    t?: (key: string, params?: Record<string, string | number>) => string,
 ): string {
     const presentation = getToolPresentation({
         toolName: child.tool.name,
@@ -19,7 +20,7 @@ export function formatTaskChildLabel(
         childrenCount: child.children.length,
         description: child.tool.description,
         metadata,
-    })
+    }, t)
 
     if (presentation.subtitle) {
         return truncate(`${presentation.title}: ${presentation.subtitle}`, 140)
