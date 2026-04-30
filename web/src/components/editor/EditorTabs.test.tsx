@@ -145,6 +145,43 @@ describe('EditorTabs', () => {
         expect(cmMocks.language).toHaveBeenCalledWith('javascript', { jsx: true, typescript: true })
     })
 
+    it('mounts CodeMirror when content arrives after the loading state', async () => {
+        useEditorFileMock.mockReturnValueOnce({ content: null, error: null, isLoading: true, refetch: vi.fn() })
+        const api = {} as ApiClient
+        const { rerender } = render(
+            <EditorTabs
+                api={api}
+                machineId="machine-1"
+                tabs={tabs}
+                activeTabId="tab-file"
+                onSelectTab={vi.fn()}
+                onCloseTab={vi.fn()}
+                onOpenTerminal={vi.fn()}
+            />
+        )
+
+        expect(screen.getByText('Loading...')).toBeInTheDocument()
+        expect(cmMocks.EditorView).not.toHaveBeenCalled()
+
+        rerender(
+            <EditorTabs
+                api={api}
+                machineId="machine-1"
+                tabs={tabs}
+                activeTabId="tab-file"
+                onSelectTab={vi.fn()}
+                onCloseTab={vi.fn()}
+                onOpenTerminal={vi.fn()}
+            />
+        )
+
+        await waitFor(() => {
+            expect(cmMocks.EditorView).toHaveBeenCalled()
+        })
+        expect(cmMocks.editorViews[0].doc).toBe('console.log("hi")')
+        expect(screen.getByTestId('codemirror-view')).toBeInTheDocument()
+    })
+
     it('shows file loading and error states instead of CodeMirror', () => {
         useEditorFileMock.mockReturnValueOnce({ content: null, error: null, isLoading: true, refetch: vi.fn() })
         const { rerender } = render(

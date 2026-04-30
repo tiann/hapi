@@ -71,10 +71,11 @@ function useCodeMirror(
     filePath: string | null
 ): void {
     const viewRef = useRef<EditorView | null>(null)
+    const contentReady = content !== null
 
     useEffect(() => {
         const container = containerRef.current
-        if (!container) return
+        if (!container || !contentReady) return
 
         if (viewRef.current) {
             viewRef.current.destroy()
@@ -105,7 +106,7 @@ function useCodeMirror(
                 viewRef.current = null
             }
         }
-    }, [containerRef, filePath])
+    }, [containerRef, filePath, contentReady])
 
     useEffect(() => {
         const view = viewRef.current
