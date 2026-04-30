@@ -10,6 +10,7 @@ const useSlashCommandsMock = vi.fn()
 const useSkillsMock = vi.fn()
 const useSendMessageMock = vi.fn()
 const sessionChatMock = vi.fn()
+const sessionChatLifecycle = vi.hoisted(() => ({ mounts: 0, unmounts: 0 }))
 
 vi.mock('@/hooks/queries/useSession', () => ({
     useSession: (...args: unknown[]) => useSessionMock(...args)
@@ -31,12 +32,21 @@ vi.mock('@/hooks/mutations/useSendMessage', () => ({
     useSendMessage: (...args: unknown[]) => useSendMessageMock(...args)
 }))
 
-vi.mock('@/components/SessionChat', () => ({
-    SessionChat: (props: unknown) => {
+vi.mock('@/components/SessionChat', async () => {
+    const React = await vi.importActual<typeof import('react')>('react')
+    return {
+        SessionChat: (props: { session?: Session }) => {
         sessionChatMock(props)
-        return <div data-testid="session-chat">Session Chat</div>
+            React.useEffect(() => {
+                sessionChatLifecycle.mounts += 1
+                return () => {
+                    sessionChatLifecycle.unmounts += 1
+                }
+            }, [])
+            return <div data-testid="session-chat">Session Chat {props.session?.id}</div>
+        }
     }
-}))
+})
 
 function makeSession(overrides: Partial<Session> = {}): Session {
     return {
@@ -68,6 +78,8 @@ function makeSession(overrides: Partial<Session> = {}): Session {
 describe('EditorChatPanel', () => {
     beforeEach(() => {
         vi.clearAllMocks()
+        sessionChatLifecycle.mounts = 0
+        sessionChatLifecycle.unmounts = 0
         useSessionMock.mockReturnValue({ session: makeSession(), isLoading: false, error: null, refetch: vi.fn() })
         useMessagesMock.mockReturnValue({
             messages: [],
@@ -144,5 +156,31 @@ describe('EditorChatPanel', () => {
 
         expect(sendMessage).toHaveBeenCalledWith('@/repo/src/App.tsx')
         expect(onDraftConsumed).toHaveBeenCalled()
+    })
+
+    it('remounts SessionChat when switching sessions so chat state does not accumulate', () => {
+        const api = {} as ApiClient
+        useSessionMock.mockReturnValueOnce({
+            session: makeSession({ id: 'session-1' }),
+            isLoading: false,
+            error: null,
+            refetch: vi.fn()
+        })
+        const { rerender } = render(<EditorChatPanel api={api} sessionId="session-1" />)
+
+        expect(screen.getByText('Session Chat session-1')).toBeInTheDocument()
+        expect(sessionChatLifecycle.mounts).toBe(1)
+
+        useSessionMock.mockReturnValueOnce({
+            session: makeSession({ id: 'session-2' }),
+            isLoading: false,
+            error: null,
+            refetch: vi.fn()
+        })
+        rerender(<EditorChatPanel api={api} sessionId="session-2" />)
+
+        expect(screen.getByText('Session Chat session-2')).toBeInTheDocument()
+        expect(sessionChatLifecycle.unmounts).toBe(1)
+        expect(sessionChatLifecycle.mounts).toBe(2)
     })
 })

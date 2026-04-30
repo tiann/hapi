@@ -86,6 +86,7 @@ export function EditorChatPanel(props: {
             ) : null}
 
             <SessionChat
+                key={session.id}
                 api={props.api}
                 session={session}
                 messages={messagesState.messages}
