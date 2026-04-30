@@ -191,8 +191,22 @@ export class ApiClient {
         return await this.request<SessionResponse>(`/api/sessions/${encodeURIComponent(sessionId)}`)
     }
 
-    async getMessages(sessionId: string, options: { beforeSeq?: number | null; limit?: number }): Promise<MessagesResponse> {
+    async getMessages(
+        sessionId: string,
+        options: {
+            beforeSeq?: number | null
+            beforeAt?: number | null
+            byPosition?: boolean
+            limit?: number
+        }
+    ): Promise<MessagesResponse> {
         const params = new URLSearchParams()
+        if (options.byPosition || options.beforeAt !== undefined && options.beforeAt !== null) {
+            params.set('byPosition', '1')
+        }
+        if (options.beforeAt !== undefined && options.beforeAt !== null) {
+            params.set('beforeAt', `${options.beforeAt}`)
+        }
         if (options.beforeSeq !== undefined && options.beforeSeq !== null) {
             params.set('beforeSeq', `${options.beforeSeq}`)
         }

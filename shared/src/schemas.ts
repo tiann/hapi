@@ -155,7 +155,8 @@ export const DecryptedMessageSchema = z.object({
     seq: z.number().nullable(),
     localId: z.string().nullable(),
     content: z.unknown(),
-    createdAt: z.number()
+    createdAt: z.number(),
+    invokedAt: z.number().nullable().optional()
 })
 
 export type DecryptedMessage = z.infer<typeof DecryptedMessageSchema>
@@ -237,7 +238,8 @@ export const SyncEventSchema = z.discriminatedUnion('type', [
     }),
     SessionChangedSchema.extend({
         type: z.literal('messages-consumed'),
-        localIds: z.array(z.string())
+        localIds: z.array(z.string()),
+        invokedAt: z.number().optional()
     }),
     SessionEventBaseSchema.extend({
         type: z.literal('heartbeat'),

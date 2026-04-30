@@ -69,6 +69,32 @@ vi.mock('./codexAppServerClient', () => {
                 return { turn: { id: turnId } };
             }
 
+            if (params?.threadId === 'thread-1') {
+                const commandStart = {
+                    item: {
+                        id: 'cmd-1',
+                        type: 'commandExecution',
+                        command: 'echo ok',
+                        cwd: '/tmp/hapi-update'
+                    }
+                };
+                harness.notifications.push({ method: 'item/started', params: commandStart });
+                this.notificationHandler?.('item/started', commandStart);
+                this.notificationHandler?.('item/commandExecution/outputDelta', {
+                    itemId: 'cmd-1',
+                    delta: 'ok\n'
+                });
+                const commandEnd = {
+                    item: {
+                        id: 'cmd-1',
+                        type: 'commandExecution',
+                        exitCode: 0
+                    }
+                };
+                harness.notifications.push({ method: 'item/completed', params: commandEnd });
+                this.notificationHandler?.('item/completed', commandEnd);
+            }
+
             const completed = { status: 'Completed', turn: { id: turnId } };
             harness.notifications.push({ method: 'turn/completed', params: completed });
             this.notificationHandler?.('turn/completed', completed);
@@ -250,7 +276,12 @@ describe('codexRemoteLauncher', () => {
                 experimentalApi: true
             }
         }]);
-        expect(harness.notifications.map((entry) => entry.method)).toEqual(['turn/started', 'turn/completed']);
+        expect(harness.notifications.map((entry) => entry.method)).toEqual([
+            'turn/started',
+            'item/started',
+            'item/completed',
+            'turn/completed'
+        ]);
         expect(sessionEvents.filter((event) => event.type === 'ready').length).toBeGreaterThanOrEqual(1);
         expect(thinkingChanges).toContain(true);
         expect(session.thinking).toBe(false);
@@ -284,6 +315,30 @@ describe('codexRemoteLauncher', () => {
         expect(harness.startTurnThreadIds).toEqual(['thread-1', 'thread-2']);
         expect(session.sessionId).toBe('thread-2');
         expect(session.thinking).toBe(false);
+    });
+
+    it('surfaces Codex bash stdout instead of duplicating raw output json', async () => {
+        const { session, codexMessages } = createSessionStub();
+
+        await codexRemoteLauncher(session as never);
+
+        expect(codexMessages).toContainEqual(expect.objectContaining({
+            type: 'tool-call-result',
+            callId: 'cmd-1',
+            output: expect.objectContaining({
+                command: 'echo ok',
+                cwd: '/tmp/hapi-update',
+                stdout: 'ok\n',
+                exit_code: 0
+            })
+        }));
+        expect(codexMessages).not.toContainEqual(expect.objectContaining({
+            type: 'tool-call-result',
+            callId: 'cmd-1',
+            output: expect.objectContaining({
+                output: 'ok\n'
+            })
+        }));
     });
 
     it('clears codex thread state without starting a turn', async () => {

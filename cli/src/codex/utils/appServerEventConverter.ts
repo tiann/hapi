@@ -123,6 +123,50 @@ function extractReasoningText(item: Record<string, unknown>): string | null {
     return null;
 }
 
+function normalizePlanStatus(value: unknown): 'pending' | 'in_progress' | 'completed' {
+    const raw = typeof value === 'string' ? value.trim().toLowerCase().replace(/[\s-]/g, '_') : '';
+    if (raw === 'completed' || raw === 'complete' || raw === 'done') return 'completed';
+    if (raw === 'in_progress' || raw === 'inprogress' || raw === 'active' || raw === 'running') return 'in_progress';
+    return 'pending';
+}
+
+function extractPlanEntries(value: unknown): Array<{ step: string; status: 'pending' | 'in_progress' | 'completed' }> {
+    const record = asRecord(value);
+    const entries = Array.isArray(value)
+        ? value
+        : Array.isArray(record?.plan)
+            ? record.plan
+            : Array.isArray(record?.items)
+                ? record.items
+                : Array.isArray(record?.steps)
+                    ? record.steps
+                    : [];
+
+    const plan: Array<{ step: string; status: 'pending' | 'in_progress' | 'completed' }> = [];
+    for (const entry of entries) {
+        if (typeof entry === 'string') {
+            plan.push({ step: entry, status: 'pending' });
+            continue;
+        }
+        const item = asRecord(entry);
+        if (!item) continue;
+        const step = asString(item.step ?? item.content ?? item.text ?? item.title ?? item.description);
+        if (!step) continue;
+        plan.push({
+            step,
+            status: normalizePlanStatus(item.status ?? item.state)
+        });
+    }
+    return plan;
+}
+
+function extractPlanUpdate(params: Record<string, unknown>): ConvertedEvent[] {
+    const plan = extractPlanEntries(
+        params.plan ?? params.update ?? params.items ?? params.steps ?? params
+    );
+    return plan.length > 0 ? [{ type: 'plan_update', plan }] : [];
+}
+
 export class AppServerEventConverter {
     private readonly agentMessageBuffers = new Map<string, string>();
     private readonly reasoningBuffers = new Map<string, string>();
@@ -228,10 +272,13 @@ export class AppServerEventConverter {
             return error ? [{ type: 'task_failed', error }] : [];
         }
 
+        if (msgType === 'plan_update') {
+            return extractPlanUpdate(msg);
+        }
+
         if (
             msgType === 'mcp_startup_update' ||
             msgType === 'mcp_startup_complete' ||
-            msgType === 'plan_update' ||
             msgType === 'skills_update_available' ||
             msgType === 'stream_error' ||
             msgType === 'warning' ||
@@ -253,7 +300,11 @@ export class AppServerEventConverter {
             return this.handleWrappedCodexEvent(paramsRecord) ?? events;
         }
 
-        if (method === 'account/rateLimits/updated' || method === 'turn/plan/updated' || method === 'thread/compacted') {
+        if (method === 'turn/plan/updated') {
+            return extractPlanUpdate(paramsRecord);
+        }
+
+        if (method === 'account/rateLimits/updated' || method === 'thread/compacted') {
             return events;
         }
 
@@ -479,6 +530,39 @@ export class AppServerEventConverter {
                     this.commandMeta.delete(itemId);
                     this.commandOutputBuffers.delete(itemId);
                     this.lastCommandOutputDeltaByItemId.delete(itemId);
+                }
+
+                return events;
+            }
+
+            if (itemType === 'mcptoolcall') {
+                const server = asString(item.server ?? item.serverName ?? item.server_name);
+                const tool = asString(item.tool ?? item.toolName ?? item.tool_name ?? item.name);
+                const input = item.arguments ?? item.input ?? {};
+
+                if (method === 'item/started') {
+                    events.push({
+                        type: 'mcp_tool_call_begin',
+                        call_id: itemId,
+                        server,
+                        tool,
+                        invocation: {
+                            server,
+                            tool,
+                            arguments: input
+                        }
+                    });
+                }
+
+                if (method === 'item/completed') {
+                    const error = item.error;
+                    events.push({
+                        type: 'mcp_tool_call_end',
+                        call_id: itemId,
+                        server,
+                        tool,
+                        result: error ? { Err: error } : item.result
+                    });
                 }
 
                 return events;

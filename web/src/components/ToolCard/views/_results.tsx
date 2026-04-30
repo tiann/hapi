@@ -92,6 +92,24 @@ interface CodexBashOutput {
     output: string
 }
 
+export function extractCodexBashDisplay(result: unknown): { stdout: string | null; stderr: string | null; exitCode: number | null; status: string | null } | null {
+    if (!isObject(result)) return null
+    const stdout = typeof result.stdout === 'string'
+        ? result.stdout
+        : typeof result.output === 'string'
+            ? result.output
+            : null
+    const stderr = typeof result.stderr === 'string' ? result.stderr : null
+    const exitCode = typeof result.exit_code === 'number'
+        ? result.exit_code
+        : typeof result.exitCode === 'number'
+            ? result.exitCode
+            : null
+    const status = typeof result.status === 'string' ? result.status : null
+    if (stdout === null && stderr === null && exitCode === null && status === null) return null
+    return { stdout, stderr, exitCode, status }
+}
+
 function parseCodexBashOutput(text: string): CodexBashOutput | null {
     const exitMatch = text.match(/^Exit code:\s*(\d+)/m)
     const wallMatch = text.match(/^Wall time:\s*(.+)$/m)
@@ -272,6 +290,38 @@ const BashResultView: ToolViewComponent = (props: ToolViewProps) => {
     )
 }
 
+const CodexBashResultView: ToolViewComponent = (props: ToolViewProps) => {
+    const result = props.block.tool.result
+
+    if (result === undefined || result === null) {
+        return <div className="text-sm text-[var(--app-hint)]">{placeholderForState(props.block.tool.state)}</div>
+    }
+
+    const display = extractCodexBashDisplay(result)
+    if (display) {
+        const stdout = display.stdout?.trimEnd() ?? ''
+        const stderr = display.stderr?.trimEnd() ?? ''
+        return (
+            <>
+                <div className="flex flex-col gap-2">
+                    <div className="text-xs text-[var(--app-hint)]">
+                        {display.exitCode !== null ? `exit ${display.exitCode}` : display.status ?? 'completed'}
+                    </div>
+                    {stdout ? <CodeBlock code={stdout} language="text" /> : null}
+                    {stderr ? <CodeBlock code={stderr} language="text" /> : null}
+                    {!stdout && !stderr ? (
+                        <div className="text-sm text-[var(--app-hint)]">
+                            {display.exitCode === 0 || display.status === 'completed' ? 'Done' : '(no output)'}
+                        </div>
+                    ) : null}
+                </div>
+                <RawJsonDevOnly value={result} />
+            </>
+        )
+    }
+
+    return <GenericResultView {...props} />
+}
 
 const MarkdownResultView: ToolViewComponent = (props: ToolViewProps) => {
     const result = props.block.tool.result
@@ -634,6 +684,7 @@ export const toolResultViewRegistry: Record<string, ToolViewComponent> = {
     NotebookRead: ReadResultView,
     NotebookEdit: MutationResultView,
     TodoWrite: TodoWriteResultView,
+    CodexBash: CodexBashResultView,
     CodexReasoning: CodexReasoningResultView,
     CodexPatch: CodexPatchResultView,
     CodexDiff: CodexDiffResultView,
