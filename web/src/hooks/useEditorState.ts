@@ -6,6 +6,7 @@ export type EditorTab = {
     path?: string
     label: string
     shell?: string
+    dirty?: boolean
 }
 
 export type EditorState = {
@@ -25,6 +26,7 @@ export type UseEditorStateResult = EditorState & {
     openFile: (filePath: string) => void
     openTerminal: (shell?: string) => void
     closeTab: (tabId: string) => void
+    setTabDirty: (tabId: string, dirty: boolean) => void
     setActiveTabId: (tabId: string | null) => void
     showContextMenu: (filePath: string, x: number, y: number) => void
     hideContextMenu: () => void
@@ -107,6 +109,12 @@ export function useEditorState(initialMachine?: string, initialProject?: string)
         setTabs(nextTabs)
     }, [setActiveTabId, setTabs])
 
+    const setTabDirty = useCallback((tabId: string, dirty: boolean) => {
+        setTabs(tabsRef.current.map((tab) => (
+            tab.id === tabId ? { ...tab, dirty } : tab
+        )))
+    }, [setTabs])
+
     const showContextMenu = useCallback((filePath: string, x: number, y: number) => {
         setContextMenuFile(filePath)
         setContextMenuPosition({ x, y })
@@ -142,6 +150,7 @@ export function useEditorState(initialMachine?: string, initialProject?: string)
         openFile,
         openTerminal,
         closeTab,
+        setTabDirty,
         setActiveTabId,
         showContextMenu,
         hideContextMenu

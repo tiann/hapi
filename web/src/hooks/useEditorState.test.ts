@@ -73,6 +73,29 @@ describe('useEditorState', () => {
         expect(result.current.activeTabId).toBe(c.id)
     })
 
+    it('tracks dirty state per file tab', () => {
+        const { result } = renderHook(() => useEditorState())
+
+        act(() => {
+            result.current.openFile('/repo/a.ts')
+            result.current.openFile('/repo/b.ts')
+        })
+        const [a, b] = result.current.tabs
+
+        act(() => {
+            result.current.setTabDirty(a.id, true)
+        })
+
+        expect(result.current.tabs.find((tab) => tab.id === a.id)).toMatchObject({ dirty: true })
+        expect(result.current.tabs.find((tab) => tab.id === b.id)).not.toHaveProperty('dirty', true)
+
+        act(() => {
+            result.current.setTabDirty(a.id, false)
+        })
+
+        expect(result.current.tabs.find((tab) => tab.id === a.id)).toMatchObject({ dirty: false })
+    })
+
     it('clears tabs and project when selecting a different machine', () => {
         const { result } = renderHook(() => useEditorState('machine-1', '/repo'))
 
