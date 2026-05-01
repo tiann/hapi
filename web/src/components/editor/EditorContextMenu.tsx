@@ -7,6 +7,9 @@ export function EditorContextMenu(props: {
     onNewFile: (filePath: string) => void
     onAddToChat: (filePath: string) => void
     onCopyPath: (filePath: string) => void | Promise<void>
+    onCopyRelativePath: (filePath: string) => void | Promise<void>
+    onRefresh: (filePath: string) => void
+    onDeleteFile: (filePath: string) => void | Promise<void>
     onClose: () => void
 }) {
     const menuRef = useRef<HTMLDivElement | null>(null)
@@ -60,6 +63,21 @@ export function EditorContextMenu(props: {
         props.onClose()
     }
 
+    const handleCopyRelativePath = async () => {
+        await props.onCopyRelativePath(filePath)
+        props.onClose()
+    }
+
+    const handleRefresh = () => {
+        props.onRefresh(filePath)
+        props.onClose()
+    }
+
+    const handleDeleteFile = () => {
+        void props.onDeleteFile(filePath)
+        props.onClose()
+    }
+
     return (
         <div
             ref={menuRef}
@@ -98,6 +116,30 @@ export function EditorContextMenu(props: {
                 className="block w-full px-3 py-1.5 text-left hover:bg-[var(--app-subtle-bg)]"
             >
                 Copy Path
+            </button>
+            <button
+                type="button"
+                role="menuitem"
+                onClick={() => { void handleCopyRelativePath() }}
+                className="block w-full px-3 py-1.5 text-left hover:bg-[var(--app-subtle-bg)]"
+            >
+                Copy Relative Path
+            </button>
+            <button
+                type="button"
+                role="menuitem"
+                onClick={handleRefresh}
+                className="block w-full px-3 py-1.5 text-left hover:bg-[var(--app-subtle-bg)]"
+            >
+                Refresh
+            </button>
+            <button
+                type="button"
+                role="menuitem"
+                onClick={handleDeleteFile}
+                className="block w-full px-3 py-1.5 text-left text-red-500 hover:bg-[var(--app-subtle-bg)]"
+            >
+                Delete File
             </button>
         </div>
     )

@@ -251,6 +251,14 @@ export class RpcGateway {
         return result as RpcEditorFileMutationResponse
     }
 
+    async editorDeleteFile(machineId: string, path: string): Promise<RpcEditorFileMutationResponse> {
+        const result = await this.machineRpc(machineId, 'editor-delete-file', { path }) as RpcEditorFileMutationResponse | unknown
+        if (!result || typeof result !== 'object') {
+            return { success: false, error: 'Unexpected editor-delete-file result' }
+        }
+        return result as RpcEditorFileMutationResponse
+    }
+
     async checkPathsExist(machineId: string, paths: string[]): Promise<Record<string, boolean>> {
         const result = await this.machineRpc(machineId, 'path-exists', { paths }) as RpcPathExistsResponse | unknown
         if (!result || typeof result !== 'object') {

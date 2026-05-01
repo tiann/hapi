@@ -123,6 +123,29 @@ export function createEditorRoutes(getSyncEngine: () => SyncEngine | null): Hono
         }
     })
 
+    app.post('/editor/file/delete', async (c) => {
+        const engine = getSyncEngine()
+        if (!engine) {
+            return c.json({ success: false, error: 'Not connected' }, 503)
+        }
+
+        const body = await c.req.json().catch(() => null)
+        const parsed = fileBodySchema.safeParse(body)
+        if (!parsed.success) {
+            return c.json({ success: false, error: 'Invalid body' }, 400)
+        }
+
+        try {
+            const result = await engine.deleteEditorFile(parsed.data.machineId, parsed.data.path)
+            return c.json(result)
+        } catch (error) {
+            return c.json({
+                success: false,
+                error: error instanceof Error ? error.message : 'Failed to delete file'
+            }, 500)
+        }
+    })
+
     app.post('/editor/projects', async (c) => {
         const engine = getSyncEngine()
         if (!engine) {

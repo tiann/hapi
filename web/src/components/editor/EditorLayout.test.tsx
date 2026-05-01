@@ -91,12 +91,18 @@ vi.mock('./EditorContextMenu', () => ({
         onNewFile: (path: string) => void
         onAddToChat: (path: string) => void
         onCopyPath: (path: string) => void | Promise<void>
+        onCopyRelativePath: (path: string) => void | Promise<void>
+        onRefresh: (path: string) => void
+        onDeleteFile: (path: string) => void | Promise<void>
     }) => props.filePath ? (
         <div data-testid="editor-context-menu">
             <button type="button" onClick={() => props.onOpen(props.filePath!)}>Context open</button>
             <button type="button" onClick={() => props.onNewFile(props.filePath!)}>Context new file</button>
             <button type="button" onClick={() => props.onAddToChat(props.filePath!)}>Context add</button>
             <button type="button" onClick={() => { void props.onCopyPath(props.filePath!) }}>Context copy</button>
+            <button type="button" onClick={() => { void props.onCopyRelativePath(props.filePath!) }}>Context copy relative</button>
+            <button type="button" onClick={() => props.onRefresh(props.filePath!)}>Context refresh</button>
+            <button type="button" onClick={() => { void props.onDeleteFile(props.filePath!) }}>Context delete</button>
         </div>
     ) : null
 }))
@@ -253,6 +259,56 @@ describe('EditorLayout', () => {
         await waitFor(() => {
             expect(writeText).toHaveBeenCalledWith('/repo/src/App.tsx')
         })
+    })
+
+    it('copies context menu relative file paths to the clipboard', async () => {
+        const writeText = vi.fn(async () => {})
+        Object.defineProperty(navigator, 'clipboard', {
+            configurable: true,
+            value: { writeText }
+        })
+        renderEditorLayout({} as ApiClient)
+
+        fireEvent.click(screen.getByText('Mock context menu'))
+        fireEvent.click(screen.getByText('Context copy relative'))
+
+        await waitFor(() => {
+            expect(writeText).toHaveBeenCalledWith('src/App.tsx')
+        })
+    })
+
+    it('refreshes context menu directories', async () => {
+        const invalidateQueries = vi.spyOn(QueryClient.prototype, 'invalidateQueries')
+        renderEditorLayout({} as ApiClient)
+
+        fireEvent.click(screen.getByText('Mock context menu'))
+        fireEvent.click(screen.getByText('Context refresh'))
+
+        await waitFor(() => {
+            expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ['editor', 'directory', 'machine-1', '/repo/src'] })
+            expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ['editor', 'directory', 'machine-1', '/repo/src/App.tsx'] })
+        })
+        invalidateQueries.mockRestore()
+    })
+
+    it('deletes context menu files and closes matching tabs', async () => {
+        const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+        const api = {
+            deleteEditorFile: vi.fn(async () => ({ success: true, path: '/repo/src/App.tsx' }))
+        } as unknown as ApiClient
+        renderEditorLayout(api)
+
+        fireEvent.click(screen.getByText('Mock open file'))
+        expect(screen.getByTestId('editor-tabs')).toHaveTextContent('App.tsx')
+
+        fireEvent.click(screen.getByText('Mock context menu'))
+        fireEvent.click(screen.getByText('Context delete'))
+
+        await waitFor(() => {
+            expect(api.deleteEditorFile).toHaveBeenCalledWith('machine-1', '/repo/src/App.tsx')
+        })
+        expect(screen.getByTestId('editor-tabs')).not.toHaveTextContent('App.tsx')
+        confirm.mockRestore()
     })
 
     it('adds a file to the active chat draft', () => {

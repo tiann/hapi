@@ -47,4 +47,24 @@ describe('ApiClient editor file mutations', () => {
             body: JSON.stringify({ machineId: 'machine-1', path: '/repo/new.ts', content: '' })
         }))
     })
+
+    it('posts editor delete-file requests', async () => {
+        const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+            ok: true,
+            status: 200,
+            statusText: 'OK',
+            json: async () => ({ success: true, path: '/repo/old.ts' })
+        } as Response)
+        const api = new ApiClient('token')
+
+        await expect(api.deleteEditorFile('machine-1', '/repo/old.ts')).resolves.toEqual({
+            success: true,
+            path: '/repo/old.ts'
+        })
+
+        expect(fetchMock).toHaveBeenCalledWith('/api/editor/file/delete', expect.objectContaining({
+            method: 'POST',
+            body: JSON.stringify({ machineId: 'machine-1', path: '/repo/old.ts' })
+        }))
+    })
 })

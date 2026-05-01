@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rm, writeFile, stat } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { RpcHandlerManager } from '@/api/rpc/RpcHandlerManager'
@@ -103,6 +103,19 @@ describe('editor RPC handlers', () => {
         })
     })
 
+    it('deletes existing files inside the editor root', async () => {
+        const filePath = join(rootDir, 'src', 'delete-me.ts')
+        await writeFile(filePath, 'remove me')
+
+        const parsed = await request(rpc, 'editor-delete-file', { path: filePath }) as { success: boolean; path?: string }
+
+        expect(parsed).toEqual({
+            success: true,
+            path: filePath
+        })
+        await expect(stat(filePath)).rejects.toThrow()
+    })
+
     it('rejects binary files and paths outside the editor root', async () => {
         await writeFile(join(rootDir, 'binary.bin'), Buffer.from([0, 1, 2, 3]))
 
@@ -119,6 +132,10 @@ describe('editor RPC handlers', () => {
             error: 'Path outside editor root'
         })
         await expect(request(rpc, 'editor-create-file', { path: resolve(rootDir, '..', 'outside.txt'), content: 'nope' })).resolves.toMatchObject({
+            success: false,
+            error: 'Path outside editor root'
+        })
+        await expect(request(rpc, 'editor-delete-file', { path: resolve(rootDir, '..', 'outside.txt') })).resolves.toMatchObject({
             success: false,
             error: 'Path outside editor root'
         })

@@ -595,6 +595,10 @@ export class SyncEngine {
         return await this.rpcGateway.editorCreateFile(machineId, path, content)
     }
 
+    async deleteEditorFile(machineId: string, path: string): Promise<RpcEditorFileMutationResponse> {
+        return await this.rpcGateway.editorDeleteFile(machineId, path)
+    }
+
     async getGitStatus(sessionId: string, cwd?: string): Promise<RpcCommandResponse> {
         return await this.rpcGateway.getGitStatus(sessionId, cwd)
     }

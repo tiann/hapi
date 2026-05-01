@@ -1,7 +1,7 @@
 import type { RpcHandlerManager } from '@/api/rpc/RpcHandlerManager'
 import { execFile, type ExecFileOptions } from 'node:child_process'
 import type { Dirent } from 'node:fs'
-import { mkdir, readdir, readFile, realpath, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { promisify } from 'node:util'
 
@@ -379,6 +379,32 @@ export function registerEditorRpcHandlers(rpcHandlerManager: RpcHandlerManager, 
                 return rpcError('File already exists')
             }
             return rpcError(getErrorMessage(error, 'Failed to create file'))
+        }
+    })
+
+    rpcHandlerManager.registerHandler<EditorReadFileRequest, EditorFileMutationResponse>('editor-delete-file', async (data) => {
+        const resolved = await resolveExistingInsideRoot(data?.path, editorRoot)
+        if (resolved.error) {
+            return rpcError(resolved.error)
+        }
+
+        try {
+            const fileStat = await stat(resolved.path)
+            if (!fileStat.isFile()) {
+                return rpcError('Path is not a file')
+            }
+
+            await rm(resolved.path)
+            return {
+                success: true,
+                path: resolved.path
+            }
+        } catch (error) {
+            const code = (error as NodeJS.ErrnoException).code
+            if (code === 'ENOENT') {
+                return rpcError('File does not exist')
+            }
+            return rpcError(getErrorMessage(error, 'Failed to delete file'))
         }
     })
 

@@ -18,6 +18,28 @@ function joinPath(base: string, name: string): string {
     return base.endsWith('/') ? `${base}${name}` : `${base}/${name}`
 }
 
+function getParentPath(filePath: string): string {
+    const normalized = filePath.replace(/\/+$/, '')
+    const index = normalized.lastIndexOf('/')
+    if (index <= 0) return '/'
+    return normalized.slice(0, index)
+}
+
+function getRelativePath(rootPath: string | null, filePath: string): string {
+    if (!rootPath) {
+        return filePath.replace(/^\/+/, '')
+    }
+
+    const root = rootPath.replace(/\/+$/, '')
+    if (filePath === root) {
+        return filePath.split('/').filter(Boolean).pop() || filePath
+    }
+    if (filePath.startsWith(`${root}/`)) {
+        return filePath.slice(root.length + 1)
+    }
+    return filePath.replace(/^\/+/, '')
+}
+
 export function EditorLayout(props: {
     api: ApiClient | null
     initialMachineId?: string
@@ -67,6 +89,46 @@ export function EditorLayout(props: {
             await navigator.clipboard.writeText(filePath)
         }
     }, [])
+
+    const handleCopyRelativePath = useCallback(async (filePath: string) => {
+        if (navigator.clipboard?.writeText) {
+            await navigator.clipboard.writeText(getRelativePath(editor.projectPath, filePath))
+        }
+    }, [editor.projectPath])
+
+    const handleRefreshPath = useCallback((filePath: string) => {
+        if (!editor.machineId) return
+
+        void queryClient.invalidateQueries({
+            queryKey: queryKeys.editorDirectory(editor.machineId, getParentPath(filePath))
+        })
+        void queryClient.invalidateQueries({
+            queryKey: queryKeys.editorDirectory(editor.machineId, filePath)
+        })
+    }, [editor.machineId, queryClient])
+
+    const handleDeleteFile = useCallback(async (filePath: string) => {
+        if (!props.api || !editor.machineId) return
+        if (!window.confirm(`Delete ${getRelativePath(editor.projectPath, filePath)}?`)) return
+
+        const response = await props.api.deleteEditorFile(editor.machineId, filePath)
+        if (!response.success) {
+            window.alert(response.error ?? 'Failed to delete file')
+            return
+        }
+
+        void queryClient.invalidateQueries({
+            queryKey: queryKeys.editorDirectory(editor.machineId, getParentPath(filePath))
+        })
+        void queryClient.invalidateQueries({
+            queryKey: queryKeys.editorDirectory(editor.machineId, filePath)
+        })
+        for (const tab of editor.tabs) {
+            if (tab.type === 'file' && tab.path === filePath) {
+                editor.closeTab(tab.id)
+            }
+        }
+    }, [editor, props.api, queryClient])
 
     const handleAddToChat = useCallback((filePath: string) => {
         if (editor.activeSessionId) {
@@ -247,6 +309,9 @@ export function EditorLayout(props: {
                 onNewFile={handleNewFile}
                 onAddToChat={handleAddToChat}
                 onCopyPath={handleCopyPath}
+                onCopyRelativePath={handleCopyRelativePath}
+                onRefresh={handleRefreshPath}
+                onDeleteFile={handleDeleteFile}
                 onClose={editor.hideContextMenu}
             />
         </div>

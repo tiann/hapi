@@ -141,6 +141,22 @@ describe('RpcGateway editor RPC', () => {
         })
     })
 
+    it('sends editor-delete-file through machine-level RPC', async () => {
+        const expected = { success: true, path: '/repo/src/Old.tsx' }
+        const { gateway, calls } = createGateway(expected)
+
+        const result = await gateway.editorDeleteFile('machine-1', '/repo/src/Old.tsx')
+
+        expect(result).toEqual(expected)
+        expect(calls[0]).toEqual({
+            event: 'rpc-request',
+            payload: {
+                method: 'machine-1:editor-delete-file',
+                params: JSON.stringify({ path: '/repo/src/Old.tsx' })
+            }
+        })
+    })
+
     it('returns an error response for unexpected editor RPC payloads', async () => {
         const { gateway } = createGateway(null)
 
@@ -167,6 +183,10 @@ describe('RpcGateway editor RPC', () => {
         await expect(gateway.editorCreateFile('machine-1', '/repo/new.ts', '')).resolves.toEqual({
             success: false,
             error: 'Unexpected editor-create-file result'
+        })
+        await expect(gateway.editorDeleteFile('machine-1', '/repo/old.ts')).resolves.toEqual({
+            success: false,
+            error: 'Unexpected editor-delete-file result'
         })
     })
 })

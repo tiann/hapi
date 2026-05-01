@@ -533,6 +533,19 @@ export class ApiClient {
         )
     }
 
+    async deleteEditorFile(
+        machineId: string,
+        path: string
+    ): Promise<EditorFileMutationResponse> {
+        return await this.request<EditorFileMutationResponse>(
+            `/api/editor/file/delete`,
+            {
+                method: "POST",
+                body: JSON.stringify({ machineId, path })
+            }
+        )
+    }
+
     async listEditorProjects(
         machineId: string
     ): Promise<EditorProjectsResponse> {
