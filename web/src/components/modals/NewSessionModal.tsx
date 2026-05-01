@@ -21,6 +21,23 @@ export function NewSessionModal(props: { onClose: () => void }) {
 
     const handleSuccess = useCallback((sessionId: string) => {
         void queryClient.invalidateQueries({ queryKey: queryKeys.sessions })
+
+        if (search.modalReturnTo === 'editor') {
+            void navigate({
+                search: (prev: any) => {
+                    const newSearch = { ...prev }
+                    delete newSearch.modal
+                    delete newSearch.modalSessionId
+                    delete newSearch.modalPath
+                    delete newSearch.modalMachineId
+                    delete newSearch.modalReplaceSessionId
+                    delete newSearch.modalReturnTo
+                    return { ...newSearch, modalNewSessionId: sessionId }
+                },
+                replace: true
+            } as any)
+            return
+        }
         
         // Always read pins from localStorage (source of truth when dashboard is not active)
         let currentPins: string[] = []
@@ -52,6 +69,7 @@ export function NewSessionModal(props: { onClose: () => void }) {
                         delete newSearch.modalPath
                         delete newSearch.modalMachineId
                         delete newSearch.modalReplaceSessionId
+                        delete newSearch.modalReturnTo
                         return { ...newSearch, modal: 'replace-pin', modalSessionId: sessionId }
                     },
                     replace: true
@@ -67,6 +85,7 @@ export function NewSessionModal(props: { onClose: () => void }) {
                     delete newSearch.modalPath
                     delete newSearch.modalMachineId
                     delete newSearch.modalReplaceSessionId
+                    delete newSearch.modalReturnTo
                     return { ...newSearch, pins: newPins.join(','), modalNewSessionId: sessionId }
                 },
                 replace: true
@@ -86,6 +105,7 @@ export function NewSessionModal(props: { onClose: () => void }) {
                     delete newSearch.modalPath
                     delete newSearch.modalMachineId
                     delete newSearch.modalReplaceSessionId
+                    delete newSearch.modalReturnTo
                     return { ...newSearch, pins: newPins.join(','), modalNewSessionId: sessionId }
                 },
                 replace: true
@@ -100,6 +120,7 @@ export function NewSessionModal(props: { onClose: () => void }) {
                 delete newSearch.modalPath
                 delete newSearch.modalMachineId
                 delete newSearch.modalReplaceSessionId
+                delete newSearch.modalReturnTo
                 return { ...newSearch, modal: 'replace-pin', modalSessionId: sessionId }
             },
             replace: true
@@ -111,10 +132,11 @@ export function NewSessionModal(props: { onClose: () => void }) {
             search: (prev: any) => ({
                 ...prev,
                 modal: 'browser',
-                modalMachineId: args.machineId
+                modalMachineId: args.machineId,
+                modalReturnTo: search.modalReturnTo
             })
         } as any)
-    }, [navigate])
+    }, [navigate, search.modalReturnTo])
 
     return (
         <DialogContent className="flex flex-col max-h-[85vh] w-[95vw] max-w-2xl p-0 gap-0 overflow-hidden">

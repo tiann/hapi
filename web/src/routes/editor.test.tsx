@@ -4,6 +4,7 @@ import type { ApiClient } from '@/api/client'
 import EditorPage from './editor'
 
 const editorLayoutMock = vi.fn()
+const loadPersistedEditorStateMock = vi.fn()
 const api = {} as ApiClient
 
 vi.mock('@tanstack/react-router', async (importOriginal) => {
@@ -16,6 +17,10 @@ vi.mock('@tanstack/react-router', async (importOriginal) => {
 
 vi.mock('@/lib/app-context', () => ({
     useAppContext: () => ({ api })
+}))
+
+vi.mock('@/lib/editor-persistence', () => ({
+    loadPersistedEditorState: () => loadPersistedEditorStateMock()
 }))
 
 
@@ -49,7 +54,8 @@ describe('EditorPage', () => {
         expect(editorLayoutMock).toHaveBeenCalledWith({
             api,
             initialMachineId: 'machine-1',
-            initialProjectPath: '/repo'
+            initialProjectPath: '/repo',
+            initialState: undefined
         })
     })
 

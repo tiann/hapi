@@ -2127,6 +2127,10 @@
         gap: 0;
     }
 
+    .db__topbar-btn--editor {
+        display: none;
+    }
+
     /* Keep "New Session" label visible but shorter */
     .db__topbar-btn--primary .db__label {
         display: inline;

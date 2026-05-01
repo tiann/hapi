@@ -12,6 +12,7 @@ function EditorTerminalBody(props: {
     api: ApiClient | null
     tab: EditorTab
     onAddToChat?: (text: string) => void
+    onRegisterClose?: (tabId: string, close: (() => void) | null) => void
 }) {
     const { token, baseUrl } = useAppContext()
     const sessionId = props.tab.sessionId ?? null
@@ -35,6 +36,7 @@ function EditorTerminalBody(props: {
         write,
         resize,
         disconnect,
+        close,
         onOutput,
         onExit,
     } = useTerminalSocket({
@@ -45,6 +47,11 @@ function EditorTerminalBody(props: {
         cwd,
         terminalId: props.tab.id
     })
+
+    useEffect(() => {
+        props.onRegisterClose?.(props.tab.id, close)
+        return () => props.onRegisterClose?.(props.tab.id, null)
+    }, [close, props.onRegisterClose, props.tab.id])
 
     useEffect(() => {
         onOutput((data) => {
@@ -75,6 +82,8 @@ function EditorTerminalBody(props: {
         // Track mouse position on terminal element (xterm captures mouse events,
         // so we can't rely on wrapper div onMouseUp)
         const termElement = terminal.element
+        if (!termElement) return
+
         const handleMouseUp = (e: MouseEvent) => {
             const rect = termElement.getBoundingClientRect()
             setTerminalMousePos({ x: e.clientX - rect.left, y: e.clientY - rect.top })
@@ -242,11 +251,24 @@ export function EditorTerminal(props: {
     onToggleCollapsed: () => void
     onAddToChat?: (text: string) => void
 }) {
+    const closeByTerminalIdRef = useRef<Map<string, () => void>>(new Map())
     const terminalTabs = useMemo(
         () => props.tabs.filter((tab) => tab.type === 'terminal'),
         [props.tabs]
     )
     const activeTerminal = terminalTabs.find((tab) => tab.id === props.activeTabId) ?? terminalTabs[0] ?? null
+    const handleRegisterClose = useCallback((tabId: string, close: (() => void) | null) => {
+        if (!close) {
+            closeByTerminalIdRef.current.delete(tabId)
+            return
+        }
+        closeByTerminalIdRef.current.set(tabId, close)
+    }, [])
+    const handleCloseTerminal = useCallback((tabId: string) => {
+        closeByTerminalIdRef.current.get(tabId)?.()
+        closeByTerminalIdRef.current.delete(tabId)
+        props.onCloseTab(tabId)
+    }, [props.onCloseTab])
 
     return (
         <div className="flex h-full min-h-0 flex-col border-t border-[var(--app-border)] bg-[var(--app-bg)]">
@@ -283,7 +305,7 @@ export function EditorTerminal(props: {
                                     type="button"
                                     aria-label={`Close terminal ${tab.label}`}
                                     className="text-[10px] hover:text-[var(--app-fg)]"
-                                    onClick={() => props.onCloseTab(tab.id)}
+                                    onClick={() => handleCloseTerminal(tab.id)}
                                 >
                                     ✕
                                 </button>
@@ -308,7 +330,12 @@ export function EditorTerminal(props: {
                         const isActive = tab.id === activeTerminal?.id
                         return (
                             <div key={tab.id} className={`h-full min-h-0 ${isActive ? 'block' : 'hidden'}`}>
-                                <EditorTerminalBody api={props.api} tab={tab} onAddToChat={props.onAddToChat} />
+                                <EditorTerminalBody
+                                    api={props.api}
+                                    tab={tab}
+                                    onAddToChat={props.onAddToChat}
+                                    onRegisterClose={handleRegisterClose}
+                                />
                             </div>
                         )
                     })}

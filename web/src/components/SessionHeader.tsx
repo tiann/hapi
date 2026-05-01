@@ -279,7 +279,7 @@ export function SessionHeader(props: {
     return (
         <>
             <div className="bg-[var(--app-bg)] pt-[env(safe-area-inset-top)]">
-                <div className="mx-auto w-full max-w-content flex items-center gap-2 p-3">
+                <div className="mx-auto w-full max-w-content flex items-center gap-2 p-2">
                     {/* Back button */}
                     <button
                         type="button"

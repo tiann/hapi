@@ -21,6 +21,7 @@ export function GlobalModalManager() {
                 delete newSearch.modalSessionId
                 delete newSearch.modalPath
                 delete newSearch.modalMachineId
+                delete newSearch.modalReturnTo
                 return newSearch
             },
             replace: true
@@ -35,7 +36,7 @@ export function GlobalModalManager() {
             {modal === 'new-session' && <NewSessionModal onClose={handleClose} />}
             {modal === 'files' && <FilesModal sessionId={modalSessionId!} path={modalPath} onClose={handleClose} />}
             {modal === 'terminal' && <TerminalModal sessionId={modalSessionId!} onClose={handleClose} />}
-            {modal === 'browser' && <BrowserModal machineId={modalMachineId} onClose={handleClose} />}
+            {modal === 'browser' && <BrowserModal machineId={modalMachineId} initialPath={modalPath} onClose={handleClose} />}
             {modal === 'replace-pin' && <ReplacePinModal onClose={handleClose} />}
         </Dialog>
     )

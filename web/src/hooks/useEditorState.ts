@@ -52,18 +52,30 @@ function getFileName(filePath: string): string {
     return filePath.split('/').filter(Boolean).pop() || filePath
 }
 
-export function useEditorState(initialMachine?: string, initialProject?: string): UseEditorStateResult {
-    const [machineId, setMachineId] = useState<string | null>(initialMachine ?? null)
-    const [projectPath, setProjectPath] = useState<string | null>(initialProject ?? null)
-    const [tabs, setTabsState] = useState<EditorTab[]>([])
-    const [activeTabId, setActiveTabIdState] = useState<string | null>(null)
-    const [activeSessionId, setActiveSessionId] = useState<string | null>(null)
+export type InitialEditorState = {
+    machineId?: string | null
+    projectPath?: string | null
+    tabs?: EditorTab[]
+    activeTabId?: string | null
+    activeSessionId?: string | null
+}
+
+export function useEditorState(initialMachine?: string, initialProject?: string, initialState?: InitialEditorState): UseEditorStateResult {
+    const initialTabs = initialState?.tabs ?? []
+    const initialActiveTabId = initialState?.activeTabId && initialTabs.some(tab => tab.id === initialState.activeTabId)
+        ? initialState.activeTabId
+        : initialTabs[0]?.id ?? null
+    const [machineId, setMachineId] = useState<string | null>(initialMachine ?? initialState?.machineId ?? null)
+    const [projectPath, setProjectPath] = useState<string | null>(initialProject ?? initialState?.projectPath ?? null)
+    const [tabs, setTabsState] = useState<EditorTab[]>(initialTabs)
+    const [activeTabId, setActiveTabIdState] = useState<string | null>(initialActiveTabId)
+    const [activeSessionId, setActiveSessionId] = useState<string | null>(initialState?.activeSessionId ?? null)
     const [contextMenuFile, setContextMenuFile] = useState<string | null>(null)
     const [contextMenuItems, setContextMenuItems] = useState<EditorTreeItem[]>([])
     const [contextMenuPosition, setContextMenuPosition] = useState<{ x: number; y: number } | null>(null)
 
-    const tabsRef = useRef<EditorTab[]>([])
-    const activeTabIdRef = useRef<string | null>(null)
+    const tabsRef = useRef<EditorTab[]>(initialTabs)
+    const activeTabIdRef = useRef<string | null>(initialActiveTabId)
 
     const setTabs = useCallback((nextTabs: EditorTab[]) => {
         tabsRef.current = nextTabs

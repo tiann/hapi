@@ -12,6 +12,7 @@ type TerminalRuntime = TerminalSession & {
     proc: Bun.Subprocess
     terminal: Bun.Terminal
     idleTimer: ReturnType<typeof setTimeout> | null
+    outputBuffer: string
 }
 
 type TerminalManagerOptions = {
@@ -26,8 +27,9 @@ type TerminalManagerOptions = {
     maxTerminals?: number
 }
 
-const DEFAULT_IDLE_TIMEOUT_MS = 15 * 60_000
+const DEFAULT_IDLE_TIMEOUT_MS = 0
 const DEFAULT_MAX_TERMINALS = 4
+const MAX_OUTPUT_BUFFER_CHARS = 200_000
 const SENSITIVE_ENV_KEYS = new Set([
     'CLI_API_TOKEN',
     'HAPI_API_URL',
@@ -110,7 +112,7 @@ export class TerminalManager {
         this.filteredEnv = buildFilteredEnv()
     }
 
-    create(terminalId: string, cols: number, rows: number, cwd?: string): void {
+    create(terminalId: string, cols: number, rows: number, cwd?: string, replay = false): void {
         if (process.platform === 'win32') {
             this.emitError(terminalId, 'Remote terminal is not supported on Windows yet.')
             return
@@ -123,6 +125,9 @@ export class TerminalManager {
             existing.terminal.resize(cols, rows)
             this.markActivity(existing)
             this.onReady({ ...this.scopePayload(), terminalId })
+            if (replay && existing.outputBuffer) {
+                this.onOutput({ ...this.scopePayload(), terminalId, data: existing.outputBuffer })
+            }
             return
         }
 
@@ -150,6 +155,7 @@ export class TerminalManager {
                     data: (terminal, data) => {
                         const text = decoder.decode(data, { stream: true })
                         if (text) {
+                            this.appendOutputBuffer(terminalId, text)
                             this.onOutput({ ...this.scopePayload(), terminalId, data: text })
                         }
                         const active = this.terminals.get(terminalId)
@@ -192,7 +198,8 @@ export class TerminalManager {
                 rows,
                 proc,
                 terminal,
-                idleTimer: null
+                idleTimer: null,
+                outputBuffer: ''
             }
 
             this.terminals.set(terminalId, runtime)
@@ -227,6 +234,15 @@ export class TerminalManager {
 
     close(terminalId: string): void {
         this.cleanup(terminalId)
+    }
+
+    private appendOutputBuffer(terminalId: string, text: string): void {
+        const runtime = this.terminals.get(terminalId)
+        if (!runtime) return
+        runtime.outputBuffer += text
+        if (runtime.outputBuffer.length > MAX_OUTPUT_BUFFER_CHARS) {
+            runtime.outputBuffer = runtime.outputBuffer.slice(-MAX_OUTPUT_BUFFER_CHARS)
+        }
     }
 
     closeAll(): void {

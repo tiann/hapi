@@ -347,6 +347,7 @@ export type RootSearch = {
     modalMachineId?: string
     modalReplaceSessionId?: string
     modalNewSessionId?: string
+    modalReturnTo?: 'editor'
 }
 
 const rootRoute = createRootRoute({
@@ -370,6 +371,9 @@ const rootRoute = createRootRoute({
         }
         if (typeof search.modalNewSessionId === 'string') {
             result.modalNewSessionId = search.modalNewSessionId
+        }
+        if (search.modalReturnTo === 'editor') {
+            result.modalReturnTo = 'editor'
         }
         return result
     }

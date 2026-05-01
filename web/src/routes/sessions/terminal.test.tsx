@@ -38,6 +38,7 @@ vi.mock('@/hooks/useTerminalSocket', () => ({
         write: writeMock,
         resize: vi.fn(),
         disconnect: vi.fn(),
+        close: vi.fn(),
         onOutput: vi.fn(),
         onExit: vi.fn()
     })

@@ -1021,6 +1021,15 @@ export function Dashboard({ api, initialPinnedIds }: DashboardProps) {
                     </button>
                     <button
                         type="button"
+                        className="db__topbar-btn db__topbar-btn--editor"
+                        title="Editor Mode"
+                        onClick={() => void navigate({ to: '/editor' })}
+                    >
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="16" rx="2" /><path d="m8 10 3 3-3 3" /><path d="M13 16h3" /></svg>
+                        <span className="db__label">Editor</span>
+                    </button>
+                    <button
+                        type="button"
                         className="db__topbar-btn"
                         title={t('dashboard.settings')}
                         onClick={() => void navigate({ search: (prev: any) => ({ ...prev, modal: 'settings' }) } as any)}

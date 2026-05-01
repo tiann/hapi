@@ -119,9 +119,20 @@ function SelectedEditorSessionList(props: {
 
     useEffect(() => {
         if (isLoading || error || projectSessions.length === 0) return
-        if (activeSessionId && projectSessions.some((session) => session.id === activeSessionId)) return
+        if (!activeSessionId) {
+            onSelectSession(projectSessions[0].id)
+            return
+        }
+        if (projectSessions.some((session) => session.id === activeSessionId)) return
+
+        const activeSession = sessions.find((session) => session.id === activeSessionId)
+        // Newly-created editor sessions can be active before the sessions list
+        // refetch includes them. Keep the explicit selection instead of
+        // bouncing back to the first stale row.
+        if (!activeSession) return
+
         onSelectSession(projectSessions[0].id)
-    }, [activeSessionId, error, isLoading, onSelectSession, projectSessions])
+    }, [activeSessionId, error, isLoading, onSelectSession, projectSessions, sessions])
 
     return (
         <div className="flex h-full min-h-0 flex-col border-b border-[var(--app-border)]">

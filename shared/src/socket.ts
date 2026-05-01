@@ -14,7 +14,8 @@ export const TerminalOpenPayloadSchema = TerminalScopeSchema.and(z.object({
     terminalId: z.string().min(1),
     cols: z.number().int().positive(),
     rows: z.number().int().positive(),
-    cwd: z.string().min(1).optional()
+    cwd: z.string().min(1).optional(),
+    replay: z.boolean().optional()
 }))
 
 export type TerminalOpenPayload = z.infer<typeof TerminalOpenPayloadSchema>

@@ -42,6 +42,7 @@ export function useTerminalSocket(options: UseTerminalSocketOptions): {
     write: (data: string) => void
     resize: (cols: number, rows: number) => void
     disconnect: () => void
+    close: () => void
     onOutput: (handler: (data: string) => void) => void
     onExit: (handler: (code: number | null, signal: string | null) => void) => void
 } {
@@ -56,6 +57,7 @@ export function useTerminalSocket(options: UseTerminalSocketOptions): {
     const tokenRef = useRef(options.token)
     const baseUrlRef = useRef(options.baseUrl)
     const lastSizeRef = useRef<{ cols: number; rows: number } | null>(null)
+    const replayOnNextCreateRef = useRef(true)
 
     useEffect(() => {
         sessionIdRef.current = options.sessionId
@@ -92,6 +94,7 @@ export function useTerminalSocket(options: UseTerminalSocketOptions): {
             terminalId: terminalIdRef.current,
             cols: size.cols,
             rows: size.rows,
+            replay: replayOnNextCreateRef.current,
             ...(cwdRef.current ? { cwd: cwdRef.current } : {})
         })
     }, [])
@@ -150,6 +153,7 @@ export function useTerminalSocket(options: UseTerminalSocketOptions): {
             if (!isCurrentTerminal(payload.terminalId)) {
                 return
             }
+            replayOnNextCreateRef.current = false
             setState({ status: 'connected' })
         })
 
@@ -219,6 +223,14 @@ export function useTerminalSocket(options: UseTerminalSocketOptions): {
         setState({ status: 'idle' })
     }, [])
 
+    const close = useCallback(() => {
+        const socket = socketRef.current
+        if (socket?.connected) {
+            socket.emit('terminal:close', { terminalId: terminalIdRef.current })
+        }
+        disconnect()
+    }, [disconnect])
+
     const onOutput = useCallback((handler: (data: string) => void) => {
         outputHandlerRef.current = handler
     }, [])
@@ -233,6 +245,7 @@ export function useTerminalSocket(options: UseTerminalSocketOptions): {
         write,
         resize,
         disconnect,
+        close,
         onOutput,
         onExit
     }

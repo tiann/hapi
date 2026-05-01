@@ -492,10 +492,10 @@ export class ApiMachineClient {
                     })
                     return
                 }
-                this.terminalManager.create(payload.terminalId, payload.cols, payload.rows, resolvedCwd)
+                this.terminalManager.create(payload.terminalId, payload.cols, payload.rows, resolvedCwd, payload.replay === true)
                 return
             }
-            this.terminalManager.create(payload.terminalId, payload.cols, payload.rows, cwd)
+            this.terminalManager.create(payload.terminalId, payload.cols, payload.rows, cwd, payload.replay === true)
         }))
 
         this.socket.on('terminal:write', handleTerminalEvent(TerminalWritePayloadSchema, (payload) => {

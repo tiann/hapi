@@ -185,7 +185,7 @@ export class ApiSessionClient extends EventEmitter {
         }
 
         this.socket.on('terminal:open', handleTerminalEvent(TerminalOpenPayloadSchema, (payload) => {
-            this.terminalManager.create(payload.terminalId, payload.cols, payload.rows)
+            this.terminalManager.create(payload.terminalId, payload.cols, payload.rows, undefined, payload.replay === true)
         }))
 
         this.socket.on('terminal:write', handleTerminalEvent(TerminalWritePayloadSchema, (payload) => {

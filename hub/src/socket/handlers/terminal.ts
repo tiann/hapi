@@ -95,7 +95,7 @@ export function registerTerminalHandlers(socket: SocketWithData, deps: TerminalH
             return
         }
 
-        const { sessionId, machineId, terminalId, cols, rows, cwd } = parsed.data
+        const { sessionId, machineId, terminalId, cols, rows, cwd, replay } = parsed.data
         const scope = sessionId ? { sessionId } : machineId ? { machineId } : null
         if (!scope) {
             emitTerminalError(terminalId, 'Terminal scope is unavailable.')
@@ -165,7 +165,8 @@ export function registerTerminalHandlers(socket: SocketWithData, deps: TerminalH
             terminalId,
             cols,
             rows,
-            ...(cwd ? { cwd } : {})
+            ...(cwd ? { cwd } : {}),
+            ...(replay ? { replay } : {})
         })
         terminalRegistry.markActivity(terminalId)
     })
@@ -240,9 +241,11 @@ export function registerTerminalHandlers(socket: SocketWithData, deps: TerminalH
     })
 
     socket.on('disconnect', () => {
-        const removed = terminalRegistry.removeBySocket(socket.id)
-        for (const entry of removed) {
-            emitCloseToCli(entry)
-        }
+        // Socket disconnect means the web view detached (route switch,
+        // reconnect, page background, etc.). Do not close the underlying
+        // terminal process here; explicit `terminal:close` is the destructive
+        // lifecycle event. A later `terminal:create` with the same ID will
+        // re-register and reattach to the CLI-side terminal manager.
+        terminalRegistry.removeBySocket(socket.id)
     })
 }

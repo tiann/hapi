@@ -168,7 +168,7 @@ body {
 /* Scale content area to use available space on wide screens */
 @media (min-width: 1280px) {
     :root {
-        --content-max-w: min(90%, 1200px);
+        --content-max-w: min(92%, 1400px);
     }
 }
 

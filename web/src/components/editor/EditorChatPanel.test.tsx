@@ -35,7 +35,12 @@ vi.mock('@/hooks/mutations/useSendMessage', () => ({
 vi.mock('@/components/SessionChat', async () => {
     const React = await vi.importActual<typeof import('react')>('react')
     return {
-        SessionChat: (props: { session?: Session; composerAppendText?: string; onComposerAppendTextConsumed?: () => void }) => {
+        SessionChat: (props: {
+            session?: Session
+            composerAppendText?: string
+            onComposerAppendTextConsumed?: () => void
+            onNewSessionRequested?: () => void
+        }) => {
         sessionChatMock(props)
             React.useEffect(() => {
                 sessionChatLifecycle.mounts += 1
@@ -121,8 +126,9 @@ describe('EditorChatPanel', () => {
 
     it('passes compact chat props to SessionChat when loaded', () => {
         const api = {} as ApiClient
+        const onNewSessionRequested = vi.fn()
 
-        render(<EditorChatPanel api={api} sessionId="session-1" />)
+        render(<EditorChatPanel api={api} sessionId="session-1" onNewSessionRequested={onNewSessionRequested} />)
 
         expect(screen.getByTestId('session-chat')).toBeInTheDocument()
         expect(useSessionMock).toHaveBeenCalledWith(api, 'session-1')
@@ -133,7 +139,8 @@ describe('EditorChatPanel', () => {
             compactMode: true,
             hideHeader: true,
             disableVoice: true,
-            availableSlashCommands: []
+            availableSlashCommands: [],
+            onNewSessionRequested
         }))
     })
 

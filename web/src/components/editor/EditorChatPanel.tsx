@@ -14,6 +14,8 @@ export function EditorChatPanel(props: {
     pendingDraftText?: string
     onDraftConsumed?: () => void
     onExpandDraft?: (text: string) => string
+    onSessionResolved?: (resolvedSessionId: string) => void
+    onNewSessionRequested?: () => void
 }) {
     const { session, isLoading, error, refetch: refetchSession } = useSession(props.api, props.sessionId)
     const messagesState = useMessages(props.api, props.sessionId)
@@ -21,7 +23,19 @@ export function EditorChatPanel(props: {
     const slashCommands = useSlashCommands(props.api, props.sessionId, agentType)
     const skills = useSkills(props.api, props.sessionId)
     const { sendMessage, retryMessage, isSending } = useSendMessage(props.api, props.sessionId, {
-        isSessionThinking: session?.thinking ?? false
+        isSessionThinking: session?.thinking ?? false,
+        resolveSessionId: async (currentSessionId) => {
+            if (!props.api || !session || session.active) {
+                return currentSessionId
+            }
+            try {
+                return await props.api.resumeSession(currentSessionId, { permissionMode: session.permissionMode ?? undefined })
+            } catch (error) {
+                console.error('Failed to resume session before send:', error)
+                return currentSessionId
+            }
+        },
+        onSessionResolved: props.onSessionResolved,
     })
 
     const getAutocompleteSuggestions = useCallback(async (query: string) => {
@@ -91,6 +105,7 @@ export function EditorChatPanel(props: {
                 disableVoice={true}
                 composerAppendText={props.pendingDraftText}
                 onComposerAppendTextConsumed={props.onDraftConsumed}
+                onNewSessionRequested={props.onNewSessionRequested}
             />
         </div>
     )

@@ -221,7 +221,29 @@ describe('terminal socket handlers', () => {
         })
     })
 
-    it('cleans up and notifies CLI on terminal socket disconnect', () => {
+    it('forwards replay requests to the CLI socket', () => {
+        const { terminalSocket, cliNamespace } = createHarness()
+        const cliSocket = new FakeSocket('cli-socket-1')
+        connectCliSocket(cliNamespace, cliSocket, 'session-1')
+
+        terminalSocket.trigger('terminal:create', {
+            sessionId: 'session-1',
+            terminalId: 'terminal-1',
+            cols: 120,
+            rows: 40,
+            replay: true
+        })
+
+        expect(lastEmit(cliSocket, 'terminal:open')?.data).toEqual({
+            sessionId: 'session-1',
+            terminalId: 'terminal-1',
+            cols: 120,
+            rows: 40,
+            replay: true
+        })
+    })
+
+    it('detaches registry entries without closing CLI terminals on terminal socket disconnect', () => {
         const { terminalSocket, cliNamespace, terminalRegistry } = createHarness()
         const cliSocket = new FakeSocket('cli-socket-1')
         connectCliSocket(cliNamespace, cliSocket, 'session-1')
@@ -236,10 +258,7 @@ describe('terminal socket handlers', () => {
         terminalSocket.trigger('disconnect')
 
         const closeEvent = lastEmit(cliSocket, 'terminal:close')
-        expect(closeEvent?.data).toEqual({
-            sessionId: 'session-1',
-            terminalId: 'terminal-1'
-        })
+        expect(closeEvent).toBeUndefined()
         expect(terminalRegistry.get('terminal-1')).toBeNull()
     })
 

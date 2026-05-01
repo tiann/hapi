@@ -7,17 +7,34 @@ import { EditorLayout } from './EditorLayout'
 const mocks = vi.hoisted(() => ({
     createSession: vi.fn(),
     lastNewSessionArgs: null as null | { onCreated: (sessionId: string) => void },
+    navigate: vi.fn(),
+    search: {} as Record<string, unknown>,
     onLeftResizePointerDown: vi.fn(),
     onRightResizePointerDown: vi.fn(),
-    onTerminalResizePointerDown: vi.fn()
+    onTerminalResizePointerDown: vi.fn(),
+    savePersistedEditorState: vi.fn()
+}))
+
+vi.mock('@tanstack/react-router', async () => {
+    const actual = await vi.importActual<typeof import('@tanstack/react-router')>('@tanstack/react-router')
+    return {
+        ...actual,
+        useNavigate: () => mocks.navigate,
+        useSearch: () => mocks.search
+    }
+})
+
+vi.mock('@/lib/editor-persistence', () => ({
+    savePersistedEditorState: (...args: unknown[]) => mocks.savePersistedEditorState(...args)
 }))
 
 vi.mock('./EditorHeader', () => ({
-    EditorHeader: (props: { onSelectMachine: (id: string) => void; onSelectProject: (path: string) => void }) => (
+    EditorHeader: (props: { onSelectMachine: (id: string) => void; onSelectProject: (path: string) => void; onBrowseProject: () => void }) => (
         <div data-testid="editor-header">
             Header
             <button type="button" onClick={() => props.onSelectMachine('machine-2')}>Select machine</button>
             <button type="button" onClick={() => props.onSelectProject('/repo2')}>Select project</button>
+            <button type="button" onClick={() => props.onBrowseProject()}>Browse project</button>
         </div>
     )
 }))
@@ -84,8 +101,11 @@ vi.mock('./EditorSessionList', () => ({
 }))
 
 vi.mock('./EditorChatPanel', () => ({
-    EditorChatPanel: (props: { pendingDraftText?: string }) => (
-        <div data-testid="editor-chat-panel">Chat draft: {props.pendingDraftText ?? ''}</div>
+    EditorChatPanel: (props: { pendingDraftText?: string; onNewSessionRequested?: () => void }) => (
+        <div data-testid="editor-chat-panel">
+            Chat draft: {props.pendingDraftText ?? ''}
+            <button type="button" onClick={props.onNewSessionRequested}>Dead session new</button>
+        </div>
     )
 }))
 
@@ -114,7 +134,7 @@ vi.mock('./EditorContextMenu', () => ({
 }))
 
 vi.mock('@/hooks/mutations/useEditorNewSession', () => ({
-    useEditorNewSession: (args: { onCreated: (sessionId: string) => void }) => {
+    useEditorNewSession: (args: { machineId: string | null; projectPath: string | null; onCreated: (sessionId: string) => void }) => {
         mocks.lastNewSessionArgs = args
         return { createSession: mocks.createSession, isCreating: false, error: null }
     }
@@ -146,6 +166,8 @@ describe('EditorLayout', () => {
     beforeEach(() => {
         vi.clearAllMocks()
         mocks.lastNewSessionArgs = null
+        mocks.search = {}
+        mocks.savePersistedEditorState.mockClear()
     })
 
     afterEach(() => {
@@ -161,6 +183,48 @@ describe('EditorLayout', () => {
         expect(screen.getByTestId('editor-terminal')).toBeInTheDocument()
         expect(screen.getByTestId('editor-session-list')).toBeInTheDocument()
         expect(screen.getByTestId('editor-chat-panel')).toBeInTheDocument()
+    })
+
+
+    it('shows browse project CTA when no project is selected', () => {
+        render(
+            <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })}>
+                <EditorLayout api={{} as ApiClient} />
+            </QueryClientProvider>
+        )
+
+        expect(screen.getByText('Open a project to start editing')).toBeInTheDocument()
+        fireEvent.click(screen.getByText('Browse Project'))
+        expect(mocks.navigate.mock.calls.at(-1)?.[0].search({})).toMatchObject({
+            modal: 'browser',
+            modalReturnTo: 'editor'
+        })
+    })
+
+    it('opens project browser from the header at the current project', () => {
+        renderEditorLayout({} as ApiClient)
+
+        fireEvent.click(screen.getByText('Browse project'))
+
+        expect(mocks.navigate.mock.calls.at(-1)?.[0].search({})).toMatchObject({
+            modal: 'browser',
+            modalMachineId: 'machine-1',
+            modalPath: '/repo',
+            modalReturnTo: 'editor'
+        })
+    })
+
+    it('persists editor state changes', () => {
+        renderEditorLayout({} as ApiClient)
+
+        fireEvent.click(screen.getByText('Mock open file'))
+
+        expect(mocks.savePersistedEditorState).toHaveBeenCalledWith(expect.objectContaining({
+            machineId: 'machine-1',
+            projectPath: '/repo',
+            activeTabId: expect.any(String),
+            tabs: expect.arrayContaining([expect.objectContaining({ type: 'file', path: '/repo/src/App.tsx' })])
+        }))
     })
 
     it('wires pane resize sizes and handlers', () => {
@@ -234,6 +298,35 @@ describe('EditorLayout', () => {
         expect(mocks.createSession).not.toHaveBeenCalled()
         expect(screen.getByTestId('editor-tabs')).not.toHaveTextContent('Terminal: bash')
         expect(screen.getByTestId('editor-terminal')).toHaveTextContent('Terminal tabs: Terminal: bash:machine-1:/repo')
+    })
+
+    it('opens the new-session modal with the current project path and editor return mode', () => {
+        renderEditorLayout({} as ApiClient)
+
+        expect(mocks.lastNewSessionArgs).toMatchObject({
+            machineId: 'machine-1',
+            projectPath: '/repo'
+        })
+
+        fireEvent.click(screen.getByText('New session'))
+        expect(mocks.navigate).toHaveBeenCalledWith({
+            search: expect.any(Function)
+        })
+        expect(mocks.navigate.mock.calls.at(-1)?.[0].search({})).toMatchObject({
+            modal: 'new-session',
+            modalMachineId: 'machine-1',
+            modalPath: '/repo',
+            modalReturnTo: 'editor'
+        })
+
+        fireEvent.click(screen.getByText('Dead session new'))
+        expect(mocks.navigate.mock.calls.at(-1)?.[0].search({})).toMatchObject({
+            modal: 'new-session',
+            modalMachineId: 'machine-1',
+            modalPath: '/repo',
+            modalReturnTo: 'editor'
+        })
+        expect(mocks.createSession).not.toHaveBeenCalled()
     })
 
     it('starts inline new-file flow and opens the created file', async () => {

@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ApiClient } from '@/api/client'
 import type { Machine } from '@/types/api'
@@ -62,6 +62,7 @@ describe('EditorHeader', () => {
                 projectPath={null}
                 onSelectMachine={onSelectMachine}
                 onSelectProject={vi.fn()}
+                onBrowseProject={vi.fn()}
             />
         )
 
@@ -75,17 +76,9 @@ describe('EditorHeader', () => {
         expect(onSelectMachine).toHaveBeenCalledWith('machine-2')
     })
 
-    it('loads projects for the selected machine and notifies when project changes', async () => {
-        const onSelectProject = vi.fn()
-        const api = {
-            listEditorProjects: vi.fn(async () => ({
-                success: true,
-                projects: [
-                    { path: '/repo-a', name: 'repo-a', hasGit: true },
-                    { path: '/repo-b', name: 'repo-b', hasGit: false }
-                ]
-            }))
-        } as unknown as ApiClient
+    it('renders a folder browser trigger for the selected project', () => {
+        const onBrowseProject = vi.fn()
+        const api = { listEditorProjects: vi.fn() } as unknown as ApiClient
 
         render(
             <EditorHeader
@@ -93,22 +86,22 @@ describe('EditorHeader', () => {
                 machineId="machine-1"
                 projectPath="/repo-a"
                 onSelectMachine={vi.fn()}
-                onSelectProject={onSelectProject}
+                onSelectProject={vi.fn()}
+                onBrowseProject={onBrowseProject}
             />
         )
 
-        await waitFor(() => {
-            expect(screen.getByRole('option', { name: '📁 repo-a' })).toBeInTheDocument()
-        })
-        expect(screen.getByRole('option', { name: '📂 repo-b' })).toBeInTheDocument()
-        expect(api.listEditorProjects).toHaveBeenCalledWith('machine-1')
+        const browseButton = screen.getByRole('button', { name: 'Browse project folder' })
+        expect(browseButton).toHaveTextContent('repo-a')
+        expect(browseButton).toHaveTextContent('/repo-a')
+        expect(api.listEditorProjects).not.toHaveBeenCalled()
 
-        fireEvent.change(screen.getByLabelText('Project'), { target: { value: '/repo-b' } })
+        fireEvent.click(browseButton)
 
-        expect(onSelectProject).toHaveBeenCalledWith('/repo-b')
+        expect(onBrowseProject).toHaveBeenCalled()
     })
 
-    it('clears projects when no machine is selected', () => {
+    it('hides project browser when no machine is selected', () => {
         const api = { listEditorProjects: vi.fn() } as unknown as ApiClient
 
         render(
@@ -118,10 +111,11 @@ describe('EditorHeader', () => {
                 projectPath={null}
                 onSelectMachine={vi.fn()}
                 onSelectProject={vi.fn()}
+                onBrowseProject={vi.fn()}
             />
         )
 
-        expect(screen.queryByLabelText('Project')).not.toBeInTheDocument()
+        expect(screen.queryByRole('button', { name: 'Browse project folder' })).not.toBeInTheDocument()
         expect(api.listEditorProjects).not.toHaveBeenCalled()
     })
 
@@ -135,6 +129,7 @@ describe('EditorHeader', () => {
                 projectPath={null}
                 onSelectMachine={vi.fn()}
                 onSelectProject={vi.fn()}
+                onBrowseProject={vi.fn()}
             />
         )
 

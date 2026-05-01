@@ -9,7 +9,8 @@ const mocks = vi.hoisted(() => ({
     isRemoteTerminalSupported: vi.fn(),
     onMountTerminal: vi.fn(),
     onResizeTerminal: vi.fn(),
-    disconnectsByTerminalId: new Map<string, ReturnType<typeof vi.fn>>()
+    disconnectsByTerminalId: new Map<string, ReturnType<typeof vi.fn>>(),
+    closesByTerminalId: new Map<string, ReturnType<typeof vi.fn>>()
 }))
 
 vi.mock('@/lib/app-context', () => ({
@@ -52,15 +53,19 @@ describe('EditorTerminal', () => {
             refetch: vi.fn()
         })
         mocks.disconnectsByTerminalId.clear()
+        mocks.closesByTerminalId.clear()
         mocks.useTerminalSocket.mockImplementation((options: { terminalId: string }) => {
             const disconnect = vi.fn()
+            const close = vi.fn()
             mocks.disconnectsByTerminalId.set(options.terminalId, disconnect)
+            mocks.closesByTerminalId.set(options.terminalId, close)
             return {
             state: { status: 'connected' },
             connect: vi.fn(),
             write: vi.fn(),
             resize: vi.fn(),
             disconnect,
+            close,
             onOutput: vi.fn(),
             onExit: vi.fn()
             }
@@ -123,6 +128,7 @@ describe('EditorTerminal', () => {
         expect(onSelectTab).toHaveBeenCalledWith('term-1')
 
         fireEvent.click(screen.getByRole('button', { name: 'Close terminal Terminal: zsh' }))
+        expect(mocks.closesByTerminalId.get('term-2')).toHaveBeenCalled()
         expect(onCloseTab).toHaveBeenCalledWith('term-2')
 
         fireEvent.click(screen.getByRole('button', { name: 'Open terminal' }))

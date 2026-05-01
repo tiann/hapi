@@ -1,17 +1,16 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import type { ApiClient } from '@/api/client'
 import type { Machine } from '@/types/api'
 import { useMachines } from '@/hooks/queries/useMachines'
 
-type EditorProject = {
-    path: string
-    name: string
-    hasGit: boolean
-}
-
 function getMachineLabel(machine: Machine): string {
     return machine.metadata?.displayName ?? machine.metadata?.host ?? machine.id.slice(0, 8)
+}
+
+function getProjectName(projectPath: string | null): string {
+    if (!projectPath) return 'Open folder'
+    return projectPath.split('/').filter(Boolean).pop() || projectPath
 }
 
 export function EditorHeader(props: {
@@ -20,55 +19,13 @@ export function EditorHeader(props: {
     projectPath: string | null
     onSelectMachine: (machineId: string) => void
     onSelectProject: (projectPath: string) => void
+    onBrowseProject: () => void
 }) {
     const navigate = useNavigate()
     const { machines, isLoading: machinesLoading } = useMachines(props.api, true)
-    const [projects, setProjects] = useState<EditorProject[]>([])
-    const [projectsLoading, setProjectsLoading] = useState(false)
-
-    useEffect(() => {
-        let cancelled = false
-
-        if (!props.machineId) {
-            setProjects([])
-            setProjectsLoading(false)
-            return () => {
-                cancelled = true
-            }
-        }
-
-        setProjectsLoading(true)
-        props.api.listEditorProjects(props.machineId)
-            .then((response) => {
-                if (cancelled) return
-                if (response.success && response.projects) {
-                    setProjects(response.projects)
-                } else {
-                    setProjects([])
-                }
-            })
-            .catch(() => {
-                if (!cancelled) {
-                    setProjects([])
-                }
-            })
-            .finally(() => {
-                if (!cancelled) {
-                    setProjectsLoading(false)
-                }
-            })
-
-        return () => {
-            cancelled = true
-        }
-    }, [props.api, props.machineId])
 
     const handleMachineChange = useCallback((event: React.ChangeEvent<HTMLSelectElement>) => {
         props.onSelectMachine(event.target.value)
-    }, [props])
-
-    const handleProjectChange = useCallback((event: React.ChangeEvent<HTMLSelectElement>) => {
-        props.onSelectProject(event.target.value)
     }, [props])
 
     return (
@@ -99,22 +56,23 @@ export function EditorHeader(props: {
             {props.machineId && (
                 <>
                     <span className="text-[var(--app-hint)] text-xs">/</span>
-                    <label className="sr-only" htmlFor="editor-project-select">Project</label>
-                    <select
-                        id="editor-project-select"
-                        aria-label="Project"
-                        value={props.projectPath ?? ''}
-                        onChange={handleProjectChange}
-                        disabled={projectsLoading}
-                        className="bg-[var(--app-bg)] text-[var(--app-fg)] border border-[var(--app-border)] rounded-md px-2 py-1 text-xs min-w-0 max-w-[280px] truncate"
+                    <button
+                        type="button"
+                        aria-label="Browse project folder"
+                        title={props.projectPath ?? 'Open folder'}
+                        onClick={props.onBrowseProject}
+                        className="flex min-w-0 max-w-[360px] items-center gap-2 rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] px-2.5 py-1 text-left text-xs text-[var(--app-fg)] hover:bg-[var(--app-secondary-bg)]"
                     >
-                        <option value="" disabled>{projectsLoading ? 'Loading...' : 'Select project'}</option>
-                        {projects.map((project) => (
-                            <option key={project.path} value={project.path}>
-                                {project.hasGit ? '📁' : '📂'} {project.name}
-                            </option>
-                        ))}
-                    </select>
+                        <span className="shrink-0">📁</span>
+                        <span className="min-w-0">
+                            <span className="block truncate font-medium">{getProjectName(props.projectPath)}</span>
+                            {props.projectPath ? (
+                                <span className="block truncate text-[10px] leading-tight text-[var(--app-hint)]">
+                                    {props.projectPath}
+                                </span>
+                            ) : null}
+                        </span>
+                    </button>
                 </>
             )}
 

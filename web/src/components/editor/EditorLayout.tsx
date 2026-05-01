@@ -1,9 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate, useSearch } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
 import type { ApiClient } from '@/api/client'
 import type { EditorTreeItem } from '@/types/editor'
+import type { PersistedEditorState } from '@/lib/editor-persistence'
+import type { RootSearch } from '@/router'
 import { appendEditorChatDraft, appendEditorChatDraftWithSelection, buildAddSelectionToChatText, expandSelectionRefs } from '@/lib/editor-chat-draft'
 import { queryKeys } from '@/lib/query-keys'
+import { savePersistedEditorState } from '@/lib/editor-persistence'
 import { useEditorPaneResize } from '@/hooks/useEditorPaneResize'
 import { useEditorState } from '@/hooks/useEditorState'
 import { useEditorNewSession } from '@/hooks/mutations/useEditorNewSession'
@@ -141,13 +145,16 @@ export function EditorLayout(props: {
     api: ApiClient | null
     initialMachineId?: string
     initialProjectPath?: string
+    initialState?: PersistedEditorState
 }) {
-    const editor = useEditorState(props.initialMachineId, props.initialProjectPath)
+    const editor = useEditorState(props.initialMachineId, props.initialProjectPath, props.initialState)
     const panes = useEditorPaneResize()
     const queryClient = useQueryClient()
+    const navigate = useNavigate()
+    const search = useSearch({ strict: false }) as RootSearch
     const [pendingDraftText, setPendingDraftText] = useState<string | undefined>(undefined)
     const [newFileTargetPath, setNewFileTargetPath] = useState<string | null>(null)
-    const [isTerminalCollapsed, setIsTerminalCollapsed] = useState(true)
+    const [isTerminalCollapsed, setIsTerminalCollapsed] = useState(props.initialState?.isTerminalCollapsed ?? true)
     const [deleteItems, setDeleteItems] = useState<EditorTreeItem[]>([])
     const [isDeletingItems, setIsDeletingItems] = useState(false)
     const [deleteError, setDeleteError] = useState<string | null>(null)
@@ -183,12 +190,47 @@ export function EditorLayout(props: {
     )
     const activeFilePath = activeFileTab?.path ?? null
 
+    useEffect(() => {
+        if (!search.modalNewSessionId) return
+        editor.setActiveSessionId(search.modalNewSessionId)
+        void queryClient.invalidateQueries({ queryKey: queryKeys.sessions })
+        void navigate({
+            search: (prev: any) => {
+                const next = { ...prev }
+                delete next.modalNewSessionId
+                return next
+            },
+            replace: true
+        } as any)
+    }, [editor, navigate, queryClient, search.modalNewSessionId])
+
+    useEffect(() => {
+        if (props.initialMachineId && props.initialMachineId !== editor.machineId) {
+            editor.selectMachine(props.initialMachineId)
+        }
+        if (props.initialProjectPath && props.initialProjectPath !== editor.projectPath) {
+            editor.selectProject(props.initialProjectPath)
+        }
+    }, [editor.machineId, editor.projectPath, editor.selectMachine, editor.selectProject, props.initialMachineId, props.initialProjectPath])
+
+    useEffect(() => {
+        savePersistedEditorState({
+            machineId: editor.machineId,
+            projectPath: editor.projectPath,
+            tabs: editor.tabs,
+            activeTabId: editor.activeTabId,
+            activeSessionId: editor.activeSessionId,
+            isTerminalCollapsed,
+        })
+    }, [editor.activeSessionId, editor.activeTabId, editor.machineId, editor.projectPath, editor.tabs, isTerminalCollapsed])
+
     const newSession = useEditorNewSession({
         api: props.api,
         machineId: editor.machineId,
         projectPath: editor.projectPath,
         onCreated: (sessionId) => {
             editor.setActiveSessionId(sessionId)
+            void queryClient.invalidateQueries({ queryKey: queryKeys.sessions })
             const pendingFiles = pendingFileAfterSessionRef.current
             if (pendingFiles?.length) {
                 setPendingDraftText(pendingFiles.reduce((draft, filePath) => appendEditorChatDraft(draft, filePath), ''))
@@ -306,9 +348,46 @@ export function EditorLayout(props: {
         })
     }, [editor.activeSessionId])
 
+    const handleSessionResolved = useCallback((resolvedSessionId: string) => {
+        if (resolvedSessionId !== editor.activeSessionId) {
+            editor.setActiveSessionId(resolvedSessionId)
+            // Prefetch the new session data
+            if (props.api) {
+                void props.api.getSession(resolvedSessionId).catch(() => {})
+            }
+        }
+    }, [editor, props.api])
+
     const handleExpandDraft = useCallback((text: string): string => {
         return expandSelectionRefs(text, selectionMapRef.current)
     }, [])
+
+    const handleBrowseProject = useCallback(() => {
+        void navigate({
+            search: (prev: any) => ({
+                ...prev,
+                modal: 'browser',
+                modalMachineId: editor.machineId ?? undefined,
+                modalPath: editor.projectPath ?? undefined,
+                modalReturnTo: 'editor'
+            })
+        } as any)
+    }, [editor.machineId, editor.projectPath, navigate])
+
+    const handleOpenNewSessionModal = useCallback(() => {
+        if (!editor.machineId || !editor.projectPath) {
+            return
+        }
+        void navigate({
+            search: (prev: any) => ({
+                ...prev,
+                modal: 'new-session',
+                modalMachineId: editor.machineId,
+                modalPath: editor.projectPath,
+                modalReturnTo: 'editor'
+            })
+        } as any)
+    }, [editor.machineId, editor.projectPath, navigate])
 
     const handleOpenItems = useCallback((items: EditorTreeItem[]) => {
         for (const item of uniqueItems(items)) {
@@ -390,6 +469,7 @@ export function EditorLayout(props: {
                 projectPath={editor.projectPath}
                 onSelectMachine={handleSelectMachine}
                 onSelectProject={handleSelectProject}
+                onBrowseProject={handleBrowseProject}
             />
 
             <div data-testid="editor-layout-body" className="flex min-h-0 flex-1 overflow-hidden">
@@ -415,17 +495,31 @@ export function EditorLayout(props: {
 
                 <main data-testid="editor-main-pane" className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
                     <div data-testid="editor-tabs-region" className="min-h-0 flex-1 overflow-hidden">
-                        <EditorTabs
-                            api={props.api}
-                            machineId={editor.machineId}
-                            tabs={fileTabs}
-                            activeTabId={activeFileTab?.id ?? null}
-                            onSelectTab={editor.setActiveTabId}
-                            onCloseTab={editor.closeTab}
-                            onNewFile={handleNewFileFromTabs}
-                            onDirtyChange={editor.setTabDirty}
-                            onAddSelectionToChat={handleAddSelectionToChat}
-                        />
+                        {!editor.machineId || !editor.projectPath ? (
+                            <div className="flex h-full flex-col items-center justify-center gap-3 p-4 text-center text-[var(--app-hint)]">
+                                <div className="text-sm font-medium text-[var(--app-fg)]">Open a project to start editing</div>
+                                <div className="max-w-sm text-xs">Choose a workspace folder, then editor tabs, terminals, and layout will be restored next time.</div>
+                                <button
+                                    type="button"
+                                    className="rounded-md border border-[var(--app-border)] bg-[var(--app-secondary-bg)] px-3 py-1.5 text-xs font-medium text-[var(--app-fg)] hover:bg-[var(--app-subtle-bg)]"
+                                    onClick={handleBrowseProject}
+                                >
+                                    Browse Project
+                                </button>
+                            </div>
+                        ) : (
+                            <EditorTabs
+                                api={props.api}
+                                machineId={editor.machineId}
+                                tabs={fileTabs}
+                                activeTabId={activeFileTab?.id ?? null}
+                                onSelectTab={editor.setActiveTabId}
+                                onCloseTab={editor.closeTab}
+                                onNewFile={handleNewFileFromTabs}
+                                onDirtyChange={editor.setTabDirty}
+                                onAddSelectionToChat={handleAddSelectionToChat}
+                            />
+                        )}
                     </div>
                     {!isTerminalCollapsed && (
                         <div
@@ -464,7 +558,7 @@ export function EditorLayout(props: {
                             projectPath={editor.projectPath}
                             activeSessionId={editor.activeSessionId}
                             onSelectSession={handleSelectSession}
-                            onNewSession={newSession.createSession}
+                            onNewSession={handleOpenNewSessionModal}
                         />
                     </div>
                     {newSession.error ? (
@@ -479,6 +573,8 @@ export function EditorLayout(props: {
                             pendingDraftText={pendingDraftText}
                             onDraftConsumed={() => setPendingDraftText(undefined)}
                             onExpandDraft={handleExpandDraft}
+                            onSessionResolved={handleSessionResolved}
+                            onNewSessionRequested={handleOpenNewSessionModal}
                         />
                     </div>
                 </aside>

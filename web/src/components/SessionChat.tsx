@@ -69,6 +69,7 @@ export function SessionChat(props: {
     pinIndex?: number
     composerAppendText?: string
     onComposerAppendTextConsumed?: () => void
+    onNewSessionRequested?: () => void
 }) {
     const { haptic } = usePlatform()
     const { t } = useTranslation()
@@ -407,7 +408,7 @@ export function SessionChat(props: {
                 if (!hasResumeToken) {
                     return (
                         <div className="px-3 pt-3">
-                            <div className="mx-auto w-full max-w-content rounded-md bg-[var(--app-subtle-bg)] p-3 text-sm flex items-center justify-between gap-3">
+                            <div className="mx-auto w-full max-w-full rounded-md bg-[var(--app-subtle-bg)] p-2 text-xs flex items-center justify-between gap-2">
                                 <p className="text-[var(--app-hint)]">
                                     This session cannot be resumed — no agent session token was saved.
                                 </p>
@@ -415,14 +416,21 @@ export function SessionChat(props: {
                                     type="button"
                                     style={{ background: 'rgb(99,102,241)', color: '#fff', whiteSpace: 'nowrap' }}
                                     className="shrink-0 rounded-md px-3 py-1.5 text-xs font-semibold hover:opacity-90 transition-opacity cursor-pointer"
-                                    onClick={() => void navigate({
-                                        search: (prev: any) => ({
-                                            ...prev,
-                                            modal: 'new-session',
-                                            modalReplaceSessionId: props.session.id,
-                                            ...(meta?.path ? { directory: meta.path } : {})
-                                        })
-                                    } as any)}
+                                    onClick={() => {
+                                        if (props.onNewSessionRequested) {
+                                            props.onNewSessionRequested()
+                                            return
+                                        }
+                                        void navigate({
+                                            search: (prev: any) => ({
+                                                ...prev,
+                                                modal: 'new-session',
+                                                modalReplaceSessionId: props.session.id,
+                                                modalPath: meta?.path,
+                                                modalMachineId: meta?.machineId
+                                            })
+                                        } as any)
+                                    }}
                                 >
                                     + New Session
                                 </button>
@@ -432,7 +440,7 @@ export function SessionChat(props: {
                 }
                 return (
                     <div className="px-3 pt-3">
-                        <div className="mx-auto w-full max-w-content rounded-md bg-[var(--app-subtle-bg)] p-3 text-sm text-[var(--app-hint)]">
+                        <div className="mx-auto w-full max-w-content rounded-md bg-[var(--app-subtle-bg)] p-2 text-xs text-[var(--app-hint)]">
                             Session is inactive. Sending will resume it automatically.
                         </div>
                     </div>
@@ -470,7 +478,7 @@ export function SessionChat(props: {
 
                     {codexCollaborationModeSupported && codexModelsState.error && !codexErrorDismissed ? (
                         <div className="px-3 pb-2">
-                            <div className="mx-auto w-full max-w-content rounded-md bg-[var(--app-subtle-bg)] p-3 text-sm text-red-500 flex items-center justify-between gap-3">
+                            <div className="mx-auto w-full max-w-full rounded-md bg-[var(--app-subtle-bg)] p-3 text-sm text-red-500 flex items-center justify-between gap-3">
                                 <span className="flex-1 min-w-0">
                                     {t('session.codexModelsLoadFailed')}: {codexModelsState.error}
                                 </span>
