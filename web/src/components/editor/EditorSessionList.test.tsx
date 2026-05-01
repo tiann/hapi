@@ -117,6 +117,38 @@ describe('EditorSessionList', () => {
         expect(onSelectSession).toHaveBeenCalledWith('s-1')
     })
 
+    it('selects the first filtered session by default when none is active', () => {
+        const onSelectSession = vi.fn()
+        render(
+            <EditorSessionList
+                api={{} as ApiClient}
+                machineId="machine-1"
+                projectPath="/repo"
+                activeSessionId={null}
+                onSelectSession={onSelectSession}
+                onNewSession={vi.fn()}
+            />
+        )
+
+        expect(onSelectSession).toHaveBeenCalledWith('s-1')
+    })
+
+    it('selects the first filtered session when the active session is outside the project', () => {
+        const onSelectSession = vi.fn()
+        render(
+            <EditorSessionList
+                api={{} as ApiClient}
+                machineId="machine-1"
+                projectPath="/repo"
+                activeSessionId="s-3"
+                onSelectSession={onSelectSession}
+                onNewSession={vi.fn()}
+            />
+        )
+
+        expect(onSelectSession).toHaveBeenCalledWith('s-1')
+    })
+
     it('shows loading, error, empty, and new session actions', () => {
         useSessionsMock.mockReturnValueOnce({ sessions: [], isLoading: true, error: null, refetch: vi.fn() })
         const { rerender } = render(

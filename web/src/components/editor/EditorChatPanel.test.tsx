@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ApiClient } from '@/api/client'
 import type { Session } from '@/types/api'
@@ -35,7 +35,7 @@ vi.mock('@/hooks/mutations/useSendMessage', () => ({
 vi.mock('@/components/SessionChat', async () => {
     const React = await vi.importActual<typeof import('react')>('react')
     return {
-        SessionChat: (props: { session?: Session }) => {
+        SessionChat: (props: { session?: Session; composerAppendText?: string; onComposerAppendTextConsumed?: () => void }) => {
         sessionChatMock(props)
             React.useEffect(() => {
                 sessionChatLifecycle.mounts += 1
@@ -138,9 +138,7 @@ describe('EditorChatPanel', () => {
     })
 
     it('sends and consumes pending draft text', () => {
-        const sendMessage = vi.fn()
         const onDraftConsumed = vi.fn()
-        useSendMessageMock.mockReturnValueOnce({ sendMessage, retryMessage: vi.fn(), isSending: false })
 
         render(
             <EditorChatPanel
@@ -151,10 +149,13 @@ describe('EditorChatPanel', () => {
             />
         )
 
-        expect(screen.getByText('Added to chat: @/repo/src/App.tsx')).toBeInTheDocument()
-        fireEvent.click(screen.getByRole('button', { name: 'Send added context' }))
-
-        expect(sendMessage).toHaveBeenCalledWith('@/repo/src/App.tsx')
+        expect(screen.queryByText('Added to chat: @/repo/src/App.tsx')).not.toBeInTheDocument()
+        expect(sessionChatMock).toHaveBeenCalledWith(expect.objectContaining({
+            composerAppendText: '@/repo/src/App.tsx',
+            onComposerAppendTextConsumed: onDraftConsumed
+        }))
+        const lastProps = sessionChatMock.mock.calls.at(-1)?.[0] as { onComposerAppendTextConsumed?: () => void }
+        lastProps.onComposerAppendTextConsumed?.()
         expect(onDraftConsumed).toHaveBeenCalled()
     })
 

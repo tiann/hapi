@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo } from 'react'
 import type { ApiClient } from '@/api/client'
 import type { SessionSummary } from '@/types/api'
 import { useSessions } from '@/hooks/queries/useSessions'
@@ -112,9 +112,16 @@ function SelectedEditorSessionList(props: {
     onNewSession: () => void
 }) {
     const { sessions, isLoading, error } = useSessions(props.api)
+    const { activeSessionId, onSelectSession } = props
     const projectSessions = useMemo(() => {
         return filterSessionsForEditorProject(sessions, props.machineId, props.projectPath)
     }, [props.machineId, props.projectPath, sessions])
+
+    useEffect(() => {
+        if (isLoading || error || projectSessions.length === 0) return
+        if (activeSessionId && projectSessions.some((session) => session.id === activeSessionId)) return
+        onSelectSession(projectSessions[0].id)
+    }, [activeSessionId, error, isLoading, onSelectSession, projectSessions])
 
     return (
         <div className="flex h-full min-h-0 flex-col border-b border-[var(--app-border)]">

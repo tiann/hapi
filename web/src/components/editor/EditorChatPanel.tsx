@@ -35,12 +35,6 @@ export function EditorChatPanel(props: {
         void messagesState.refetch()
     }, [messagesState, refetchSession])
 
-    const handleSendDraft = useCallback(() => {
-        if (!props.pendingDraftText) return
-        sendMessage(props.pendingDraftText)
-        props.onDraftConsumed?.()
-    }, [props, sendMessage])
-
     if (!props.sessionId) {
         return (
             <div className="flex h-full items-center justify-center p-4 text-sm text-[var(--app-hint)]">
@@ -67,24 +61,6 @@ export function EditorChatPanel(props: {
 
     return (
         <div className="flex h-full min-h-0 flex-col">
-            {props.pendingDraftText ? (
-                <div className="border-b border-[var(--app-border)] bg-[var(--app-subtle-bg)] p-2 text-xs">
-                    <div className="flex items-center gap-2">
-                        <div className="min-w-0 flex-1 truncate text-[var(--app-hint)]">
-                            Added to chat: {props.pendingDraftText}
-                        </div>
-                        <button
-                            type="button"
-                            className="rounded border border-[var(--app-border)] px-2 py-1 font-medium text-[var(--app-fg)] hover:bg-[var(--app-secondary-bg)]"
-                            onClick={handleSendDraft}
-                            aria-label="Send added context"
-                        >
-                            Send
-                        </button>
-                    </div>
-                </div>
-            ) : null}
-
             <SessionChat
                 key={session.id}
                 api={props.api}
@@ -109,6 +85,8 @@ export function EditorChatPanel(props: {
                 compactMode={true}
                 hideHeader={true}
                 disableVoice={true}
+                composerAppendText={props.pendingDraftText}
+                onComposerAppendTextConsumed={props.onDraftConsumed}
             />
         </div>
     )

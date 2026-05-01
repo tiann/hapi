@@ -67,6 +67,8 @@ export function SessionChat(props: {
     hideHeader?: boolean
     compactMode?: boolean
     pinIndex?: number
+    composerAppendText?: string
+    onComposerAppendTextConsumed?: () => void
 }) {
     const { haptic } = usePlatform()
     const { t } = useTranslation()
@@ -526,6 +528,8 @@ export function SessionChat(props: {
                         voiceMicMuted={voice?.micMuted}
                         onVoiceToggle={voice ? handleVoiceToggle : undefined}
                         onVoiceMicToggle={voice ? handleVoiceMicToggle : undefined}
+                        appendText={props.composerAppendText}
+                        onAppendTextConsumed={props.onComposerAppendTextConsumed}
                     />
                 </div>
             </AssistantRuntimeProvider>
