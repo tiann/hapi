@@ -25,6 +25,7 @@ import { VisibilityTracker } from './visibility/visibilityTracker'
 import { TunnelManager } from './tunnel'
 import { waitForTunnelTlsReady } from './tunnel/tlsGate'
 import { ServerChanChannel } from './serverchan/channel'
+import { WecomBot } from './wecom/bot'
 import QRCode from 'qrcode'
 import type { Server as BunServer } from 'bun'
 import type { WebSocketData } from '@socket.io/bun-engine'
@@ -104,6 +105,7 @@ let webServer: BunServer<WebSocketData> | null = null
 let sseManager: SSEManager | null = null
 let visibilityTracker: VisibilityTracker | null = null
 let notificationHub: NotificationHub | null = null
+let wecomBot: WecomBot | null = null
 let tunnelManager: TunnelManager | null = null
 
 async function main() {
@@ -157,6 +159,14 @@ async function main() {
         console.log(`[Hub] ServerChan notifications: ${config.serverChanNotification ? 'enabled' : 'disabled'} (${notificationSource})`)
     } else {
         console.log('[Hub] ServerChan: disabled (no SERVERCHAN_SENDKEY)')
+    }
+    if (config.wecomEnabled) {
+        const source = formatSource(config.sources.wecomBotId)
+        const notificationSource = formatSource(config.sources.wecomNotification)
+        console.log(`[Hub] WeCom: enabled (${source})`)
+        console.log(`[Hub] WeCom notifications: ${config.wecomNotification ? 'enabled' : 'disabled'} (${notificationSource})`)
+    } else {
+        console.log('[Hub] WeCom: disabled (no WECOM_BOT_ID/WECOM_BOT_SECRET)')
     }
 
     // Display tunnel status
@@ -217,6 +227,19 @@ async function main() {
         }
     }
 
+    // Initialize WeCom bot (optional)
+    if (config.wecomEnabled && config.wecomBotId && config.wecomBotSecret && config.wecomNotification) {
+        wecomBot = new WecomBot({
+            botId: config.wecomBotId,
+            secret: config.wecomBotSecret,
+            cliApiToken: config.cliApiToken,
+            publicUrl: config.publicUrl,
+            store,
+            syncEngine
+        })
+        notificationChannels.push(wecomBot)
+    }
+
     notificationHub = new NotificationHub(syncEngine, notificationChannels)
 
     // Start HTTP service first (before tunnel, so tunnel has something to forward to)
@@ -236,6 +259,10 @@ async function main() {
     // Start the bot if configured
     if (happyBot) {
         await happyBot.start()
+    }
+
+    if (wecomBot) {
+        wecomBot.start()
     }
 
     console.log('')
@@ -310,6 +337,7 @@ async function main() {
         console.log('\nShutting down...')
         await tunnelManager?.stop()
         await happyBot?.stop()
+        wecomBot?.stop()
         notificationHub?.stop()
         syncEngine?.stop()
         sseManager?.stop()
