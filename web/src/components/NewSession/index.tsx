@@ -5,6 +5,7 @@ import { usePlatform } from '@/hooks/usePlatform'
 import { useMachinePathsExists } from '@/hooks/useMachinePathsExists'
 import { useSpawnSession } from '@/hooks/mutations/useSpawnSession'
 import { useCodexModels } from '@/hooks/queries/useCodexModels'
+import { useOpencodeModelsForCwd } from '@/hooks/queries/useOpencodeModelsForCwd'
 import { useSessions } from '@/hooks/queries/useSessions'
 import { useActiveSuggestions, type Suggestion } from '@/hooks/useActiveSuggestions'
 import { useDirectorySuggestions } from '@/hooks/useDirectorySuggestions'
@@ -16,6 +17,7 @@ import { AgentSelector } from './AgentSelector'
 import { DirectorySection } from './DirectorySection'
 import { MachineSelector } from './MachineSelector'
 import { ModelSelector } from './ModelSelector'
+import { OpencodeModelSelector } from './OpencodeModelSelector'
 import { ClaudeEffortSelector } from './ClaudeEffortSelector'
 import { ReasoningEffortSelector } from './ReasoningEffortSelector'
 import {
@@ -106,6 +108,7 @@ export function NewSession(props: {
         machineId,
         enabled: agent === 'codex' && Boolean(machineId)
     })
+    const [opencodeSelectedModel, setOpencodeSelectedModel] = useState<string | null>(null)
     const runnerSpawnError = useMemo(
         () => formatRunnerSpawnError(selectedMachine),
         [selectedMachine]
@@ -131,6 +134,28 @@ export function NewSession(props: {
 
     const trimmedDirectory = directory.trim()
     const deferredDirectory = useDeferredValue(trimmedDirectory)
+    const opencodeModelsState = useOpencodeModelsForCwd({
+        api: props.api,
+        machineId,
+        cwd: deferredDirectory,
+        enabled: agent === 'opencode' && Boolean(machineId) && deferredDirectory.length > 0
+    })
+    useEffect(() => {
+        // Auto-pick the OpenCode default model when discovery finishes, so the
+        // form has a sensible value if the user hits Enter without scrolling.
+        if (agent !== 'opencode') return
+        if (opencodeSelectedModel !== null) return
+        const fallback = opencodeModelsState.currentModelId
+            ?? opencodeModelsState.availableModels[0]?.modelId
+            ?? null
+        if (fallback) {
+            setOpencodeSelectedModel(fallback)
+        }
+    }, [agent, opencodeSelectedModel, opencodeModelsState.currentModelId, opencodeModelsState.availableModels])
+    useEffect(() => {
+        // Reset selection when agent / machine / directory changes; new probe = new defaults.
+        setOpencodeSelectedModel(null)
+    }, [agent, machineId, deferredDirectory])
     const allPaths = useDirectorySuggestions(machineId, sessions, recentPaths)
 
     const pathsToCheck = useMemo(
@@ -277,7 +302,9 @@ export function NewSession(props: {
                 return
             }
 
-            const resolvedModel = model !== 'auto' && agent !== 'opencode' ? model : undefined
+            const resolvedModel = agent === 'opencode'
+                ? (opencodeSelectedModel ?? undefined)
+                : (model !== 'auto' ? model : undefined)
             const resolvedEffort = agent === 'claude' && effort !== 'auto' ? effort : undefined
             const resolvedModelReasoningEffort = agent === 'codex' && modelReasoningEffort !== 'default'
                 ? modelReasoningEffort
@@ -355,17 +382,31 @@ export function NewSession(props: {
                 isDisabled={isFormDisabled}
                 onAgentChange={setAgent}
             />
-            <ModelSelector
-                agent={agent}
-                model={model}
-                options={agent === 'codex' ? codexModelOptions : undefined}
-                isDisabled={isFormDisabled || (agent === 'codex' && Boolean(codexModelsState.error))}
-                isLoading={agent === 'codex' && codexModelsState.isLoading}
-                error={agent === 'codex' && codexModelsState.error
-                    ? `${t('newSession.model.loadFailed')}: ${codexModelsState.error}`
-                    : null}
-                onModelChange={setModel}
-            />
+            {agent === 'opencode' ? (
+                <OpencodeModelSelector
+                    cwd={deferredDirectory}
+                    machineId={machineId}
+                    isLoading={opencodeModelsState.isLoading}
+                    error={opencodeModelsState.error}
+                    availableModels={opencodeModelsState.availableModels}
+                    currentModelId={opencodeModelsState.currentModelId}
+                    selectedModel={opencodeSelectedModel}
+                    onModelChange={setOpencodeSelectedModel}
+                    onRetry={opencodeModelsState.refetch}
+                />
+            ) : (
+                <ModelSelector
+                    agent={agent}
+                    model={model}
+                    options={agent === 'codex' ? codexModelOptions : undefined}
+                    isDisabled={isFormDisabled || (agent === 'codex' && Boolean(codexModelsState.error))}
+                    isLoading={agent === 'codex' && codexModelsState.isLoading}
+                    error={agent === 'codex' && codexModelsState.error
+                        ? `${t('newSession.model.loadFailed')}: ${codexModelsState.error}`
+                        : null}
+                    onModelChange={setModel}
+                />
+            )}
             <ClaudeEffortSelector
                 agent={agent}
                 effort={effort}
