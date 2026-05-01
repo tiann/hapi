@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mockGeminiSession = vi.hoisted(() => ({
     setModel: vi.fn(),
     setPermissionMode: vi.fn(),
+    pushKeepAlive: vi.fn(),
+    thinking: false,
     stopKeepAlive: vi.fn()
 }));
 
@@ -121,7 +123,7 @@ describe('runGemini', () => {
         expect(harness.geminiLoopArgs[0]?.model).toBe('gemini-3-pro-preview');
     });
 
-    it('does not persist the hardcoded default fallback model', async () => {
+    it('does not persist the hardcoded default fallback model so it floats with machine config', async () => {
         resolveGeminiRuntimeConfigMock.mockReturnValue({
             model: 'gemini-3-flash-preview',
             modelSource: 'default'
@@ -151,6 +153,27 @@ describe('runGemini', () => {
         const result = await handler({ model: 'gemini-2.5-flash' }) as Record<string, unknown>;
         const applied = result.applied as Record<string, unknown>;
         expect(applied.model).toBe('gemini-2.5-flash');
+    });
+
+    it('pushes a keepAlive immediately after a config change so the hub UI reflects it', async () => {
+        resolveGeminiRuntimeConfigMock.mockReturnValue({
+            model: 'gemini-3-flash-preview',
+            modelSource: 'default'
+        });
+
+        await runGemini({});
+
+        // Reset to ignore pushKeepAlive fired from initial onSessionReady setup
+        mockGeminiSession.pushKeepAlive.mockClear();
+
+        const registerCalls = harness.session.rpcHandlerManager.registerHandler.mock.calls;
+        const configHandler = registerCalls.find(
+            (call: unknown[]) => call[0] === 'set-session-config'
+        );
+        const handler = configHandler![1] as (payload: unknown) => Promise<unknown>;
+        await handler({ model: 'gemini-2.5-flash' });
+
+        expect(mockGeminiSession.pushKeepAlive).toHaveBeenCalledTimes(1);
     });
 
     it('rejects invalid model in set-session-config RPC', async () => {

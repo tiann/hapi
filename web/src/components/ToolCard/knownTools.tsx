@@ -159,7 +159,12 @@ export const knownTools: Record<string, {
             }
             return null
         },
-        minimal: true
+        minimal: (opts) => {
+            const result = isObject(opts.result) ? opts.result : null
+            const stdout = result && typeof result.stdout === 'string' ? result.stdout.trim() : ''
+            const stderr = result && typeof result.stderr === 'string' ? result.stderr.trim() : ''
+            return stdout.length === 0 && stderr.length === 0
+        }
     },
     CodexPermission: {
         icon: () => <QuestionIcon className={DEFAULT_ICON_CLASS} />,

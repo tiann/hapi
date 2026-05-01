@@ -32,6 +32,74 @@ function normalizeAgentEvent(value: unknown): AgentEvent | null {
     return value as AgentEvent
 }
 
+function normalizeCodexTokenUsage(value: unknown) {
+    const info = isObject(value) ? value : null
+    if (!info) return null
+    // Codex reports both:
+    // - `total`: cumulative usage for the whole session (can be millions).
+    // - `last`: current turn/request usage, which matches the live context bar.
+    // Prefer `last`; falling back to `total` keeps older payloads working.
+    const usageSource = isObject(info.last)
+        ? info.last
+        : isObject(info.total)
+            ? info.total
+            : info
+    const inputTokens = asNumber(usageSource.inputTokens ?? usageSource.input_tokens)
+    const outputTokens = asNumber(usageSource.outputTokens ?? usageSource.output_tokens)
+    if (inputTokens === null || outputTokens === null) return null
+
+    return {
+        input_tokens: inputTokens,
+        output_tokens: outputTokens,
+        // Codex `inputTokens` already includes cached input tokens; expose cache
+        // hits for display, but use `context_tokens` to avoid double-counting.
+        cache_creation_input_tokens: undefined,
+        cache_read_input_tokens: asNumber(usageSource.cachedInputTokens ?? usageSource.cacheReadInputTokens ?? usageSource.cache_read_input_tokens) ?? undefined,
+        context_tokens: inputTokens,
+        context_window: asNumber(info.modelContextWindow ?? info.model_context_window) ?? undefined
+    }
+}
+
+function normalizePlanStatus(value: unknown): 'pending' | 'in_progress' | 'completed' {
+    const raw = typeof value === 'string' ? value.trim().toLowerCase().replace(/[\s-]/g, '_') : ''
+    if (raw === 'completed' || raw === 'complete' || raw === 'done') return 'completed'
+    if (raw === 'in_progress' || raw === 'inprogress' || raw === 'active' || raw === 'running') return 'in_progress'
+    return 'pending'
+}
+
+function normalizePlanEntries(value: unknown): Array<{ step: string; status: 'pending' | 'in_progress' | 'completed' }> {
+    const record = isObject(value) ? value : null
+    const entries = Array.isArray(value)
+        ? value
+        : Array.isArray(record?.plan)
+            ? record.plan
+            : Array.isArray(record?.items)
+                ? record.items
+                : Array.isArray(record?.steps)
+                    ? record.steps
+                    : []
+
+    const plan: Array<{ step: string; status: 'pending' | 'in_progress' | 'completed' }> = []
+    for (const entry of entries) {
+        if (typeof entry === 'string') {
+            plan.push({ step: entry, status: 'pending' })
+            continue
+        }
+        if (!isObject(entry)) continue
+        const step = asString(entry.step)
+            ?? asString(entry.content)
+            ?? asString(entry.text)
+            ?? asString(entry.title)
+            ?? asString(entry.description)
+        if (!step) continue
+        plan.push({
+            step,
+            status: normalizePlanStatus(entry.status ?? entry.state)
+        })
+    }
+    return plan
+}
+
 function normalizeAssistantOutput(
     messageId: string,
     localId: string | null,
@@ -375,6 +443,23 @@ export function normalizeAgentRecord(
             }
         }
 
+        if (data.type === 'token_count') {
+            const usage = normalizeCodexTokenUsage(data.info)
+            return usage ? {
+                id: messageId,
+                localId,
+                createdAt,
+                role: 'event',
+                content: {
+                    type: 'token-count',
+                    info: data.info
+                },
+                isSidechain: false,
+                meta,
+                usage
+            } : null
+        }
+
         if (data.type === 'tool-call' && typeof data.callId === 'string') {
             const uuid = asString(data.id) ?? messageId
             return {
@@ -408,10 +493,50 @@ export function normalizeAgentRecord(
                     type: 'tool-result',
                     tool_use_id: data.callId,
                     content: data.output,
-                    is_error: false,
+                    is_error: Boolean(data.is_error),
                     uuid,
                     parentUUID: null
                 }],
+                meta
+            }
+        }
+
+        if (data.type === 'plan_update') {
+            const plan = normalizePlanEntries(data.plan ?? data.update ?? data.items ?? data.steps ?? data)
+            if (plan.length === 0) return null
+            const uuid = asString(data.id) ?? messageId
+            return {
+                id: messageId,
+                localId,
+                createdAt,
+                role: 'agent',
+                isSidechain: false,
+                content: [
+                    {
+                        type: 'tool-call',
+                        id: 'codex-plan-state',
+                        name: 'update_plan',
+                        input: {
+                            plan,
+                            source: 'codex'
+                        },
+                        description: null,
+                        uuid,
+                        parentUUID: null
+                    },
+                    {
+                        type: 'tool-result',
+                        tool_use_id: 'codex-plan-state',
+                        content: {
+                            plan,
+                            source: 'codex',
+                            status: 'updated'
+                        },
+                        is_error: false,
+                        uuid: `${uuid}:result`,
+                        parentUUID: null
+                    }
+                ],
                 meta
             }
         }

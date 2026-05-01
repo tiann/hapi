@@ -11,6 +11,7 @@ type DbMessageRow = {
     created_at: number
     seq: number
     local_id: string | null
+    invoked_at: number | null
 }
 
 function toStoredMessage(row: DbMessageRow): StoredMessage {
@@ -20,7 +21,8 @@ function toStoredMessage(row: DbMessageRow): StoredMessage {
         content: safeJsonParse(row.content),
         createdAt: row.created_at,
         seq: row.seq,
-        localId: row.local_id
+        localId: row.local_id,
+        invokedAt: row.invoked_at ?? null
     }
 }
 
@@ -49,11 +51,16 @@ export function addMessage(
     const id = randomUUID()
     const json = JSON.stringify(content)
 
+    // Messages without a localId have no ack path (markMessagesInvoked matches by localId).
+    // Treat them as already-invoked at insert time so they land in the thread normally instead
+    // of being stuck in the queued floating bar forever.
+    const invokedAt = localId ? null : now
+
     db.prepare(`
         INSERT INTO messages (
-            id, session_id, content, created_at, seq, local_id
+            id, session_id, content, created_at, seq, local_id, invoked_at
         ) VALUES (
-            @id, @session_id, @content, @created_at, @seq, @local_id
+            @id, @session_id, @content, @created_at, @seq, @local_id, @invoked_at
         )
     `).run({
         id,
@@ -61,7 +68,8 @@ export function addMessage(
         content: json,
         created_at: now,
         seq: msgSeq,
-        local_id: localId ?? null
+        local_id: localId ?? null,
+        invoked_at: invokedAt
     })
 
     const row = db.prepare('SELECT * FROM messages WHERE id = ?').get(id) as DbMessageRow | undefined
@@ -106,11 +114,76 @@ export function getMessagesAfter(
     return rows.map(toStoredMessage)
 }
 
+/** Paginate messages by COALESCE(invoked_at, created_at) DESC, seq DESC.
+ *  Used for V8 byPosition mode.  Results are returned in ascending display order. */
+export function getMessagesByPosition(
+    db: Database,
+    sessionId: string,
+    limit: number,
+    before?: { at: number; seq: number }
+): StoredMessage[] {
+    const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.min(200, limit)) : 200
+    const beforeClause = before
+        ? 'AND (COALESCE(invoked_at, created_at) < @beforeAt OR (COALESCE(invoked_at, created_at) = @beforeAt AND seq < @beforeSeq))'
+        : ''
+    const rows = db.prepare(`
+        SELECT *, COALESCE(invoked_at, created_at) AS position_at
+        FROM messages
+        WHERE session_id = @sessionId
+          ${beforeClause}
+        ORDER BY position_at DESC, seq DESC
+        LIMIT @limit
+    `).all({
+        sessionId,
+        beforeAt: before?.at ?? null,
+        beforeSeq: before?.seq ?? null,
+        limit: safeLimit
+    }) as DbMessageRow[]
+    // Reverse so results are in ascending display order (oldest first)
+    return rows.reverse().map(toStoredMessage)
+}
+
+/** Returns user messages that have a localId but no invoked_at.
+ *  Used to surface queued messages on refresh / secondary clients even when they
+ *  fall outside the latest position-ordered page (their position key is the send
+ *  time, but the floating bar still needs to render them). */
+export function getUninvokedLocalMessages(
+    db: Database,
+    sessionId: string
+): StoredMessage[] {
+    const rows = db.prepare(
+        'SELECT * FROM messages WHERE session_id = ? AND invoked_at IS NULL AND local_id IS NOT NULL ORDER BY seq ASC'
+    ).all(sessionId) as DbMessageRow[]
+    return rows.map(toStoredMessage)
+}
+
 export function getMaxSeq(db: Database, sessionId: string): number {
     const row = db.prepare(
         'SELECT COALESCE(MAX(seq), 0) AS maxSeq FROM messages WHERE session_id = ?'
     ).get(sessionId) as { maxSeq: number } | undefined
     return row?.maxSeq ?? 0
+}
+
+/** Mark messages as invoked at the given server timestamp.
+ *  Only updates rows whose local_id is in localIds.
+ *  First-write-wins: rows with a non-NULL invoked_at are not updated.  A duplicate
+ *  ack (e.g. a CLI re-emit) would otherwise re-stamp the timestamp and shuffle
+ *  the message's position in the byPosition-ordered thread. */
+export function markMessagesInvoked(
+    db: Database,
+    sessionId: string,
+    localIds: string[],
+    invokedAt: number
+): void {
+    if (localIds.length === 0) return
+    const placeholders = localIds.map(() => '?').join(', ')
+    db.prepare(
+        `UPDATE messages
+         SET invoked_at = ?
+         WHERE session_id = ?
+           AND local_id IN (${placeholders})
+           AND invoked_at IS NULL`
+    ).run(invokedAt, sessionId, ...localIds)
 }
 
 export function mergeSessionMessages(
@@ -145,8 +218,15 @@ export function mergeSessionMessages(
         if (collisions.length > 0) {
             const localIds = collisions.map((row) => row.local_id)
             const placeholders = localIds.map(() => '?').join(', ')
+            // Force-invoke the older copy: clearing local_id severs its ack path
+            // (markMessagesInvoked matches by local_id), so leaving invoked_at
+            // NULL would strand the row in the queued floating bar forever.
+            // Use COALESCE so an already-invoked row keeps its server timestamp.
             db.prepare(
-                `UPDATE messages SET local_id = NULL WHERE session_id = ? AND local_id IN (${placeholders})`
+                `UPDATE messages
+                 SET local_id = NULL,
+                     invoked_at = COALESCE(invoked_at, created_at)
+                 WHERE session_id = ? AND local_id IN (${placeholders})`
             ).run(fromSessionId, ...localIds)
         }
 

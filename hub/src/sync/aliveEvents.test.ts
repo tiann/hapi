@@ -108,7 +108,12 @@ describe('alive incremental events', () => {
             expect(engine.getSession(session.id)?.activeAt).toBe(activeAtBeforeSend)
             expect(emittedSocketUpdates.length).toBeGreaterThan(0)
 
-            const update = events.find((event) => event.type === 'session-updated')
+            const update = events.find((event) => {
+                return event.type === 'session-updated'
+                    && typeof event.data === 'object'
+                    && event.data !== null
+                    && (event.data as { thinking?: unknown }).thinking === true
+            })
             expect(update).toBeDefined()
             if (!update || update.type !== 'session-updated') {
                 return

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SessionSummary } from '@/types/api'
-import { deduplicateSessionsByAgentId } from './SessionList'
+import { deduplicateSessionsByAgentId, getVisibleSessionPreview, normalizeSearch, sessionMatchesQuery } from './SessionList'
 
 function makeSession(overrides: Partial<SessionSummary> & { id: string }): SessionSummary {
     return {
@@ -78,5 +78,52 @@ describe('deduplicateSessionsByAgentId', () => {
         const result = deduplicateSessionsByAgentId(sessions)
         expect(result).toHaveLength(2)
         expect(result.map(s => s.id).sort()).toEqual(['b', 'd'])
+    })
+})
+
+
+describe('session list search helpers', () => {
+    it('normalizes whitespace and case before filtering', () => {
+        const session = makeSession({
+            id: 'session-1',
+            metadata: {
+                path: '/work/hapi',
+                name: 'Fix Bot Review',
+                flavor: 'codex',
+                machineId: 'machine-1'
+            }
+        })
+
+        expect(normalizeSearch('  BOT  ')).toBe('bot')
+        expect(sessionMatchesQuery(session, normalizeSearch('bot review'), 'desktop')).toBe(true)
+        expect(sessionMatchesQuery(session, normalizeSearch('desktop'), 'desktop')).toBe(true)
+        expect(sessionMatchesQuery(session, normalizeSearch('missing'), 'desktop')).toBe(false)
+    })
+})
+
+describe('getVisibleSessionPreview', () => {
+    it('keeps selected and active sessions inside the collapsed preview', () => {
+        const sessions = Array.from({ length: 6 }, (_, index) => makeSession({
+            id: `s-${index + 1}`,
+            active: index === 4,
+            metadata: { path: '/work/hapi' },
+            updatedAt: 100 - index
+        }))
+
+        const preview = getVisibleSessionPreview(sessions, {
+            selectedSessionId: 's-6',
+            limit: 3
+        })
+
+        expect(preview.map(session => session.id)).toEqual(['s-6', 's-5', 's-1'])
+    })
+
+    it('returns all sessions when expanded', () => {
+        const sessions = Array.from({ length: 4 }, (_, index) => makeSession({
+            id: `s-${index + 1}`,
+            metadata: { path: '/work/hapi' }
+        }))
+
+        expect(getVisibleSessionPreview(sessions, { expanded: true, limit: 2 })).toHaveLength(4)
     })
 })

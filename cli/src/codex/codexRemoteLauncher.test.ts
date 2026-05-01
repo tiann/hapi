@@ -9,6 +9,9 @@ const harness = vi.hoisted(() => ({
     startThreadIds: [] as string[],
     resumeThreadIds: [] as string[],
     startTurnThreadIds: [] as string[],
+    interruptedTurns: [] as Array<{ threadId: string; turnId: string }>,
+    compactThreadIds: [] as string[],
+    suppressTurnCompletion: false,
     remainingThreadSystemErrors: 0
 }));
 
@@ -62,6 +65,36 @@ vi.mock('./codexAppServerClient', () => {
                 return { turn: { id: turnId } };
             }
 
+            if (harness.suppressTurnCompletion) {
+                return { turn: { id: turnId } };
+            }
+
+            if (params?.threadId === 'thread-1') {
+                const commandStart = {
+                    item: {
+                        id: 'cmd-1',
+                        type: 'commandExecution',
+                        command: 'echo ok',
+                        cwd: '/tmp/hapi-update'
+                    }
+                };
+                harness.notifications.push({ method: 'item/started', params: commandStart });
+                this.notificationHandler?.('item/started', commandStart);
+                this.notificationHandler?.('item/commandExecution/outputDelta', {
+                    itemId: 'cmd-1',
+                    delta: 'ok\n'
+                });
+                const commandEnd = {
+                    item: {
+                        id: 'cmd-1',
+                        type: 'commandExecution',
+                        exitCode: 0
+                    }
+                };
+                harness.notifications.push({ method: 'item/completed', params: commandEnd });
+                this.notificationHandler?.('item/completed', commandEnd);
+            }
+
             const completed = { status: 'Completed', turn: { id: turnId } };
             harness.notifications.push({ method: 'turn/completed', params: completed });
             this.notificationHandler?.('turn/completed', completed);
@@ -69,7 +102,16 @@ vi.mock('./codexAppServerClient', () => {
             return { turn: { id: turnId } };
         }
 
-        async interruptTurn(): Promise<Record<string, never>> {
+        async interruptTurn(params?: { threadId?: string; turnId?: string }): Promise<Record<string, never>> {
+            harness.interruptedTurns.push({
+                threadId: params?.threadId ?? 'thread-unknown',
+                turnId: params?.turnId ?? 'turn-unknown'
+            });
+            return {};
+        }
+
+        async compactThread(params?: { threadId?: string }): Promise<Record<string, never>> {
+            harness.compactThreadIds.push(params?.threadId ?? 'thread-unknown');
             return {};
         }
 
@@ -117,6 +159,7 @@ function createSessionStub(messages = ['hello from launcher test']) {
     const codexMessages: unknown[] = [];
     const thinkingChanges: boolean[] = [];
     const foundSessionIds: string[] = [];
+    const resetThreadCalls: string[] = [];
     let currentModel: string | null | undefined;
     let agentState: FakeAgentState = {
         requests: {},
@@ -168,6 +211,10 @@ function createSessionStub(messages = ['hello from launcher test']) {
             session.sessionId = id;
             foundSessionIds.push(id);
         },
+        resetCodexThread() {
+            resetThreadCalls.push(session.sessionId ?? 'none');
+            session.sessionId = null;
+        },
         sendAgentMessage(message: unknown) {
             client.sendAgentMessage(message);
         },
@@ -185,6 +232,7 @@ function createSessionStub(messages = ['hello from launcher test']) {
         codexMessages,
         thinkingChanges,
         foundSessionIds,
+        resetThreadCalls,
         rpcHandlers,
         getModel: () => currentModel,
         getAgentState: () => agentState
@@ -199,6 +247,9 @@ describe('codexRemoteLauncher', () => {
         harness.startThreadIds = [];
         harness.resumeThreadIds = [];
         harness.startTurnThreadIds = [];
+        harness.interruptedTurns = [];
+        harness.compactThreadIds = [];
+        harness.suppressTurnCompletion = false;
         harness.remainingThreadSystemErrors = 0;
     });
 
@@ -225,7 +276,12 @@ describe('codexRemoteLauncher', () => {
                 experimentalApi: true
             }
         }]);
-        expect(harness.notifications.map((entry) => entry.method)).toEqual(['turn/started', 'turn/completed']);
+        expect(harness.notifications.map((entry) => entry.method)).toEqual([
+            'turn/started',
+            'item/started',
+            'item/completed',
+            'turn/completed'
+        ]);
         expect(sessionEvents.filter((event) => event.type === 'ready').length).toBeGreaterThanOrEqual(1);
         expect(thinkingChanges).toContain(true);
         expect(session.thinking).toBe(false);
@@ -259,5 +315,130 @@ describe('codexRemoteLauncher', () => {
         expect(harness.startTurnThreadIds).toEqual(['thread-1', 'thread-2']);
         expect(session.sessionId).toBe('thread-2');
         expect(session.thinking).toBe(false);
+    });
+
+    it('surfaces Codex bash stdout instead of duplicating raw output json', async () => {
+        const { session, codexMessages } = createSessionStub();
+
+        await codexRemoteLauncher(session as never);
+
+        expect(codexMessages).toContainEqual(expect.objectContaining({
+            type: 'tool-call-result',
+            callId: 'cmd-1',
+            output: expect.objectContaining({
+                command: 'echo ok',
+                cwd: '/tmp/hapi-update',
+                stdout: 'ok\n',
+                exit_code: 0
+            })
+        }));
+        expect(codexMessages).not.toContainEqual(expect.objectContaining({
+            type: 'tool-call-result',
+            callId: 'cmd-1',
+            output: expect.objectContaining({
+                output: 'ok\n'
+            })
+        }));
+    });
+
+    it('clears codex thread state without starting a turn', async () => {
+        const { session, sessionEvents, resetThreadCalls } = createSessionStub(['/clear', 'next message']);
+
+        const exitReason = await codexRemoteLauncher(session as never);
+
+        expect(exitReason).toBe('exit');
+        expect(resetThreadCalls).toEqual(['none']);
+        expect(harness.startThreadIds).toEqual(['thread-1']);
+        expect(harness.startTurnThreadIds).toEqual(['thread-1']);
+        expect(sessionEvents).toContainEqual({
+            type: 'message',
+            message: 'Context was reset'
+        });
+        expect(session.sessionId).toBe('thread-1');
+    });
+
+    it('interrupts an in-flight turn before clearing codex thread state', async () => {
+        harness.suppressTurnCompletion = true;
+        const { session, sessionEvents, resetThreadCalls } = createSessionStub(['first message', '/clear']);
+
+        const exitReason = await codexRemoteLauncher(session as never);
+
+        expect(exitReason).toBe('exit');
+        expect(harness.startThreadIds).toEqual(['thread-1']);
+        expect(harness.startTurnThreadIds).toEqual(['thread-1']);
+        expect(harness.interruptedTurns).toEqual([{ threadId: 'thread-1', turnId: 'turn-1' }]);
+        expect(resetThreadCalls).toEqual(['thread-1']);
+        expect(sessionEvents).toContainEqual({
+            type: 'message',
+            message: 'Context was reset'
+        });
+        expect(session.thinking).toBe(false);
+    });
+
+    it('compacts the current thread without starting a turn', async () => {
+        const { session, sessionEvents } = createSessionStub(['first message', '/compact']);
+
+        const exitReason = await codexRemoteLauncher(session as never);
+
+        expect(exitReason).toBe('exit');
+        expect(harness.startThreadIds).toEqual(['thread-1']);
+        expect(harness.startTurnThreadIds).toEqual(['thread-1']);
+        expect(harness.compactThreadIds).toEqual(['thread-1']);
+        expect(sessionEvents).toContainEqual({
+            type: 'message',
+            message: 'Compaction started'
+        });
+        expect(sessionEvents).toContainEqual({
+            type: 'message',
+            message: 'Compaction completed'
+        });
+    });
+
+    it('interrupts an in-flight turn before compacting the current thread', async () => {
+        harness.suppressTurnCompletion = true;
+        const { session, sessionEvents } = createSessionStub(['first message', '/compact']);
+
+        const exitReason = await codexRemoteLauncher(session as never);
+
+        expect(exitReason).toBe('exit');
+        expect(harness.startThreadIds).toEqual(['thread-1']);
+        expect(harness.startTurnThreadIds).toEqual(['thread-1']);
+        expect(harness.interruptedTurns).toEqual([{ threadId: 'thread-1', turnId: 'turn-1' }]);
+        expect(harness.compactThreadIds).toEqual(['thread-1']);
+        expect(sessionEvents).toContainEqual({
+            type: 'message',
+            message: 'Compaction completed'
+        });
+        expect(session.thinking).toBe(false);
+    });
+
+    it('reports nothing to compact when no codex thread exists', async () => {
+        const { session, sessionEvents } = createSessionStub(['/compact']);
+
+        const exitReason = await codexRemoteLauncher(session as never);
+
+        expect(exitReason).toBe('exit');
+        expect(harness.startThreadIds).toEqual([]);
+        expect(harness.startTurnThreadIds).toEqual([]);
+        expect(harness.compactThreadIds).toEqual([]);
+        expect(sessionEvents).toContainEqual({
+            type: 'message',
+            message: 'Nothing to compact'
+        });
+    });
+
+    it('rejects argument-bearing codex slash commands without starting a turn', async () => {
+        const { session, sessionEvents } = createSessionStub(['/compact now']);
+
+        const exitReason = await codexRemoteLauncher(session as never);
+
+        expect(exitReason).toBe('exit');
+        expect(harness.startThreadIds).toEqual([]);
+        expect(harness.startTurnThreadIds).toEqual([]);
+        expect(harness.compactThreadIds).toEqual([]);
+        expect(sessionEvents).toContainEqual({
+            type: 'message',
+            message: '/compact does not accept arguments'
+        });
     });
 });
