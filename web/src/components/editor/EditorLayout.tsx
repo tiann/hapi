@@ -1,8 +1,8 @@
-import { useCallback, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import type { ApiClient } from '@/api/client'
 import type { EditorTreeItem } from '@/types/editor'
-import { appendEditorChatDraft } from '@/lib/editor-chat-draft'
+import { appendEditorChatDraft, appendEditorChatDraftWithSelection, buildAddSelectionToChatText, expandSelectionRefs } from '@/lib/editor-chat-draft'
 import { queryKeys } from '@/lib/query-keys'
 import { useEditorPaneResize } from '@/hooks/useEditorPaneResize'
 import { useEditorState } from '@/hooks/useEditorState'
@@ -147,11 +147,14 @@ export function EditorLayout(props: {
     const queryClient = useQueryClient()
     const [pendingDraftText, setPendingDraftText] = useState<string | undefined>(undefined)
     const [newFileTargetPath, setNewFileTargetPath] = useState<string | null>(null)
-    const [isTerminalCollapsed, setIsTerminalCollapsed] = useState(false)
+    const [isTerminalCollapsed, setIsTerminalCollapsed] = useState(true)
     const [deleteItems, setDeleteItems] = useState<EditorTreeItem[]>([])
     const [isDeletingItems, setIsDeletingItems] = useState(false)
     const [deleteError, setDeleteError] = useState<string | null>(null)
     const pendingFileAfterSessionRef = useRef<string[] | null>(null)
+    const selectionMapRef = useRef<Map<string, { path: string; start: number; end: number; content: string }>>(new Map())
+    const lastActiveTerminalTabIdRef = useRef<string | null>(null)
+
     const fileTabs = useMemo(
         () => editor.tabs.filter((tab) => tab.type === 'file'),
         [editor.tabs]
@@ -164,8 +167,18 @@ export function EditorLayout(props: {
         () => fileTabs.find((tab) => tab.id === editor.activeTabId) ?? fileTabs[fileTabs.length - 1] ?? null,
         [editor.activeTabId, fileTabs]
     )
+    // Track last active terminal tab so fallback preserves user's selection
+    useEffect(() => {
+        if (editor.activeTabId && terminalTabs.some(t => t.id === editor.activeTabId)) {
+            lastActiveTerminalTabIdRef.current = editor.activeTabId
+        }
+    }, [editor.activeTabId, terminalTabs])
+
     const activeTerminalTab = useMemo(
-        () => terminalTabs.find((tab) => tab.id === editor.activeTabId) ?? terminalTabs[terminalTabs.length - 1] ?? null,
+        () => terminalTabs.find((tab) => tab.id === editor.activeTabId)
+            ?? terminalTabs.find(t => t.id === lastActiveTerminalTabIdRef.current)
+            ?? terminalTabs[terminalTabs.length - 1]
+            ?? null,
         [editor.activeTabId, terminalTabs]
     )
     const activeFilePath = activeFileTab?.path ?? null
@@ -263,6 +276,40 @@ export function EditorLayout(props: {
         newSession.createSession()
     }, [editor.activeSessionId, newSession])
 
+    const handleAddSelectionToChat = useCallback((filePath: string, startLine: number, endLine: number, content: string) => {
+        const refKey = buildAddSelectionToChatText(filePath, startLine, endLine)
+        selectionMapRef.current.set(refKey, { path: filePath, start: startLine, end: endLine, content })
+
+        if (editor.activeSessionId) {
+            setPendingDraftText((current) => appendEditorChatDraftWithSelection(current ?? '', filePath, startLine, endLine))
+            return
+        }
+
+        // No session yet: just append to draft, selection map persists
+        setPendingDraftText((current) => appendEditorChatDraftWithSelection(current ?? '', filePath, startLine, endLine))
+    }, [editor.activeSessionId])
+
+    const handleAddTerminalToChat = useCallback((text: string) => {
+        if (!text) return
+        if (editor.activeSessionId) {
+            setPendingDraftText((current) => {
+                const draft = (current ?? '').trimEnd()
+                if (draft.length === 0) return text
+                return `${draft}\n${text}`
+            })
+            return
+        }
+        setPendingDraftText((current) => {
+            const draft = (current ?? '').trimEnd()
+            if (draft.length === 0) return text
+            return `${draft}\n${text}`
+        })
+    }, [editor.activeSessionId])
+
+    const handleExpandDraft = useCallback((text: string): string => {
+        return expandSelectionRefs(text, selectionMapRef.current)
+    }, [])
+
     const handleOpenItems = useCallback((items: EditorTreeItem[]) => {
         for (const item of uniqueItems(items)) {
             if (item.type === 'file') {
@@ -282,6 +329,7 @@ export function EditorLayout(props: {
     const handleOpenTerminal = useCallback(() => {
         if (editor.machineId && editor.projectPath) {
             editor.openTerminal({ machineId: editor.machineId, cwd: editor.projectPath })
+            setIsTerminalCollapsed(false)
             return
         }
     }, [editor])
@@ -376,6 +424,7 @@ export function EditorLayout(props: {
                             onCloseTab={editor.closeTab}
                             onNewFile={handleNewFileFromTabs}
                             onDirtyChange={editor.setTabDirty}
+                            onAddSelectionToChat={handleAddSelectionToChat}
                         />
                     </div>
                     {!isTerminalCollapsed && (
@@ -396,6 +445,7 @@ export function EditorLayout(props: {
                             onCloseTab={editor.closeTab}
                             onOpenTerminal={handleOpenTerminal}
                             onToggleCollapsed={() => setIsTerminalCollapsed((current) => !current)}
+                            onAddToChat={handleAddTerminalToChat}
                         />
                     </div>
                 </main>
@@ -428,6 +478,7 @@ export function EditorLayout(props: {
                             sessionId={editor.activeSessionId}
                             pendingDraftText={pendingDraftText}
                             onDraftConsumed={() => setPendingDraftText(undefined)}
+                            onExpandDraft={handleExpandDraft}
                         />
                     </div>
                 </aside>

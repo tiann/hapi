@@ -11,6 +11,7 @@ import { isRemoteTerminalSupported } from '@/utils/terminalSupport'
 function EditorTerminalBody(props: {
     api: ApiClient | null
     tab: EditorTab
+    onAddToChat?: (text: string) => void
 }) {
     const { token, baseUrl } = useAppContext()
     const sessionId = props.tab.sessionId ?? null
@@ -20,9 +21,13 @@ function EditorTerminalBody(props: {
     const terminalSupported = sessionId ? isRemoteTerminalSupported(session?.metadata) : true
     const terminalRef = useRef<Terminal | null>(null)
     const inputDisposableRef = useRef<{ dispose: () => void } | null>(null)
+    const selectionDisposeRef = useRef<() => void>(() => {})
     const connectOnceRef = useRef(false)
     const lastSizeRef = useRef<{ cols: number; rows: number } | null>(null)
     const [exitInfo, setExitInfo] = useState<{ code: number | null; signal: string | null } | null>(null)
+    const [terminalSelection, setTerminalSelection] = useState<string | null>(null)
+    const [terminalMousePos, setTerminalMousePos] = useState<{ x: number; y: number } | null>(null)
+    const terminalContainerRef = useRef<HTMLDivElement | null>(null)
 
     const {
         state: terminalState,
@@ -57,6 +62,32 @@ function EditorTerminalBody(props: {
     const handleTerminalMount = useCallback((terminal: Terminal) => {
         terminalRef.current = terminal
         inputDisposableRef.current?.dispose()
+
+        // Dispose previous selection + mouse listeners
+        selectionDisposeRef.current()
+
+        // Selection tracking for "Add to chat"
+        const selectionDisposable = terminal.onSelectionChange(() => {
+            const sel = terminal.getSelection()
+            setTerminalSelection(sel || null)
+        })
+
+        // Track mouse position on terminal element (xterm captures mouse events,
+        // so we can't rely on wrapper div onMouseUp)
+        const termElement = terminal.element
+        const handleMouseUp = (e: MouseEvent) => {
+            const rect = termElement.getBoundingClientRect()
+            setTerminalMousePos({ x: e.clientX - rect.left, y: e.clientY - rect.top })
+        }
+        termElement.addEventListener('mouseup', handleMouseUp)
+
+        selectionDisposeRef.current = () => {
+            selectionDisposable.dispose()
+            termElement.removeEventListener('mouseup', handleMouseUp)
+            setTerminalSelection(null)
+            setTerminalMousePos(null)
+        }
+
         inputDisposableRef.current = terminal.onData((data) => {
             write(data)
         })
@@ -106,6 +137,7 @@ function EditorTerminalBody(props: {
     useEffect(() => {
         return () => {
             inputDisposableRef.current?.dispose()
+            selectionDisposeRef.current()
             connectOnceRef.current = false
             disconnect()
         }
@@ -139,7 +171,7 @@ function EditorTerminalBody(props: {
             : null
 
     return (
-        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+        <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden">
             <div className="flex shrink-0 items-center gap-2 border-b border-[var(--app-border)] px-2 py-1 text-[10px] text-[var(--app-hint)]">
                 <span className={`h-2 w-2 rounded-full ${
                     status === 'connected'
@@ -163,13 +195,36 @@ function EditorTerminalBody(props: {
                     {errorMessage}
                 </div>
             ) : null}
-            <div className="min-h-0 flex-1 overflow-hidden p-2">
+            <div
+                ref={terminalContainerRef}
+                className="min-h-0 flex-1 overflow-hidden p-2 relative"
+            >
                 {terminalSupported && (machineId || session?.active) ? (
                     <TerminalView onMount={handleTerminalMount} onResize={handleResize} className="h-full w-full" />
                 ) : (
                     <div className="flex h-full items-center justify-center rounded border border-[var(--app-border)] text-xs text-[var(--app-hint)]">
                         {errorMessage}
                     </div>
+                )}
+                {terminalSelection && terminalMousePos && props.onAddToChat && (
+                    <button
+                        type="button"
+                        aria-label="Add selection to chat"
+                        className="absolute z-20 rounded border border-violet-500/30 bg-violet-500/10 px-2 py-0.5 text-[11px] text-violet-300 shadow-md hover:bg-violet-500 hover:text-white hover:border-violet-400 transition-colors"
+                        style={{
+                            top: Math.max(0, terminalMousePos.y - 28) + 'px',
+                            left: Math.max(0, terminalMousePos.x - 45) + 'px',
+                        }}
+                        onClick={() => {
+                            if (terminalSelection && props.onAddToChat) {
+                                props.onAddToChat(terminalSelection)
+                            }
+                            setTerminalSelection(null)
+                            setTerminalMousePos(null)
+                        }}
+                    >
+                        Add to chat
+                    </button>
                 )}
             </div>
         </div>
@@ -185,6 +240,7 @@ export function EditorTerminal(props: {
     onCloseTab: (tabId: string) => void
     onOpenTerminal: () => void
     onToggleCollapsed: () => void
+    onAddToChat?: (text: string) => void
 }) {
     const terminalTabs = useMemo(
         () => props.tabs.filter((tab) => tab.type === 'terminal'),
@@ -252,7 +308,7 @@ export function EditorTerminal(props: {
                         const isActive = tab.id === activeTerminal?.id
                         return (
                             <div key={tab.id} className={`h-full min-h-0 ${isActive ? 'block' : 'hidden'}`}>
-                                <EditorTerminalBody api={props.api} tab={tab} />
+                                <EditorTerminalBody api={props.api} tab={tab} onAddToChat={props.onAddToChat} />
                             </div>
                         )
                     })}

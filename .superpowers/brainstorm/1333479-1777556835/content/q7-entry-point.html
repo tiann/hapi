@@ -1,0 +1,26 @@
+<h2>User vào Editor Mode từ đâu?</h2>
+<p class="subtitle">Flow để user đi từ giao diện hiện tại vào editor mode</p>
+
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Từ Dashboard — "Open in Editor" button</h3>
+      <p>Dashboard hiện tại group session theo Machine → Directory. Mỗi group có thêm nút "Open in Editor". Click → navigate sang <code>/editor?machine=...&project=...</code>.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Từ Session — button "Open in Editor"</h3>
+      <p>Trong session detail, có nút "Open in Editor" trên header. Tự động lấy machine từ session metadata + project path.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Cả A và B</h3>
+      <p>Cả 2 entry point. Dashboard cho "bắt đầu mới", session cho "đang chat muốn xem code".</p>
+    </div>
+  </div>
+</div>

@@ -40,6 +40,9 @@ const cmMocks = vi.hoisted(() => ({
                     state: {
                         doc: {
                             toString: () => content
+                        },
+                        selection: {
+                            main: { from: 0, to: 0, empty: true }
                         }
                     }
                 }

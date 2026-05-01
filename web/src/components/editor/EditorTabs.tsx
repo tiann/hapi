@@ -16,7 +16,8 @@ import { useEditorFile } from '@/hooks/queries/useEditorFile'
 
 const editorScrollTheme = EditorView.theme({
     '&': {
-        height: '100%'
+        height: '100%',
+        fontSize: 'calc(13px * var(--app-font-scale, 1))'
     },
     '.cm-scroller': {
         overflow: 'auto'
@@ -74,15 +75,27 @@ function getFileExtensionLabel(filePath: string): string {
     return ext ? ext.toUpperCase() : 'TEXT'
 }
 
+export interface EditorSelectionInfo {
+    from: number
+    to: number
+    text: string
+    startLine: number
+    endLine: number
+    /** Pixel coords within the editor container */
+    top: number
+    right: number
+}
+
 function useCodeMirror(
     containerRef: React.RefObject<HTMLDivElement | null>,
     content: string | null,
     filePath: string | null,
     onChange?: (content: string) => void
-): void {
+): { selection: EditorSelectionInfo | null; clearSelection: () => void } {
     const viewRef = useRef<EditorView | null>(null)
     const suppressChangeRef = useRef(false)
     const contentReady = content !== null
+    const [selection, setSelection] = useState<EditorSelectionInfo | null>(null)
 
     useEffect(() => {
         const container = containerRef.current
@@ -104,6 +117,34 @@ function useCodeMirror(
                 if (update.docChanged) {
                     onChange?.(update.state.doc.toString())
                 }
+                const sel = update.state.selection.main
+                if (!sel.empty) {
+                    const doc = update.state.doc
+                    const text = doc.sliceString(sel.from, sel.to)
+                    const startLine = doc.lineAt(sel.from).number
+                    const endLine = doc.lineAt(sel.to).number
+                    const container = containerRef.current
+                    if (container) {
+                        const fromCoords = update.view.coordsAtPos(sel.from)
+                        const toCoords = update.view.coordsAtPos(sel.to)
+                        const containerRect = container.getBoundingClientRect()
+                        if (fromCoords && toCoords) {
+                            setSelection({
+                                from: sel.from,
+                                to: sel.to,
+                                text,
+                                startLine,
+                                endLine,
+                                top: fromCoords.top - containerRect.top + container.scrollTop,
+                                right: toCoords.right - containerRect.left,
+                            })
+                            return
+                        }
+                    }
+                    setSelection({ from: sel.from, to: sel.to, text, startLine, endLine, top: 0, right: 0 })
+                } else {
+                    setSelection(null)
+                }
             }),
         ]
         if (langExt) {
@@ -123,8 +164,17 @@ function useCodeMirror(
             if (viewRef.current === view) {
                 viewRef.current = null
             }
+            setSelection(null)
         }
     }, [containerRef, filePath, contentReady, onChange])
+
+    const clearSelection = useCallback(() => {
+        const view = viewRef.current
+        if (view) {
+            view.dispatch({ selection: { anchor: view.state.selection.main.head } })
+        }
+        setSelection(null)
+    }, [])
 
     useEffect(() => {
         const view = viewRef.current
@@ -145,6 +195,8 @@ function useCodeMirror(
             }
         }
     }, [content])
+
+    return { selection, clearSelection }
 }
 
 function FileTabContent(props: {
@@ -155,6 +207,7 @@ function FileTabContent(props: {
     filePath: string
     onContentLoaded: (tabId: string, content: string) => void
     onContentChanged: (tabId: string, content: string) => void
+    onAddSelectionToChat?: (filePath: string, startLine: number, endLine: number, content: string) => void
 }) {
     const containerRef = useRef<HTMLDivElement>(null)
     const tab = props.tabId
@@ -167,13 +220,27 @@ function FileTabContent(props: {
     const handleChange = useCallback((nextContent: string) => {
         props.onContentChanged(tab, nextContent)
     }, [props.onContentChanged, tab])
-    useCodeMirror(containerRef, content, props.filePath, handleChange)
+    const { selection, clearSelection } = useCodeMirror(containerRef, content, props.filePath, handleChange)
+    const [mouseUpPos, setMouseUpPos] = useState<{ x: number; y: number } | null>(null)
+
+    const handleAddSelection = useCallback(() => {
+        if (selection && props.onAddSelectionToChat) {
+            props.onAddSelectionToChat(props.filePath, selection.startLine, selection.endLine, selection.text)
+        }
+        clearSelection()
+        setMouseUpPos(null)
+    }, [selection, clearSelection, props])
 
     useEffect(() => {
         if (content !== null) {
             props.onContentLoaded(tab, content)
         }
     }, [content, props.onContentLoaded, tab])
+
+    const handleMouseUp = useCallback((e: React.MouseEvent) => {
+        const rect = e.currentTarget.getBoundingClientRect()
+        setMouseUpPos({ x: e.clientX - rect.left, y: e.clientY - rect.top })
+    }, [])
 
     if (isLoading) {
         return (
@@ -191,7 +258,29 @@ function FileTabContent(props: {
         )
     }
 
-    return <div ref={containerRef} data-testid="codemirror-host" className="h-full min-h-0 w-full overflow-hidden" />
+    return (
+        <div
+            data-testid="codemirror-host"
+            className="h-full min-h-0 w-full overflow-hidden relative"
+            onMouseUp={handleMouseUp}
+        >
+            <div ref={containerRef} className="h-full min-h-0 w-full" />
+            {selection && mouseUpPos && props.onAddSelectionToChat && (
+                <button
+                    type="button"
+                    aria-label="Add selection to chat"
+                    className="absolute z-20 rounded border border-violet-500/30 bg-violet-500/10 px-2 py-0.5 text-[11px] text-violet-300 shadow-md hover:bg-violet-500 hover:text-white hover:border-violet-400 transition-colors"
+                    style={{
+                        top: Math.max(0, mouseUpPos.y - 28) + 'px',
+                        left: Math.max(0, mouseUpPos.x - 45) + 'px',
+                    }}
+                    onClick={handleAddSelection}
+                >
+                    Add to chat
+                </button>
+            )}
+        </div>
+    )
 }
 
 export function EditorTabs(props: {
@@ -204,6 +293,7 @@ export function EditorTabs(props: {
     onNewFile: () => void
     onDirtyChange?: (tabId: string, dirty: boolean) => void
     onSaveFile?: (path: string, content: string) => Promise<void>
+    onAddSelectionToChat?: (filePath: string, startLine: number, endLine: number, content: string) => void
 }) {
     const fileContentsRef = useRef<Map<string, string>>(new Map())
     const [savingTabId, setSavingTabId] = useState<string | null>(null)
@@ -363,6 +453,7 @@ export function EditorTabs(props: {
                         filePath={activeTab.path}
                         onContentLoaded={handleContentLoaded}
                         onContentChanged={handleContentChanged}
+                        onAddSelectionToChat={props.onAddSelectionToChat}
                     />
                 )}
                 {activeTab?.path && !props.machineId && (

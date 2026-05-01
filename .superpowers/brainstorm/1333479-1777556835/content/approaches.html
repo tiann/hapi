@@ -1,0 +1,38 @@
+<h2>3 Approaches cho Editor Mode</h2>
+<p class="subtitle">Từ nhanh nhất đến tối ưu nhất</p>
+
+<div class="options" data-multiselect>
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>MVP thẳng tiến — Route mới + ghép component có sẵn</h3>
+      <p>Thêm route <code>/editor</code>, layout 3 cột flexbox. Panel trái = DirectoryTree, giữa = CodeMirror viewer, phải = SessionList + SessionChat. Dùng nguyên component hiện tại, chỉ viết layout mới + editor viewer. Nhanh nhất.</p>
+      <div class="pros-cons" style="margin-top: 8px;">
+        <div class="pros"><h4>Pros</h4><ul><li>~5-6 ngày</li><li>Rủi ro thấp — không sửa code hiện tại</li><li>Dễ rollback nếu fail</li></ul></div>
+        <div class="cons"><h4>Cons</h4><ul><li>Code chưa tối ưu — SessionChat hơi nặng cho panel phải</li><li>Không có tab system — mở từng file một</li><li>2 page riêng biệt, chưa có cross-link mượt</li></ul></div>
+      </div>
+    </div>
+  </div>
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>MVP + Tab System + Compact Chat</h3>
+      <p>Tất cả của A, thêm: (1) Tab system cho editor — mở nhiều file, chuyển tab, close tab. (2) Compact SessionChat — fork nhẹ bỏ voice/terminal/team panel. (3) Context menu "Add to Chat". Đầy đủ tính năng cốt lõi.</p>
+      <div class="pros-cons" style="margin-top: 8px;">
+        <div class="pros"><h4>Pros</h4><ul><li>Trải nghiệm gần giống VS Code/Cursor</li><li>Tab system + context menu mạnh</li><li>Tách biệt rõ với agent mode</li></ul></div>
+        <div class="cons"><h4>Cons</h4><ul><li>~7-9 ngày</li><li>Fork SessionChat = duplicate code</li><li>File write API cần thêm (phase 2)</li></ul></div>
+      </div>
+    </div>
+  </div>
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Full-featured — Refactor + Phase 2 ready</h3>
+      <p>Tất cả của B +: (1) Refactor SessionChat thành composable (ChatCore, ComposerBar) — dùng chung cho cả 2 mode. (2) File write RPC sẵn sàng. (3) Monaco Editor thay vì CodeMirror viewer. Sẵn sàng cho phase 2 (full edit).</p>
+      <div class="pros-cons" style="margin-top: 8px;">
+        <div class="pros"><h4>Pros</h4><ul><li>Kiến trúc sạch, bền vững</li><li>Ready cho phase 2</li><li>1 source of truth cho chat component</li></ul></div>
+        <div class="cons"><h4>Cons</h4><ul><li>~10-12 ngày</li><li>Refactor SessionChat rủi ro break agent mode</li><li>Monaco Editor nặng (~5MB bundle)</li></ul></div>
+      </div>
+    </div>
+  </div>
+</div>

@@ -1,0 +1,275 @@
+<h2>Editor Mode Layout v2 — Theo Dashboard Design Language</h2>
+<p class="subtitle">Dùng cùng CSS variables với Mission Control Dashboard. File tree có icon theo loại file + git status. Session list đầy đủ thông tin. Chat panel đầy đủ chức năng.</p>
+
+<div class="mockup" style="margin-bottom: 16px;">
+  <div class="mockup-header">Layout tổng thể (chỉnh sửa theo góp ý của cậu)</div>
+  <div class="mockup-body">
+    <div style="background: var(--bg); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; font-size: 12px; line-height: 1.5;">
+      <!-- Header -->
+      <div style="display: flex; align-items: center; gap: 12px; padding: 8px 14px; border-bottom: 1px solid var(--border); background: var(--subtle);">
+        <span style="font-weight: 600; color: var(--fg);">⚡ HAPI Editor</span>
+        <span style="color: var(--hint);">▸</span>
+        <select style="background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px; font-size: 11px;">
+          <option>🖥 MacBook-Pro</option>
+          <option>🖥 Gaming-PC</option>
+        </select>
+        <span style="color: var(--hint);">/</span>
+        <select style="background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px; font-size: 11px;">
+          <option>📁 hapi (~/notebooks/hapi)</option>
+        </select>
+        <span style="flex:1;"></span>
+        <button style="padding: 4px 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--fg); font-size: 11px; cursor: pointer;">← Agent Mode</button>
+      </div>
+
+      <!-- 3 columns -->
+      <div style="display: flex; height: 500px;">
+
+        <!-- LEFT: File Tree (260px) — giữ nguyên design từ DirectoryTree + git status -->
+        <div style="width: 260px; min-width: 180px; border-right: 1px solid var(--border); display: flex; flex-direction: column; background: var(--bg);">
+          <div style="padding: 8px 12px; font-size: 11px; font-weight: 600; color: var(--fg); border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 6px;">
+            <span>📁 hapi</span>
+            <span style="flex:1;"></span>
+            <span style="font-size: 10px; color: var(--hint); cursor: pointer;">↻</span>
+            <span style="font-size: 10px; color: var(--hint); cursor: pointer;">📂</span>
+            <span style="font-size: 10px; color: var(--hint); cursor: pointer;">🔍</span>
+          </div>
+          <div style="flex:1; overflow-y: auto; padding: 4px 0; font-size: 12px;">
+            <!-- Expanded folder -->
+            <div style="padding: 3px 12px 3px 14px; color: var(--hint); cursor: pointer;">▾ <span style="color: var(--link);">📁 src/</span></div>
+            <div style="padding: 3px 12px 3px 28px; color: var(--hint); cursor: pointer;">▾ <span style="color: var(--link);">📁 components/</span></div>
+            <div style="padding: 3px 12px 3px 42px; color: var(--fg); cursor: pointer; background: rgba(99,102,241,0.08);">
+              <span style="color: #3178c6;">📄</span> App.tsx
+            </div>
+            <div style="padding: 3px 12px 3px 42px; color: var(--fg); cursor: pointer;">
+              <span style="color: #3178c6;">📄</span> SessionList.tsx
+              <span style="display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: #f59e0b; margin-left: 4px; vertical-align: middle;"></span>
+            </div>
+            <div style="padding: 3px 12px 3px 42px; color: var(--fg); cursor: pointer;">
+              <span style="color: #2563eb;">📄</span> index.css
+            </div>
+            <div style="padding: 3px 12px 3px 28px; color: var(--hint); cursor: pointer;">▸ <span style="color: var(--link);">📁 hooks/</span></div>
+            <div style="padding: 3px 12px 3px 28px; color: var(--hint); cursor: pointer;">▸ <span style="color: var(--link);">📁 lib/</span></div>
+            <div style="padding: 3px 12px 3px 14px; color: var(--hint); cursor: pointer;">▸ <span style="color: var(--link);">📁 shared/</span></div>
+            <div style="padding: 3px 12px 3px 14px; color: var(--fg); cursor: pointer;">
+              <span style="color: #64748b;">📄</span> README.md
+              <span style="display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: #f59e0b; margin-left: 4px; vertical-align: middle;"></span>
+            </div>
+            <div style="padding: 3px 12px 3px 14px; color: var(--fg); cursor: pointer;">
+              <span style="color: #f59e0b;">📄</span> package.json
+              <span style="display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: #f59e0b; margin-left: 4px; vertical-align: middle;"></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- CENTER: Editor + Tab System (flex:1) -->
+        <div style="flex:1; min-width: 300px; display: flex; flex-direction: column; background: var(--bg);">
+          <!-- Tabs bar -->
+          <div style="display: flex; align-items: center; background: var(--subtle); border-bottom: 1px solid var(--border); overflow-x: auto;">
+            <div style="padding: 7px 16px; font-size: 12px; color: var(--fg); background: var(--bg); border-bottom: 2px solid #6366f1; border-right: 1px solid var(--border); white-space: nowrap; cursor: pointer;">
+              <span style="color: #3178c6;">📄</span> App.tsx <span style="color: var(--hint); margin-left: 6px;">✕</span>
+            </div>
+            <div style="padding: 7px 16px; font-size: 12px; color: var(--hint); border-right: 1px solid var(--border); white-space: nowrap; cursor: pointer;">
+              <span style="color: #3178c6;">📄</span> SessionList.tsx <span style="color: var(--hint); margin-left: 6px;">✕</span>
+            </div>
+            <div style="padding: 7px 16px; font-size: 12px; color: var(--hint); border-right: 1px solid var(--border); white-space: nowrap; cursor: pointer;">
+              💻 Terminal: bash <span style="color: var(--hint); margin-left: 6px;">✕</span>
+            </div>
+            <div style="padding: 7px 12px; font-size: 16px; color: var(--hint); cursor: pointer; font-weight: 300;">+</div>
+            <span style="flex:1;"></span>
+            <div style="padding: 4px 10px; font-size: 10px; color: var(--hint); border-left: 1px solid var(--border);">UTF-8</div>
+            <div style="padding: 4px 10px; font-size: 10px; color: var(--hint); border-left: 1px solid var(--border);">TypeScript React</div>
+            <div style="padding: 4px 10px; font-size: 10px; color: var(--hint); border-left: 1px solid var(--border);">Ln 1, Col 1</div>
+          </div>
+          <!-- Code content -->
+          <div style="flex:1; overflow-y: auto; padding: 12px 18px; font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 13px; line-height: 1.7; background: var(--bg); color: var(--fg);">
+            <div style="color: #569cd6;">import</div>
+            <div style="color: #dcdcaa;">{ useCallback, useEffect, useMemo, useRef, useState }</div>
+            <div style="color: #569cd6;">from</div>
+            <div style="color: #ce9178;">'react'</div>
+            <div></div>
+            <div style="color: #569cd6;">import</div>
+            <div style="color: #dcdcaa;">{ Outlet, useLocation, useMatchRoute, useRouter }</div>
+            <div style="color: #569cd6;">from</div>
+            <div style="color: #ce9178;">'@tanstack/react-router'</div>
+            <div></div>
+            <div style="color: #6a9955;">// ─── App Shell ───────────────────────────────────────</div>
+            <div></div>
+            <div style="color: #569cd6;">export</div>
+            <div style="color: #569cd6;">function</div>
+            <div style="color: #dcdcaa;">App</div>
+            <div>() {</div>
+            <div>&nbsp;&nbsp;<span style="color: #569cd6;">const</span> { api } = <span style="color: #dcdcaa;">useAppContext</span>()</div>
+            <div>&nbsp;&nbsp;<span style="color: #569cd6;">const</span> { token } = <span style="color: #dcdcaa;">useAuth</span>()</div>
+            <div>&nbsp;&nbsp;<span style="color: #569cd6;">const</span> goBack = <span style="color: #dcdcaa;">useAppGoBack</span>()</div>
+            <div>&nbsp;&nbsp;<span style="color: #569cd6;">const</span> matchRoute = <span style="color: #dcdcaa;">useMatchRoute</span>()</div>
+            <div></div>
+            <div>&nbsp;&nbsp;<span style="color: #569cd6;">const</span> sessionMatch = <span style="color: #dcdcaa;">matchRoute</span>({ to: <span style="color: #ce9178;">'/sessions/$sessionId'</span> })</div>
+            <div>&nbsp;&nbsp;<span style="color: #569cd6;">const</span> selectedSessionId = sessionMatch && <span style="color: #569cd6;">typeof</span> sessionMatch === <span style="color: #ce9178;">'object'</span></div>
+            <div>&nbsp;&nbsp;&nbsp;&nbsp;? sessionMatch.sessionId</div>
+            <div>&nbsp;&nbsp;&nbsp;&nbsp;: <span style="color: #569cd6;">null</span></div>
+            <div></div>
+            <div>&nbsp;&nbsp;<span style="color: #569cd6;">return</span> (</div>
+            <div>&nbsp;&nbsp;&nbsp;&nbsp;&lt;<span style="color: #569cd6;">div</span> <span style="color: #9cdcfe;">className</span>=<span style="color: #ce9178;">"h-full min-h-0 flex flex-col"</span>&gt;</div>
+            <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&lt;<span style="color: #569cd6;">Outlet</span> /&gt;</div>
+            <div>&nbsp;&nbsp;&nbsp;&nbsp;&lt;/<span style="color: #569cd6;">div</span>&gt;</div>
+            <div>&nbsp;&nbsp;)</div>
+            <div>}</div>
+          </div>
+        </div>
+
+        <!-- RIGHT: Sessions + Chat Panel (380px) -->
+        <div style="width: 380px; min-width: 280px; border-left: 1px solid var(--border); display: flex; flex-direction: column; background: var(--bg);">
+
+          <!-- Session List (top) — có đủ thông tin: title, agent, model, status, time, permission -->
+          <div style="border-bottom: 1px solid var(--border); display: flex; flex-direction: column;">
+            <div style="padding: 8px 12px; font-size: 11px; font-weight: 600; color: var(--fg); display: flex; align-items: center; gap: 6px; border-bottom: 1px solid var(--border);">
+              <span>💬 Sessions · hapi</span>
+              <span style="font-size: 10px; color: var(--hint);">(3)</span>
+              <span style="flex:1;"></span>
+              <button style="padding: 2px 8px; border-radius: 5px; border: 1px solid var(--border); background: var(--bg); color: var(--fg); font-size: 10px; cursor: pointer;">+ New</button>
+            </div>
+            <div style="max-height: 180px; overflow-y: auto; padding: 4px 6px;">
+              <!-- Session item 1 - active, đang chọn -->
+              <div style="padding: 6px 8px; border-radius: 6px; background: rgba(99,102,241,0.08); margin-bottom: 2px; cursor: pointer; border-left: 2px solid #6366f1;">
+                <div style="display: flex; align-items: center; gap: 6px;">
+                  <span style="width: 6px; height: 6px; border-radius: 50%; background: #22c55e;"></span>
+                  <span style="font-weight: 500; font-size: 12px; color: var(--fg); flex:1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Refactor SessionChat</span>
+                </div>
+                <div style="display: flex; gap: 8px; margin-top: 3px; font-size: 10px; color: var(--hint);">
+                  <span style="color: #818cf8;">Codex</span>
+                  <span>gpt-5.2</span>
+                  <span>xhigh</span>
+                </div>
+                <div style="display: flex; gap: 6px; margin-top: 2px; font-size: 10px; color: var(--hint); align-items: center;">
+                  <span>🟢 Active</span>
+                  <span>·</span>
+                  <span>5m ago</span>
+                  <span style="border: 1px solid #22c55e; border-radius: 3px; padding: 0 3px; font-size: 9px; color: #22c55e;">default</span>
+                </div>
+              </div>
+              <!-- Session item 2 -->
+              <div style="padding: 6px 8px; border-radius: 6px; margin-bottom: 2px; cursor: pointer;">
+                <div style="display: flex; align-items: center; gap: 6px;">
+                  <span style="width: 6px; height: 6px; border-radius: 50%; background: var(--hint);"></span>
+                  <span style="font-weight: 500; font-size: 12px; color: var(--fg); flex:1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Fix TypeScript errors in shared/</span>
+                </div>
+                <div style="display: flex; gap: 8px; margin-top: 3px; font-size: 10px; color: var(--hint);">
+                  <span>Claude</span>
+                  <span>opus-4-5</span>
+                </div>
+                <div style="display: flex; gap: 6px; margin-top: 2px; font-size: 10px; color: var(--hint); align-items: center;">
+                  <span>⏸ Inactive</span>
+                  <span>·</span>
+                  <span>1h ago</span>
+                </div>
+              </div>
+              <!-- Session item 3 -->
+              <div style="padding: 6px 8px; border-radius: 6px; margin-bottom: 2px; cursor: pointer;">
+                <div style="display: flex; align-items: center; gap: 6px;">
+                  <span style="width: 6px; height: 6px; border-radius: 50%; background: #f59e0b;"></span>
+                  <span style="font-weight: 500; font-size: 12px; color: var(--fg); flex:1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Add unit tests for API routes</span>
+                </div>
+                <div style="display: flex; gap: 8px; margin-top: 3px; font-size: 10px; color: var(--hint);">
+                  <span style="color: #818cf8;">Codex</span>
+                  <span>gpt-5.4-mini</span>
+                </div>
+                <div style="display: flex; gap: 6px; margin-top: 2px; font-size: 10px; color: var(--hint); align-items: center;">
+                  <span>⚠ Waiting approval</span>
+                  <span>·</span>
+                  <span>3h ago</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Chat Panel (bottom) — đầy đủ: có file attachment, permission mode, model selector -->
+          <div style="flex:1; display: flex; flex-direction: column; min-height: 0;">
+            <div style="padding: 8px 12px; font-size: 11px; font-weight: 600; color: var(--fg); border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 6px;">
+              <span>🗨 Refactor SessionChat</span>
+              <span style="flex:1;"></span>
+              <span style="font-size: 9px; border: 1px solid var(--border); border-radius: 3px; padding: 1px 5px; color: var(--hint); cursor: pointer;">↗ Full</span>
+            </div>
+            <!-- Messages area -->
+            <div style="flex:1; overflow-y: auto; padding: 10px 12px; display: flex; flex-direction: column; gap: 10px;">
+              <!-- User message -->
+              <div style="display: flex; flex-direction: column; align-items: flex-end;">
+                <div style="max-width: 85%; background: rgba(99,102,241,0.1); border-radius: 10px 10px 2px 10px; padding: 8px 12px; font-size: 12px; color: var(--fg);">
+                  Hãy refactor lại SessionChat component để tách composable
+                </div>
+                <div style="font-size: 9px; color: var(--hint); margin-top: 2px; margin-right: 4px;">Now</div>
+              </div>
+              <!-- AI message with code block -->
+              <div style="display: flex; flex-direction: column; align-items: flex-start;">
+                <div style="max-width: 90%; background: var(--subtle); border-radius: 10px 10px 10px 2px; padding: 8px 12px; font-size: 12px; color: var(--fg);">
+                  <div style="margin-bottom: 6px;">Tôi sẽ tách SessionChat thành 3 composable:</div>
+                  <div style="background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; font-family: monospace; font-size: 11px;">
+                    <span style="color: #569cd6;">// ChatCore.tsx</span><br>
+                    <span style="color: #569cd6;">export</span> ChatCore<br>
+                    <span style="color: #569cd6;">// ComposerBar.tsx</span><br>
+                    <span style="color: #569cd6;">export</span> ComposerBar<br>
+                    <span style="color: #569cd6;">// ChatHeader.tsx</span><br>
+                    <span style="color: #569cd6;">export</span> ChatHeader
+                  </div>
+                </div>
+                <div style="font-size: 9px; color: var(--hint); margin-top: 2px; margin-left: 4px;">Just now</div>
+              </div>
+            </div>
+            <!-- Composer — đầy đủ attachment, permission mode, model selector -->
+            <div style="border-top: 1px solid var(--border); padding: 8px 10px;">
+              <div style="display: flex; align-items: center; gap: 4px; margin-bottom: 4px;">
+                <span style="font-size: 9px; border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px; color: var(--hint); cursor: pointer;">📎 File</span>
+                <span style="font-size: 9px; border-radius: 4px; padding: 2px 6px; background: rgba(34,197,94,0.1); color: #22c55e; cursor: pointer;">default</span>
+                <span style="font-size: 9px; border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px; color: var(--hint); cursor: pointer;">gpt-5.2 ▾</span>
+                <span style="font-size: 9px; border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px; color: var(--hint); cursor: pointer;">xhigh ▾</span>
+                <span style="flex:1;"></span>
+                <span style="font-size: 9px; color: var(--hint);">2.4K / 200K</span>
+              </div>
+              <div style="display: flex; gap: 6px;">
+                <input style="flex:1; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--fg); font-size: 12px;" placeholder="Ask AI about this code...">
+                <button style="padding: 6px 12px; border-radius: 8px; border: none; background: #6366f1; color: white; font-size: 12px; cursor: pointer;">Send</button>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<h3 style="margin-top: 20px;">Context Menu: Right-click file → Add to Chat</h3>
+<div class="mockup">
+  <div class="mockup-header">Multi-select files, tự động thêm vào active session</div>
+  <div class="mockup-body" style="display: flex; gap: 24px; font-size: 13px; align-items: flex-start;">
+    <div style="border: 1px solid var(--border); border-radius: 10px; padding: 6px; width: 200px; background: var(--bg);">
+      <div style="padding: 7px 12px; border-radius: 6px; cursor: pointer; font-size: 12px;">📂 Open in Editor</div>
+      <div style="padding: 7px 12px; border-radius: 6px; background: var(--subtle); cursor: pointer; font-size: 12px; font-weight: 500;">💬 Add to Chat</div>
+      <div style="height: 1px; background: var(--border); margin: 3px 0;"></div>
+      <div style="padding: 7px 12px; border-radius: 6px; cursor: pointer; font-size: 12px;">📄 Copy Path</div>
+      <div style="padding: 7px 12px; border-radius: 6px; cursor: pointer; font-size: 12px;">🔍 View Diff</div>
+    </div>
+    <div style="flex:1;">
+      <div style="font-weight: 500; margin-bottom: 8px; font-size: 13px;">Khi chọn Add to Chat:</div>
+      <div style="color: var(--hint); margin-bottom: 4px;">→ File path(s) hiện ra trong composer input</div>
+      <div style="color: var(--hint); margin-bottom: 4px;">→ Nếu chưa có session active → tự tạo mới session</div>
+      <div style="color: var(--hint); margin-bottom: 4px;">→ Có thể chọn nhiều file cùng lúc (Ctrl/Cmd+click)</div>
+      <div style="border: 1px solid var(--border); border-radius: 6px; padding: 10px 14px; margin-top: 10px; font-family: monospace; font-size: 12px; background: var(--subtle); color: var(--fg);">
+        @file:src/components/SessionChat.tsx<br>
+        @file:src/components/SessionList.tsx<br>
+        @file:src/components/FileIcon.tsx
+      </div>
+    </div>
+  </div>
+</div>
+
+<h3 style="margin-top: 20px;">Thay đổi so với v1</h3>
+<div style="font-size: 13px; color: var(--fg);">
+  <ol style="padding-left: 20px; line-height: 1.8;">
+    <li>✅ <strong>Design language:</strong> Dùng hệ thống CSS variables của Dashboard (--app-bg, --app-fg, --app-border, --app-subtle-bg, --app-hint, --app-link)</li>
+    <li>✅ <strong>File tree:</strong> Icon màu theo loại file (ts=#3178c6, css=#2563eb, json=#f59e0b...) + git status dot</li>
+    <li>✅ <strong>Session list đầy đủ:</strong> Title, agent (Codex/Claude), model, effort, status (active/inactive/waiting), relative time, permission mode badge</li>
+    <li>✅ <strong>Chat panel đầy đủ:</strong> File attachment button, permission mode selector, model selector, effort selector, context size indicator</li>
+    <li>✅ <strong>Code syntax color:</strong> Dùng theme VS Code Dark+ làm reference</li>
+    <li>✅ <strong>Terminal tabs:</strong> Tab "Terminal: bash" bên cạnh file tabs, giống VS Code</li>
+  </ol>
+</div>

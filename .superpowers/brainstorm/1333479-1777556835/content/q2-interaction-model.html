@@ -1,0 +1,26 @@
+<h2>Cậu tưởng tượng workflow giữa editor và session chat như thế nào?</h2>
+<p class="subtitle">Mối quan hệ giữa panel chat (phải) và editor (giữa)</p>
+
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>1 session chat gắn với 1 project</h3>
+      <p>Panel phải có 1 session chat duy nhất cho cả project. AI toàn quyền truy cập toàn bộ project. Mình mở file nào thì AI cũng biết và có thể edit. Giống antigravity — 1 cuộc hội thoại xuyên suốt cho project.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Multiple sessions, chọn session để chat</h3>
+      <p>Panel phải có nhiều session chat (tabs hoặc list). Mỗi session độc lập — có thể dùng cho các task khác nhau. Khi chat session nào, context của AI giới hạn trong session đó. File vẫn mở chung ở editor.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Multiple sessions + tự động gắn file đang mở</h3>
+      <p>Giống B, nhưng AI trong session tự động biết mình đang xem file nào ở editor. Mở tab mới → AI được context về file đó. Đóng tab → context tự thu hẹp. Tương tự cursor composer với open tabs.</p>
+    </div>
+  </div>
+</div>

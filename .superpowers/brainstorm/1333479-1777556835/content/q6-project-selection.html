@@ -1,0 +1,26 @@
+<h2>Chọn project trong Editor Mode như thế nào?</h2>
+<p class="subtitle">Vì không có "project" concept chính thức, cần xác định cách user chọn workspace</p>
+
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Url param + browse từ header</h3>
+      <p>URL: <code>/editor?project=/home/user/foo</code>. Trên header có dropdown chọn project — browse machine + folder giống WorkspaceBrowser. Đổi project → load lại tree + list session của project đó.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Không chọn project — workspace là tất cả session</h3>
+      <p>Editor mode hiển thị tất cả session từ tất cả project. File tree là "merged view" từ nhiều session. Phức tạp nhưng không cần concept project.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Tự động từ session active</h3>
+      <p>Khi click "Open in Editor" từ 1 session đang chạy, tự động lấy <code>metadata.path</code> làm project root. Không cần chọn thủ công. Header vẫn có thể đổi sau.</p>
+    </div>
+  </div>
+</div>

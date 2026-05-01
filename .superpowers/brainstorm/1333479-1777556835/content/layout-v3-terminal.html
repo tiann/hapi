@@ -1,0 +1,145 @@
+<h2>Editor Layout v3 — Terminal là panel riêng bên dưới</h2>
+<p class="subtitle">Cậu muốn terminal không phải là tab trong editor mà là 1 panel cố định bên dưới editor</p>
+
+<div class="mockup" style="margin-bottom: 16px;">
+  <div class="mockup-header">Layout mới: Terminal panel below editor</div>
+  <div class="mockup-body">
+    <div style="background: var(--bg); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; font-size: 12px; line-height: 1.5;">
+      <!-- Header -->
+      <div style="display: flex; align-items: center; gap: 12px; padding: 8px 14px; border-bottom: 1px solid var(--border); background: var(--subtle);">
+        <span style="font-weight: 600; color: var(--fg);">⚡ HAPI Editor</span>
+        <span style="color: var(--hint);">▸</span>
+        <select style="background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px; font-size: 11px;"><option>🖥 MacBook-Pro</option></select>
+        <span style="color: var(--hint);">/</span>
+        <select style="background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px; font-size: 11px;"><option>📁 hapi (~/notebooks/hapi)</option></select>
+        <span style="flex:1;"></span>
+        <button style="padding: 4px 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--fg); font-size: 11px; cursor: pointer;">← Agent Mode</button>
+      </div>
+
+      <!-- Main area: 3 columns (top section) + terminal (bottom section) -->
+      <div style="display: flex; flex-direction: column; height: 540px;">
+
+        <!-- TOP: 3 columns -->
+        <div style="display: flex; flex:1; min-height: 0;">
+          <!-- LEFT: File Tree -->
+          <div style="width: 260px; min-width: 180px; border-right: 1px solid var(--border); display: flex; flex-direction: column;">
+            <div style="padding: 6px 12px; font-size: 11px; font-weight: 600; color: var(--fg); border-bottom: 1px solid var(--border);">
+              📁 hapi
+              <span style="float:right;font-size:10px;color:var(--hint);cursor:pointer;">↻ 📂 🔍</span>
+            </div>
+            <div style="flex:1; overflow-y: auto; padding: 4px 0; font-size: 12px;">
+              <div style="padding: 3px 12px 3px 14px;">▾ 📁 src/</div>
+              <div style="padding: 3px 12px 3px 28px;">▾ 📁 components/</div>
+              <div style="padding: 3px 12px 3px 42px; background: rgba(99,102,241,0.06);">
+                <span style="color:#3178c6;">📄</span> App.tsx
+              </div>
+              <div style="padding: 3px 12px 3px 42px;">
+                <span style="color:#3178c6;">📄</span> SessionList.tsx
+                <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#f59e0b;margin-left:4px;"></span>
+              </div>
+              <div style="padding: 3px 12px 3px 28px;">▸ 📁 hooks/</div>
+              <div style="padding: 3px 12px 3px 28px;">▸ 📁 lib/</div>
+            </div>
+          </div>
+
+          <!-- CENTER: Editor + Tabs -->
+          <div style="flex:1; min-width: 300px; display: flex; flex-direction: column;">
+            <!-- Tabs bar -->
+            <div style="display: flex; align-items: center; background: var(--subtle); border-bottom: 1px solid var(--border); overflow-x: auto; font-size: 12px;">
+              <div style="padding: 7px 16px; background: var(--bg); border-bottom: 2px solid #6366f1; border-right: 1px solid var(--border); white-space: nowrap; cursor: pointer;">📄 App.tsx ✕</div>
+              <div style="padding: 7px 16px; border-right: 1px solid var(--border); color: var(--hint); white-space: nowrap; cursor: pointer;">📄 SessionList.tsx ✕</div>
+              <div style="padding: 7px 12px; font-size: 16px; color: var(--hint); cursor: pointer;">+</div>
+              <span style="flex:1;"></span>
+              <div style="padding: 4px 10px; font-size: 10px; color: var(--hint); border-left: 1px solid var(--border);">TypeScript React</div>
+              <div style="padding: 4px 10px; font-size: 10px; color: var(--hint); border-left: 1px solid var(--border);">Ln 1, Col 1</div>
+            </div>
+            <!-- Code content -->
+            <div style="flex:1; overflow-y: auto; padding: 10px 18px; font-family: monospace; font-size: 13px; line-height: 1.7;">
+              <span style="color:#569cd6;">import</span> { useCallback } <span style="color:#569cd6;">from</span> <span style="color:#ce9178;">'react'</span>
+            </div>
+          </div>
+
+          <!-- RIGHT: Sessions + Chat -->
+          <div style="width: 380px; min-width: 280px; border-left: 1px solid var(--border); display: flex; flex-direction: column;">
+            <!-- Session list -->
+            <div style="border-bottom: 1px solid var(--border);">
+              <div style="padding: 6px 12px; font-size: 11px; font-weight: 600; color: var(--fg); border-bottom: 1px solid var(--border); display: flex; align-items: center;">
+                💬 Sessions · hapi <span style="font-size:10px;color:var(--hint);">(3)</span>
+                <span style="flex:1;"></span>
+                <button style="padding:2px 8px;border-radius:5px;border:1px solid var(--border);background:var(--bg);color:var(--fg);font-size:10px;cursor:pointer;">+ New</button>
+              </div>
+              <div style="max-height: 140px; overflow-y: auto; padding: 4px 6px;">
+                <div style="padding:5px 8px;border-radius:4px;background:rgba(99,102,241,0.06);margin-bottom:2px;cursor:pointer;border-left:2px solid #6366f1;">
+                  <div style="font-weight:500;font-size:11px;">🟢 Refactor SessionChat</div>
+                  <div style="font-size:9px;color:var(--hint);">Codex · gpt-5.2 · 5m ago</div>
+                </div>
+                <div style="padding:5px 8px;border-radius:4px;margin-bottom:2px;cursor:pointer;">
+                  <div style="font-weight:500;font-size:11px;">⚪ Fix TypeScript errors</div>
+                  <div style="font-size:9px;color:var(--hint);">Claude · opus-4-5 · 1h ago</div>
+                </div>
+                <div style="padding:5px 8px;border-radius:4px;cursor:pointer;">
+                  <div style="font-weight:500;font-size:11px;">⚠ Add unit tests</div>
+                  <div style="font-size:9px;color:var(--hint);">Codex · gpt-5.4-mini · 3h ago</div>
+                </div>
+              </div>
+            </div>
+            <!-- Chat -->
+            <div style="flex:1; display: flex; flex-direction: column; min-height: 0;">
+              <div style="padding: 6px 12px; font-size: 11px; font-weight: 600; border-bottom: 1px solid var(--border);">🗨 Refactor SessionChat</div>
+              <div style="flex:1; padding: 8px 12px; overflow-y: auto;">
+                <div style="margin-bottom:8px;padding:6px 10px;background:rgba(99,102,241,0.08);border-radius:8px;font-size:11px;">You: Refactor SessionChat...</div>
+                <div style="margin-bottom:8px;padding:6px 10px;background:var(--subtle);border-radius:8px;font-size:11px;">AI: Được, tôi sẽ tách ra...</div>
+              </div>
+              <div style="border-top:1px solid var(--border);padding:6px 10px;">
+                <div style="display:flex;gap:4px;margin-bottom:4px;">
+                  <span style="font-size:9px;border:1px solid var(--border);border-radius:4px;padding:1px 6px;cursor:pointer;">📎</span>
+                  <span style="font-size:9px;border-radius:4px;padding:1px 6px;background:rgba(34,197,94,0.1);color:#22c55e;">default</span>
+                  <span style="font-size:9px;border:1px solid var(--border);border-radius:4px;padding:1px 6px;">gpt-5.2 ▾</span>
+                  <span style="font-size:9px;border:1px solid var(--border);border-radius:4px;padding:1px 6px;">xhigh ▾</span>
+                  <span style="flex:1;"></span>
+                  <span style="font-size:9px;color:var(--hint);">2.4K/200K</span>
+                </div>
+                <div style="display:flex;gap:6px;">
+                  <input style="flex:1;padding:7px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--fg);font-size:11px;" placeholder="Ask AI...">
+                  <button style="padding:5px 12px;border-radius:6px;border:none;background:#6366f1;color:white;font-size:11px;cursor:pointer;">Send</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- RESIZE HANDLE for terminal -->
+        <div style="height:3px;background:var(--border);cursor:row-resize;flex-shrink:0;"></div>
+
+        <!-- BOTTOM: Terminal Panel -->
+        <div style="height: 180px; min-height: 80px; background: #1e1e1e; display: flex; flex-direction: column; border-top: 1px solid var(--border);">
+          <!-- Terminal tab bar -->
+          <div style="display: flex; align-items: center; background: #2d2d2d; border-bottom: 1px solid #3c3c3c; font-size: 11px;">
+            <div style="padding: 5px 14px; background: #1e1e1e; border-bottom: 2px solid #6366f1; color: #cccccc; cursor: pointer;">💻 bash</div>
+            <div style="padding: 5px 14px; color: #888; cursor: pointer;">💻 zsh</div>
+            <div style="padding: 5px 10px; color: #888; cursor: pointer; font-size: 14px;">+</div>
+            <span style="flex:1;"></span>
+            <div style="padding: 3px 10px; color: #888; cursor: pointer; font-size: 14px;">✕</div>
+          </div>
+          <!-- Terminal content -->
+          <div style="flex:1; padding: 8px 14px; font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 12px; color: #cccccc; overflow-y: auto;">
+            <div><span style="color:#4ade80;">huynq@macbook</span> <span style="color:#818cf8;">~/notebooks/hapi</span> $ bun run dev</div>
+            <div style="color:#888;">$ hub:dev: http://localhost:3006</div>
+            <div style="color:#888;">$ web:dev: http://localhost:5173</div>
+            <div><span style="color:#4ade80;">huynq@macbook</span> <span style="color:#818cf8;">~/notebooks/hapi</span> $ <span style="animation: blink 1s step-end infinite;">▊</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<h3>Thay đổi chính so với v2</h3>
+<div style="font-size:13px; color: var(--fg); line-height: 1.8;">
+  <ol style="padding-left: 20px;">
+    <li>✅ Terminal không còn là tab trong editor. Nó là <strong>panel riêng bên dưới</strong>, giống VS Code.</li>
+    <li>✅ Layout chuyển từ 3 cột → <strong>3 cột + 1 hàng dưới</strong>: flexbox column, hàng trên 3 cột, hàng dưới terminal.</li>
+    <li>✅ Có <strong>resize handle</strong> giữa editor và terminal (kéo lên/xuống).</li>
+    <li>✅ Terminal có tab bar riêng, có thể mở nhiều shell (bash, zsh, fish...).</li>
+  </ol>
+</div>

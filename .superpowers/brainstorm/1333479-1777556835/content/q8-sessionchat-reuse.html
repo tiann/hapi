@@ -1,0 +1,38 @@
+<h2>Dùng lại SessionChat như thế nào?</h2>
+<p class="subtitle">3 cách tiếp cận với trade-off riêng</p>
+
+<div class="split">
+  <div class="mockup">
+    <div class="mockup-header">A: Dùng nguyên SessionChat</div>
+    <div class="mockup-body" style="font-size: 13px;">
+      <div style="margin-bottom: 8px; color: var(--green)">✅ Nhanh nhất — 1 ngày</div>
+      <div style="margin-bottom: 8px; color: var(--green)">✅ Không duplicate code</div>
+      <div style="margin-bottom: 8px; color: var(--red)">❌ Panel phải nặng — voice, terminal, team panel dư thừa</div>
+      <div style="margin-bottom: 8px; color: var(--red)">❌ Component 543 dòng, khó tùy chỉnh layout</div>
+      <div style="color: var(--hint)">Cách: Wrap SessionChat, truyền props, hide những phần không cần bằng flag</div>
+    </div>
+  </div>
+  <div class="mockup">
+    <div class="mockup-header">B: Fork phiên bản compact</div>
+    <div class="mockup-body" style="font-size: 13px;">
+      <div style="margin-bottom: 8px; color: var(--green)">✅ Panel phải gọn, đúng nhu cầu</div>
+      <div style="margin-bottom: 8px; color: var(--green)">✅ Tối ưu riêng cho editor mode</div>
+      <div style="margin-bottom: 8px; color: var(--red)">❌ Duplicate code — 2 versions cần sync</div>
+      <div style="margin-bottom: 8px; color: var(--red)">❌ Bug fix 1 bên phải port sang bên kia</div>
+      <div style="color: var(--hint)">Cách: Copy SessionChat → EditorSessionChat, xóa voice/terminal/team</div>
+    </div>
+  </div>
+</div>
+
+<div style="margin-top: 12px;">
+  <div class="mockup">
+    <div class="mockup-header">C: Refactor thành composable</div>
+    <div class="mockup-body" style="font-size: 13px;">
+      <div style="margin-bottom: 8px; color: var(--green)">✅ Không duplicate — 1 source of truth</div>
+      <div style="margin-bottom: 8px; color: var(--green)">✅ Linh hoạt — dùng sub-component nào cũng được</div>
+      <div style="margin-bottom: 8px; color: var(--yellow)">⚠️ Chậm hơn — cần refactor SessionChat (~2-3 ngày)</div>
+      <div style="margin-bottom: 8px; color: var(--yellow)">⚠️ Rủi ro — có thể break session detail hiện tại</div>
+      <div style="color: var(--hint)">Cách: Tách ChatCore, ComposerBar từ SessionChat. Cả 2 mode dùng chung.</div>
+    </div>
+  </div>
+</div>

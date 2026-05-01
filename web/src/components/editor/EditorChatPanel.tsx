@@ -13,6 +13,7 @@ export function EditorChatPanel(props: {
     sessionId: string | null
     pendingDraftText?: string
     onDraftConsumed?: () => void
+    onExpandDraft?: (text: string) => string
 }) {
     const { session, isLoading, error, refetch: refetchSession } = useSession(props.api, props.sessionId)
     const messagesState = useMessages(props.api, props.sessionId)
@@ -76,7 +77,10 @@ export function EditorChatPanel(props: {
                 onBack={() => {}}
                 onRefresh={refreshSession}
                 onLoadMore={messagesState.loadMore}
-                onSend={(text: string, attachments?: AttachmentMetadata[]) => sendMessage(text, attachments)}
+                onSend={(text: string, attachments?: AttachmentMetadata[]) => {
+                    const expandedText = props.onExpandDraft ? props.onExpandDraft(text) : text
+                    sendMessage(expandedText, attachments)
+                }}
                 onFlushPending={messagesState.flushPending}
                 onAtBottomChange={messagesState.setAtBottom}
                 onRetryMessage={retryMessage}

@@ -1,0 +1,154 @@
+<h2>Editor Mode — Layout Design</h2>
+<p class="subtitle">3 cột chính + header + tab system</p>
+
+<div class="mockup" style="margin-bottom: 20px;">
+  <div class="mockup-header">Full Layout (Desktop ≥1024px)</div>
+  <div class="mockup-body">
+    <div style="background: var(--bg); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; font-size: 12px;">
+      <!-- Header -->
+      <div class="mock-nav" style="padding: 8px 14px; display: flex; align-items: center; gap: 14px;">
+        <span style="font-weight: 600;">HAPI Editor</span>
+        <span style="color: var(--hint); font-size: 11px;">▼</span>
+        <select class="mock-input" style="width: 160px; font-size: 11px; padding: 2px 6px;">
+          <option>🖥 MacBook-Pro</option>
+          <option>🖥 Gaming-PC</option>
+        </select>
+        <span style="color: var(--hint); margin: 0 4px;">/</span>
+        <select class="mock-input" style="width: 200px; font-size: 11px; padding: 2px 6px;">
+          <option>📁 ~/projects/hapi</option>
+        </select>
+        <span style="flex:1;"></span>
+        <button class="mock-button" style="font-size: 11px; padding: 3px 10px;">Agent Mode →</button>
+      </div>
+      <!-- 3 columns -->
+      <div style="display: flex; height: 480px; border-top: 1px solid var(--border);">
+        <!-- Left: File Tree (~260px) -->
+        <div class="mock-sidebar" style="width: 260px; min-width: 180px; border-right: 1px solid var(--border); display: flex; flex-direction: column;">
+          <div style="padding: 8px 12px; font-weight: 600; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 6px;">
+            <span>📁 hapi</span>
+            <span style="flex:1;"></span>
+            <span style="font-size: 10px; color: var(--hint); cursor: pointer;">↻</span>
+          </div>
+          <div style="flex:1; overflow-y: auto; padding: 4px 0;">
+            <div style="padding: 4px 12px 4px 16px;">▸ src/</div>
+            <div style="padding: 4px 12px 4px 32px; color: var(--green);">▾ app/</div>
+            <div style="padding: 4px 12px 4px 48px; background: var(--subtle); color: var(--fg);">📄 App.tsx</div>
+            <div style="padding: 4px 12px 4px 48px;">📄 router.tsx</div>
+            <div style="padding: 4px 12px 4px 32px;">▸ lib/</div>
+            <div style="padding: 4px 12px 4px 32px; color: var(--yellow);">📄 package.json <span style="font-size: 9px; color: var(--orange);">M</span></div>
+            <div style="padding: 4px 12px 4px 16px;">▸ docs/</div>
+            <div style="padding: 4px 12px 4px 16px;">▸ tests/</div>
+            <div style="padding: 4px 12px 4px 16px; color: var(--red);">📄 README.md <span style="font-size: 9px; color: var(--orange);">M</span></div>
+          </div>
+        </div>
+        <!-- Center: Editor + Tabs (flex:1) -->
+        <div style="flex:1; display: flex; flex-direction: column; min-width: 300px;">
+          <!-- Tabs bar -->
+          <div style="display: flex; align-items: center; border-bottom: 1px solid var(--border); background: var(--subtle);">
+            <div style="padding: 6px 14px; border-bottom: 2px solid var(--accent); background: var(--bg);">App.tsx ✕</div>
+            <div style="padding: 6px 14px; border-right: 1px solid var(--border);">router.tsx ✕</div>
+            <div style="padding: 6px 14px; border-right: 1px solid var(--border);">Terminal: bash ✕</div>
+            <div style="padding: 6px 14px; color: var(--hint); cursor: pointer;">+</div>
+            <span style="flex:1;"></span>
+          </div>
+          <!-- Editor content -->
+          <div class="mock-content" style="flex:1; padding: 12px 18px; font-family: monospace; font-size: 13px;">
+            <div style="opacity: 0.5;">import { useCallback, useEffect } from 'react'</div>
+            <div style="opacity: 0.5;">import { Outlet, useLocation } from '@tanstack/react-router'</div>
+            <div style="opacity: 0.5;"></div>
+            <div style="opacity: 0.5; font-weight: 600;">export function App() {</div>
+            <div style="opacity: 0.5;">&nbsp;&nbsp;const { api } = useAppContext()</div>
+            <div style="opacity: 0.5;">&nbsp;&nbsp;const { token } = useAuth()</div>
+            <div style="opacity: 0.5;"></div>
+            <div style="opacity: 0.5;">&nbsp;&nbsp;...</div>
+          </div>
+        </div>
+        <!-- Right: Sessions + Chat panel (~380px) -->
+        <div class="mock-sidebar" style="width: 380px; min-width: 280px; border-left: 1px solid var(--border); display: flex; flex-direction: column;">
+          <!-- Session list (top 35%) -->
+          <div style="height: 35%; border-bottom: 1px solid var(--border); display: flex; flex-direction: column;">
+            <div style="padding: 8px 12px; font-weight: 600; display: flex; align-items: center; gap: 6px;">
+              <span>💬 Sessions</span>
+              <span style="flex:1;"></span>
+              <button class="mock-button" style="font-size: 10px; padding: 2px 8px;">+ New</button>
+            </div>
+            <div style="flex:1; overflow-y: auto; padding: 4px 8px;">
+              <div style="padding: 6px 8px; background: var(--subtle); border-radius: 4px; margin-bottom: 2px; cursor: pointer;">
+                <div style="font-weight: 500;">🟢 Refactor SessionChat</div>
+                <div style="font-size: 10px; color: var(--hint);">Codex · 5m ago · active</div>
+              </div>
+              <div style="padding: 6px 8px; border-radius: 4px; margin-bottom: 2px; cursor: pointer;">
+                <div style="font-weight: 500;">⚪ Fix type errors</div>
+                <div style="font-size: 10px; color: var(--hint);">Claude · 1h ago</div>
+              </div>
+              <div style="padding: 6px 8px; border-radius: 4px; margin-bottom: 2px; cursor: pointer;">
+                <div style="font-weight: 500;">⚪ Add tests for API</div>
+                <div style="font-size: 10px; color: var(--hint);">Codex · 3h ago</div>
+              </div>
+            </div>
+          </div>
+          <!-- Chat panel (bottom 65%) -->
+          <div style="flex:1; display: flex; flex-direction: column;">
+            <div style="padding: 8px 12px; font-weight: 600; border-bottom: 1px solid var(--border);">🗨 Refactor SessionChat</div>
+            <div class="mock-content" style="flex:1; padding: 8px 12px; overflow-y: auto;">
+              <div style="margin-bottom: 8px; padding: 6px 8px; background: var(--subtle); border-radius: 6px;">
+                <span style="font-weight: 500;">You:</span> Refactor SessionChat...
+              </div>
+              <div style="margin-bottom: 8px; padding: 6px 8px; border-left: 2px solid var(--accent);">
+                <span style="font-weight: 500;">AI:</span> Tôi sẽ giúp refactor...
+              </div>
+            </div>
+            <div style="padding: 8px 12px; border-top: 1px solid var(--border);">
+              <input class="mock-input" placeholder="Chat with Refactor..." style="width: 100%; font-size: 12px;">
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<h3 style="margin-top: 24px;">Resize behavior</h3>
+<div class="split">
+  <div class="mockup">
+    <div class="mockup-header">3 cột có resize handles</div>
+    <div class="mockup-body" style="font-size: 13px;">
+      <div style="margin-bottom: 6px;">↕ Tree: min 180px, default 260px</div>
+      <div style="margin-bottom: 6px;">↕ Chat: min 280px, default 380px</div>
+      <div style="margin-bottom: 6px; color: var(--hint);">↔ Dùng lại <code>useSidebarResize.ts</code> có sẵn</div>
+    </div>
+  </div>
+  <div class="mockup">
+    <div class="mockup-header">Dưới 1024px: hiện fallback</div>
+    <div class="mockup-body" style="font-size: 13px; text-align: center; padding: 30px;">
+      <div style="font-size: 48px; margin-bottom: 12px;">🖥</div>
+      <div style="font-weight: 500;">Editor mode cần màn hình lớn hơn</div>
+      <div style="color: var(--hint); margin-top: 6px;">Vui lòng mở trên desktop hoặc tablet landscape</div>
+      <button class="mock-button" style="margin-top: 12px;">← Về Agent Mode</button>
+    </div>
+  </div>
+</div>
+
+<h3 style="margin-top: 24px;">Context Menu: Add to Chat</h3>
+<div class="mockup">
+  <div class="mockup-header">Right-click file trong tree</div>
+  <div class="mockup-body" style="display: flex; gap: 20px; font-size: 13px;">
+    <div style="border: 1px solid var(--border); border-radius: 8px; padding: 4px; width: 180px;">
+      <div style="padding: 6px 10px; border-radius: 4px; cursor: pointer;">📂 Open in Editor</div>
+      <div style="padding: 6px 10px; border-radius: 4px; background: var(--subtle); cursor: pointer; font-weight: 500;">💬 Add to Chat</div>
+      <div style="width: 100%; height: 1px; background: var(--border); margin: 2px 0;"></div>
+      <div style="padding: 6px 10px; border-radius: 4px; cursor: pointer;">📄 Copy Path</div>
+      <div style="padding: 6px 10px; border-radius: 4px; cursor: pointer;">🔍 View Diff</div>
+    </div>
+    <div style="flex:1;">
+      <div style="font-weight: 500; margin-bottom: 6px;">Khi chọn "Add to Chat":</div>
+      <div style="color: var(--hint);">→ File path được thêm vào input composer của session đang active</div>
+      <div style="color: var(--hint); margin-top: 4px;">→ Nếu chưa có session active → tự tạo session mới</div>
+      <div style="color: var(--hint); margin-top: 4px;">→ Chọn được nhiều file cùng lúc (multi-select)</div>
+      <div style="background: var(--subtle); border-radius: 6px; padding: 8px 10px; margin-top: 10px; font-family: monospace; font-size: 11px;">
+        @file:src/components/SessionChat.tsx<br>
+        @file:src/components/App.tsx
+      </div>
+    </div>
+  </div>
+</div>

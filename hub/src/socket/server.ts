@@ -18,7 +18,7 @@ const jwtPayloadSchema = z.object({
     ns: z.string()
 })
 
-const DEFAULT_IDLE_TIMEOUT_MS = 15 * 60_000
+const DEFAULT_IDLE_TIMEOUT_MS = 0
 const DEFAULT_MAX_TERMINALS = 4
 
 function resolveEnvNumber(name: string, fallback: number): number {

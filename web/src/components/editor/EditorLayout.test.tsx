@@ -168,10 +168,13 @@ describe('EditorLayout', () => {
 
         expect(screen.getByTestId('editor-file-tree').closest('aside')).toHaveStyle({ width: '321px' })
         expect(screen.getByTestId('editor-session-list').closest('aside')).toHaveStyle({ width: '432px' })
-        expect(screen.getByTestId('editor-terminal').parentElement).toHaveStyle({ height: '210px' })
+        expect(screen.getByTestId('editor-terminal').parentElement).toHaveStyle({ height: '32px' })
 
         fireEvent.pointerDown(screen.getByRole('separator', { name: 'Resize file tree' }))
         fireEvent.pointerDown(screen.getByRole('separator', { name: 'Resize sessions panel' }))
+
+        // Expand terminal to test resize handler
+        fireEvent.click(screen.getByText('Mock toggle terminal'))
         fireEvent.pointerDown(screen.getByRole('separator', { name: 'Resize terminal panel' }))
 
         expect(mocks.onLeftResizePointerDown).toHaveBeenCalledTimes(1)
