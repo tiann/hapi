@@ -15,6 +15,9 @@ export interface ServerSettings {
     telegramNotification: boolean
     serverChanSendKey: string | null
     serverChanNotification: boolean
+    wecomBotId: string | null
+    wecomBotSecret: string | null
+    wecomNotification: boolean
     listenHost: string
     listenPort: number
     publicUrl: string
@@ -28,6 +31,9 @@ export interface ServerSettingsResult {
         telegramNotification: 'env' | 'file' | 'default'
         serverChanSendKey: 'env' | 'file' | 'default'
         serverChanNotification: 'env' | 'file' | 'default'
+        wecomBotId: 'env' | 'file' | 'default'
+        wecomBotSecret: 'env' | 'file' | 'default'
+        wecomNotification: 'env' | 'file' | 'default'
         listenHost: 'env' | 'file' | 'default'
         listenPort: 'env' | 'file' | 'default'
         publicUrl: 'env' | 'file' | 'default'
@@ -93,6 +99,9 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
         telegramNotification: 'default',
         serverChanSendKey: 'default',
         serverChanNotification: 'default',
+        wecomBotId: 'default',
+        wecomBotSecret: 'default',
+        wecomNotification: 'default',
         listenHost: 'default',
         listenPort: 'default',
         publicUrl: 'default',
@@ -152,6 +161,48 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
     } else if (settings.serverChanNotification !== undefined) {
         serverChanNotification = settings.serverChanNotification
         sources.serverChanNotification = 'file'
+    }
+
+    // wecomBotId: env > file > null
+    let wecomBotId: string | null = null
+    if (process.env.WECOM_BOT_ID) {
+        wecomBotId = process.env.WECOM_BOT_ID
+        sources.wecomBotId = 'env'
+        if (settings.wecomBotId === undefined) {
+            settings.wecomBotId = wecomBotId
+            needsSave = true
+        }
+    } else if (settings.wecomBotId !== undefined) {
+        wecomBotId = settings.wecomBotId
+        sources.wecomBotId = 'file'
+    }
+
+    // wecomBotSecret: env > file > null
+    let wecomBotSecret: string | null = null
+    if (process.env.WECOM_BOT_SECRET) {
+        wecomBotSecret = process.env.WECOM_BOT_SECRET
+        sources.wecomBotSecret = 'env'
+        if (settings.wecomBotSecret === undefined) {
+            settings.wecomBotSecret = wecomBotSecret
+            needsSave = true
+        }
+    } else if (settings.wecomBotSecret !== undefined) {
+        wecomBotSecret = settings.wecomBotSecret
+        sources.wecomBotSecret = 'file'
+    }
+
+    // wecomNotification: env > file > true
+    let wecomNotification = true
+    if (process.env.WECOM_NOTIFICATION !== undefined) {
+        wecomNotification = process.env.WECOM_NOTIFICATION === 'true'
+        sources.wecomNotification = 'env'
+        if (settings.wecomNotification === undefined) {
+            settings.wecomNotification = wecomNotification
+            needsSave = true
+        }
+    } else if (settings.wecomNotification !== undefined) {
+        wecomNotification = settings.wecomNotification
+        sources.wecomNotification = 'file'
     }
 
     // listenHost: env > file (new or old name) > default
@@ -248,6 +299,9 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
             telegramNotification,
             serverChanSendKey,
             serverChanNotification,
+            wecomBotId,
+            wecomBotSecret,
+            wecomNotification,
             listenHost,
             listenPort,
             publicUrl,
