@@ -188,6 +188,7 @@ describe('dialog result formatting', () => {
         const { container } = renderResult('```ts\nconst value = 1\n```')
 
         expect(container.querySelector('[class*="border-l-"]')).toBeNull()
+        expect(container.querySelector('pre')).not.toBeNull()
         expect(container).toHaveTextContent('const value = 1')
     })
 })
@@ -221,16 +222,31 @@ describe('read file result formatting', () => {
         )
     }
 
-    it('renders Read file content as a quote instead of a code block', () => {
+    it('renders source file content as a code block', () => {
         const { container } = renderToolResult('Read', {
             file: {
                 filePath: '/tmp/example.ts',
                 content: 'const value = 1\nexport { value }'
             }
         })
+
+        expect(container.querySelector('[class*="border-l-"]')).toBeNull()
+        expect(container.querySelector('pre')).not.toBeNull()
+        expect(container).toHaveTextContent('File content')
+        expect(container).toHaveTextContent('const value = 1')
+        expect(screen.getAllByText('Raw JSON').length).toBeGreaterThan(0)
+    })
+
+    it('renders plain read output as a quote', () => {
+        const { container } = renderToolResult('Read', {
+            file: {
+                filePath: '/tmp/notes.txt',
+                content: 'plain notes from the workspace'
+            }
+        })
         const quote = container.querySelector('[class*="border-l-"]')
 
-        expect(quote).toHaveTextContent('const value = 1')
+        expect(quote).toHaveTextContent('plain notes from the workspace')
         expect(quote).toHaveClass('tool-result-quote')
         expect(quote?.querySelector('pre')).toBeNull()
         expect(screen.getAllByText('Raw JSON').length).toBeGreaterThan(0)
@@ -246,5 +262,18 @@ describe('read file result formatting', () => {
 
         expect(quote).toHaveTextContent('hello from file')
         expect(quote?.querySelector('pre')).toBeNull()
+    })
+
+    it('renders parsed Codex read command source output as a code block', () => {
+        const { container } = renderToolResult(
+            'CodexBash',
+            'Exit code: 0\nWall time: 0.1s\nOutput:\nconst value = 1',
+            { parsed_cmd: [{ type: 'read', name: 'debug.ts' }] }
+        )
+
+        expect(container.querySelector('[class*="border-l-"]')).toBeNull()
+        expect(container.querySelector('pre')).not.toBeNull()
+        expect(container).toHaveTextContent('File content')
+        expect(container).toHaveTextContent('const value = 1')
     })
 })
