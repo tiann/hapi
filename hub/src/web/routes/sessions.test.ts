@@ -52,6 +52,7 @@ function createSession(overrides?: Partial<Session>): Session {
 
 function createApp(session: Session, opts?: {
     resumeSession?: (sessionId: string, namespace: string, resumeOpts?: { permissionMode?: string }) => Promise<{ type: string; sessionId?: string; message?: string; code?: string }>
+    listSlashCommands?: SyncEngine['listSlashCommands']
 }) {
     const applySessionConfigCalls: Array<[string, Record<string, unknown>]> = []
     const applySessionConfig = async (sessionId: string, config: Record<string, unknown>) => {
@@ -77,7 +78,11 @@ function createApp(session: Session, opts?: {
         applySessionConfig,
         listCodexModelsForSession,
         listOpencodeModelsForSession,
-        resumeSession
+        resumeSession,
+        listSlashCommands: opts?.listSlashCommands ?? (async () => ({
+            success: true,
+            commands: []
+        }))
     } as Partial<SyncEngine>
 
     const app = new Hono<WebAppEnv>()
@@ -457,4 +462,66 @@ describe('sessions routes', () => {
         expect(response.status).toBe(200)
         expect(capturedResumeOpts).toEqual({ permissionMode: 'bypassPermissions' })
     })
+
+    it('falls back to metadata slash commands when RPC listing fails', async () => {
+        const session = createSession({
+            metadata: {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'claude',
+                slashCommands: ['help', 'memory', 'status']
+            }
+        })
+        const { app } = createApp(session, {
+            listSlashCommands: async () => {
+                throw new Error('RPC unavailable')
+            }
+        })
+
+        const response = await app.request('/api/sessions/session-1/slash-commands')
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({
+            success: true,
+            commands: [
+                { name: 'help', source: 'builtin' },
+                { name: 'memory', source: 'builtin' },
+                { name: 'status', source: 'builtin' }
+            ]
+        })
+    })
+
+    it('merges RPC and metadata slash commands without hiding built-ins', async () => {
+        const session = createSession({
+            metadata: {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'claude',
+                slashCommands: ['help', 'memory']
+            }
+        })
+        const { app } = createApp(session, {
+            listSlashCommands: async () => ({
+                success: true,
+                commands: [
+                    { name: 'clear', source: 'builtin' },
+                    { name: 'project-only', source: 'project', content: 'Project prompt' }
+                ]
+            })
+        })
+
+        const response = await app.request('/api/sessions/session-1/slash-commands')
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({
+            success: true,
+            commands: [
+                { name: 'help', source: 'builtin' },
+                { name: 'memory', source: 'builtin' },
+                { name: 'clear', source: 'builtin' },
+                { name: 'project-only', source: 'project', content: 'Project prompt' }
+            ]
+        })
+    })
+
 })
