@@ -33,6 +33,24 @@ describe('mergeSlashCommands', () => {
             { name: 'clear', source: 'project', content: 'project clear prompt' }
         ])
     })
+
+    it('keeps API-provided built-ins while de-duplicating by name', () => {
+        const commands = mergeSlashCommands([
+            { name: 'clear', source: 'builtin' },
+            { name: 'status', source: 'builtin' },
+            { name: 'help', source: 'builtin' },
+            { name: 'status', source: 'builtin', description: 'Captured status' },
+            { name: 'project-only', source: 'project', content: 'Project prompt' }
+        ])
+
+        expect(commands).toEqual([
+            { name: 'clear', source: 'builtin' },
+            { name: 'help', source: 'builtin' },
+            { name: 'status', source: 'builtin', description: 'Captured status' },
+            { name: 'project-only', source: 'project', content: 'Project prompt' }
+        ])
+    })
+
 })
 
 describe('findCodexCustomPromptExpansion', () => {
