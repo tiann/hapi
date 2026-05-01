@@ -170,7 +170,7 @@ export class ApiSessionClient extends EventEmitter {
             logger.debug('[API] Socket error:', payload)
         })
 
-        const handleTerminalEvent = <T extends { sessionId: string }>(
+        const handleTerminalEvent = <T extends { sessionId?: string }>(
             schema: ZodType<T>,
             handler: (payload: T) => void
         ) => (data: unknown) => {

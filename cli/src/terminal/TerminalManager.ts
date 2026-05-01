@@ -15,7 +15,8 @@ type TerminalRuntime = TerminalSession & {
 }
 
 type TerminalManagerOptions = {
-    sessionId: string
+    sessionId?: string
+    machineId?: string
     getSessionPath: () => string | null
     onReady: (payload: TerminalReadyPayload) => void
     onOutput: (payload: TerminalOutputPayload) => void
@@ -81,7 +82,8 @@ function buildFilteredEnv(): NodeJS.ProcessEnv {
 }
 
 export class TerminalManager {
-    private readonly sessionId: string
+    private readonly sessionId?: string
+    private readonly machineId?: string
     private readonly getSessionPath: () => string | null
     private readonly onReady: (payload: TerminalReadyPayload) => void
     private readonly onOutput: (payload: TerminalOutputPayload) => void
@@ -93,7 +95,11 @@ export class TerminalManager {
     private readonly filteredEnv: NodeJS.ProcessEnv
 
     constructor(options: TerminalManagerOptions) {
+        if (Boolean(options.sessionId) === Boolean(options.machineId)) {
+            throw new Error('TerminalManager requires exactly one of sessionId or machineId')
+        }
         this.sessionId = options.sessionId
+        this.machineId = options.machineId
         this.getSessionPath = options.getSessionPath
         this.onReady = options.onReady
         this.onOutput = options.onOutput
@@ -104,7 +110,7 @@ export class TerminalManager {
         this.filteredEnv = buildFilteredEnv()
     }
 
-    create(terminalId: string, cols: number, rows: number): void {
+    create(terminalId: string, cols: number, rows: number, cwd?: string): void {
         if (process.platform === 'win32') {
             this.emitError(terminalId, 'Remote terminal is not supported on Windows yet.')
             return
@@ -116,7 +122,7 @@ export class TerminalManager {
             existing.rows = rows
             existing.terminal.resize(cols, rows)
             this.markActivity(existing)
-            this.onReady({ sessionId: this.sessionId, terminalId })
+            this.onReady({ ...this.scopePayload(), terminalId })
             return
         }
 
@@ -130,7 +136,7 @@ export class TerminalManager {
             return
         }
 
-        const sessionPath = this.getSessionPath() ?? getInvokedCwd()
+        const sessionPath = cwd?.trim() || this.getSessionPath() || getInvokedCwd()
         const shell = resolveShell()
         const decoder = new TextDecoder()
 
@@ -144,7 +150,7 @@ export class TerminalManager {
                     data: (terminal, data) => {
                         const text = decoder.decode(data, { stream: true })
                         if (text) {
-                            this.onOutput({ sessionId: this.sessionId, terminalId, data: text })
+                            this.onOutput({ ...this.scopePayload(), terminalId, data: text })
                         }
                         const active = this.terminals.get(terminalId)
                         if (active) {
@@ -160,7 +166,7 @@ export class TerminalManager {
                 onExit: (subprocess, exitCode) => {
                     const signal = subprocess.signalCode ?? null
                     this.onExit({
-                        sessionId: this.sessionId,
+                        ...this.scopePayload(),
                         terminalId,
                         code: exitCode ?? null,
                         signal
@@ -191,7 +197,7 @@ export class TerminalManager {
 
             this.terminals.set(terminalId, runtime)
             this.markActivity(runtime)
-            this.onReady({ sessionId: this.sessionId, terminalId })
+            this.onReady({ ...this.scopePayload(), terminalId })
         } catch (error) {
             logger.debug('[TERMINAL] Failed to spawn terminal', { error })
             this.emitError(terminalId, 'Failed to spawn terminal.')
@@ -275,6 +281,16 @@ export class TerminalManager {
     }
 
     private emitError(terminalId: string, message: string): void {
-        this.onError({ sessionId: this.sessionId, terminalId, message })
+        this.onError({ ...this.scopePayload(), terminalId, message })
+    }
+
+    private scopePayload(): { sessionId: string } | { machineId: string } {
+        if (this.sessionId) {
+            return { sessionId: this.sessionId }
+        }
+        if (this.machineId) {
+            return { machineId: this.machineId }
+        }
+        throw new Error('TerminalManager scope is not configured')
     }
 }

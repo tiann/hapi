@@ -7,12 +7,16 @@ export type EditorTab = {
     label: string
     shell?: string
     sessionId?: string
+    machineId?: string
+    cwd?: string
     dirty?: boolean
 }
 
 export type OpenTerminalOptions = {
     shell?: string
     sessionId?: string
+    machineId?: string
+    cwd?: string
 }
 
 export type EditorState = {
@@ -91,13 +95,21 @@ export function useEditorState(initialMachine?: string, initialProject?: string)
         const sessionId = options && typeof options === 'object' && typeof options.sessionId === 'string' && options.sessionId.trim()
             ? options.sessionId
             : undefined
+        const machineId = options && typeof options === 'object' && typeof options.machineId === 'string' && options.machineId.trim()
+            ? options.machineId
+            : undefined
+        const cwd = options && typeof options === 'object' && typeof options.cwd === 'string' && options.cwd.trim()
+            ? options.cwd
+            : undefined
         const terminalCount = tabsRef.current.filter((tab) => tab.type === 'terminal').length
         const newTab: EditorTab = {
             id: generateTabId(),
             type: 'terminal',
             label: `Terminal: ${shellName}${terminalCount > 0 ? ` (${terminalCount + 1})` : ''}`,
             shell: shellName,
-            sessionId
+            sessionId,
+            machineId,
+            cwd
         }
         setTabs([...tabsRef.current, newTab])
         setActiveTabId(newTab.id)

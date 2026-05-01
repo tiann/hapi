@@ -30,7 +30,6 @@ export function EditorLayout(props: {
     const [newFileTargetPath, setNewFileTargetPath] = useState<string | null>(null)
     const [isTerminalCollapsed, setIsTerminalCollapsed] = useState(false)
     const pendingFileAfterSessionRef = useRef<string | null>(null)
-    const pendingTerminalAfterSessionRef = useRef(false)
     const fileTabs = useMemo(
         () => editor.tabs.filter((tab) => tab.type === 'file'),
         [editor.tabs]
@@ -60,10 +59,6 @@ export function EditorLayout(props: {
                 setPendingDraftText(appendEditorChatDraft('', pendingFile))
                 pendingFileAfterSessionRef.current = null
             }
-            if (pendingTerminalAfterSessionRef.current) {
-                editor.openTerminal({ sessionId })
-                pendingTerminalAfterSessionRef.current = false
-            }
         }
     })
 
@@ -92,14 +87,11 @@ export function EditorLayout(props: {
     }, [activeFilePath, editor.projectPath])
 
     const handleOpenTerminal = useCallback(() => {
-        if (editor.activeSessionId) {
-            editor.openTerminal({ sessionId: editor.activeSessionId })
+        if (editor.machineId && editor.projectPath) {
+            editor.openTerminal({ machineId: editor.machineId, cwd: editor.projectPath })
             return
         }
-
-        pendingTerminalAfterSessionRef.current = true
-        newSession.createSession()
-    }, [editor, newSession])
+    }, [editor])
 
     const handleCancelNewFile = useCallback(() => {
         setNewFileTargetPath(null)
@@ -132,14 +124,12 @@ export function EditorLayout(props: {
     const handleSelectMachine = useCallback((machineId: string) => {
         setPendingDraftText(undefined)
         pendingFileAfterSessionRef.current = null
-        pendingTerminalAfterSessionRef.current = false
         editor.selectMachine(machineId)
     }, [editor])
 
     const handleSelectProject = useCallback((projectPath: string) => {
         setPendingDraftText(undefined)
         pendingFileAfterSessionRef.current = null
-        pendingTerminalAfterSessionRef.current = false
         editor.selectProject(projectPath)
     }, [editor])
 

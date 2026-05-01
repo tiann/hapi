@@ -23,13 +23,14 @@ const terminalCloseSchema = z.object({
 export type TerminalHandlersDeps = {
     io: SocketServer
     getSession: (sessionId: string) => { active: boolean; namespace: string } | null
+    getMachine: (machineId: string) => { active: boolean; namespace: string } | null
     terminalRegistry: TerminalRegistry
     maxTerminalsPerSocket: number
     maxTerminalsPerSession: number
 }
 
 export function registerTerminalHandlers(socket: SocketWithData, deps: TerminalHandlersDeps): void {
-    const { io, getSession, terminalRegistry, maxTerminalsPerSocket, maxTerminalsPerSession } = deps
+    const { io, getSession, getMachine, terminalRegistry, maxTerminalsPerSocket, maxTerminalsPerSession } = deps
     const cliNamespace = io.of('/cli')
     const namespace = typeof socket.data.namespace === 'string' ? socket.data.namespace : null
 
@@ -57,19 +58,25 @@ export function registerTerminalHandlers(socket: SocketWithData, deps: TerminalH
         return cliSocket
     }
 
+    const getEntryScope = (entry: TerminalRegistryEntry): { sessionId: string } | { machineId: string } | null => {
+        if (entry.sessionId) return { sessionId: entry.sessionId }
+        if (entry.machineId) return { machineId: entry.machineId }
+        return null
+    }
+
     const emitCloseToCli = (entry: TerminalRegistryEntry): void => {
         const cliSocket = cliNamespace.sockets.get(entry.cliSocketId)
         if (!cliSocket || cliSocket.data.namespace !== namespace) {
             return
         }
-        cliSocket.emit('terminal:close', {
-            sessionId: entry.sessionId,
-            terminalId: entry.terminalId
-        })
+        const scope = getEntryScope(entry)
+        if (!scope) return
+        cliSocket.emit('terminal:close', { ...scope, terminalId: entry.terminalId })
     }
 
-    const pickCliSocketId = (sessionId: string): string | null => {
-        const room = cliNamespace.adapter.rooms.get(`session:${sessionId}`)
+    const pickCliSocketId = (scope: { sessionId: string } | { machineId: string }): string | null => {
+        const roomId = 'sessionId' in scope ? `session:${scope.sessionId}` : `machine:${scope.machineId}`
+        const room = cliNamespace.adapter.rooms.get(roomId)
         if (!room || room.size === 0) {
             return null
         }
@@ -88,33 +95,59 @@ export function registerTerminalHandlers(socket: SocketWithData, deps: TerminalH
             return
         }
 
-        const { sessionId, terminalId, cols, rows } = parsed.data
-        const session = getSession(sessionId)
-        if (!namespace || !session || session.namespace !== namespace || !session.active) {
-            emitTerminalError(terminalId, 'Session is inactive or unavailable.')
+        const { sessionId, machineId, terminalId, cols, rows, cwd } = parsed.data
+        const scope = sessionId ? { sessionId } : machineId ? { machineId } : null
+        if (!scope) {
+            emitTerminalError(terminalId, 'Terminal scope is unavailable.')
             return
         }
 
+        if (sessionId) {
+            const session = getSession(sessionId)
+            if (!namespace || !session || session.namespace !== namespace || !session.active) {
+                emitTerminalError(terminalId, 'Session is inactive or unavailable.')
+                return
+            }
+        } else if (machineId) {
+            const machine = getMachine(machineId)
+            if (!namespace || !machine || machine.namespace !== namespace || !machine.active) {
+                emitTerminalError(terminalId, 'Machine is inactive or unavailable.')
+                return
+            }
+        }
+
         const existingEntry = terminalRegistry.get(terminalId)
-        const isReconnect = existingEntry?.sessionId === sessionId
+        const isReconnect = existingEntry?.sessionId === sessionId && existingEntry?.machineId === machineId
 
         if (!isReconnect && terminalRegistry.countForSocket(socket.id) >= maxTerminalsPerSocket) {
             emitTerminalError(terminalId, `Too many terminals open (max ${maxTerminalsPerSocket}).`)
             return
         }
 
-        if (!isReconnect && terminalRegistry.countForSession(sessionId) >= maxTerminalsPerSession) {
-            emitTerminalError(terminalId, `Too many terminals open for this session (max ${maxTerminalsPerSession}).`)
+        const scopeCount = sessionId
+            ? terminalRegistry.countForSession(sessionId)
+            : machineId
+              ? terminalRegistry.countForMachine(machineId)
+              : 0
+        const scopeLabel = sessionId ? 'session' : 'machine'
+        if (!isReconnect && scopeCount >= maxTerminalsPerSession) {
+            emitTerminalError(terminalId, `Too many terminals open for this ${scopeLabel} (max ${maxTerminalsPerSession}).`)
             return
         }
 
-        const cliSocketId = pickCliSocketId(sessionId)
+        const cliSocketId = pickCliSocketId(scope)
         if (!cliSocketId) {
-            emitTerminalError(terminalId, 'CLI is not connected for this session.')
+            emitTerminalError(terminalId, `CLI is not connected for this ${scopeLabel}.`)
             return
         }
 
-        const entry = terminalRegistry.register(terminalId, sessionId, socket.id, cliSocketId)
+        const entry = terminalRegistry.register({
+            terminalId,
+            sessionId,
+            machineId,
+            socketId: socket.id,
+            cliSocketId
+        })
         if (!entry) {
             emitTerminalError(terminalId, 'Terminal ID is already in use.')
             return
@@ -123,15 +156,16 @@ export function registerTerminalHandlers(socket: SocketWithData, deps: TerminalH
         const cliSocket = cliNamespace.sockets.get(cliSocketId)
         if (!cliSocket) {
             terminalRegistry.remove(terminalId)
-            emitTerminalError(terminalId, 'CLI is not connected for this session.')
+            emitTerminalError(terminalId, `CLI is not connected for this ${scopeLabel}.`)
             return
         }
 
         cliSocket.emit('terminal:open', {
-            sessionId,
+            ...scope,
             terminalId,
             cols,
-            rows
+            rows,
+            ...(cwd ? { cwd } : {})
         })
         terminalRegistry.markActivity(terminalId)
     })
@@ -152,8 +186,10 @@ export function registerTerminalHandlers(socket: SocketWithData, deps: TerminalH
         if (!cliSocket) {
             return
         }
+        const entryScope = getEntryScope(entry)
+        if (!entryScope) return
         cliSocket.emit('terminal:write', {
-            sessionId: entry.sessionId,
+            ...entryScope,
             terminalId,
             data: payload
         })
@@ -176,8 +212,10 @@ export function registerTerminalHandlers(socket: SocketWithData, deps: TerminalH
         if (!cliSocket) {
             return
         }
+        const entryScope = getEntryScope(entry)
+        if (!entryScope) return
         cliSocket.emit('terminal:resize', {
-            sessionId: entry.sessionId,
+            ...entryScope,
             terminalId,
             cols,
             rows

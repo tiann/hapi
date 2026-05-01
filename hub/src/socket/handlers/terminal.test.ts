@@ -69,6 +69,7 @@ type Harness = {
 
 function createHarness(options?: {
     sessionActive?: boolean
+    machineActive?: boolean
     maxTerminalsPerSocket?: number
     maxTerminalsPerSession?: number
 }): Harness {
@@ -81,6 +82,7 @@ function createHarness(options?: {
     registerTerminalHandlers(terminalSocket as unknown as SocketWithData, {
         io: io as unknown as SocketServer,
         getSession: () => ({ active: options?.sessionActive ?? true, namespace: 'default' }),
+        getMachine: () => ({ active: options?.machineActive ?? true, namespace: 'default' }),
         terminalRegistry,
         maxTerminalsPerSocket: options?.maxTerminalsPerSocket ?? 4,
         maxTerminalsPerSession: options?.maxTerminalsPerSession ?? 4
@@ -93,6 +95,15 @@ function connectCliSocket(cliNamespace: FakeNamespace, cliSocket: FakeSocket, se
     cliSocket.data.namespace = 'default'
     cliNamespace.sockets.set(cliSocket.id, cliSocket)
     const roomId = `session:${sessionId}`
+    const room = cliNamespace.adapter.rooms.get(roomId) ?? new Set<string>()
+    room.add(cliSocket.id)
+    cliNamespace.adapter.rooms.set(roomId, room)
+}
+
+function connectMachineCliSocket(cliNamespace: FakeNamespace, cliSocket: FakeSocket, machineId: string): void {
+    cliSocket.data.namespace = 'default'
+    cliNamespace.sockets.set(cliSocket.id, cliSocket)
+    const roomId = `machine:${machineId}`
     const room = cliNamespace.adapter.rooms.get(roomId) ?? new Set<string>()
     room.add(cliSocket.id)
     cliNamespace.adapter.rooms.set(roomId, room)
@@ -176,6 +187,38 @@ describe('terminal socket handlers', () => {
             terminalId: 'terminal-1'
         })
         expect(terminalRegistry.get('terminal-1')).toBeNull()
+    })
+
+    it('opens a machine-scoped terminal without a chat session', () => {
+        const { terminalSocket, cliNamespace, terminalRegistry } = createHarness()
+        const cliSocket = new FakeSocket('cli-socket-machine')
+        connectMachineCliSocket(cliNamespace, cliSocket, 'machine-1')
+
+        terminalSocket.trigger('terminal:create', {
+            machineId: 'machine-1',
+            terminalId: 'terminal-machine',
+            cwd: '/repo',
+            cols: 120,
+            rows: 40
+        })
+
+        const openEvent = lastEmit(cliSocket, 'terminal:open')
+        expect(openEvent?.data).toEqual({
+            machineId: 'machine-1',
+            terminalId: 'terminal-machine',
+            cwd: '/repo',
+            cols: 120,
+            rows: 40
+        })
+        expect(terminalRegistry.get('terminal-machine')).not.toBeNull()
+
+        terminalSocket.trigger('terminal:close', {
+            terminalId: 'terminal-machine'
+        })
+        expect(lastEmit(cliSocket, 'terminal:close')?.data).toEqual({
+            machineId: 'machine-1',
+            terminalId: 'terminal-machine'
+        })
     })
 
     it('cleans up and notifies CLI on terminal socket disconnect', () => {

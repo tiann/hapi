@@ -14,8 +14,10 @@ function EditorTerminalBody(props: {
 }) {
     const { token, baseUrl } = useAppContext()
     const sessionId = props.tab.sessionId ?? null
+    const machineId = props.tab.machineId ?? null
+    const cwd = props.tab.cwd ?? undefined
     const { session, isLoading } = useSession(props.api, sessionId)
-    const terminalSupported = isRemoteTerminalSupported(session?.metadata)
+    const terminalSupported = sessionId ? isRemoteTerminalSupported(session?.metadata) : true
     const terminalRef = useRef<Terminal | null>(null)
     const inputDisposableRef = useRef<{ dispose: () => void } | null>(null)
     const connectOnceRef = useRef(false)
@@ -34,6 +36,8 @@ function EditorTerminalBody(props: {
         token,
         baseUrl,
         sessionId: sessionId ?? '',
+        machineId: machineId ?? '',
+        cwd,
         terminalId: props.tab.id
     })
 
@@ -61,7 +65,8 @@ function EditorTerminalBody(props: {
 
     const handleResize = useCallback((cols: number, rows: number) => {
         lastSizeRef.current = { cols, rows }
-        if (!sessionId || !session?.active || !terminalSupported) {
+        const isScopeActive = machineId ? true : Boolean(session?.active)
+        if ((!sessionId && !machineId) || !isScopeActive || !terminalSupported) {
             return
         }
         if (!connectOnceRef.current) {
@@ -70,10 +75,11 @@ function EditorTerminalBody(props: {
             return
         }
         resize(cols, rows)
-    }, [connect, resize, session?.active, sessionId, terminalSupported])
+    }, [connect, machineId, resize, session?.active, sessionId, terminalSupported])
 
     useEffect(() => {
-        if (!sessionId || !session?.active || !terminalSupported || connectOnceRef.current) {
+        const isScopeActive = machineId ? true : Boolean(session?.active)
+        if ((!sessionId && !machineId) || !isScopeActive || !terminalSupported || connectOnceRef.current) {
             return
         }
         const size = lastSizeRef.current
@@ -82,7 +88,7 @@ function EditorTerminalBody(props: {
         }
         connectOnceRef.current = true
         connect(size.cols, size.rows)
-    }, [connect, session?.active, sessionId, terminalSupported])
+    }, [connect, machineId, session?.active, sessionId, terminalSupported])
 
     useEffect(() => {
         if (terminalState.status === 'connecting' || terminalState.status === 'connected') {
@@ -91,11 +97,11 @@ function EditorTerminalBody(props: {
     }, [terminalState.status])
 
     useEffect(() => {
-        if (session?.active === false || !terminalSupported) {
+        if ((sessionId && session?.active === false) || !terminalSupported) {
             disconnect()
             connectOnceRef.current = false
         }
-    }, [disconnect, session?.active, terminalSupported])
+    }, [disconnect, session?.active, sessionId, terminalSupported])
 
     useEffect(() => {
         return () => {
@@ -105,7 +111,7 @@ function EditorTerminalBody(props: {
         }
     }, [disconnect])
 
-    if (!sessionId) {
+    if (!sessionId && !machineId) {
         return (
             <div className="flex min-h-0 flex-1 items-center justify-center p-4 text-xs text-[var(--app-hint)]">
                 Select or create a session to use terminal
@@ -113,7 +119,7 @@ function EditorTerminalBody(props: {
         )
     }
 
-    if (isLoading) {
+    if (sessionId && isLoading) {
         return (
             <div className="flex min-h-0 flex-1 items-center justify-center p-4 text-xs text-[var(--app-hint)]">
                 Loading terminal session...
@@ -122,7 +128,7 @@ function EditorTerminalBody(props: {
     }
 
     const status = terminalState.status
-    const errorMessage = !session
+    const errorMessage = sessionId && !session
         ? 'Terminal session is unavailable.'
         : !terminalSupported
         ? 'Remote terminal is not supported on this host.'
@@ -158,7 +164,7 @@ function EditorTerminalBody(props: {
                 </div>
             ) : null}
             <div className="min-h-0 flex-1 overflow-hidden p-2">
-                {terminalSupported && session?.active ? (
+                {terminalSupported && (machineId || session?.active) ? (
                     <TerminalView onMount={handleTerminalMount} onResize={handleResize} className="h-full w-full" />
                 ) : (
                     <div className="flex h-full items-center justify-center rounded border border-[var(--app-border)] text-xs text-[var(--app-hint)]">
@@ -240,15 +246,22 @@ export function EditorTerminal(props: {
                 </button>
             </div>
 
-            {!props.isCollapsed && (
-                activeTerminal ? (
-                    <EditorTerminalBody key={activeTerminal.id} api={props.api} tab={activeTerminal} />
-                ) : (
-                    <div className="flex min-h-0 flex-1 items-center justify-center p-4 text-xs text-[var(--app-hint)]">
-                        <div>No terminal open</div>
-                    </div>
-                )
-            )}
+            {terminalTabs.length > 0 ? (
+                <div className={`min-h-0 flex-1 overflow-hidden ${props.isCollapsed ? 'hidden' : ''}`}>
+                    {terminalTabs.map((tab) => {
+                        const isActive = tab.id === activeTerminal?.id
+                        return (
+                            <div key={tab.id} className={`h-full min-h-0 ${isActive ? 'block' : 'hidden'}`}>
+                                <EditorTerminalBody api={props.api} tab={tab} />
+                            </div>
+                        )
+                    })}
+                </div>
+            ) : !props.isCollapsed ? (
+                <div className="flex min-h-0 flex-1 items-center justify-center p-4 text-xs text-[var(--app-hint)]">
+                    <div>No terminal open</div>
+                </div>
+            ) : null}
         </div>
     )
 }

@@ -9,6 +9,12 @@ import { basename, dirname, isAbsolute, join, relative, resolve as resolvePath }
 import { logger } from '@/ui/logger'
 import { configuration } from '@/configuration'
 import type { Update, UpdateMachineBody } from '@hapi/protocol'
+import {
+    TerminalClosePayloadSchema,
+    TerminalOpenPayloadSchema,
+    TerminalResizePayloadSchema,
+    TerminalWritePayloadSchema
+} from '@hapi/protocol'
 import type { RunnerState, Machine, MachineMetadata } from './types'
 import { RunnerStateSchema, MachineMetadataSchema } from './types'
 import { backoff } from '@/utils/time'
@@ -16,6 +22,7 @@ import { getInvokedCwd } from '@/utils/invokedCwd'
 import { RpcHandlerManager } from './rpc/RpcHandlerManager'
 import { registerCommonHandlers } from '../modules/common/registerCommonHandlers'
 import { registerEditorRpcHandlers } from '../modules/editorRpc'
+import { TerminalManager } from '@/terminal/TerminalManager'
 import type { SpawnSessionOptions, SpawnSessionResult } from '../modules/common/rpcTypes'
 import { applyVersionedAck } from './versionedUpdate'
 import { buildSocketIoExtraHeaderOptions } from './hubExtraHeaders'
@@ -23,6 +30,10 @@ import { buildSocketIoExtraHeaderOptions } from './hubExtraHeaders'
 interface ServerToRunnerEvents {
     update: (data: Update) => void
     'rpc-request': (data: { method: string; params: string }, callback: (response: string) => void) => void
+    'terminal:open': (data: unknown) => void
+    'terminal:write': (data: unknown) => void
+    'terminal:resize': (data: unknown) => void
+    'terminal:close': (data: unknown) => void
     error: (data: { message: string }) => void
 }
 
@@ -52,6 +63,10 @@ interface RunnerToServerEvents {
     }) => void) => void
     'rpc-register': (data: { method: string }) => void
     'rpc-unregister': (data: { method: string }) => void
+    'terminal:ready': (data: unknown) => void
+    'terminal:output': (data: unknown) => void
+    'terminal:exit': (data: unknown) => void
+    'terminal:error': (data: unknown) => void
 }
 
 type MachineRpcHandlers = {
@@ -90,6 +105,7 @@ export class ApiMachineClient {
     private socket!: Socket<ServerToRunnerEvents, RunnerToServerEvents>
     private keepAliveInterval: NodeJS.Timeout | null = null
     private rpcHandlerManager: RpcHandlerManager
+    private readonly terminalManager: TerminalManager
 
     private readonly normalizedWorkspaceRoot: string | undefined
 
@@ -119,6 +135,14 @@ export class ApiMachineClient {
 
         registerCommonHandlers(this.rpcHandlerManager, getInvokedCwd())
         registerEditorRpcHandlers(this.rpcHandlerManager, this.workspaceRoot ?? this.machine.metadata?.homeDir ?? getInvokedCwd())
+        this.terminalManager = new TerminalManager({
+            machineId: this.machine.id,
+            getSessionPath: () => this.workspaceRoot ?? this.machine.metadata?.homeDir ?? getInvokedCwd(),
+            onReady: (payload) => this.socket.emit('terminal:ready', payload),
+            onOutput: (payload) => this.socket.emit('terminal:output', payload),
+            onExit: (payload) => this.socket.emit('terminal:exit', payload),
+            onError: (payload) => this.socket.emit('terminal:error', payload)
+        })
 
         this.rpcHandlerManager.registerHandler<PathExistsRequest, PathExistsResponse>('path-exists', async (params) => {
             const rawPaths = Array.isArray(params?.paths) ? params.paths : []
@@ -434,12 +458,57 @@ export class ApiMachineClient {
         this.socket.on('disconnect', () => {
             logger.debug('[API MACHINE] Disconnected from bot')
             this.rpcHandlerManager.onSocketDisconnect()
+            this.terminalManager.closeAll()
             this.stopKeepAlive()
         })
 
         this.socket.on('rpc-request', async (data: { method: string; params: string }, callback: (response: string) => void) => {
             callback(await this.rpcHandlerManager.handleRequest(data))
         })
+
+        const handleTerminalEvent = <T extends { machineId?: string }>(
+            schema: { safeParse: (data: unknown) => { success: true; data: T } | { success: false } },
+            handler: (payload: T) => void | Promise<void>
+        ) => (data: unknown) => {
+            const parsed = schema.safeParse(data)
+            if (!parsed.success) {
+                return
+            }
+            if (parsed.data.machineId !== this.machine.id) {
+                return
+            }
+            void handler(parsed.data)
+        }
+
+        this.socket.on('terminal:open', handleTerminalEvent(TerminalOpenPayloadSchema, async (payload) => {
+            const cwd = typeof payload.cwd === 'string' ? payload.cwd : undefined
+            if (cwd && this.normalizedWorkspaceRoot) {
+                const resolvedCwd = await this.resolveForWorkspaceCheck(cwd)
+                if (!this.isWithinWorkspaceRoot(resolvedCwd)) {
+                    this.socket.emit('terminal:error', {
+                        machineId: this.machine.id,
+                        terminalId: payload.terminalId,
+                        message: 'Terminal path is outside this machine workspace root.'
+                    })
+                    return
+                }
+                this.terminalManager.create(payload.terminalId, payload.cols, payload.rows, resolvedCwd)
+                return
+            }
+            this.terminalManager.create(payload.terminalId, payload.cols, payload.rows, cwd)
+        }))
+
+        this.socket.on('terminal:write', handleTerminalEvent(TerminalWritePayloadSchema, (payload) => {
+            this.terminalManager.write(payload.terminalId, payload.data)
+        }))
+
+        this.socket.on('terminal:resize', handleTerminalEvent(TerminalResizePayloadSchema, (payload) => {
+            this.terminalManager.resize(payload.terminalId, payload.cols, payload.rows)
+        }))
+
+        this.socket.on('terminal:close', handleTerminalEvent(TerminalClosePayloadSchema, (payload) => {
+            this.terminalManager.close(payload.terminalId)
+        }))
 
         this.socket.on('update', (data: Update) => {
             if (data.body.t !== 'update-machine') {
@@ -505,6 +574,7 @@ export class ApiMachineClient {
 
     shutdown(): void {
         this.stopKeepAlive()
+        this.terminalManager.closeAll()
         if (this.socket) {
             this.socket.close()
         }

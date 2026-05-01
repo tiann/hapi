@@ -58,12 +58,18 @@ describe('cli terminal handlers', () => {
         const terminalRegistry = new TerminalRegistry({ idleTimeoutMs: 0 })
 
         terminalNamespace.sockets.set(terminalSocket.id, terminalSocket)
-        terminalRegistry.register('terminal-1', 'session-1', terminalSocket.id, cliSocket.id)
+        terminalRegistry.register({
+            terminalId: 'terminal-1',
+            sessionId: 'session-1',
+            socketId: terminalSocket.id,
+            cliSocketId: cliSocket.id
+        })
 
         registerTerminalHandlers(cliSocket as unknown as CliSocketWithData, {
             terminalRegistry,
             terminalNamespace: terminalNamespace as never,
             resolveSessionAccess: () => ({ ok: true, value: {} as StoredSession }),
+            resolveMachineAccess: () => ({ ok: true, value: {} as never }),
             emitAccessError: () => {
                 throw new Error('Unexpected access error')
             }
@@ -80,6 +86,45 @@ describe('cli terminal handlers', () => {
             sessionId: 'session-1',
             terminalId: 'terminal-1',
             message: 'Remote terminal is not supported on Windows yet.'
+        })
+    })
+
+    it('forwards machine-scoped terminal output without session access', () => {
+        const cliSocket = new FakeSocket('cli-socket')
+        const terminalSocket = new FakeSocket('terminal-socket')
+        const terminalNamespace = new FakeNamespace()
+        const terminalRegistry = new TerminalRegistry({ idleTimeoutMs: 0 })
+
+        terminalNamespace.sockets.set(terminalSocket.id, terminalSocket)
+        terminalRegistry.register({
+            terminalId: 'terminal-machine',
+            machineId: 'machine-1',
+            socketId: terminalSocket.id,
+            cliSocketId: cliSocket.id
+        })
+
+        registerTerminalHandlers(cliSocket as unknown as CliSocketWithData, {
+            terminalRegistry,
+            terminalNamespace: terminalNamespace as never,
+            resolveSessionAccess: () => {
+                throw new Error('Session access should not be checked')
+            },
+            resolveMachineAccess: () => ({ ok: true, value: {} as never }),
+            emitAccessError: () => {
+                throw new Error('Unexpected access error')
+            }
+        })
+
+        cliSocket.trigger('terminal:output', {
+            machineId: 'machine-1',
+            terminalId: 'terminal-machine',
+            data: 'hello'
+        })
+
+        expect(lastEmit(terminalSocket, 'terminal:output')?.data).toEqual({
+            machineId: 'machine-1',
+            terminalId: 'terminal-machine',
+            data: 'hello'
         })
     })
 })

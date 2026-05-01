@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ApiClient } from '@/api/client'
@@ -52,7 +52,7 @@ vi.mock('./EditorTabs', () => ({
 
 vi.mock('./EditorTerminal', () => ({
     EditorTerminal: (props: {
-        tabs: Array<{ id: string; label: string; sessionId?: string }>
+        tabs: Array<{ id: string; label: string; sessionId?: string; machineId?: string; cwd?: string }>
         activeTabId: string | null
         onOpenTerminal: () => void
         isCollapsed: boolean
@@ -60,7 +60,7 @@ vi.mock('./EditorTerminal', () => ({
     }) => (
         <div data-testid="editor-terminal">
             Terminal collapsed: {props.isCollapsed ? 'yes' : 'no'}
-            <div>Terminal tabs: {props.tabs.map((tab) => `${tab.label}:${tab.sessionId ?? ''}`).join(',')}</div>
+            <div>Terminal tabs: {props.tabs.map((tab) => `${tab.label}:${tab.sessionId ?? tab.machineId ?? ''}:${tab.cwd ?? ''}`).join(',')}</div>
             <div>Active terminal: {props.activeTabId ?? ''}</div>
             <button type="button" onClick={() => props.onOpenTerminal()}>Mock open terminal</button>
             <button type="button" onClick={() => props.onToggleCollapsed()}>Mock toggle terminal</button>
@@ -199,10 +199,9 @@ describe('EditorLayout', () => {
     it('opens terminal only in the terminal panel and toggles terminal collapse', () => {
         renderEditorLayout({} as ApiClient)
 
-        fireEvent.click(screen.getByText('Select session'))
         fireEvent.click(screen.getByText('Mock open terminal'))
         expect(screen.getByTestId('editor-tabs')).not.toHaveTextContent('Terminal: bash')
-        expect(screen.getByTestId('editor-terminal')).toHaveTextContent('Terminal tabs: Terminal: bash:session-1')
+        expect(screen.getByTestId('editor-terminal')).toHaveTextContent('Terminal tabs: Terminal: bash:machine-1:/repo')
 
         expect(screen.getByTestId('editor-terminal')).toHaveTextContent('Terminal collapsed: no')
         expect(screen.getByTestId('editor-terminal').parentElement).toHaveStyle({ height: '210px' })
@@ -213,19 +212,13 @@ describe('EditorLayout', () => {
         expect(screen.getByTestId('editor-terminal').parentElement).toHaveStyle({ height: '32px' })
     })
 
-    it('creates a session before opening a terminal when no session is active', () => {
+    it('does not create a chat session before opening a machine terminal', () => {
         renderEditorLayout({} as ApiClient)
 
         fireEvent.click(screen.getByText('Mock open terminal'))
-        expect(mocks.createSession).toHaveBeenCalled()
-        expect(screen.getByTestId('editor-terminal')).toHaveTextContent('Terminal tabs:')
-
-        act(() => {
-            mocks.lastNewSessionArgs?.onCreated('session-new')
-        })
-
+        expect(mocks.createSession).not.toHaveBeenCalled()
         expect(screen.getByTestId('editor-tabs')).not.toHaveTextContent('Terminal: bash')
-        expect(screen.getByTestId('editor-terminal')).toHaveTextContent('Terminal tabs: Terminal: bash:session-new')
+        expect(screen.getByTestId('editor-terminal')).toHaveTextContent('Terminal tabs: Terminal: bash:machine-1:/repo')
     })
 
     it('starts inline new-file flow and opens the created file', async () => {

@@ -4,12 +4,13 @@ import {
     TerminalOutputPayloadSchema,
     TerminalReadyPayloadSchema
 } from '@hapi/protocol'
-import type { StoredSession } from '../../../store'
+import type { StoredMachine, StoredSession } from '../../../store'
 import type { TerminalRegistry } from '../../terminalRegistry'
 import type { CliSocketWithData, SocketServer } from '../../socketTypes'
 import type { AccessErrorReason, AccessResult } from './types'
 
 type ResolveSessionAccess = (sessionId: string) => AccessResult<StoredSession>
+type ResolveMachineAccess = (machineId: string) => AccessResult<StoredMachine>
 
 type EmitAccessError = (scope: 'session' | 'machine', id: string, reason: AccessErrorReason) => void
 
@@ -24,13 +25,14 @@ export type TerminalHandlersDeps = {
     terminalRegistry: TerminalRegistry
     terminalNamespace: SocketNamespace
     resolveSessionAccess: ResolveSessionAccess
+    resolveMachineAccess: ResolveMachineAccess
     emitAccessError: EmitAccessError
 }
 
 export function registerTerminalHandlers(socket: CliSocketWithData, deps: TerminalHandlersDeps): void {
-    const { terminalRegistry, terminalNamespace, resolveSessionAccess, emitAccessError } = deps
+    const { terminalRegistry, terminalNamespace, resolveSessionAccess, resolveMachineAccess, emitAccessError } = deps
 
-    const forwardTerminalEvent = (event: string, payload: { sessionId: string; terminalId: string } & Record<string, unknown>) => {
+    const forwardTerminalEvent = (event: string, payload: { sessionId?: string; machineId?: string; terminalId: string } & Record<string, unknown>) => {
         const entry = terminalRegistry.get(payload.terminalId)
         if (!entry) {
             return
@@ -38,13 +40,21 @@ export function registerTerminalHandlers(socket: CliSocketWithData, deps: Termin
         if (entry.cliSocketId !== socket.id) {
             return
         }
-        if (payload.sessionId !== entry.sessionId) {
+        if (payload.sessionId !== entry.sessionId || payload.machineId !== entry.machineId) {
             return
         }
-        const sessionAccess = resolveSessionAccess(payload.sessionId)
-        if (!sessionAccess.ok) {
-            emitAccessError('session', payload.sessionId, sessionAccess.reason)
-            return
+        if (payload.sessionId) {
+            const sessionAccess = resolveSessionAccess(payload.sessionId)
+            if (!sessionAccess.ok) {
+                emitAccessError('session', payload.sessionId, sessionAccess.reason)
+                return
+            }
+        } else if (payload.machineId) {
+            const machineAccess = resolveMachineAccess(payload.machineId)
+            if (!machineAccess.ok) {
+                emitAccessError('machine', payload.machineId, machineAccess.reason)
+                return
+            }
         }
         const terminalSocket = terminalNamespace.sockets.get(entry.socketId)
         if (!terminalSocket) {
@@ -77,7 +87,7 @@ export function registerTerminalHandlers(socket: CliSocketWithData, deps: Termin
             return
         }
         const entry = terminalRegistry.get(parsed.data.terminalId)
-        if (!entry || entry.sessionId !== parsed.data.sessionId || entry.cliSocketId !== socket.id) {
+        if (!entry || entry.sessionId !== parsed.data.sessionId || entry.machineId !== parsed.data.machineId || entry.cliSocketId !== socket.id) {
             return
         }
         terminalRegistry.remove(parsed.data.terminalId)
@@ -95,15 +105,24 @@ export function registerTerminalHandlers(socket: CliSocketWithData, deps: Termin
         }
 
         const entry = terminalRegistry.get(parsed.data.terminalId)
-        if (!entry || entry.sessionId !== parsed.data.sessionId || entry.cliSocketId !== socket.id) {
+        if (!entry || entry.sessionId !== parsed.data.sessionId || entry.machineId !== parsed.data.machineId || entry.cliSocketId !== socket.id) {
             return
         }
 
-        const sessionAccess = resolveSessionAccess(parsed.data.sessionId)
-        if (!sessionAccess.ok) {
-            terminalRegistry.remove(parsed.data.terminalId)
-            emitAccessError('session', parsed.data.sessionId, sessionAccess.reason)
-            return
+        if (parsed.data.sessionId) {
+            const sessionAccess = resolveSessionAccess(parsed.data.sessionId)
+            if (!sessionAccess.ok) {
+                terminalRegistry.remove(parsed.data.terminalId)
+                emitAccessError('session', parsed.data.sessionId, sessionAccess.reason)
+                return
+            }
+        } else if (parsed.data.machineId) {
+            const machineAccess = resolveMachineAccess(parsed.data.machineId)
+            if (!machineAccess.ok) {
+                terminalRegistry.remove(parsed.data.terminalId)
+                emitAccessError('machine', parsed.data.machineId, machineAccess.reason)
+                return
+            }
         }
 
         const terminalSocket = terminalNamespace.sockets.get(entry.socketId)
@@ -117,6 +136,7 @@ export function cleanupTerminalHandlers(socket: CliSocketWithData, deps: { termi
     for (const entry of removed) {
         const terminalSocket = deps.terminalNamespace.sockets.get(entry.socketId)
         terminalSocket?.emit('terminal:error', {
+            ...(entry.sessionId ? { sessionId: entry.sessionId } : { machineId: entry.machineId }),
             terminalId: entry.terminalId,
             message: 'CLI disconnected.'
         })

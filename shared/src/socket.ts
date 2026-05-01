@@ -3,68 +3,68 @@ import type { CodexCollaborationMode, PermissionMode } from './modes'
 
 export type SocketErrorReason = 'namespace-missing' | 'access-denied' | 'not-found'
 
-export const TerminalOpenPayloadSchema = z.object({
-    sessionId: z.string().min(1),
+const TerminalScopeSchema = z.object({
+    sessionId: z.string().min(1).optional(),
+    machineId: z.string().min(1).optional()
+}).refine((value) => Boolean(value.sessionId) !== Boolean(value.machineId), {
+    message: 'Exactly one of sessionId or machineId is required'
+})
+
+export const TerminalOpenPayloadSchema = TerminalScopeSchema.and(z.object({
     terminalId: z.string().min(1),
     cols: z.number().int().positive(),
-    rows: z.number().int().positive()
-})
+    rows: z.number().int().positive(),
+    cwd: z.string().min(1).optional()
+}))
 
 export type TerminalOpenPayload = z.infer<typeof TerminalOpenPayloadSchema>
 
-export const TerminalWritePayloadSchema = z.object({
-    sessionId: z.string().min(1),
+export const TerminalWritePayloadSchema = TerminalScopeSchema.and(z.object({
     terminalId: z.string().min(1),
     data: z.string()
-})
+}))
 
 export type TerminalWritePayload = z.infer<typeof TerminalWritePayloadSchema>
 
-export const TerminalResizePayloadSchema = z.object({
-    sessionId: z.string().min(1),
+export const TerminalResizePayloadSchema = TerminalScopeSchema.and(z.object({
     terminalId: z.string().min(1),
     cols: z.number().int().positive(),
     rows: z.number().int().positive()
-})
+}))
 
 export type TerminalResizePayload = z.infer<typeof TerminalResizePayloadSchema>
 
-export const TerminalClosePayloadSchema = z.object({
-    sessionId: z.string().min(1),
+export const TerminalClosePayloadSchema = TerminalScopeSchema.and(z.object({
     terminalId: z.string().min(1)
-})
+}))
 
 export type TerminalClosePayload = z.infer<typeof TerminalClosePayloadSchema>
 
-export const TerminalReadyPayloadSchema = z.object({
-    sessionId: z.string().min(1),
+export const TerminalReadyPayloadSchema = TerminalScopeSchema.and(z.object({
     terminalId: z.string().min(1)
-})
+}))
 
 export type TerminalReadyPayload = z.infer<typeof TerminalReadyPayloadSchema>
 
-export const TerminalOutputPayloadSchema = z.object({
-    sessionId: z.string().min(1),
+export const TerminalOutputPayloadSchema = TerminalScopeSchema.and(z.object({
     terminalId: z.string().min(1),
     data: z.string()
-})
+}))
 
 export type TerminalOutputPayload = z.infer<typeof TerminalOutputPayloadSchema>
 
-export const TerminalExitPayloadSchema = z.object({
-    sessionId: z.string().min(1),
+export const TerminalExitPayloadSchema = TerminalScopeSchema.and(z.object({
     terminalId: z.string().min(1),
     code: z.number().int().nullable(),
     signal: z.string().nullable()
-})
+}))
 
 export type TerminalExitPayload = z.infer<typeof TerminalExitPayloadSchema>
 
-export const TerminalErrorPayloadSchema = z.object({
-    sessionId: z.string().min(1),
+export const TerminalErrorPayloadSchema = TerminalScopeSchema.and(z.object({
     terminalId: z.string().min(1),
     message: z.string()
-})
+}))
 
 export type TerminalErrorPayload = z.infer<typeof TerminalErrorPayloadSchema>
 export const SessionEndReasonSchema = z.enum(['completed', 'terminated', 'error'])

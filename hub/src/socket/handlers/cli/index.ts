@@ -120,6 +120,7 @@ export function registerCliHandlers(socket: CliSocketWithData, deps: CliHandlers
         terminalRegistry,
         terminalNamespace,
         resolveSessionAccess,
+        resolveMachineAccess,
         emitAccessError
     })
 

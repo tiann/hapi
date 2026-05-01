@@ -1,9 +1,18 @@
 export type TerminalRegistryEntry = {
     terminalId: string
-    sessionId: string
+    sessionId?: string
+    machineId?: string
     socketId: string
     cliSocketId: string
     idleTimer: ReturnType<typeof setTimeout> | null
+}
+
+export type TerminalRegistryRegisterOptions = {
+    terminalId: string
+    sessionId?: string
+    machineId?: string
+    socketId: string
+    cliSocketId: string
 }
 
 type TerminalRegistryOptions = {
@@ -15,6 +24,7 @@ export class TerminalRegistry {
     private readonly terminals = new Map<string, TerminalRegistryEntry>()
     private readonly terminalsBySocket = new Map<string, Set<string>>()
     private readonly terminalsBySession = new Map<string, Set<string>>()
+    private readonly terminalsByMachine = new Map<string, Set<string>>()
     private readonly terminalsByCliSocket = new Map<string, Set<string>>()
     private readonly idleTimeoutMs: number
     private readonly onIdle?: (entry: TerminalRegistryEntry) => void
@@ -24,16 +34,36 @@ export class TerminalRegistry {
         this.onIdle = options.onIdle
     }
 
-    register(terminalId: string, sessionId: string, socketId: string, cliSocketId: string): TerminalRegistryEntry | null {
+    register(options: TerminalRegistryRegisterOptions): TerminalRegistryEntry | null
+    register(terminalId: string, sessionId: string, socketId: string, cliSocketId: string): TerminalRegistryEntry | null
+    register(
+        optionsOrTerminalId: TerminalRegistryRegisterOptions | string,
+        legacySessionId?: string,
+        legacySocketId?: string,
+        legacyCliSocketId?: string
+    ): TerminalRegistryEntry | null {
+        const options = typeof optionsOrTerminalId === 'string'
+            ? {
+                terminalId: optionsOrTerminalId,
+                sessionId: legacySessionId,
+                socketId: legacySocketId ?? '',
+                cliSocketId: legacyCliSocketId ?? ''
+            }
+            : optionsOrTerminalId
+        const { terminalId, sessionId, machineId, socketId, cliSocketId } = options
+        if (Boolean(sessionId) === Boolean(machineId)) {
+            return null
+        }
+
         const existing = this.terminals.get(terminalId)
         if (existing) {
             if (existing.socketId === socketId) {
                 return existing
             }
-            if (existing.sessionId !== sessionId) {
+            if (existing.sessionId !== sessionId || existing.machineId !== machineId) {
                 return null
             }
-            // Same session, different socket — stale entry from a previous
+            // Same scope, different socket — stale entry from a previous
             // connection (e.g. socket reconnect in a PWA). Terminal IDs are
             // client-generated UUIDs so cross-client collisions are not a
             // realistic concern; clean up and re-register.
@@ -43,6 +73,7 @@ export class TerminalRegistry {
         const entry: TerminalRegistryEntry = {
             terminalId,
             sessionId,
+            machineId,
             socketId,
             cliSocketId,
             idleTimer: null
@@ -50,7 +81,12 @@ export class TerminalRegistry {
 
         this.terminals.set(terminalId, entry)
         this.addToIndex(this.terminalsBySocket, socketId, terminalId)
-        this.addToIndex(this.terminalsBySession, sessionId, terminalId)
+        if (sessionId) {
+            this.addToIndex(this.terminalsBySession, sessionId, terminalId)
+        }
+        if (machineId) {
+            this.addToIndex(this.terminalsByMachine, machineId, terminalId)
+        }
         this.addToIndex(this.terminalsByCliSocket, cliSocketId, terminalId)
         this.scheduleIdle(entry)
 
@@ -77,7 +113,12 @@ export class TerminalRegistry {
 
         this.terminals.delete(terminalId)
         this.removeFromIndex(this.terminalsBySocket, entry.socketId, terminalId)
-        this.removeFromIndex(this.terminalsBySession, entry.sessionId, terminalId)
+        if (entry.sessionId) {
+            this.removeFromIndex(this.terminalsBySession, entry.sessionId, terminalId)
+        }
+        if (entry.machineId) {
+            this.removeFromIndex(this.terminalsByMachine, entry.machineId, terminalId)
+        }
         this.removeFromIndex(this.terminalsByCliSocket, entry.cliSocketId, terminalId)
         if (entry.idleTimer) {
             clearTimeout(entry.idleTimer)
@@ -108,6 +149,10 @@ export class TerminalRegistry {
 
     countForSession(sessionId: string): number {
         return this.terminalsBySession.get(sessionId)?.size ?? 0
+    }
+
+    countForMachine(machineId: string): number {
+        return this.terminalsByMachine.get(machineId)?.size ?? 0
     }
 
     private scheduleIdle(entry: TerminalRegistryEntry): void {

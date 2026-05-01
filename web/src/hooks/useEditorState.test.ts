@@ -39,16 +39,16 @@ describe('useEditorState', () => {
         expect(result.current.activeTabId).toBe(firstTabId)
     })
 
-    it('opens terminal tabs with shell labels, session ids, and activates the new tab', () => {
+    it('opens terminal tabs with shell labels, scope data, and activates the new tab', () => {
         const { result } = renderHook(() => useEditorState())
 
         act(() => {
-            result.current.openTerminal({ sessionId: 'session-1' })
+            result.current.openTerminal({ machineId: 'machine-1', cwd: '/repo' })
             result.current.openTerminal({ shell: 'zsh', sessionId: 'session-2' })
         })
 
         expect(result.current.tabs).toEqual([
-            expect.objectContaining({ type: 'terminal', label: 'Terminal: bash', shell: 'bash', sessionId: 'session-1' }),
+            expect.objectContaining({ type: 'terminal', label: 'Terminal: bash', shell: 'bash', machineId: 'machine-1', cwd: '/repo' }),
             expect.objectContaining({ type: 'terminal', label: 'Terminal: zsh (2)', shell: 'zsh', sessionId: 'session-2' })
         ])
         expect(result.current.activeTabId).toBe(result.current.tabs[1].id)

@@ -91,7 +91,7 @@ export function createSocketServer(deps: SocketServerDeps): {
             })
             const cliSocket = cliNs.sockets.get(entry.cliSocketId)
             cliSocket?.emit('terminal:close', {
-                sessionId: entry.sessionId,
+                ...(entry.sessionId ? { sessionId: entry.sessionId } : { machineId: entry.machineId }),
                 terminalId: entry.terminalId
             })
         }
@@ -145,6 +145,9 @@ export function createSocketServer(deps: SocketServerDeps): {
         io,
         getSession: (sessionId) => {
             return deps.getSession?.(sessionId) ?? deps.store.sessions.getSession(sessionId)
+        },
+        getMachine: (machineId) => {
+            return deps.store.machines.getMachine(machineId)
         },
         terminalRegistry,
         maxTerminalsPerSocket,

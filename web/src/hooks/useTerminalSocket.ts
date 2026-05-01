@@ -10,7 +10,9 @@ type TerminalConnectionState =
 type UseTerminalSocketOptions = {
     baseUrl: string
     token: string
-    sessionId: string
+    sessionId?: string
+    machineId?: string
+    cwd?: string
     terminalId: string
 }
 
@@ -48,6 +50,8 @@ export function useTerminalSocket(options: UseTerminalSocketOptions): {
     const outputHandlerRef = useRef<(data: string) => void>(() => {})
     const exitHandlerRef = useRef<(code: number | null, signal: string | null) => void>(() => {})
     const sessionIdRef = useRef(options.sessionId)
+    const machineIdRef = useRef(options.machineId)
+    const cwdRef = useRef(options.cwd)
     const terminalIdRef = useRef(options.terminalId)
     const tokenRef = useRef(options.token)
     const baseUrlRef = useRef(options.baseUrl)
@@ -55,9 +59,11 @@ export function useTerminalSocket(options: UseTerminalSocketOptions): {
 
     useEffect(() => {
         sessionIdRef.current = options.sessionId
+        machineIdRef.current = options.machineId
+        cwdRef.current = options.cwd
         terminalIdRef.current = options.terminalId
         baseUrlRef.current = options.baseUrl
-    }, [options.sessionId, options.terminalId, options.baseUrl])
+    }, [options.sessionId, options.machineId, options.cwd, options.terminalId, options.baseUrl])
 
     useEffect(() => {
         tokenRef.current = options.token
@@ -82,10 +88,11 @@ export function useTerminalSocket(options: UseTerminalSocketOptions): {
 
     const emitCreate = useCallback((socket: Socket, size: { cols: number; rows: number }) => {
         socket.emit('terminal:create', {
-            sessionId: sessionIdRef.current,
+            ...(sessionIdRef.current ? { sessionId: sessionIdRef.current } : { machineId: machineIdRef.current }),
             terminalId: terminalIdRef.current,
             cols: size.cols,
-            rows: size.rows
+            rows: size.rows,
+            ...(cwdRef.current ? { cwd: cwdRef.current } : {})
         })
     }, [])
 
@@ -97,9 +104,10 @@ export function useTerminalSocket(options: UseTerminalSocketOptions): {
         lastSizeRef.current = { cols, rows }
         const token = tokenRef.current
         const sessionId = sessionIdRef.current
+        const machineId = machineIdRef.current
         const terminalId = terminalIdRef.current
 
-        if (!token || !sessionId || !terminalId) {
+        if (!token || !terminalId || (!sessionId && !machineId)) {
             setErrorState('Missing terminal credentials.')
             return
         }
