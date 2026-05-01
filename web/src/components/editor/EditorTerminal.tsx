@@ -250,6 +250,7 @@ export function EditorTerminal(props: {
     onOpenTerminal: () => void
     onToggleCollapsed: () => void
     onAddToChat?: (text: string) => void
+    onRegisterTerminalClose?: (tabId: string, close: (() => void) | null) => void
 }) {
     const closeByTerminalIdRef = useRef<Map<string, () => void>>(new Map())
     const terminalTabs = useMemo(
@@ -260,10 +261,12 @@ export function EditorTerminal(props: {
     const handleRegisterClose = useCallback((tabId: string, close: (() => void) | null) => {
         if (!close) {
             closeByTerminalIdRef.current.delete(tabId)
+            props.onRegisterTerminalClose?.(tabId, null)
             return
         }
         closeByTerminalIdRef.current.set(tabId, close)
-    }, [])
+        props.onRegisterTerminalClose?.(tabId, close)
+    }, [props.onRegisterTerminalClose])
     const handleCloseTerminal = useCallback((tabId: string) => {
         closeByTerminalIdRef.current.get(tabId)?.()
         closeByTerminalIdRef.current.delete(tabId)

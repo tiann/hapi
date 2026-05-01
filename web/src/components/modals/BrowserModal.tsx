@@ -36,7 +36,7 @@ export function BrowserModal(props: { machineId?: string; initialPath?: string; 
     }, [navigate, search.modalReturnTo])
 
     return (
-        <DialogContent className="flex flex-col max-h-[85vh] w-[95vw] max-w-2xl p-0 gap-0 overflow-hidden">
+        <DialogContent className="flex h-[85vh] max-h-[85vh] w-[95vw] max-w-2xl flex-col gap-0 overflow-hidden p-0">
             <DialogHeader className="p-4 pb-3 border-b border-[var(--app-border)]">
                 <DialogTitle className="text-xl font-semibold">
                     {search.modalReturnTo === 'editor' ? 'Open project folder' : t('browse.title')}
@@ -44,7 +44,7 @@ export function BrowserModal(props: { machineId?: string; initialPath?: string; 
                 <DialogDescription className="sr-only">Browse workspaces</DialogDescription>
             </DialogHeader>
 
-            <div className="app-scroll-y p-4 min-h-[400px]">
+            <div className="min-h-0 flex-1 overflow-hidden p-4">
                 <WorkspaceBrowser
                     api={api}
                     machines={machines}

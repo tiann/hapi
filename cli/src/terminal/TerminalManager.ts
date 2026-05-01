@@ -12,6 +12,7 @@ type TerminalRuntime = TerminalSession & {
     proc: Bun.Subprocess
     terminal: Bun.Terminal
     idleTimer: ReturnType<typeof setTimeout> | null
+    detachedTimer: ReturnType<typeof setTimeout> | null
     outputBuffer: string
 }
 
@@ -24,10 +25,12 @@ type TerminalManagerOptions = {
     onExit: (payload: TerminalExitPayload) => void
     onError: (payload: TerminalErrorPayload) => void
     idleTimeoutMs?: number
+    detachedTimeoutMs?: number
     maxTerminals?: number
 }
 
 const DEFAULT_IDLE_TIMEOUT_MS = 0
+const DEFAULT_DETACHED_TIMEOUT_MS = 5 * 60_000
 const DEFAULT_MAX_TERMINALS = 4
 const MAX_OUTPUT_BUFFER_CHARS = 200_000
 const SENSITIVE_ENV_KEYS = new Set([
@@ -48,6 +51,15 @@ function resolveEnvNumber(name: string, fallback: number): number {
     }
     const parsed = Number.parseInt(raw, 10)
     return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
+}
+
+function resolveEnvNumberAllowZero(name: string, fallback: number): number {
+    const raw = process.env[name]
+    if (!raw) {
+        return fallback
+    }
+    const parsed = Number.parseInt(raw, 10)
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback
 }
 
 function resolveShell(): string {
@@ -92,6 +104,7 @@ export class TerminalManager {
     private readonly onExit: (payload: TerminalExitPayload) => void
     private readonly onError: (payload: TerminalErrorPayload) => void
     private readonly idleTimeoutMs: number
+    private readonly detachedTimeoutMs: number
     private readonly maxTerminals: number
     private readonly terminals: Map<string, TerminalRuntime> = new Map()
     private readonly filteredEnv: NodeJS.ProcessEnv
@@ -108,6 +121,7 @@ export class TerminalManager {
         this.onExit = options.onExit
         this.onError = options.onError
         this.idleTimeoutMs = options.idleTimeoutMs ?? resolveEnvNumber('HAPI_TERMINAL_IDLE_TIMEOUT_MS', DEFAULT_IDLE_TIMEOUT_MS)
+        this.detachedTimeoutMs = options.detachedTimeoutMs ?? resolveEnvNumberAllowZero('HAPI_TERMINAL_DETACHED_TIMEOUT_MS', DEFAULT_DETACHED_TIMEOUT_MS)
         this.maxTerminals = options.maxTerminals ?? resolveEnvNumber('HAPI_TERMINAL_MAX_TERMINALS', DEFAULT_MAX_TERMINALS)
         this.filteredEnv = buildFilteredEnv()
     }
@@ -122,6 +136,7 @@ export class TerminalManager {
         if (existing) {
             existing.cols = cols
             existing.rows = rows
+            this.clearDetachedTimer(existing)
             existing.terminal.resize(cols, rows)
             this.markActivity(existing)
             this.onReady({ ...this.scopePayload(), terminalId })
@@ -199,6 +214,7 @@ export class TerminalManager {
                 proc,
                 terminal,
                 idleTimer: null,
+                detachedTimer: null,
                 outputBuffer: ''
             }
 
@@ -236,6 +252,17 @@ export class TerminalManager {
         this.cleanup(terminalId)
     }
 
+    detach(terminalId: string): void {
+        const runtime = this.terminals.get(terminalId)
+        if (!runtime || this.detachedTimeoutMs <= 0) {
+            return
+        }
+        this.clearDetachedTimer(runtime)
+        runtime.detachedTimer = setTimeout(() => {
+            this.cleanup(runtime.terminalId)
+        }, this.detachedTimeoutMs)
+    }
+
     private appendOutputBuffer(terminalId: string, text: string): void {
         const runtime = this.terminals.get(terminalId)
         if (!runtime) return
@@ -263,6 +290,7 @@ export class TerminalManager {
         if (runtime.idleTimer) {
             clearTimeout(runtime.idleTimer)
         }
+        this.clearDetachedTimer(runtime)
 
         runtime.idleTimer = setTimeout(() => {
             this.emitError(runtime.terminalId, 'Terminal closed due to inactivity.')
@@ -298,6 +326,14 @@ export class TerminalManager {
 
     private emitError(terminalId: string, message: string): void {
         this.onError({ ...this.scopePayload(), terminalId, message })
+    }
+
+    private clearDetachedTimer(runtime: TerminalRuntime): void {
+        if (!runtime.detachedTimer) {
+            return
+        }
+        clearTimeout(runtime.detachedTimer)
+        runtime.detachedTimer = null
     }
 
     private scopePayload(): { sessionId: string } | { machineId: string } {

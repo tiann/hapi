@@ -231,7 +231,7 @@ export function WorkspaceBrowser(props: {
     // No machines connected
     if (machines.length === 0 && !machinesLoading) {
         return (
-            <div className="flex flex-col h-full">
+            <div className="flex h-full min-h-0 flex-col">
                 <div className="px-3 py-2 border-b border-[var(--app-divider)]">{machineSelector}</div>
                 <div className="flex-1 flex flex-col items-center justify-center gap-3 px-6 text-center">
                     <div className="text-sm text-[var(--app-hint)]">{t('browse.noMachinesConnected')}</div>
@@ -244,7 +244,7 @@ export function WorkspaceBrowser(props: {
     // Browsing is opt-in, triggered by `--workspace-root`.
     if (selectedMachine && !workspaceRoot) {
         return (
-            <div className="flex flex-col h-full">
+            <div className="flex h-full min-h-0 flex-col">
                 <div className="px-3 py-2 border-b border-[var(--app-divider)]">{machineSelector}</div>
                 <div className="flex-1 flex flex-col items-center justify-center gap-3 px-6 text-center">
                     <div className="text-sm text-[var(--app-fg)] font-medium">{t('browse.noRootTitle')}</div>
@@ -261,8 +261,8 @@ export function WorkspaceBrowser(props: {
     }
 
     return (
-        <div className="flex flex-col h-full">
-            <div className="px-3 py-2 border-b border-[var(--app-divider)]">
+        <div className="flex h-full min-h-0 flex-col">
+            <div className="shrink-0 px-3 py-2 border-b border-[var(--app-divider)]">
                 {machineSelector}
 
                 {currentPath && (
@@ -305,7 +305,7 @@ export function WorkspaceBrowser(props: {
                 <div className="px-3 py-2 text-sm text-red-600">{error}</div>
             )}
 
-            <div className="flex-1 app-scroll-y">
+            <div className="min-h-0 flex-1 app-scroll-y">
                 {isLoading && entries.length === 0 ? (
                     <div className="flex items-center justify-center py-8 text-sm text-[var(--app-hint)]">{t('loading')}</div>
                 ) : directories.length === 0 ? (
@@ -335,7 +335,7 @@ export function WorkspaceBrowser(props: {
             </div>
 
             {currentPath && (
-                <div className="px-3 py-2 border-t border-[var(--app-divider)]">
+                <div className="shrink-0 px-3 py-2 border-t border-[var(--app-divider)]">
                     <div className="flex items-center gap-2">
                         <div className="flex-1 text-xs text-[var(--app-hint)] truncate" title={currentPath}>
                             {currentPath}

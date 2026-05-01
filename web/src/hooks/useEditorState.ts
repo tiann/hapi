@@ -173,8 +173,13 @@ export function useEditorState(initialMachine?: string, initialProject?: string,
     }, [setActiveTabId, setTabs])
 
     const selectProject = useCallback((path: string) => {
+        if (projectPath !== path) {
+            setTabs([])
+            setActiveTabId(null)
+            setActiveSessionId(null)
+        }
         setProjectPath(path)
-    }, [])
+    }, [projectPath, setActiveTabId, setTabs])
 
     return {
         machineId,

@@ -259,6 +259,10 @@ describe('terminal socket handlers', () => {
 
         const closeEvent = lastEmit(cliSocket, 'terminal:close')
         expect(closeEvent).toBeUndefined()
+        expect(lastEmit(cliSocket, 'terminal:detach')?.data).toEqual({
+            sessionId: 'session-1',
+            terminalId: 'terminal-1'
+        })
         expect(terminalRegistry.get('terminal-1')).toBeNull()
     })
 

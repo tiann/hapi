@@ -101,4 +101,27 @@ describe('TerminalManager', () => {
 
         expect(outputs).toEqual([])
     })
+
+    it('cleans up detached terminals after the detached timeout', async () => {
+        installFakeSpawn()
+        const errors: string[] = []
+
+        const manager = new TerminalManager({
+            sessionId: 'session-1',
+            getSessionPath: () => '/tmp',
+            onReady: () => {},
+            onOutput: () => {},
+            onExit: () => {},
+            onError: (payload) => errors.push(payload.message),
+            idleTimeoutMs: 0,
+            detachedTimeoutMs: 1
+        })
+
+        manager.create('terminal-1', 80, 24)
+        manager.detach('terminal-1')
+        await new Promise((resolve) => setTimeout(resolve, 5))
+        manager.write('terminal-1', 'echo still-there\n')
+
+        expect(errors).toEqual(['Terminal not found.'])
+    })
 })

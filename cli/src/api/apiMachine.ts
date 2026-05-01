@@ -11,6 +11,7 @@ import { configuration } from '@/configuration'
 import type { Update, UpdateMachineBody } from '@hapi/protocol'
 import {
     TerminalClosePayloadSchema,
+    TerminalDetachPayloadSchema,
     TerminalOpenPayloadSchema,
     TerminalResizePayloadSchema,
     TerminalWritePayloadSchema
@@ -34,6 +35,7 @@ interface ServerToRunnerEvents {
     'terminal:write': (data: unknown) => void
     'terminal:resize': (data: unknown) => void
     'terminal:close': (data: unknown) => void
+    'terminal:detach': (data: unknown) => void
     error: (data: { message: string }) => void
 }
 
@@ -508,6 +510,10 @@ export class ApiMachineClient {
 
         this.socket.on('terminal:close', handleTerminalEvent(TerminalClosePayloadSchema, (payload) => {
             this.terminalManager.close(payload.terminalId)
+        }))
+
+        this.socket.on('terminal:detach', handleTerminalEvent(TerminalDetachPayloadSchema, (payload) => {
+            this.terminalManager.detach(payload.terminalId)
         }))
 
         this.socket.on('update', (data: Update) => {

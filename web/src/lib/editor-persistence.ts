@@ -1,6 +1,7 @@
 import type { EditorTab } from '@/hooks/useEditorState'
 
 const STORAGE_KEY = 'hapi-editor-state:v1'
+const PAGE_INSTANCE_ID = `${Date.now()}-${Math.random().toString(36).slice(2)}`
 
 export type PersistedEditorState = {
     machineId: string | null
@@ -12,7 +13,7 @@ export type PersistedEditorState = {
 }
 
 function isBrowser(): boolean {
-    return typeof window !== 'undefined' && typeof localStorage !== 'undefined'
+    return typeof window !== 'undefined' && typeof sessionStorage !== 'undefined'
 }
 
 function isTab(value: unknown): value is EditorTab {
@@ -36,11 +37,15 @@ export function loadPersistedEditorState(): PersistedEditorState | null {
     if (!isBrowser()) return null
 
     try {
-        const raw = localStorage.getItem(STORAGE_KEY)
+        const raw = sessionStorage.getItem(STORAGE_KEY)
         if (!raw) return null
         const parsed: unknown = JSON.parse(raw)
         if (!parsed || typeof parsed !== 'object') return null
-        const value = parsed as Partial<PersistedEditorState>
+        const value = parsed as Partial<PersistedEditorState> & { pageInstanceId?: unknown }
+        if (value.pageInstanceId !== PAGE_INSTANCE_ID) {
+            sessionStorage.removeItem(STORAGE_KEY)
+            return null
+        }
         const tabs = Array.isArray(value.tabs) ? value.tabs.filter(isTab).map(tab => ({ ...tab, dirty: false })) : []
         const activeTabId = readStringOrNull(value.activeTabId)
         const activeSessionId = readStringOrNull(value.activeSessionId)
@@ -61,10 +66,21 @@ export function savePersistedEditorState(state: PersistedEditorState): void {
     if (!isBrowser()) return
 
     try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify({
+        sessionStorage.setItem(STORAGE_KEY, JSON.stringify({
             ...state,
+            pageInstanceId: PAGE_INSTANCE_ID,
             tabs: state.tabs.map(tab => ({ ...tab, dirty: false })),
         }))
+    } catch {
+        // Ignore storage errors.
+    }
+}
+
+export function clearPersistedEditorState(): void {
+    if (!isBrowser()) return
+
+    try {
+        sessionStorage.removeItem(STORAGE_KEY)
     } catch {
         // Ignore storage errors.
     }

@@ -14,6 +14,7 @@ import type { SessionEndReason } from '@hapi/protocol'
 import type { ClientToServerEvents, ServerToClientEvents, Update } from '@hapi/protocol'
 import {
     TerminalClosePayloadSchema,
+    TerminalDetachPayloadSchema,
     TerminalOpenPayloadSchema,
     TerminalResizePayloadSchema,
     TerminalWritePayloadSchema
@@ -198,6 +199,10 @@ export class ApiSessionClient extends EventEmitter {
 
         this.socket.on('terminal:close', handleTerminalEvent(TerminalClosePayloadSchema, (payload) => {
             this.terminalManager.close(payload.terminalId)
+        }))
+
+        this.socket.on('terminal:detach', handleTerminalEvent(TerminalDetachPayloadSchema, (payload) => {
+            this.terminalManager.detach(payload.terminalId)
         }))
 
         this.socket.on('update', (data: Update) => {

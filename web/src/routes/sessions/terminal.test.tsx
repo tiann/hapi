@@ -4,6 +4,7 @@ import { I18nProvider } from '@/lib/i18n-context'
 import TerminalPage from './terminal'
 
 const writeMock = vi.fn()
+const closeMock = vi.fn()
 
 vi.mock('@tanstack/react-router', () => ({
     useParams: () => ({ sessionId: 'session-1' })
@@ -38,7 +39,7 @@ vi.mock('@/hooks/useTerminalSocket', () => ({
         write: writeMock,
         resize: vi.fn(),
         disconnect: vi.fn(),
-        close: vi.fn(),
+        close: closeMock,
         onOutput: vi.fn(),
         onExit: vi.fn()
     })
@@ -97,5 +98,19 @@ describe('TerminalPage paste behavior', () => {
         fireEvent.click(screen.getAllByRole('button', { name: 'Paste' })[0])
 
         expect(await screen.findByText('Paste input')).toBeInTheDocument()
+    })
+
+    it('does not close the remote terminal on initial render', () => {
+        renderWithProviders()
+
+        expect(closeMock).not.toHaveBeenCalled()
+    })
+
+    it('closes the remote terminal when leaving the page', () => {
+        const rendered = renderWithProviders()
+
+        rendered.unmount()
+
+        expect(closeMock).toHaveBeenCalled()
     })
 })

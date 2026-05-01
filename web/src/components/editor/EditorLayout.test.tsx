@@ -12,7 +12,9 @@ const mocks = vi.hoisted(() => ({
     onLeftResizePointerDown: vi.fn(),
     onRightResizePointerDown: vi.fn(),
     onTerminalResizePointerDown: vi.fn(),
-    savePersistedEditorState: vi.fn()
+    savePersistedEditorState: vi.fn(),
+    clearPersistedEditorState: vi.fn(),
+    terminalClose: vi.fn()
 }))
 
 vi.mock('@tanstack/react-router', async () => {
@@ -25,7 +27,8 @@ vi.mock('@tanstack/react-router', async () => {
 })
 
 vi.mock('@/lib/editor-persistence', () => ({
-    savePersistedEditorState: (...args: unknown[]) => mocks.savePersistedEditorState(...args)
+    savePersistedEditorState: (...args: unknown[]) => mocks.savePersistedEditorState(...args),
+    clearPersistedEditorState: (...args: unknown[]) => mocks.clearPersistedEditorState(...args)
 }))
 
 vi.mock('./EditorHeader', () => ({
@@ -79,6 +82,7 @@ vi.mock('./EditorTerminal', () => ({
         onOpenTerminal: () => void
         isCollapsed: boolean
         onToggleCollapsed: () => void
+        onRegisterTerminalClose?: (tabId: string, close: (() => void) | null) => void
     }) => (
         <div data-testid="editor-terminal">
             Terminal collapsed: {props.isCollapsed ? 'yes' : 'no'}
@@ -86,6 +90,7 @@ vi.mock('./EditorTerminal', () => ({
             <div>Active terminal: {props.activeTabId ?? ''}</div>
             <button type="button" onClick={() => props.onOpenTerminal()}>Mock open terminal</button>
             <button type="button" onClick={() => props.onToggleCollapsed()}>Mock toggle terminal</button>
+            <button type="button" onClick={() => props.onRegisterTerminalClose?.('mock-terminal', mocks.terminalClose)}>Mock register terminal close</button>
         </div>
     )
 }))
@@ -168,6 +173,8 @@ describe('EditorLayout', () => {
         mocks.lastNewSessionArgs = null
         mocks.search = {}
         mocks.savePersistedEditorState.mockClear()
+        mocks.clearPersistedEditorState.mockClear()
+        mocks.terminalClose.mockClear()
     })
 
     afterEach(() => {
@@ -289,6 +296,28 @@ describe('EditorLayout', () => {
 
         expect(screen.getByTestId('editor-terminal')).toHaveTextContent('Terminal collapsed: yes')
         expect(screen.getByTestId('editor-terminal').parentElement).toHaveStyle({ height: '32px' })
+    })
+
+    it('closes editor terminals and clears project state when switching project', () => {
+        renderEditorLayout({} as ApiClient)
+
+        fireEvent.click(screen.getByText('Mock open terminal'))
+        fireEvent.click(screen.getByText('Mock register terminal close'))
+        fireEvent.click(screen.getByText('Select project'))
+
+        expect(mocks.terminalClose).toHaveBeenCalledTimes(1)
+        expect(screen.getByTestId('editor-terminal')).not.toHaveTextContent('Terminal: bash')
+    })
+
+    it('closes editor terminals and clears persisted state on page unload', () => {
+        renderEditorLayout({} as ApiClient)
+
+        fireEvent.click(screen.getByText('Mock open terminal'))
+        fireEvent.click(screen.getByText('Mock register terminal close'))
+        window.dispatchEvent(new Event('pagehide'))
+
+        expect(mocks.terminalClose).toHaveBeenCalledTimes(1)
+        expect(mocks.clearPersistedEditorState).toHaveBeenCalledTimes(1)
     })
 
     it('does not create a chat session before opening a machine terminal', () => {

@@ -8,11 +8,6 @@ function getMachineLabel(machine: Machine): string {
     return machine.metadata?.displayName ?? machine.metadata?.host ?? machine.id.slice(0, 8)
 }
 
-function getProjectName(projectPath: string | null): string {
-    if (!projectPath) return 'Open folder'
-    return projectPath.split('/').filter(Boolean).pop() || projectPath
-}
-
 export function EditorHeader(props: {
     api: ApiClient
     machineId: string | null
@@ -61,16 +56,11 @@ export function EditorHeader(props: {
                         aria-label="Browse project folder"
                         title={props.projectPath ?? 'Open folder'}
                         onClick={props.onBrowseProject}
-                        className="flex min-w-0 max-w-[360px] items-center gap-2 rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] px-2.5 py-1 text-left text-xs text-[var(--app-fg)] hover:bg-[var(--app-secondary-bg)]"
+                        className="flex min-w-0 max-w-[420px] items-center gap-2 rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] px-2.5 py-1 text-left text-xs text-[var(--app-fg)] hover:bg-[var(--app-secondary-bg)]"
                     >
                         <span className="shrink-0">📁</span>
-                        <span className="min-w-0">
-                            <span className="block truncate font-medium">{getProjectName(props.projectPath)}</span>
-                            {props.projectPath ? (
-                                <span className="block truncate text-[10px] leading-tight text-[var(--app-hint)]">
-                                    {props.projectPath}
-                                </span>
-                            ) : null}
+                        <span className="min-w-0 truncate">
+                            {props.projectPath ?? 'Open folder'}
                         </span>
                     </button>
                 </>

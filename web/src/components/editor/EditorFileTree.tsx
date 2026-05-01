@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type FocusEvent, typ
 import type { ApiClient } from '@/api/client'
 import type { EditorDirectoryResponse } from '@/types/api'
 import type { EditorTreeItem } from '@/types/editor'
-import { FileIcon } from '@/components/FileIcon'
+import { FileIcon, FolderIcon } from '@/components/FileIcon'
 import { useProjectDirectory } from '@/hooks/queries/useProjectDirectory'
 
 type TreeEntry = NonNullable<EditorDirectoryResponse['entries']>[number]
@@ -139,29 +139,6 @@ function ChevronIcon(props: { collapsed: boolean }) {
             aria-hidden="true"
         >
             <polyline points="9 18 15 12 9 6" />
-        </svg>
-    )
-}
-
-function FolderIcon(props: { open?: boolean }) {
-    return (
-        <svg
-            width="16"
-            height="16"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.6"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            className="text-[var(--app-link)]"
-            aria-hidden="true"
-        >
-            {props.open ? (
-                <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v2H3V7Z" />
-            ) : (
-                <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
-            )}
         </svg>
     )
 }
@@ -307,7 +284,7 @@ function DirectoryNode(props: {
                 style={{ paddingLeft: indent }}
             >
                 <ChevronIcon collapsed={!isExpanded} />
-                <FolderIcon open={isExpanded} />
+                <FolderIcon folderName={props.name} open={isExpanded} size={16} />
                 <span className="truncate flex-1 text-[var(--app-fg)]">{props.name}</span>
             </button>
 
@@ -494,7 +471,7 @@ export function EditorFileTree(props: {
     return (
         <div className="flex flex-col h-full">
             <div className="px-3 py-2 text-xs font-semibold text-[var(--app-fg)] border-b border-[var(--app-border)] shrink-0 flex items-center gap-1.5">
-                <FolderIcon open />
+                <FolderIcon folderName={projectName} open size={16} />
                 <span className="truncate">{projectName}</span>
                 <button
                     type="button"

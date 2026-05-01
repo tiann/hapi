@@ -187,6 +187,7 @@ export function TerminalModal(props: { sessionId: string; onClose: () => void })
         write,
         resize,
         disconnect,
+        close,
         onOutput,
         onExit,
     } = useTerminalSocket({
@@ -274,16 +275,15 @@ export function TerminalModal(props: { sessionId: string; onClose: () => void })
     useEffect(() => {
         connectOnceRef.current = false
         setExitInfo(null)
-        disconnect()
-    }, [sessionId, disconnect])
+    }, [sessionId])
 
     useEffect(() => {
         return () => {
             inputDisposableRef.current?.dispose()
             connectOnceRef.current = false
-            disconnect()
+            close()
         }
-    }, [disconnect])
+    }, [sessionId, close])
 
     useEffect(() => {
         if (session?.active === false || !terminalSupported) {

@@ -7,7 +7,7 @@ import type { PersistedEditorState } from '@/lib/editor-persistence'
 import type { RootSearch } from '@/router'
 import { appendEditorChatDraft, appendEditorChatDraftWithSelection, buildAddSelectionToChatText, expandSelectionRefs } from '@/lib/editor-chat-draft'
 import { queryKeys } from '@/lib/query-keys'
-import { savePersistedEditorState } from '@/lib/editor-persistence'
+import { clearPersistedEditorState, savePersistedEditorState } from '@/lib/editor-persistence'
 import { useEditorPaneResize } from '@/hooks/useEditorPaneResize'
 import { useEditorState } from '@/hooks/useEditorState'
 import { useEditorNewSession } from '@/hooks/mutations/useEditorNewSession'
@@ -161,6 +161,7 @@ export function EditorLayout(props: {
     const pendingFileAfterSessionRef = useRef<string[] | null>(null)
     const selectionMapRef = useRef<Map<string, { path: string; start: number; end: number; content: string }>>(new Map())
     const lastActiveTerminalTabIdRef = useRef<string | null>(null)
+    const terminalCloseFnsRef = useRef<Map<string, () => void>>(new Map())
 
     const fileTabs = useMemo(
         () => editor.tabs.filter((tab) => tab.type === 'file'),
@@ -190,6 +191,21 @@ export function EditorLayout(props: {
     )
     const activeFilePath = activeFileTab?.path ?? null
 
+    const handleRegisterTerminalClose = useCallback((tabId: string, close: (() => void) | null) => {
+        if (!close) {
+            terminalCloseFnsRef.current.delete(tabId)
+            return
+        }
+        terminalCloseFnsRef.current.set(tabId, close)
+    }, [])
+
+    const cleanupEditorRuntime = useCallback(() => {
+        for (const close of terminalCloseFnsRef.current.values()) {
+            close()
+        }
+        terminalCloseFnsRef.current.clear()
+    }, [])
+
     useEffect(() => {
         if (!search.modalNewSessionId) return
         editor.setActiveSessionId(search.modalNewSessionId)
@@ -206,12 +222,23 @@ export function EditorLayout(props: {
 
     useEffect(() => {
         if (props.initialMachineId && props.initialMachineId !== editor.machineId) {
+            cleanupEditorRuntime()
             editor.selectMachine(props.initialMachineId)
         }
         if (props.initialProjectPath && props.initialProjectPath !== editor.projectPath) {
+            cleanupEditorRuntime()
             editor.selectProject(props.initialProjectPath)
         }
-    }, [editor.machineId, editor.projectPath, editor.selectMachine, editor.selectProject, props.initialMachineId, props.initialProjectPath])
+    }, [cleanupEditorRuntime, editor.machineId, editor.projectPath, editor.selectMachine, editor.selectProject, props.initialMachineId, props.initialProjectPath])
+
+    useEffect(() => {
+        const handlePageHide = () => {
+            cleanupEditorRuntime()
+            clearPersistedEditorState()
+        }
+        window.addEventListener('pagehide', handlePageHide)
+        return () => window.removeEventListener('pagehide', handlePageHide)
+    }, [cleanupEditorRuntime])
 
     useEffect(() => {
         savePersistedEditorState({
@@ -444,14 +471,18 @@ export function EditorLayout(props: {
     const handleSelectMachine = useCallback((machineId: string) => {
         setPendingDraftText(undefined)
         pendingFileAfterSessionRef.current = null
+        cleanupEditorRuntime()
         editor.selectMachine(machineId)
-    }, [editor])
+    }, [cleanupEditorRuntime, editor])
 
     const handleSelectProject = useCallback((projectPath: string) => {
         setPendingDraftText(undefined)
         pendingFileAfterSessionRef.current = null
+        if (projectPath !== editor.projectPath) {
+            cleanupEditorRuntime()
+        }
         editor.selectProject(projectPath)
-    }, [editor])
+    }, [cleanupEditorRuntime, editor])
 
     if (!props.api) {
         return (
@@ -540,6 +571,7 @@ export function EditorLayout(props: {
                             onOpenTerminal={handleOpenTerminal}
                             onToggleCollapsed={() => setIsTerminalCollapsed((current) => !current)}
                             onAddToChat={handleAddTerminalToChat}
+                            onRegisterTerminalClose={handleRegisterTerminalClose}
                         />
                     </div>
                 </main>

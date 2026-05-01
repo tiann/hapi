@@ -74,6 +74,16 @@ export function registerTerminalHandlers(socket: SocketWithData, deps: TerminalH
         cliSocket.emit('terminal:close', { ...scope, terminalId: entry.terminalId })
     }
 
+    const emitDetachToCli = (entry: TerminalRegistryEntry): void => {
+        const cliSocket = cliNamespace.sockets.get(entry.cliSocketId)
+        if (!cliSocket || cliSocket.data.namespace !== namespace) {
+            return
+        }
+        const scope = getEntryScope(entry)
+        if (!scope) return
+        cliSocket.emit('terminal:detach', { ...scope, terminalId: entry.terminalId })
+    }
+
     const pickCliSocketId = (scope: { sessionId: string } | { machineId: string }): string | null => {
         const roomId = 'sessionId' in scope ? `session:${scope.sessionId}` : `machine:${scope.machineId}`
         const room = cliNamespace.adapter.rooms.get(roomId)
@@ -246,6 +256,9 @@ export function registerTerminalHandlers(socket: SocketWithData, deps: TerminalH
         // terminal process here; explicit `terminal:close` is the destructive
         // lifecycle event. A later `terminal:create` with the same ID will
         // re-register and reattach to the CLI-side terminal manager.
-        terminalRegistry.removeBySocket(socket.id)
+        const removed = terminalRegistry.removeBySocket(socket.id)
+        for (const entry of removed) {
+            emitDetachToCli(entry)
+        }
     })
 }

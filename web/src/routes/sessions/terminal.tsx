@@ -205,6 +205,7 @@ export default function TerminalPage() {
         write,
         resize,
         disconnect,
+        close,
         onOutput,
         onExit,
     } = useTerminalSocket({
@@ -292,16 +293,15 @@ export default function TerminalPage() {
     useEffect(() => {
         connectOnceRef.current = false
         setExitInfo(null)
-        disconnect()
-    }, [sessionId, disconnect])
+    }, [sessionId])
 
     useEffect(() => {
         return () => {
             inputDisposableRef.current?.dispose()
             connectOnceRef.current = false
-            disconnect()
+            close()
         }
-    }, [disconnect])
+    }, [sessionId, close])
 
     useEffect(() => {
         if (session?.active === false || !terminalSupported) {

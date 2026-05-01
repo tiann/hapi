@@ -40,6 +40,8 @@ export const TerminalClosePayloadSchema = TerminalScopeSchema.and(z.object({
 }))
 
 export type TerminalClosePayload = z.infer<typeof TerminalClosePayloadSchema>
+export const TerminalDetachPayloadSchema = TerminalClosePayloadSchema
+export type TerminalDetachPayload = TerminalClosePayload
 
 export const TerminalReadyPayloadSchema = TerminalScopeSchema.and(z.object({
     terminalId: z.string().min(1)
@@ -131,6 +133,7 @@ export interface ServerToClientEvents {
     'terminal:write': (data: TerminalWritePayload) => void
     'terminal:resize': (data: TerminalResizePayload) => void
     'terminal:close': (data: TerminalClosePayload) => void
+    'terminal:detach': (data: TerminalDetachPayload) => void
     error: (data: { message: string; code?: SocketErrorReason; scope?: 'session' | 'machine'; id?: string }) => void
 }
 
