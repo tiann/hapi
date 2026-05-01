@@ -2,6 +2,12 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { EditorContextMenu } from './EditorContextMenu'
 
+const singleFile = [{ path: '/repo/src/App.tsx', type: 'file' as const }]
+const selectedItems = [
+    { path: '/repo/src/App.tsx', type: 'file' as const },
+    { path: '/repo/src/Other.ts', type: 'file' as const }
+]
+
 describe('EditorContextMenu', () => {
     afterEach(() => {
         cleanup()
@@ -11,6 +17,7 @@ describe('EditorContextMenu', () => {
         const { container, rerender } = render(
             <EditorContextMenu
                 filePath={null}
+                items={[]}
                 position={{ x: 10, y: 20 }}
                 onOpen={vi.fn()}
                 onNewFile={vi.fn()}
@@ -18,7 +25,7 @@ describe('EditorContextMenu', () => {
                 onCopyPath={vi.fn()}
                 onCopyRelativePath={vi.fn()}
                 onRefresh={vi.fn()}
-                onDeleteFile={vi.fn()}
+                onDelete={vi.fn()}
                 onClose={vi.fn()}
             />
         )
@@ -27,6 +34,7 @@ describe('EditorContextMenu', () => {
         rerender(
             <EditorContextMenu
                 filePath="/repo/file.ts"
+                items={[{ path: '/repo/file.ts', type: 'file' }]}
                 position={null}
                 onOpen={vi.fn()}
                 onNewFile={vi.fn()}
@@ -34,7 +42,7 @@ describe('EditorContextMenu', () => {
                 onCopyPath={vi.fn()}
                 onCopyRelativePath={vi.fn()}
                 onRefresh={vi.fn()}
-                onDeleteFile={vi.fn()}
+                onDelete={vi.fn()}
                 onClose={vi.fn()}
             />
         )
@@ -45,6 +53,7 @@ describe('EditorContextMenu', () => {
         render(
             <EditorContextMenu
                 filePath="/repo/src/App.tsx"
+                items={singleFile}
                 position={{ x: 12, y: 34 }}
                 onOpen={vi.fn()}
                 onNewFile={vi.fn()}
@@ -52,7 +61,7 @@ describe('EditorContextMenu', () => {
                 onCopyPath={vi.fn()}
                 onCopyRelativePath={vi.fn()}
                 onRefresh={vi.fn()}
-                onDeleteFile={vi.fn()}
+                onDelete={vi.fn()}
                 onClose={vi.fn()}
             />
         )
@@ -65,7 +74,7 @@ describe('EditorContextMenu', () => {
         expect(screen.getByRole('menuitem', { name: 'Copy Path' })).toBeInTheDocument()
         expect(screen.getByRole('menuitem', { name: 'Copy Relative Path' })).toBeInTheDocument()
         expect(screen.getByRole('menuitem', { name: 'Refresh' })).toBeInTheDocument()
-        expect(screen.getByRole('menuitem', { name: 'Delete File' })).toBeInTheDocument()
+        expect(screen.getByRole('menuitem', { name: 'Delete' })).toBeInTheDocument()
     })
 
     it('runs open, new-file, add-to-chat, refresh, and delete actions then closes', () => {
@@ -73,12 +82,13 @@ describe('EditorContextMenu', () => {
         const onNewFile = vi.fn()
         const onAddToChat = vi.fn()
         const onRefresh = vi.fn()
-        const onDeleteFile = vi.fn()
+        const onDelete = vi.fn()
         const onClose = vi.fn()
 
         render(
             <EditorContextMenu
                 filePath="/repo/src/App.tsx"
+                items={selectedItems}
                 position={{ x: 12, y: 34 }}
                 onOpen={onOpen}
                 onNewFile={onNewFile}
@@ -86,13 +96,13 @@ describe('EditorContextMenu', () => {
                 onCopyPath={vi.fn()}
                 onCopyRelativePath={vi.fn()}
                 onRefresh={onRefresh}
-                onDeleteFile={onDeleteFile}
+                onDelete={onDelete}
                 onClose={onClose}
             />
         )
 
         fireEvent.click(screen.getByRole('menuitem', { name: 'Open in Editor' }))
-        expect(onOpen).toHaveBeenCalledWith('/repo/src/App.tsx')
+        expect(onOpen).toHaveBeenCalledWith(selectedItems)
         expect(onClose).toHaveBeenCalledTimes(1)
 
         fireEvent.click(screen.getByRole('menuitem', { name: 'New File' }))
@@ -100,15 +110,15 @@ describe('EditorContextMenu', () => {
         expect(onClose).toHaveBeenCalledTimes(2)
 
         fireEvent.click(screen.getByRole('menuitem', { name: 'Add to Chat' }))
-        expect(onAddToChat).toHaveBeenCalledWith('/repo/src/App.tsx')
+        expect(onAddToChat).toHaveBeenCalledWith(selectedItems)
         expect(onClose).toHaveBeenCalledTimes(3)
 
         fireEvent.click(screen.getByRole('menuitem', { name: 'Refresh' }))
-        expect(onRefresh).toHaveBeenCalledWith('/repo/src/App.tsx')
+        expect(onRefresh).toHaveBeenCalledWith(selectedItems)
         expect(onClose).toHaveBeenCalledTimes(4)
 
-        fireEvent.click(screen.getByRole('menuitem', { name: 'Delete File' }))
-        expect(onDeleteFile).toHaveBeenCalledWith('/repo/src/App.tsx')
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Delete' }))
+        expect(onDelete).toHaveBeenCalledWith(selectedItems)
         expect(onClose).toHaveBeenCalledTimes(5)
     })
 
@@ -123,6 +133,7 @@ describe('EditorContextMenu', () => {
         render(
             <EditorContextMenu
                 filePath="/repo/src/App.tsx"
+                items={selectedItems}
                 position={{ x: 12, y: 34 }}
                 onOpen={vi.fn()}
                 onNewFile={vi.fn()}
@@ -130,13 +141,13 @@ describe('EditorContextMenu', () => {
                 onCopyPath={onCopyPath}
                 onCopyRelativePath={onCopyRelativePath}
                 onRefresh={vi.fn()}
-                onDeleteFile={vi.fn()}
+                onDelete={vi.fn()}
                 onClose={onClose}
             />
         )
 
         fireEvent.click(screen.getByRole('menuitem', { name: 'Copy Path' }))
-        expect(onCopyPath).toHaveBeenCalledWith('/repo/src/App.tsx')
+        expect(onCopyPath).toHaveBeenCalledWith(selectedItems)
         expect(onClose).not.toHaveBeenCalled()
 
         resolveCopy()
@@ -146,7 +157,7 @@ describe('EditorContextMenu', () => {
 
         fireEvent.click(screen.getByRole('menuitem', { name: 'Copy Relative Path' }))
         await waitFor(() => {
-            expect(onCopyRelativePath).toHaveBeenCalledWith('/repo/src/App.tsx')
+            expect(onCopyRelativePath).toHaveBeenCalledWith(selectedItems)
             expect(onClose).toHaveBeenCalledTimes(2)
         })
     })
@@ -158,6 +169,7 @@ describe('EditorContextMenu', () => {
                 <button type="button">outside</button>
                 <EditorContextMenu
                     filePath="/repo/src/App.tsx"
+                    items={singleFile}
                     position={{ x: 12, y: 34 }}
                     onOpen={vi.fn()}
                     onNewFile={vi.fn()}
@@ -165,7 +177,7 @@ describe('EditorContextMenu', () => {
                     onCopyPath={vi.fn()}
                     onCopyRelativePath={vi.fn()}
                     onRefresh={vi.fn()}
-                    onDeleteFile={vi.fn()}
+                    onDelete={vi.fn()}
                     onClose={onClose}
                 />
             </>

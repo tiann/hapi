@@ -124,6 +124,7 @@ describe('useEditorState', () => {
         expect(result.current.tabs).toEqual([])
         expect(result.current.activeTabId).toBeNull()
         expect(result.current.contextMenuFile).toBe('/repo/a.ts')
+        expect(result.current.contextMenuItems).toEqual([{ path: '/repo/a.ts', type: 'file' }])
         expect(result.current.contextMenuPosition).toEqual({ x: 10, y: 20 })
     })
 
@@ -135,6 +136,7 @@ describe('useEditorState', () => {
         })
 
         expect(result.current.contextMenuFile).toBe('/repo/file.ts')
+        expect(result.current.contextMenuItems).toEqual([{ path: '/repo/file.ts', type: 'file' }])
         expect(result.current.contextMenuPosition).toEqual({ x: 100, y: 200 })
 
         act(() => {
@@ -142,7 +144,22 @@ describe('useEditorState', () => {
         })
 
         expect(result.current.contextMenuFile).toBeNull()
+        expect(result.current.contextMenuItems).toEqual([])
         expect(result.current.contextMenuPosition).toBeNull()
+    })
+
+    it('stores selected tree items for context menu actions', () => {
+        const { result } = renderHook(() => useEditorState())
+        const items = [
+            { path: '/repo/src', type: 'directory' as const },
+            { path: '/repo/README.md', type: 'file' as const }
+        ]
+
+        act(() => {
+            result.current.showContextMenu('/repo/README.md', 10, 20, items)
+        })
+
+        expect(result.current.contextMenuItems).toEqual(items)
     })
 
     it('uses stable tab id shape', () => {

@@ -1,20 +1,25 @@
 import { useEffect, useRef } from 'react'
+import type { EditorTreeItem } from '@/types/editor'
 
 export function EditorContextMenu(props: {
     filePath: string | null
+    items: EditorTreeItem[]
     position: { x: number; y: number } | null
-    onOpen: (filePath: string) => void
+    onOpen: (items: EditorTreeItem[]) => void
     onNewFile: (filePath: string) => void
-    onAddToChat: (filePath: string) => void
-    onCopyPath: (filePath: string) => void | Promise<void>
-    onCopyRelativePath: (filePath: string) => void | Promise<void>
-    onRefresh: (filePath: string) => void
-    onDeleteFile: (filePath: string) => void | Promise<void>
+    onAddToChat: (items: EditorTreeItem[]) => void
+    onCopyPath: (items: EditorTreeItem[]) => void | Promise<void>
+    onCopyRelativePath: (items: EditorTreeItem[]) => void | Promise<void>
+    onRefresh: (items: EditorTreeItem[]) => void
+    onDelete: (items: EditorTreeItem[]) => void | Promise<void>
     onClose: () => void
 }) {
     const menuRef = useRef<HTMLDivElement | null>(null)
     const filePath = props.filePath
     const position = props.position
+    const items = props.items.length > 0
+        ? props.items
+        : (filePath ? [{ path: filePath, type: 'file' as const }] : [])
 
     useEffect(() => {
         if (!filePath || !position) return
@@ -44,12 +49,12 @@ export function EditorContextMenu(props: {
     }
 
     const handleOpen = () => {
-        props.onOpen(filePath)
+        props.onOpen(items)
         props.onClose()
     }
 
     const handleAddToChat = () => {
-        props.onAddToChat(filePath)
+        props.onAddToChat(items)
         props.onClose()
     }
 
@@ -59,22 +64,22 @@ export function EditorContextMenu(props: {
     }
 
     const handleCopyPath = async () => {
-        await props.onCopyPath(filePath)
+        await props.onCopyPath(items)
         props.onClose()
     }
 
     const handleCopyRelativePath = async () => {
-        await props.onCopyRelativePath(filePath)
+        await props.onCopyRelativePath(items)
         props.onClose()
     }
 
     const handleRefresh = () => {
-        props.onRefresh(filePath)
+        props.onRefresh(items)
         props.onClose()
     }
 
     const handleDeleteFile = () => {
-        void props.onDeleteFile(filePath)
+        void props.onDelete(items)
         props.onClose()
     }
 
@@ -139,7 +144,7 @@ export function EditorContextMenu(props: {
                 onClick={handleDeleteFile}
                 className="block w-full px-3 py-1.5 text-left text-red-500 hover:bg-[var(--app-subtle-bg)]"
             >
-                Delete File
+                Delete
             </button>
         </div>
     )

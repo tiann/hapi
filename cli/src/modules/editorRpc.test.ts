@@ -103,17 +103,26 @@ describe('editor RPC handlers', () => {
         })
     })
 
-    it('deletes existing files inside the editor root', async () => {
+    it('deletes existing files and directories inside the editor root', async () => {
         const filePath = join(rootDir, 'src', 'delete-me.ts')
+        const dirPath = join(rootDir, 'src', 'delete-dir')
         await writeFile(filePath, 'remove me')
+        await mkdir(dirPath)
+        await writeFile(join(dirPath, 'nested.ts'), 'remove me too')
 
         const parsed = await request(rpc, 'editor-delete-file', { path: filePath }) as { success: boolean; path?: string }
+        const dirParsed = await request(rpc, 'editor-delete-file', { path: dirPath }) as { success: boolean; path?: string }
 
         expect(parsed).toEqual({
             success: true,
             path: filePath
         })
+        expect(dirParsed).toEqual({
+            success: true,
+            path: dirPath
+        })
         await expect(stat(filePath)).rejects.toThrow()
+        await expect(stat(dirPath)).rejects.toThrow()
     })
 
     it('rejects binary files and paths outside the editor root', async () => {

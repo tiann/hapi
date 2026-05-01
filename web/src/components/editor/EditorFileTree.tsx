@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FocusEvent, type KeyboardEvent, type MouseEvent } from 'react'
 import type { ApiClient } from '@/api/client'
 import type { EditorDirectoryResponse } from '@/types/api'
+import type { EditorTreeItem } from '@/types/editor'
 import { FileIcon } from '@/components/FileIcon'
 import { useProjectDirectory } from '@/hooks/queries/useProjectDirectory'
 
@@ -201,8 +202,10 @@ function DirectoryNode(props: {
     name: string
     depth: number
     onOpenFile: (filePath: string) => void
-    onContextMenu: (filePath: string, x: number, y: number) => void
+    onRowClick: (event: MouseEvent<HTMLButtonElement>, item: EditorTreeItem, defaultAction: () => void) => void
+    onRowContextMenu: (event: MouseEvent<HTMLButtonElement>, item: EditorTreeItem) => void
     activeFilePath?: string | null
+    selectedPaths: Set<string>
     expanded: Set<string>
     onToggle: (path: string) => void
     refreshSeq: number
@@ -232,12 +235,6 @@ function DirectoryNode(props: {
         }
     }, [isExpanded, props.refreshSeq, refetch])
 
-    const handleContextMenu = useCallback((event: MouseEvent, filePath: string) => {
-        event.preventDefault()
-        event.stopPropagation()
-        props.onContextMenu(filePath, event.clientX, event.clientY)
-    }, [props])
-
     const renderDirectory = useCallback((entry: TreeEntry) => {
         const childPath = joinPath(props.path, entry.name)
         return (
@@ -249,8 +246,10 @@ function DirectoryNode(props: {
                 name={entry.name}
                 depth={childDepth}
                 onOpenFile={props.onOpenFile}
-                onContextMenu={props.onContextMenu}
+                onRowClick={props.onRowClick}
+                onRowContextMenu={props.onRowContextMenu}
                 activeFilePath={props.activeFilePath}
+                selectedPaths={props.selectedPaths}
                 expanded={props.expanded}
                 onToggle={props.onToggle}
                 refreshSeq={props.refreshSeq}
@@ -264,16 +263,21 @@ function DirectoryNode(props: {
     const renderFile = useCallback((entry: TreeEntry) => {
         const filePath = joinPath(props.path, entry.name)
         const isActive = props.activeFilePath === filePath
+        const isSelected = props.selectedPaths.has(filePath)
+        const item: EditorTreeItem = { path: filePath, type: 'file' }
         return (
             <button
                 key={filePath}
                 type="button"
                 aria-label={`Open file ${entry.name}`}
                 aria-current={isActive ? 'page' : undefined}
-                onClick={() => props.onOpenFile(filePath)}
-                onContextMenu={(event) => handleContextMenu(event, filePath)}
+                aria-selected={isSelected ? 'true' : undefined}
+                data-editor-tree-path={filePath}
+                data-editor-tree-type="file"
+                onClick={(event) => props.onRowClick(event, item, () => props.onOpenFile(filePath))}
+                onContextMenu={(event) => props.onRowContextMenu(event, item)}
                 className={`flex w-full items-center gap-1.5 pl-1 pr-2 py-1 text-left transition-colors text-xs text-[var(--app-fg)] ${
-                    isActive ? 'bg-[var(--app-subtle-bg)] text-[var(--app-fg)]' : 'hover:bg-[var(--app-subtle-bg)]'
+                    isSelected || isActive ? 'bg-[var(--app-subtle-bg)] text-[var(--app-fg)]' : 'hover:bg-[var(--app-subtle-bg)]'
                 }`}
                 style={{ paddingLeft: indent + 14 }}
             >
@@ -282,16 +286,24 @@ function DirectoryNode(props: {
                 <GitStatusDot status={entry.gitStatus} />
             </button>
         )
-    }, [handleContextMenu, indent, props])
+    }, [indent, props])
+
+    const directoryItem: EditorTreeItem = { path: props.path, type: 'directory' }
+    const isDirectorySelected = props.selectedPaths.has(props.path)
 
     return (
         <div>
             <button
                 type="button"
                 aria-label={`Toggle directory ${props.name}`}
-                onClick={() => props.onToggle(props.path)}
-                onContextMenu={(event) => handleContextMenu(event, props.path)}
-                className="flex w-full items-center gap-1.5 px-2 py-1 text-left hover:bg-[var(--app-subtle-bg)] transition-colors text-xs"
+                aria-selected={isDirectorySelected ? 'true' : undefined}
+                data-editor-tree-path={props.path}
+                data-editor-tree-type="directory"
+                onClick={(event) => props.onRowClick(event, directoryItem, () => props.onToggle(props.path))}
+                onContextMenu={(event) => props.onRowContextMenu(event, directoryItem)}
+                className={`flex w-full items-center gap-1.5 px-2 py-1 text-left hover:bg-[var(--app-subtle-bg)] transition-colors text-xs ${
+                    isDirectorySelected ? 'bg-[var(--app-subtle-bg)]' : ''
+                }`}
                 style={{ paddingLeft: indent }}
             >
                 <ChevronIcon collapsed={!isExpanded} />
@@ -340,19 +352,24 @@ export function EditorFileTree(props: {
     machineId: string | null
     projectPath: string | null
     onOpenFile: (filePath: string) => void
-    onContextMenu: (filePath: string, x: number, y: number) => void
+    onContextMenu: (filePath: string, x: number, y: number, items: EditorTreeItem[]) => void
     activeFilePath?: string | null
     newFileTargetPath?: string | null
     onCreateFile?: (parentPath: string, fileName: string) => Promise<{ success: boolean; path?: string; error?: string } | unknown>
     onCancelNewFile?: () => void
 }) {
+    const treeRef = useRef<HTMLDivElement | null>(null)
     const [expanded, setExpanded] = useState<Set<string>>(() => (
         props.projectPath ? new Set([props.projectPath]) : new Set()
     ))
     const [refreshSeq, setRefreshSeq] = useState(0)
+    const [selectedItems, setSelectedItems] = useState<Map<string, EditorTreeItem>>(() => new Map())
+    const [selectionAnchor, setSelectionAnchor] = useState<string | null>(null)
 
     useEffect(() => {
         setExpanded(props.projectPath ? new Set([props.projectPath]) : new Set())
+        setSelectedItems(new Map())
+        setSelectionAnchor(null)
     }, [props.projectPath])
 
     useEffect(() => {
@@ -388,6 +405,82 @@ export function EditorFileTree(props: {
         })
     }, [])
 
+    const getVisibleItems = useCallback((): EditorTreeItem[] => {
+        const root = treeRef.current
+        if (!root) return []
+        return Array.from(root.querySelectorAll<HTMLElement>('[data-editor-tree-path]'))
+            .map((element) => {
+                const path = element.dataset.editorTreePath
+                const type = element.dataset.editorTreeType
+                if (!path || (type !== 'file' && type !== 'directory')) return null
+                return { path, type }
+            })
+            .filter((item): item is EditorTreeItem => item !== null)
+    }, [])
+
+    const setSelection = useCallback((items: EditorTreeItem[]) => {
+        setSelectedItems(new Map(items.map((item) => [item.path, item])))
+    }, [])
+
+    const getSelectedInVisibleOrder = useCallback((fallback: EditorTreeItem): EditorTreeItem[] => {
+        const visibleItems = getVisibleItems()
+        const selected = visibleItems.filter((item) => selectedItems.has(item.path))
+        return selected.length > 0 ? selected : [fallback]
+    }, [getVisibleItems, selectedItems])
+
+    const handleRowClick = useCallback((
+        event: MouseEvent<HTMLButtonElement>,
+        item: EditorTreeItem,
+        defaultAction: () => void
+    ) => {
+        if (event.shiftKey && selectionAnchor) {
+            event.preventDefault()
+            const visibleItems = getVisibleItems()
+            const anchorIndex = visibleItems.findIndex((visibleItem) => visibleItem.path === selectionAnchor)
+            const itemIndex = visibleItems.findIndex((visibleItem) => visibleItem.path === item.path)
+            if (anchorIndex >= 0 && itemIndex >= 0) {
+                const [start, end] = anchorIndex < itemIndex ? [anchorIndex, itemIndex] : [itemIndex, anchorIndex]
+                setSelection(visibleItems.slice(start, end + 1))
+                return
+            }
+        }
+
+        if (event.ctrlKey || event.metaKey) {
+            event.preventDefault()
+            setSelectedItems((prev) => {
+                const next = new Map(prev)
+                if (next.has(item.path)) {
+                    next.delete(item.path)
+                } else {
+                    next.set(item.path, item)
+                }
+                return next
+            })
+            setSelectionAnchor(item.path)
+            return
+        }
+
+        setSelection([item])
+        setSelectionAnchor(item.path)
+        defaultAction()
+    }, [getVisibleItems, selectionAnchor, setSelection])
+
+    const handleRowContextMenu = useCallback((event: MouseEvent<HTMLButtonElement>, item: EditorTreeItem) => {
+        event.preventDefault()
+        event.stopPropagation()
+
+        let items: EditorTreeItem[]
+        if (selectedItems.has(item.path)) {
+            items = getSelectedInVisibleOrder(item)
+        } else {
+            items = [item]
+            setSelection(items)
+            setSelectionAnchor(item.path)
+        }
+
+        props.onContextMenu(item.path, event.clientX, event.clientY, items)
+    }, [getSelectedInVisibleOrder, props, selectedItems, setSelection])
+
     if (!props.machineId || !props.projectPath) {
         return (
             <div className="flex items-center justify-center h-full text-xs text-[var(--app-hint)] p-4 text-center">
@@ -413,7 +506,7 @@ export function EditorFileTree(props: {
                     ↻
                 </button>
             </div>
-            <div className="flex-1 overflow-y-auto py-1">
+            <div ref={treeRef} className="flex-1 overflow-y-auto py-1">
                 <DirectoryNode
                     api={props.api}
                     machineId={props.machineId}
@@ -421,8 +514,10 @@ export function EditorFileTree(props: {
                     name={projectName}
                     depth={0}
                     onOpenFile={props.onOpenFile}
-                    onContextMenu={props.onContextMenu}
+                    onRowClick={handleRowClick}
+                    onRowContextMenu={handleRowContextMenu}
                     activeFilePath={props.activeFilePath}
+                    selectedPaths={new Set(selectedItems.keys())}
                     expanded={expanded}
                     onToggle={handleToggle}
                     refreshSeq={refreshSeq}

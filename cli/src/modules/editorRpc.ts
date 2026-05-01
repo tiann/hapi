@@ -390,11 +390,11 @@ export function registerEditorRpcHandlers(rpcHandlerManager: RpcHandlerManager, 
 
         try {
             const fileStat = await stat(resolved.path)
-            if (!fileStat.isFile()) {
-                return rpcError('Path is not a file')
+            if (!fileStat.isFile() && !fileStat.isDirectory()) {
+                return rpcError('Path is not a file or directory')
             }
 
-            await rm(resolved.path)
+            await rm(resolved.path, { recursive: fileStat.isDirectory() })
             return {
                 success: true,
                 path: resolved.path

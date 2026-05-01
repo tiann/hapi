@@ -174,7 +174,44 @@ describe('EditorFileTree', () => {
             clientY: 34
         })
 
-        expect(onContextMenu).toHaveBeenCalledWith('/repo/README.md', 12, 34)
+        expect(onContextMenu).toHaveBeenCalledWith('/repo/README.md', 12, 34, [
+            { path: '/repo/README.md', type: 'file' }
+        ])
+    })
+
+    it('supports ctrl and shift selection for visible files and folders', () => {
+        const onContextMenu = vi.fn()
+        render(
+            <EditorFileTree
+                api={{} as ApiClient}
+                machineId="machine-1"
+                projectPath="/repo"
+                onOpenFile={vi.fn()}
+                onContextMenu={onContextMenu}
+            />
+        )
+
+        const src = screen.getByRole('button', { name: 'Toggle directory src' })
+        const readme = screen.getByRole('button', { name: 'Open file README.md' })
+
+        fireEvent.click(src, { ctrlKey: true })
+        expect(src).toHaveAttribute('aria-selected', 'true')
+        expect(readme).not.toHaveAttribute('aria-selected', 'true')
+
+        fireEvent.click(readme, { ctrlKey: true })
+        expect(src).toHaveAttribute('aria-selected', 'true')
+        expect(readme).toHaveAttribute('aria-selected', 'true')
+
+        fireEvent.contextMenu(readme, { clientX: 12, clientY: 34 })
+        expect(onContextMenu).toHaveBeenCalledWith('/repo/README.md', 12, 34, [
+            { path: '/repo/src', type: 'directory' },
+            { path: '/repo/README.md', type: 'file' }
+        ])
+
+        fireEvent.click(readme)
+        fireEvent.click(src, { shiftKey: true })
+        expect(src).toHaveAttribute('aria-selected', 'true')
+        expect(readme).toHaveAttribute('aria-selected', 'true')
     })
 
     it('creates a nested file from an inline input under a folder target', async () => {

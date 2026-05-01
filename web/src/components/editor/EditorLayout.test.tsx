@@ -25,7 +25,7 @@ vi.mock('./EditorHeader', () => ({
 vi.mock('./EditorFileTree', () => ({
     EditorFileTree: (props: {
         onOpenFile: (path: string) => void
-        onContextMenu: (path: string, x: number, y: number) => void
+        onContextMenu: (path: string, x: number, y: number, items: Array<{ path: string; type: 'file' | 'directory' }>) => void
         activeFilePath?: string | null
         newFileTargetPath?: string | null
         onCreateFile?: (parentPath: string, fileName: string) => Promise<unknown>
@@ -33,7 +33,12 @@ vi.mock('./EditorFileTree', () => ({
         <div data-testid="editor-file-tree">
             FileTree
             <button type="button" onClick={() => props.onOpenFile('/repo/src/App.tsx')}>Mock open file</button>
-            <button type="button" onClick={() => props.onContextMenu('/repo/src/App.tsx', 12, 34)}>Mock context menu</button>
+            <button type="button" onClick={() => props.onOpenFile('/repo/src/Other.ts')}>Mock open other file</button>
+            <button type="button" onClick={() => props.onContextMenu('/repo/src/App.tsx', 12, 34, [{ path: '/repo/src/App.tsx', type: 'file' }])}>Mock context menu</button>
+            <button type="button" onClick={() => props.onContextMenu('/repo/src/App.tsx', 12, 34, [
+                { path: '/repo/src/App.tsx', type: 'file' },
+                { path: '/repo/src/Other.ts', type: 'file' }
+            ])}>Mock multi context menu</button>
             <div>Active file: {props.activeFilePath ?? ''}</div>
             <div>New file target: {props.newFileTargetPath ?? ''}</div>
             <button type="button" onClick={() => { void props.onCreateFile?.('/repo/src', 'New.ts') }}>Mock create file</button>
@@ -87,22 +92,23 @@ vi.mock('./EditorChatPanel', () => ({
 vi.mock('./EditorContextMenu', () => ({
     EditorContextMenu: (props: {
         filePath: string | null
-        onOpen: (path: string) => void
+        items: Array<{ path: string; type: 'file' | 'directory' }>
+        onOpen: (items: Array<{ path: string; type: 'file' | 'directory' }>) => void
         onNewFile: (path: string) => void
-        onAddToChat: (path: string) => void
-        onCopyPath: (path: string) => void | Promise<void>
-        onCopyRelativePath: (path: string) => void | Promise<void>
-        onRefresh: (path: string) => void
-        onDeleteFile: (path: string) => void | Promise<void>
+        onAddToChat: (items: Array<{ path: string; type: 'file' | 'directory' }>) => void
+        onCopyPath: (items: Array<{ path: string; type: 'file' | 'directory' }>) => void | Promise<void>
+        onCopyRelativePath: (items: Array<{ path: string; type: 'file' | 'directory' }>) => void | Promise<void>
+        onRefresh: (items: Array<{ path: string; type: 'file' | 'directory' }>) => void
+        onDelete: (items: Array<{ path: string; type: 'file' | 'directory' }>) => void | Promise<void>
     }) => props.filePath ? (
         <div data-testid="editor-context-menu">
-            <button type="button" onClick={() => props.onOpen(props.filePath!)}>Context open</button>
+            <button type="button" onClick={() => props.onOpen(props.items)}>Context open</button>
             <button type="button" onClick={() => props.onNewFile(props.filePath!)}>Context new file</button>
-            <button type="button" onClick={() => props.onAddToChat(props.filePath!)}>Context add</button>
-            <button type="button" onClick={() => { void props.onCopyPath(props.filePath!) }}>Context copy</button>
-            <button type="button" onClick={() => { void props.onCopyRelativePath(props.filePath!) }}>Context copy relative</button>
-            <button type="button" onClick={() => props.onRefresh(props.filePath!)}>Context refresh</button>
-            <button type="button" onClick={() => { void props.onDeleteFile(props.filePath!) }}>Context delete</button>
+            <button type="button" onClick={() => props.onAddToChat(props.items)}>Context add</button>
+            <button type="button" onClick={() => { void props.onCopyPath(props.items) }}>Context copy</button>
+            <button type="button" onClick={() => { void props.onCopyRelativePath(props.items) }}>Context copy relative</button>
+            <button type="button" onClick={() => props.onRefresh(props.items)}>Context refresh</button>
+            <button type="button" onClick={() => { void props.onDelete(props.items) }}>Context delete</button>
         </div>
     ) : null
 }))
@@ -277,6 +283,22 @@ describe('EditorLayout', () => {
         })
     })
 
+    it('copies multiple selected context menu paths one per line', async () => {
+        const writeText = vi.fn(async () => {})
+        Object.defineProperty(navigator, 'clipboard', {
+            configurable: true,
+            value: { writeText }
+        })
+        renderEditorLayout({} as ApiClient)
+
+        fireEvent.click(screen.getByText('Mock multi context menu'))
+        fireEvent.click(screen.getByText('Context copy relative'))
+
+        await waitFor(() => {
+            expect(writeText).toHaveBeenCalledWith('src/App.tsx\nsrc/Other.ts')
+        })
+    })
+
     it('refreshes context menu directories', async () => {
         const invalidateQueries = vi.spyOn(QueryClient.prototype, 'invalidateQueries')
         renderEditorLayout({} as ApiClient)
@@ -291,23 +313,33 @@ describe('EditorLayout', () => {
         invalidateQueries.mockRestore()
     })
 
-    it('deletes context menu files and closes matching tabs', async () => {
-        const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    it('deletes context menu items through a confirm modal and closes matching tabs', async () => {
+        const confirm = vi.spyOn(window, 'confirm')
         const api = {
             deleteEditorFile: vi.fn(async () => ({ success: true, path: '/repo/src/App.tsx' }))
         } as unknown as ApiClient
         renderEditorLayout(api)
 
         fireEvent.click(screen.getByText('Mock open file'))
+        fireEvent.click(screen.getByText('Mock open other file'))
         expect(screen.getByTestId('editor-tabs')).toHaveTextContent('App.tsx')
+        expect(screen.getByTestId('editor-tabs')).toHaveTextContent('Other.ts')
 
-        fireEvent.click(screen.getByText('Mock context menu'))
+        fireEvent.click(screen.getByText('Mock multi context menu'))
         fireEvent.click(screen.getByText('Context delete'))
+
+        expect(confirm).not.toHaveBeenCalled()
+        expect(screen.getByRole('dialog', { name: 'Delete 2 items?' })).toBeInTheDocument()
+        expect(api.deleteEditorFile).not.toHaveBeenCalled()
+
+        fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
 
         await waitFor(() => {
             expect(api.deleteEditorFile).toHaveBeenCalledWith('machine-1', '/repo/src/App.tsx')
+            expect(api.deleteEditorFile).toHaveBeenCalledWith('machine-1', '/repo/src/Other.ts')
         })
         expect(screen.getByTestId('editor-tabs')).not.toHaveTextContent('App.tsx')
+        expect(screen.getByTestId('editor-tabs')).not.toHaveTextContent('Other.ts')
         confirm.mockRestore()
     })
 

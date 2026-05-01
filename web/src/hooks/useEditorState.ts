@@ -1,4 +1,5 @@
 import { useCallback, useRef, useState } from 'react'
+import type { EditorTreeItem } from '@/types/editor'
 
 export type EditorTab = {
     id: string
@@ -26,6 +27,7 @@ export type EditorState = {
     activeTabId: string | null
     activeSessionId: string | null
     contextMenuFile: string | null
+    contextMenuItems: EditorTreeItem[]
     contextMenuPosition: { x: number; y: number } | null
 }
 
@@ -38,7 +40,7 @@ export type UseEditorStateResult = EditorState & {
     closeTab: (tabId: string) => void
     setTabDirty: (tabId: string, dirty: boolean) => void
     setActiveTabId: (tabId: string | null) => void
-    showContextMenu: (filePath: string, x: number, y: number) => void
+    showContextMenu: (filePath: string, x: number, y: number, items?: EditorTreeItem[]) => void
     hideContextMenu: () => void
 }
 
@@ -57,6 +59,7 @@ export function useEditorState(initialMachine?: string, initialProject?: string)
     const [activeTabId, setActiveTabIdState] = useState<string | null>(null)
     const [activeSessionId, setActiveSessionId] = useState<string | null>(null)
     const [contextMenuFile, setContextMenuFile] = useState<string | null>(null)
+    const [contextMenuItems, setContextMenuItems] = useState<EditorTreeItem[]>([])
     const [contextMenuPosition, setContextMenuPosition] = useState<{ x: number; y: number } | null>(null)
 
     const tabsRef = useRef<EditorTab[]>([])
@@ -138,13 +141,15 @@ export function useEditorState(initialMachine?: string, initialProject?: string)
         )))
     }, [setTabs])
 
-    const showContextMenu = useCallback((filePath: string, x: number, y: number) => {
+    const showContextMenu = useCallback((filePath: string, x: number, y: number, items?: EditorTreeItem[]) => {
         setContextMenuFile(filePath)
+        setContextMenuItems(items && items.length > 0 ? items : [{ path: filePath, type: 'file' }])
         setContextMenuPosition({ x, y })
     }, [])
 
     const hideContextMenu = useCallback(() => {
         setContextMenuFile(null)
+        setContextMenuItems([])
         setContextMenuPosition(null)
     }, [])
 
@@ -166,6 +171,7 @@ export function useEditorState(initialMachine?: string, initialProject?: string)
         activeTabId,
         activeSessionId,
         contextMenuFile,
+        contextMenuItems,
         contextMenuPosition,
         selectMachine,
         selectProject,

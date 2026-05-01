@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import type { ApiClient } from '@/api/client'
+import type { EditorTreeItem } from '@/types/editor'
 import { appendEditorChatDraft } from '@/lib/editor-chat-draft'
 import { queryKeys } from '@/lib/query-keys'
 import { useEditorPaneResize } from '@/hooks/useEditorPaneResize'
@@ -40,6 +41,102 @@ function getRelativePath(rootPath: string | null, filePath: string): string {
     return filePath.replace(/^\/+/, '')
 }
 
+function uniqueItems(items: EditorTreeItem[]): EditorTreeItem[] {
+    const seen = new Set<string>()
+    const result: EditorTreeItem[] = []
+    for (const item of items) {
+        if (seen.has(item.path)) continue
+        seen.add(item.path)
+        result.push(item)
+    }
+    return result
+}
+
+function isPathInsideDirectory(path: string, directoryPath: string): boolean {
+    const normalizedPath = path.replace(/\/+$/, '')
+    const normalizedDirectory = directoryPath.replace(/\/+$/, '')
+    return normalizedPath === normalizedDirectory || normalizedPath.startsWith(`${normalizedDirectory}/`)
+}
+
+function pruneDeleteItems(items: EditorTreeItem[]): EditorTreeItem[] {
+    const unique = uniqueItems(items)
+    const directories = unique.filter((item) => item.type === 'directory')
+    return unique.filter((item) => {
+        if (item.type === 'directory') {
+            return !directories.some((directory) => (
+                directory.path !== item.path && isPathInsideDirectory(item.path, directory.path)
+            ))
+        }
+        return !directories.some((directory) => isPathInsideDirectory(item.path, directory.path))
+    })
+}
+
+function DeleteConfirmModal(props: {
+    items: EditorTreeItem[]
+    projectPath: string | null
+    isDeleting: boolean
+    error: string | null
+    onCancel: () => void
+    onConfirm: () => void
+}) {
+    if (props.items.length === 0) return null
+
+    const title = props.items.length === 1
+        ? `Delete ${getRelativePath(props.projectPath, props.items[0].path)}?`
+        : `Delete ${props.items.length} items?`
+    const visibleItems = props.items.slice(0, 5)
+    const hiddenCount = props.items.length - visibleItems.length
+
+    return (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 px-4">
+            <div
+                role="dialog"
+                aria-modal="true"
+                aria-label={title}
+                className="w-full max-w-md rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] p-4 text-sm text-[var(--app-fg)] shadow-xl"
+            >
+                <h2 className="text-base font-semibold">{title}</h2>
+                <p className="mt-2 text-xs text-[var(--app-hint)]">
+                    This will permanently delete the selected file/folder items.
+                </p>
+                <ul className="mt-3 max-h-40 overflow-auto rounded border border-[var(--app-border)] bg-[var(--app-subtle-bg)] p-2 text-xs">
+                    {visibleItems.map((item) => (
+                        <li key={item.path} className="truncate">
+                            {getRelativePath(props.projectPath, item.path)}
+                        </li>
+                    ))}
+                    {hiddenCount > 0 ? (
+                        <li className="text-[var(--app-hint)]">and {hiddenCount} more…</li>
+                    ) : null}
+                </ul>
+                {props.error ? (
+                    <div className="mt-3 rounded border border-red-500/40 bg-red-500/10 px-2 py-1 text-xs text-red-500">
+                        {props.error}
+                    </div>
+                ) : null}
+                <div className="mt-4 flex justify-end gap-2">
+                    <button
+                        type="button"
+                        className="rounded border border-[var(--app-border)] px-3 py-1.5 text-xs hover:bg-[var(--app-subtle-bg)]"
+                        disabled={props.isDeleting}
+                        onClick={props.onCancel}
+                    >
+                        Cancel
+                    </button>
+                    <button
+                        type="button"
+                        className="rounded bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-500 disabled:opacity-60"
+                        disabled={props.isDeleting}
+                        onClick={props.onConfirm}
+                    >
+                        {props.isDeleting ? 'Deleting…' : 'Delete'}
+                    </button>
+                </div>
+            </div>
+        </div>
+    )
+}
+
 export function EditorLayout(props: {
     api: ApiClient | null
     initialMachineId?: string
@@ -51,7 +148,10 @@ export function EditorLayout(props: {
     const [pendingDraftText, setPendingDraftText] = useState<string | undefined>(undefined)
     const [newFileTargetPath, setNewFileTargetPath] = useState<string | null>(null)
     const [isTerminalCollapsed, setIsTerminalCollapsed] = useState(false)
-    const pendingFileAfterSessionRef = useRef<string | null>(null)
+    const [deleteItems, setDeleteItems] = useState<EditorTreeItem[]>([])
+    const [isDeletingItems, setIsDeletingItems] = useState(false)
+    const [deleteError, setDeleteError] = useState<string | null>(null)
+    const pendingFileAfterSessionRef = useRef<string[] | null>(null)
     const fileTabs = useMemo(
         () => editor.tabs.filter((tab) => tab.type === 'file'),
         [editor.tabs]
@@ -76,69 +176,100 @@ export function EditorLayout(props: {
         projectPath: editor.projectPath,
         onCreated: (sessionId) => {
             editor.setActiveSessionId(sessionId)
-            const pendingFile = pendingFileAfterSessionRef.current
-            if (pendingFile) {
-                setPendingDraftText(appendEditorChatDraft('', pendingFile))
+            const pendingFiles = pendingFileAfterSessionRef.current
+            if (pendingFiles?.length) {
+                setPendingDraftText(pendingFiles.reduce((draft, filePath) => appendEditorChatDraft(draft, filePath), ''))
                 pendingFileAfterSessionRef.current = null
             }
         }
     })
 
-    const handleCopyPath = useCallback(async (filePath: string) => {
+    const handleCopyPath = useCallback(async (items: EditorTreeItem[]) => {
         if (navigator.clipboard?.writeText) {
-            await navigator.clipboard.writeText(filePath)
+            await navigator.clipboard.writeText(uniqueItems(items).map((item) => item.path).join('\n'))
         }
     }, [])
 
-    const handleCopyRelativePath = useCallback(async (filePath: string) => {
+    const handleCopyRelativePath = useCallback(async (items: EditorTreeItem[]) => {
         if (navigator.clipboard?.writeText) {
-            await navigator.clipboard.writeText(getRelativePath(editor.projectPath, filePath))
+            await navigator.clipboard.writeText(uniqueItems(items).map((item) => getRelativePath(editor.projectPath, item.path)).join('\n'))
         }
     }, [editor.projectPath])
 
-    const handleRefreshPath = useCallback((filePath: string) => {
+    const handleRefreshPath = useCallback((items: EditorTreeItem[]) => {
         if (!editor.machineId) return
 
-        void queryClient.invalidateQueries({
-            queryKey: queryKeys.editorDirectory(editor.machineId, getParentPath(filePath))
-        })
-        void queryClient.invalidateQueries({
-            queryKey: queryKeys.editorDirectory(editor.machineId, filePath)
-        })
+        for (const item of uniqueItems(items)) {
+            void queryClient.invalidateQueries({
+                queryKey: queryKeys.editorDirectory(editor.machineId, getParentPath(item.path))
+            })
+            void queryClient.invalidateQueries({
+                queryKey: queryKeys.editorDirectory(editor.machineId, item.path)
+            })
+        }
     }, [editor.machineId, queryClient])
 
-    const handleDeleteFile = useCallback(async (filePath: string) => {
-        if (!props.api || !editor.machineId) return
-        if (!window.confirm(`Delete ${getRelativePath(editor.projectPath, filePath)}?`)) return
+    const handleRequestDelete = useCallback((items: EditorTreeItem[]) => {
+        setDeleteError(null)
+        setDeleteItems(pruneDeleteItems(items))
+    }, [])
 
-        const response = await props.api.deleteEditorFile(editor.machineId, filePath)
-        if (!response.success) {
-            window.alert(response.error ?? 'Failed to delete file')
-            return
-        }
+    const handleConfirmDelete = useCallback(async () => {
+        if (!props.api || !editor.machineId || deleteItems.length === 0) return
 
-        void queryClient.invalidateQueries({
-            queryKey: queryKeys.editorDirectory(editor.machineId, getParentPath(filePath))
-        })
-        void queryClient.invalidateQueries({
-            queryKey: queryKeys.editorDirectory(editor.machineId, filePath)
-        })
-        for (const tab of editor.tabs) {
-            if (tab.type === 'file' && tab.path === filePath) {
-                editor.closeTab(tab.id)
+        setIsDeletingItems(true)
+        setDeleteError(null)
+        try {
+            for (const item of deleteItems) {
+                const response = await props.api.deleteEditorFile(editor.machineId, item.path)
+                if (!response.success) {
+                    setDeleteError(response.error ?? `Failed to delete ${getRelativePath(editor.projectPath, item.path)}`)
+                    return
+                }
             }
-        }
-    }, [editor, props.api, queryClient])
 
-    const handleAddToChat = useCallback((filePath: string) => {
+            for (const item of deleteItems) {
+                void queryClient.invalidateQueries({
+                    queryKey: queryKeys.editorDirectory(editor.machineId, getParentPath(item.path))
+                })
+                void queryClient.invalidateQueries({
+                    queryKey: queryKeys.editorDirectory(editor.machineId, item.path)
+                })
+            }
+            for (const tab of editor.tabs) {
+                if (!tab.path) continue
+                if (deleteItems.some((item) => (
+                    item.type === 'directory'
+                        ? isPathInsideDirectory(tab.path!, item.path)
+                        : tab.path === item.path
+                ))) {
+                    editor.closeTab(tab.id)
+                }
+            }
+            setDeleteItems([])
+        } finally {
+            setIsDeletingItems(false)
+        }
+    }, [deleteItems, editor, props.api, queryClient])
+
+    const handleAddToChat = useCallback((items: EditorTreeItem[]) => {
+        const paths = uniqueItems(items).map((item) => item.path)
         if (editor.activeSessionId) {
-            setPendingDraftText((current) => appendEditorChatDraft(current ?? '', filePath))
+            setPendingDraftText((current) => paths.reduce((draft, filePath) => appendEditorChatDraft(draft, filePath), current ?? ''))
             return
         }
 
-        pendingFileAfterSessionRef.current = filePath
+        pendingFileAfterSessionRef.current = paths
         newSession.createSession()
     }, [editor.activeSessionId, newSession])
+
+    const handleOpenItems = useCallback((items: EditorTreeItem[]) => {
+        for (const item of uniqueItems(items)) {
+            if (item.type === 'file') {
+                editor.openFile(item.path)
+            }
+        }
+    }, [editor])
 
     const handleNewFile = useCallback((targetPath: string) => {
         setNewFileTargetPath(targetPath)
@@ -305,14 +436,26 @@ export function EditorLayout(props: {
             <EditorContextMenu
                 filePath={editor.contextMenuFile}
                 position={editor.contextMenuPosition}
-                onOpen={editor.openFile}
+                items={editor.contextMenuItems}
+                onOpen={handleOpenItems}
                 onNewFile={handleNewFile}
                 onAddToChat={handleAddToChat}
                 onCopyPath={handleCopyPath}
                 onCopyRelativePath={handleCopyRelativePath}
                 onRefresh={handleRefreshPath}
-                onDeleteFile={handleDeleteFile}
+                onDelete={handleRequestDelete}
                 onClose={editor.hideContextMenu}
+            />
+            <DeleteConfirmModal
+                items={deleteItems}
+                projectPath={editor.projectPath}
+                isDeleting={isDeletingItems}
+                error={deleteError}
+                onCancel={() => {
+                    setDeleteItems([])
+                    setDeleteError(null)
+                }}
+                onConfirm={() => { void handleConfirmDelete() }}
             />
         </div>
     )
