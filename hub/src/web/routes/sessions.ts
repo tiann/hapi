@@ -46,6 +46,39 @@ const uploadDeleteSchema = z.object({
 
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 
+
+type SlashCommand = {
+    name: string
+    description?: string
+    source: 'builtin' | 'user' | 'plugin' | 'project'
+    content?: string
+    pluginName?: string
+}
+
+function commandsFromMetadataSlashCommands(names: readonly string[] | undefined): SlashCommand[] {
+    if (!names?.length) {
+        return []
+    }
+
+    return names
+        .filter((name): name is string => typeof name === 'string' && name.trim().length > 0)
+        .map((name) => ({
+            name,
+            source: 'builtin'
+        }))
+}
+
+function mergeSlashCommands(
+    primary: readonly SlashCommand[],
+    fallback: readonly SlashCommand[]
+): SlashCommand[] {
+    const commandMap = new Map<string, SlashCommand>()
+    for (const command of [...fallback, ...primary]) {
+        commandMap.set(command.name, command)
+    }
+    return Array.from(commandMap.values())
+}
+
 function estimateBase64Bytes(base64: string): number {
     const len = base64.length
     if (len === 0) return 0
@@ -498,10 +531,29 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         // Get agent type from session metadata, default to 'claude'
         const agent = sessionResult.session.metadata?.flavor ?? 'claude'
 
+        const metadataCommands = commandsFromMetadataSlashCommands(
+            sessionResult.session.metadata?.slashCommands
+        )
+
         try {
             const result = await engine.listSlashCommands(sessionResult.sessionId, agent)
+            if (result.success && result.commands) {
+                return c.json({
+                    ...result,
+                    commands: mergeSlashCommands(result.commands, metadataCommands)
+                })
+            }
+
+            if (metadataCommands.length > 0) {
+                return c.json({ success: true, commands: metadataCommands })
+            }
+
             return c.json(result)
         } catch (error) {
+            if (metadataCommands.length > 0) {
+                return c.json({ success: true, commands: metadataCommands })
+            }
+
             return c.json({
                 success: false,
                 error: error instanceof Error ? error.message : 'Failed to list slash commands'
