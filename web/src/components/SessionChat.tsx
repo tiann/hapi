@@ -408,6 +408,7 @@ export function SessionChat(props: {
                         api={props.api}
                         sessionId={props.session.id}
                         metadata={props.session.metadata}
+                        model={props.session.model}
                         disabled={sessionInactive}
                         onRefresh={props.onRefresh}
                         onRetryMessage={props.onRetryMessage}

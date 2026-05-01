@@ -32,13 +32,15 @@ export function normalizeUserRecord(
     localId: string | null,
     createdAt: number,
     content: unknown,
-    meta?: unknown
+    meta?: unknown,
+    invokedAt?: number | null
 ): NormalizedMessage | null {
     if (typeof content === 'string') {
         return {
             id: messageId,
             localId,
             createdAt,
+            invokedAt,
             role: 'user',
             content: { type: 'text', text: content },
             isSidechain: false,
@@ -52,6 +54,7 @@ export function normalizeUserRecord(
             id: messageId,
             localId,
             createdAt,
+            invokedAt,
             role: 'user',
             content: { type: 'text', text: content.text, attachments },
             isSidechain: false,

@@ -21,9 +21,9 @@ export function normalizeDecryptedMessage(message: DecryptedMessage): Normalized
     }
 
     if (record.role === 'user') {
-        const normalized = normalizeUserRecord(message.id, message.localId, message.createdAt, record.content, record.meta)
+        const normalized = normalizeUserRecord(message.id, message.localId, message.createdAt, record.content, record.meta, message.invokedAt)
         return normalized
-            ? { ...normalized, status: message.status, originalText: message.originalText }
+            ? { ...normalized, status: message.status, originalText: message.originalText, invokedAt: message.invokedAt }
             : {
                 id: message.id,
                 localId: message.localId,
@@ -33,19 +33,20 @@ export function normalizeDecryptedMessage(message: DecryptedMessage): Normalized
                 content: { type: 'text', text: safeStringify(record.content) },
                 meta: record.meta,
                 status: message.status,
-                originalText: message.originalText
+                originalText: message.originalText,
+                invokedAt: message.invokedAt
             }
     }
     if (record.role === 'agent') {
         if (isSkippableAgentContent(record.content)) {
             return null
         }
-        const normalized = normalizeAgentRecord(message.id, message.localId, message.createdAt, record.content, record.meta)
+        const normalized = normalizeAgentRecord(message.id, message.localId, message.createdAt, record.content, record.meta, message.invokedAt)
         if (!normalized && isCodexContent(record.content)) {
             return null
         }
         return normalized
-            ? { ...normalized, status: message.status, originalText: message.originalText }
+            ? { ...normalized, status: message.status, originalText: message.originalText, invokedAt: message.invokedAt }
             : {
                 id: message.id,
                 localId: message.localId,
@@ -55,7 +56,8 @@ export function normalizeDecryptedMessage(message: DecryptedMessage): Normalized
                 content: [{ type: 'text', text: safeStringify(record.content), uuid: message.id, parentUUID: null }],
                 meta: record.meta,
                 status: message.status,
-                originalText: message.originalText
+                originalText: message.originalText,
+                invokedAt: message.invokedAt
             }
     }
 
@@ -68,6 +70,7 @@ export function normalizeDecryptedMessage(message: DecryptedMessage): Normalized
         content: [{ type: 'text', text: safeStringify(record.content), uuid: message.id, parentUUID: null }],
         meta: record.meta,
         status: message.status,
-        originalText: message.originalText
+        originalText: message.originalText,
+        invokedAt: message.invokedAt
     }
 }

@@ -3,7 +3,7 @@ import type { AppendMessage, AttachmentAdapter, ThreadMessageLike } from '@assis
 import { useExternalMessageConverter, useExternalStoreRuntime } from '@assistant-ui/react'
 import { safeStringify } from '@hapi/protocol'
 import { renderEventLabel } from '@/chat/presentation'
-import type { ChatBlock, CliOutputBlock } from '@/chat/types'
+import type { ChatBlock, CliOutputBlock, UsageData } from '@/chat/types'
 import type { AgentEvent, ToolCallBlock } from '@/chat/types'
 import type { AttachmentMetadata, MessageStatus as HappyMessageStatus, Session } from '@/types/api'
 
@@ -16,6 +16,10 @@ export type HappyChatMessageMetadata = {
     event?: AgentEvent
     source?: CliOutputBlock['source']
     attachments?: AttachmentMetadata[]
+    invokedAt?: number | null
+    durationMs?: number
+    usage?: UsageData
+    model?: string | null
 }
 
 function toThreadMessageLike(block: ChatBlock): ThreadMessageLike {
@@ -32,7 +36,8 @@ function toThreadMessageLike(block: ChatBlock): ThreadMessageLike {
                     status: block.status,
                     localId: block.localId,
                     originalText: block.originalText,
-                    attachments: block.attachments
+                    attachments: block.attachments,
+                    invokedAt: block.invokedAt
                 } satisfies HappyChatMessageMetadata
             }
         }
@@ -46,7 +51,13 @@ function toThreadMessageLike(block: ChatBlock): ThreadMessageLike {
             createdAt: new Date(block.createdAt),
             content: [{ type: 'text', text: block.text }],
             metadata: {
-                custom: { kind: 'assistant' } satisfies HappyChatMessageMetadata
+                custom: {
+                    kind: 'assistant',
+                    invokedAt: block.invokedAt,
+                    durationMs: block.durationMs,
+                    usage: block.usage,
+                    model: block.model
+                } satisfies HappyChatMessageMetadata
             }
         }
     }
@@ -59,7 +70,13 @@ function toThreadMessageLike(block: ChatBlock): ThreadMessageLike {
             createdAt: new Date(block.createdAt),
             content: [{ type: 'reasoning', text: block.text }],
             metadata: {
-                custom: { kind: 'assistant' } satisfies HappyChatMessageMetadata
+                custom: {
+                    kind: 'assistant',
+                    invokedAt: block.invokedAt,
+                    durationMs: block.durationMs,
+                    usage: block.usage,
+                    model: block.model
+                } satisfies HappyChatMessageMetadata
             }
         }
     }
@@ -72,7 +89,12 @@ function toThreadMessageLike(block: ChatBlock): ThreadMessageLike {
             createdAt: new Date(block.createdAt),
             content: [{ type: 'text', text: renderEventLabel(block.event) }],
             metadata: {
-                custom: { kind: 'event', event: block.event } satisfies HappyChatMessageMetadata
+                custom: {
+                    kind: 'event',
+                    event: block.event,
+                    invokedAt: block.invokedAt,
+                    model: block.model
+                } satisfies HappyChatMessageMetadata
             }
         }
     }
@@ -85,7 +107,14 @@ function toThreadMessageLike(block: ChatBlock): ThreadMessageLike {
             createdAt: new Date(block.createdAt),
             content: [{ type: 'text', text: block.text }],
             metadata: {
-                custom: { kind: 'cli-output', source: block.source } satisfies HappyChatMessageMetadata
+                custom: {
+                    kind: 'cli-output',
+                    source: block.source,
+                    invokedAt: block.invokedAt,
+                    durationMs: block.durationMs,
+                    usage: block.usage,
+                    model: block.model
+                } satisfies HappyChatMessageMetadata
             }
         }
     }
@@ -108,7 +137,14 @@ function toThreadMessageLike(block: ChatBlock): ThreadMessageLike {
             artifact: toolBlock
         }],
         metadata: {
-            custom: { kind: 'tool', toolCallId: toolBlock.id } satisfies HappyChatMessageMetadata
+            custom: {
+                kind: 'tool',
+                toolCallId: toolBlock.id,
+                invokedAt: toolBlock.invokedAt,
+                durationMs: toolBlock.durationMs,
+                usage: toolBlock.usage,
+                model: toolBlock.model
+            } satisfies HappyChatMessageMetadata
         }
     }
 }

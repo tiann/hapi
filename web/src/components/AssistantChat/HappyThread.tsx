@@ -153,6 +153,7 @@ export function HappyThread(props: {
     api: ApiClient
     sessionId: string
     metadata: SessionMetadataSummary | null
+    model?: string | null
     disabled: boolean
     onRefresh: () => void
     onRetryMessage?: (localId: string) => void
@@ -382,6 +383,7 @@ export function HappyThread(props: {
             api: props.api,
             sessionId: props.sessionId,
             metadata: props.metadata,
+            model: props.model,
             disabled: props.disabled,
             onRefresh: props.onRefresh,
             onRetryMessage: props.onRetryMessage

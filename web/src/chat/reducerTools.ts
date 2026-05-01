@@ -1,5 +1,5 @@
 import type { AgentState } from '@/types/api'
-import type { ChatBlock, ChatToolCall, NormalizedMessage, ToolCallBlock, ToolPermission } from '@/chat/types'
+import type { ChatBlock, ChatToolCall, NormalizedMessage, ToolCallBlock, ToolPermission, UsageData } from '@/chat/types'
 
 export type PermissionEntry = {
     toolName: string
@@ -56,6 +56,10 @@ export function ensureToolBlock(
     id: string,
     seed: {
         createdAt: number
+        invokedAt?: number | null
+        durationMs?: number
+        usage?: UsageData
+        model?: string | null
         localId: string | null
         meta?: unknown
         name: string
@@ -91,6 +95,18 @@ export function ensureToolBlock(
         if (seed.description !== null) {
             existing.tool.description = seed.description
         }
+        if (seed.invokedAt !== undefined) {
+            existing.invokedAt = seed.invokedAt
+        }
+        if (seed.durationMs !== undefined) {
+            existing.durationMs = seed.durationMs
+        }
+        if (seed.usage !== undefined) {
+            existing.usage = seed.usage
+        }
+        if (seed.model !== undefined) {
+            existing.model = seed.model
+        }
         return existing
     }
 
@@ -117,6 +133,10 @@ export function ensureToolBlock(
         id,
         localId: seed.localId,
         createdAt: seed.createdAt,
+        invokedAt: seed.invokedAt,
+        durationMs: seed.durationMs,
+        usage: seed.usage,
+        model: seed.model,
         tool,
         children: [],
         meta: seed.meta

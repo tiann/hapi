@@ -105,7 +105,8 @@ function normalizeAssistantOutput(
     localId: string | null,
     createdAt: number,
     data: Record<string, unknown>,
-    meta?: unknown
+    meta?: unknown,
+    invokedAt?: number | null
 ): NormalizedMessage | null {
     const uuid = asString(data.uuid) ?? messageId
     const parentUUID = asString(data.parentUuid) ?? null
@@ -142,11 +143,14 @@ function normalizeAssistantOutput(
     const usage = isObject(message.usage) ? (message.usage as Record<string, unknown>) : null
     const inputTokens = usage ? asNumber(usage.input_tokens) : null
     const outputTokens = usage ? asNumber(usage.output_tokens) : null
+    const model = asString(message.model) ?? null
 
     return {
         id: messageId,
         localId,
         createdAt,
+        invokedAt,
+        model,
         role: 'agent',
         isSidechain,
         content: blocks,
@@ -166,7 +170,8 @@ function normalizeUserOutput(
     localId: string | null,
     createdAt: number,
     data: Record<string, unknown>,
-    meta?: unknown
+    meta?: unknown,
+    invokedAt?: number | null
 ): NormalizedMessage | null {
     const uuid = asString(data.uuid) ?? messageId
     const parentUUID = asString(data.parentUuid) ?? null
@@ -182,6 +187,7 @@ function normalizeUserOutput(
             id: messageId,
             localId,
             createdAt,
+            invokedAt,
             role: 'agent',
             isSidechain: true,
             content: [{ type: 'sidechain', uuid, parentUUID, prompt: messageContent }]
@@ -201,6 +207,7 @@ function normalizeUserOutput(
             id: messageId,
             localId,
             createdAt,
+            invokedAt,
             role: 'agent',
             isSidechain: true,
             content: [{ type: 'sidechain', uuid, parentUUID, prompt: messageContent }]
@@ -220,6 +227,7 @@ function normalizeUserOutput(
                 id: messageId,
                 localId,
                 createdAt,
+                invokedAt,
                 role: 'agent',
                 isSidechain: true,
                 content: [{ type: 'sidechain', uuid, parentUUID, prompt: textParts.join('\n\n') }]
@@ -240,6 +248,7 @@ function normalizeUserOutput(
                 id: messageId,
                 localId,
                 createdAt,
+                invokedAt,
                 role: 'user',
                 isSidechain: false,
                 content: { type: 'text', text: textParts.join('\n\n') },
@@ -281,6 +290,7 @@ function normalizeUserOutput(
         id: messageId,
         localId,
         createdAt,
+        invokedAt,
         role: 'agent',
         isSidechain,
         content: blocks,
@@ -305,7 +315,8 @@ export function normalizeAgentRecord(
     localId: string | null,
     createdAt: number,
     content: unknown,
-    meta?: unknown
+    meta?: unknown,
+    invokedAt?: number | null
 ): NormalizedMessage | null {
     if (!isObject(content) || typeof content.type !== 'string') return null
 
@@ -319,16 +330,17 @@ export function normalizeAgentRecord(
         if (!isClaudeChatVisibleMessage({ type: data.type, subtype: data.subtype })) return null
 
         if (data.type === 'assistant') {
-            return normalizeAssistantOutput(messageId, localId, createdAt, data, meta)
+            return normalizeAssistantOutput(messageId, localId, createdAt, data, meta, invokedAt)
         }
         if (data.type === 'user') {
-            return normalizeUserOutput(messageId, localId, createdAt, data, meta)
+            return normalizeUserOutput(messageId, localId, createdAt, data, meta, invokedAt)
         }
         if (data.type === 'summary' && typeof data.summary === 'string') {
             return {
                 id: messageId,
                 localId,
                 createdAt,
+                invokedAt,
                 role: 'agent',
                 isSidechain: false,
                 content: [{ type: 'summary', summary: data.summary }],
@@ -340,6 +352,7 @@ export function normalizeAgentRecord(
                 id: messageId,
                 localId,
                 createdAt,
+                invokedAt,
                 role: 'event',
                 content: {
                     type: 'api-error',
@@ -356,10 +369,12 @@ export function normalizeAgentRecord(
                 id: messageId,
                 localId,
                 createdAt,
+                invokedAt,
                 role: 'event',
                 content: {
                     type: 'turn-duration',
-                    durationMs: asNumber(data.durationMs) ?? 0
+                    durationMs: asNumber(data.durationMs) ?? 0,
+                    messageId: asString(data.messageId) ?? undefined
                 },
                 isSidechain: false,
                 meta
@@ -371,6 +386,7 @@ export function normalizeAgentRecord(
                 id: messageId,
                 localId,
                 createdAt,
+                invokedAt,
                 role: 'event',
                 content: {
                     type: 'microcompact',
@@ -388,6 +404,7 @@ export function normalizeAgentRecord(
                 id: messageId,
                 localId,
                 createdAt,
+                invokedAt,
                 role: 'event',
                 content: {
                     type: 'compact',
@@ -408,6 +425,7 @@ export function normalizeAgentRecord(
             id: messageId,
             localId,
             createdAt,
+            invokedAt,
             role: 'event',
             content: event,
             isSidechain: false,
@@ -424,6 +442,7 @@ export function normalizeAgentRecord(
                 id: messageId,
                 localId,
                 createdAt,
+                invokedAt,
                 role: 'agent',
                 isSidechain: false,
                 content: [{ type: 'text', text: data.message, uuid: messageId, parentUUID: null }],
@@ -436,6 +455,7 @@ export function normalizeAgentRecord(
                 id: messageId,
                 localId,
                 createdAt,
+                invokedAt,
                 role: 'agent',
                 isSidechain: false,
                 content: [{ type: 'reasoning', text: data.message, uuid: messageId, parentUUID: null }],
@@ -449,6 +469,7 @@ export function normalizeAgentRecord(
                 id: messageId,
                 localId,
                 createdAt,
+                invokedAt,
                 role: 'event',
                 content: {
                     type: 'token-count',
@@ -466,6 +487,7 @@ export function normalizeAgentRecord(
                 id: messageId,
                 localId,
                 createdAt,
+                invokedAt,
                 role: 'agent',
                 isSidechain: false,
                 content: [{
@@ -487,6 +509,7 @@ export function normalizeAgentRecord(
                 id: messageId,
                 localId,
                 createdAt,
+                invokedAt,
                 role: 'agent',
                 isSidechain: false,
                 content: [{
@@ -509,6 +532,7 @@ export function normalizeAgentRecord(
                 id: messageId,
                 localId,
                 createdAt,
+                invokedAt,
                 role: 'agent',
                 isSidechain: false,
                 content: [

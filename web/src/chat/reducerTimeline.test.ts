@@ -186,4 +186,43 @@ describe('reduceTimeline', () => {
         const events = blocks.filter(b => b.kind === 'agent-event')
         expect(events).toHaveLength(1)
     })
+
+    it('merges turn-duration event into assistant block by messageId', () => {
+        const assistantMsg = makeAgentMessage('Thinking...', { id: 'target-msg-id' })
+        const durationEvent: TracedMessage = {
+            id: 'event-1',
+            role: 'event',
+            createdAt: 1_700_000_002_000,
+            content: { type: 'turn-duration', durationMs: 1500, messageId: 'target-msg-id' }
+        } as TracedMessage
+
+        const { blocks } = reduceTimeline([assistantMsg, durationEvent], makeContext())
+        const agentTextBlock = blocks.find(b => b.kind === 'agent-text') as any
+        expect(agentTextBlock).toBeDefined()
+        expect(agentTextBlock.durationMs).toBe(1500)
+    })
+
+    it('merges turn-duration event into the last assistant block as fallback', () => {
+        const assistantMsg = makeAgentMessage('Hello')
+        const durationEvent: TracedMessage = {
+            id: 'event-1',
+            role: 'event',
+            createdAt: 1_700_000_002_000,
+            content: { type: 'turn-duration', durationMs: 2500 } // No messageId
+        } as TracedMessage
+
+        const { blocks } = reduceTimeline([assistantMsg, durationEvent], makeContext())
+        const agentTextBlock = blocks.find(b => b.kind === 'agent-text') as any
+        expect(agentTextBlock).toBeDefined()
+        expect(agentTextBlock.durationMs).toBe(2500)
+    })
+
+    it('propagates model information to assistant blocks', () => {
+        const assistantMsg = makeAgentMessage('Hello', { model: 'claude-3-opus' })
+        const { blocks } = reduceTimeline([assistantMsg], makeContext())
+
+        const agentTextBlock = blocks.find(b => b.kind === 'agent-text') as any
+        expect(agentTextBlock).toBeDefined()
+        expect(agentTextBlock.model).toBe('claude-3-opus')
+    })
 })

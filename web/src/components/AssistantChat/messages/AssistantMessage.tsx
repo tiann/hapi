@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { MessagePrimitive, useAssistantState } from '@assistant-ui/react'
 import { MarkdownText } from '@/components/assistant-ui/markdown-text'
 import { Reasoning, ReasoningGroup } from '@/components/assistant-ui/reasoning'
@@ -8,6 +9,8 @@ import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
 import type { HappyChatMessageMetadata } from '@/lib/assistant-runtime'
 import { getAssistantCopyText } from '@/components/AssistantChat/messages/assistantCopyText'
 import { getConversationMessageAnchorId } from '@/chat/outline'
+import { MessageMetadata } from '@/components/AssistantChat/messages/MessageMetadata'
+import { useHappyChatContext } from '@/components/AssistantChat/context'
 
 const TOOL_COMPONENTS = {
     Fallback: HappyToolMessage
@@ -22,6 +25,8 @@ const MESSAGE_PART_COMPONENTS = {
 
 export function HappyAssistantMessage() {
     const { copied, copy } = useCopyToClipboard()
+    const { model } = useHappyChatContext()
+    const [showMetadata, setShowMetadata] = useState(false)
     const messageId = useAssistantState(({ message }) => message.id)
     const isCliOutput = useAssistantState(({ message }) => {
         const custom = message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
@@ -41,6 +46,12 @@ export function HappyAssistantMessage() {
         if (message.role !== 'assistant') return ''
         return getAssistantCopyText(message.content)
     })
+
+    const invokedAt = useAssistantState(({ message }) => (message.metadata.custom as HappyChatMessageMetadata)?.invokedAt)
+    const durationMs = useAssistantState(({ message }) => (message.metadata.custom as HappyChatMessageMetadata)?.durationMs)
+    const usage = useAssistantState(({ message }) => (message.metadata.custom as HappyChatMessageMetadata)?.usage)
+    const messageModel = useAssistantState(({ message }) => (message.metadata.custom as HappyChatMessageMetadata)?.model)
+
     const rootClass = toolOnly
         ? 'py-1 min-w-0 max-w-full overflow-x-hidden'
         : 'px-1 min-w-0 max-w-full overflow-x-hidden'
@@ -51,7 +62,18 @@ export function HappyAssistantMessage() {
                 id={getConversationMessageAnchorId(messageId)}
                 className="scroll-mt-4 px-1 min-w-0 max-w-full overflow-x-hidden"
             >
-                <CliOutputBlock text={cliText} />
+                <div onClick={() => setShowMetadata(!showMetadata)} className="cursor-pointer">
+                    <CliOutputBlock text={cliText} />
+                </div>
+                {showMetadata && (
+                    <MessageMetadata
+                        invokedAt={invokedAt}
+                        durationMs={durationMs}
+                        usage={usage}
+                        model={messageModel || model}
+                        className="mt-1"
+                    />
+                )}
             </MessagePrimitive.Root>
         )
     }
@@ -61,9 +83,18 @@ export function HappyAssistantMessage() {
             id={getConversationMessageAnchorId(messageId)}
             className={`${rootClass} ${copyText ? 'group/msg' : ''} scroll-mt-4`}
         >
-            <div className="min-w-0">
+            <div className="min-w-0 cursor-pointer" onClick={() => setShowMetadata(!showMetadata)}>
                 <MessagePrimitive.Content components={MESSAGE_PART_COMPONENTS} />
             </div>
+            {showMetadata && (
+                <MessageMetadata
+                    invokedAt={invokedAt}
+                    durationMs={durationMs}
+                    usage={usage}
+                    model={messageModel || model}
+                    className="mt-1"
+                />
+            )}
             {copyText && (
                 <div className="hidden sm:flex justify-end mt-1 opacity-0 group-hover/msg:opacity-100 transition-opacity">
                     <button
