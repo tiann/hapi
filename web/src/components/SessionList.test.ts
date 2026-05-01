@@ -102,7 +102,7 @@ describe('session list search helpers', () => {
 })
 
 describe('getVisibleSessionPreview', () => {
-    it('does not promote the selected session in collapsed previews', () => {
+    it('keeps selected and active sessions inside the collapsed preview without promoting them', () => {
         const sessions = Array.from({ length: 6 }, (_, index) => makeSession({
             id: `s-${index + 1}`,
             active: index === 4,
@@ -111,10 +111,26 @@ describe('getVisibleSessionPreview', () => {
         }))
 
         const preview = getVisibleSessionPreview(sessions, {
+            selectedSessionId: 's-6',
             limit: 3
         })
 
-        expect(preview.map(session => session.id)).toEqual(['s-5', 's-1', 's-2'])
+        expect(preview.map(session => session.id)).toEqual(['s-1', 's-5', 's-6'])
+    })
+
+    it('does not move an already-visible selected session to the top', () => {
+        const sessions = Array.from({ length: 6 }, (_, index) => makeSession({
+            id: `s-${index + 1}`,
+            metadata: { path: '/work/hapi' },
+            updatedAt: 100 - index
+        }))
+
+        const preview = getVisibleSessionPreview(sessions, {
+            selectedSessionId: 's-3',
+            limit: 4
+        })
+
+        expect(preview.map(session => session.id)).toEqual(['s-1', 's-2', 's-3', 's-4'])
     })
 
     it('returns all sessions when expanded', () => {
