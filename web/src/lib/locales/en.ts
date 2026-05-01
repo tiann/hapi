@@ -122,6 +122,8 @@ export default {
   'newSession.model': 'Model',
   'newSession.effort': 'Effort',
   'newSession.model.optional': 'optional',
+  'newSession.model.custom.placeholder': 'Enter Claude model name',
+  'newSession.model.custom.required': 'Custom model is required',
   'newSession.model.loadFailed': 'Failed to load Codex models',
   'newSession.reasoningEffort': 'Reasoning effort',
   'newSession.yolo': 'YOLO mode',

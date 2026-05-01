@@ -10,6 +10,7 @@ describe('Claude model options', () => {
             { value: 'opus[1m]', label: 'Opus 1M' },
             { value: 'sonnet', label: 'Sonnet' },
             { value: 'sonnet[1m]', label: 'Sonnet 1M' },
+            { value: 'custom', label: 'Custom' },
         ])
     })
 

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildCliArgs } from './run'
+import { buildCliArgs, shouldSetClaudeHaikuModelEnv } from './run'
 
 describe('buildCliArgs', () => {
     it('adds --permission-mode for valid permission mode', () => {
@@ -60,5 +60,15 @@ describe('buildCliArgs', () => {
             expect(args).toContain('--permission-mode')
             expect(args).toContain(mode)
         }
+    })
+
+    it('detects custom Claude models for Haiku env override', () => {
+        expect(shouldSetClaudeHaikuModelEnv('claude', 'claude-3-5-haiku-latest')).toBe(true)
+        expect(shouldSetClaudeHaikuModelEnv('claude', 'opus')).toBe(false)
+        expect(shouldSetClaudeHaikuModelEnv('claude', 'opus[1m]')).toBe(false)
+        expect(shouldSetClaudeHaikuModelEnv('claude', 'sonnet')).toBe(false)
+        expect(shouldSetClaudeHaikuModelEnv('claude', 'sonnet[1m]')).toBe(false)
+        expect(shouldSetClaudeHaikuModelEnv('codex', 'claude-3-5-haiku-latest')).toBe(false)
+        expect(shouldSetClaudeHaikuModelEnv('claude')).toBe(false)
     })
 })
