@@ -75,6 +75,7 @@ export const RawJSONLinesSchema = z.discriminatedUnion("type", [
     maxRetries: z.number().optional(),
     error: z.unknown().optional(),
     durationMs: z.number().optional(),
+    messageId: z.string().optional(),
   }),
 ]);
 
