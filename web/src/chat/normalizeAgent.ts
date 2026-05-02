@@ -380,6 +380,21 @@ export function normalizeAgentRecord(
                 meta
             }
         }
+        if (data.type === 'result' && data.subtype === 'success') {
+            return {
+                id: messageId,
+                localId,
+                createdAt,
+                invokedAt,
+                role: 'event',
+                content: {
+                    type: 'turn-duration',
+                    durationMs: asNumber(data.duration_ms) ?? 0
+                },
+                isSidechain: false,
+                meta
+            }
+        }
         if (data.type === 'system' && data.subtype === 'microcompact_boundary') {
             const metadata = isObject(data.microcompactMetadata) ? data.microcompactMetadata : null
             return {
