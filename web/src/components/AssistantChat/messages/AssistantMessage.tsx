@@ -10,7 +10,6 @@ import type { HappyChatMessageMetadata } from '@/lib/assistant-runtime'
 import { getAssistantCopyText } from '@/components/AssistantChat/messages/assistantCopyText'
 import { getConversationMessageAnchorId } from '@/chat/outline'
 import { MessageMetadata } from '@/components/AssistantChat/messages/MessageMetadata'
-import { useHappyChatContext } from '@/components/AssistantChat/context'
 
 const TOOL_COMPONENTS = {
     Fallback: HappyToolMessage
@@ -25,7 +24,6 @@ const MESSAGE_PART_COMPONENTS = {
 
 export function HappyAssistantMessage() {
     const { copied, copy } = useCopyToClipboard()
-    const { model } = useHappyChatContext()
     const [showMetadata, setShowMetadata] = useState(false)
     const messageId = useAssistantState(({ message }) => message.id)
     const isCliOutput = useAssistantState(({ message }) => {
@@ -70,7 +68,7 @@ export function HappyAssistantMessage() {
                         invokedAt={invokedAt}
                         durationMs={durationMs}
                         usage={usage}
-                        model={messageModel || model}
+                        model={messageModel ?? null}
                         className="mt-1"
                     />
                 )}
@@ -91,7 +89,7 @@ export function HappyAssistantMessage() {
                     invokedAt={invokedAt}
                     durationMs={durationMs}
                     usage={usage}
-                    model={messageModel || model}
+                    model={messageModel ?? null}
                     className="mt-1"
                 />
             )}

@@ -225,4 +225,33 @@ describe('reduceTimeline', () => {
         expect(agentTextBlock).toBeDefined()
         expect(agentTextBlock.model).toBe('claude-3-opus')
     })
+
+    it('preserves per-message model across mid-session model switches', () => {
+        const earlier = makeAgentMessage('Earlier reply', {
+            id: 'msg-earlier',
+            createdAt: 1_700_000_000_000,
+            model: 'claude-3-opus'
+        })
+        const later = makeAgentMessage('Later reply', {
+            id: 'msg-later',
+            createdAt: 1_700_000_001_000,
+            model: 'gemini-3-flash-preview',
+            content: [{ type: 'text', text: 'Later reply', uuid: 'u-2', parentUUID: null }]
+        })
+
+        const { blocks } = reduceTimeline([earlier, later], makeContext())
+        const earlierBlock = blocks.find(b => b.id === 'msg-earlier:0') as any
+        const laterBlock = blocks.find(b => b.id === 'msg-later:0') as any
+        expect(earlierBlock.model).toBe('claude-3-opus')
+        expect(laterBlock.model).toBe('gemini-3-flash-preview')
+    })
+
+    it('leaves model undefined when message lacks per-message model', () => {
+        const assistantMsg = makeAgentMessage('Hello without model')
+        const { blocks } = reduceTimeline([assistantMsg], makeContext())
+
+        const agentTextBlock = blocks.find(b => b.kind === 'agent-text') as any
+        expect(agentTextBlock).toBeDefined()
+        expect(agentTextBlock.model).toBeUndefined()
+    })
 })
