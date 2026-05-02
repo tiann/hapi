@@ -77,16 +77,17 @@ export function HappyAssistantMessage() {
                 id={getConversationMessageAnchorId(messageId)}
                 className="scroll-mt-4 px-1 min-w-0 max-w-full overflow-x-hidden"
             >
-                <div
-                    onClick={hasMetadata ? toggleMetadata : undefined}
-                    onKeyDown={hasMetadata ? onMetadataKeyDown : undefined}
-                    role={hasMetadata ? 'button' : undefined}
-                    tabIndex={hasMetadata ? 0 : undefined}
-                    aria-expanded={hasMetadata ? showMetadata : undefined}
-                    className={hasMetadata ? 'cursor-pointer' : undefined}
-                >
-                    <CliOutputBlock text={cliText} />
-                </div>
+                <CliOutputBlock text={cliText} />
+                {hasMetadata && (
+                    <button
+                        type="button"
+                        onClick={() => setShowMetadata((open) => !open)}
+                        aria-expanded={showMetadata}
+                        className="mt-1 text-[10px] text-[var(--app-hint)] hover:text-[var(--app-fg)] underline-offset-2 hover:underline"
+                    >
+                        {showMetadata ? 'Hide metadata' : 'Show metadata'}
+                    </button>
+                )}
                 {showMetadata && (
                     <MessageMetadata
                         invokedAt={invokedAt}

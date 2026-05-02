@@ -75,16 +75,19 @@ export function HappyUserMessage() {
                 className="scroll-mt-4 px-1 min-w-0 max-w-full overflow-x-hidden"
             >
                 <div className="ml-auto w-full max-w-[92%]">
-                    <div
-                        onClick={hasMetadata ? toggleMetadata : undefined}
-                        onKeyDown={hasMetadata ? onMetadataKeyDown : undefined}
-                        role={hasMetadata ? 'button' : undefined}
-                        tabIndex={hasMetadata ? 0 : undefined}
-                        aria-expanded={hasMetadata ? showMetadata : undefined}
-                        className={hasMetadata ? 'cursor-pointer' : undefined}
-                    >
-                        <CliOutputBlock text={cliText} />
-                    </div>
+                    <CliOutputBlock text={cliText} />
+                    {hasMetadata && (
+                        <div className="mt-1 flex justify-end">
+                            <button
+                                type="button"
+                                onClick={() => setShowMetadata((open) => !open)}
+                                aria-expanded={showMetadata}
+                                className="text-[10px] text-[var(--app-hint)] hover:text-[var(--app-fg)] underline-offset-2 hover:underline"
+                            >
+                                {showMetadata ? 'Hide metadata' : 'Show metadata'}
+                            </button>
+                        </div>
+                    )}
                     {showMetadata && invokedAt != null && (
                         <MessageMetadata invokedAt={invokedAt} className="mt-1 justify-end" />
                     )}
