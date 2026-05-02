@@ -48,5 +48,37 @@ describe("RawJSONLinesSchema", () => {
             if (parsed.type !== "assistant") throw new Error("expected assistant record");
             expect(parsed.message?.model).toBe("claude-sonnet-4-6");
         });
+
+        it("passes through message fields not declared on the schema", () => {
+            // `RawMessageSchema.passthrough()` keeps keys that the cli does not
+            // explicitly know about, so future SDK additions reach the hub
+            // without another schema change.
+            const parsed = RawJSONLinesSchema.parse({
+                type: "assistant",
+                uuid: "msg-2",
+                message: {
+                    role: "assistant",
+                    content: [{ type: "text", text: "hi" }],
+                    futureField: { nested: "value" }
+                }
+            });
+            if (parsed.type !== "assistant") throw new Error("expected assistant record");
+            expect((parsed.message as Record<string, unknown> | undefined)?.futureField).toEqual({ nested: "value" });
+        });
+    });
+
+    describe("passthrough on system records", () => {
+        it("keeps undeclared fields on system records (e.g. future turn_duration metadata)", () => {
+            const parsed = RawJSONLinesSchema.parse({
+                type: "system",
+                subtype: "turn_duration",
+                uuid: "evt-3",
+                durationMs: 1234,
+                messageId: "asst-99",
+                futureBreakdown: { tokens: { in: 1, out: 2 } }
+            });
+            if (parsed.type !== "system") throw new Error("expected system record");
+            expect((parsed as Record<string, unknown>).futureBreakdown).toEqual({ tokens: { in: 1, out: 2 } });
+        });
     });
 });
