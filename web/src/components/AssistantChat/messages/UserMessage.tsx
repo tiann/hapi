@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useCallback, useState, type MouseEvent } from 'react'
 import { MessagePrimitive, useAssistantState } from '@assistant-ui/react'
 import { LazyRainbowText } from '@/components/LazyRainbowText'
 import { useHappyChatContext } from '@/components/AssistantChat/context'
@@ -10,11 +10,16 @@ import { CopyIcon, CheckIcon } from '@/components/icons'
 import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
 import { getConversationMessageAnchorId } from '@/chat/outline'
 import { MessageMetadata } from '@/components/AssistantChat/messages/MessageMetadata'
+import { isClickOnNestedControl } from '@/components/AssistantChat/messages/metadataToggle'
 
 export function HappyUserMessage() {
     const ctx = useHappyChatContext()
     const { copied, copy } = useCopyToClipboard()
     const [showMetadata, setShowMetadata] = useState(false)
+    const toggleMetadata = useCallback((event: MouseEvent<HTMLElement>) => {
+        if (isClickOnNestedControl(event)) return
+        setShowMetadata((open) => !open)
+    }, [])
     const role = useAssistantState(({ message }) => message.role)
     const messageId = useAssistantState(({ message }) => message.id)
     const text = useAssistantState(({ message }) => {
@@ -61,7 +66,7 @@ export function HappyUserMessage() {
                 className="scroll-mt-4 px-1 min-w-0 max-w-full overflow-x-hidden"
             >
                 <div className="ml-auto w-full max-w-[92%]">
-                    <div onClick={() => setShowMetadata(!showMetadata)} className="cursor-pointer">
+                    <div onClick={toggleMetadata} className="cursor-pointer">
                         <CliOutputBlock text={cliText} />
                     </div>
                     {showMetadata && invokedAt && (
@@ -79,7 +84,7 @@ export function HappyUserMessage() {
         <MessagePrimitive.Root
             id={getConversationMessageAnchorId(messageId)}
             className={`${userBubbleClass} group/msg scroll-mt-4 cursor-pointer`}
-            onClick={() => setShowMetadata(!showMetadata)}
+            onClick={toggleMetadata}
         >
             <div className="flex flex-col gap-1">
                 <div className="flex items-end gap-2">

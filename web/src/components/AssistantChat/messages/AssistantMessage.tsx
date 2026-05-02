@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useCallback, useState, type MouseEvent } from 'react'
 import { MessagePrimitive, useAssistantState } from '@assistant-ui/react'
 import { MarkdownText } from '@/components/assistant-ui/markdown-text'
 import { Reasoning, ReasoningGroup } from '@/components/assistant-ui/reasoning'
@@ -10,6 +10,7 @@ import type { HappyChatMessageMetadata } from '@/lib/assistant-runtime'
 import { getAssistantCopyText } from '@/components/AssistantChat/messages/assistantCopyText'
 import { getConversationMessageAnchorId } from '@/chat/outline'
 import { MessageMetadata } from '@/components/AssistantChat/messages/MessageMetadata'
+import { isClickOnNestedControl } from '@/components/AssistantChat/messages/metadataToggle'
 
 const TOOL_COMPONENTS = {
     Fallback: HappyToolMessage
@@ -25,6 +26,10 @@ const MESSAGE_PART_COMPONENTS = {
 export function HappyAssistantMessage() {
     const { copied, copy } = useCopyToClipboard()
     const [showMetadata, setShowMetadata] = useState(false)
+    const toggleMetadata = useCallback((event: MouseEvent<HTMLElement>) => {
+        if (isClickOnNestedControl(event)) return
+        setShowMetadata((open) => !open)
+    }, [])
     const messageId = useAssistantState(({ message }) => message.id)
     const isCliOutput = useAssistantState(({ message }) => {
         const custom = message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
@@ -60,7 +65,7 @@ export function HappyAssistantMessage() {
                 id={getConversationMessageAnchorId(messageId)}
                 className="scroll-mt-4 px-1 min-w-0 max-w-full overflow-x-hidden"
             >
-                <div onClick={() => setShowMetadata(!showMetadata)} className="cursor-pointer">
+                <div onClick={toggleMetadata} className="cursor-pointer">
                     <CliOutputBlock text={cliText} />
                 </div>
                 {showMetadata && (
@@ -81,7 +86,7 @@ export function HappyAssistantMessage() {
             id={getConversationMessageAnchorId(messageId)}
             className={`${rootClass} ${copyText ? 'group/msg' : ''} scroll-mt-4`}
         >
-            <div className="min-w-0 cursor-pointer" onClick={() => setShowMetadata(!showMetadata)}>
+            <div className="min-w-0 cursor-pointer" onClick={toggleMetadata}>
                 <MessagePrimitive.Content components={MESSAGE_PART_COMPONENTS} />
             </div>
             {showMetadata && (
