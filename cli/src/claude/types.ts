@@ -18,6 +18,7 @@ const RawMessageSchema = z.object({
   role: z.string().optional(),
   content: z.unknown(),
   usage: UsageSchema.optional(),
+  model: z.string().optional(),
 });
 
 const RawJSONLinesBaseSchema = z.object({
