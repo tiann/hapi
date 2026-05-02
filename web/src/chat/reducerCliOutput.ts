@@ -70,12 +70,16 @@ export function mergeCliOutputBlocks(blocks: ChatBlock[]): ChatBlock[] {
             && hasLocalCommandStdoutTag(block.text)
         ) {
             const separator = prev.text.endsWith('\n') || block.text.startsWith('\n') ? '' : '\n'
+            // The command-name block (`prev`) carries the assistant message's
+            // metadata; the stdout follow-up (`block`) is a synthetic split
+            // with no first-class metadata of its own. Always prefer prev's
+            // values; fall back to block only if prev is missing one.
             merged[merged.length - 1] = {
                 ...prev,
                 text: `${prev.text}${separator}${block.text}`,
                 invokedAt: prev.invokedAt ?? block.invokedAt,
-                durationMs: block.durationMs ?? prev.durationMs,
-                usage: block.usage ?? prev.usage,
+                durationMs: prev.durationMs ?? block.durationMs,
+                usage: prev.usage ?? block.usage,
                 model: prev.model ?? block.model
             }
             continue

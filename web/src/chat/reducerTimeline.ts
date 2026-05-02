@@ -1,4 +1,4 @@
-import type { ChatBlock, ToolCallBlock, ToolPermission } from '@/chat/types'
+import type { AgentReasoningBlock, AgentTextBlock, ChatBlock, CliOutputBlock, ToolCallBlock, ToolPermission } from '@/chat/types'
 import type { TracedMessage } from '@/chat/tracer'
 import { createCliOutputBlock, isCliOutputText, mergeCliOutputBlocks } from '@/chat/reducerCliOutput'
 import { parseMessageAsEvent } from '@/chat/reducerEvents'
@@ -44,22 +44,25 @@ export function reduceTimeline(
             if (msg.content.type === 'turn-duration') {
                 const targetId = msg.content.targetMessageId
                 const durationMs = msg.content.durationMs as number
+                type DurationBearingBlock = AgentTextBlock | AgentReasoningBlock | CliOutputBlock | ToolCallBlock
+                const isDurationTarget = (b: ChatBlock): b is DurationBearingBlock =>
+                    b.kind === 'agent-text' || b.kind === 'agent-reasoning' || b.kind === 'cli-output' || b.kind === 'tool-call'
                 let foundIndex = -1
 
                 if (targetId) {
-                    foundIndex = blocks.findLastIndex(b => b.id === targetId || b.id.startsWith(`${targetId}:`))
+                    foundIndex = blocks.findLastIndex(b => isDurationTarget(b) && (b.id === targetId || b.id.startsWith(`${targetId}:`)))
                     if (foundIndex === -1) {
                         foundIndex = blocks.findLastIndex(b => b.kind === 'tool-call' && b.tool.id === targetId)
                     }
                 }
 
                 if (foundIndex === -1) {
-                    foundIndex = blocks.findLastIndex(b => b.kind === 'agent-text' || b.kind === 'agent-reasoning' || b.kind === 'cli-output' || b.kind === 'tool-call')
+                    foundIndex = blocks.findLastIndex(isDurationTarget)
                 }
 
                 if (foundIndex !== -1) {
                     const b = blocks[foundIndex]
-                    if (b.kind === 'agent-text' || b.kind === 'agent-reasoning' || b.kind === 'cli-output' || b.kind === 'tool-call') {
+                    if (isDurationTarget(b)) {
                         b.durationMs = durationMs
                     }
                 }

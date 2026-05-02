@@ -255,6 +255,29 @@ describe('reduceTimeline', () => {
         expect(agentTextBlock.model).toBeUndefined()
     })
 
+    it('falls back to the last duration-bearing block when targetMessageId resolves to a non-duration block', () => {
+        // Regression: the matcher used to take the first id-prefix match and
+        // then silently drop the duration when that block was not duration-
+        // bearing (agent-event / user-text). The fallback search must run.
+        const userMsg = makeUserMessage('Earlier user text', { id: 'u-prefix' })
+        const assistantMsg = makeAgentMessage('Assistant reply', { id: 'asst-1' })
+        const durationEvent: TracedMessage = {
+            id: 'event-fallback',
+            role: 'event',
+            createdAt: 1_700_000_002_000,
+            // targetMessageId matches a user-text block id by prefix; the
+            // matcher must skip it (kind is not duration-bearing) and fall
+            // back to the last assistant-like block.
+            content: { type: 'turn-duration', durationMs: 9999, targetMessageId: 'u-prefix' }
+        } as TracedMessage
+
+        const { blocks } = reduceTimeline([userMsg, assistantMsg, durationEvent], makeContext())
+        const userBlock = blocks.find(b => b.kind === 'user-text') as any
+        const agentBlock = blocks.find(b => b.kind === 'agent-text') as any
+        expect((userBlock as { durationMs?: number }).durationMs).toBeUndefined()
+        expect(agentBlock.durationMs).toBe(9999)
+    })
+
     it('keeps toolBlocksById reference identity when applying turn-duration to a tool-call', () => {
         const toolCallMsg: TracedMessage = {
             id: 'msg-tool',
