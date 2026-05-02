@@ -46,7 +46,21 @@ describe('isClickOnNestedControl', () => {
         expect(isClickOnNestedControl(makeMouseEvent(paragraph))).toBe(false)
     })
 
-    it('returns false when target is not an HTMLElement', () => {
+    it('returns false when target is not an Element', () => {
         expect(isClickOnNestedControl({ target: null } as unknown as MouseEvent<HTMLElement>)).toBe(false)
+    })
+
+    it('returns true when the click target is an SVG icon inside a button', () => {
+        // Icon-only controls (copy, retry, code-copy) render an <svg>/<path>
+        // child of the <button>. Clicking the icon makes the event target an
+        // SVGElement, which is not an HTMLElement — the guard must still walk
+        // up to the enclosing button via closest().
+        const button = document.createElement('button')
+        const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+        const path = document.createElementNS('http://www.w3.org/2000/svg', 'path')
+        svg.appendChild(path)
+        button.appendChild(svg)
+        expect(isClickOnNestedControl(makeMouseEvent(svg as unknown as HTMLElement))).toBe(true)
+        expect(isClickOnNestedControl(makeMouseEvent(path as unknown as HTMLElement))).toBe(true)
     })
 })
