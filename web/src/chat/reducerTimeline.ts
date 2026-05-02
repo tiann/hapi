@@ -44,34 +44,22 @@ export function reduceTimeline(
             if (msg.content.type === 'turn-duration') {
                 const targetId = msg.content.messageId as string | undefined
                 const durationMs = msg.content.durationMs as number
-                let merged = false
+                let foundIndex = -1
 
                 if (targetId) {
-                    // Try to find the block by ID (or prefix for composite IDs)
-                    for (let i = blocks.length - 1; i >= 0; i--) {
-                        const b = blocks[i]
-                        if (b.id === targetId || b.id.startsWith(`${targetId}:`)) {
-                            if (b.kind === 'agent-text' || b.kind === 'agent-reasoning' || b.kind === 'cli-output' || b.kind === 'tool-call') {
-                                (b as any).durationMs = durationMs
-                                merged = true
-                            }
-                        }
-                        if (b.kind === 'tool-call' && b.tool.id === targetId) {
-                            b.durationMs = durationMs
-                            merged = true
-                        }
+                    foundIndex = blocks.findLastIndex(b => b.id === targetId || b.id.startsWith(`${targetId}:`))
+                    if (foundIndex === -1) {
+                        foundIndex = blocks.findLastIndex(b => b.kind === 'tool-call' && b.tool.id === targetId)
                     }
                 }
 
-                if (!merged) {
-                    // Fallback to last assistant-like block
-                    for (let i = blocks.length - 1; i >= 0; i--) {
-                        const b = blocks[i]
-                        if (b.kind === 'agent-text' || b.kind === 'agent-reasoning' || b.kind === 'cli-output' || b.kind === 'tool-call') {
-                            (b as any).durationMs = durationMs
-                            break
-                        }
-                    }
+                if (foundIndex === -1) {
+                    foundIndex = blocks.findLastIndex(b => b.kind === 'agent-text' || b.kind === 'agent-reasoning' || b.kind === 'cli-output' || b.kind === 'tool-call')
+                }
+
+                if (foundIndex !== -1) {
+                    const b = blocks[foundIndex]
+                    blocks[foundIndex] = { ...b, durationMs } as any
                 }
                 continue
             }
