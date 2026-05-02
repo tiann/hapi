@@ -21,7 +21,7 @@ export function normalizeDecryptedMessage(message: DecryptedMessage): Normalized
     }
 
     if (record.role === 'user') {
-        const normalized = normalizeUserRecord(message.id, message.localId, message.createdAt, record.content, record.meta, message.invokedAt)
+        const normalized = normalizeUserRecord(message.id, message.localId, message.createdAt, record.content, record.meta)
         return normalized
             ? { ...normalized, status: message.status, originalText: message.originalText, invokedAt: message.invokedAt }
             : {
@@ -41,7 +41,7 @@ export function normalizeDecryptedMessage(message: DecryptedMessage): Normalized
         if (isSkippableAgentContent(record.content)) {
             return null
         }
-        const normalized = normalizeAgentRecord(message.id, message.localId, message.createdAt, record.content, record.meta, message.invokedAt)
+        const normalized = normalizeAgentRecord(message.id, message.localId, message.createdAt, record.content, record.meta)
         if (!normalized && isCodexContent(record.content)) {
             return null
         }

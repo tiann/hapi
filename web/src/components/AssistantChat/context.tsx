@@ -7,7 +7,6 @@ export type HappyChatContextValue = {
     api: ApiClient
     sessionId: string
     metadata: SessionMetadataSummary | null
-    model?: string | null
     disabled: boolean
     onRefresh: () => void
     onRetryMessage?: (localId: string) => void

@@ -42,7 +42,7 @@ export function reduceTimeline(
                 continue
             }
             if (msg.content.type === 'turn-duration') {
-                const targetId = msg.content.messageId as string | undefined
+                const targetId = msg.content.targetMessageId
                 const durationMs = msg.content.durationMs as number
                 let foundIndex = -1
 

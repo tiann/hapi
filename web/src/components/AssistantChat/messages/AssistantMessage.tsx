@@ -50,10 +50,10 @@ export function HappyAssistantMessage() {
         return getAssistantCopyText(message.content)
     })
 
-    const invokedAt = useAssistantState(({ message }) => (message.metadata.custom as HappyChatMessageMetadata)?.invokedAt)
-    const durationMs = useAssistantState(({ message }) => (message.metadata.custom as HappyChatMessageMetadata)?.durationMs)
-    const usage = useAssistantState(({ message }) => (message.metadata.custom as HappyChatMessageMetadata)?.usage)
-    const messageModel = useAssistantState(({ message }) => (message.metadata.custom as HappyChatMessageMetadata)?.model)
+    const invokedAt = useAssistantState(({ message }) => (message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined)?.invokedAt)
+    const durationMs = useAssistantState(({ message }) => (message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined)?.durationMs)
+    const usage = useAssistantState(({ message }) => (message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined)?.usage)
+    const messageModel = useAssistantState(({ message }) => (message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined)?.model)
 
     const rootClass = toolOnly
         ? 'py-1 min-w-0 max-w-full overflow-x-hidden'

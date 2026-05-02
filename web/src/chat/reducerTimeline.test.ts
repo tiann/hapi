@@ -187,13 +187,13 @@ describe('reduceTimeline', () => {
         expect(events).toHaveLength(1)
     })
 
-    it('merges turn-duration event into assistant block by messageId', () => {
+    it('merges turn-duration event into assistant block by targetMessageId', () => {
         const assistantMsg = makeAgentMessage('Thinking...', { id: 'target-msg-id' })
         const durationEvent: TracedMessage = {
             id: 'event-1',
             role: 'event',
             createdAt: 1_700_000_002_000,
-            content: { type: 'turn-duration', durationMs: 1500, messageId: 'target-msg-id' }
+            content: { type: 'turn-duration', durationMs: 1500, targetMessageId: 'target-msg-id' }
         } as TracedMessage
 
         const { blocks } = reduceTimeline([assistantMsg, durationEvent], makeContext())
@@ -208,7 +208,7 @@ describe('reduceTimeline', () => {
             id: 'event-1',
             role: 'event',
             createdAt: 1_700_000_002_000,
-            content: { type: 'turn-duration', durationMs: 2500 } // No messageId
+            content: { type: 'turn-duration', durationMs: 2500 } // No targetMessageId
         } as TracedMessage
 
         const { blocks } = reduceTimeline([assistantMsg, durationEvent], makeContext())
@@ -276,7 +276,7 @@ describe('reduceTimeline', () => {
             id: 'event-1',
             role: 'event',
             createdAt: 1_700_000_001_000,
-            content: { type: 'turn-duration', durationMs: 1234, messageId: 'msg-tool' }
+            content: { type: 'turn-duration', durationMs: 1234, targetMessageId: 'msg-tool' }
         } as TracedMessage
 
         const { blocks, toolBlocksById } = reduceTimeline([toolCallMsg, durationEvent], makeContext())
