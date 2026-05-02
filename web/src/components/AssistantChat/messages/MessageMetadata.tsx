@@ -8,9 +8,7 @@ export type MessageMetadataProps = {
     className?: string
 }
 
-export function MessageMetadata({ invokedAt, durationMs, usage, model, className }: MessageMetadataProps) {
-    if (!invokedAt && !durationMs && !usage && !model) return null
-
+export function buildMessageMetadataLabels({ invokedAt, durationMs, usage, model }: Omit<MessageMetadataProps, 'className'>): string[] {
     const parts: string[] = []
 
     if (invokedAt) {
@@ -27,17 +25,14 @@ export function MessageMetadata({ invokedAt, durationMs, usage, model, className
         parts.push(`Duration: ${(durationMs / 1000).toFixed(1)}s`)
     }
 
-    const modelName = model || usage?.service_tier
-    if (modelName) {
-        const tier = usage?.service_tier
-        const isStandardTier = tier?.toLowerCase() === 'standard'
-        const displayModel = model || (isStandardTier ? undefined : tier) || 'AI Model'
-        
-        let label = `Model: ${displayModel}`
-        if (model && tier && !isStandardTier) {
-            label += ` (${tier})`
-        }
+    const tier = usage?.service_tier
+    const isStandardTier = tier?.toLowerCase() === 'standard'
+    if (model) {
+        let label = `Model: ${model}`
+        if (tier && !isStandardTier) label += ` (${tier})`
         parts.push(label)
+    } else if (tier && !isStandardTier) {
+        parts.push(`Tier: ${tier}`)
     }
 
     if (usage) {
@@ -45,6 +40,13 @@ export function MessageMetadata({ invokedAt, durationMs, usage, model, className
         const formatToken = (n: number) => n.toLocaleString()
         parts.push(`Usage: ${formatToken(total)} tokens (${formatToken(usage.input_tokens)} in / ${formatToken(usage.output_tokens)} out)`)
     }
+
+    return parts
+}
+
+export function MessageMetadata({ invokedAt, durationMs, usage, model, className }: MessageMetadataProps) {
+    const parts = buildMessageMetadataLabels({ invokedAt, durationMs, usage, model })
+    if (parts.length === 0) return null
 
     return (
         <div className={`text-[10px] text-[var(--app-hint)] flex flex-wrap gap-x-2 gap-y-0.5 mt-0.5 px-0.5 leading-tight opacity-60 ${className || ''}`}>
