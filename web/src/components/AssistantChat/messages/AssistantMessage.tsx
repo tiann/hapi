@@ -1,4 +1,4 @@
-import { useCallback, useState, type MouseEvent } from 'react'
+import { useCallback, useState, type KeyboardEvent, type MouseEvent } from 'react'
 import { MessagePrimitive, useAssistantState } from '@assistant-ui/react'
 import { MarkdownText } from '@/components/assistant-ui/markdown-text'
 import { Reasoning, ReasoningGroup } from '@/components/assistant-ui/reasoning'
@@ -55,6 +55,18 @@ export function HappyAssistantMessage() {
     const usage = useAssistantState(({ message }) => (message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined)?.usage)
     const messageModel = useAssistantState(({ message }) => (message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined)?.model)
 
+    const hasMetadata = invokedAt != null
+        || (typeof durationMs === 'number' && durationMs >= 0)
+        || usage != null
+        || (messageModel != null && messageModel !== '')
+
+    const onMetadataKeyDown = useCallback((event: KeyboardEvent<HTMLDivElement>) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault()
+            setShowMetadata((open) => !open)
+        }
+    }, [])
+
     const rootClass = toolOnly
         ? 'py-1 min-w-0 max-w-full overflow-x-hidden'
         : 'px-1 min-w-0 max-w-full overflow-x-hidden'
@@ -65,7 +77,14 @@ export function HappyAssistantMessage() {
                 id={getConversationMessageAnchorId(messageId)}
                 className="scroll-mt-4 px-1 min-w-0 max-w-full overflow-x-hidden"
             >
-                <div onClick={toggleMetadata} className="cursor-pointer">
+                <div
+                    onClick={hasMetadata ? toggleMetadata : undefined}
+                    onKeyDown={hasMetadata ? onMetadataKeyDown : undefined}
+                    role={hasMetadata ? 'button' : undefined}
+                    tabIndex={hasMetadata ? 0 : undefined}
+                    aria-expanded={hasMetadata ? showMetadata : undefined}
+                    className={hasMetadata ? 'cursor-pointer' : undefined}
+                >
                     <CliOutputBlock text={cliText} />
                 </div>
                 {showMetadata && (
@@ -86,7 +105,14 @@ export function HappyAssistantMessage() {
             id={getConversationMessageAnchorId(messageId)}
             className={`${rootClass} ${copyText ? 'group/msg' : ''} scroll-mt-4`}
         >
-            <div className="min-w-0 cursor-pointer" onClick={toggleMetadata}>
+            <div
+                className={hasMetadata ? 'min-w-0 cursor-pointer' : 'min-w-0'}
+                onClick={hasMetadata ? toggleMetadata : undefined}
+                onKeyDown={hasMetadata ? onMetadataKeyDown : undefined}
+                role={hasMetadata ? 'button' : undefined}
+                tabIndex={hasMetadata ? 0 : undefined}
+                aria-expanded={hasMetadata ? showMetadata : undefined}
+            >
                 <MessagePrimitive.Content components={MESSAGE_PART_COMPONENTS} />
             </div>
             {showMetadata && (

@@ -11,7 +11,9 @@ export type MessageMetadataProps = {
 export function buildMessageMetadataLabels({ invokedAt, durationMs, usage, model }: Omit<MessageMetadataProps, 'className'>): string[] {
     const parts: string[] = []
 
-    if (invokedAt) {
+    // Explicit nullish checks — `if (invokedAt)` would drop epoch 0, and
+    // `if (durationMs)` would drop legitimate 0 ms turns.
+    if (invokedAt != null) {
         const time = new Date(invokedAt).toLocaleTimeString([], {
             hour12: false,
             hour: '2-digit',
@@ -21,7 +23,7 @@ export function buildMessageMetadataLabels({ invokedAt, durationMs, usage, model
         parts.push(`Invoke: ${time}`)
     }
 
-    if (durationMs) {
+    if (typeof durationMs === 'number' && durationMs >= 0) {
         parts.push(`Duration: ${(durationMs / 1000).toFixed(1)}s`)
     }
 
@@ -36,9 +38,13 @@ export function buildMessageMetadataLabels({ invokedAt, durationMs, usage, model
     }
 
     if (usage) {
+        // "Billable" because cache_read tokens are not part of the input
+        // figure used for billing; surfacing only input + output here is
+        // intentional. If we ever surface cache I/O, keep this label and
+        // add a separate `Cache:` line.
         const total = usage.input_tokens + usage.output_tokens
         const formatToken = (n: number) => n.toLocaleString()
-        parts.push(`Usage: ${formatToken(total)} tokens (${formatToken(usage.input_tokens)} in / ${formatToken(usage.output_tokens)} out)`)
+        parts.push(`Usage: ${formatToken(total)} billable tokens (${formatToken(usage.input_tokens)} in / ${formatToken(usage.output_tokens)} out)`)
     }
 
     return parts

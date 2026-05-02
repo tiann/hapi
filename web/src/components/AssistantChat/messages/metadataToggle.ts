@@ -1,6 +1,6 @@
 import type { MouseEvent } from 'react'
 
-const NESTED_INTERACTIVE_SELECTOR = 'button, a, input, textarea, select, [role="button"]'
+const NESTED_INTERACTIVE_SELECTOR = 'button, a, input, textarea, select, summary, [role="button"], [role="status"]'
 
 /**
  * Returns true when the click landed on (or inside) an interactive descendant

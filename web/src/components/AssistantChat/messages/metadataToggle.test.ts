@@ -63,4 +63,26 @@ describe('isClickOnNestedControl', () => {
         expect(isClickOnNestedControl(makeMouseEvent(svg as unknown as HTMLElement))).toBe(true)
         expect(isClickOnNestedControl(makeMouseEvent(path as unknown as HTMLElement))).toBe(true)
     })
+
+    it('returns true when the click target is a native <summary> (tool-card details disclosure)', () => {
+        // Tool cards expand their bodies via native <details><summary>; a
+        // click on the summary must not flip the message metadata footer
+        // alongside expanding the disclosure.
+        const details = document.createElement('details')
+        const summary = document.createElement('summary')
+        summary.textContent = 'Task details'
+        details.appendChild(summary)
+        expect(isClickOnNestedControl(makeMouseEvent(summary))).toBe(true)
+    })
+
+    it('returns true when the click target is a status indicator (role="status")', () => {
+        // MessageStatusIndicator renders queued/sending icons inside a span
+        // with role="status"; clicks on those should not toggle metadata.
+        const statusSpan = document.createElement('span')
+        statusSpan.setAttribute('role', 'status')
+        const inner = document.createElement('span')
+        statusSpan.appendChild(inner)
+        expect(isClickOnNestedControl(makeMouseEvent(statusSpan))).toBe(true)
+        expect(isClickOnNestedControl(makeMouseEvent(inner))).toBe(true)
+    })
 })

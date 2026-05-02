@@ -40,4 +40,27 @@ describe('buildMessageMetadataLabels', () => {
     it('returns an empty list when nothing is provided', () => {
         expect(buildMessageMetadataLabels({})).toEqual([])
     })
+
+    it('labels token totals as billable to clarify that cache I/O is intentionally excluded', () => {
+        const parts = buildMessageMetadataLabels({
+            usage: { input_tokens: 100, output_tokens: 200 }
+        })
+        expect(parts.some(p => /\bbillable tokens\b/.test(p))).toBe(true)
+        expect(parts.some(p => p.includes('300 billable tokens (100 in / 200 out)'))).toBe(true)
+    })
+
+    it('does not drop a Duration line when durationMs is exactly 0', () => {
+        const parts = buildMessageMetadataLabels({ durationMs: 0 })
+        expect(parts).toContain('Duration: 0.0s')
+    })
+
+    it('does not drop an Invoke line when invokedAt is the unix epoch', () => {
+        const parts = buildMessageMetadataLabels({ invokedAt: 0 })
+        expect(parts.some(p => p.startsWith('Invoke:'))).toBe(true)
+    })
+
+    it('omits the Invoke line when invokedAt is null or undefined', () => {
+        expect(buildMessageMetadataLabels({ invokedAt: null }).some(p => p.startsWith('Invoke:'))).toBe(false)
+        expect(buildMessageMetadataLabels({}).some(p => p.startsWith('Invoke:'))).toBe(false)
+    })
 })

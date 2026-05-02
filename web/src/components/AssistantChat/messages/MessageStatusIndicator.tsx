@@ -34,7 +34,7 @@ export function MessageStatusIndicator(props: {
 }) {
     if (props.status === 'queued') {
         return (
-            <span className="inline-flex items-center text-[var(--app-fg-muted)]">
+            <span role="status" aria-label="Queued" className="inline-flex items-center text-[var(--app-fg-muted)]">
                 <QueuedIcon />
             </span>
         )
@@ -42,7 +42,7 @@ export function MessageStatusIndicator(props: {
 
     if (props.status === 'sending') {
         return (
-            <span className="inline-flex items-center text-[var(--app-fg-muted)]">
+            <span role="status" aria-label="Sending" className="inline-flex items-center text-[var(--app-fg-muted)]">
                 <SendingIcon />
             </span>
         )

@@ -1,4 +1,4 @@
-import { useCallback, useState, type MouseEvent } from 'react'
+import { useCallback, useState, type KeyboardEvent, type MouseEvent } from 'react'
 import { MessagePrimitive, useAssistantState } from '@assistant-ui/react'
 import { LazyRainbowText } from '@/components/LazyRainbowText'
 import { useHappyChatContext } from '@/components/AssistantChat/context'
@@ -53,6 +53,15 @@ export function HappyUserMessage() {
 
     const invokedAt = useAssistantState(({ message }) => (message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined)?.invokedAt)
 
+    const hasMetadata = invokedAt != null
+
+    const onMetadataKeyDown = useCallback((event: KeyboardEvent<HTMLElement>) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault()
+            setShowMetadata((open) => !open)
+        }
+    }, [])
+
     if (role !== 'user') return null
     const canRetry = status === 'failed' && typeof localId === 'string' && Boolean(ctx.onRetryMessage)
     const onRetry = canRetry ? () => ctx.onRetryMessage!(localId) : undefined
@@ -66,10 +75,17 @@ export function HappyUserMessage() {
                 className="scroll-mt-4 px-1 min-w-0 max-w-full overflow-x-hidden"
             >
                 <div className="ml-auto w-full max-w-[92%]">
-                    <div onClick={toggleMetadata} className="cursor-pointer">
+                    <div
+                        onClick={hasMetadata ? toggleMetadata : undefined}
+                        onKeyDown={hasMetadata ? onMetadataKeyDown : undefined}
+                        role={hasMetadata ? 'button' : undefined}
+                        tabIndex={hasMetadata ? 0 : undefined}
+                        aria-expanded={hasMetadata ? showMetadata : undefined}
+                        className={hasMetadata ? 'cursor-pointer' : undefined}
+                    >
                         <CliOutputBlock text={cliText} />
                     </div>
-                    {showMetadata && invokedAt && (
+                    {showMetadata && invokedAt != null && (
                         <MessageMetadata invokedAt={invokedAt} className="mt-1 justify-end" />
                     )}
                 </div>
@@ -83,8 +99,12 @@ export function HappyUserMessage() {
     return (
         <MessagePrimitive.Root
             id={getConversationMessageAnchorId(messageId)}
-            className={`${userBubbleClass} group/msg scroll-mt-4 cursor-pointer`}
-            onClick={toggleMetadata}
+            className={`${userBubbleClass} group/msg scroll-mt-4 ${hasMetadata ? 'cursor-pointer' : ''}`}
+            onClick={hasMetadata ? toggleMetadata : undefined}
+            onKeyDown={hasMetadata ? onMetadataKeyDown : undefined}
+            role={hasMetadata ? 'button' : undefined}
+            tabIndex={hasMetadata ? 0 : undefined}
+            aria-expanded={hasMetadata ? showMetadata : undefined}
         >
             <div className="flex flex-col gap-1">
                 <div className="flex items-end gap-2">
@@ -113,7 +133,7 @@ export function HappyUserMessage() {
                         </div>
                     )}
                 </div>
-                {showMetadata && invokedAt && (
+                {showMetadata && invokedAt != null && (
                     <MessageMetadata invokedAt={invokedAt} className="justify-end opacity-60" />
                 )}
             </div>
