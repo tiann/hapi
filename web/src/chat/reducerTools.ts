@@ -95,7 +95,12 @@ export function ensureToolBlock(
         if (seed.description !== null) {
             existing.tool.description = seed.description
         }
-        if (seed.invokedAt !== undefined) {
+        // The first call (tool_use) records when the tool was invoked. The
+        // second call (tool_result) carries the result message's invokedAt,
+        // which is when the result was processed — not when the tool was
+        // invoked. Preserve the original timestamp so the metadata footer
+        // still answers "when was this tool invoked?" correctly.
+        if (seed.invokedAt !== undefined && existing.invokedAt == null) {
             existing.invokedAt = seed.invokedAt
         }
         if (seed.durationMs !== undefined) {

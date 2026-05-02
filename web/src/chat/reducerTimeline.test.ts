@@ -278,6 +278,52 @@ describe('reduceTimeline', () => {
         expect(agentBlock.durationMs).toBe(9999)
     })
 
+    it('preserves the original tool-call invokedAt when the matching tool-result message arrives later', () => {
+        // Regression: the second `ensureToolBlock` call (driven by a
+        // tool-result message) used to overwrite the tool-call's invokedAt
+        // with the result message's invokedAt, so the rendered "Invoke"
+        // timestamp told the user when the result was processed instead of
+        // when the tool was invoked.
+        const toolUseMsg: TracedMessage = {
+            id: 'msg-call',
+            localId: null,
+            createdAt: 1_700_000_000_000,
+            invokedAt: 1_700_000_000_500,
+            role: 'agent',
+            content: [{
+                type: 'tool-call',
+                id: 'tc-invoked-at',
+                name: 'Bash',
+                input: { command: 'ls' },
+                description: null,
+                uuid: 'u-1',
+                parentUUID: null
+            }],
+            isSidechain: false
+        } as TracedMessage
+        const toolResultMsg: TracedMessage = {
+            id: 'msg-result',
+            localId: null,
+            createdAt: 1_700_000_001_000,
+            invokedAt: 1_700_000_002_000, // would clobber the tool-call invokedAt without the guard
+            role: 'agent',
+            content: [{
+                type: 'tool-result',
+                tool_use_id: 'tc-invoked-at',
+                content: 'ok',
+                is_error: false,
+                uuid: 'u-2',
+                parentUUID: null
+            }],
+            isSidechain: false
+        } as TracedMessage
+
+        const { blocks } = reduceTimeline([toolUseMsg, toolResultMsg], makeContext())
+        const toolBlock = blocks.find(b => b.kind === 'tool-call') as any
+        expect(toolBlock).toBeDefined()
+        expect(toolBlock.invokedAt).toBe(1_700_000_000_500)
+    })
+
     it('keeps toolBlocksById reference identity when applying turn-duration to a tool-call', () => {
         const toolCallMsg: TracedMessage = {
             id: 'msg-tool',
