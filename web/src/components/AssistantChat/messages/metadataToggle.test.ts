@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest'
 import type { MouseEvent } from 'react'
 import { isClickOnNestedControl } from './metadataToggle'
 
-function makeMouseEvent(target: HTMLElement): MouseEvent<HTMLElement> {
-    return { target } as unknown as MouseEvent<HTMLElement>
+function makeMouseEvent(target: HTMLElement, currentTarget?: HTMLElement): MouseEvent<HTMLElement> {
+    return { target, currentTarget } as unknown as MouseEvent<HTMLElement>
 }
 
 describe('isClickOnNestedControl', () => {
@@ -84,5 +84,30 @@ describe('isClickOnNestedControl', () => {
         statusSpan.appendChild(inner)
         expect(isClickOnNestedControl(makeMouseEvent(statusSpan))).toBe(true)
         expect(isClickOnNestedControl(makeMouseEvent(inner))).toBe(true)
+    })
+
+    it('returns false when the only matching ancestor is the toggle wrapper itself', () => {
+        // Regression: AssistantMessage / UserMessage assign role="button" to the
+        // toggle wrapper for keyboard a11y. Without currentTarget exclusion,
+        // closest('[role="button"]') from any inner click matches the wrapper
+        // and the toggle bails out — the entire mouse-toggle path becomes dead.
+        const wrapper = document.createElement('div')
+        wrapper.setAttribute('role', 'button')
+        const text = document.createElement('span')
+        text.textContent = 'message body'
+        wrapper.appendChild(text)
+        expect(isClickOnNestedControl(makeMouseEvent(text, wrapper))).toBe(false)
+    })
+
+    it('still returns true when a real nested control sits between target and wrapper', () => {
+        // The wrapper-exclusion guard must not let descendants slip through
+        // — an actual button inside the wrapper still suppresses the toggle.
+        const wrapper = document.createElement('div')
+        wrapper.setAttribute('role', 'button')
+        const innerButton = document.createElement('button')
+        const icon = document.createElement('span')
+        innerButton.appendChild(icon)
+        wrapper.appendChild(innerButton)
+        expect(isClickOnNestedControl(makeMouseEvent(icon, wrapper))).toBe(true)
     })
 })

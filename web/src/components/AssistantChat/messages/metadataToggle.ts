@@ -11,8 +11,15 @@ const NESTED_INTERACTIVE_SELECTOR = 'button, a, input, textarea, select, summary
  * `Element` (not `HTMLElement`) so that clicks landing on the `<svg>` or
  * `<path>` descendants of icon-only buttons are still walked back up to the
  * enclosing button via `closest`.
+ *
+ * `currentTarget` (the toggle wrapper itself) is excluded — the wrapper carries
+ * `role="button"` for keyboard accessibility, so without this guard `closest`
+ * would always match the wrapper from any inner click and the toggle would
+ * never fire for mouse users.
  */
 export function isClickOnNestedControl(event: MouseEvent<HTMLElement>): boolean {
     const target = event.target
-    return target instanceof Element && target.closest(NESTED_INTERACTIVE_SELECTOR) !== null
+    if (!(target instanceof Element)) return false
+    const match = target.closest(NESTED_INTERACTIVE_SELECTOR)
+    return match !== null && match !== event.currentTarget
 }
