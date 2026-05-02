@@ -254,4 +254,38 @@ describe('reduceTimeline', () => {
         expect(agentTextBlock).toBeDefined()
         expect(agentTextBlock.model).toBeUndefined()
     })
+
+    it('keeps toolBlocksById reference identity when applying turn-duration to a tool-call', () => {
+        const toolCallMsg: TracedMessage = {
+            id: 'msg-tool',
+            localId: null,
+            createdAt: 1_700_000_000_000,
+            role: 'agent',
+            content: [{
+                type: 'tool-call',
+                id: 'tc-1',
+                name: 'Bash',
+                input: { command: 'ls' },
+                description: null,
+                uuid: 'u-1',
+                parentUUID: null
+            }],
+            isSidechain: false
+        } as TracedMessage
+        const durationEvent: TracedMessage = {
+            id: 'event-1',
+            role: 'event',
+            createdAt: 1_700_000_001_000,
+            content: { type: 'turn-duration', durationMs: 1234, messageId: 'msg-tool' }
+        } as TracedMessage
+
+        const { blocks, toolBlocksById } = reduceTimeline([toolCallMsg, durationEvent], makeContext())
+        const toolBlock = blocks.find(b => b.kind === 'tool-call') as any
+        expect(toolBlock).toBeDefined()
+        expect(toolBlock.durationMs).toBe(1234)
+        // The block in `blocks` and the one indexed in `toolBlocksById` must be
+        // the same object reference, so that subsequent permission/result
+        // mutations land on the rendered block instead of a stale clone.
+        expect(toolBlocksById.get('tc-1')).toBe(toolBlock)
+    })
 })

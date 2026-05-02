@@ -59,7 +59,9 @@ export function reduceTimeline(
 
                 if (foundIndex !== -1) {
                     const b = blocks[foundIndex]
-                    blocks[foundIndex] = { ...b, durationMs } as any
+                    if (b.kind === 'agent-text' || b.kind === 'agent-reasoning' || b.kind === 'cli-output' || b.kind === 'tool-call') {
+                        b.durationMs = durationMs
+                    }
                 }
                 continue
             }
