@@ -1,3 +1,4 @@
+import type { AgentFlavor } from '@hapi/protocol';
 import type { AgentBackend, AgentMessage, AgentSessionConfig, PermissionRequest, PermissionResponse, PromptContent } from '@/agent/types';
 import { asString, isObject } from '@hapi/protocol';
 import { AcpStdioTransport, type AcpStderrError } from './AcpStdioTransport';
@@ -10,11 +11,22 @@ type PendingPermission = {
     resolve: (result: { outcome: { outcome: string; optionId?: string } }) => void;
 };
 
+export type AcpModelDescriptor = {
+    modelId: string;
+    name?: string;
+};
+
+export type AcpSessionModelsMetadata = {
+    availableModels: AcpModelDescriptor[];
+    currentModelId: string | null;
+};
+
 export class AcpSdkBackend implements AgentBackend {
     private transport: AcpStdioTransport | null = null;
     private permissionHandler: ((request: PermissionRequest) => void) | null = null;
     private stderrErrorHandler: ((error: AcpStderrError) => void) | null = null;
     private readonly pendingPermissions = new Map<string, PendingPermission>();
+    private readonly sessionModelsMetadata = new Map<string, AcpSessionModelsMetadata>();
     private messageHandler: AcpMessageHandler | null = null;
     private activeSessionId: string | null = null;
     private isProcessingMessage = false;
@@ -108,6 +120,7 @@ export class AcpSdkBackend implements AgentBackend {
         }
 
         this.activeSessionId = sessionId;
+        this.captureSessionModelsMetadata(sessionId, response);
         return sessionId;
     }
 
@@ -133,10 +146,15 @@ export class AcpSdkBackend implements AgentBackend {
         const loadedSessionId = isObject(response) ? asString(response.sessionId) : null;
         const sessionId = loadedSessionId ?? config.sessionId;
         this.activeSessionId = sessionId;
+        this.captureSessionModelsMetadata(sessionId, response);
         return sessionId;
     }
 
-    async setModel(sessionId: string, modelId: string): Promise<void> {
+    async setModel(
+        sessionId: string,
+        modelId: string,
+        opts?: { flavor?: AgentFlavor }
+    ): Promise<void> {
         if (!this.transport) {
             throw new Error('ACP transport not initialized');
         }
@@ -145,12 +163,37 @@ export class AcpSdkBackend implements AgentBackend {
         // in-flight prompt to drain so we never interleave a switch with a session/prompt.
         await this.waitForResponseComplete();
 
-        // Errors (including JSON-RPC 'method not found') propagate as rejections
-        // from the transport; the launcher's catch block handles them.
-        await this.transport.sendRequest('session/set_model', {
+        // ACP defines `session/set_model` ({ sessionId, modelId }) for inline model
+        // switching — see ACP SDK schema `x-method: session/set_model`. OpenCode
+        // 1.14.30 implements this exact wire name (the SDK's TypeScript helper is
+        // exposed as `unstable_setSessionModel` but the JSON-RPC method on the wire
+        // is unprefixed). Errors (including JSON-RPC 'method not found') propagate
+        // as rejections from the transport; the launcher's catch block handles them.
+        const response = await this.transport.sendRequest('session/set_model', {
             sessionId,
             modelId
         });
+
+        if (opts?.flavor === 'opencode') {
+            // OpenCode's set_model response only carries an opaque `_meta` block,
+            // not `availableModels`/`currentModelId`. Optimistically update the
+            // cached currentModelId (the call succeeded, so the agent has switched)
+            // while preserving the availableModels list captured from session/new.
+            this.updateCurrentModelOptimistic(sessionId, modelId);
+        } else {
+            // For other flavors (e.g. Gemini), if the response carries metadata,
+            // capture it. Missing fields are silently ignored.
+            this.captureSessionModelsMetadata(sessionId, response);
+        }
+    }
+
+    /**
+     * Returns the per-session models metadata captured from session/new (or
+     * session/load, or session/set_model). Returns undefined if the agent did
+     * not include the optional `models` block in its response.
+     */
+    getSessionModelsMetadata(sessionId: string): AcpSessionModelsMetadata | undefined {
+        return this.sessionModelsMetadata.get(sessionId);
     }
 
     async prompt(
@@ -279,6 +322,7 @@ export class AcpSdkBackend implements AgentBackend {
         this.messageHandler = null;
         this.activeSessionId = null;
         this.isProcessingMessage = false;
+        this.sessionModelsMetadata.clear();
         this.notifyResponseComplete();
         await this.transport.close();
         this.transport = null;
@@ -374,5 +418,75 @@ export class AcpSdkBackend implements AgentBackend {
         for (const resolve of resolvers) {
             resolve();
         }
+    }
+
+    /**
+     * Optimistically update the cached `currentModelId` for a session after a
+     * successful `session/set_model` call whose response does not echo the
+     * model metadata (OpenCode 1.14.30 returns only `_meta.opencode.modelId`).
+     * The previously captured `availableModels` list is preserved.
+     */
+    private updateCurrentModelOptimistic(sessionId: string, modelId: string): void {
+        const existing = this.sessionModelsMetadata.get(sessionId);
+        this.sessionModelsMetadata.set(sessionId, {
+            availableModels: existing?.availableModels ?? [],
+            currentModelId: modelId
+        });
+    }
+
+    /**
+     * Extract `availableModels` and `currentModelId` from an ACP response and
+     * store them keyed by sessionId. Both top-level and nested-under-`models`
+     * shapes are accepted because different agents use different conventions.
+     * Missing or malformed fields are silently ignored — flavors that do not
+     * expose model metadata (e.g. current Gemini ACP build) simply leave the
+     * cache untouched.
+     */
+    private captureSessionModelsMetadata(sessionId: string, response: unknown): void {
+        if (!isObject(response)) return;
+
+        const directList = response.availableModels;
+        const directCurrent = response.currentModelId;
+        const nested = isObject(response.models) ? response.models : null;
+        const nestedList = nested?.availableModels;
+        const nestedCurrent = nested?.currentModelId;
+
+        const rawModels = Array.isArray(directList)
+            ? directList
+            : Array.isArray(nestedList)
+                ? nestedList
+                : null;
+        const rawCurrent = typeof directCurrent === 'string'
+            ? directCurrent
+            : typeof nestedCurrent === 'string'
+                ? nestedCurrent
+                : null;
+
+        if (rawModels === null && rawCurrent === null) {
+            return;
+        }
+
+        const availableModels: AcpModelDescriptor[] = [];
+        if (Array.isArray(rawModels)) {
+            for (const entry of rawModels) {
+                if (!isObject(entry)) continue;
+                const modelId = asString(entry.modelId);
+                if (!modelId) continue;
+                const name = asString(entry.name) ?? undefined;
+                availableModels.push(name ? { modelId, name } : { modelId });
+            }
+        } else {
+            // Preserve previously-captured availableModels when the response only
+            // updates currentModelId (e.g. a setModel response from some agents).
+            const existing = this.sessionModelsMetadata.get(sessionId);
+            if (existing) {
+                availableModels.push(...existing.availableModels);
+            }
+        }
+
+        this.sessionModelsMetadata.set(sessionId, {
+            availableModels,
+            currentModelId: rawCurrent
+        });
     }
 }
