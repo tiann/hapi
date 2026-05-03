@@ -1074,6 +1074,15 @@ describe('session model', () => {
                 null,
                 'default'
             )
+            store.messages.addMessage(s2.id, { role: 'user', content: { type: 'text', text: 'hello from s2' } })
+            store.codexHistory.addItem({
+                sessionId: s2.id,
+                codexThreadId: 'thread-X',
+                itemId: 'user-1',
+                itemKind: 'user',
+                messageSeq: 1,
+                rawItem: { id: 'target-user-1', role: 'user' }
+            })
 
             expect(s1.id).not.toBe(s2.id)
 
@@ -1087,6 +1096,11 @@ describe('session model', () => {
             expect(store.codexHistory.getPrefixThroughReplyForUserMessageSeq(s2.id, 1)).toEqual([
                 { id: 'user-1', role: 'user' },
                 { id: 'assistant-1', role: 'assistant' }
+            ])
+            expect(store.codexHistory.getPrefixThroughReplyForUserMessageSeq(s2.id, 3)).toEqual([
+                { id: 'user-1', role: 'user' },
+                { id: 'assistant-1', role: 'assistant' },
+                { id: 'target-user-1', role: 'user' }
             ])
         })
 

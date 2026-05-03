@@ -16,6 +16,7 @@ export type AddCodexHistoryItemInput = {
 }
 
 type CodexHistoryRow = {
+    id?: string
     codex_thread_id: string
     turn_id: string | null
     item_id: string
@@ -185,33 +186,82 @@ export class CodexHistoryStore {
     moveSessionHistory(fromSessionId: string, toSessionId: string, targetMessageSeqOffset: number): number {
         if (fromSessionId === toSessionId) return 0
 
-        const sourceMaxSeq = (this.db.prepare(
-            'SELECT COALESCE(MAX(seq), 0) AS maxSeq FROM codex_history_items WHERE session_id = ?'
-        ).get(fromSessionId) as { maxSeq: number } | undefined)?.maxSeq ?? 0
+        const sourceRows = this.db.prepare(`
+            SELECT id, codex_thread_id, turn_id, item_id, item_kind, message_seq, raw_item, seq, created_at
+            FROM codex_history_items
+            WHERE session_id = ?
+            ORDER BY seq ASC
+        `).all(fromSessionId) as Array<CodexHistoryRow & { id: string }>
 
         try {
             this.db.exec('BEGIN')
 
-            if (sourceMaxSeq > 0) {
+            if (targetMessageSeqOffset !== 0) {
                 this.db.prepare(`
                     UPDATE codex_history_items
-                    SET seq = seq + ?,
-                        message_seq = CASE
+                    SET message_seq = CASE
                             WHEN message_seq IS NULL THEN NULL
                             ELSE message_seq + ?
                         END
                     WHERE session_id = ?
-                `).run(sourceMaxSeq, targetMessageSeqOffset, toSessionId)
+                `).run(targetMessageSeqOffset, toSessionId)
             }
 
-            const result = this.db.prepare(`
-                UPDATE OR IGNORE codex_history_items
-                SET session_id = ?
-                WHERE session_id = ?
-            `).run(toSessionId, fromSessionId)
+            if (sourceRows.length === 0) {
+                this.db.exec('COMMIT')
+                return 0
+            }
+
+            const sourceMaxSeq = sourceRows[sourceRows.length - 1]?.seq ?? 0
+            if (sourceMaxSeq > 0) {
+                this.db.prepare(`
+                    UPDATE codex_history_items
+                    SET seq = seq + ?
+                    WHERE session_id = ?
+                `).run(sourceMaxSeq, toSessionId)
+            }
+
+            const existingItemIds = new Set(
+                (this.db.prepare(
+                    'SELECT item_id FROM codex_history_items WHERE session_id = ?'
+                ).all(toSessionId) as Array<{ item_id: string }>).map((row) => row.item_id)
+            )
+
+            const insert = this.db.prepare(`
+                INSERT INTO codex_history_items (
+                    id, session_id, codex_thread_id, turn_id, item_id, item_kind, message_seq, raw_item, seq, created_at
+                ) VALUES (
+                    @id, @session_id, @codex_thread_id, @turn_id, @item_id, @item_kind, @message_seq, @raw_item, @seq, @created_at
+                )
+            `)
+
+            let moved = 0
+            for (const row of sourceRows) {
+                const itemId = existingItemIds.has(row.item_id)
+                    ? `${row.item_id}:moved:${row.id}`
+                    : row.item_id
+                insert.run({
+                    id: randomUUID(),
+                    session_id: toSessionId,
+                    codex_thread_id: row.codex_thread_id,
+                    turn_id: row.turn_id,
+                    item_id: itemId,
+                    item_kind: row.item_kind,
+                    message_seq: row.message_seq,
+                    raw_item: row.raw_item,
+                    seq: row.seq,
+                    created_at: row.created_at
+                })
+                existingItemIds.add(itemId)
+                moved += 1
+            }
+
+            this.db.prepare(
+                'DELETE FROM codex_history_items WHERE session_id = ?'
+            ).run(fromSessionId)
 
             this.db.exec('COMMIT')
-            return result.changes
+            return moved
         } catch (error) {
             this.db.exec('ROLLBACK')
             throw error

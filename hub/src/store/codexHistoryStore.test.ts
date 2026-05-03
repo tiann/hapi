@@ -183,6 +183,76 @@ describe('CodexHistoryStore', () => {
         ])
     })
 
+    it('preserves moved raw history when item ids collide', () => {
+        const store = new Store(':memory:')
+        const source = store.sessions.getOrCreateSession('s1', { flavor: 'codex' }, null, 'default')
+        const target = store.sessions.getOrCreateSession('s2', { flavor: 'codex' }, null, 'default')
+
+        store.codexHistory.addItem({
+            sessionId: source.id,
+            codexThreadId: 'thread-1',
+            itemId: 'hapi-user-1',
+            itemKind: 'user',
+            messageSeq: 1,
+            rawItem: { id: 'source-user', role: 'user' }
+        })
+        store.codexHistory.addItem({
+            sessionId: source.id,
+            codexThreadId: 'thread-1',
+            itemId: 'source-assistant-1',
+            itemKind: 'assistant',
+            rawItem: { id: 'source-assistant', role: 'assistant' }
+        })
+        store.codexHistory.addItem({
+            sessionId: target.id,
+            codexThreadId: 'thread-2',
+            itemId: 'hapi-user-1',
+            itemKind: 'user',
+            messageSeq: 1,
+            rawItem: { id: 'target-user', role: 'user' }
+        })
+
+        expect(store.codexHistory.moveSessionHistory(source.id, target.id, 2)).toBe(2)
+        expect(store.codexHistory.getPrefixThroughReplyForUserMessageSeq(target.id, 1)).toEqual([
+            { id: 'source-user', role: 'user' },
+            { id: 'source-assistant', role: 'assistant' }
+        ])
+        expect(store.codexHistory.getPrefixThroughReplyForUserMessageSeq(target.id, 3)).toEqual([
+            { id: 'source-user', role: 'user' },
+            { id: 'source-assistant', role: 'assistant' },
+            { id: 'target-user', role: 'user' }
+        ])
+    })
+
+    it('remaps target raw history even when source has no raw rows', () => {
+        const store = new Store(':memory:')
+        const source = store.sessions.getOrCreateSession('s1', { flavor: 'codex' }, null, 'default')
+        const target = store.sessions.getOrCreateSession('s2', { flavor: 'codex' }, null, 'default')
+
+        store.codexHistory.addItem({
+            sessionId: target.id,
+            codexThreadId: 'thread-2',
+            itemId: 'hapi-user-1',
+            itemKind: 'user',
+            messageSeq: 1,
+            rawItem: { id: 'target-user', role: 'user' }
+        })
+        store.codexHistory.addItem({
+            sessionId: target.id,
+            codexThreadId: 'thread-2',
+            itemId: 'target-assistant-1',
+            itemKind: 'assistant',
+            rawItem: { id: 'target-assistant', role: 'assistant' }
+        })
+
+        expect(store.codexHistory.moveSessionHistory(source.id, target.id, 2)).toBe(0)
+        expect(store.codexHistory.getPrefixThroughReplyForUserMessageSeq(target.id, 1)).toBeNull()
+        expect(store.codexHistory.getPrefixThroughReplyForUserMessageSeq(target.id, 3)).toEqual([
+            { id: 'target-user', role: 'user' },
+            { id: 'target-assistant', role: 'assistant' }
+        ])
+    })
+
     it('deletes codex history rows when deleting the session', () => {
         const store = new Store(':memory:')
         const session = store.sessions.getOrCreateSession('s1', { flavor: 'codex' }, null, 'default')
