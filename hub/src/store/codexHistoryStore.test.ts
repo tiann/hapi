@@ -141,6 +141,43 @@ describe('CodexHistoryStore', () => {
         expect(store.codexHistory.getPrefixThroughReplyForUserMessageSeq(target.id, 1)).toBeNull()
     })
 
+    it('preserves cloned raw history when item ids collide', () => {
+        const store = new Store(':memory:')
+        const source = store.sessions.getOrCreateSession('s1', { flavor: 'codex' }, null, 'default')
+        const target = store.sessions.getOrCreateSession('s2', { flavor: 'codex' }, null, 'default')
+
+        store.codexHistory.addItem({
+            sessionId: source.id,
+            codexThreadId: 'thread-1',
+            itemId: 'hapi-user-1',
+            itemKind: 'user',
+            messageSeq: 1,
+            rawItem: { id: 'source-user', role: 'user' }
+        })
+        store.codexHistory.addItem({
+            sessionId: source.id,
+            codexThreadId: 'thread-1',
+            itemId: 'source-assistant-1',
+            itemKind: 'assistant',
+            rawItem: { id: 'source-assistant', role: 'assistant' }
+        })
+        store.codexHistory.addItem({
+            sessionId: target.id,
+            codexThreadId: 'thread-2',
+            itemId: 'hapi-user-1',
+            itemKind: 'user',
+            messageSeq: 1,
+            rawItem: { id: 'target-user', role: 'user' }
+        })
+
+        expect(store.codexHistory.clonePrefixThroughReplyForUserMessageSeq(source.id, target.id, 1, 2)).toBe(2)
+        expect(store.codexHistory.getPrefixThroughReplyForUserMessageSeq(target.id, 3)).toEqual([
+            { id: 'target-user', role: 'user' },
+            { id: 'source-user', role: 'user' },
+            { id: 'source-assistant', role: 'assistant' }
+        ])
+    })
+
     it('moves raw history between sessions and remaps target user message seqs', () => {
         const store = new Store(':memory:')
         const source = store.sessions.getOrCreateSession('s1', { flavor: 'codex' }, null, 'default')

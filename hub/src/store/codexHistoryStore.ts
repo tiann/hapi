@@ -131,7 +131,7 @@ export class CodexHistoryStore {
 
     cloneSessionHistory(fromSessionId: string, toSessionId: string, messageSeqOffset: number): number {
         const rows = this.db.prepare(`
-            SELECT codex_thread_id, turn_id, item_id, item_kind, message_seq, raw_item, seq, created_at
+            SELECT id, codex_thread_id, turn_id, item_id, item_kind, message_seq, raw_item, seq, created_at
             FROM codex_history_items
             WHERE session_id = ?
             ORDER BY seq ASC
@@ -170,7 +170,7 @@ export class CodexHistoryStore {
 
         const beforeClause = nextUser ? 'AND seq < @nextUserSeq' : ''
         const rows = this.db.prepare(`
-            SELECT codex_thread_id, turn_id, item_id, item_kind, message_seq, raw_item, seq, created_at
+            SELECT id, codex_thread_id, turn_id, item_id, item_kind, message_seq, raw_item, seq, created_at
             FROM codex_history_items
             WHERE session_id = @fromSessionId
               ${beforeClause}
@@ -275,8 +275,14 @@ export class CodexHistoryStore {
             'SELECT COALESCE(MAX(seq), 0) AS maxSeq FROM codex_history_items WHERE session_id = ?'
         ).get(toSessionId) as { maxSeq: number } | undefined)?.maxSeq ?? 0
 
+        const existingItemIds = new Set(
+            (this.db.prepare(
+                'SELECT item_id FROM codex_history_items WHERE session_id = ?'
+            ).all(toSessionId) as Array<{ item_id: string }>).map((row) => row.item_id)
+        )
+
         const insert = this.db.prepare(`
-            INSERT OR IGNORE INTO codex_history_items (
+            INSERT INTO codex_history_items (
                 id, session_id, codex_thread_id, turn_id, item_id, item_kind, message_seq, raw_item, seq, created_at
             ) VALUES (
                 @id, @session_id, @codex_thread_id, @turn_id, @item_id, @item_kind, @message_seq, @raw_item, @seq, @created_at
@@ -285,19 +291,23 @@ export class CodexHistoryStore {
 
         let cloned = 0
         for (const row of rows) {
-            const result = insert.run({
+            const itemId = existingItemIds.has(row.item_id)
+                ? `${row.item_id}:cloned:${row.id ?? randomUUID()}`
+                : row.item_id
+            insert.run({
                 id: randomUUID(),
                 session_id: toSessionId,
                 codex_thread_id: row.codex_thread_id,
                 turn_id: row.turn_id,
-                item_id: row.item_id,
+                item_id: itemId,
                 item_kind: row.item_kind,
                 message_seq: row.message_seq == null ? null : row.message_seq + messageSeqOffset,
                 raw_item: row.raw_item,
                 seq: targetMaxSeq + row.seq,
                 created_at: row.created_at
             })
-            cloned += result.changes
+            existingItemIds.add(itemId)
+            cloned += 1
         }
 
         return cloned
