@@ -182,6 +182,42 @@ export class CodexHistoryStore {
         return this.cloneRows(toSessionId, rows, messageSeqOffset)
     }
 
+    moveSessionHistory(fromSessionId: string, toSessionId: string, targetMessageSeqOffset: number): number {
+        if (fromSessionId === toSessionId) return 0
+
+        const sourceMaxSeq = (this.db.prepare(
+            'SELECT COALESCE(MAX(seq), 0) AS maxSeq FROM codex_history_items WHERE session_id = ?'
+        ).get(fromSessionId) as { maxSeq: number } | undefined)?.maxSeq ?? 0
+
+        try {
+            this.db.exec('BEGIN')
+
+            if (sourceMaxSeq > 0) {
+                this.db.prepare(`
+                    UPDATE codex_history_items
+                    SET seq = seq + ?,
+                        message_seq = CASE
+                            WHEN message_seq IS NULL THEN NULL
+                            ELSE message_seq + ?
+                        END
+                    WHERE session_id = ?
+                `).run(sourceMaxSeq, targetMessageSeqOffset, toSessionId)
+            }
+
+            const result = this.db.prepare(`
+                UPDATE OR IGNORE codex_history_items
+                SET session_id = ?
+                WHERE session_id = ?
+            `).run(toSessionId, fromSessionId)
+
+            this.db.exec('COMMIT')
+            return result.changes
+        } catch (error) {
+            this.db.exec('ROLLBACK')
+            throw error
+        }
+    }
+
     private cloneRows(toSessionId: string, rows: CodexHistoryRow[], messageSeqOffset: number): number {
         if (rows.length === 0) return 0
 

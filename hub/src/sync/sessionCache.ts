@@ -559,6 +559,10 @@ export class SessionCache {
         }
 
         const movedMessages = this.store.messages.mergeSessionMessages(oldSessionId, newSessionId)
+        const targetMessageSeqOffset = movedMessages.oldMaxSeq > 0 && movedMessages.newMaxSeq > 0
+            ? movedMessages.oldMaxSeq
+            : 0
+        this.store.codexHistory.moveSessionHistory(oldSessionId, newSessionId, targetMessageSeqOffset)
         if (movedMessages.moved > 0) {
             if (!options.deleteOldSession) {
                 this.publisher.emit({ type: 'messages-invalidated', sessionId: oldSessionId, namespace })

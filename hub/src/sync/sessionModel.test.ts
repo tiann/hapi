@@ -1050,8 +1050,23 @@ describe('session model', () => {
                 'default'
             )
 
-            // Add a message to s1
-            store.messages.addMessage(s1.id, { type: 'text', text: 'hello from s1' }, 'local-1')
+            store.messages.addMessage(s1.id, { role: 'user', content: { type: 'text', text: 'hello from s1' } })
+            store.messages.addMessage(s1.id, { role: 'assistant', content: { type: 'text', text: 'answer from s1' } })
+            store.codexHistory.addItem({
+                sessionId: s1.id,
+                codexThreadId: 'thread-X',
+                itemId: 'user-1',
+                itemKind: 'user',
+                messageSeq: 1,
+                rawItem: { id: 'user-1', role: 'user' }
+            })
+            store.codexHistory.addItem({
+                sessionId: s1.id,
+                codexThreadId: 'thread-X',
+                itemId: 'assistant-1',
+                itemKind: 'assistant',
+                rawItem: { id: 'assistant-1', role: 'assistant' }
+            })
 
             const s2 = cache.getOrCreateSession(
                 'tag-2',
@@ -1069,6 +1084,10 @@ describe('session model', () => {
 
             const messages = store.messages.getMessages(s2.id, 100)
             expect(messages.length).toBeGreaterThanOrEqual(1)
+            expect(store.codexHistory.getPrefixThroughReplyForUserMessageSeq(s2.id, 1)).toEqual([
+                { id: 'user-1', role: 'user' },
+                { id: 'assistant-1', role: 'assistant' }
+            ])
         })
 
         it('preserves sessions with different agent session IDs', async () => {
