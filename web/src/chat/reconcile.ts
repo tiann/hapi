@@ -116,6 +116,7 @@ function areUserTextBlocksEqual(left: UserTextBlock, right: UserTextBlock): bool
 
 function areAgentTextBlocksEqual(left: AgentTextBlock, right: AgentTextBlock): boolean {
     return left.text === right.text
+        && left.seq === right.seq
         && left.localId === right.localId
         && left.createdAt === right.createdAt
         && left.meta === right.meta
@@ -123,6 +124,7 @@ function areAgentTextBlocksEqual(left: AgentTextBlock, right: AgentTextBlock): b
 
 function areAgentReasoningBlocksEqual(left: AgentReasoningBlock, right: AgentReasoningBlock): boolean {
     return left.text === right.text
+        && left.seq === right.seq
         && left.localId === right.localId
         && left.createdAt === right.createdAt
         && left.meta === right.meta
