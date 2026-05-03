@@ -69,12 +69,12 @@ describe('HappyUserMessage fork action', () => {
         } as any
     })
 
-    it('does not show fork action for user messages with a seq', () => {
+    it('shows fork-before action for user messages with a seq', () => {
         const onForkBeforeMessage = vi.fn()
         renderUserMessage(onForkBeforeMessage)
 
-        expect(screen.queryByTitle('Fork from this response')).toBeNull()
-        expect(onForkBeforeMessage).not.toHaveBeenCalled()
+        screen.getByTitle('Fork before here').click()
+        expect(onForkBeforeMessage).toHaveBeenCalledWith(7)
     })
 
     it('does not show fork action for non-user messages', () => {
@@ -87,6 +87,6 @@ describe('HappyUserMessage fork action', () => {
 
         renderUserMessage(vi.fn())
 
-        expect(screen.queryByTitle('Fork from this response')).toBeNull()
+        expect(screen.queryByTitle('Fork before here')).toBeNull()
     })
 })

@@ -582,14 +582,16 @@ export class SyncEngine {
             const record = cutMessage ? unwrapRoleWrappedRecordEnvelope(cutMessage.content) : null
             const userMessageSeq = (() => {
                 if (!cutMessage || !record) return null
-                if (record.role === 'user') return opts.beforeSeq
+                if (record.role === 'user') {
+                    return this.store.messages.getPreviousUserMessageSeq(sessionId, opts.beforeSeq)
+                }
                 if (record.role === 'agent' || record.role === 'assistant') {
                     return this.store.messages.getPreviousUserMessageSeq(sessionId, opts.beforeSeq)
                 }
                 return null
             })()
             if (!userMessageSeq) {
-                return { type: 'error', message: 'Historical fork cut point must be an agent response', code: 'fork_unavailable' }
+                return { type: 'error', message: 'No earlier history to fork from', code: 'fork_unavailable' }
             }
             const prefix = this.store.codexHistory.getPrefixThroughReplyForUserMessageSeq(sessionId, userMessageSeq)
             if (!prefix) {
