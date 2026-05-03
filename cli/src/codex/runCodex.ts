@@ -193,6 +193,9 @@ export async function runCodex(opts: {
                     messageQueue.pushIsolateAndClear(isolatedCommandText, enhancedMode, localId, messageSeq);
                     return;
                 }
+                // Each user message starts its own turn so messageSeq → raw-history item is 1:1.
+                // Batching multiple messages into one turn would emit a single user item upstream
+                // and break historical-fork prefix reconstruction.
                 messageQueue.pushIsolated(text, enhancedMode, localId, messageSeq);
             } catch (error) {
                 logger.debug('[Codex] Failed to handle user message', error);

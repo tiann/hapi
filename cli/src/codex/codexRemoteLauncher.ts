@@ -23,6 +23,7 @@ import {
     type RemoteLauncherDisplayContext,
     type RemoteLauncherExitReason
 } from '@/modules/common/remote/RemoteLauncherBase';
+import { isAbortError } from '@/utils/spawnWithAbort';
 
 type HappyServer = Awaited<ReturnType<typeof buildHapiMcpBridge>>['server'];
 type QueuedMessage = { message: string; mode: EnhancedMode; isolate: boolean; hash: string; messageSeqs: number[] };
@@ -709,6 +710,10 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 mcpServers,
                 cliOverrides: session.codexCliOverrides
             });
+            // Contract: Codex app-server `thread/resume` accepts an unknown threadId together with a
+            // `history` array and creates a fresh thread seeded with that history. The synthetic id
+            // here is required so we can later disambiguate this thread from the source. If a future
+            // app-server release rejects unknown ids, this is the call that breaks first.
             const historicalThreadId = `hapi-fork-${randomUUID()}`;
             let resumeResponse: unknown;
             try {
@@ -735,20 +740,29 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             applyResolvedModel(resumeRecord?.model);
             sendReady();
         } else if (session.forkSessionId) {
-            const forkResponse = await appServerClient.forkThread(buildThreadForkParams({
-                threadId: session.forkSessionId,
-                cwd: session.path,
-                mode: buildInitialMode(),
-                mcpServers,
-                cliOverrides: session.codexCliOverrides
-            }), {
-                signal: this.abortController.signal
-            });
+            let forkResponse: unknown;
+            try {
+                forkResponse = await appServerClient.forkThread(buildThreadForkParams({
+                    threadId: session.forkSessionId,
+                    cwd: session.path,
+                    mode: buildInitialMode(),
+                    mcpServers,
+                    cliOverrides: session.codexCliOverrides
+                }), {
+                    signal: this.abortController.signal
+                });
+            } catch (error) {
+                if (isAbortError(error)) {
+                    throw error;
+                }
+                const detail = error instanceof Error ? error.message : String(error);
+                throw new Error(`Codex fork failed: app-server rejected thread/fork: ${detail}`);
+            }
             const forkRecord = asRecord(forkResponse);
             const forkThread = forkRecord ? asRecord(forkRecord.thread) : null;
             const forkedThreadId = asString(forkThread?.id);
             if (!forkedThreadId) {
-                throw new Error('app-server thread/fork did not return thread.id');
+                throw new Error('Codex fork failed: app-server thread/fork did not return thread.id');
             }
             this.currentThreadId = forkedThreadId;
             session.onSessionFound(forkedThreadId);
@@ -956,7 +970,17 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                             applyResolvedModel(forkRecord?.model);
                             logger.debug(`[Codex] Forked app-server thread ${forkCandidate} -> ${threadId ?? 'unknown'}`);
                         } catch (error) {
-                            logger.warn(`[Codex] Failed to fork app-server thread ${forkCandidate}, starting new thread`, error);
+                            // Surface the fork failure to the user. Falling back silently to startThread
+                            // would lose the source thread's context without any indication.
+                            if (isAbortError(error)) {
+                                throw error;
+                            }
+                            const detail = error instanceof Error ? error.message : String(error);
+                            const message = `Fork failed (${forkCandidate}): ${detail}`;
+                            logger.warn(`[Codex] ${message}`);
+                            messageBuffer.addMessage(message, 'status');
+                            session.sendSessionEvent({ type: 'message', message });
+                            throw error;
                         }
                     } else if (resumeCandidate) {
                         try {
@@ -1043,12 +1067,12 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 }
             } catch (error) {
                 logger.warn('Error in codex session:', error);
-                const isAbortError = error instanceof Error && error.name === 'AbortError';
+                const aborted = isAbortError(error);
                 turnInFlight = false;
                 allowAnonymousTerminalEvent = false;
                 this.currentTurnId = null;
 
-                if (isAbortError) {
+                if (aborted) {
                     messageBuffer.addMessage('Aborted by user', 'status');
                     session.sendSessionEvent({ type: 'message', message: 'Aborted by user' });
                 } else {

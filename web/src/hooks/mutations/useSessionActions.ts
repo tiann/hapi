@@ -14,7 +14,7 @@ export function useSessionActions(
 ): {
     abortSession: () => Promise<void>
     archiveSession: () => Promise<void>
-    forkSession: () => Promise<string>
+    forkSession: () => Promise<{ sessionId: string; warnings?: string[] }>
     switchSession: () => Promise<void>
     setPermissionMode: (mode: PermissionMode) => Promise<void>
     setCollaborationMode: (mode: CodexCollaborationMode) => Promise<void>

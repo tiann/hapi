@@ -461,33 +461,46 @@ export class SessionCache {
 
     async inheritSessionMetadata(sourceSessionId: string, targetSessionId: string): Promise<void> {
         const source = this.sessions.get(sourceSessionId) ?? this.refreshSession(sourceSessionId)
-        const target = this.sessions.get(targetSessionId) ?? this.refreshSession(targetSessionId)
-        if (!source || !target) {
+        if (!source) {
             throw new Error('Session not found')
         }
 
-        const mergedMetadata = mergeSessionMetadata(source.metadata ?? null, target.metadata ?? null)
-        if (mergedMetadata === target.metadata) {
-            return
+        // Retry on version-mismatch: by the time the fork's target session has become active, the CLI
+        // has typically already emitted update-metadata events that bumped metadataVersion. Re-read the
+        // latest snapshot and re-merge so a concurrent CLI write does not silently drop inheritance.
+        // Small backoff between attempts gives any in-flight CLI write room to land before we reread.
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+            if (attempt > 0) {
+                await new Promise((resolve) => setTimeout(resolve, 25 * attempt))
+            }
+            const target = this.refreshSession(targetSessionId)
+            if (!target) {
+                throw new Error('Session not found')
+            }
+
+            const mergedMetadata = mergeSessionMetadata(source.metadata ?? null, target.metadata ?? null)
+            if (mergedMetadata === target.metadata) {
+                return
+            }
+
+            const result = this.store.sessions.updateSessionMetadata(
+                targetSessionId,
+                mergedMetadata,
+                target.metadataVersion,
+                target.namespace,
+                { touchUpdatedAt: false }
+            )
+
+            if (result.result === 'success') {
+                this.refreshSession(targetSessionId)
+                return
+            }
+            if (result.result === 'error') {
+                throw new Error('Failed to inherit session metadata')
+            }
         }
 
-        const result = this.store.sessions.updateSessionMetadata(
-            targetSessionId,
-            mergedMetadata,
-            target.metadataVersion,
-            target.namespace,
-            { touchUpdatedAt: false }
-        )
-
-        if (result.result === 'error') {
-            throw new Error('Failed to inherit session metadata')
-        }
-
-        if (result.result === 'version-mismatch') {
-            throw new Error('Session was modified concurrently. Please try again.')
-        }
-
-        this.refreshSession(targetSessionId)
+        throw new Error('Session was modified concurrently. Please try again.')
     }
 
     async deleteSession(sessionId: string): Promise<void> {

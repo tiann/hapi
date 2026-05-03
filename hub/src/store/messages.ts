@@ -315,6 +315,9 @@ export function cloneSessionMessages(
     try {
         db.exec('BEGIN')
 
+        // Cloned rows preserve relative ordering by reusing the source row's seq offset by
+        // targetMaxSeq. Source-side gaps (from a prior session merge) are inherited as-is; sort
+        // order remains correct but cloned rows are not guaranteed to be contiguous in seq.
         const targetMaxSeq = getMaxSeq(db, toSessionId)
         const existingLocalIds = new Set<string>(
             (db.prepare(
@@ -339,6 +342,11 @@ export function cloneSessionMessages(
                 existingLocalIds.add(localId)
             }
 
+            // Cloned messages are history, never queued work. Force a non-null invoked_at so a
+            // pending user message on the source (local_id set, invoked_at null) does not get
+            // re-delivered to the CLI on the forked session via getUninvokedLocalMessages.
+            const invokedAt = row.invoked_at ?? row.created_at
+
             insert.run({
                 id: randomUUID(),
                 session_id: toSessionId,
@@ -346,7 +354,7 @@ export function cloneSessionMessages(
                 created_at: row.created_at,
                 seq: targetMaxSeq + row.seq,
                 local_id: localId,
-                invoked_at: row.invoked_at
+                invoked_at: invokedAt
             })
         }
 

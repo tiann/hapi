@@ -381,7 +381,7 @@ export function SessionChat(props: {
 
     const handleForkBeforeMessage = useCallback(async (beforeSeq: number) => {
         try {
-            const newSessionId = await props.api.forkSession(props.session.id, { beforeSeq })
+            const { sessionId: newSessionId, warnings } = await props.api.forkSession(props.session.id, { beforeSeq })
             haptic.notification('success')
             addToast({
                 title: t('dialog.fork.successTitle'),
@@ -391,14 +391,20 @@ export function SessionChat(props: {
                 variant: 'success',
                 actionLabel: t('toast.action.openSession')
             })
+            if (warnings && warnings.length > 0) {
+                addToast({
+                    title: t('dialog.fork.partialTitle'),
+                    body: warnings.join('; '),
+                    variant: 'error'
+                })
+            }
         } catch (error) {
             haptic.notification('error')
             const message = error instanceof Error ? error.message : t('dialog.fork.failedDescription')
             addToast({
                 title: t('dialog.fork.failedTitle'),
                 body: message,
-                sessionId: props.session.id,
-                url: `/sessions/${props.session.id}`
+                variant: 'error'
             })
         }
     }, [addToast, haptic, props.api, props.session, t])

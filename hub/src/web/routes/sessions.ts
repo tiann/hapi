@@ -157,7 +157,10 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         if (contentType.includes('application/json')) {
             const body = await c.req.json().catch(() => null) as { beforeSeq?: unknown } | null
             if (body && body.beforeSeq !== undefined) {
-                beforeSeq = typeof body.beforeSeq === 'number' ? body.beforeSeq : Number.NaN
+                if (typeof body.beforeSeq !== 'number' || !Number.isInteger(body.beforeSeq) || body.beforeSeq <= 0) {
+                    return c.json({ error: 'beforeSeq must be a positive integer', code: 'fork_unavailable' }, 400)
+                }
+                beforeSeq = body.beforeSeq
             }
         }
 
@@ -175,7 +178,9 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return c.json({ error: result.message, code: result.code }, status)
         }
 
-        return c.json({ type: 'success', sessionId: result.sessionId })
+        return c.json(result.warnings && result.warnings.length > 0
+            ? { type: 'success', sessionId: result.sessionId, warnings: result.warnings }
+            : { type: 'success', sessionId: result.sessionId })
     })
 
     app.post('/sessions/:id/upload', async (c) => {

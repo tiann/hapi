@@ -7,7 +7,7 @@ export type Toast = {
     body: string
     sessionId?: string
     url?: string
-    variant?: 'default' | 'success'
+    variant?: 'default' | 'success' | 'error'
     actionLabel?: string
 }
 

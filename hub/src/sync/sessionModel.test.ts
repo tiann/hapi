@@ -896,12 +896,12 @@ describe('session model', () => {
             expect(await engine.forkSession(session.id, 'default', { beforeSeq: 2 })).toMatchObject({
                 type: 'error',
                 code: 'fork_unavailable',
-                message: '历史点 fork 只支持新版本会话'
+                message: 'Historical fork is only supported for sessions started with the new Codex history pipeline'
             })
             expect(await engine.forkSession(session.id, 'default', { beforeSeq: 1 })).toMatchObject({
                 type: 'error',
                 code: 'fork_unavailable',
-                message: '历史点 fork 只支持新版本会话'
+                message: 'Historical fork is only supported for sessions started with the new Codex history pipeline'
             })
         } finally {
             engine.stop()

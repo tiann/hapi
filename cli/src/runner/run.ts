@@ -379,8 +379,9 @@ export async function startRunner(options: { workspaceRoot?: string } = {}): Pro
         }
 
         let forkHistoryFile: string | null = null;
+        let forkHistoryDir: string | null = null;
         if (agent === 'codex' && Array.isArray(options.forkHistory)) {
-          const forkHistoryDir = await fs.mkdtemp(join(os.tmpdir(), 'hapi-codex-history-'));
+          forkHistoryDir = await fs.mkdtemp(join(os.tmpdir(), 'hapi-codex-history-'));
           forkHistoryFile = join(forkHistoryDir, 'history.json');
           await fs.writeFile(forkHistoryFile, JSON.stringify(options.forkHistory));
         }
@@ -500,6 +501,10 @@ export async function startRunner(options: { workspaceRoot?: string } = {}): Pro
           logger.debug(`[RUNNER RUN] Child PID ${pid} exited with code ${code}, signal ${signal}`);
           if (code !== 0 || signal) {
             logStderrTail();
+          }
+          // Child normally deletes this dir after reading; clean up here in case it crashed first.
+          if (forkHistoryDir) {
+            void fs.rm(forkHistoryDir, { recursive: true, force: true }).catch(() => undefined);
           }
           const errorAwaiter = pidToErrorAwaiter.get(pid);
           if (errorAwaiter) {

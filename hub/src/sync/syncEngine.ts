@@ -52,7 +52,7 @@ export type ResumeSessionResult =
     | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'no_machine_online' | 'resume_unavailable' | 'resume_failed' }
 
 export type ForkSessionResult =
-    | { type: 'success'; sessionId: string }
+    | { type: 'success'; sessionId: string; warnings?: string[] }
     | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'no_machine_online' | 'fork_unavailable' | 'fork_failed' }
 
 export class SyncEngine {
@@ -572,11 +572,6 @@ export class SyncEngine {
             return { type: 'error', message: 'Fork is only supported for Codex sessions', code: 'fork_unavailable' }
         }
 
-        const forkToken = metadata.codexSessionId
-        if (!forkToken) {
-            return { type: 'error', message: 'Fork session ID unavailable', code: 'fork_unavailable' }
-        }
-
         let forkHistory: unknown[] | undefined
         let cloneBeforeSeq: number | undefined
         if (opts?.beforeSeq !== undefined) {
@@ -600,12 +595,41 @@ export class SyncEngine {
             if (!prefix) {
                 return {
                     type: 'error',
-                    message: '历史点 fork 只支持新版本会话',
+                    message: 'Historical fork is only supported for sessions started with the new Codex history pipeline',
+                    code: 'fork_unavailable'
+                }
+            }
+            if (prefix.length === 0) {
+                // Defensive: a non-null but empty prefix means we located a user-message cut point
+                // but found zero raw history rows up to it — should be impossible by construction
+                // and indicates corruption rather than an old session.
+                return {
+                    type: 'error',
+                    message: 'Codex history prefix is empty; refusing to fork from missing history',
+                    code: 'fork_unavailable'
+                }
+            }
+            // Conservative cap below Socket.IO's 1 MiB default to leave room for the rest of the
+            // spawn payload (mcp config, permission mode, model, etc.). Without a guard the spawn
+            // RPC silently fails as an opaque socket timeout.
+            const FORK_HISTORY_MAX_BYTES = 512 * 1024
+            const prefixBytes = Buffer.byteLength(JSON.stringify(prefix), 'utf8')
+            if (prefixBytes > FORK_HISTORY_MAX_BYTES) {
+                return {
+                    type: 'error',
+                    message: `Historical fork payload too large (${prefixBytes} bytes, max ${FORK_HISTORY_MAX_BYTES})`,
                     code: 'fork_unavailable'
                 }
             }
             forkHistory = prefix
             cloneBeforeSeq = this.store.messages.getNextUserMessageSeq(sessionId, userMessageSeq) ?? undefined
+        }
+
+        // Whole-session fork needs the source's codex thread id; historical fork carries the prefix
+        // inline and does not.
+        const forkToken = metadata.codexSessionId
+        if (!forkHistory && !forkToken) {
+            return { type: 'error', message: 'Fork session ID unavailable', code: 'fork_unavailable' }
         }
 
         const onlineMachines = this.machineCache.getOnlineMachinesByNamespace(namespace)
@@ -649,6 +673,18 @@ export class SyncEngine {
             return { type: 'error', message: spawnResult.message, code: 'fork_failed' }
         }
 
+        const becameActive = await this.waitForSessionActive(spawnResult.sessionId)
+        if (!becameActive) {
+            // Spawn succeeded but the CLI never went active. Avoid the partial-success leak: do NOT
+            // clone messages, inherit metadata, or emit session-forked into a session the user
+            // can't actually use yet (skipping the emit also prevents notificationHub from leaking
+            // a never-cleaned entry for a session that may never emit session-end).
+            return { type: 'error', message: 'Session failed to become active', code: 'fork_failed' }
+        }
+
+        // Emit session-forked only after active. The CLI's `ready` event always lags `session-alive`
+        // by the time it takes to set up the codex thread, so notificationHub still gets the
+        // suppression entry installed before the ready arrives.
         this.eventPublisher.emit({
             type: 'session-forked',
             sessionId: spawnResult.sessionId,
@@ -656,15 +692,33 @@ export class SyncEngine {
             namespace
         })
 
-        const becameActive = await this.waitForSessionActive(spawnResult.sessionId)
-        if (!becameActive) {
-            return { type: 'error', message: 'Session failed to become active', code: 'fork_failed' }
+        // Best-effort post-conditions. If either fails the session itself is still valid; surface a
+        // warning back to the caller (and a log line) rather than reporting fork_failed.
+        const warnings: string[] = []
+        try {
+            // Observability for the residual ordering race: codex sessions don't normally write to
+            // the messages table before the first user turn, so the target should be empty here.
+            // If a future CLI change starts writing earlier, cloned history will land *after* those
+            // rows in the timeline; logging makes that regression obvious instead of silent.
+            const cloneResult = this.store.messages.cloneSessionMessages(sessionId, spawnResult.sessionId, cloneBeforeSeq)
+            const targetMaxSeqBefore = cloneResult.targetMaxSeq - cloneResult.sourceMaxSeq
+            if (targetMaxSeqBefore > 0) {
+                console.warn(`[SyncEngine] Forked session ${spawnResult.sessionId} already had ${targetMaxSeqBefore} messages before clone; cloned history will appear after them.`)
+            }
+        } catch (error) {
+            console.error(`[SyncEngine] Failed to clone messages into forked session ${spawnResult.sessionId}:`, error)
+            warnings.push('history could not be cloned')
+        }
+        try {
+            await this.sessionCache.inheritSessionMetadata(sessionId, spawnResult.sessionId)
+        } catch (error) {
+            console.error(`[SyncEngine] Failed to inherit metadata into forked session ${spawnResult.sessionId}:`, error)
+            warnings.push('title could not be inherited')
         }
 
-        this.store.messages.cloneSessionMessages(sessionId, spawnResult.sessionId, cloneBeforeSeq)
-        await this.sessionCache.inheritSessionMetadata(sessionId, spawnResult.sessionId)
-
-        return { type: 'success', sessionId: spawnResult.sessionId }
+        return warnings.length > 0
+            ? { type: 'success', sessionId: spawnResult.sessionId, warnings }
+            : { type: 'success', sessionId: spawnResult.sessionId }
     }
 
     async waitForSessionActive(sessionId: string, timeoutMs: number = 15_000): Promise<boolean> {

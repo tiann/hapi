@@ -8,7 +8,8 @@ const toastVariants = cva(
         variants: {
             variant: {
                 default: 'border-[var(--app-border)] bg-[var(--app-bg)]',
-                success: 'border-emerald-500/35 bg-emerald-50 text-emerald-950 shadow-emerald-500/10 ring-1 ring-emerald-500/15 dark:bg-emerald-950 dark:text-emerald-50'
+                success: 'border-emerald-500/35 bg-emerald-50 text-emerald-950 shadow-emerald-500/10 ring-1 ring-emerald-500/15 dark:bg-emerald-950 dark:text-emerald-50',
+                error: 'border-red-500/35 bg-red-50 text-red-950 shadow-red-500/10 ring-1 ring-red-500/15 dark:bg-red-950 dark:text-red-50'
             }
         },
         defaultVariants: {
@@ -23,7 +24,8 @@ const toastActionVariants = cva(
         variants: {
             variant: {
                 default: 'bg-[var(--app-secondary-bg)] text-[var(--app-fg)] ring-[var(--app-border)]',
-                success: 'bg-white/90 text-emerald-700 ring-emerald-500/20 dark:bg-emerald-900/80 dark:text-emerald-200'
+                success: 'bg-white/90 text-emerald-700 ring-emerald-500/20 dark:bg-emerald-900/80 dark:text-emerald-200',
+                error: 'bg-white/90 text-red-700 ring-red-500/20 dark:bg-red-900/80 dark:text-red-200'
             }
         },
         defaultVariants: {

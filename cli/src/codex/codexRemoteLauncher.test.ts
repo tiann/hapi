@@ -14,7 +14,8 @@ const harness = vi.hoisted(() => ({
     compactThreadIds: [] as string[],
     suppressTurnCompletion: false,
     remainingThreadSystemErrors: 0,
-    forkCalls: [] as unknown[]
+    forkCalls: [] as unknown[],
+    resumeShouldThrow: null as Error | null
 }));
 
 vi.mock('react', () => ({
@@ -65,6 +66,9 @@ vi.mock('./codexAppServerClient', () => {
             const id = params?.threadId ?? 'thread-resumed';
             harness.resumeThreadIds.push(id);
             harness.resumeThreadCalls.push(params);
+            if (harness.resumeShouldThrow) {
+                throw harness.resumeShouldThrow;
+            }
             return { thread: { id }, model: 'gpt-5.4' };
         }
 
@@ -292,6 +296,7 @@ describe('codexRemoteLauncher', () => {
         harness.suppressTurnCompletion = false;
         harness.remainingThreadSystemErrors = 0;
         harness.forkCalls = [];
+        harness.resumeShouldThrow = null;
     });
 
     it('finishes a turn and emits ready when task lifecycle events include turn_id', async () => {
@@ -417,6 +422,17 @@ describe('codexRemoteLauncher', () => {
             cwd: '/tmp/hapi-update'
         });
         expect(foundSessionIds[0]).toMatch(/^hapi-fork-/);
+    });
+
+    it('throws a descriptive error when thread/resume(history) is rejected by app-server', async () => {
+        harness.resumeShouldThrow = new Error('history not supported');
+        const forkHistory = [{ id: 'user-1', role: 'user' }];
+        const { session } = createSessionStub({ forkSessionId: 'thread-source', forkHistory });
+
+        await expect(codexRemoteLauncher(session as never)).rejects.toThrow(
+            /Codex historical fork failed: app-server rejected thread\/resume\(history\): history not supported/
+        );
+        expect(harness.resumeThreadCalls).toHaveLength(1);
     });
 
     it('records user raw history before completed app-server items', async () => {

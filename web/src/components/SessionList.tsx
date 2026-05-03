@@ -582,7 +582,7 @@ function SessionItem(props: {
         s.metadata?.flavor ?? null
     )
 
-    const handleFork = useForkWithFeedback(forkSession, s.id, sessionName)
+    const handleFork = useForkWithFeedback(forkSession, sessionName)
 
     const longPressHandlers = useLongPress({
         onLongPress: (point) => {
@@ -648,7 +648,7 @@ function SessionItem(props: {
                 sessionActive={s.active}
                 canFork={canFork}
                 onRename={() => setRenameOpen(true)}
-                onFork={() => handleFork(onSelect)}
+                onFork={handleFork}
                 onArchive={() => setArchiveOpen(true)}
                 onDelete={() => setDeleteOpen(true)}
                 anchorPoint={menuAnchorPoint}
