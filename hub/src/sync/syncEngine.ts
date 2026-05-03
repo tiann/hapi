@@ -728,6 +728,13 @@ export class SyncEngine {
             return { type: 'error', message: spawnResult.message, code: 'fork_failed' }
         }
 
+        this.eventPublisher.emit({
+            type: 'session-forked',
+            sessionId: spawnResult.sessionId,
+            sourceSessionId: sessionId,
+            namespace
+        })
+
         const becameActive = await this.waitForSessionActive(spawnResult.sessionId)
         if (!becameActive) {
             return { type: 'error', message: 'Session failed to become active', code: 'fork_failed' }

@@ -168,6 +168,53 @@ describe('NotificationHub', () => {
         hub.stop()
     })
 
+    it('suppresses the first ready notification for forked sessions only', async () => {
+        const engine = new FakeSyncEngine()
+        const channel = new StubChannel()
+        const hub = new NotificationHub(engine as unknown as SyncEngine, [channel], {
+            permissionDebounceMs: 1,
+            readyCooldownMs: 1
+        })
+
+        const session = createSession({ id: 'forked-session' })
+        engine.setSession(session)
+
+        const readyEvent: SyncEvent = {
+            type: 'message-received',
+            sessionId: session.id,
+            message: {
+                id: 'message-1',
+                seq: 1,
+                localId: null,
+                createdAt: 0,
+                content: {
+                    role: 'agent',
+                    content: {
+                        id: 'event-1',
+                        type: 'event',
+                        data: { type: 'ready' }
+                    }
+                }
+            }
+        }
+
+        engine.emit({
+            type: 'session-forked',
+            sessionId: session.id,
+            sourceSessionId: 'source-session'
+        })
+        engine.emit(readyEvent)
+        await sleep(5)
+        expect(channel.readySessions).toHaveLength(0)
+
+        await sleep(5)
+        engine.emit(readyEvent)
+        await sleep(5)
+        expect(channel.readySessions).toHaveLength(1)
+
+        hub.stop()
+    })
+
     it('sends task notifications for task_notification system messages', async () => {
         const engine = new FakeSyncEngine()
         const channel = new StubChannel()

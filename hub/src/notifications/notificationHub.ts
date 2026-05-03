@@ -10,6 +10,7 @@ export class NotificationHub {
     private readonly lastKnownRequests: Map<string, Set<string>> = new Map()
     private readonly notificationDebounce: Map<string, NodeJS.Timeout> = new Map()
     private readonly lastReadyNotificationAt: Map<string, number> = new Map()
+    private readonly suppressNextReadyNotification: Set<string> = new Set()
     private unsubscribeSyncEvents: (() => void) | null = null
 
     constructor(
@@ -55,6 +56,11 @@ export class NotificationHub {
             return
         }
 
+        if (event.type === 'session-forked') {
+            this.suppressNextReadyNotification.add(event.sessionId)
+            return
+        }
+
         if (event.type === 'session-ended' && event.sessionId) {
             if (event.reason === 'completed') {
                 this.sendSessionCompletion(event.sessionId, event.reason).catch((error) => {
@@ -89,6 +95,7 @@ export class NotificationHub {
         }
         this.lastKnownRequests.delete(sessionId)
         this.lastReadyNotificationAt.delete(sessionId)
+        this.suppressNextReadyNotification.delete(sessionId)
     }
 
     private getNotifiableSession(sessionId: string): Session | null {
@@ -150,6 +157,10 @@ export class NotificationHub {
     private async sendReadyNotification(sessionId: string): Promise<void> {
         const session = this.getNotifiableSession(sessionId)
         if (!session) {
+            return
+        }
+
+        if (this.suppressNextReadyNotification.delete(sessionId)) {
             return
         }
 
