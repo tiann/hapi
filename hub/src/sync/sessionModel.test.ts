@@ -695,7 +695,9 @@ describe('session model', () => {
                 },
                 null,
                 'default',
-                'gpt-5.4'
+                'gpt-5.4',
+                undefined,
+                'xhigh'
             )
             engine.getOrCreateMachine(
                 'machine-1',
@@ -707,12 +709,13 @@ describe('session model', () => {
 
             let capturedForkSessionId: string | undefined
             let capturedModel: string | undefined
+            let capturedModelReasoningEffort: string | undefined
             ;(engine as any).rpcGateway.spawnSession = async (
                 _machineId: string,
                 _directory: string,
                 _agent: string,
                 model?: string,
-                _modelReasoningEffort?: string,
+                modelReasoningEffort?: string,
                 _yolo?: boolean,
                 _sessionType?: 'simple' | 'worktree',
                 _worktreeName?: string,
@@ -720,6 +723,7 @@ describe('session model', () => {
                 forkSessionId?: string
             ) => {
                 capturedModel = model
+                capturedModelReasoningEffort = modelReasoningEffort
                 capturedForkSessionId = forkSessionId
                 const forkedSession = engine.getOrCreateSession(
                     'forked-session',
@@ -743,6 +747,7 @@ describe('session model', () => {
             expect(result.type).toBe('success')
             expect(capturedForkSessionId).toBe('codex-thread-1')
             expect(capturedModel).toBe('gpt-5.4')
+            expect(capturedModelReasoningEffort).toBe('xhigh')
         } finally {
             engine.stop()
         }

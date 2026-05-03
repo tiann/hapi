@@ -658,7 +658,7 @@ export class SyncEngine {
             metadata.path,
             'codex',
             session.model ?? undefined,
-            undefined,
+            session.modelReasoningEffort ?? undefined,
             undefined,
             undefined,
             undefined,
