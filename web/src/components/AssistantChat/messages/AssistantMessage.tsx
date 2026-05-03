@@ -161,7 +161,10 @@ export function HappyAssistantMessage() {
                                 type="button"
                                 title="Copy"
                                 className="inline-flex h-8 w-8 items-center justify-center rounded-md hover:bg-[var(--app-subtle-bg)] active:bg-[var(--app-subtle-bg)] transition-colors"
-                                onClick={() => copy(copyText)}
+                                onClick={(event) => {
+                                    event.stopPropagation()
+                                    copy(copyText)
+                                }}
                             >
                                 {copied
                                     ? <CheckIcon className="h-4 w-4 text-green-500" />
@@ -174,7 +177,10 @@ export function HappyAssistantMessage() {
                                 title="Fork from this response"
                                 aria-label="Fork from this response"
                                 className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] shadow-sm hover:bg-[var(--app-subtle-bg)] active:bg-[var(--app-subtle-bg)] transition-colors"
-                                onClick={() => ctx.onForkBeforeMessage!(seq)}
+                                onClick={(event) => {
+                                    event.stopPropagation()
+                                    ctx.onForkBeforeMessage!(seq)
+                                }}
                             >
                                 <ForkIcon className="h-4 w-4 text-[var(--app-fg)]" />
                             </button>
