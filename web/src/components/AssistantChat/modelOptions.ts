@@ -81,5 +81,13 @@ export function getNextModelForFlavor(
     if (flavor === 'gemini') {
         return getNextGeminiModel(currentModel)
     }
+    // OpenCode discovers models dynamically via the listOpencodeModels RPC. Until
+    // those options arrive, pressing the Ctrl/Cmd+M shortcut must not fall through
+    // to the Claude preset cycler — that would post `sonnet`/`opus` into an
+    // OpenCode session and the next turn would attempt `session/set_model` with a
+    // Claude id. Keep the current model unchanged instead.
+    if (flavor === 'opencode') {
+        return normalizeCurrentModel(currentModel)
+    }
     return getNextClaudeComposerModel(currentModel)
 }

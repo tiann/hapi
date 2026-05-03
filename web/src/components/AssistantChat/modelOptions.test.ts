@@ -90,4 +90,19 @@ describe('getNextModelForFlavor', () => {
         ])
         expect(next).toBe('gpt-5.5')
     })
+
+    it('keeps the current opencode model when the dynamic list has not loaded (undefined customOptions)', () => {
+        const next = getNextModelForFlavor('opencode', 'ollama/exaone:4.5-33b-q8')
+        expect(next).toBe('ollama/exaone:4.5-33b-q8')
+    })
+
+    it('keeps the current opencode model when the dynamic list is empty', () => {
+        const next = getNextModelForFlavor('opencode', 'ollama/exaone:4.5-33b-q8', [])
+        expect(next).toBe('ollama/exaone:4.5-33b-q8')
+    })
+
+    it('returns null for opencode without a current model and without dynamic options (no Claude fallback)', () => {
+        const next = getNextModelForFlavor('opencode', null, [])
+        expect(next).toBeNull()
+    })
 })
