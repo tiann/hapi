@@ -389,4 +389,41 @@ describe('AppServerEventConverter', () => {
 
         expect(events).toEqual([{ type: 'task_failed', error: 'fatal' }]);
     });
+
+    it('maps thread/compacted notifications', () => {
+        const converter = new AppServerEventConverter();
+        const events = converter.handleNotification('thread/compacted', {
+            threadId: 'thread-1',
+            turnId: 'turn-compact'
+        });
+
+        expect(events).toEqual([{
+            type: 'thread_compacted',
+            thread_id: 'thread-1',
+            turn_id: 'turn-compact'
+        }]);
+    });
+
+    it('ignores compacted notifications without thread ids', () => {
+        const converter = new AppServerEventConverter();
+
+        expect(converter.handleNotification('thread/compacted', { turnId: 'turn-compact' })).toEqual([]);
+        expect(converter.handleNotification('codex/event/context_compacted', {
+            msg: { type: 'context_compacted', turn_id: 'turn-compact' }
+        })).toEqual([]);
+    });
+
+    it('unwraps context_compacted events', () => {
+        const converter = new AppServerEventConverter();
+        const events = converter.handleNotification('codex/event/context_compacted', {
+            msg: { type: 'context_compacted', thread_id: 'thread-1', turn_id: 'turn-compact' }
+        });
+
+        expect(events).toEqual([{
+            type: 'thread_compacted',
+            thread_id: 'thread-1',
+            turn_id: 'turn-compact'
+        }]);
+    });
+
 });
