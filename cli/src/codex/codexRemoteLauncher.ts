@@ -14,17 +14,19 @@ import type { EnhancedMode } from './loop';
 import { hasCodexCliOverrides } from './utils/codexCliOverrides';
 import { AppServerEventConverter } from './utils/appServerEventConverter';
 import { registerAppServerPermissionHandlers } from './utils/appServerPermissionAdapter';
-import { buildThreadStartParams, buildTurnStartParams } from './utils/appServerConfig';
+import { buildThreadForkParams, buildThreadStartParams, buildTurnStartParams } from './utils/appServerConfig';
 import { shouldIgnoreTerminalEvent } from './utils/terminalEventGuard';
 import { parseCodexSpecialCommand } from './codexSpecialCommands';
+import type { ResponseItem } from './appServerTypes';
 import {
     RemoteLauncherBase,
     type RemoteLauncherDisplayContext,
     type RemoteLauncherExitReason
 } from '@/modules/common/remote/RemoteLauncherBase';
+import { isAbortError } from '@/utils/spawnWithAbort';
 
 type HappyServer = Awaited<ReturnType<typeof buildHapiMcpBridge>>['server'];
-type QueuedMessage = { message: string; mode: EnhancedMode; isolate: boolean; hash: string };
+type QueuedMessage = { message: string; mode: EnhancedMode; isolate: boolean; hash: string; messageSeqs: number[] };
 
 class CodexRemoteLauncher extends RemoteLauncherBase {
     private readonly session: CodexSession;
@@ -139,6 +141,77 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
 
         const asString = (value: unknown): string | null => {
             return typeof value === 'string' && value.length > 0 ? value : null;
+        };
+
+        const extractHistoryItem = (params: unknown): Record<string, unknown> | null => {
+            const record = asRecord(params);
+            if (!record) return null;
+            return asRecord(record.item) ?? record;
+        };
+
+        const extractHistoryItemId = (params: unknown, item: Record<string, unknown>): string | null => {
+            const record = asRecord(params);
+            return asString(record?.itemId ?? record?.item_id ?? record?.id)
+                ?? asString(item.id ?? item.itemId ?? item.item_id);
+        };
+
+        const extractHistoryTurnId = (params: unknown): string | null => {
+            const record = asRecord(params);
+            return asString(record?.turnId ?? record?.turn_id) ?? this.currentTurnId;
+        };
+
+        const classifyHistoryItem = (item: Record<string, unknown>): 'user' | 'assistant' | 'tool' | 'event' | 'unknown' => {
+            if (item.role === 'user') return 'user';
+            if (item.role === 'assistant') return 'assistant';
+            const rawType = asString(item.type)?.toLowerCase() ?? '';
+            if (rawType.includes('tool') || rawType.includes('function') || rawType.includes('command')) return 'tool';
+            if (rawType.includes('message') || rawType.includes('reasoning')) return 'assistant';
+            if (rawType.includes('event')) return 'event';
+            return 'unknown';
+        };
+
+        const recordHistoryItem = (input: {
+            threadId: string;
+            turnId?: string | null;
+            itemId: string;
+            itemKind: 'user' | 'assistant' | 'tool' | 'event' | 'unknown';
+            messageSeq?: number | null;
+            rawItem: ResponseItem;
+        }): void => {
+            const historySender = (session.client as unknown as { sendCodexHistoryItem?: typeof session.client.sendCodexHistoryItem }).sendCodexHistoryItem;
+            if (!historySender) {
+                return;
+            }
+            historySender.call(session.client, {
+                codexThreadId: input.threadId,
+                turnId: input.turnId ?? null,
+                itemId: input.itemId,
+                itemKind: input.itemKind,
+                messageSeq: input.messageSeq ?? null,
+                rawItem: input.rawItem
+            });
+        };
+
+        const buildUserHistoryItem = (itemId: string, message: string): ResponseItem => ({
+            id: itemId,
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: message }]
+        });
+
+        const recordCompletedHistoryItem = (method: string, params: unknown): void => {
+            if (method !== 'item/completed' || !this.currentThreadId) return;
+            const item = extractHistoryItem(params);
+            if (!item) return;
+            const itemId = extractHistoryItemId(params, item);
+            if (!itemId) return;
+            recordHistoryItem({
+                threadId: this.currentThreadId,
+                turnId: extractHistoryTurnId(params),
+                itemId,
+                itemKind: classifyHistoryItem(item),
+                rawItem: item
+            });
         };
 
         const applyResolvedModel = (value: unknown): string | undefined => {
@@ -567,6 +640,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         });
 
         appServerClient.setNotificationHandler((method, params) => {
+            recordCompletedHistoryItem(method, params);
             const events = appServerEventConverter.handleNotification(method, params);
             for (const event of events) {
                 const eventRecord = asRecord(event) ?? { type: undefined };
@@ -598,6 +672,23 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             session.sendSessionEvent({ type: 'ready' });
         };
 
+        const buildInitialMode = (): EnhancedMode => {
+            const rawPermissionMode = session.getPermissionMode();
+            const permissionMode = rawPermissionMode === 'default'
+                || rawPermissionMode === 'read-only'
+                || rawPermissionMode === 'safe-yolo'
+                || rawPermissionMode === 'yolo'
+                ? rawPermissionMode
+                : 'default';
+            const rawCollaborationMode = session.getCollaborationMode?.();
+            const collaborationMode = rawCollaborationMode === 'plan' ? 'plan' : 'default';
+            return {
+                permissionMode,
+                model: session.getModel() ?? undefined,
+                collaborationMode
+            };
+        };
+
         await appServerClient.connect();
         await appServerClient.initialize({
             clientInfo: {
@@ -611,6 +702,74 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
 
         let hasThread = false;
         let pending: QueuedMessage | null = null;
+
+        if (session.forkHistory) {
+            const threadParams = buildThreadStartParams({
+                cwd: session.path,
+                mode: buildInitialMode(),
+                mcpServers,
+                cliOverrides: session.codexCliOverrides
+            });
+            // Contract: Codex app-server `thread/resume` accepts an unknown threadId together with a
+            // `history` array and creates a fresh thread seeded with that history. The synthetic id
+            // here is required so we can later disambiguate this thread from the source. If a future
+            // app-server release rejects unknown ids, this is the call that breaks first.
+            const historicalThreadId = `hapi-fork-${randomUUID()}`;
+            let resumeResponse: unknown;
+            try {
+                resumeResponse = await appServerClient.resumeThread({
+                    threadId: historicalThreadId,
+                    history: session.forkHistory,
+                    ...threadParams
+                }, {
+                    signal: this.abortController.signal
+                });
+            } catch (error) {
+                const detail = error instanceof Error ? error.message : String(error);
+                throw new Error(`Codex historical fork failed: app-server rejected thread/resume(history): ${detail}`);
+            }
+            const resumeRecord = asRecord(resumeResponse);
+            const resumeThread = resumeRecord ? asRecord(resumeRecord.thread) : null;
+            const resumedThreadId = asString(resumeThread?.id);
+            if (!resumedThreadId) {
+                throw new Error('Codex historical fork failed: app-server thread/resume(history) did not return thread.id');
+            }
+            this.currentThreadId = resumedThreadId;
+            session.onSessionFound(resumedThreadId);
+            hasThread = true;
+            applyResolvedModel(resumeRecord?.model);
+            sendReady();
+        } else if (session.forkSessionId) {
+            let forkResponse: unknown;
+            try {
+                forkResponse = await appServerClient.forkThread(buildThreadForkParams({
+                    threadId: session.forkSessionId,
+                    cwd: session.path,
+                    mode: buildInitialMode(),
+                    mcpServers,
+                    cliOverrides: session.codexCliOverrides
+                }), {
+                    signal: this.abortController.signal
+                });
+            } catch (error) {
+                if (isAbortError(error)) {
+                    throw error;
+                }
+                const detail = error instanceof Error ? error.message : String(error);
+                throw new Error(`Codex fork failed: app-server rejected thread/fork: ${detail}`);
+            }
+            const forkRecord = asRecord(forkResponse);
+            const forkThread = forkRecord ? asRecord(forkRecord.thread) : null;
+            const forkedThreadId = asString(forkThread?.id);
+            if (!forkedThreadId) {
+                throw new Error('Codex fork failed: app-server thread/fork did not return thread.id');
+            }
+            this.currentThreadId = forkedThreadId;
+            session.onSessionFound(forkedThreadId);
+            hasThread = true;
+            applyResolvedModel(forkRecord?.model);
+            sendReady();
+        }
 
         clearReadyAfterTurnTimer = () => {
             if (!readyAfterTurnTimer) {
@@ -788,12 +947,42 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                         cliOverrides: session.codexCliOverrides
                     });
 
+                    const forkCandidate = session.forkSessionId;
                     const resumeCandidate = session.sessionId && session.sessionId !== invalidThreadId
                         ? session.sessionId
                         : null;
                     let threadId: string | null = null;
 
-                    if (resumeCandidate) {
+                    if (forkCandidate) {
+                        try {
+                            const forkResponse = await appServerClient.forkThread(buildThreadForkParams({
+                                threadId: forkCandidate,
+                                cwd: session.path,
+                                mode: message.mode,
+                                mcpServers,
+                                cliOverrides: session.codexCliOverrides
+                            }), {
+                                signal: this.abortController.signal
+                            });
+                            const forkRecord = asRecord(forkResponse);
+                            const forkThread = forkRecord ? asRecord(forkRecord.thread) : null;
+                            threadId = asString(forkThread?.id);
+                            applyResolvedModel(forkRecord?.model);
+                            logger.debug(`[Codex] Forked app-server thread ${forkCandidate} -> ${threadId ?? 'unknown'}`);
+                        } catch (error) {
+                            // Surface the fork failure to the user. Falling back silently to startThread
+                            // would lose the source thread's context without any indication.
+                            if (isAbortError(error)) {
+                                throw error;
+                            }
+                            const detail = error instanceof Error ? error.message : String(error);
+                            const message = `Fork failed (${forkCandidate}): ${detail}`;
+                            logger.warn(`[Codex] ${message}`);
+                            messageBuffer.addMessage(message, 'status');
+                            session.sendSessionEvent({ type: 'message', message });
+                            throw error;
+                        }
+                    } else if (resumeCandidate) {
                         try {
                             const resumeResponse = await appServerClient.resumeThread({
                                 threadId: resumeCandidate,
@@ -850,6 +1039,17 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     },
                     cliOverrides: session.codexCliOverrides
                 });
+                const messageSeq = message.messageSeqs.length === 1 ? message.messageSeqs[0] : null;
+                if (typeof messageSeq === 'number' && this.currentThreadId) {
+                    const itemId = `hapi-user-${messageSeq}`;
+                    recordHistoryItem({
+                        threadId: this.currentThreadId,
+                        itemId,
+                        itemKind: 'user',
+                        messageSeq,
+                        rawItem: buildUserHistoryItem(itemId, message.message)
+                    });
+                }
                 turnInFlight = true;
                 allowAnonymousTerminalEvent = false;
                 const turnResponse = await appServerClient.startTurn(turnParams, {
@@ -867,12 +1067,12 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 }
             } catch (error) {
                 logger.warn('Error in codex session:', error);
-                const isAbortError = error instanceof Error && error.name === 'AbortError';
+                const aborted = isAbortError(error);
                 turnInFlight = false;
                 allowAnonymousTerminalEvent = false;
                 this.currentTurnId = null;
 
-                if (isAbortError) {
+                if (aborted) {
                     messageBuffer.addMessage('Aborted by user', 'status');
                     session.sendSessionEvent({ type: 'message', message: 'Aborted by user' });
                 } else {

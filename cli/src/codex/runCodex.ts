@@ -13,7 +13,7 @@ import { isPermissionModeAllowedForFlavor } from '@hapi/protocol';
 import { CodexCollaborationModeSchema, PermissionModeSchema } from '@hapi/protocol/schemas';
 import { formatMessageWithAttachments } from '@/utils/attachmentFormatter';
 import { getInvokedCwd } from '@/utils/invokedCwd';
-import type { ReasoningEffort } from './appServerTypes';
+import type { ReasoningEffort, ResponseItem } from './appServerTypes';
 import { parseCodexSpecialCommand } from './codexSpecialCommands';
 import { listSlashCommands } from '@/modules/common/slashCommands';
 import { resolveCodexSlashCommand } from './utils/slashCommands';
@@ -27,6 +27,8 @@ export async function runCodex(opts: {
     codexArgs?: string[];
     permissionMode?: PermissionMode;
     resumeSessionId?: string;
+    forkSessionId?: string;
+    forkHistory?: ResponseItem[];
     model?: string;
     modelReasoningEffort?: ReasoningEffort;
 }): Promise<void> {
@@ -135,8 +137,10 @@ export async function runCodex(opts: {
     };
 
     let userMessageChain: Promise<void> = Promise.resolve();
-    session.onUserMessage((message, localId) => {
+    session.onUserMessage((message, meta) => {
         userMessageChain = userMessageChain.then(async () => {
+            const localId = meta.localId
+            const messageSeq = meta.seq ?? null
             try {
                 syncCurrentConfigFromSession();
                 let text = message.content.text;
@@ -186,10 +190,13 @@ export async function runCodex(opts: {
                     collaborationMode: currentCollaborationMode
                 };
                 if (isolatedCommandText) {
-                    messageQueue.pushIsolateAndClear(isolatedCommandText, enhancedMode, localId);
+                    messageQueue.pushIsolateAndClear(isolatedCommandText, enhancedMode, localId, messageSeq);
                     return;
                 }
-                messageQueue.push(text, enhancedMode, localId);
+                // Each user message starts its own turn so messageSeq → raw-history item is 1:1.
+                // Batching multiple messages into one turn would emit a single user item upstream
+                // and break historical-fork prefix reconstruction.
+                messageQueue.pushIsolated(text, enhancedMode, localId, messageSeq);
             } catch (error) {
                 logger.debug('[Codex] Failed to handle user message', error);
                 const enhancedMode: EnhancedMode = {
@@ -198,7 +205,7 @@ export async function runCodex(opts: {
                     modelReasoningEffort: currentModelReasoningEffort,
                     collaborationMode: currentCollaborationMode
                 };
-                messageQueue.push(formatMessageWithAttachments(message.content.text, message.content.attachments), enhancedMode, localId);
+                messageQueue.pushIsolated(formatMessageWithAttachments(message.content.text, message.content.attachments), enhancedMode, localId, messageSeq);
             }
         }).catch((error) => {
             logger.debug('[Codex] User message handler chain failed', error);
@@ -312,6 +319,8 @@ export async function runCodex(opts: {
             modelReasoningEffort: currentModelReasoningEffort,
             collaborationMode: currentCollaborationMode,
             resumeSessionId: opts.resumeSessionId,
+            forkSessionId: opts.forkSessionId,
+            forkHistory: opts.forkHistory,
             onModeChange: createModeChangeHandler(session),
             onSessionReady: (instance) => {
                 sessionWrapperRef.current = instance;

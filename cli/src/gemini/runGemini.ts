@@ -119,7 +119,8 @@ export async function runGemini(opts: {
         logger.debug(`[gemini] Synced session config for keepalive: permissionMode=${currentPermissionMode}, model=${resolvedModel}`);
     };
 
-    session.onUserMessage((message, localId) => {
+    session.onUserMessage((message, meta) => {
+        const localId = meta.localId
         const formattedText = formatMessageWithAttachments(message.content.text, message.content.attachments);
         const mode: GeminiMode = {
             permissionMode: currentPermissionMode,

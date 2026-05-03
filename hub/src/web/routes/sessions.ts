@@ -141,6 +141,49 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         return c.json({ type: 'success', sessionId: result.sessionId })
     })
 
+    app.post('/sessions/:id/fork', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        let beforeSeq: number | undefined
+        const contentType = c.req.header('content-type') ?? ''
+        if (contentType.includes('application/json')) {
+            const body = await c.req.json().catch(() => null) as { beforeSeq?: unknown } | null
+            if (body && body.beforeSeq !== undefined) {
+                if (typeof body.beforeSeq !== 'number' || !Number.isInteger(body.beforeSeq) || body.beforeSeq <= 0) {
+                    return c.json({ error: 'beforeSeq must be a positive integer', code: 'fork_unavailable' }, 400)
+                }
+                beforeSeq = body.beforeSeq
+            }
+        }
+
+        const namespace = c.get('namespace')
+        const result = await engine.forkSession(
+            sessionResult.sessionId,
+            namespace,
+            beforeSeq !== undefined ? { beforeSeq } : undefined
+        )
+        if (result.type === 'error') {
+            const status = result.code === 'no_machine_online' ? 503
+                : result.code === 'access_denied' ? 403
+                    : result.code === 'session_not_found' ? 404
+                        : result.code === 'fork_unavailable' ? 409
+                            : 500
+            return c.json({ error: result.message, code: result.code }, status)
+        }
+
+        return c.json(result.warnings && result.warnings.length > 0
+            ? { type: 'success', sessionId: result.sessionId, warnings: result.warnings }
+            : { type: 'success', sessionId: result.sessionId })
+    })
+
     app.post('/sessions/:id/upload', async (c) => {
         const engine = requireSyncEngine(c, getSyncEngine)
         if (engine instanceof Response) {

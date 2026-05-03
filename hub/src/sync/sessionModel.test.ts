@@ -473,6 +473,7 @@ describe('session model', () => {
                 _sessionType?: string,
                 _worktreeName?: string,
                 _resumeSessionId?: string,
+                _forkSessionId?: string,
                 effort?: string
             ) => {
                 capturedModel = model
@@ -589,7 +590,8 @@ describe('session model', () => {
                 _yolo?: boolean,
                 _sessionType?: 'simple' | 'worktree',
                 _worktreeName?: string,
-                resumeSessionId?: string
+                resumeSessionId?: string,
+                _forkSessionId?: string
             ) => {
                 capturedResumeSessionId = resumeSessionId
                 return { type: 'success', sessionId: session.id }
@@ -654,6 +656,7 @@ describe('session model', () => {
                 _sessionType?: string,
                 _worktreeName?: string,
                 _resumeSessionId?: string,
+                _forkSessionId?: string,
                 _effort?: string,
                 permissionMode?: string
             ) => {
@@ -666,6 +669,369 @@ describe('session model', () => {
 
             expect(result).toEqual({ type: 'success', sessionId: session.id })
             expect(capturedPermissionMode).toBe('bypassPermissions')
+        } finally {
+            engine.stop()
+        }
+    })
+
+    it('passes fork session ID to rpc gateway when forking codex session', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            const session = engine.getOrCreateSession(
+                'session-codex-fork',
+                {
+                    path: '/tmp/project',
+                    host: 'localhost',
+                    machineId: 'machine-1',
+                    flavor: 'codex',
+                    codexSessionId: 'codex-thread-1'
+                },
+                null,
+                'default',
+                'gpt-5.4',
+                undefined,
+                'xhigh'
+            )
+            engine.getOrCreateMachine(
+                'machine-1',
+                { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
+                null,
+                'default'
+            )
+            engine.handleMachineAlive({ machineId: 'machine-1', time: Date.now() })
+
+            let capturedForkSessionId: string | undefined
+            let capturedModel: string | undefined
+            let capturedModelReasoningEffort: string | undefined
+            ;(engine as any).rpcGateway.spawnSession = async (
+                _machineId: string,
+                _directory: string,
+                _agent: string,
+                model?: string,
+                modelReasoningEffort?: string,
+                _yolo?: boolean,
+                _sessionType?: 'simple' | 'worktree',
+                _worktreeName?: string,
+                _resumeSessionId?: string,
+                forkSessionId?: string
+            ) => {
+                capturedModel = model
+                capturedModelReasoningEffort = modelReasoningEffort
+                capturedForkSessionId = forkSessionId
+                const forkedSession = engine.getOrCreateSession(
+                    'forked-session',
+                    {
+                        path: '/tmp/project',
+                        host: 'localhost',
+                        machineId: 'machine-1',
+                        flavor: 'codex',
+                        codexSessionId: 'codex-thread-2'
+                    },
+                    null,
+                    'default',
+                    model
+                )
+                return { type: 'success', sessionId: forkedSession.id }
+            }
+            ;(engine as any).waitForSessionActive = async () => true
+
+            const result = await engine.forkSession(session.id, 'default')
+
+            expect(result.type).toBe('success')
+            expect(capturedForkSessionId).toBe('codex-thread-1')
+            expect(capturedModel).toBe('gpt-5.4')
+            expect(capturedModelReasoningEffort).toBe('xhigh')
+        } finally {
+            engine.stop()
+        }
+    })
+
+    it('passes raw history through the selected user reply for historical codex fork', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            const session = engine.getOrCreateSession(
+                'session-codex-history-fork',
+                {
+                    path: '/tmp/project',
+                    host: 'localhost',
+                    machineId: 'machine-1',
+                    flavor: 'codex',
+                    codexSessionId: 'codex-thread-1'
+                },
+                null,
+                'default',
+                'gpt-5.4'
+            )
+            engine.getOrCreateMachine(
+                'machine-1',
+                { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
+                null,
+                'default'
+            )
+            engine.handleMachineAlive({ machineId: 'machine-1', time: Date.now() })
+
+            store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'first' } })
+            store.messages.addMessage(session.id, { role: 'assistant', content: { type: 'text', text: 'answer' } })
+            store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'second' } })
+            store.messages.addMessage(session.id, { role: 'assistant', content: { type: 'text', text: 'second answer' } })
+            store.codexHistory.addItem({
+                sessionId: session.id,
+                codexThreadId: 'codex-thread-1',
+                itemId: 'user-1',
+                itemKind: 'user',
+                messageSeq: 1,
+                rawItem: { id: 'user-1', role: 'user' }
+            })
+            store.codexHistory.addItem({
+                sessionId: session.id,
+                codexThreadId: 'codex-thread-1',
+                itemId: 'assistant-1',
+                itemKind: 'assistant',
+                rawItem: { id: 'assistant-1', role: 'assistant' }
+            })
+            store.codexHistory.addItem({
+                sessionId: session.id,
+                codexThreadId: 'codex-thread-1',
+                itemId: 'user-3',
+                itemKind: 'user',
+                messageSeq: 3,
+                rawItem: { id: 'user-3', role: 'user' }
+            })
+            store.codexHistory.addItem({
+                sessionId: session.id,
+                codexThreadId: 'codex-thread-1',
+                itemId: 'assistant-3',
+                itemKind: 'assistant',
+                rawItem: { id: 'assistant-3', role: 'assistant' }
+            })
+
+            let capturedForkSessionId: string | undefined
+            let capturedForkHistory: unknown[] | undefined
+            let spawnCount = 0
+            let forkedSessionId = ''
+            ;(engine as any).rpcGateway.spawnSession = async (
+                _machineId: string,
+                _directory: string,
+                _agent: string,
+                _model?: string,
+                _modelReasoningEffort?: string,
+                _yolo?: boolean,
+                _sessionType?: 'simple' | 'worktree',
+                _worktreeName?: string,
+                _resumeSessionId?: string,
+                forkSessionId?: string,
+                _effort?: string,
+                _permissionMode?: string,
+                forkHistory?: unknown[]
+            ) => {
+                capturedForkSessionId = forkSessionId
+                capturedForkHistory = forkHistory
+                spawnCount += 1
+                const forkedSession = engine.getOrCreateSession(
+                    `forked-session-history-point-${spawnCount}`,
+                    {
+                        path: '/tmp/project',
+                        host: 'localhost',
+                        machineId: 'machine-1',
+                        flavor: 'codex',
+                        codexSessionId: `codex-thread-fork-${spawnCount}`
+                    },
+                    null,
+                    'default'
+                )
+                forkedSessionId = forkedSession.id
+                return { type: 'success', sessionId: forkedSessionId }
+            }
+            ;(engine as any).waitForSessionActive = async () => true
+
+            const result = await engine.forkSession(session.id, 'default', { beforeSeq: 2 })
+
+            expect(result).toEqual({ type: 'success', sessionId: forkedSessionId })
+            expect(capturedForkSessionId).toBeUndefined()
+            expect(capturedForkHistory as unknown).toEqual([
+                { id: 'user-1', role: 'user' },
+                { id: 'assistant-1', role: 'assistant' }
+            ])
+            expect(store.messages.getMessages(forkedSessionId, 10).map((message) => message.content)).toEqual([
+                { role: 'user', content: { type: 'text', text: 'first' } },
+                { role: 'assistant', content: { type: 'text', text: 'answer' } }
+            ])
+
+            const firstForkedSessionId = forkedSessionId
+            capturedForkSessionId = undefined
+            capturedForkHistory = undefined
+
+            const chainedResult = await engine.forkSession(firstForkedSessionId, 'default', { beforeSeq: 2 })
+
+            expect(chainedResult).toEqual({ type: 'success', sessionId: forkedSessionId })
+            expect(forkedSessionId).not.toBe(firstForkedSessionId)
+            expect(capturedForkSessionId).toBeUndefined()
+            expect(capturedForkHistory as unknown).toEqual([
+                { id: 'user-1', role: 'user' },
+                { id: 'assistant-1', role: 'assistant' }
+            ])
+        } finally {
+            engine.stop()
+        }
+    })
+
+    it('forks before a selected user message by using the previous completed turn', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            const session = engine.getOrCreateSession(
+                'session-codex-history-fork-before-user',
+                {
+                    path: '/tmp/project',
+                    host: 'localhost',
+                    machineId: 'machine-1',
+                    flavor: 'codex',
+                    codexSessionId: 'codex-thread-1'
+                },
+                null,
+                'default'
+            )
+            engine.getOrCreateMachine(
+                'machine-1',
+                { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
+                null,
+                'default'
+            )
+            engine.handleMachineAlive({ machineId: 'machine-1', time: Date.now() })
+
+            store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'first' } })
+            store.messages.addMessage(session.id, { role: 'assistant', content: { type: 'text', text: 'answer' } })
+            store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'second' } })
+            store.codexHistory.addItem({
+                sessionId: session.id,
+                codexThreadId: 'codex-thread-1',
+                itemId: 'user-1',
+                itemKind: 'user',
+                messageSeq: 1,
+                rawItem: { id: 'user-1', role: 'user' }
+            })
+            store.codexHistory.addItem({
+                sessionId: session.id,
+                codexThreadId: 'codex-thread-1',
+                itemId: 'assistant-1',
+                itemKind: 'assistant',
+                rawItem: { id: 'assistant-1', role: 'assistant' }
+            })
+            store.codexHistory.addItem({
+                sessionId: session.id,
+                codexThreadId: 'codex-thread-1',
+                itemId: 'user-2',
+                itemKind: 'user',
+                messageSeq: 3,
+                rawItem: { id: 'user-2', role: 'user' }
+            })
+
+            let capturedForkHistory: unknown[] | undefined
+            let forkedSessionId = ''
+            ;(engine as any).rpcGateway.spawnSession = async (
+                _machineId: string,
+                _directory: string,
+                _agent: string,
+                _model?: string,
+                _modelReasoningEffort?: string,
+                _yolo?: boolean,
+                _sessionType?: 'simple' | 'worktree',
+                _worktreeName?: string,
+                _resumeSessionId?: string,
+                _forkSessionId?: string,
+                _effort?: string,
+                _permissionMode?: string,
+                forkHistory?: unknown[]
+            ) => {
+                capturedForkHistory = forkHistory
+                const forkedSession = engine.getOrCreateSession(
+                    'forked-session-before-user',
+                    {
+                        path: '/tmp/project',
+                        host: 'localhost',
+                        machineId: 'machine-1',
+                        flavor: 'codex',
+                        codexSessionId: 'codex-thread-2'
+                    },
+                    null,
+                    'default'
+                )
+                forkedSessionId = forkedSession.id
+                return { type: 'success', sessionId: forkedSessionId }
+            }
+            ;(engine as any).waitForSessionActive = async () => true
+
+            const result = await engine.forkSession(session.id, 'default', { beforeSeq: 3 })
+
+            expect(result).toEqual({ type: 'success', sessionId: forkedSessionId })
+            expect(capturedForkHistory).toEqual([
+                { id: 'user-1', role: 'user' },
+                { id: 'assistant-1', role: 'assistant' }
+            ])
+            expect(store.messages.getMessages(forkedSessionId, 10).map((message) => message.content)).toEqual([
+                { role: 'user', content: { type: 'text', text: 'first' } },
+                { role: 'assistant', content: { type: 'text', text: 'answer' } }
+            ])
+        } finally {
+            engine.stop()
+        }
+    })
+
+    it('rejects historical fork for non-user cut points or sessions without raw history', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            const session = engine.getOrCreateSession(
+                'session-codex-history-fork-unavailable',
+                {
+                    path: '/tmp/project',
+                    host: 'localhost',
+                    machineId: 'machine-1',
+                    flavor: 'codex',
+                    codexSessionId: 'codex-thread-1'
+                },
+                null,
+                'default'
+            )
+            store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'first' } })
+            store.messages.addMessage(session.id, { role: 'assistant', content: { type: 'text', text: 'answer' } })
+
+            expect(await engine.forkSession(session.id, 'default', { beforeSeq: 2 })).toMatchObject({
+                type: 'error',
+                code: 'fork_unavailable',
+                message: 'Historical fork is only supported for sessions started with the new Codex history pipeline'
+            })
+            expect(await engine.forkSession(session.id, 'default', { beforeSeq: 1 })).toMatchObject({
+                type: 'error',
+                code: 'fork_unavailable',
+                message: 'No earlier history to fork from'
+            })
         } finally {
             engine.stop()
         }
@@ -684,8 +1050,23 @@ describe('session model', () => {
                 'default'
             )
 
-            // Add a message to s1
-            store.messages.addMessage(s1.id, { type: 'text', text: 'hello from s1' }, 'local-1')
+            store.messages.addMessage(s1.id, { role: 'user', content: { type: 'text', text: 'hello from s1' } })
+            store.messages.addMessage(s1.id, { role: 'assistant', content: { type: 'text', text: 'answer from s1' } })
+            store.codexHistory.addItem({
+                sessionId: s1.id,
+                codexThreadId: 'thread-X',
+                itemId: 'user-1',
+                itemKind: 'user',
+                messageSeq: 1,
+                rawItem: { id: 'user-1', role: 'user' }
+            })
+            store.codexHistory.addItem({
+                sessionId: s1.id,
+                codexThreadId: 'thread-X',
+                itemId: 'assistant-1',
+                itemKind: 'assistant',
+                rawItem: { id: 'assistant-1', role: 'assistant' }
+            })
 
             const s2 = cache.getOrCreateSession(
                 'tag-2',
@@ -693,6 +1074,15 @@ describe('session model', () => {
                 null,
                 'default'
             )
+            store.messages.addMessage(s2.id, { role: 'user', content: { type: 'text', text: 'hello from s2' } })
+            store.codexHistory.addItem({
+                sessionId: s2.id,
+                codexThreadId: 'thread-X',
+                itemId: 'user-1',
+                itemKind: 'user',
+                messageSeq: 1,
+                rawItem: { id: 'target-user-1', role: 'user' }
+            })
 
             expect(s1.id).not.toBe(s2.id)
 
@@ -703,6 +1093,15 @@ describe('session model', () => {
 
             const messages = store.messages.getMessages(s2.id, 100)
             expect(messages.length).toBeGreaterThanOrEqual(1)
+            expect(store.codexHistory.getPrefixThroughReplyForUserMessageSeq(s2.id, 1)).toEqual([
+                { id: 'user-1', role: 'user' },
+                { id: 'assistant-1', role: 'assistant' }
+            ])
+            expect(store.codexHistory.getPrefixThroughReplyForUserMessageSeq(s2.id, 3)).toEqual([
+                { id: 'user-1', role: 'user' },
+                { id: 'assistant-1', role: 'assistant' },
+                { id: 'target-user-1', role: 'user' }
+            ])
         })
 
         it('preserves sessions with different agent session IDs', async () => {
@@ -1002,5 +1401,215 @@ describe('session model', () => {
             // completedRequests has req-1
             expect(state.completedRequests?.['req-1']).toBeDefined()
         })
+    })
+
+    it('clones existing messages into the forked session', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            const session = engine.getOrCreateSession(
+                'session-codex-fork-history',
+                {
+                    path: '/tmp/project',
+                    host: 'localhost',
+                    machineId: 'machine-1',
+                    flavor: 'codex',
+                    codexSessionId: 'codex-thread-1'
+                },
+                null,
+                'default',
+                'gpt-5.4'
+            )
+            engine.getOrCreateMachine(
+                'machine-1',
+                { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
+                null,
+                'default'
+            )
+            engine.handleMachineAlive({ machineId: 'machine-1', time: Date.now() })
+
+            store.messages.addMessage(session.id, {
+                role: 'user',
+                content: { type: 'text', text: 'old user message' }
+            })
+            store.messages.addMessage(session.id, {
+                role: 'assistant',
+                content: { type: 'text', text: 'old assistant message' }
+            })
+
+            let forkedSessionId = ''
+            ;(engine as any).rpcGateway.spawnSession = async () => {
+                const forkedSession = engine.getOrCreateSession(
+                    'forked-session-history',
+                    {
+                        path: '/tmp/project',
+                        host: 'localhost',
+                        machineId: 'machine-1',
+                        flavor: 'codex',
+                        codexSessionId: 'codex-thread-2'
+                    },
+                    null,
+                    'default',
+                    'gpt-5.4'
+                )
+                forkedSessionId = forkedSession.id
+                return { type: 'success', sessionId: forkedSessionId }
+            }
+            ;(engine as any).waitForSessionActive = async () => true
+
+            const result = await engine.forkSession(session.id, 'default')
+
+            expect(result).toEqual({ type: 'success', sessionId: forkedSessionId })
+            expect(store.messages.getMessages(forkedSessionId, 10).map((message) => message.content)).toEqual([
+                { role: 'user', content: { type: 'text', text: 'old user message' } },
+                { role: 'assistant', content: { type: 'text', text: 'old assistant message' } }
+            ])
+            expect(store.messages.getMessages(session.id, 10).map((message) => message.content)).toEqual([
+                { role: 'user', content: { type: 'text', text: 'old user message' } },
+                { role: 'assistant', content: { type: 'text', text: 'old assistant message' } }
+            ])
+        } finally {
+            engine.stop()
+        }
+    })
+
+    it('preserves custom session title when forking', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            const session = engine.getOrCreateSession(
+                'session-codex-fork-title',
+                {
+                    path: '/tmp/project',
+                    host: 'localhost',
+                    machineId: 'machine-1',
+                    flavor: 'codex',
+                    codexSessionId: 'codex-thread-1',
+                    name: '我的自定义标题'
+                },
+                null,
+                'default',
+                'gpt-5.4'
+            )
+            engine.getOrCreateMachine(
+                'machine-1',
+                { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
+                null,
+                'default'
+            )
+            engine.handleMachineAlive({ machineId: 'machine-1', time: Date.now() })
+
+            let forkedSessionId = ''
+            ;(engine as any).rpcGateway.spawnSession = async () => {
+                const forkedSession = engine.getOrCreateSession(
+                    'forked-session-title',
+                    {
+                        path: '/tmp/project',
+                        host: 'localhost',
+                        machineId: 'machine-1',
+                        flavor: 'codex',
+                        codexSessionId: 'codex-thread-2'
+                    },
+                    null,
+                    'default',
+                    'gpt-5.4'
+                )
+                forkedSessionId = forkedSession.id
+                return { type: 'success', sessionId: forkedSessionId }
+            }
+            ;(engine as any).waitForSessionActive = async () => true
+
+            const result = await engine.forkSession(session.id, 'default')
+
+            expect(result).toEqual({ type: 'success', sessionId: forkedSessionId })
+            expect(engine.getSession(forkedSessionId)?.metadata?.name).toBe('我的自定义标题')
+            expect(store.sessions.getSession(forkedSessionId)?.metadata).toMatchObject({
+                name: '我的自定义标题'
+            })
+        } finally {
+            engine.stop()
+        }
+    })
+
+    it('preserves summary title when forking', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            const session = engine.getOrCreateSession(
+                'session-codex-fork-summary',
+                {
+                    path: '/tmp/project',
+                    host: 'localhost',
+                    machineId: 'machine-1',
+                    flavor: 'codex',
+                    codexSessionId: 'codex-thread-1',
+                    summary: {
+                        text: '自动标题',
+                        updatedAt: 123456
+                    }
+                },
+                null,
+                'default',
+                'gpt-5.4'
+            )
+            engine.getOrCreateMachine(
+                'machine-1',
+                { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
+                null,
+                'default'
+            )
+            engine.handleMachineAlive({ machineId: 'machine-1', time: Date.now() })
+
+            let forkedSessionId = ''
+            ;(engine as any).rpcGateway.spawnSession = async () => {
+                const forkedSession = engine.getOrCreateSession(
+                    'forked-session-summary',
+                    {
+                        path: '/tmp/project',
+                        host: 'localhost',
+                        machineId: 'machine-1',
+                        flavor: 'codex',
+                        codexSessionId: 'codex-thread-2'
+                    },
+                    null,
+                    'default',
+                    'gpt-5.4'
+                )
+                forkedSessionId = forkedSession.id
+                return { type: 'success', sessionId: forkedSessionId }
+            }
+            ;(engine as any).waitForSessionActive = async () => true
+
+            const result = await engine.forkSession(session.id, 'default')
+
+            expect(result).toEqual({ type: 'success', sessionId: forkedSessionId })
+            expect(engine.getSession(forkedSessionId)?.metadata?.summary?.text).toBe('自动标题')
+            expect(store.sessions.getSession(forkedSessionId)?.metadata).toMatchObject({
+                summary: {
+                    text: '自动标题',
+                    updatedAt: 123456
+                }
+            })
+        } finally {
+            engine.stop()
+        }
     })
 })

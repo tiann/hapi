@@ -3,8 +3,9 @@ import { MessagePrimitive, useAssistantState } from '@assistant-ui/react'
 import { MarkdownText } from '@/components/assistant-ui/markdown-text'
 import { Reasoning, ReasoningGroup } from '@/components/assistant-ui/reasoning'
 import { HappyToolMessage } from '@/components/AssistantChat/messages/ToolMessage'
+import { useHappyChatContext } from '@/components/AssistantChat/context'
 import { CliOutputBlock } from '@/components/CliOutputBlock'
-import { CopyIcon, CheckIcon } from '@/components/icons'
+import { CopyIcon, CheckIcon, ForkIcon } from '@/components/icons'
 import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
 import type { HappyChatMessageMetadata } from '@/lib/assistant-runtime'
 import { getAssistantCopyText } from '@/components/AssistantChat/messages/assistantCopyText'
@@ -24,6 +25,7 @@ const MESSAGE_PART_COMPONENTS = {
 } as const
 
 export function HappyAssistantMessage() {
+    const ctx = useHappyChatContext()
     const { copied, copy } = useCopyToClipboard()
     const [showMetadata, setShowMetadata] = useState(false)
     const toggleMetadata = useCallback((event: MouseEvent<HTMLElement>) => {
@@ -49,16 +51,21 @@ export function HappyAssistantMessage() {
         if (message.role !== 'assistant') return ''
         return getAssistantCopyText(message.content)
     })
-
     const invokedAt = useAssistantState(({ message }) => (message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined)?.invokedAt)
     const durationMs = useAssistantState(({ message }) => (message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined)?.durationMs)
     const usage = useAssistantState(({ message }) => (message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined)?.usage)
     const messageModel = useAssistantState(({ message }) => (message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined)?.model)
+    const seq = useAssistantState(({ message }) => {
+        if (message.role !== 'assistant') return null
+        const custom = message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
+        return custom?.kind === 'assistant' && typeof custom.seq === 'number' ? custom.seq : null
+    })
 
     const hasMetadata = invokedAt != null
         || (typeof durationMs === 'number' && durationMs >= 0)
         || usage != null
         || (messageModel != null && messageModel !== '')
+    const canFork = typeof seq === 'number' && Boolean(ctx.onForkBeforeMessage)
 
     const onMetadataKeyDown = useCallback((event: KeyboardEvent<HTMLDivElement>) => {
         if (isNestedInteractiveEvent(event)) return
@@ -105,7 +112,7 @@ export function HappyAssistantMessage() {
     return (
         <MessagePrimitive.Root
             id={getConversationMessageAnchorId(messageId)}
-            className={`${rootClass} ${copyText ? 'group/msg' : ''} scroll-mt-4`}
+            className={`${rootClass} ${(copyText || canFork) ? 'group/msg' : ''} scroll-mt-4`}
         >
             <div
                 className={hasMetadata ? 'min-w-0 cursor-pointer' : 'min-w-0'}
@@ -126,18 +133,31 @@ export function HappyAssistantMessage() {
                     className="mt-1"
                 />
             )}
-            {copyText && (
-                <div className="hidden sm:flex justify-end mt-1 opacity-0 group-hover/msg:opacity-100 transition-opacity">
-                    <button
-                        type="button"
-                        title="Copy"
-                        className="p-0.5 rounded hover:bg-[var(--app-subtle-bg)] transition-colors"
-                        onClick={() => copy(copyText)}
-                    >
-                        {copied
-                            ? <CheckIcon className="h-3.5 w-3.5 text-green-500" />
-                            : <CopyIcon className="h-3.5 w-3.5 text-[var(--app-hint)]" />}
-                    </button>
+            {(copyText || canFork) && (
+                <div className="flex justify-end gap-1 mt-2 opacity-80 group-hover/msg:opacity-100 transition-opacity">
+                    {copyText && (
+                        <button
+                            type="button"
+                            title="Copy"
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-md hover:bg-[var(--app-subtle-bg)] active:bg-[var(--app-subtle-bg)] transition-colors"
+                            onClick={() => copy(copyText)}
+                        >
+                            {copied
+                                ? <CheckIcon className="h-4 w-4 text-green-500" />
+                                : <CopyIcon className="h-4 w-4 text-[var(--app-hint)]" />}
+                        </button>
+                    )}
+                    {canFork && (
+                        <button
+                            type="button"
+                            title="Fork from this response"
+                            aria-label="Fork from this response"
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-md hover:bg-[var(--app-subtle-bg)] active:bg-[var(--app-subtle-bg)] transition-colors"
+                            onClick={() => ctx.onForkBeforeMessage!(seq)}
+                        >
+                            <ForkIcon className="h-4 w-4 text-[var(--app-hint)]" />
+                        </button>
+                    )}
                 </div>
             )}
         </MessagePrimitive.Root>

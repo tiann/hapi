@@ -52,6 +52,7 @@ function createSession(overrides?: Partial<Session>): Session {
 
 function createApp(session: Session, opts?: {
     resumeSession?: (sessionId: string, namespace: string, resumeOpts?: { permissionMode?: string }) => Promise<{ type: string; sessionId?: string; message?: string; code?: string }>
+    forkSession?: (sessionId: string, namespace: string, forkOpts?: { beforeSeq?: number }) => Promise<{ type: string; sessionId?: string; message?: string; code?: string }>
 }) {
     const applySessionConfigCalls: Array<[string, Record<string, unknown>]> = []
     const applySessionConfig = async (sessionId: string, config: Record<string, unknown>) => {
@@ -72,12 +73,14 @@ function createApp(session: Session, opts?: {
         currentModelId: 'ollama/exaone:4.5-33b-q8'
     })
     const resumeSession = opts?.resumeSession ?? (async (sessionId: string) => ({ type: 'success', sessionId }))
+    const forkSession = opts?.forkSession ?? (async (sessionId: string) => ({ type: 'success', sessionId }))
     const engine = {
         resolveSessionAccess: () => ({ ok: true, sessionId: session.id, session }),
         applySessionConfig,
         listCodexModelsForSession,
         listOpencodeModelsForSession,
-        resumeSession
+        resumeSession,
+        forkSession
     } as Partial<SyncEngine>
 
     const app = new Hono<WebAppEnv>()
@@ -91,6 +94,26 @@ function createApp(session: Session, opts?: {
 }
 
 describe('sessions routes', () => {
+    it('returns conflict when fork is unavailable', async () => {
+        const { app } = createApp(createSession(), {
+            forkSession: async () => ({
+                type: 'error',
+                message: 'Fork is only supported for Codex sessions',
+                code: 'fork_unavailable'
+            })
+        })
+
+        const response = await app.request('/api/sessions/session-1/fork', {
+            method: 'POST'
+        })
+
+        expect(response.status).toBe(409)
+        expect(await response.json()).toEqual({
+            error: 'Fork is only supported for Codex sessions',
+            code: 'fork_unavailable'
+        })
+    })
+
     it('rejects collaboration mode changes for local Codex sessions', async () => {
         const session = createSession({
             agentState: {

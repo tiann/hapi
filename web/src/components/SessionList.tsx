@@ -10,6 +10,7 @@ import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { CopyIcon, CheckIcon } from '@/components/icons'
 import { cn } from '@/lib/utils'
 import { useTranslation } from '@/lib/use-translation'
+import { useForkWithFeedback } from '@/hooks/mutations/useForkWithFeedback'
 
 type SessionGroup = {
     key: string
@@ -572,11 +573,16 @@ function SessionItem(props: {
     const [archiveOpen, setArchiveOpen] = useState(false)
     const [deleteOpen, setDeleteOpen] = useState(false)
 
-    const { archiveSession, renameSession, deleteSession, isPending } = useSessionActions(
+    const canFork = s.metadata?.flavor === 'codex'
+    const sessionName = getSessionTitle(s)
+
+    const { archiveSession, forkSession, renameSession, deleteSession, isPending } = useSessionActions(
         api,
         s.id,
         s.metadata?.flavor ?? null
     )
+
+    const handleFork = useForkWithFeedback(forkSession, sessionName)
 
     const longPressHandlers = useLongPress({
         onLongPress: (point) => {
@@ -592,7 +598,6 @@ function SessionItem(props: {
         threshold: 500
     })
 
-    const sessionName = getSessionTitle(s)
     const todoProgress = getTodoProgress(s)
     return (
         <>
@@ -641,7 +646,9 @@ function SessionItem(props: {
                 isOpen={menuOpen}
                 onClose={() => setMenuOpen(false)}
                 sessionActive={s.active}
+                canFork={canFork}
                 onRename={() => setRenameOpen(true)}
+                onFork={handleFork}
                 onArchive={() => setArchiveOpen(true)}
                 onDelete={() => setDeleteOpen(true)}
                 anchorPoint={menuAnchorPoint}

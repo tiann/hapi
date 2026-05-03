@@ -135,6 +135,15 @@ export interface ServerToClientEvents {
 
 export interface ClientToServerEvents {
     message: (data: { sid: string; message: unknown; localId?: string }) => void
+    'codex-history-item': (data: {
+        sid: string
+        codexThreadId: string
+        turnId?: string | null
+        itemId: string
+        itemKind: 'user' | 'assistant' | 'tool' | 'event' | 'unknown'
+        messageSeq?: number | null
+        rawItem: unknown
+    }) => void
     'session-alive': (data: {
         sid: string
         time: number

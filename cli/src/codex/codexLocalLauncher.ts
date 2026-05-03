@@ -12,6 +12,7 @@ import { BaseLocalLauncher } from '@/modules/common/launcher/BaseLocalLauncher';
 
 export async function codexLocalLauncher(session: CodexSession): Promise<'switch' | 'exit'> {
     const resumeSessionId = session.sessionId;
+    const forkSessionId = session.forkSessionId;
     let primarySessionId = resumeSessionId;
     let primaryTranscriptPath: string | null = null;
     let scanner: CodexSessionScanner | null = null;
@@ -168,7 +169,8 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
         launch: async (abortSignal) => {
             await codexLocal({
                 path: session.path,
-                sessionId: resumeSessionId,
+                resumeSessionId,
+                forkSessionId,
                 modelReasoningEffort: (session.getModelReasoningEffort() ?? undefined) as ReasoningEffort | undefined,
                 onSessionFound: handleSessionFound,
                 abort: abortSignal,

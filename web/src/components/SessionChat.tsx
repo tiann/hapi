@@ -32,6 +32,7 @@ import { useOpencodeModels } from '@/hooks/queries/useOpencodeModels'
 import { useVoiceOptional } from '@/lib/voice-context'
 import { RealtimeVoiceSession, registerSessionStore, registerVoiceHooksStore, voiceHooks } from '@/realtime'
 import { isRemoteTerminalSupported } from '@/utils/terminalSupport'
+import { useToast } from '@/lib/toast-context'
 
 function getOutlineTitle(session: Session): string {
     if (session.metadata?.name) {
@@ -69,6 +70,7 @@ export function SessionChat(props: {
 }) {
     const { haptic } = usePlatform()
     const { t } = useTranslation()
+    const { addToast } = useToast()
     const navigate = useNavigate()
     const sessionInactive = !props.session.active
     const terminalSupported = isRemoteTerminalSupported(props.session.metadata)
@@ -377,6 +379,36 @@ export function SessionChat(props: {
         setForceScrollToken((token) => token + 1)
     }, [props.onSend])
 
+    const handleForkBeforeMessage = useCallback(async (beforeSeq: number) => {
+        try {
+            const { sessionId: newSessionId, warnings } = await props.api.forkSession(props.session.id, { beforeSeq })
+            haptic.notification('success')
+            addToast({
+                title: t('dialog.fork.successTitle'),
+                body: t('dialog.fork.successDescription', { name: getOutlineTitle(props.session) }),
+                sessionId: newSessionId,
+                url: `/sessions/${newSessionId}`,
+                variant: 'success',
+                actionLabel: t('toast.action.openSession')
+            })
+            if (warnings && warnings.length > 0) {
+                addToast({
+                    title: t('dialog.fork.partialTitle'),
+                    body: warnings.join('; '),
+                    variant: 'error'
+                })
+            }
+        } catch (error) {
+            haptic.notification('error')
+            const message = error instanceof Error ? error.message : t('dialog.fork.failedDescription')
+            addToast({
+                title: t('dialog.fork.failedTitle'),
+                body: message,
+                variant: 'error'
+            })
+        }
+    }, [addToast, haptic, props.api, props.session, t])
+
     const attachmentAdapter = useMemo(() => {
         if (!props.session.active) {
             return undefined
@@ -427,6 +459,7 @@ export function SessionChat(props: {
                         disabled={sessionInactive}
                         onRefresh={props.onRefresh}
                         onRetryMessage={props.onRetryMessage}
+                        onForkBeforeMessage={agentFlavor === 'codex' ? handleForkBeforeMessage : undefined}
                         onFlushPending={props.onFlushPending}
                         onAtBottomChange={props.onAtBottomChange}
                         isLoadingMessages={props.isLoadingMessages}

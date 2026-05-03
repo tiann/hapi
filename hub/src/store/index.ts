@@ -7,6 +7,7 @@ import { MessageStore } from './messageStore'
 import { PushStore } from './pushStore'
 import { SessionStore } from './sessionStore'
 import { UserStore } from './userStore'
+import { CodexHistoryStore } from './codexHistoryStore'
 
 export type {
     StoredMachine,
@@ -21,14 +22,16 @@ export { MessageStore } from './messageStore'
 export { PushStore } from './pushStore'
 export { SessionStore } from './sessionStore'
 export { UserStore } from './userStore'
+export { CodexHistoryStore } from './codexHistoryStore'
 
-const SCHEMA_VERSION: number = 8
+const SCHEMA_VERSION: number = 9
 const REQUIRED_TABLES = [
     'sessions',
     'machines',
     'messages',
     'users',
-    'push_subscriptions'
+    'push_subscriptions',
+    'codex_history_items'
 ] as const
 
 export class Store {
@@ -40,6 +43,7 @@ export class Store {
     readonly messages: MessageStore
     readonly users: UserStore
     readonly push: PushStore
+    readonly codexHistory: CodexHistoryStore
 
     constructor(dbPath: string) {
         this.dbPath = dbPath
@@ -81,6 +85,7 @@ export class Store {
         this.messages = new MessageStore(this.db)
         this.users = new UserStore(this.db)
         this.push = new PushStore(this.db)
+        this.codexHistory = new CodexHistoryStore(this.db)
     }
 
     private initSchema(): void {
@@ -97,6 +102,7 @@ export class Store {
             5: () => this.migrateFromV5ToV6(),
             6: () => this.migrateFromV6ToV7(),
             7: () => this.migrateFromV7ToV8(),
+            8: () => this.migrateFromV8ToV9(),
         })
 
         if (currentVersion === 0) {
@@ -220,6 +226,26 @@ export class Store {
                 UNIQUE(namespace, endpoint)
             );
             CREATE INDEX IF NOT EXISTS idx_push_subscriptions_namespace ON push_subscriptions(namespace);
+
+            CREATE TABLE IF NOT EXISTS codex_history_items (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                codex_thread_id TEXT NOT NULL,
+                turn_id TEXT,
+                item_id TEXT NOT NULL,
+                item_kind TEXT NOT NULL,
+                message_seq INTEGER,
+                raw_item TEXT NOT NULL,
+                seq INTEGER NOT NULL,
+                created_at INTEGER NOT NULL,
+                FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_codex_history_items_session_item
+                ON codex_history_items(session_id, item_id);
+            CREATE INDEX IF NOT EXISTS idx_codex_history_items_session_seq
+                ON codex_history_items(session_id, seq);
+            CREATE INDEX IF NOT EXISTS idx_codex_history_items_session_message_seq
+                ON codex_history_items(session_id, message_seq);
         `)
     }
 
@@ -374,6 +400,30 @@ export class Store {
         this.db.exec(`
             CREATE INDEX IF NOT EXISTS idx_messages_session_position
                 ON messages(session_id, COALESCE(invoked_at, created_at) DESC, seq DESC)
+        `)
+    }
+
+    private migrateFromV8ToV9(): void {
+        this.db.exec(`
+            CREATE TABLE IF NOT EXISTS codex_history_items (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                codex_thread_id TEXT NOT NULL,
+                turn_id TEXT,
+                item_id TEXT NOT NULL,
+                item_kind TEXT NOT NULL,
+                message_seq INTEGER,
+                raw_item TEXT NOT NULL,
+                seq INTEGER NOT NULL,
+                created_at INTEGER NOT NULL,
+                FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_codex_history_items_session_item
+                ON codex_history_items(session_id, item_id);
+            CREATE INDEX IF NOT EXISTS idx_codex_history_items_session_seq
+                ON codex_history_items(session_id, seq);
+            CREATE INDEX IF NOT EXISTS idx_codex_history_items_session_message_seq
+                ON codex_history_items(session_id, message_seq);
         `)
     }
 

@@ -5,8 +5,10 @@ export type Toast = {
     id: string
     title: string
     body: string
-    sessionId: string
-    url: string
+    sessionId?: string
+    url?: string
+    variant?: 'default' | 'success' | 'error'
+    actionLabel?: string
 }
 
 export type ToastContextValue = {

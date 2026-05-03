@@ -51,7 +51,8 @@ export async function runAgentSession(opts: {
 
     const messageQueue = new MessageQueue2<Record<string, never>>(() => hashObject({}));
 
-    session.onUserMessage((message, localId) => {
+    session.onUserMessage((message, meta) => {
+        const localId = meta.localId
         const formattedText = formatMessageWithAttachments(message.content.text, message.content.attachments);
         messageQueue.push(formattedText, {}, localId);
     });

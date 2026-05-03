@@ -6,6 +6,7 @@ import type {
     ApprovalPolicy,
     SandboxMode,
     SandboxPolicy,
+    ThreadForkParams,
     ThreadStartParams,
     TurnStartParams
 } from '../appServerTypes';
@@ -103,6 +104,37 @@ export function buildThreadStartParams(args: {
     }
 
     return params;
+}
+
+export function buildThreadForkParams(args: {
+    threadId: string;
+    cwd: string;
+    mode: EnhancedMode;
+    mcpServers: McpServersConfig;
+    cliOverrides?: CodexCliOverrides;
+    baseInstructions?: string;
+    developerInstructions?: string;
+}): ThreadForkParams {
+    const startParams = buildThreadStartParams({
+        cwd: args.cwd,
+        mode: args.mode,
+        mcpServers: args.mcpServers,
+        cliOverrides: args.cliOverrides,
+        baseInstructions: args.baseInstructions,
+        developerInstructions: args.developerInstructions
+    });
+
+    return {
+        threadId: args.threadId,
+        cwd: startParams.cwd,
+        approvalPolicy: startParams.approvalPolicy,
+        sandbox: startParams.sandbox,
+        config: startParams.config,
+        baseInstructions: startParams.baseInstructions,
+        developerInstructions: startParams.developerInstructions,
+        model: startParams.model,
+        persistExtendedHistory: true
+    };
 }
 
 export function buildTurnStartParams(args: {

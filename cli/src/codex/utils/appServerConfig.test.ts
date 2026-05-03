@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildThreadStartParams, buildTurnStartParams } from './appServerConfig';
+import { buildThreadForkParams, buildThreadStartParams, buildTurnStartParams } from './appServerConfig';
 import { codexSystemPrompt } from './systemPrompt';
 
 describe('appServerConfig', () => {
@@ -94,6 +94,33 @@ describe('appServerConfig', () => {
             },
             developer_instructions: codexSystemPrompt,
             model_reasoning_effort: 'xhigh'
+        });
+    });
+
+    it('builds fork params from thread config defaults', () => {
+        const params = buildThreadForkParams({
+            threadId: 'thread-source',
+            cwd: '/workspace/project',
+            mode: { permissionMode: 'default', model: 'gpt-5.4', collaborationMode: 'default' },
+            mcpServers
+        });
+
+        expect(params).toEqual({
+            threadId: 'thread-source',
+            cwd: '/workspace/project',
+            approvalPolicy: 'on-request',
+            sandbox: 'workspace-write',
+            model: 'gpt-5.4',
+            baseInstructions: codexSystemPrompt,
+            developerInstructions: codexSystemPrompt,
+            config: {
+                'mcp_servers.hapi': {
+                    command: 'node',
+                    args: ['mcp']
+                },
+                developer_instructions: codexSystemPrompt
+            },
+            persistExtendedHistory: true
         });
     });
 

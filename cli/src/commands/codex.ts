@@ -5,7 +5,8 @@ import { maybeAutoStartServer } from '@/utils/autoStartServer'
 import type { CommandDefinition } from './types'
 import { CODEX_PERMISSION_MODES } from '@hapi/protocol/modes'
 import type { CodexPermissionMode } from '@hapi/protocol/types'
-import type { ReasoningEffort } from '@/codex/appServerTypes'
+import type { ReasoningEffort, ResponseItem } from '@/codex/appServerTypes'
+import { readFile, rm } from 'node:fs/promises'
 import { assertCodexLocalSupported } from '@/codex/utils/codexVersion'
 
 function parseReasoningEffort(value: string): ReasoningEffort {
@@ -34,6 +35,8 @@ export const codexCommand: CommandDefinition = {
                 codexArgs?: string[]
                 permissionMode?: CodexPermissionMode
                 resumeSessionId?: string
+                forkSessionId?: string
+                forkHistory?: ResponseItem[]
                 model?: string
                 modelReasoningEffort?: ReasoningEffort
             } = {}
@@ -48,6 +51,15 @@ export const codexCommand: CommandDefinition = {
                         throw new Error('resume requires a session id')
                     }
                     options.resumeSessionId = candidate
+                    i += 1
+                    continue
+                }
+                if (i === 0 && arg === 'fork') {
+                    const candidate = commandArgs[i + 1]
+                    if (!candidate || candidate.startsWith('-')) {
+                        throw new Error('fork requires a session id')
+                    }
+                    options.forkSessionId = candidate
                     i += 1
                     continue
                 }
@@ -76,6 +88,18 @@ export const codexCommand: CommandDefinition = {
                         throw new Error('Missing --model-reasoning-effort value')
                     }
                     options.modelReasoningEffort = parseReasoningEffort(effort)
+                } else if (arg === '--fork-history-file') {
+                    const file = commandArgs[++i]
+                    if (!file) {
+                        throw new Error('Missing --fork-history-file value')
+                    }
+                    const raw = await readFile(file, 'utf8')
+                    const parsed = JSON.parse(raw) as unknown
+                    if (!Array.isArray(parsed)) {
+                        throw new Error('--fork-history-file must contain a JSON array')
+                    }
+                    options.forkHistory = parsed as ResponseItem[]
+                    void rm(file, { force: true }).catch(() => undefined)
                 } else {
                     unknownArgs.push(arg)
                 }

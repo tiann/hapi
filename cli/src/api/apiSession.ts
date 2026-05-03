@@ -48,6 +48,11 @@ const SYSTEM_INJECTION_PREFIXES = [
     '<system-reminder>',
 ]
 
+export type UserMessageMeta = {
+    localId?: string
+    seq?: number | null
+}
+
 /**
  * Returns true if a JSONL message should be classified as a user-role message
  * (i.e., text typed by a real human) rather than an agent-role message.
@@ -79,8 +84,8 @@ export class ApiSessionClient extends EventEmitter {
     private agentState: AgentState | null
     private agentStateVersion: number
     private readonly socket: Socket<ServerToClientEvents, ClientToServerEvents>
-    private pendingMessages: { message: UserMessage; localId?: string }[] = []
-    private pendingMessageCallback: ((message: UserMessage, localId?: string) => void) | null = null
+    private pendingMessages: { message: UserMessage; meta: UserMessageMeta }[] = []
+    private pendingMessageCallback: ((message: UserMessage, meta: UserMessageMeta) => void) | null = null
     private lastSeenMessageSeq: number | null = null
     private backfillInFlight: Promise<void> | null = null
     private needsBackfill = false
@@ -245,19 +250,19 @@ export class ApiSessionClient extends EventEmitter {
         this.socket.connect()
     }
 
-    onUserMessage(callback: (data: UserMessage, localId?: string) => void): void {
+    onUserMessage(callback: (data: UserMessage, meta: UserMessageMeta) => void): void {
         this.pendingMessageCallback = callback
         while (this.pendingMessages.length > 0) {
             const pending = this.pendingMessages.shift()!
-            callback(pending.message, pending.localId)
+            callback(pending.message, pending.meta)
         }
     }
 
-    private enqueueUserMessage(message: UserMessage, localId?: string): void {
+    private enqueueUserMessage(message: UserMessage, meta: UserMessageMeta): void {
         if (this.pendingMessageCallback) {
-            this.pendingMessageCallback(message, localId)
+            this.pendingMessageCallback(message, meta)
         } else {
-            this.pendingMessages.push({ message, localId })
+            this.pendingMessages.push({ message, meta })
         }
     }
 
@@ -272,7 +277,10 @@ export class ApiSessionClient extends EventEmitter {
 
         const userResult = UserMessageSchema.safeParse(message.content)
         if (userResult.success) {
-            this.enqueueUserMessage(userResult.data, message.localId ?? undefined)
+            this.enqueueUserMessage(userResult.data, {
+                localId: message.localId ?? undefined,
+                seq
+            })
             return
         }
 
@@ -498,6 +506,20 @@ export class ApiSessionClient extends EventEmitter {
     emitMessagesConsumed(localIds: string[]): void {
         if (localIds.length === 0) return
         this.socket.emit('messages-consumed', { sid: this.sessionId, localIds })
+    }
+
+    sendCodexHistoryItem(item: {
+        codexThreadId: string
+        turnId?: string | null
+        itemId: string
+        itemKind: 'user' | 'assistant' | 'tool' | 'event' | 'unknown'
+        messageSeq?: number | null
+        rawItem: unknown
+    }): void {
+        this.socket.emit('codex-history-item', {
+            sid: this.sessionId,
+            ...item
+        })
     }
 
     sendSessionDeath(reason?: SessionEndReason): void {

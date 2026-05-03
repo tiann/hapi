@@ -76,6 +76,7 @@ export default {
 
   // Session actions
   'session.action.rename': '重命名',
+  'session.action.fork': 'Fork',
   'session.action.archive': '归档',
   'session.action.delete': '删除',
   'session.action.copy': '复制',
@@ -91,6 +92,12 @@ export default {
   'dialog.archive.description': '确定要归档 "{name}" 吗？这将断开活动会话。',
   'dialog.archive.confirm': '归档',
   'dialog.archive.confirming': '归档中…',
+  'dialog.fork.successTitle': 'Fork 成功',
+  'dialog.fork.successDescription': '已从 "{name}" 创建新会话。',
+  'dialog.fork.failedTitle': 'Fork 失败',
+  'dialog.fork.failedDescription': '无法 Fork 会话，请重试。',
+  'dialog.fork.partialTitle': 'Fork 已创建但存在警告',
+  'toast.action.openSession': '点击前往新会话',
 
   'dialog.delete.title': '删除会话',
   'dialog.delete.description': '确定要删除 "{name}" 吗？此操作无法撤销。',

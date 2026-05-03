@@ -296,6 +296,19 @@ export class ApiClient {
         return response.sessionId
     }
 
+    async forkSession(sessionId: string, opts?: { beforeSeq?: number }): Promise<{ sessionId: string; warnings?: string[] }> {
+        const response = await this.request<{ sessionId: string; warnings?: string[] }>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/fork`,
+            {
+                method: 'POST',
+                ...(opts?.beforeSeq !== undefined && {
+                    body: JSON.stringify({ beforeSeq: opts.beforeSeq })
+                })
+            }
+        )
+        return { sessionId: response.sessionId, warnings: response.warnings }
+    }
+
     async sendMessage(sessionId: string, text: string, localId?: string | null, attachments?: AttachmentMetadata[]): Promise<void> {
         await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/messages`, {
             method: 'POST',

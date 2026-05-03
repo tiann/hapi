@@ -1,5 +1,6 @@
 import type { Database } from 'bun:sqlite'
 import { randomUUID } from 'node:crypto'
+import { unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
 
 import type { StoredMessage } from './types'
 import { safeJsonParse } from './json'
@@ -114,6 +115,44 @@ export function getMessagesAfter(
     return rows.map(toStoredMessage)
 }
 
+export function getNextUserMessageSeq(
+    db: Database,
+    sessionId: string,
+    afterSeq: number
+): number | null {
+    const rows = db.prepare(
+        'SELECT * FROM messages WHERE session_id = ? AND seq > ? ORDER BY seq ASC'
+    ).all(sessionId, afterSeq) as DbMessageRow[]
+
+    for (const row of rows) {
+        const record = unwrapRoleWrappedRecordEnvelope(safeJsonParse(row.content))
+        if (record?.role === 'user') {
+            return row.seq
+        }
+    }
+
+    return null
+}
+
+export function getPreviousUserMessageSeq(
+    db: Database,
+    sessionId: string,
+    beforeSeq: number
+): number | null {
+    const rows = db.prepare(
+        'SELECT * FROM messages WHERE session_id = ? AND seq < ? ORDER BY seq DESC'
+    ).all(sessionId, beforeSeq) as DbMessageRow[]
+
+    for (const row of rows) {
+        const record = unwrapRoleWrappedRecordEnvelope(safeJsonParse(row.content))
+        if (record?.role === 'user') {
+            return row.seq
+        }
+    }
+
+    return null
+}
+
 /** Paginate messages by COALESCE(invoked_at, created_at) DESC, seq DESC.
  *  Used for V8 byPosition mode.  Results are returned in ascending display order. */
 export function getMessagesByPosition(
@@ -162,6 +201,13 @@ export function getMaxSeq(db: Database, sessionId: string): number {
         'SELECT COALESCE(MAX(seq), 0) AS maxSeq FROM messages WHERE session_id = ?'
     ).get(sessionId) as { maxSeq: number } | undefined
     return row?.maxSeq ?? 0
+}
+
+export function getMessageBySeq(db: Database, sessionId: string, seq: number): StoredMessage | null {
+    const row = db.prepare(
+        'SELECT * FROM messages WHERE session_id = ? AND seq = ? LIMIT 1'
+    ).get(sessionId, seq) as DbMessageRow | undefined
+    return row ? toStoredMessage(row) : null
 }
 
 /** Mark messages as invoked at the given server timestamp.
@@ -236,6 +282,88 @@ export function mergeSessionMessages(
 
         db.exec('COMMIT')
         return { moved: result.changes, oldMaxSeq, newMaxSeq }
+    } catch (error) {
+        db.exec('ROLLBACK')
+        throw error
+    }
+}
+
+export function cloneSessionMessages(
+    db: Database,
+    fromSessionId: string,
+    toSessionId: string,
+    beforeSeq?: number
+): { cloned: number; sourceMaxSeq: number; targetMaxSeq: number } {
+    if (fromSessionId === toSessionId) {
+        return { cloned: 0, sourceMaxSeq: 0, targetMaxSeq: getMaxSeq(db, toSessionId) }
+    }
+
+    const sourceRows = beforeSeq === undefined
+        ? db.prepare(
+            'SELECT * FROM messages WHERE session_id = ? ORDER BY seq ASC'
+        ).all(fromSessionId) as DbMessageRow[]
+        : db.prepare(
+            'SELECT * FROM messages WHERE session_id = ? AND seq < ? ORDER BY seq ASC'
+        ).all(fromSessionId, beforeSeq) as DbMessageRow[]
+
+    if (sourceRows.length === 0) {
+        return { cloned: 0, sourceMaxSeq: 0, targetMaxSeq: getMaxSeq(db, toSessionId) }
+    }
+
+    const sourceMaxSeq = sourceRows[sourceRows.length - 1]?.seq ?? 0
+
+    try {
+        db.exec('BEGIN')
+
+        // Cloned rows preserve relative ordering by reusing the source row's seq offset by
+        // targetMaxSeq. Source-side gaps (from a prior session merge) are inherited as-is; sort
+        // order remains correct but cloned rows are not guaranteed to be contiguous in seq.
+        const targetMaxSeq = getMaxSeq(db, toSessionId)
+        const existingLocalIds = new Set<string>(
+            (db.prepare(
+                'SELECT local_id FROM messages WHERE session_id = ? AND local_id IS NOT NULL'
+            ).all(toSessionId) as Array<{ local_id: string }>).map((row) => row.local_id)
+        )
+
+        const insert = db.prepare(`
+            INSERT INTO messages (
+                id, session_id, content, created_at, seq, local_id, invoked_at
+            ) VALUES (
+                @id, @session_id, @content, @created_at, @seq, @local_id, @invoked_at
+            )
+        `)
+
+        for (const row of sourceRows) {
+            const localId = row.local_id && !existingLocalIds.has(row.local_id)
+                ? row.local_id
+                : null
+
+            if (localId) {
+                existingLocalIds.add(localId)
+            }
+
+            // Cloned messages are history, never queued work. Force a non-null invoked_at so a
+            // pending user message on the source (local_id set, invoked_at null) does not get
+            // re-delivered to the CLI on the forked session via getUninvokedLocalMessages.
+            const invokedAt = row.invoked_at ?? row.created_at
+
+            insert.run({
+                id: randomUUID(),
+                session_id: toSessionId,
+                content: row.content,
+                created_at: row.created_at,
+                seq: targetMaxSeq + row.seq,
+                local_id: localId,
+                invoked_at: invokedAt
+            })
+        }
+
+        db.exec('COMMIT')
+        return {
+            cloned: sourceRows.length,
+            sourceMaxSeq,
+            targetMaxSeq: targetMaxSeq + sourceMaxSeq
+        }
     } catch (error) {
         db.exec('ROLLBACK')
         throw error

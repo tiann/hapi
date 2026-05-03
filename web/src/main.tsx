@@ -52,15 +52,14 @@ async function bootstrap() {
 
     const updateSW = registerSW({
         onNeedRefresh() {
-            if (confirm('New version available! Reload to update?')) {
-                updateSW(true)
-            }
+            updateSW(true)
         },
         onOfflineReady() {
             console.log('App ready for offline use')
         },
         onRegistered(registration) {
             if (registration) {
+                void registration.update()
                 setInterval(() => {
                     registration.update()
                 }, 60 * 60 * 1000)

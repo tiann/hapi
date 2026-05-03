@@ -8,6 +8,7 @@
  */
 
 import type { CodexCollaborationMode, DecryptedMessage, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
+import { unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
 import type { Server } from 'socket.io'
 import type { Store } from '../store'
 import type { RpcRegistry } from '../socket/rpcRegistry'
@@ -50,7 +51,12 @@ export type ResumeSessionResult =
     | { type: 'success'; sessionId: string }
     | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'no_machine_online' | 'resume_unavailable' | 'resume_failed' }
 
+export type ForkSessionResult =
+    | { type: 'success'; sessionId: string; warnings?: string[] }
+    | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'no_machine_online' | 'fork_unavailable' | 'fork_failed' }
+
 export class SyncEngine {
+    private readonly store: Store
     private readonly eventPublisher: EventPublisher
     private readonly sessionCache: SessionCache
     private readonly machineCache: MachineCache
@@ -64,6 +70,7 @@ export class SyncEngine {
         rpcRegistry: RpcRegistry,
         sseManager: SSEManager
     ) {
+        this.store = store
         this.eventPublisher = new EventPublisher(sseManager, (event) => this.resolveNamespace(event))
         this.sessionCache = new SessionCache(store, this.eventPublisher)
         this.machineCache = new MachineCache(store, this.eventPublisher)
@@ -402,8 +409,10 @@ export class SyncEngine {
         sessionType?: 'simple' | 'worktree',
         worktreeName?: string,
         resumeSessionId?: string,
+        forkSessionId?: string,
         effort?: string,
-        permissionMode?: PermissionMode
+        permissionMode?: PermissionMode,
+        forkHistory?: unknown[]
     ): Promise<{ type: 'success'; sessionId: string } | { type: 'error'; message: string }> {
         return await this.rpcGateway.spawnSession(
             machineId,
@@ -415,8 +424,10 @@ export class SyncEngine {
             sessionType,
             worktreeName,
             resumeSessionId,
+            forkSessionId,
             effort,
-            permissionMode
+            permissionMode,
+            forkHistory
         )
     }
 
@@ -489,6 +500,7 @@ export class SyncEngine {
             undefined,
             undefined,
             resumeToken,
+            undefined,
             session.effort ?? undefined,
             effectivePermissionMode
         )
@@ -538,6 +550,198 @@ export class SyncEngine {
                 // best-effort: web-side safety net hides remaining duplicates
             })
         }
+    }
+
+    async forkSession(sessionId: string, namespace: string, opts?: { beforeSeq?: number }): Promise<ForkSessionResult> {
+        const access = this.sessionCache.resolveSessionAccess(sessionId, namespace)
+        if (!access.ok) {
+            return {
+                type: 'error',
+                message: access.reason === 'access-denied' ? 'Session access denied' : 'Session not found',
+                code: access.reason === 'access-denied' ? 'access_denied' : 'session_not_found'
+            }
+        }
+
+        const session = access.session
+        const metadata = session.metadata
+        if (!metadata || typeof metadata.path !== 'string') {
+            return { type: 'error', message: 'Session metadata missing path', code: 'fork_unavailable' }
+        }
+
+        if (metadata.flavor !== 'codex') {
+            return { type: 'error', message: 'Fork is only supported for Codex sessions', code: 'fork_unavailable' }
+        }
+
+        let forkHistory: unknown[] | undefined
+        let cloneBeforeSeq: number | undefined
+        let historicalForkUserMessageSeq: number | undefined
+        if (opts?.beforeSeq !== undefined) {
+            if (!Number.isInteger(opts.beforeSeq) || opts.beforeSeq <= 0) {
+                return { type: 'error', message: 'beforeSeq must be a positive integer', code: 'fork_unavailable' }
+            }
+            const cutMessage = this.store.messages.getMessageBySeq(sessionId, opts.beforeSeq)
+            const record = cutMessage ? unwrapRoleWrappedRecordEnvelope(cutMessage.content) : null
+            const userMessageSeq = (() => {
+                if (!cutMessage || !record) return null
+                if (record.role === 'user') {
+                    return this.store.messages.getPreviousUserMessageSeq(sessionId, opts.beforeSeq)
+                }
+                if (record.role === 'agent' || record.role === 'assistant') {
+                    return this.store.messages.getPreviousUserMessageSeq(sessionId, opts.beforeSeq)
+                }
+                return null
+            })()
+            if (!userMessageSeq) {
+                return { type: 'error', message: 'No earlier history to fork from', code: 'fork_unavailable' }
+            }
+            const prefix = this.store.codexHistory.getPrefixThroughReplyForUserMessageSeq(sessionId, userMessageSeq)
+            if (!prefix) {
+                return {
+                    type: 'error',
+                    message: 'Historical fork is only supported for sessions started with the new Codex history pipeline',
+                    code: 'fork_unavailable'
+                }
+            }
+            if (prefix.length === 0) {
+                // Defensive: a non-null but empty prefix means we located a user-message cut point
+                // but found zero raw history rows up to it — should be impossible by construction
+                // and indicates corruption rather than an old session.
+                return {
+                    type: 'error',
+                    message: 'Codex history prefix is empty; refusing to fork from missing history',
+                    code: 'fork_unavailable'
+                }
+            }
+            // Conservative cap below Socket.IO's 1 MiB default to leave room for the rest of the
+            // spawn payload (mcp config, permission mode, model, etc.). Without a guard the spawn
+            // RPC silently fails as an opaque socket timeout.
+            const FORK_HISTORY_MAX_BYTES = 512 * 1024
+            const prefixBytes = Buffer.byteLength(JSON.stringify(prefix), 'utf8')
+            if (prefixBytes > FORK_HISTORY_MAX_BYTES) {
+                return {
+                    type: 'error',
+                    message: `Historical fork payload too large (${prefixBytes} bytes, max ${FORK_HISTORY_MAX_BYTES})`,
+                    code: 'fork_unavailable'
+                }
+            }
+            forkHistory = prefix
+            cloneBeforeSeq = this.store.messages.getNextUserMessageSeq(sessionId, userMessageSeq) ?? undefined
+            historicalForkUserMessageSeq = userMessageSeq
+        }
+
+        // Whole-session fork needs the source's codex thread id; historical fork carries the prefix
+        // inline and does not.
+        const forkToken = metadata.codexSessionId
+        if (!forkHistory && !forkToken) {
+            return { type: 'error', message: 'Fork session ID unavailable', code: 'fork_unavailable' }
+        }
+
+        const onlineMachines = this.machineCache.getOnlineMachinesByNamespace(namespace)
+        if (onlineMachines.length === 0) {
+            return { type: 'error', message: 'No machine online', code: 'no_machine_online' }
+        }
+
+        const targetMachine = (() => {
+            if (metadata.machineId) {
+                const exact = onlineMachines.find((machine) => machine.id === metadata.machineId)
+                if (exact) return exact
+            }
+            if (metadata.host) {
+                const hostMatch = onlineMachines.find((machine) => machine.metadata?.host === metadata.host)
+                if (hostMatch) return hostMatch
+            }
+            return null
+        })()
+
+        if (!targetMachine) {
+            return { type: 'error', message: 'No machine online', code: 'no_machine_online' }
+        }
+
+        const spawnResult = await this.rpcGateway.spawnSession(
+            targetMachine.id,
+            metadata.path,
+            'codex',
+            session.model ?? undefined,
+            session.modelReasoningEffort ?? undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            forkHistory ? undefined : forkToken,
+            session.effort ?? undefined,
+            session.permissionMode ?? undefined,
+            forkHistory
+        )
+
+        if (spawnResult.type !== 'success') {
+            return { type: 'error', message: spawnResult.message, code: 'fork_failed' }
+        }
+
+        const becameActive = await this.waitForSessionActive(spawnResult.sessionId)
+        if (!becameActive) {
+            // Spawn succeeded but the CLI never went active. Avoid the partial-success leak: do NOT
+            // clone messages, inherit metadata, or emit session-forked into a session the user
+            // can't actually use yet (skipping the emit also prevents notificationHub from leaking
+            // a never-cleaned entry for a session that may never emit session-end).
+            return { type: 'error', message: 'Session failed to become active', code: 'fork_failed' }
+        }
+
+        // Emit session-forked only after active. The CLI's `ready` event always lags `session-alive`
+        // by the time it takes to set up the codex thread, so notificationHub still gets the
+        // suppression entry installed before the ready arrives.
+        this.eventPublisher.emit({
+            type: 'session-forked',
+            sessionId: spawnResult.sessionId,
+            sourceSessionId: sessionId,
+            namespace
+        })
+
+        // Best-effort post-conditions. If either fails the session itself is still valid; surface a
+        // warning back to the caller (and a log line) rather than reporting fork_failed.
+        const warnings: string[] = []
+        let clonedMessageSeqOffset: number | null = null
+        try {
+            // Observability for the residual ordering race: codex sessions don't normally write to
+            // the messages table before the first user turn, so the target should be empty here.
+            // If a future CLI change starts writing earlier, cloned history will land *after* those
+            // rows in the timeline; logging makes that regression obvious instead of silent.
+            const cloneResult = this.store.messages.cloneSessionMessages(sessionId, spawnResult.sessionId, cloneBeforeSeq)
+            clonedMessageSeqOffset = cloneResult.targetMaxSeq - cloneResult.sourceMaxSeq
+            const targetMaxSeqBefore = cloneResult.targetMaxSeq - cloneResult.sourceMaxSeq
+            if (targetMaxSeqBefore > 0) {
+                console.warn(`[SyncEngine] Forked session ${spawnResult.sessionId} already had ${targetMaxSeqBefore} messages before clone; cloned history will appear after them.`)
+            }
+        } catch (error) {
+            console.error(`[SyncEngine] Failed to clone messages into forked session ${spawnResult.sessionId}:`, error)
+            warnings.push('history could not be cloned')
+        }
+        if (clonedMessageSeqOffset != null) {
+            try {
+                if (historicalForkUserMessageSeq !== undefined) {
+                    this.store.codexHistory.clonePrefixThroughReplyForUserMessageSeq(
+                        sessionId,
+                        spawnResult.sessionId,
+                        historicalForkUserMessageSeq,
+                        clonedMessageSeqOffset
+                    )
+                } else {
+                    this.store.codexHistory.cloneSessionHistory(sessionId, spawnResult.sessionId, clonedMessageSeqOffset)
+                }
+            } catch (error) {
+                console.error(`[SyncEngine] Failed to clone Codex history into forked session ${spawnResult.sessionId}:`, error)
+                warnings.push('raw history could not be cloned')
+            }
+        }
+        try {
+            await this.sessionCache.inheritSessionMetadata(sessionId, spawnResult.sessionId)
+        } catch (error) {
+            console.error(`[SyncEngine] Failed to inherit metadata into forked session ${spawnResult.sessionId}:`, error)
+            warnings.push('title could not be inherited')
+        }
+
+        return warnings.length > 0
+            ? { type: 'success', sessionId: spawnResult.sessionId, warnings }
+            : { type: 'success', sessionId: spawnResult.sessionId }
     }
 
     async waitForSessionActive(sessionId: string, timeoutMs: number = 15_000): Promise<boolean> {

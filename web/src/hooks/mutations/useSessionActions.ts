@@ -14,6 +14,7 @@ export function useSessionActions(
 ): {
     abortSession: () => Promise<void>
     archiveSession: () => Promise<void>
+    forkSession: () => Promise<{ sessionId: string; warnings?: string[] }>
     switchSession: () => Promise<void>
     setPermissionMode: (mode: PermissionMode) => Promise<void>
     setCollaborationMode: (mode: CodexCollaborationMode) => Promise<void>
@@ -60,6 +61,16 @@ export function useSessionActions(
             await api.switchSession(sessionId)
         },
         onSuccess: () => void invalidateSession(),
+    })
+
+    const forkMutation = useMutation({
+        mutationFn: async () => {
+            if (!api || !sessionId) {
+                throw new Error('Session unavailable')
+            }
+            return await api.forkSession(sessionId)
+        },
+        onSuccess: () => void queryClient.invalidateQueries({ queryKey: queryKeys.sessions })
     })
 
     const permissionMutation = useMutation({
@@ -155,6 +166,7 @@ export function useSessionActions(
     return {
         abortSession: abortMutation.mutateAsync,
         archiveSession: archiveMutation.mutateAsync,
+        forkSession: forkMutation.mutateAsync,
         switchSession: switchMutation.mutateAsync,
         setPermissionMode: permissionMutation.mutateAsync,
         setCollaborationMode: collaborationMutation.mutateAsync,
@@ -165,6 +177,7 @@ export function useSessionActions(
         deleteSession: deleteMutation.mutateAsync,
         isPending: abortMutation.isPending
             || archiveMutation.isPending
+            || forkMutation.isPending
             || switchMutation.isPending
             || permissionMutation.isPending
             || collaborationMutation.isPending
