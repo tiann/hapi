@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, render, screen } from '@testing-library/react'
 import type { ReactNode } from 'react'
 
 import { HappyChatProvider } from '@/components/AssistantChat/context'
@@ -69,16 +69,15 @@ describe('HappyUserMessage fork action', () => {
         } as any
     })
 
-    it('shows Fork before here for user messages with a seq', () => {
+    it('does not show fork action for user messages with a seq', () => {
         const onForkBeforeMessage = vi.fn()
         renderUserMessage(onForkBeforeMessage)
 
-        fireEvent.click(screen.getByTitle('Fork before here'))
-
-        expect(onForkBeforeMessage).toHaveBeenCalledWith(7)
+        expect(screen.queryByTitle('Fork from this response')).toBeNull()
+        expect(onForkBeforeMessage).not.toHaveBeenCalled()
     })
 
-    it('does not show Fork before here for non-user messages', () => {
+    it('does not show fork action for non-user messages', () => {
         state.message = {
             role: 'assistant',
             id: 'assistant:m1',
@@ -88,6 +87,6 @@ describe('HappyUserMessage fork action', () => {
 
         renderUserMessage(vi.fn())
 
-        expect(screen.queryByTitle('Fork before here')).toBeNull()
+        expect(screen.queryByTitle('Fork from this response')).toBeNull()
     })
 })

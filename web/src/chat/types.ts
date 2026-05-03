@@ -137,6 +137,7 @@ export type UserTextBlock = {
 export type AgentTextBlock = {
     kind: 'agent-text'
     id: string
+    seq?: number | null
     localId: string | null
     createdAt: number
     invokedAt?: number | null
@@ -150,6 +151,7 @@ export type AgentTextBlock = {
 export type AgentReasoningBlock = {
     kind: 'agent-reasoning'
     id: string
+    seq?: number | null
     localId: string | null
     createdAt: number
     invokedAt?: number | null

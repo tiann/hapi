@@ -664,10 +664,18 @@ export class SyncEngine {
             }
             const cutMessage = this.store.messages.getMessageBySeq(sessionId, opts.beforeSeq)
             const record = cutMessage ? unwrapRoleWrappedRecordEnvelope(cutMessage.content) : null
-            if (!cutMessage || record?.role !== 'user') {
-                return { type: 'error', message: 'Historical fork cut point must be a user message', code: 'fork_unavailable' }
+            const userMessageSeq = (() => {
+                if (!cutMessage || !record) return null
+                if (record.role === 'user') return opts.beforeSeq
+                if (record.role === 'agent' || record.role === 'assistant') {
+                    return this.store.messages.getPreviousUserMessageSeq(sessionId, opts.beforeSeq)
+                }
+                return null
+            })()
+            if (!userMessageSeq) {
+                return { type: 'error', message: 'Historical fork cut point must be an agent response', code: 'fork_unavailable' }
             }
-            const prefix = this.store.codexHistory.getPrefixBeforeMessageSeq(sessionId, opts.beforeSeq)
+            const prefix = this.store.codexHistory.getPrefixThroughReplyForUserMessageSeq(sessionId, userMessageSeq)
             if (!prefix) {
                 return {
                     type: 'error',
@@ -676,7 +684,7 @@ export class SyncEngine {
                 }
             }
             forkHistory = prefix
-            cloneBeforeSeq = opts.beforeSeq
+            cloneBeforeSeq = this.store.messages.getNextUserMessageSeq(sessionId, userMessageSeq) ?? undefined
         }
 
         const onlineMachines = this.machineCache.getOnlineMachinesByNamespace(namespace)

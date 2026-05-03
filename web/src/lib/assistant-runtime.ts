@@ -56,6 +56,7 @@ function toThreadMessageLike(block: VisibleChatBlock): ThreadMessageLike {
             metadata: {
                 custom: {
                     kind: 'assistant',
+                    seq: block.seq,
                     invokedAt: block.invokedAt,
                     durationMs: block.durationMs,
                     usage: block.usage,
@@ -75,6 +76,7 @@ function toThreadMessageLike(block: VisibleChatBlock): ThreadMessageLike {
             metadata: {
                 custom: {
                     kind: 'assistant',
+                    seq: block.seq,
                     invokedAt: block.invokedAt,
                     durationMs: block.durationMs,
                     usage: block.usage,

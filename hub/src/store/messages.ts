@@ -1,5 +1,6 @@
 import type { Database } from 'bun:sqlite'
 import { randomUUID } from 'node:crypto'
+import { unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
 
 import type { StoredMessage } from './types'
 import { safeJsonParse } from './json'
@@ -112,6 +113,44 @@ export function getMessagesAfter(
     ).all(sessionId, safeAfterSeq, safeLimit) as DbMessageRow[]
 
     return rows.map(toStoredMessage)
+}
+
+export function getNextUserMessageSeq(
+    db: Database,
+    sessionId: string,
+    afterSeq: number
+): number | null {
+    const rows = db.prepare(
+        'SELECT * FROM messages WHERE session_id = ? AND seq > ? ORDER BY seq ASC'
+    ).all(sessionId, afterSeq) as DbMessageRow[]
+
+    for (const row of rows) {
+        const record = unwrapRoleWrappedRecordEnvelope(safeJsonParse(row.content))
+        if (record?.role === 'user') {
+            return row.seq
+        }
+    }
+
+    return null
+}
+
+export function getPreviousUserMessageSeq(
+    db: Database,
+    sessionId: string,
+    beforeSeq: number
+): number | null {
+    const rows = db.prepare(
+        'SELECT * FROM messages WHERE session_id = ? AND seq < ? ORDER BY seq DESC'
+    ).all(sessionId, beforeSeq) as DbMessageRow[]
+
+    for (const row of rows) {
+        const record = unwrapRoleWrappedRecordEnvelope(safeJsonParse(row.content))
+        if (record?.role === 'user') {
+            return row.seq
+        }
+    }
+
+    return null
 }
 
 /** Paginate messages by COALESCE(invoked_at, created_at) DESC, seq DESC.

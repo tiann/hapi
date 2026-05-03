@@ -48,6 +48,46 @@ export class CodexHistoryStore {
         })
     }
 
+    getPrefixThroughReplyForUserMessageSeq(sessionId: string, messageSeq: number): unknown[] | null {
+        const cut = this.db.prepare(`
+            SELECT seq
+            FROM codex_history_items
+            WHERE session_id = ?
+              AND message_seq = ?
+              AND item_kind = 'user'
+            ORDER BY seq ASC
+            LIMIT 1
+        `).get(sessionId, messageSeq) as { seq: number } | undefined
+
+        if (!cut) {
+            return null
+        }
+
+        const nextUser = this.db.prepare(`
+            SELECT seq
+            FROM codex_history_items
+            WHERE session_id = ?
+              AND item_kind = 'user'
+              AND seq > ?
+            ORDER BY seq ASC
+            LIMIT 1
+        `).get(sessionId, cut.seq) as { seq: number } | undefined
+
+        const beforeClause = nextUser ? 'AND seq < @nextUserSeq' : ''
+        const rows = this.db.prepare(`
+            SELECT raw_item
+            FROM codex_history_items
+            WHERE session_id = @sessionId
+              ${beforeClause}
+            ORDER BY seq ASC
+        `).all({
+            sessionId,
+            nextUserSeq: nextUser?.seq ?? null
+        }) as Array<{ raw_item: string }>
+
+        return rows.map((row) => safeJsonParse(row.raw_item))
+    }
+
     getPrefixBeforeMessageSeq(sessionId: string, beforeSeq: number): unknown[] | null {
         const cut = this.db.prepare(`
             SELECT seq

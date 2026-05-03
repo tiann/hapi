@@ -56,6 +56,54 @@ describe('CodexHistoryStore', () => {
         expect(store.codexHistory.getPrefixBeforeMessageSeq(session.id, 2)).toBeNull()
     })
 
+    it('returns raw history through the selected user reply', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('s1', { flavor: 'codex' }, null, 'default')
+
+        store.codexHistory.addItem({
+            sessionId: session.id,
+            codexThreadId: 'thread-1',
+            itemId: 'user-1',
+            itemKind: 'user',
+            messageSeq: 1,
+            rawItem: { id: 'user-1', role: 'user' }
+        })
+        store.codexHistory.addItem({
+            sessionId: session.id,
+            codexThreadId: 'thread-1',
+            itemId: 'assistant-1',
+            itemKind: 'assistant',
+            rawItem: { id: 'assistant-1', role: 'assistant' }
+        })
+        store.codexHistory.addItem({
+            sessionId: session.id,
+            codexThreadId: 'thread-1',
+            itemId: 'user-2',
+            itemKind: 'user',
+            messageSeq: 3,
+            rawItem: { id: 'user-2', role: 'user' }
+        })
+        store.codexHistory.addItem({
+            sessionId: session.id,
+            codexThreadId: 'thread-1',
+            itemId: 'assistant-2',
+            itemKind: 'assistant',
+            rawItem: { id: 'assistant-2', role: 'assistant' }
+        })
+
+        expect(store.codexHistory.getPrefixThroughReplyForUserMessageSeq(session.id, 1)).toEqual([
+            { id: 'user-1', role: 'user' },
+            { id: 'assistant-1', role: 'assistant' }
+        ])
+        expect(store.codexHistory.getPrefixThroughReplyForUserMessageSeq(session.id, 3)).toEqual([
+            { id: 'user-1', role: 'user' },
+            { id: 'assistant-1', role: 'assistant' },
+            { id: 'user-2', role: 'user' },
+            { id: 'assistant-2', role: 'assistant' }
+        ])
+        expect(store.codexHistory.getPrefixThroughReplyForUserMessageSeq(session.id, 2)).toBeNull()
+    })
+
     it('deletes codex history rows when deleting the session', () => {
         const store = new Store(':memory:')
         const session = store.sessions.getOrCreateSession('s1', { flavor: 'codex' }, null, 'default')
