@@ -6,7 +6,7 @@ import { killProcessByChildProcess } from '@/utils/process';
 const DEFAULT_ABORT_EXIT_CODES = [130, 137, 143];
 const DEFAULT_ABORT_SIGNALS: NodeJS.Signals[] = ['SIGTERM'];
 
-const isAbortError = (error: unknown): boolean => {
+export const isAbortError = (error: unknown): boolean => {
     if (!error || typeof error !== 'object') {
         return false;
     }

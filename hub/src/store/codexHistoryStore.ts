@@ -23,17 +23,16 @@ export class CodexHistoryStore {
     }
 
     addItem(input: AddCodexHistoryItemInput): void {
-        const now = Date.now()
-        const row = this.db.prepare(
-            'SELECT COALESCE(MAX(seq), 0) + 1 AS nextSeq FROM codex_history_items WHERE session_id = ?'
-        ).get(input.sessionId) as { nextSeq: number }
-
-        this.db.prepare(`
+        // Compute seq atomically inside the INSERT so two concurrent addItem calls cannot read the
+        // same MAX(seq) and produce duplicate seq values for one session.
+        const result = this.db.prepare(`
             INSERT OR IGNORE INTO codex_history_items (
                 id, session_id, codex_thread_id, turn_id, item_id, item_kind, message_seq, raw_item, seq, created_at
-            ) VALUES (
-                @id, @session_id, @codex_thread_id, @turn_id, @item_id, @item_kind, @message_seq, @raw_item, @seq, @created_at
             )
+            SELECT
+                @id, @session_id, @codex_thread_id, @turn_id, @item_id, @item_kind, @message_seq, @raw_item,
+                COALESCE((SELECT MAX(seq) FROM codex_history_items WHERE session_id = @session_id), 0) + 1,
+                @created_at
         `).run({
             id: randomUUID(),
             session_id: input.sessionId,
@@ -43,9 +42,13 @@ export class CodexHistoryStore {
             item_kind: input.itemKind,
             message_seq: input.messageSeq ?? null,
             raw_item: JSON.stringify(input.rawItem),
-            seq: row.nextSeq,
-            created_at: now
+            created_at: Date.now()
         })
+        if (result.changes === 0) {
+            // INSERT OR IGNORE swallowed the row — most likely a duplicate (session_id, item_id),
+            // but any constraint failure lands here. Log enough to disambiguate during a later post-mortem.
+            console.warn(`[CodexHistoryStore] addItem inserted 0 rows sessionId=${input.sessionId} itemId=${input.itemId} (duplicate or constraint violation)`)
+        }
     }
 
     getPrefixThroughReplyForUserMessageSeq(sessionId: string, messageSeq: number): unknown[] | null {
@@ -75,7 +78,7 @@ export class CodexHistoryStore {
 
         const beforeClause = nextUser ? 'AND seq < @nextUserSeq' : ''
         const rows = this.db.prepare(`
-            SELECT raw_item
+            SELECT seq, raw_item
             FROM codex_history_items
             WHERE session_id = @sessionId
               ${beforeClause}
@@ -83,9 +86,9 @@ export class CodexHistoryStore {
         `).all({
             sessionId,
             nextUserSeq: nextUser?.seq ?? null
-        }) as Array<{ raw_item: string }>
+        }) as Array<{ seq: number; raw_item: string }>
 
-        return rows.map((row) => safeJsonParse(row.raw_item))
+        return parsePrefixRows(rows, sessionId)
     }
 
     getPrefixBeforeMessageSeq(sessionId: string, beforeSeq: number): unknown[] | null {
@@ -104,13 +107,28 @@ export class CodexHistoryStore {
         }
 
         const rows = this.db.prepare(`
-            SELECT raw_item
+            SELECT seq, raw_item
             FROM codex_history_items
             WHERE session_id = ?
               AND seq < ?
             ORDER BY seq ASC
-        `).all(sessionId, cut.seq) as Array<{ raw_item: string }>
+        `).all(sessionId, cut.seq) as Array<{ seq: number; raw_item: string }>
 
-        return rows.map((row) => safeJsonParse(row.raw_item))
+        return parsePrefixRows(rows, sessionId)
     }
+}
+
+// Throw on unparseable rows — forwarding null into thread/resume(history) would corrupt the prefix.
+function parsePrefixRows(rows: Array<{ seq: number; raw_item: string }>, sessionId: string): unknown[] {
+    const items: unknown[] = []
+    for (const row of rows) {
+        const parsed = safeJsonParse(row.raw_item)
+        if (parsed === null) {
+            const message = `[CodexHistoryStore] Corrupt history row sessionId=${sessionId} seq=${row.seq}`
+            console.error(message)
+            throw new Error(message)
+        }
+        items.push(parsed)
+    }
+    return items
 }

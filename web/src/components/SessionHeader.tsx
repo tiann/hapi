@@ -8,7 +8,6 @@ import { RenameSessionDialog } from '@/components/RenameSessionDialog'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { getSessionModelLabel } from '@/lib/sessionModelLabel'
 import { useTranslation } from '@/lib/use-translation'
-import { useNavigate } from '@tanstack/react-router'
 import { useForkWithFeedback } from '@/hooks/mutations/useForkWithFeedback'
 
 function getSessionTitle(session: Session): string {
@@ -95,7 +94,6 @@ export function SessionHeader(props: {
     onSessionDeleted?: () => void
 }) {
     const { t } = useTranslation()
-    const navigate = useNavigate()
     const { session, api, onSessionDeleted } = props
     const title = useMemo(() => getSessionTitle(session), [session])
     const worktreeBranch = session.metadata?.worktree?.branch
@@ -116,7 +114,7 @@ export function SessionHeader(props: {
         session.metadata?.flavor ?? null
     )
 
-    const handleFork = useForkWithFeedback(forkSession, session.id, title)
+    const handleFork = useForkWithFeedback(forkSession, title)
 
     const handleDelete = async () => {
         await deleteSession()
@@ -227,10 +225,7 @@ export function SessionHeader(props: {
                 sessionActive={session.active}
                 canFork={canFork}
                 onRename={() => setRenameOpen(true)}
-                onFork={() => handleFork((newId) => navigate({
-                    to: '/sessions/$sessionId',
-                    params: { sessionId: newId }
-                }))}
+                onFork={handleFork}
                 onArchive={() => setArchiveOpen(true)}
                 onDelete={() => setDeleteOpen(true)}
                 anchorPoint={menuAnchorPoint}
