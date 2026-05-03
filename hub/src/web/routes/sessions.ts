@@ -174,7 +174,8 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             const status = result.code === 'no_machine_online' ? 503
                 : result.code === 'access_denied' ? 403
                     : result.code === 'session_not_found' ? 404
-                        : 500
+                        : result.code === 'fork_unavailable' ? 409
+                            : 500
             return c.json({ error: result.message, code: result.code }, status)
         }
 
