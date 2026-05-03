@@ -134,27 +134,28 @@ export function HappyAssistantMessage() {
                 />
             )}
             {(copyText || canFork) && (
-                <div className="flex justify-end mt-1 opacity-70 group-hover/msg:opacity-100 transition-opacity">
+                <div className="flex justify-end gap-1 mt-2 opacity-80 group-hover/msg:opacity-100 transition-opacity">
                     {copyText && (
                         <button
                             type="button"
                             title="Copy"
-                            className="p-0.5 rounded hover:bg-[var(--app-subtle-bg)] transition-colors"
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-md hover:bg-[var(--app-subtle-bg)] active:bg-[var(--app-subtle-bg)] transition-colors"
                             onClick={() => copy(copyText)}
                         >
                             {copied
-                                ? <CheckIcon className="h-3.5 w-3.5 text-green-500" />
-                                : <CopyIcon className="h-3.5 w-3.5 text-[var(--app-hint)]" />}
+                                ? <CheckIcon className="h-4 w-4 text-green-500" />
+                                : <CopyIcon className="h-4 w-4 text-[var(--app-hint)]" />}
                         </button>
                     )}
                     {canFork && (
                         <button
                             type="button"
                             title="Fork from this response"
-                            className="p-0.5 rounded hover:bg-[var(--app-subtle-bg)] transition-colors"
+                            aria-label="Fork from this response"
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] shadow-sm hover:bg-[var(--app-subtle-bg)] active:bg-[var(--app-subtle-bg)] transition-colors"
                             onClick={() => ctx.onForkBeforeMessage!(seq)}
                         >
-                            <ForkIcon className="h-3.5 w-3.5 text-[var(--app-hint)]" />
+                            <ForkIcon className="h-4 w-4 text-[var(--app-fg)]" />
                         </button>
                     )}
                 </div>
