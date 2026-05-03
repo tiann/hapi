@@ -228,6 +228,19 @@ export class AppServerEventConverter {
             return error ? [{ type: 'task_failed', error }] : [];
         }
 
+        if (msgType === 'context_compacted') {
+            const threadId = asString(msg.thread_id ?? msg.threadId);
+            if (!threadId) {
+                return [];
+            }
+            const turnId = asString(msg.turn_id ?? msg.turnId);
+            return [{
+                type: 'thread_compacted',
+                thread_id: threadId,
+                ...(turnId ? { turn_id: turnId } : {})
+            }];
+        }
+
         if (
             msgType === 'mcp_startup_update' ||
             msgType === 'mcp_startup_complete' ||
@@ -235,7 +248,6 @@ export class AppServerEventConverter {
             msgType === 'skills_update_available' ||
             msgType === 'stream_error' ||
             msgType === 'warning' ||
-            msgType === 'context_compacted' ||
             msgType === 'terminal_interaction' ||
             msgType === 'user_message'
         ) {
@@ -253,7 +265,21 @@ export class AppServerEventConverter {
             return this.handleWrappedCodexEvent(paramsRecord) ?? events;
         }
 
-        if (method === 'account/rateLimits/updated' || method === 'turn/plan/updated' || method === 'thread/compacted') {
+        if (method === 'account/rateLimits/updated' || method === 'turn/plan/updated') {
+            return events;
+        }
+
+        if (method === 'thread/compacted') {
+            const threadId = asString(paramsRecord.threadId ?? paramsRecord.thread_id);
+            if (!threadId) {
+                return events;
+            }
+            const turnId = asString(paramsRecord.turnId ?? paramsRecord.turn_id);
+            events.push({
+                type: 'thread_compacted',
+                thread_id: threadId,
+                ...(turnId ? { turn_id: turnId } : {})
+            });
             return events;
         }
 

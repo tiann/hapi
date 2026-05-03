@@ -10,6 +10,8 @@ import type {
     ThreadStartResponse,
     ThreadResumeParams,
     ThreadResumeResponse,
+    ThreadCompactParams,
+    ThreadCompactResponse,
     TurnStartParams,
     TurnStartResponse,
     TurnInterruptParams,
@@ -156,6 +158,14 @@ export class CodexAppServerClient {
             timeoutMs: CodexAppServerClient.DEFAULT_TIMEOUT_MS
         });
         return response as ThreadResumeResponse;
+    }
+
+    async compactThread(params: ThreadCompactParams, options?: { signal?: AbortSignal }): Promise<ThreadCompactResponse> {
+        const response = await this.sendRequest('thread/compact/start', params, {
+            signal: options?.signal,
+            timeoutMs: CodexAppServerClient.DEFAULT_TIMEOUT_MS
+        });
+        return response as ThreadCompactResponse;
     }
 
     async startTurn(params: TurnStartParams, options?: { signal?: AbortSignal }): Promise<TurnStartResponse> {

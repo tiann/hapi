@@ -138,6 +138,12 @@ export type CollaborationMode = {
     };
 };
 
+export interface ThreadCompactParams {
+    threadId: string;
+}
+
+export type ThreadCompactResponse = Record<string, never>;
+
 export interface TurnStartParams {
     threadId: string;
     input: UserInput[];
