@@ -20,7 +20,6 @@ export function useForkWithFeedback(
                 variant: 'success',
                 actionLabel: t('toast.action.openSession')
             })
-            onSuccess(newSessionId)
         } catch (error) {
             const message = error instanceof Error ? error.message : t('dialog.fork.failedDescription')
             addToast({
