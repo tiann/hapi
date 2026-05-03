@@ -10,7 +10,7 @@ import type { HappyChatMessageMetadata } from '@/lib/assistant-runtime'
 import { getAssistantCopyText } from '@/components/AssistantChat/messages/assistantCopyText'
 import { getConversationMessageAnchorId } from '@/chat/outline'
 import { MessageMetadata } from '@/components/AssistantChat/messages/MessageMetadata'
-import { isClickOnNestedControl } from '@/components/AssistantChat/messages/metadataToggle'
+import { isNestedInteractiveEvent } from '@/components/AssistantChat/messages/metadataToggle'
 
 const TOOL_COMPONENTS = {
     Fallback: HappyToolMessage
@@ -27,7 +27,7 @@ export function HappyAssistantMessage() {
     const { copied, copy } = useCopyToClipboard()
     const [showMetadata, setShowMetadata] = useState(false)
     const toggleMetadata = useCallback((event: MouseEvent<HTMLElement>) => {
-        if (isClickOnNestedControl(event)) return
+        if (isNestedInteractiveEvent(event)) return
         setShowMetadata((open) => !open)
     }, [])
     const messageId = useAssistantState(({ message }) => message.id)
@@ -61,6 +61,7 @@ export function HappyAssistantMessage() {
         || (messageModel != null && messageModel !== '')
 
     const onMetadataKeyDown = useCallback((event: KeyboardEvent<HTMLDivElement>) => {
+        if (isNestedInteractiveEvent(event)) return
         if (event.key === 'Enter' || event.key === ' ') {
             event.preventDefault()
             setShowMetadata((open) => !open)

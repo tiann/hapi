@@ -10,14 +10,14 @@ import { CopyIcon, CheckIcon } from '@/components/icons'
 import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
 import { getConversationMessageAnchorId } from '@/chat/outline'
 import { MessageMetadata } from '@/components/AssistantChat/messages/MessageMetadata'
-import { isClickOnNestedControl } from '@/components/AssistantChat/messages/metadataToggle'
+import { isNestedInteractiveEvent } from '@/components/AssistantChat/messages/metadataToggle'
 
 export function HappyUserMessage() {
     const ctx = useHappyChatContext()
     const { copied, copy } = useCopyToClipboard()
     const [showMetadata, setShowMetadata] = useState(false)
     const toggleMetadata = useCallback((event: MouseEvent<HTMLElement>) => {
-        if (isClickOnNestedControl(event)) return
+        if (isNestedInteractiveEvent(event)) return
         setShowMetadata((open) => !open)
     }, [])
     const role = useAssistantState(({ message }) => message.role)
@@ -56,6 +56,7 @@ export function HappyUserMessage() {
     const hasMetadata = invokedAt != null
 
     const onMetadataKeyDown = useCallback((event: KeyboardEvent<HTMLElement>) => {
+        if (isNestedInteractiveEvent(event)) return
         if (event.key === 'Enter' || event.key === ' ') {
             event.preventDefault()
             setShowMetadata((open) => !open)

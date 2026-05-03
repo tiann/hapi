@@ -1,22 +1,26 @@
 import { describe, expect, it } from 'vitest'
-import type { MouseEvent } from 'react'
-import { isClickOnNestedControl } from './metadataToggle'
+import type { KeyboardEvent, MouseEvent } from 'react'
+import { isNestedInteractiveEvent } from './metadataToggle'
 
 function makeMouseEvent(target: HTMLElement, currentTarget?: HTMLElement): MouseEvent<HTMLElement> {
     return { target, currentTarget } as unknown as MouseEvent<HTMLElement>
 }
 
-describe('isClickOnNestedControl', () => {
+function makeKeyboardEvent(target: HTMLElement, currentTarget?: HTMLElement): KeyboardEvent<HTMLElement> {
+    return { target, currentTarget } as unknown as KeyboardEvent<HTMLElement>
+}
+
+describe('isNestedInteractiveEvent', () => {
     it('returns true when the click target is itself a button', () => {
         const button = document.createElement('button')
-        expect(isClickOnNestedControl(makeMouseEvent(button))).toBe(true)
+        expect(isNestedInteractiveEvent(makeMouseEvent(button))).toBe(true)
     })
 
     it('returns true when the click target is nested inside a button (e.g. icon)', () => {
         const button = document.createElement('button')
         const icon = document.createElement('span')
         button.appendChild(icon)
-        expect(isClickOnNestedControl(makeMouseEvent(icon))).toBe(true)
+        expect(isNestedInteractiveEvent(makeMouseEvent(icon))).toBe(true)
     })
 
     it('returns true for role="button" elements (Radix triggers, Markdown copy button)', () => {
@@ -24,7 +28,7 @@ describe('isClickOnNestedControl', () => {
         div.setAttribute('role', 'button')
         const inner = document.createElement('span')
         div.appendChild(inner)
-        expect(isClickOnNestedControl(makeMouseEvent(inner))).toBe(true)
+        expect(isNestedInteractiveEvent(makeMouseEvent(inner))).toBe(true)
     })
 
     it('returns true for anchors and form controls', () => {
@@ -32,10 +36,10 @@ describe('isClickOnNestedControl', () => {
         const input = document.createElement('input')
         const textarea = document.createElement('textarea')
         const select = document.createElement('select')
-        expect(isClickOnNestedControl(makeMouseEvent(a))).toBe(true)
-        expect(isClickOnNestedControl(makeMouseEvent(input))).toBe(true)
-        expect(isClickOnNestedControl(makeMouseEvent(textarea))).toBe(true)
-        expect(isClickOnNestedControl(makeMouseEvent(select))).toBe(true)
+        expect(isNestedInteractiveEvent(makeMouseEvent(a))).toBe(true)
+        expect(isNestedInteractiveEvent(makeMouseEvent(input))).toBe(true)
+        expect(isNestedInteractiveEvent(makeMouseEvent(textarea))).toBe(true)
+        expect(isNestedInteractiveEvent(makeMouseEvent(select))).toBe(true)
     })
 
     it('returns false for plain message body text', () => {
@@ -43,11 +47,11 @@ describe('isClickOnNestedControl', () => {
         const paragraph = document.createElement('p')
         paragraph.textContent = 'Hello'
         root.appendChild(paragraph)
-        expect(isClickOnNestedControl(makeMouseEvent(paragraph))).toBe(false)
+        expect(isNestedInteractiveEvent(makeMouseEvent(paragraph))).toBe(false)
     })
 
     it('returns false when target is not an Element', () => {
-        expect(isClickOnNestedControl({ target: null } as unknown as MouseEvent<HTMLElement>)).toBe(false)
+        expect(isNestedInteractiveEvent({ target: null } as unknown as MouseEvent<HTMLElement>)).toBe(false)
     })
 
     it('returns true when the click target is an SVG icon inside a button', () => {
@@ -60,8 +64,8 @@ describe('isClickOnNestedControl', () => {
         const path = document.createElementNS('http://www.w3.org/2000/svg', 'path')
         svg.appendChild(path)
         button.appendChild(svg)
-        expect(isClickOnNestedControl(makeMouseEvent(svg as unknown as HTMLElement))).toBe(true)
-        expect(isClickOnNestedControl(makeMouseEvent(path as unknown as HTMLElement))).toBe(true)
+        expect(isNestedInteractiveEvent(makeMouseEvent(svg as unknown as HTMLElement))).toBe(true)
+        expect(isNestedInteractiveEvent(makeMouseEvent(path as unknown as HTMLElement))).toBe(true)
     })
 
     it('returns true when the click target is a native <summary> (tool-card details disclosure)', () => {
@@ -72,7 +76,7 @@ describe('isClickOnNestedControl', () => {
         const summary = document.createElement('summary')
         summary.textContent = 'Task details'
         details.appendChild(summary)
-        expect(isClickOnNestedControl(makeMouseEvent(summary))).toBe(true)
+        expect(isNestedInteractiveEvent(makeMouseEvent(summary))).toBe(true)
     })
 
     it('returns true when the click target is a status indicator (role="status")', () => {
@@ -82,8 +86,8 @@ describe('isClickOnNestedControl', () => {
         statusSpan.setAttribute('role', 'status')
         const inner = document.createElement('span')
         statusSpan.appendChild(inner)
-        expect(isClickOnNestedControl(makeMouseEvent(statusSpan))).toBe(true)
-        expect(isClickOnNestedControl(makeMouseEvent(inner))).toBe(true)
+        expect(isNestedInteractiveEvent(makeMouseEvent(statusSpan))).toBe(true)
+        expect(isNestedInteractiveEvent(makeMouseEvent(inner))).toBe(true)
     })
 
     it('returns false when the only matching ancestor is the toggle wrapper itself', () => {
@@ -96,7 +100,7 @@ describe('isClickOnNestedControl', () => {
         const text = document.createElement('span')
         text.textContent = 'message body'
         wrapper.appendChild(text)
-        expect(isClickOnNestedControl(makeMouseEvent(text, wrapper))).toBe(false)
+        expect(isNestedInteractiveEvent(makeMouseEvent(text, wrapper))).toBe(false)
     })
 
     it('still returns true when a real nested control sits between target and wrapper', () => {
@@ -108,6 +112,27 @@ describe('isClickOnNestedControl', () => {
         const icon = document.createElement('span')
         innerButton.appendChild(icon)
         wrapper.appendChild(innerButton)
-        expect(isClickOnNestedControl(makeMouseEvent(icon, wrapper))).toBe(true)
+        expect(isNestedInteractiveEvent(makeMouseEvent(icon, wrapper))).toBe(true)
+    })
+
+    it('returns true for Enter/Space keyboard events bubbling from a nested button', () => {
+        // Keyboard parity with mouse path: pressing Enter on a focused
+        // descendant button (e.g. Markdown code-copy) bubbles a keydown to the
+        // wrapper. Without this guard the wrapper's onKeyDown would also flip
+        // the metadata footer alongside the descendant's own activation.
+        const wrapper = document.createElement('div')
+        wrapper.setAttribute('role', 'button')
+        const innerButton = document.createElement('button')
+        wrapper.appendChild(innerButton)
+        expect(isNestedInteractiveEvent(makeKeyboardEvent(innerButton, wrapper))).toBe(true)
+    })
+
+    it('returns false for keyboard events targeting the wrapper itself', () => {
+        // Wrapper-exclusion must apply to keyboard too — a keydown targeting
+        // the wrapper should still fire the toggle, otherwise keyboard users
+        // lose the ability to open metadata via the wrapper.
+        const wrapper = document.createElement('div')
+        wrapper.setAttribute('role', 'button')
+        expect(isNestedInteractiveEvent(makeKeyboardEvent(wrapper, wrapper))).toBe(false)
     })
 })
