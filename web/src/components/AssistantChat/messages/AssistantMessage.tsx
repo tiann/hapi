@@ -134,7 +134,7 @@ export function HappyAssistantMessage() {
                 />
             )}
             {(copyText || canFork) && (
-                <div className="hidden sm:flex justify-end mt-1 opacity-0 group-hover/msg:opacity-100 transition-opacity">
+                <div className="flex justify-end mt-1 opacity-70 group-hover/msg:opacity-100 transition-opacity">
                     {copyText && (
                         <button
                             type="button"
