@@ -152,10 +152,10 @@ export function HappyAssistantMessage() {
                             type="button"
                             title="Fork from this response"
                             aria-label="Fork from this response"
-                            className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] shadow-sm hover:bg-[var(--app-subtle-bg)] active:bg-[var(--app-subtle-bg)] transition-colors"
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-md hover:bg-[var(--app-subtle-bg)] active:bg-[var(--app-subtle-bg)] transition-colors"
                             onClick={() => ctx.onForkBeforeMessage!(seq)}
                         >
-                            <ForkIcon className="h-4 w-4 text-[var(--app-fg)]" />
+                            <ForkIcon className="h-4 w-4 text-[var(--app-hint)]" />
                         </button>
                     )}
                 </div>
