@@ -11,6 +11,7 @@ export class NotificationHub {
     private readonly notificationDebounce: Map<string, NodeJS.Timeout> = new Map()
     private readonly lastReadyNotificationAt: Map<string, number> = new Map()
     private readonly suppressReadyUntil: Map<string, number> = new Map()
+    private readonly forkedBootstrapReadySessions: Set<string> = new Set()
     private unsubscribeSyncEvents: (() => void) | null = null
 
     constructor(
@@ -39,6 +40,7 @@ export class NotificationHub {
         this.lastKnownRequests.clear()
         this.lastReadyNotificationAt.clear()
         this.suppressReadyUntil.clear()
+        this.forkedBootstrapReadySessions.clear()
     }
 
     private handleSyncEvent(event: SyncEvent): void {
@@ -59,6 +61,7 @@ export class NotificationHub {
 
         if (event.type === 'session-forked') {
             this.suppressReadyUntil.set(event.sessionId, Date.now() + this.readyCooldownMs)
+            this.forkedBootstrapReadySessions.add(event.sessionId)
             return
         }
 
@@ -74,6 +77,9 @@ export class NotificationHub {
         if (event.type === 'message-received' && event.sessionId) {
             const eventType = extractMessageEventType(event)
             if (eventType === 'ready') {
+                if (this.shouldSuppressForkedBootstrapReady(event.sessionId)) {
+                    return
+                }
                 this.sendReadyNotification(event.sessionId).catch((error) => {
                     console.error('[NotificationHub] Failed to send ready notification:', error)
                 })
@@ -97,6 +103,22 @@ export class NotificationHub {
         this.lastKnownRequests.delete(sessionId)
         this.lastReadyNotificationAt.delete(sessionId)
         this.suppressReadyUntil.delete(sessionId)
+        this.forkedBootstrapReadySessions.delete(sessionId)
+    }
+
+    private shouldSuppressForkedBootstrapReady(sessionId: string): boolean {
+        const suppressUntil = this.suppressReadyUntil.get(sessionId) ?? 0
+        if (Date.now() < suppressUntil) {
+            return true
+        }
+
+        if (!this.forkedBootstrapReadySessions.has(sessionId)) {
+            return false
+        }
+
+        this.forkedBootstrapReadySessions.delete(sessionId)
+        this.suppressReadyUntil.delete(sessionId)
+        return true
     }
 
     private getNotifiableSession(sessionId: string): Session | null {
