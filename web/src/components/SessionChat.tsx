@@ -391,10 +391,6 @@ export function SessionChat(props: {
                 variant: 'success',
                 actionLabel: t('toast.action.openSession')
             })
-            navigate({
-                to: '/sessions/$sessionId',
-                params: { sessionId: newSessionId }
-            })
         } catch (error) {
             haptic.notification('error')
             const message = error instanceof Error ? error.message : t('dialog.fork.failedDescription')
@@ -405,7 +401,7 @@ export function SessionChat(props: {
                 url: `/sessions/${props.session.id}`
             })
         }
-    }, [addToast, haptic, navigate, props.api, props.session, t])
+    }, [addToast, haptic, props.api, props.session, t])
 
     const attachmentAdapter = useMemo(() => {
         if (!props.session.active) {
