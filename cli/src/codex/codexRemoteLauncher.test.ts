@@ -12,7 +12,12 @@ const harness = vi.hoisted(() => ({
     interruptedTurns: [] as Array<{ threadId: string; turnId: string }>,
     compactThreadIds: [] as string[],
     suppressTurnCompletion: false,
-    remainingThreadSystemErrors: 0
+    remainingThreadSystemErrors: 0,
+    startTurnMessages: [] as string[],
+    failResumeThreadIds: [] as string[],
+    nextThreadSystemErrorMessage: null as string | null,
+    failNextCompact: false,
+    deferThreadStatusNotifications: false
 }));
 
 vi.mock('./codexAppServerClient', () => {
@@ -43,12 +48,29 @@ vi.mock('./codexAppServerClient', () => {
         async resumeThread(params?: { threadId?: string }): Promise<{ thread: { id: string }; model: string }> {
             const id = params?.threadId ?? 'thread-resumed';
             harness.resumeThreadIds.push(id);
+            if (harness.failResumeThreadIds.includes(id)) {
+                throw new Error('resume failed');
+            }
             return { thread: { id }, model: 'gpt-5.4' };
         }
 
-        async startTurn(params?: { threadId?: string }): Promise<{ turn: { id?: string } }> {
+        async compactThread(params?: { threadId?: string }): Promise<Record<string, never>> {
+            const threadId = params?.threadId ?? 'thread-unknown';
+            harness.compactThreadIds.push(threadId);
+            if (harness.failNextCompact) {
+                harness.failNextCompact = false;
+                throw new Error('compact failed');
+            }
+            const compacted = { threadId, turnId: `compact-${harness.compactThreadIds.length}` };
+            harness.notifications.push({ method: 'thread/compacted', params: compacted });
+            this.notificationHandler?.('thread/compacted', compacted);
+            return {};
+        }
+
+        async startTurn(params?: { threadId?: string; input?: Array<{ text?: string }>; message?: string; userMessage?: string }): Promise<{ turn: { id?: string } }> {
             const threadId = params?.threadId ?? 'thread-unknown';
             harness.startTurnThreadIds.push(threadId);
+            harness.startTurnMessages.push(params?.input?.[0]?.text ?? params?.message ?? params?.userMessage ?? '');
             const turnId = `turn-${harness.startTurnThreadIds.length}`;
             const started = { turn: { id: turnId } };
             harness.notifications.push({ method: 'turn/started', params: started });
@@ -58,10 +80,15 @@ vi.mock('./codexAppServerClient', () => {
                 harness.remainingThreadSystemErrors -= 1;
                 const failed = {
                     thread: { id: threadId },
-                    status: { type: 'systemError' }
+                    status: { type: 'systemError', ...(harness.nextThreadSystemErrorMessage ? { message: harness.nextThreadSystemErrorMessage } : {}) }
                 };
                 harness.notifications.push({ method: 'thread/status/changed', params: failed });
-                this.notificationHandler?.('thread/status/changed', failed);
+                const notify = () => this.notificationHandler?.('thread/status/changed', failed);
+                if (harness.deferThreadStatusNotifications) {
+                    setTimeout(notify, 0);
+                } else {
+                    notify();
+                }
                 return { turn: { id: turnId } };
             }
 
@@ -107,11 +134,6 @@ vi.mock('./codexAppServerClient', () => {
                 threadId: params?.threadId ?? 'thread-unknown',
                 turnId: params?.turnId ?? 'turn-unknown'
             });
-            return {};
-        }
-
-        async compactThread(params?: { threadId?: string }): Promise<Record<string, never>> {
-            harness.compactThreadIds.push(params?.threadId ?? 'thread-unknown');
             return {};
         }
 
@@ -250,7 +272,12 @@ describe('codexRemoteLauncher', () => {
         harness.interruptedTurns = [];
         harness.compactThreadIds = [];
         harness.suppressTurnCompletion = false;
+        harness.startTurnMessages = [];
+        harness.failResumeThreadIds = [];
         harness.remainingThreadSystemErrors = 0;
+        harness.nextThreadSystemErrorMessage = null;
+        harness.failNextCompact = false;
+        harness.deferThreadStatusNotifications = false;
     });
 
     it('finishes a turn and emits ready when task lifecycle events include turn_id', async () => {
@@ -287,14 +314,17 @@ describe('codexRemoteLauncher', () => {
         expect(session.thinking).toBe(false);
     });
 
-    it('surfaces thread-level systemError as a visible failure and emits ready', async () => {
-        harness.remainingThreadSystemErrors = 1;
-        const { session, sessionEvents } = createSessionStub();
+    it('surfaces thread-level systemError only after same-thread retries are exhausted', async () => {
+        harness.remainingThreadSystemErrors = 4;
+        const { session, sessionEvents } = createSessionStub(['first message']);
 
         const exitReason = await codexRemoteLauncher(session as never);
 
         expect(exitReason).toBe('exit');
-        expect(harness.notifications.map((entry) => entry.method)).toEqual(['turn/started', 'thread/status/changed']);
+        expect(harness.startThreadIds).toEqual(['thread-1']);
+        expect(harness.resumeThreadIds).toEqual([]);
+        expect(harness.startTurnThreadIds).toEqual(['thread-1', 'thread-1', 'thread-1', 'thread-1']);
+        expect(harness.startTurnMessages).toEqual(['first message', 'first message', 'first message', 'first message']);
         expect(sessionEvents).toContainEqual({
             type: 'message',
             message: 'Task failed: Codex thread entered systemError'
@@ -303,17 +333,152 @@ describe('codexRemoteLauncher', () => {
         expect(session.thinking).toBe(false);
     });
 
-    it('starts a fresh thread for the next queued message after thread-level systemError', async () => {
+    it('retries a thread-level systemError on the same thread without starting a fresh thread', async () => {
+        harness.remainingThreadSystemErrors = 1;
+        const { session, sessionEvents } = createSessionStub(['first message']);
+
+        const exitReason = await codexRemoteLauncher(session as never);
+
+        expect(exitReason).toBe('exit');
+        expect(harness.startThreadIds).toEqual(['thread-1']);
+        expect(harness.resumeThreadIds).toEqual([]);
+        expect(harness.startTurnThreadIds).toEqual(['thread-1', 'thread-1']);
+        expect(harness.startTurnMessages).toEqual(['first message', 'first message']);
+        expect(session.sessionId).toBe('thread-1');
+        expect(sessionEvents).not.toContainEqual({
+            type: 'message',
+            message: 'Task failed: Codex thread entered systemError'
+        });
+        expect(session.thinking).toBe(false);
+    });
+
+    it('compacts the same thread before retrying context-window overflow', async () => {
+        harness.remainingThreadSystemErrors = 1;
+        harness.nextThreadSystemErrorMessage = "Codex ran out of room in the model's context window. Start a new thread or clear earlier history before retrying.";
+        const { session, sessionEvents } = createSessionStub(['first message']);
+
+        const exitReason = await codexRemoteLauncher(session as never);
+
+        expect(exitReason).toBe('exit');
+        expect(harness.startThreadIds).toEqual(['thread-1']);
+        expect(harness.compactThreadIds).toEqual(['thread-1']);
+        expect(harness.startTurnThreadIds).toEqual(['thread-1', 'thread-1']);
+        expect(harness.startTurnMessages).toEqual(['first message', 'first message']);
+        expect(session.sessionId).toBe('thread-1');
+        expect(sessionEvents).not.toContainEqual({
+            type: 'message',
+            message: "Task failed: Codex ran out of room in the model's context window. Start a new thread or clear earlier history before retrying."
+        });
+        expect(session.thinking).toBe(false);
+    });
+
+    it('retries asynchronous thread-level systemError notifications on the same thread', async () => {
+        harness.remainingThreadSystemErrors = 1;
+        harness.deferThreadStatusNotifications = true;
+        const { session, sessionEvents } = createSessionStub(['first message']);
+
+        const exitReason = await codexRemoteLauncher(session as never);
+
+        expect(exitReason).toBe('exit');
+        expect(harness.startThreadIds).toEqual(['thread-1']);
+        expect(harness.resumeThreadIds).toEqual([]);
+        expect(harness.startTurnThreadIds).toEqual(['thread-1', 'thread-1']);
+        expect(harness.startTurnMessages).toEqual(['first message', 'first message']);
+        expect(session.sessionId).toBe('thread-1');
+        expect(sessionEvents).not.toContainEqual({
+            type: 'message',
+            message: 'Task failed: Codex thread entered systemError'
+        });
+        expect(session.thinking).toBe(false);
+    });
+
+    it('compacts before retrying asynchronous context-window overflow notifications', async () => {
+        harness.remainingThreadSystemErrors = 1;
+        harness.deferThreadStatusNotifications = true;
+        harness.nextThreadSystemErrorMessage = "Codex ran out of room in the model's context window. Start a new thread or clear earlier history before retrying.";
+        const { session, sessionEvents } = createSessionStub(['first message']);
+
+        const exitReason = await codexRemoteLauncher(session as never);
+
+        expect(exitReason).toBe('exit');
+        expect(harness.startThreadIds).toEqual(['thread-1']);
+        expect(harness.compactThreadIds).toEqual(['thread-1']);
+        expect(harness.startTurnThreadIds).toEqual(['thread-1', 'thread-1']);
+        expect(harness.startTurnMessages).toEqual(['first message', 'first message']);
+        expect(session.sessionId).toBe('thread-1');
+        expect(sessionEvents).not.toContainEqual({
+            type: 'message',
+            message: "Task failed: Codex ran out of room in the model's context window. Start a new thread or clear earlier history before retrying."
+        });
+        expect(session.thinking).toBe(false);
+    });
+
+    it('does not create a new thread when same-conversation compact fails', async () => {
+        harness.remainingThreadSystemErrors = 1;
+        harness.nextThreadSystemErrorMessage = "Codex ran out of room in the model's context window. Start a new thread or clear earlier history before retrying.";
+        harness.failNextCompact = true;
+        const { session, sessionEvents } = createSessionStub(['first message']);
+
+        const exitReason = await codexRemoteLauncher(session as never);
+
+        expect(exitReason).toBe('exit');
+        expect(harness.startThreadIds).toEqual(['thread-1']);
+        expect(harness.compactThreadIds).toEqual(['thread-1']);
+        expect(harness.startTurnThreadIds).toEqual(['thread-1']);
+        expect(session.sessionId).toBe('thread-1');
+        expect(sessionEvents).toContainEqual({
+            type: 'message',
+            message: 'Task failed: context window overflow and same-conversation compact failed'
+        });
+        expect(session.thinking).toBe(false);
+    });
+
+    it('keeps using the old thread for later messages after same-thread retries are exhausted', async () => {
+        harness.remainingThreadSystemErrors = 4;
+        const { session } = createSessionStub(['first message', 'second message']);
+
+        const exitReason = await codexRemoteLauncher(session as never);
+
+        expect(exitReason).toBe('exit');
+        expect(harness.startThreadIds).toEqual(['thread-1']);
+        expect(harness.resumeThreadIds).toEqual([]);
+        expect(harness.startTurnThreadIds).toEqual(['thread-1', 'thread-1', 'thread-1', 'thread-1', 'thread-1']);
+        expect(harness.startTurnMessages).toEqual(['first message', 'first message', 'first message', 'first message', 'second message']);
+        expect(session.sessionId).toBe('thread-1');
+        expect(session.thinking).toBe(false);
+    });
+
+    it('does not create a new thread when an existing conversation cannot be resumed', async () => {
+        harness.failResumeThreadIds = ['thread-old'];
+        const { session, sessionEvents } = createSessionStub(['first message']);
+        session.sessionId = 'thread-old';
+
+        const exitReason = await codexRemoteLauncher(session as never);
+
+        expect(exitReason).toBe('exit');
+        expect(harness.resumeThreadIds).toEqual(['thread-old']);
+        expect(harness.startThreadIds).toEqual([]);
+        expect(harness.startTurnThreadIds).toEqual([]);
+        expect(session.sessionId).toBe('thread-old');
+        expect(sessionEvents).toContainEqual({
+            type: 'message',
+            message: 'Task failed: Codex conversation thread-old could not be resumed; no new conversation was created'
+        });
+        expect(session.thinking).toBe(false);
+    });
+
+    it('does not start a fresh thread for the next queued message after thread-level systemError', async () => {
         harness.remainingThreadSystemErrors = 1;
         const { session } = createSessionStub(['first message', 'second message']);
 
         const exitReason = await codexRemoteLauncher(session as never);
 
         expect(exitReason).toBe('exit');
-        expect(harness.startThreadIds).toEqual(['thread-1', 'thread-2']);
+        expect(harness.startThreadIds).toEqual(['thread-1']);
         expect(harness.resumeThreadIds).toEqual([]);
-        expect(harness.startTurnThreadIds).toEqual(['thread-1', 'thread-2']);
-        expect(session.sessionId).toBe('thread-2');
+        expect(harness.startTurnThreadIds).toEqual(['thread-1', 'thread-1', 'thread-1']);
+        expect(harness.startTurnMessages).toEqual(['first message', 'first message', 'second message']);
+        expect(session.sessionId).toBe('thread-1');
         expect(session.thinking).toBe(false);
     });
 

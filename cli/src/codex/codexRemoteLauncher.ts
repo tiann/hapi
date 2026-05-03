@@ -26,6 +26,35 @@ import {
 type HappyServer = Awaited<ReturnType<typeof buildHapiMcpBridge>>['server'];
 type QueuedMessage = { message: string; mode: EnhancedMode; isolate: boolean; hash: string };
 
+const SAME_THREAD_RETRYABLE_ERROR_PATTERNS = [
+    'selected model is at capacity',
+    'codex thread entered systemerror'
+];
+const CONTEXT_COMPACT_RETRYABLE_ERROR_PATTERNS = [
+    'ran out of room in the model',
+    'context window',
+    'clear earlier history'
+];
+const SAME_THREAD_MAX_RETRIES = 3;
+const SAME_THREAD_MAX_COMPACT_RETRIES = 1;
+const SAME_THREAD_COMPACT_TIMEOUT_MS = 10 * 60 * 1000;
+
+function isSameThreadRetryableCodexError(error: string | null): boolean {
+    if (!error) {
+        return false;
+    }
+    const normalized = error.toLowerCase();
+    return SAME_THREAD_RETRYABLE_ERROR_PATTERNS.some((pattern) => normalized.includes(pattern));
+}
+
+function isContextCompactRetryableCodexError(error: string | null): boolean {
+    if (!error) {
+        return false;
+    }
+    const normalized = error.toLowerCase();
+    return CONTEXT_COMPACT_RETRYABLE_ERROR_PATTERNS.some((pattern) => normalized.includes(pattern));
+}
+
 class CodexRemoteLauncher extends RemoteLauncherBase {
     private readonly session: CodexSession;
     private readonly appServerClient: CodexAppServerClient;
@@ -243,6 +272,117 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         let turnInFlight = false;
         let allowAnonymousTerminalEvent = false;
         let invalidThreadId: string | null = null;
+        let activeMessage: QueuedMessage | null = null;
+        let sameThreadRetryAttempt = 0;
+        let sameThreadCompactAttempt = 0;
+        let recoveryInFlight = false;
+        let compactRecovery: {
+            threadId: string;
+            message: QueuedMessage;
+            timeout: ReturnType<typeof setTimeout> | null;
+        } | null = null;
+        let loopWakeWaiter: (() => void) | null = null;
+
+        const wakeLoop = () => {
+            const waiter = loopWakeWaiter;
+            if (!waiter) {
+                return;
+            }
+            loopWakeWaiter = null;
+            waiter();
+        };
+
+        const waitForTurnOrRecovery = (signal: AbortSignal): Promise<void> => new Promise((resolve) => {
+            if (!turnInFlight && !recoveryInFlight) {
+                resolve();
+                return;
+            }
+
+            const finish = () => {
+                if (loopWakeWaiter === finish) {
+                    loopWakeWaiter = null;
+                }
+                signal.removeEventListener('abort', finish);
+                resolve();
+            };
+
+            loopWakeWaiter = finish;
+            signal.addEventListener('abort', finish, { once: true });
+        });
+
+        const clearCompactRecovery = (recovery: typeof compactRecovery) => {
+            if (!recovery) {
+                return;
+            }
+            if (recovery.timeout) {
+                clearTimeout(recovery.timeout);
+            }
+            if (compactRecovery === recovery) {
+                compactRecovery = null;
+            }
+            recoveryInFlight = false;
+            wakeLoop();
+        };
+
+        const failCompactRecovery = (recovery: typeof compactRecovery, message: string) => {
+            if (!recovery || compactRecovery !== recovery) {
+                return;
+            }
+            logger.warn(`[Codex] ${message}`);
+            messageBuffer.addMessage(message, 'status');
+            session.sendSessionEvent({ type: 'message', message });
+            activeMessage = null;
+            clearCompactRecovery(recovery);
+        };
+
+        const completeCompactRecovery = (threadId: string | null) => {
+            const recovery = compactRecovery;
+            if (!recovery) {
+                return false;
+            }
+            if (!threadId || threadId !== recovery.threadId) {
+                return false;
+            }
+            if (!this.shouldExit && this.currentThreadId === recovery.threadId) {
+                pending = recovery.message;
+                const message = 'Context compacted; retrying same conversation';
+                messageBuffer.addMessage(message, 'status');
+                session.sendSessionEvent({ type: 'message', message });
+            }
+            clearCompactRecovery(recovery);
+            return true;
+        };
+
+        const beginCompactRecovery = (threadId: string, messageToRetry: QueuedMessage, error: string | null) => {
+            sameThreadCompactAttempt += 1;
+            recoveryInFlight = true;
+            const recovery = {
+                threadId,
+                message: messageToRetry,
+                timeout: null as ReturnType<typeof setTimeout> | null
+            };
+            compactRecovery = recovery;
+            recovery.timeout = setTimeout(() => {
+                failCompactRecovery(
+                    recovery,
+                    'Task failed: context window overflow and same-conversation compact timed out'
+                );
+            }, SAME_THREAD_COMPACT_TIMEOUT_MS);
+            recovery.timeout.unref?.();
+
+            logger.debug(
+                `[Codex] Compacting retryable context failure on same thread ` +
+                `(attempt ${sameThreadCompactAttempt}/${SAME_THREAD_MAX_COMPACT_RETRIES}): ${error ?? 'unknown error'}`
+            );
+            void appServerClient.compactThread({ threadId }, { signal: this.abortController.signal })
+                .catch((compactError) => {
+                    logger.warn('[Codex] Failed to start app-server thread compact before retry:', compactError);
+                    failCompactRecovery(
+                        recovery,
+                        'Task failed: context window overflow and same-conversation compact failed'
+                    );
+                });
+        };
 
         const handleCodexEvent = (msg: Record<string, unknown>) => {
             const msgType = asString(msg.type);
@@ -260,6 +400,11 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 return;
             }
 
+            if (msgType === 'thread_compacted') {
+                completeCompactRecovery(eventThreadId);
+                return;
+            }
+
             if (msgType === 'task_started') {
                 const turnId = eventTurnId;
                 if (turnId) {
@@ -271,6 +416,18 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             }
 
             const isThreadStatusFailure = msgType === 'task_failed' && msg.terminal_source === 'thread_status';
+            const error = msgType === 'task_failed' ? asString(msg.error) : null;
+            const shouldCompactAndRetrySameThread = msgType === 'task_failed'
+                && isContextCompactRetryableCodexError(error)
+                && Boolean(activeMessage)
+                && Boolean(this.currentThreadId)
+                && sameThreadCompactAttempt < SAME_THREAD_MAX_COMPACT_RETRIES;
+            const shouldRetrySameThread = msgType === 'task_failed'
+                && !shouldCompactAndRetrySameThread
+                && isSameThreadRetryableCodexError(error)
+                && Boolean(activeMessage)
+                && Boolean(this.currentThreadId)
+                && sameThreadRetryAttempt < SAME_THREAD_MAX_RETRIES;
 
             if (isTerminalEvent) {
                 if (shouldIgnoreTerminalEvent({
@@ -290,12 +447,24 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     );
                     return;
                 }
+                if (shouldCompactAndRetrySameThread) {
+                    const threadId = this.currentThreadId;
+                    const messageToRetry = activeMessage;
+                    if (threadId && messageToRetry) {
+                        beginCompactRecovery(threadId, messageToRetry, error);
+                    }
+                } else if (shouldRetrySameThread) {
+                    sameThreadRetryAttempt += 1;
+                    pending = activeMessage;
+                    logger.debug(
+                        `[Codex] Retrying retryable failure on same thread ` +
+                        `(attempt ${sameThreadRetryAttempt}/${SAME_THREAD_MAX_RETRIES}): ${error ?? 'unknown error'}`
+                    );
+                }
                 this.currentTurnId = null;
                 allowAnonymousTerminalEvent = false;
-                if (isThreadStatusFailure) {
-                    invalidThreadId = eventThreadId ?? this.currentThreadId;
-                    this.currentThreadId = null;
-                    hasThread = false;
+                if (isThreadStatusFailure && !shouldRetrySameThread && !shouldCompactAndRetrySameThread) {
+                    logger.warn(`[Codex] Thread-level failure on ${eventThreadId ?? this.currentThreadId ?? 'unknown thread'}; preserving same conversation`);
                 }
             }
 
@@ -327,10 +496,23 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             } else if (msgType === 'turn_aborted') {
                 messageBuffer.addMessage('Turn aborted', 'status');
             } else if (msgType === 'task_failed') {
-                const error = asString(msg.error);
-                const message = error ? `Task failed: ${error}` : 'Task failed';
-                messageBuffer.addMessage(message, 'status');
-                session.sendSessionEvent({ type: 'message', message });
+                if (shouldCompactAndRetrySameThread) {
+                    const retryMessage = error
+                        ? `Task failed: ${error}; compacting same conversation before retry (${sameThreadCompactAttempt}/${SAME_THREAD_MAX_COMPACT_RETRIES})`
+                        : `Task failed; compacting same conversation before retry (${sameThreadCompactAttempt}/${SAME_THREAD_MAX_COMPACT_RETRIES})`;
+                    messageBuffer.addMessage(retryMessage, 'status');
+                    session.sendSessionEvent({ type: 'message', message: retryMessage });
+                } else if (shouldRetrySameThread) {
+                    const retryMessage = error
+                        ? `Task failed: ${error}; retrying same conversation (${sameThreadRetryAttempt}/${SAME_THREAD_MAX_RETRIES})`
+                        : `Task failed; retrying same conversation (${sameThreadRetryAttempt}/${SAME_THREAD_MAX_RETRIES})`;
+                    messageBuffer.addMessage(retryMessage, 'status');
+                    session.sendSessionEvent({ type: 'message', message: retryMessage });
+                } else {
+                    const message = error ? `Task failed: ${error}` : 'Task failed';
+                    messageBuffer.addMessage(message, 'status');
+                    session.sendSessionEvent({ type: 'message', message });
+                }
             }
 
             if (msgType === 'task_started') {
@@ -353,12 +535,21 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 }
                 diffProcessor.reset();
                 appServerEventConverter.reset();
+                wakeLoop();
             }
 
             if (isTerminalEvent && !turnInFlight) {
                 scheduleReadyAfterTurn?.();
             } else if (readyAfterTurnTimer && msgType !== 'task_started') {
                 scheduleReadyAfterTurn?.();
+            }
+
+            if (msgType === 'task_complete') {
+                sameThreadRetryAttempt = 0;
+                sameThreadCompactAttempt = 0;
+                recoveryInFlight = false;
+                clearCompactRecovery(compactRecovery);
+                activeMessage = null;
             }
 
             if (msgType === 'agent_reasoning_section_break') {
@@ -625,7 +816,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             readyAfterTurnTimer = setTimeout(() => {
                 readyAfterTurnTimer = null;
                 emitReadyIfIdle({
-                    pending,
+                    pending: pending ?? (recoveryInFlight ? activeMessage : null),
                     queueSize: () => session.queue.size(),
                     shouldExit: this.shouldExit,
                     sendReady
@@ -753,9 +944,22 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
 
         while (!this.shouldExit) {
             logActiveHandles('loop-top');
+            if (!pending && (turnInFlight || recoveryInFlight) && session.queue.size() === 0) {
+                await waitForTurnOrRecovery(this.abortController.signal);
+                if (this.abortController.signal.aborted && !this.shouldExit) {
+                    logger.debug('[codex]: Internal wait aborted while turn/recovery was active; continuing');
+                    continue;
+                }
+                continue;
+            }
+
             let message: QueuedMessage | null = pending;
+            const isRetryMessage = Boolean(message);
             pending = null;
             if (!message) {
+                sameThreadRetryAttempt = 0;
+                sameThreadCompactAttempt = 0;
+                activeMessage = null;
                 const waitSignal = this.abortController.signal;
                 const batch = await session.queue.waitForMessagesAndGetAsString(waitSignal);
                 if (!batch) {
@@ -773,7 +977,10 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 break;
             }
 
-            messageBuffer.addMessage(message.message, 'user');
+            if (!isRetryMessage) {
+                messageBuffer.addMessage(message.message, 'user');
+            }
+            activeMessage = message;
 
             try {
                 if (await handleSpecialCommand(message)) {
@@ -788,9 +995,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                         cliOverrides: session.codexCliOverrides
                     });
 
-                    const resumeCandidate = session.sessionId && session.sessionId !== invalidThreadId
-                        ? session.sessionId
-                        : null;
+                    const resumeCandidate = session.sessionId ?? null;
                     let threadId: string | null = null;
 
                     if (resumeCandidate) {
@@ -807,7 +1012,12 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                             applyResolvedModel(resumeRecord?.model);
                             logger.debug(`[Codex] Resumed app-server thread ${threadId}`);
                         } catch (error) {
-                            logger.warn(`[Codex] Failed to resume app-server thread ${resumeCandidate}, starting new thread`, error);
+                            logger.warn(`[Codex] Failed to resume app-server thread ${resumeCandidate}; preserving old conversation boundary`, error);
+                            const failureMessage = `Task failed: Codex conversation ${resumeCandidate} could not be resumed; no new conversation was created`;
+                            messageBuffer.addMessage(failureMessage, 'status');
+                            session.sendSessionEvent({ type: 'message', message: failureMessage });
+                            pending = null;
+                            continue;
                         }
                     }
 
@@ -891,7 +1101,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     session.onThinkingChange(false);
                     clearReadyAfterTurnTimer?.();
                     emitReadyIfIdle({
-                        pending,
+                        pending: pending ?? (recoveryInFlight ? activeMessage : null),
                         queueSize: () => session.queue.size(),
                         shouldExit: this.shouldExit,
                         sendReady
