@@ -15,6 +15,17 @@ export type AddCodexHistoryItemInput = {
     rawItem: unknown
 }
 
+type CodexHistoryRow = {
+    codex_thread_id: string
+    turn_id: string | null
+    item_id: string
+    item_kind: CodexHistoryItemKind
+    message_seq: number | null
+    raw_item: string
+    seq: number
+    created_at: number
+}
+
 export class CodexHistoryStore {
     private readonly db: Database
 
@@ -115,6 +126,95 @@ export class CodexHistoryStore {
         `).all(sessionId, cut.seq) as Array<{ seq: number; raw_item: string }>
 
         return parsePrefixRows(rows, sessionId)
+    }
+
+    cloneSessionHistory(fromSessionId: string, toSessionId: string, messageSeqOffset: number): number {
+        const rows = this.db.prepare(`
+            SELECT codex_thread_id, turn_id, item_id, item_kind, message_seq, raw_item, seq, created_at
+            FROM codex_history_items
+            WHERE session_id = ?
+            ORDER BY seq ASC
+        `).all(fromSessionId) as CodexHistoryRow[]
+
+        return this.cloneRows(toSessionId, rows, messageSeqOffset)
+    }
+
+    clonePrefixThroughReplyForUserMessageSeq(
+        fromSessionId: string,
+        toSessionId: string,
+        messageSeq: number,
+        messageSeqOffset: number
+    ): number {
+        const cut = this.db.prepare(`
+            SELECT seq
+            FROM codex_history_items
+            WHERE session_id = ?
+              AND message_seq = ?
+              AND item_kind = 'user'
+            ORDER BY seq ASC
+            LIMIT 1
+        `).get(fromSessionId, messageSeq) as { seq: number } | undefined
+
+        if (!cut) return 0
+
+        const nextUser = this.db.prepare(`
+            SELECT seq
+            FROM codex_history_items
+            WHERE session_id = ?
+              AND item_kind = 'user'
+              AND seq > ?
+            ORDER BY seq ASC
+            LIMIT 1
+        `).get(fromSessionId, cut.seq) as { seq: number } | undefined
+
+        const beforeClause = nextUser ? 'AND seq < @nextUserSeq' : ''
+        const rows = this.db.prepare(`
+            SELECT codex_thread_id, turn_id, item_id, item_kind, message_seq, raw_item, seq, created_at
+            FROM codex_history_items
+            WHERE session_id = @fromSessionId
+              ${beforeClause}
+            ORDER BY seq ASC
+        `).all({
+            fromSessionId,
+            nextUserSeq: nextUser?.seq ?? null
+        }) as CodexHistoryRow[]
+
+        return this.cloneRows(toSessionId, rows, messageSeqOffset)
+    }
+
+    private cloneRows(toSessionId: string, rows: CodexHistoryRow[], messageSeqOffset: number): number {
+        if (rows.length === 0) return 0
+
+        const targetMaxSeq = (this.db.prepare(
+            'SELECT COALESCE(MAX(seq), 0) AS maxSeq FROM codex_history_items WHERE session_id = ?'
+        ).get(toSessionId) as { maxSeq: number } | undefined)?.maxSeq ?? 0
+
+        const insert = this.db.prepare(`
+            INSERT OR IGNORE INTO codex_history_items (
+                id, session_id, codex_thread_id, turn_id, item_id, item_kind, message_seq, raw_item, seq, created_at
+            ) VALUES (
+                @id, @session_id, @codex_thread_id, @turn_id, @item_id, @item_kind, @message_seq, @raw_item, @seq, @created_at
+            )
+        `)
+
+        let cloned = 0
+        for (const row of rows) {
+            const result = insert.run({
+                id: randomUUID(),
+                session_id: toSessionId,
+                codex_thread_id: row.codex_thread_id,
+                turn_id: row.turn_id,
+                item_id: row.item_id,
+                item_kind: row.item_kind,
+                message_seq: row.message_seq == null ? null : row.message_seq + messageSeqOffset,
+                raw_item: row.raw_item,
+                seq: targetMaxSeq + row.seq,
+                created_at: row.created_at
+            })
+            cloned += result.changes
+        }
+
+        return cloned
     }
 }
 

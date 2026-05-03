@@ -821,6 +821,7 @@ describe('session model', () => {
 
             let capturedForkSessionId: string | undefined
             let capturedForkHistory: unknown[] | undefined
+            let spawnCount = 0
             let forkedSessionId = ''
             ;(engine as any).rpcGateway.spawnSession = async (
                 _machineId: string,
@@ -839,14 +840,15 @@ describe('session model', () => {
             ) => {
                 capturedForkSessionId = forkSessionId
                 capturedForkHistory = forkHistory
+                spawnCount += 1
                 const forkedSession = engine.getOrCreateSession(
-                    'forked-session-history-point',
+                    `forked-session-history-point-${spawnCount}`,
                     {
                         path: '/tmp/project',
                         host: 'localhost',
                         machineId: 'machine-1',
                         flavor: 'codex',
-                        codexSessionId: 'codex-thread-2'
+                        codexSessionId: `codex-thread-fork-${spawnCount}`
                     },
                     null,
                     'default'
@@ -860,13 +862,27 @@ describe('session model', () => {
 
             expect(result).toEqual({ type: 'success', sessionId: forkedSessionId })
             expect(capturedForkSessionId).toBeUndefined()
-            expect(capturedForkHistory).toEqual([
+            expect(capturedForkHistory as unknown).toEqual([
                 { id: 'user-1', role: 'user' },
                 { id: 'assistant-1', role: 'assistant' }
             ])
             expect(store.messages.getMessages(forkedSessionId, 10).map((message) => message.content)).toEqual([
                 { role: 'user', content: { type: 'text', text: 'first' } },
                 { role: 'assistant', content: { type: 'text', text: 'answer' } }
+            ])
+
+            const firstForkedSessionId = forkedSessionId
+            capturedForkSessionId = undefined
+            capturedForkHistory = undefined
+
+            const chainedResult = await engine.forkSession(firstForkedSessionId, 'default', { beforeSeq: 2 })
+
+            expect(chainedResult).toEqual({ type: 'success', sessionId: forkedSessionId })
+            expect(forkedSessionId).not.toBe(firstForkedSessionId)
+            expect(capturedForkSessionId).toBeUndefined()
+            expect(capturedForkHistory as unknown).toEqual([
+                { id: 'user-1', role: 'user' },
+                { id: 'assistant-1', role: 'assistant' }
             ])
         } finally {
             engine.stop()

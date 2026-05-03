@@ -574,6 +574,7 @@ export class SyncEngine {
 
         let forkHistory: unknown[] | undefined
         let cloneBeforeSeq: number | undefined
+        let historicalForkUserMessageSeq: number | undefined
         if (opts?.beforeSeq !== undefined) {
             if (!Number.isInteger(opts.beforeSeq) || opts.beforeSeq <= 0) {
                 return { type: 'error', message: 'beforeSeq must be a positive integer', code: 'fork_unavailable' }
@@ -625,6 +626,7 @@ export class SyncEngine {
             }
             forkHistory = prefix
             cloneBeforeSeq = this.store.messages.getNextUserMessageSeq(sessionId, userMessageSeq) ?? undefined
+            historicalForkUserMessageSeq = userMessageSeq
         }
 
         // Whole-session fork needs the source's codex thread id; historical fork carries the prefix
@@ -697,12 +699,14 @@ export class SyncEngine {
         // Best-effort post-conditions. If either fails the session itself is still valid; surface a
         // warning back to the caller (and a log line) rather than reporting fork_failed.
         const warnings: string[] = []
+        let clonedMessageSeqOffset: number | null = null
         try {
             // Observability for the residual ordering race: codex sessions don't normally write to
             // the messages table before the first user turn, so the target should be empty here.
             // If a future CLI change starts writing earlier, cloned history will land *after* those
             // rows in the timeline; logging makes that regression obvious instead of silent.
             const cloneResult = this.store.messages.cloneSessionMessages(sessionId, spawnResult.sessionId, cloneBeforeSeq)
+            clonedMessageSeqOffset = cloneResult.targetMaxSeq - cloneResult.sourceMaxSeq
             const targetMaxSeqBefore = cloneResult.targetMaxSeq - cloneResult.sourceMaxSeq
             if (targetMaxSeqBefore > 0) {
                 console.warn(`[SyncEngine] Forked session ${spawnResult.sessionId} already had ${targetMaxSeqBefore} messages before clone; cloned history will appear after them.`)
@@ -710,6 +714,23 @@ export class SyncEngine {
         } catch (error) {
             console.error(`[SyncEngine] Failed to clone messages into forked session ${spawnResult.sessionId}:`, error)
             warnings.push('history could not be cloned')
+        }
+        if (clonedMessageSeqOffset != null) {
+            try {
+                if (historicalForkUserMessageSeq !== undefined) {
+                    this.store.codexHistory.clonePrefixThroughReplyForUserMessageSeq(
+                        sessionId,
+                        spawnResult.sessionId,
+                        historicalForkUserMessageSeq,
+                        clonedMessageSeqOffset
+                    )
+                } else {
+                    this.store.codexHistory.cloneSessionHistory(sessionId, spawnResult.sessionId, clonedMessageSeqOffset)
+                }
+            } catch (error) {
+                console.error(`[SyncEngine] Failed to clone Codex history into forked session ${spawnResult.sessionId}:`, error)
+                warnings.push('raw history could not be cloned')
+            }
         }
         try {
             await this.sessionCache.inheritSessionMetadata(sessionId, spawnResult.sessionId)

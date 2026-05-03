@@ -104,6 +104,43 @@ describe('CodexHistoryStore', () => {
         expect(store.codexHistory.getPrefixThroughReplyForUserMessageSeq(session.id, 2)).toBeNull()
     })
 
+    it('clones a raw history prefix and remaps user message seqs', () => {
+        const store = new Store(':memory:')
+        const source = store.sessions.getOrCreateSession('s1', { flavor: 'codex' }, null, 'default')
+        const target = store.sessions.getOrCreateSession('s2', { flavor: 'codex' }, null, 'default')
+
+        store.codexHistory.addItem({
+            sessionId: source.id,
+            codexThreadId: 'thread-1',
+            itemId: 'user-1',
+            itemKind: 'user',
+            messageSeq: 1,
+            rawItem: { id: 'user-1', role: 'user' }
+        })
+        store.codexHistory.addItem({
+            sessionId: source.id,
+            codexThreadId: 'thread-1',
+            itemId: 'assistant-1',
+            itemKind: 'assistant',
+            rawItem: { id: 'assistant-1', role: 'assistant' }
+        })
+        store.codexHistory.addItem({
+            sessionId: source.id,
+            codexThreadId: 'thread-1',
+            itemId: 'user-2',
+            itemKind: 'user',
+            messageSeq: 3,
+            rawItem: { id: 'user-2', role: 'user' }
+        })
+
+        expect(store.codexHistory.clonePrefixThroughReplyForUserMessageSeq(source.id, target.id, 1, 4)).toBe(2)
+        expect(store.codexHistory.getPrefixThroughReplyForUserMessageSeq(target.id, 5)).toEqual([
+            { id: 'user-1', role: 'user' },
+            { id: 'assistant-1', role: 'assistant' }
+        ])
+        expect(store.codexHistory.getPrefixThroughReplyForUserMessageSeq(target.id, 1)).toBeNull()
+    })
+
     it('deletes codex history rows when deleting the session', () => {
         const store = new Store(':memory:')
         const session = store.sessions.getOrCreateSession('s1', { flavor: 'codex' }, null, 'default')
