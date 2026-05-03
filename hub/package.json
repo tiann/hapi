@@ -12,11 +12,13 @@
         "test": "bun test",
         "typecheck": "tsc --noEmit",
         "build": "bun build src/index.ts --outdir dist --target bun",
-        "generate:embedded-web-assets": "bun run scripts/generate-embedded-web-assets.ts"
+        "generate:embedded-web-assets": "bun run scripts/generate-embedded-web-assets.ts",
+        "e2e:wecom": "bun run scripts/e2e-wecom.ts"
     },
     "dependencies": {
         "@hapi/protocol": "workspace:*",
         "@socket.io/bun-engine": "^0.1.0",
+        "@wecom/aibot-node-sdk": "^1.0.6",
         "grammy": "^1.38.4",
         "hono": "^4.11.2",
         "jose": "^6.1.3",
