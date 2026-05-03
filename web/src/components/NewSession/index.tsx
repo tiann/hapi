@@ -19,6 +19,7 @@ import { MachineSelector } from './MachineSelector'
 import { ModelSelector } from './ModelSelector'
 import { OpencodeModelSelector } from './OpencodeModelSelector'
 import { ClaudeEffortSelector } from './ClaudeEffortSelector'
+import { shouldEnableOpencodeModelDiscovery } from './opencodeModelsGate'
 import { ReasoningEffortSelector } from './ReasoningEffortSelector'
 import {
     loadPreferredAgent,
@@ -134,11 +135,39 @@ export function NewSession(props: {
 
     const trimmedDirectory = directory.trim()
     const deferredDirectory = useDeferredValue(trimmedDirectory)
+    const allPaths = useDirectorySuggestions(machineId, sessions, recentPaths)
+
+    const pathsToCheck = useMemo(
+        () => Array.from(new Set([
+            ...(deferredDirectory ? [deferredDirectory] : []),
+            ...allPaths
+        ])).slice(0, 1000),
+        [allPaths, deferredDirectory]
+    )
+
+    const { pathExistence, checkPathsExists } = useMachinePathsExists(props.api, machineId, pathsToCheck)
+
+    const verifiedPaths = useMemo(
+        () => allPaths.filter((path) => pathExistence[path]),
+        [allPaths, pathExistence]
+    )
+
+    const deferredDirectoryExists = deferredDirectory
+        ? pathExistence[deferredDirectory]
+        : undefined
     const opencodeModelsState = useOpencodeModelsForCwd({
         api: props.api,
         machineId,
         cwd: deferredDirectory,
-        enabled: agent === 'opencode' && Boolean(machineId) && deferredDirectory.length > 0
+        // Gate on positive existence: typing partial paths must not spawn an
+        // expensive `opencode acp` probe for a non-existent cwd while the
+        // existence check is in flight.
+        enabled: shouldEnableOpencodeModelDiscovery({
+            agent,
+            machineId,
+            cwd: deferredDirectory,
+            cwdExists: deferredDirectoryExists,
+        })
     })
     useEffect(() => {
         // Auto-pick the OpenCode default model when discovery finishes, so the
@@ -156,22 +185,6 @@ export function NewSession(props: {
         // Reset selection when agent / machine / directory changes; new probe = new defaults.
         setOpencodeSelectedModel(null)
     }, [agent, machineId, deferredDirectory])
-    const allPaths = useDirectorySuggestions(machineId, sessions, recentPaths)
-
-    const pathsToCheck = useMemo(
-        () => Array.from(new Set([
-            ...(deferredDirectory ? [deferredDirectory] : []),
-            ...allPaths
-        ])).slice(0, 1000),
-        [allPaths, deferredDirectory]
-    )
-
-    const { pathExistence, checkPathsExists } = useMachinePathsExists(props.api, machineId, pathsToCheck)
-
-    const verifiedPaths = useMemo(
-        () => allPaths.filter((path) => pathExistence[path]),
-        [allPaths, pathExistence]
-    )
 
     const currentDirectoryExists = trimmedDirectory ? pathExistence[trimmedDirectory] : undefined
     const needsDirectoryCreationWarning = sessionType === 'simple' && trimmedDirectory !== '' && currentDirectoryExists === false
