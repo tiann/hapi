@@ -24,6 +24,7 @@ import { join } from 'path';
 import { buildMachineMetadata } from '@/agent/sessionFactory';
 import { resolveWorkspaceRoot } from '@/utils/workspaceRoot';
 import { hashRunnerCliApiToken } from './runnerIdentity';
+import { buildRunnerSpawnKey, findReusableRunnerSpawnSession } from './spawnDedupe';
 
 export async function startRunner(options: { workspaceRoot?: string } = {}): Promise<void> {
   // We don't have cleanup function at the time of server construction
@@ -144,6 +145,7 @@ export async function startRunner(options: { workspaceRoot?: string } = {}): Pro
     // Session spawning awaiter system
     const pidToAwaiter = new Map<number, (session: TrackedSession) => void>();
     const pidToErrorAwaiter = new Map<number, (errorMessage: string) => void>();
+    const spawnKeyToPendingSpawn = new Map<string, Promise<SpawnSessionResult>>();
     type SpawnFailureDetails = {
       message: string
       pid?: number
@@ -242,6 +244,46 @@ export async function startRunner(options: { workspaceRoot?: string } = {}): Pro
       let spawnDirectory = directory;
       let worktreeInfo: WorktreeInfo | null = null;
       let happyProcess: ReturnType<typeof spawnHappyCLI> | null = null;
+      const spawnKey = buildRunnerSpawnKey(options);
+
+      if (spawnKey) {
+        const pendingSpawn = spawnKeyToPendingSpawn.get(spawnKey);
+        if (pendingSpawn) {
+          logger.debug('[RUNNER RUN] Waiting for existing in-flight spawn with the same target');
+          return await pendingSpawn;
+        }
+
+        const reusableSession = findReusableRunnerSpawnSession(
+          pidToTrackedSession.values(),
+          spawnKey,
+          isProcessAlive
+        );
+        if (reusableSession?.happySessionId) {
+          logger.debug(
+            `[RUNNER RUN] Reusing existing runner-spawned session ${reusableSession.happySessionId} ` +
+            `for duplicate spawn target (PID ${reusableSession.pid})`
+          );
+          reportSpawnOutcomeToHub?.({ type: 'success' });
+          return {
+            type: 'success',
+            sessionId: reusableSession.happySessionId
+          };
+        }
+      }
+      let resolvePendingSpawn: ((result: SpawnSessionResult) => void) | null = null;
+      if (spawnKey) {
+        const pendingSpawn = new Promise<SpawnSessionResult>((resolve) => {
+          resolvePendingSpawn = resolve;
+        });
+        spawnKeyToPendingSpawn.set(spawnKey, pendingSpawn);
+      }
+      const finishSpawnSession = (result: SpawnSessionResult): SpawnSessionResult => {
+        if (spawnKey && spawnKeyToPendingSpawn.has(spawnKey)) {
+          spawnKeyToPendingSpawn.delete(spawnKey);
+          resolvePendingSpawn?.(result);
+        }
+        return result;
+      };
 
       if (sessionType === 'simple') {
         try {
@@ -253,10 +295,10 @@ export async function startRunner(options: { workspaceRoot?: string } = {}): Pro
           // Check if directory creation is approved
           if (!approvedNewDirectoryCreation) {
             logger.debug(`[RUNNER RUN] Directory creation not approved for: ${directory}`);
-            return {
+            return finishSpawnSession({
               type: 'requestToApproveDirectoryCreation',
               directory
-            };
+            });
           }
 
           try {
@@ -280,10 +322,10 @@ export async function startRunner(options: { workspaceRoot?: string } = {}): Pro
             }
 
             logger.debug(`[RUNNER RUN] Directory creation failed: ${errorMessage}`);
-            return {
+            return finishSpawnSession({
               type: 'error',
               errorMessage
-            };
+            });
           }
         }
       } else {
@@ -292,10 +334,10 @@ export async function startRunner(options: { workspaceRoot?: string } = {}): Pro
           logger.debug(`[RUNNER RUN] Worktree base directory exists: ${directory}`);
         } catch (error) {
           logger.debug(`[RUNNER RUN] Worktree base directory missing: ${directory}`);
-          return {
+          return finishSpawnSession({
             type: 'error',
             errorMessage: `Worktree sessions require an existing Git repository. Directory not found: ${directory}`
-          };
+          });
         }
       }
 
@@ -306,10 +348,10 @@ export async function startRunner(options: { workspaceRoot?: string } = {}): Pro
         });
         if (!worktreeResult.ok) {
           logger.debug(`[RUNNER RUN] Worktree creation failed: ${worktreeResult.error}`);
-          return {
+          return finishSpawnSession({
             type: 'error',
             errorMessage: worktreeResult.error
-          };
+          });
         }
         worktreeInfo = worktreeResult.info;
         spawnDirectory = worktreeInfo.worktreePath;
@@ -435,10 +477,10 @@ export async function startRunner(options: { workspaceRoot?: string } = {}): Pro
             }
           });
           await maybeCleanupWorktree('no-pid');
-          return {
+          return finishSpawnSession({
             type: 'error',
             errorMessage
-          };
+          });
         }
         happyProcess.removeListener('error', captureSpawnErrorBeforePidCheck);
 
@@ -478,6 +520,7 @@ export async function startRunner(options: { workspaceRoot?: string } = {}): Pro
           startedBy: 'runner',
           pid,
           childProcess: happyProcess,
+          spawnKey: spawnKey ?? undefined,
           directoryCreated,
           message: directoryCreated ? `The path '${directory}' did not exist. We created a new folder and spawned a new session there.` : undefined
         };
@@ -586,7 +629,7 @@ export async function startRunner(options: { workspaceRoot?: string } = {}): Pro
         } else {
           reportSpawnOutcomeToHub?.({ type: 'success' });
         }
-        return spawnResult;
+        return finishSpawnSession(spawnResult);
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
         logger.debug('[RUNNER RUN] Failed to spawn session:', error);
@@ -597,10 +640,10 @@ export async function startRunner(options: { workspaceRoot?: string } = {}): Pro
             message: `Failed to spawn session: ${errorMessage}`
           }
         });
-        return {
+        return finishSpawnSession({
           type: 'error',
           errorMessage: `Failed to spawn session: ${errorMessage}`
-        };
+        });
       }
     };
 
