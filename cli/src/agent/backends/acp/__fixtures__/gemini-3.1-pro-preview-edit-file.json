@@ -1,0 +1,143 @@
+{
+  "model": "gemini-3.1-pro-preview",
+  "scenario": "edit_file",
+  "prompt": "Please replace 'pro fixture line' with 'pro fixture updated' in cli/pr-fixture-write.txt",
+  "captured_at": "2026-05-04T03:08:46.000Z",
+  "updates": [
+    {
+      "sessionUpdate": "tool_call",
+      "toolCallId": "update_topic-1777864104458-1",
+      "status": "in_progress",
+      "title": "Update topic to: \"Updating PR Fixture Write\"",
+      "content": [],
+      "locations": [],
+      "kind": "think"
+    },
+    {
+      "sessionUpdate": "tool_call_update",
+      "toolCallId": "update_topic-1777864104458-1",
+      "status": "completed",
+      "title": "Update topic to: \"Updating PR Fixture Write\"",
+      "content": [
+        {
+          "type": "content",
+          "content": {
+            "type": "text",
+            "text": "## 📂 Topic: **Updating PR Fixture Write**\n\n**Summary:**\nI am going to read the contents of cli/pr-fixture-write.txt so I can precisely target the replacement of 'pro fixture line' with 'pro fixture updated'.\n\n> [!STRATEGY]\n> **Intent:** Read cli/pr-fixture-write.txt to get context for replacement"
+          }
+        }
+      ],
+      "locations": [],
+      "kind": "think"
+    },
+    {
+      "sessionUpdate": "tool_call",
+      "toolCallId": "read_file-1777864104493-2",
+      "status": "in_progress",
+      "title": "cli/pr-fixture-write.txt",
+      "content": [],
+      "locations": [
+        {
+          "path": "/home/lupin/workspace/hapi-fix-gemini-display/cli/pr-fixture-write.txt"
+        }
+      ],
+      "kind": "read"
+    },
+    {
+      "sessionUpdate": "tool_call_update",
+      "toolCallId": "read_file-1777864104493-2",
+      "status": "completed",
+      "title": "cli/pr-fixture-write.txt",
+      "content": [],
+      "locations": [
+        {
+          "path": "/home/lupin/workspace/hapi-fix-gemini-display/cli/pr-fixture-write.txt"
+        }
+      ],
+      "kind": "read"
+    },
+    {
+      "sessionUpdate": "tool_call",
+      "toolCallId": "replace-1777864108456-3",
+      "status": "in_progress",
+      "title": "cli/pr-fixture-write.txt: pro fixture line => pro fixture updated",
+      "content": [],
+      "locations": [
+        {
+          "path": "/home/lupin/workspace/hapi-fix-gemini-display/cli/pr-fixture-write.txt"
+        }
+      ],
+      "kind": "edit"
+    },
+    {
+      "sessionUpdate": "tool_call_update",
+      "toolCallId": "replace-1777864108456-3",
+      "status": "completed",
+      "title": "cli/pr-fixture-write.txt: pro fixture line => pro fixture updated",
+      "content": [
+        {
+          "type": "diff",
+          "path": "/home/lupin/workspace/hapi-fix-gemini-display/cli/pr-fixture-write.txt",
+          "oldText": "pro fixture line\n",
+          "newText": "pro fixture updated\n",
+          "_meta": {
+            "kind": "modify"
+          }
+        }
+      ],
+      "locations": [
+        {
+          "path": "/home/lupin/workspace/hapi-fix-gemini-display/cli/pr-fixture-write.txt"
+        }
+      ],
+      "kind": "edit"
+    },
+    {
+      "sessionUpdate": "tool_call",
+      "toolCallId": "update_topic-1777864111933-4",
+      "status": "in_progress",
+      "title": "Update topic to: \"Finished PR Fixture Update\"",
+      "content": [],
+      "locations": [],
+      "kind": "think"
+    },
+    {
+      "sessionUpdate": "tool_call_update",
+      "toolCallId": "update_topic-1777864111933-4",
+      "status": "completed",
+      "title": "Update topic to: \"Finished PR Fixture Update\"",
+      "content": [
+        {
+          "type": "content",
+          "content": {
+            "type": "text",
+            "text": "## 📂 Topic: **Finished PR Fixture Update**\n\n**Summary:**\nI successfully replaced 'pro fixture line' with 'pro fixture updated' in cli/pr-fixture-write.txt.\n\n> [!STRATEGY]\n> **Intent:** Finished replacing text in the PR fixture file."
+          }
+        }
+      ],
+      "locations": [],
+      "kind": "think"
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "`cli/pr-fixture"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "-write.txt` 파일의 내용을 성공적으로 업데이트했습니다. 다른 필요하신 작업이 있다면 말씀"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "해 주세요."
+      }
+    }
+  ]
+}

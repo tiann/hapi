@@ -1278,6 +1278,44 @@ describe('AcpMessageHandler', () => {
                 expectedMinReasoning: 0,
                 hasMessageChunks: true,
             },
+            // ── gemini-3.1-pro-preview captures (live ACP, 2026-05-04) ──
+            // Same handler shape (rawInput omitted, kind+title fallback drives
+            // input derivation). The pro tier reuses the same think/read/
+            // execute/edit kinds and emits prose thoughts (not JSON), so the
+            // assertions below match the flash captures.
+            {
+                name: 'gemini-3.1-pro-preview / read_file',
+                file: `${fixtureDir}/gemini-3.1-pro-preview-read-file.json`,
+                expectedMinToolCalls: 2,
+                expectedMinReasoning: 0,
+                hasMessageChunks: true,
+            },
+            {
+                // run_shell: pro emits a single agent_thought_chunk in addition
+                // to the execute tool_call.
+                name: 'gemini-3.1-pro-preview / run_shell',
+                file: `${fixtureDir}/gemini-3.1-pro-preview-run-shell.json`,
+                expectedMinToolCalls: 1,
+                expectedMinReasoning: 1,
+                hasMessageChunks: true,
+            },
+            {
+                // write_file: kind=edit, locations carries the file path.
+                name: 'gemini-3.1-pro-preview / write_file',
+                file: `${fixtureDir}/gemini-3.1-pro-preview-write-file.json`,
+                expectedMinToolCalls: 1,
+                expectedMinReasoning: 0,
+                hasMessageChunks: true,
+            },
+            {
+                // replace (in-place edit): pro version interleaves think + read
+                // + edit kinds before the final agent_message_chunk burst.
+                name: 'gemini-3.1-pro-preview / edit_file',
+                file: `${fixtureDir}/gemini-3.1-pro-preview-edit-file.json`,
+                expectedMinToolCalls: 2,
+                expectedMinReasoning: 0,
+                hasMessageChunks: true,
+            },
         ] as const;
 
         for (const fx of fixtures) {
