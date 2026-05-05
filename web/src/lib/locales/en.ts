@@ -274,6 +274,12 @@ export default {
   // Send blocked
   'send.blocked.title': 'Cannot send message',
   'send.blocked.noConnection': 'Not connected to server',
+  'resume.failed.title': 'Resume failed',
+  'toast.ready.title': 'Ready for input',
+  'toast.ready.body': '{agent} is waiting in {session}',
+  'toast.permission.title': 'Permission Request',
+  'toast.task.completed': 'Task completed',
+  'toast.task.failed': 'Task failed',
 
   // Install prompt
   'install.title': 'Install HAPI',

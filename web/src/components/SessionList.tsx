@@ -711,8 +711,8 @@ export function SessionList(props: {
     }
 
     const allSessions = useMemo(
-        () => deduplicateSessionsByAgentId(props.sessions, selectedSessionId),
-        [props.sessions, selectedSessionId]
+        () => props.sessions,
+        [props.sessions]
     )
     const visibleSessions = useMemo(
         () => isSearching
