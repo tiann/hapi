@@ -66,6 +66,34 @@ function getTextFromMessage(msg: DecryptedMessage): string {
 }
 
 /**
+ * Determines whether the user can cancel or edit a queued message.
+ *
+ * Two conditions must both be true:
+ * 1. hasServerEcho: the hub has persisted the row.
+ *    useSendMessage.onMutate creates { id: localId, localId } before POST /messages
+ *    completes. Only after the server echo (message-received SSE) does the store
+ *    replace the row with a server-assigned UUID id, making id !== localId.
+ *    Sending DELETE before that echo would find no row in the hub and return
+ *    cancelled/localId:null; the original POST could then still insert and broadcast
+ *    the message, letting a canceled message reappear and be invoked.
+ * 2. !isPending: no cancel mutation is already in-flight.
+ *
+ * @internal Exported for unit testing.
+ */
+export function computeCanCancel({
+    id,
+    localId,
+    isPending,
+}: {
+    id: string
+    localId: string | null | undefined
+    isPending: boolean
+}): boolean {
+    const hasServerEcho = localId ? id !== localId : true
+    return hasServerEcho && !isPending
+}
+
+/**
  * Floating bar above the composer showing queued (pending invocation) messages.
  * Each item has an edit button (✎) and a cancel button (✕).
  *
@@ -100,9 +128,10 @@ export function QueuedMessagesBar({ sessionId, api }: { sessionId: string; api: 
                         const text = getTextFromMessage(msg)
                         const localId = msg.localId ?? msg.id
                         const isPending = cancelMutation.isPending && cancelMutation.variables?.localId === localId
+                        const canCancel = computeCanCancel({ id: msg.id, localId: msg.localId, isPending })
 
                         const handleCancel = () => {
-                            if (isPending) return
+                            if (!canCancel) return
                             cancelMutation.mutate({
                                 sessionId,
                                 messageId: msg.id,
@@ -112,7 +141,7 @@ export function QueuedMessagesBar({ sessionId, api }: { sessionId: string; api: 
                         }
 
                         const handleEdit = () => {
-                            if (isPending) return
+                            if (!canCancel) return
                             // Edit = cancel + prefill composer (Codex dialect: no separate edit mode).
                             cancelMutation.mutate(
                                 {
@@ -148,7 +177,7 @@ export function QueuedMessagesBar({ sessionId, api }: { sessionId: string; api: 
                                     <button
                                         type="button"
                                         aria-label="Edit queued message"
-                                        disabled={isPending}
+                                        disabled={!canCancel}
                                         onClick={handleEdit}
                                         onMouseDown={(e) => e.preventDefault()}
                                         className="flex h-6 w-6 items-center justify-center rounded text-[var(--app-hint)] transition-colors hover:bg-[var(--app-border)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-40"
@@ -171,7 +200,7 @@ export function QueuedMessagesBar({ sessionId, api }: { sessionId: string; api: 
                                     <button
                                         type="button"
                                         aria-label="Cancel queued message"
-                                        disabled={isPending}
+                                        disabled={!canCancel}
                                         onClick={handleCancel}
                                         onMouseDown={(e) => e.preventDefault()}
                                         className="flex h-6 w-6 items-center justify-center rounded text-[var(--app-hint)] transition-colors hover:bg-[var(--app-border)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-40"
