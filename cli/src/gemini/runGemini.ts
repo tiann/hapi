@@ -128,6 +128,11 @@ export async function runGemini(opts: {
         messageQueue.push(formattedText, mode, localId);
     });
 
+    session.onCancelQueuedMessage((localId) => {
+        const removed = messageQueue.cancelByLocalId(localId);
+        logger.debug(`[gemini] cancelByLocalId(${localId}): ${removed ? 'removed' : 'not found (best-effort)'}`);
+    });
+
     const resolvePermissionMode = (value: unknown): PermissionMode => {
         const parsed = PermissionModeSchema.safeParse(value);
         if (!parsed.success || !isPermissionModeAllowedForFlavor(parsed.data, 'gemini')) {

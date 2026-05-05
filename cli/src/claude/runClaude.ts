@@ -297,6 +297,11 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         logger.debugLargeJson('User message pushed to queue:', message)
     });
 
+    session.onCancelQueuedMessage((localId) => {
+        const removed = messageQueue.cancelByLocalId(localId);
+        logger.debug(`[claude] cancelByLocalId(${localId}): ${removed ? 'removed' : 'not found (best-effort)'}`);
+    });
+
     const resolvePermissionMode = (value: unknown): PermissionMode => {
         const parsed = PermissionModeSchema.safeParse(value);
         if (!parsed.success || !isPermissionModeAllowedForFlavor(parsed.data, 'claude')) {

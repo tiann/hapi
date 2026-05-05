@@ -81,6 +81,7 @@ export class ApiSessionClient extends EventEmitter {
     private readonly socket: Socket<ServerToClientEvents, ClientToServerEvents>
     private pendingMessages: { message: UserMessage; localId?: string }[] = []
     private pendingMessageCallback: ((message: UserMessage, localId?: string) => void) | null = null
+    private cancelQueuedMessageCallback: ((localId: string) => void) | null = null
     private lastSeenMessageSeq: number | null = null
     private backfillInFlight: Promise<void> | null = null
     private needsBackfill = false
@@ -209,6 +210,13 @@ export class ApiSessionClient extends EventEmitter {
                     return
                 }
 
+                if (data.body.t === 'cancel-queued-message') {
+                    if (data.body.localId && this.cancelQueuedMessageCallback) {
+                        this.cancelQueuedMessageCallback(data.body.localId)
+                    }
+                    return
+                }
+
                 if (data.body.t === 'update-session') {
                     if (data.body.metadata && data.body.metadata.version > this.metadataVersion) {
                         const parsed = MetadataSchema.safeParse(data.body.metadata.value)
@@ -251,6 +259,10 @@ export class ApiSessionClient extends EventEmitter {
             const pending = this.pendingMessages.shift()!
             callback(pending.message, pending.localId)
         }
+    }
+
+    onCancelQueuedMessage(callback: (localId: string) => void): void {
+        this.cancelQueuedMessageCallback = callback
     }
 
     private enqueueUserMessage(message: UserMessage, localId?: string): void {
