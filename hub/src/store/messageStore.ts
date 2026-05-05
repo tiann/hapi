@@ -30,7 +30,7 @@ export class MessageStore {
         return getUninvokedLocalMessages(this.db, sessionId)
     }
 
-    cancelQueuedMessage(sessionId: string, messageId: string): { changes: number } {
+    cancelQueuedMessage(sessionId: string, messageId: string): { changes: number; localId: string | null } {
         return cancelQueuedMessage(this.db, sessionId, messageId)
     }
 

@@ -146,9 +146,9 @@ export class MessageService {
             return { ok: true, alreadyGone: true }
         }
 
-        // Notify CLI: remove from in-memory queue if still waiting
-        // localId is not stored on this path, so we send the messageId for reference only.
-        // The CLI dispatcher matches by localId from the body; best-effort if missing.
+        // Notify CLI: remove from in-memory queue if still waiting.
+        // Include localId (retrieved from DB before the DELETE) so the CLI dispatcher
+        // can match against the in-memory queue entry, which is keyed by localId.
         this.io.of('/cli').to(`session:${sessionId}`).emit('update', {
             id: randomUUID(),
             seq: 0,
@@ -156,7 +156,8 @@ export class MessageService {
             body: {
                 t: 'cancel-queued-message' as const,
                 sid: sessionId,
-                messageId
+                messageId,
+                ...(result.localId ? { localId: result.localId } : {})
             }
         })
 

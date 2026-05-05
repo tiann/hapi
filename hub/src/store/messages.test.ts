@@ -10,20 +10,21 @@ function makeSession(store: Store, tag: string) {
 }
 
 describe('cancelQueuedMessage', () => {
-    it('happy path: deletes queued message (invoked_at IS NULL), returns changes=1', () => {
+    it('happy path: deletes queued message (invoked_at IS NULL), returns changes=1 and localId', () => {
         const store = makeStore()
         const session = makeSession(store, 'cancel-happy')
         const msg = store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'hello' } }, 'lid-1')
 
         const result = store.messages.cancelQueuedMessage(session.id, msg.id)
         expect(result.changes).toBe(1)
+        expect(result.localId).toBe('lid-1')
 
         // Row should be gone from uninvoked list
         const remaining = store.messages.getUninvokedLocalMessages(session.id)
         expect(remaining).toHaveLength(0)
     })
 
-    it('already-invoked: returns changes=0, row stays in DB', () => {
+    it('already-invoked: returns changes=0 and localId=null, row stays in DB', () => {
         const store = makeStore()
         const session = makeSession(store, 'cancel-already-invoked')
         const msg = store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'hello' } }, 'lid-2')
@@ -33,6 +34,7 @@ describe('cancelQueuedMessage', () => {
 
         const result = store.messages.cancelQueuedMessage(session.id, msg.id)
         expect(result.changes).toBe(0)
+        expect(result.localId).toBeNull()
 
         // Row still exists (with invoked_at set)
         const messages = store.messages.getMessages(session.id)
