@@ -9,7 +9,7 @@
 
 import type { CodexCollaborationMode, DecryptedMessage, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
 import type { Server } from 'socket.io'
-import type { Store } from '../store'
+import type { Store, CancelQueuedMessageResult } from '../store'
 import type { RpcRegistry } from '../socket/rpcRegistry'
 import type { SSEManager } from '../sse/sseManager'
 import { EventPublisher, type SyncEventListener } from './eventPublisher'
@@ -315,7 +315,7 @@ export class SyncEngine {
     cancelQueuedMessage(
         sessionId: string,
         messageId: string
-    ): { status: 'cancelled'; localId: string | null } | { status: 'invoked' } {
+    ): CancelQueuedMessageResult {
         return this.messageService.cancelQueuedMessage(sessionId, messageId)
     }
 

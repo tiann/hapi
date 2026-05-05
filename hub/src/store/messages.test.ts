@@ -26,16 +26,25 @@ describe('cancelQueuedMessage', () => {
         expect(remaining).toHaveLength(0)
     })
 
-    it('already-invoked: returns status=invoked, row stays in DB', () => {
+    it('already-invoked: returns status=invoked with full message row, row stays in DB', () => {
         const store = makeStore()
         const session = makeSession(store, 'cancel-already-invoked')
-        const msg = store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'hello' } }, 'lid-2')
+        const content = { role: 'user', content: { type: 'text', text: 'hello' } }
+        const msg = store.messages.addMessage(session.id, content, 'lid-2')
 
+        const invokedAt = Date.now()
         // Simulate CLI invoke ack
-        store.messages.markMessagesInvoked(session.id, ['lid-2'], Date.now())
+        store.messages.markMessagesInvoked(session.id, ['lid-2'], invokedAt)
 
         const result = store.messages.cancelQueuedMessage(session.id, msg.id)
         expect(result.status).toBe('invoked')
+
+        // Must include the invoked row so the web client can restore authoritative state
+        if (result.status === 'invoked') {
+            expect(result.message.id).toBe(msg.id)
+            expect(result.message.localId).toBe('lid-2')
+            expect(result.message.invokedAt).toBe(invokedAt)
+        }
 
         // Row still exists (with invoked_at set)
         const messages = store.messages.getMessages(session.id)

@@ -16,6 +16,7 @@ export type {
     StoredUser,
     VersionedUpdateResult
 } from './types'
+export type { CancelQueuedMessageResult } from './messages'
 export { MachineStore } from './machineStore'
 export { MessageStore } from './messageStore'
 export { PushStore } from './pushStore'

@@ -166,7 +166,7 @@ export function getMaxSeq(db: Database, sessionId: string): number {
 
 export type CancelQueuedMessageResult =
     | { status: 'cancelled'; localId: string | null }
-    | { status: 'invoked' }
+    | { status: 'invoked'; message: StoredMessage }
 
 /** Delete a queued (invoked_at IS NULL) message by session + message id.
  *
@@ -174,7 +174,8 @@ export type CancelQueuedMessageResult =
  * Returns a discriminated union so callers can distinguish two zero-delete cases:
  *   - 'cancelled': row was absent (already cancelled, or wrong id/session) — treat as success.
  *   - 'invoked':   row exists but invoked_at IS NOT NULL (CLI consumed it first) —
- *                  caller must revert any optimistic removal.
+ *                  caller must revert any optimistic removal using the returned row,
+ *                  not a stale client-side snapshot, so invokedAt is authoritative.
  *
  * The invoked_at IS NULL guard ensures cancel and invoke are mutually exclusive at
  * the DB level (first-write-wins, mirrors markMessagesInvoked). */
@@ -194,8 +195,10 @@ export function cancelQueuedMessage(
         }
 
         if (row.invoked_at !== null) {
-            // CLI already consumed this message before the cancel arrived
-            return { status: 'invoked' as const }
+            // CLI already consumed this message before the cancel arrived.
+            // Return the full row so the web client can restore authoritative invoked state
+            // rather than reverting to a stale queued snapshot (invokedAt: null).
+            return { status: 'invoked' as const, message: toStoredMessage(row) }
         }
 
         db.prepare(

@@ -1,7 +1,7 @@
 import type { AttachmentMetadata, DecryptedMessage } from '@hapi/protocol/types'
 import type { Server } from 'socket.io'
 import { randomUUID } from 'node:crypto'
-import type { Store } from '../store'
+import type { Store, CancelQueuedMessageResult } from '../store'
 import { EventPublisher } from './eventPublisher'
 
 export class MessageService {
@@ -139,14 +139,14 @@ export class MessageService {
     cancelQueuedMessage(
         sessionId: string,
         messageId: string
-    ): { status: 'cancelled'; localId: string | null } | { status: 'invoked' } {
+    ): CancelQueuedMessageResult {
         const result = this.store.messages.cancelQueuedMessage(sessionId, messageId)
 
         if (result.status === 'invoked') {
             // CLI already consumed this message — skip CLI notification and SSE.
-            // The caller (web route) will surface this to the client so it can
-            // revert the optimistic removal.
-            return { status: 'invoked' }
+            // Return the full invoked row so the web client can restore authoritative
+            // state (with correct invokedAt) instead of a stale queued snapshot.
+            return result
         }
 
         // status === 'cancelled': notify CLI to drop the entry from its in-memory queue,
