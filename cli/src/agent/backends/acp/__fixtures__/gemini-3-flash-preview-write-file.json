@@ -1,7 +1,7 @@
 {
   "model": "gemini-3-flash-preview",
   "scenario": "write_file",
-  "prompt": "Please create a file at /home/lupin/workspace/hapi-fix-gemini-display/cli/write-demo.txt with exactly this content: 'hello write demo line one\\nhello line two'.",
+  "prompt": "Please create a file at /tmp/demo-write.txt with exactly this content: 'hello write demo line one\\nhello line two'.",
   "captured_at": "2026-04-30T09:14:15.000Z",
   "updates": [
     {
@@ -23,7 +23,7 @@
           "type": "content",
           "content": {
             "type": "text",
-            "text": "## 📂 Topic: **Creating file in workspace**\n\n**Summary:**\nThe user requested creating write-demo.txt within the allowed workspace directory. I am now creating the file /home/lupin/workspace/hapi-fix-gemini-display/cli/write-demo.txt with the specified two lines of content.\n\n> [!STRATEGY]\n> **Intent:** Create write-demo.txt in the workspace root."
+            "text": "## 📂 Topic: **Creating file in workspace**\n\n**Summary:**\nThe user requested creating demo-write.txt. I am now creating the file /tmp/demo-write.txt with the specified two lines of content.\n\n> [!STRATEGY]\n> **Intent:** Create demo-write.txt in /tmp."
           }
         }
       ],
@@ -34,11 +34,11 @@
       "sessionUpdate": "tool_call",
       "toolCallId": "write_file-1777540455292-4",
       "status": "in_progress",
-      "title": "Writing to write-demo.txt",
+      "title": "Writing to demo-write.txt",
       "content": [],
       "locations": [
         {
-          "path": "/home/lupin/workspace/hapi-fix-gemini-display/cli/write-demo.txt"
+          "path": "/tmp/demo-write.txt"
         }
       ],
       "kind": "edit"
@@ -47,11 +47,11 @@
       "sessionUpdate": "tool_call_update",
       "toolCallId": "write_file-1777540455292-4",
       "status": "completed",
-      "title": "Writing to write-demo.txt",
+      "title": "Writing to demo-write.txt",
       "content": [
         {
           "type": "diff",
-          "path": "/home/lupin/workspace/hapi-fix-gemini-display/cli/write-demo.txt",
+          "path": "/tmp/demo-write.txt",
           "oldText": "",
           "newText": "hello write demo line one\nhello line two",
           "_meta": {
@@ -61,7 +61,7 @@
       ],
       "locations": [
         {
-          "path": "/home/lupin/workspace/hapi-fix-gemini-display/cli/write-demo.txt"
+          "path": "/tmp/demo-write.txt"
         }
       ],
       "kind": "edit"
@@ -70,14 +70,14 @@
       "sessionUpdate": "agent_message_chunk",
       "content": {
         "type": "text",
-        "text": "`/home/lupin/workspace/hapi-fix-gemini-display"
+        "text": "`/tmp/demo-write.txt`"
       }
     },
     {
       "sessionUpdate": "agent_message_chunk",
       "content": {
         "type": "text",
-        "text": "/cli/write-demo.txt` 파일을 요청하신 내용으로 생성했습니다."
+        "text": " 파일을 요청하신 내용으로 생성했습니다."
       }
     }
   ]
