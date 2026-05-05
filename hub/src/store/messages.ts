@@ -185,9 +185,17 @@ export function cancelQueuedMessage(
     messageId: string
 ): CancelQueuedMessageResult {
     return db.transaction(() => {
-        const row = db.prepare(
-            'SELECT * FROM messages WHERE id = ? AND session_id = ?'
-        ).get(messageId, sessionId) as DbMessageRow | undefined
+        // Accept either the server-assigned uuid (id) or the client localId.
+        // This handles the pre-echo window where the web client still holds
+        // msg.id === localId and passes that as the messageId parameter.
+        // Note: local_id = ? evaluates to NULL (no match) when local_id IS NULL,
+        // which is safe — messages without a localId are inserted with invoked_at set
+        // and are never queued, so they cannot reach this code path anyway.
+        const row = db.prepare(`
+            SELECT * FROM messages
+            WHERE session_id = ? AND (id = ? OR local_id = ?)
+            LIMIT 1
+        `).get(sessionId, messageId, messageId) as DbMessageRow | undefined
 
         if (!row) {
             // Row absent: already cancelled or wrong id — fold into 'cancelled'
@@ -201,9 +209,10 @@ export function cancelQueuedMessage(
             return { status: 'invoked' as const, message: toStoredMessage(row) }
         }
 
-        db.prepare(
-            'DELETE FROM messages WHERE id = ? AND session_id = ? AND invoked_at IS NULL'
-        ).run(messageId, sessionId)
+        db.prepare(`
+            DELETE FROM messages
+            WHERE session_id = ? AND (id = ? OR local_id = ?) AND invoked_at IS NULL
+        `).run(sessionId, messageId, messageId)
 
         return { status: 'cancelled' as const, localId: row.local_id }
     })()

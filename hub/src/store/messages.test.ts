@@ -108,4 +108,67 @@ describe('cancelQueuedMessage', () => {
             expect(result.localId).toBe('lid-propagate')
         }
     })
+
+    it('cancel by localId before server echo: localId match returns status=cancelled with localId', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'cancel-by-localid')
+        // Simulate the optimistic row: server has stored it with local_id but web client
+        // still holds msg.id === localId (server echo not yet received).
+        const localId = 'local:pre-echo-id'
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'hello' } }, localId)
+
+        // The web client passes localId as messageId (before server echo replaces it)
+        const result = store.messages.cancelQueuedMessage(session.id, localId)
+        expect(result.status).toBe('cancelled')
+        if (result.status === 'cancelled') {
+            expect(result.localId).toBe(localId)
+        }
+
+        // Row should be gone
+        const remaining = store.messages.getUninvokedLocalMessages(session.id)
+        expect(remaining).toHaveLength(0)
+    })
+
+    it('cancel by localId × 2 idempotent: second call returns status=cancelled with localId=null', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'cancel-by-localid-idempotent')
+        const localId = 'local:idem-id'
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'hello' } }, localId)
+
+        const first = store.messages.cancelQueuedMessage(session.id, localId)
+        expect(first.status).toBe('cancelled')
+        if (first.status === 'cancelled') {
+            expect(first.localId).toBe(localId)
+        }
+
+        // Second cancel by the same localId — row is already gone
+        const second = store.messages.cancelQueuedMessage(session.id, localId)
+        expect(second.status).toBe('cancelled')
+        if (second.status === 'cancelled') {
+            expect(second.localId).toBeNull()
+        }
+    })
+
+    it('cancel by localId when invoked: returns status=invoked with message row', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'cancel-by-localid-invoked')
+        const localId = 'local:invoked-id'
+        const msg = store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'hello' } }, localId)
+
+        const invokedAt = Date.now()
+        store.messages.markMessagesInvoked(session.id, [localId], invokedAt)
+
+        // Web client passes localId as messageId — should detect invoked_at IS NOT NULL
+        const result = store.messages.cancelQueuedMessage(session.id, localId)
+        expect(result.status).toBe('invoked')
+        if (result.status === 'invoked') {
+            expect(result.message.id).toBe(msg.id)
+            expect(result.message.localId).toBe(localId)
+            expect(result.message.invokedAt).toBe(invokedAt)
+        }
+
+        // Row still exists
+        const messages = store.messages.getMessages(session.id)
+        expect(messages.some(m => m.id === msg.id)).toBe(true)
+    })
 })
