@@ -620,6 +620,37 @@ export function updateMessageStatus(sessionId: string, localId: string, status: 
     })
 }
 
+/** Remove an optimistic (not-yet-confirmed) message by its localId or server id.
+ *  Used by the cancel affordance: optimistically drop the row immediately so the
+ *  floating bar clears before the DELETE /messages/:id round-trip completes. If
+ *  the request fails, the caller is responsible for re-inserting the row (e.g.
+ *  via ingestIncomingMessages).  Matches against both `localId` and `id` so that
+ *  rows loaded from the server (which may have a stable uuid `id` + a localId) are
+ *  also handled.
+ */
+export function removeOptimisticMessage(sessionId: string, localId: string): void {
+    if (!localId) return
+    updateState(sessionId, (prev) => {
+        let changed = false
+        const filterList = (list: DecryptedMessage[]) => {
+            const next = list.filter((message) => {
+                const matchesLocalId = message.localId === localId
+                const matchesId = message.id === localId
+                if (matchesLocalId || matchesId) {
+                    changed = true
+                    return false
+                }
+                return true
+            })
+            return next
+        }
+        const messages = filterList(prev.messages)
+        const pending = filterList(prev.pending)
+        if (!changed) return prev
+        return buildState(prev, { messages, pending })
+    }, true)
+}
+
 /** Transition the queued messages whose localIds match to 'sent' and record invokedAt.
  *  Driven by the CLI ack (messages-consumed). Unmatched messages remain queued.
  *  Also handles server-loaded messages (status=undefined) that have a matching localId.

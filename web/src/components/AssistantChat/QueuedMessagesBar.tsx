@@ -1,9 +1,12 @@
+import { useAssistantApi } from '@assistant-ui/react'
 import { useCallback, useSyncExternalStore } from 'react'
+import type { ApiClient } from '@/api/client'
 import { getMessageWindowState, subscribeMessageWindow } from '@/lib/message-window-store'
 import { isQueuedForInvocation } from '@/lib/messages'
 import { EMPTY_STATE } from '@/hooks/queries/useMessages'
 import { normalizeDecryptedMessage } from '@/chat/normalize'
 import type { DecryptedMessage } from '@/types/api'
+import { useCancelQueuedMessage } from '@/hooks/mutations/useCancelQueuedMessage'
 
 function ClockIcon() {
     return (
@@ -64,12 +67,15 @@ function getTextFromMessage(msg: DecryptedMessage): string {
 
 /**
  * Floating bar above the composer showing queued (pending invocation) messages.
- * Disappears automatically when all queued messages are invoked or consumed.
+ * Each item has an edit button (✎) and a cancel button (✕).
  *
- * TODO PR 2: add cancel/edit buttons per item.
+ * Edit = client-side cancel + prefill composer with message text (Codex dialect).
+ * Cancel = DELETE /sessions/:id/messages/:messageId with optimistic removal.
  */
-export function QueuedMessagesBar({ sessionId }: { sessionId: string }) {
+export function QueuedMessagesBar({ sessionId, api }: { sessionId: string; api: ApiClient | null }) {
     const queued = useQueuedMessages(sessionId)
+    const assistantApi = useAssistantApi()
+    const cancelMutation = useCancelQueuedMessage(api)
 
     if (queued.length === 0) {
         return null
@@ -92,13 +98,96 @@ export function QueuedMessagesBar({ sessionId }: { sessionId: string }) {
                 >
                     {queued.map((msg) => {
                         const text = getTextFromMessage(msg)
+                        const localId = msg.localId ?? msg.id
+                        const isPending = cancelMutation.isPending && cancelMutation.variables?.localId === localId
+
+                        const handleCancel = () => {
+                            if (isPending) return
+                            cancelMutation.mutate({
+                                sessionId,
+                                messageId: msg.id,
+                                localId,
+                                snapshot: msg,
+                            })
+                        }
+
+                        const handleEdit = () => {
+                            if (isPending) return
+                            // Edit = cancel + prefill composer (Codex dialect: no separate edit mode).
+                            cancelMutation.mutate(
+                                {
+                                    sessionId,
+                                    messageId: msg.id,
+                                    localId,
+                                    snapshot: msg,
+                                },
+                                {
+                                    onSuccess: () => {
+                                        // Only prefill if text is available; attachment-only rows get empty string.
+                                        const prefillText = text
+                                        if (prefillText) {
+                                            assistantApi.composer().setText(prefillText)
+                                        }
+                                    },
+                                }
+                            )
+                        }
+
                         return (
                             <li
                                 key={msg.localId ?? msg.id}
                                 className="flex items-start gap-2 min-w-0 rounded-lg bg-[var(--app-secondary-bg)] px-3 py-2 shadow-sm"
                             >
-                                <span className="line-clamp-3 whitespace-pre-wrap break-words text-[var(--app-fg)]">{text}</span>
-                                {/* TODO PR 2: cancel/edit buttons */}
+                                <span className="flex-1 line-clamp-3 whitespace-pre-wrap break-words text-[var(--app-fg)]">
+                                    {text}
+                                </span>
+                                <div className="flex shrink-0 items-center gap-1">
+                                    <button
+                                        type="button"
+                                        aria-label="Edit queued message"
+                                        disabled={isPending}
+                                        onClick={handleEdit}
+                                        onMouseDown={(e) => e.preventDefault()}
+                                        className="flex h-6 w-6 items-center justify-center rounded text-[var(--app-hint)] transition-colors hover:bg-[var(--app-border)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-40"
+                                    >
+                                        <svg
+                                            viewBox="0 0 16 16"
+                                            fill="none"
+                                            className="h-3.5 w-3.5"
+                                            aria-hidden="true"
+                                        >
+                                            <path
+                                                d="M11.5 2.5a1.414 1.414 0 0 1 2 2L5 13H3v-2L11.5 2.5Z"
+                                                stroke="currentColor"
+                                                strokeWidth="1.4"
+                                                strokeLinecap="round"
+                                                strokeLinejoin="round"
+                                            />
+                                        </svg>
+                                    </button>
+                                    <button
+                                        type="button"
+                                        aria-label="Cancel queued message"
+                                        disabled={isPending}
+                                        onClick={handleCancel}
+                                        onMouseDown={(e) => e.preventDefault()}
+                                        className="flex h-6 w-6 items-center justify-center rounded text-[var(--app-hint)] transition-colors hover:bg-[var(--app-border)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-40"
+                                    >
+                                        <svg
+                                            viewBox="0 0 16 16"
+                                            fill="none"
+                                            className="h-3.5 w-3.5"
+                                            aria-hidden="true"
+                                        >
+                                            <path
+                                                d="M4 4l8 8M12 4l-8 8"
+                                                stroke="currentColor"
+                                                strokeWidth="1.5"
+                                                strokeLinecap="round"
+                                            />
+                                        </svg>
+                                    </button>
+                                </div>
                             </li>
                         )
                     })}

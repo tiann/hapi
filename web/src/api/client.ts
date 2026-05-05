@@ -307,6 +307,14 @@ export class ApiClient {
         })
     }
 
+    async cancelMessage(sessionId: string, messageId: string): Promise<{ ok: boolean; alreadyGone?: boolean }> {
+        const response = await this.request(
+            `/api/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}`,
+            { method: 'DELETE' }
+        )
+        return response as { ok: boolean; alreadyGone?: boolean }
+    }
+
     async abortSession(sessionId: string): Promise<void> {
         await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/abort`, {
             method: 'POST',
