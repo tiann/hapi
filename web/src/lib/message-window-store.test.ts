@@ -70,7 +70,7 @@ describe('message-window-store status updates', () => {
             }),
         ])
 
-        markMessagesConsumed(SESSION_ID, ['queued-1'])
+        markMessagesConsumed(SESSION_ID, ['queued-1'], Date.now())
 
         const message = getMessageWindowState(SESSION_ID).messages.find((entry) => entry.id === 'server-queued')
         expect(message?.status).toBe('sent')
