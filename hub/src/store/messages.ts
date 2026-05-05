@@ -164,28 +164,46 @@ export function getMaxSeq(db: Database, sessionId: string): number {
     return row?.maxSeq ?? 0
 }
 
+export type CancelQueuedMessageResult =
+    | { status: 'cancelled'; localId: string | null }
+    | { status: 'invoked' }
+
 /** Delete a queued (invoked_at IS NULL) message by session + message id.
- *  Returns { changes: number; localId: string | null } — changes=1 on success,
- *  0 when already-invoked or not found.  localId is included so the caller can
- *  propagate it to the CLI dispatcher for in-memory queue removal.
- *  The AND invoked_at IS NULL guard ensures cancel and invoke are mutually exclusive:
- *  whichever arrives first at the DB wins (first-write-wins, mirrors markMessagesInvoked). */
+ *
+ * Runs inside a transaction to eliminate the SELECT-then-DELETE race window.
+ * Returns a discriminated union so callers can distinguish two zero-delete cases:
+ *   - 'cancelled': row was absent (already cancelled, or wrong id/session) — treat as success.
+ *   - 'invoked':   row exists but invoked_at IS NOT NULL (CLI consumed it first) —
+ *                  caller must revert any optimistic removal.
+ *
+ * The invoked_at IS NULL guard ensures cancel and invoke are mutually exclusive at
+ * the DB level (first-write-wins, mirrors markMessagesInvoked). */
 export function cancelQueuedMessage(
     db: Database,
     sessionId: string,
     messageId: string
-): { changes: number; localId: string | null } {
-    // Read localId before deleting so we can propagate it to the CLI dispatcher.
-    const row = db.prepare(
-        'SELECT local_id FROM messages WHERE id = ? AND session_id = ? AND invoked_at IS NULL'
-    ).get(messageId, sessionId) as { local_id: string | null } | undefined
-    if (!row) {
-        return { changes: 0, localId: null }
-    }
-    const result = db.prepare(
-        'DELETE FROM messages WHERE id = ? AND session_id = ? AND invoked_at IS NULL'
-    ).run(messageId, sessionId)
-    return { changes: result.changes, localId: row.local_id }
+): CancelQueuedMessageResult {
+    return db.transaction(() => {
+        const row = db.prepare(
+            'SELECT * FROM messages WHERE id = ? AND session_id = ?'
+        ).get(messageId, sessionId) as DbMessageRow | undefined
+
+        if (!row) {
+            // Row absent: already cancelled or wrong id — fold into 'cancelled'
+            return { status: 'cancelled' as const, localId: null }
+        }
+
+        if (row.invoked_at !== null) {
+            // CLI already consumed this message before the cancel arrived
+            return { status: 'invoked' as const }
+        }
+
+        db.prepare(
+            'DELETE FROM messages WHERE id = ? AND session_id = ? AND invoked_at IS NULL'
+        ).run(messageId, sessionId)
+
+        return { status: 'cancelled' as const, localId: row.local_id }
+    })()
 }
 
 /** Mark messages as invoked at the given server timestamp.

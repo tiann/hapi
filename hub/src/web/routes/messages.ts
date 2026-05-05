@@ -65,10 +65,7 @@ export function createMessagesRoutes(getSyncEngine: () => SyncEngine | null): Ho
         const messageId = c.req.param('messageId')
 
         const result = engine.cancelQueuedMessage(sessionId, messageId)
-        if (result.alreadyGone) {
-            return c.json({ ok: true, alreadyGone: true })
-        }
-        return c.json({ ok: true })
+        return c.json(result)
     })
 
     app.post('/sessions/:id/messages', async (c) => {

@@ -139,16 +139,18 @@ export class MessageService {
     cancelQueuedMessage(
         sessionId: string,
         messageId: string
-    ): { ok: boolean; alreadyGone: boolean } {
+    ): { status: 'cancelled'; localId: string | null } | { status: 'invoked' } {
         const result = this.store.messages.cancelQueuedMessage(sessionId, messageId)
 
-        if (result.changes === 0) {
-            return { ok: true, alreadyGone: true }
+        if (result.status === 'invoked') {
+            // CLI already consumed this message — skip CLI notification and SSE.
+            // The caller (web route) will surface this to the client so it can
+            // revert the optimistic removal.
+            return { status: 'invoked' }
         }
 
-        // Notify CLI: remove from in-memory queue if still waiting.
-        // Include localId (retrieved from DB before the DELETE) so the CLI dispatcher
-        // can match against the in-memory queue entry, which is keyed by localId.
+        // status === 'cancelled': notify CLI to drop the entry from its in-memory queue,
+        // then broadcast SSE so all connected web clients remove the row.
         this.io.of('/cli').to(`session:${sessionId}`).emit('update', {
             id: randomUUID(),
             seq: 0,
@@ -167,7 +169,7 @@ export class MessageService {
             messageId
         })
 
-        return { ok: true, alreadyGone: false }
+        return { status: 'cancelled', localId: result.localId }
     }
 
     async sendMessage(

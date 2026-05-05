@@ -315,7 +315,7 @@ export class SyncEngine {
     cancelQueuedMessage(
         sessionId: string,
         messageId: string
-    ): { ok: boolean; alreadyGone: boolean } {
+    ): { status: 'cancelled'; localId: string | null } | { status: 'invoked' } {
         return this.messageService.cancelQueuedMessage(sessionId, messageId)
     }
 

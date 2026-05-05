@@ -25,6 +25,7 @@ import type {
     SessionResponse,
     SessionsResponse
 } from '@/types/api'
+import type { CancelMessageResponse } from '@hapi/protocol/schemas'
 
 type ApiClientOptions = {
     baseUrl?: string
@@ -307,12 +308,12 @@ export class ApiClient {
         })
     }
 
-    async cancelMessage(sessionId: string, messageId: string): Promise<{ ok: boolean; alreadyGone?: boolean }> {
+    async cancelMessage(sessionId: string, messageId: string): Promise<CancelMessageResponse> {
         const response = await this.request(
             `/api/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}`,
             { method: 'DELETE' }
         )
-        return response as { ok: boolean; alreadyGone?: boolean }
+        return response as CancelMessageResponse
     }
 
     async abortSession(sessionId: string): Promise<void> {

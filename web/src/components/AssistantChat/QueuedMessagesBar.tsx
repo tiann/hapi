@@ -122,7 +122,10 @@ export function QueuedMessagesBar({ sessionId, api }: { sessionId: string; api: 
                                     snapshot: msg,
                                 },
                                 {
-                                    onSuccess: () => {
+                                    onSuccess: (result) => {
+                                        // Race guard: if the agent already consumed this message, skip prefill.
+                                        // The hook's own onSuccess already reverted the optimistic removal.
+                                        if (result.status === 'invoked') return
                                         // Only prefill if text is available; attachment-only rows get empty string.
                                         const prefillText = text
                                         if (prefillText) {

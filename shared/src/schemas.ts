@@ -261,3 +261,10 @@ export const SyncEventSchema = z.discriminatedUnion('type', [
 ])
 
 export type SyncEvent = z.infer<typeof SyncEventSchema>
+
+export const CancelMessageResponseSchema = z.discriminatedUnion('status', [
+    z.object({ status: z.literal('cancelled'), localId: z.string().nullable() }),
+    z.object({ status: z.literal('invoked') }),
+])
+
+export type CancelMessageResponse = z.infer<typeof CancelMessageResponseSchema>
