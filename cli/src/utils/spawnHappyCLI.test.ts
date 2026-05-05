@@ -1,7 +1,17 @@
 import { beforeAll, afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SpawnOptions } from 'child_process';
 
-const spawnMock = vi.fn((..._args: any[]) => ({ pid: 12345 } as any));
+const {
+  spawnMock,
+  existsSyncMock,
+  isBunCompiledMock,
+  projectPathMock
+} = vi.hoisted(() => ({
+  spawnMock: vi.fn((..._args: any[]) => ({ pid: 12345 }) as any),
+  existsSyncMock: vi.fn((path: string) => !path.includes('missing-hapi.exe')),
+  isBunCompiledMock: vi.fn(() => false),
+  projectPathMock: vi.fn(() => process.cwd())
+}));
 
 vi.mock('child_process', async () => {
   const actual = await vi.importActual<typeof import('child_process')>('child_process');
@@ -11,8 +21,22 @@ vi.mock('child_process', async () => {
   };
 });
 
+vi.mock('node:fs', async () => {
+  const actual = await vi.importActual<typeof import('node:fs')>('node:fs');
+  return {
+    ...actual,
+    existsSync: existsSyncMock
+  };
+});
+
+vi.mock('@/projectPath', () => ({
+  isBunCompiled: isBunCompiledMock,
+  projectPath: projectPathMock
+}));
+
 const originalPlatformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
 const originalInvokedCwd = process.env.HAPI_INVOKED_CWD;
+const originalCliExecutable = process.env.HAPI_CLI_EXECUTABLE;
 
 function setPlatform(value: string) {
   Object.defineProperty(process, 'platform', {
@@ -40,10 +64,19 @@ describe('spawnHappyCLI windowsHide behavior', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.resetModules();
+    existsSyncMock.mockImplementation((path: string) => !path.includes('missing-hapi.exe'));
+    isBunCompiledMock.mockReturnValue(false);
+    projectPathMock.mockReturnValue(process.cwd());
     if (originalInvokedCwd === undefined) {
       delete process.env.HAPI_INVOKED_CWD;
     } else {
       process.env.HAPI_INVOKED_CWD = originalInvokedCwd;
+    }
+    if (originalCliExecutable === undefined) {
+      delete process.env.HAPI_CLI_EXECUTABLE;
+    } else {
+      process.env.HAPI_CLI_EXECUTABLE = originalCliExecutable;
     }
   });
 
@@ -104,11 +137,59 @@ describe('spawnHappyCLI windowsHide behavior', () => {
     expect(command.command).toBe(process.execPath);
     if (isBunRuntime) {
       expect(command.args[0]).toBe('--cwd');
-      expect(command.args[1].replace(/\\/g, '/')).toMatch(/\/hapi\/cli$/);
-      expect(command.args[2].replace(/\\/g, '/')).toMatch(/\/hapi\/cli\/src\/index\.ts$/);
+      expect(command.args[1].replace(/\\/g, '/')).toMatch(/\/cli$/);
+      expect(command.args[2].replace(/\\/g, '/')).toMatch(/\/cli\/src\/index\.ts$/);
     } else {
-      expect(command.args.some((arg) => arg.replace(/\\/g, '/').endsWith('/hapi/cli/src/index.ts'))).toBe(true);
+      expect(command.args.some((arg) => arg.replace(/\\/g, '/').endsWith('/cli/src/index.ts'))).toBe(true);
     }
+  });
+
+  it('uses an inherited compiled CLI executable override when it points to an existing binary', async () => {
+    isBunCompiledMock.mockReturnValue(true);
+    process.env.HAPI_CLI_EXECUTABLE = 'C:\\Users\\Administrator\\.hapi\\patched\\hapi.exe';
+    const { getHappyCliCommand, resolveHappyCliExecutable } = await import('./spawnHappyCLI');
+
+    const command = getHappyCliCommand(['mcp', '--url', 'http://127.0.0.1:1234/']);
+
+    expect(resolveHappyCliExecutable()).toBe(process.env.HAPI_CLI_EXECUTABLE);
+    expect(command.command).toBe(process.env.HAPI_CLI_EXECUTABLE);
+  });
+
+  it('falls back to a real argv0 executable before process.execPath in compiled mode', async () => {
+    isBunCompiledMock.mockReturnValue(true);
+    const previousArgv0 = process.argv[0];
+    process.argv[0] = 'C:\\Users\\Administrator\\.hapi\\patched\\resume-recovery-0.17.2\\hapi.exe';
+    const { resolveHappyCliExecutable } = await import('./spawnHappyCLI');
+
+    try {
+      expect(resolveHappyCliExecutable()).toBe(process.argv[0]);
+    } finally {
+      process.argv[0] = previousArgv0;
+    }
+  });
+
+  it('ignores an inherited compiled CLI executable override when the binary is missing', async () => {
+    isBunCompiledMock.mockReturnValue(true);
+    process.env.HAPI_CLI_EXECUTABLE = 'C:\\Users\\Administrator\\.hapi\\patched\\missing-hapi.exe';
+    const { getHappyCliCommand } = await import('./spawnHappyCLI');
+
+    const command = getHappyCliCommand(['mcp', '--url', 'http://127.0.0.1:1234/']);
+
+    expect(command.command).toBe(process.execPath);
+  });
+
+  it('passes the resolved compiled executable to child HAPI processes', async () => {
+    isBunCompiledMock.mockReturnValue(true);
+    process.env.HAPI_CLI_EXECUTABLE = 'C:\\Users\\Administrator\\.hapi\\patched\\hapi.exe';
+    const { spawnHappyCLI } = await import('./spawnHappyCLI');
+
+    spawnHappyCLI(['mcp', '--url', 'http://127.0.0.1:1234/'], {
+      stdio: 'ignore'
+    });
+
+    const [command, _args, options] = spawnMock.mock.calls[0] as unknown[] | undefined ?? [];
+    expect(command).toBe(process.env.HAPI_CLI_EXECUTABLE);
+    expect((options as SpawnOptions | undefined)?.env?.HAPI_CLI_EXECUTABLE).toBe(process.env.HAPI_CLI_EXECUTABLE);
   });
 
   it('passes invoked workspace cwd to child processes when cwd is provided', async () => {

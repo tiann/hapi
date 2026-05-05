@@ -32,6 +32,8 @@ import { isBunCompiled, projectPath } from '@/projectPath';
 import { logger } from '@/ui/logger';
 import { existsSync } from 'node:fs';
 
+const HAPI_CLI_EXECUTABLE_ENV = 'HAPI_CLI_EXECUTABLE';
+
 /**
  * Resolve the TypeScript entrypoint for development mode.
  */
@@ -71,11 +73,30 @@ function resolveInvokedCwd(cwd: SpawnOptions['cwd']): string {
   return process.cwd();
 }
 
+export function resolveHappyCliExecutable(): string {
+  const override = process.env[HAPI_CLI_EXECUTABLE_ENV]?.trim();
+  if (override && isCrossPlatformAbsolutePath(override) && existsSync(override)) {
+    return override;
+  }
+
+  const argv0 = process.argv[0]?.trim();
+  if (argv0 && isCrossPlatformAbsolutePath(argv0) && existsSync(argv0)) {
+    return argv0;
+  }
+
+  const bunArgv0 = globalThis.Bun?.argv?.[0]?.trim();
+  if (bunArgv0 && isCrossPlatformAbsolutePath(bunArgv0) && existsSync(bunArgv0)) {
+    return bunArgv0;
+  }
+
+  return process.execPath;
+}
+
 export function getHappyCliCommand(args: string[]): HappyCliCommand {
   // Compiled binary mode: just use the executable directly
   if (isBunCompiled()) {
     return {
-      command: process.execPath,
+      command: resolveHappyCliExecutable(),
       args
     };
   }
@@ -118,10 +139,11 @@ export function spawnHappyCLI(args: string[], options: SpawnOptions = {}): Child
   const fullCommand = `hapi ${args.join(' ')}`;
   logger.debug(`[SPAWN HAPI CLI] Spawning: ${fullCommand} in ${directory}`);
   
+  const compiledMode = isBunCompiled();
   const { command: spawnCommand, args: spawnArgs } = getHappyCliCommand(args);
 
   // Sanity check that the entrypoint path exists
-  if (!isBunCompiled()) {
+  if (!compiledMode) {
     const entrypoint = spawnArgs.find((arg) => arg.endsWith('index.ts'));
     if (entrypoint && !existsSync(entrypoint)) {
       const errorMessage = `Entrypoint ${entrypoint} does not exist`;
@@ -133,8 +155,12 @@ export function spawnHappyCLI(args: string[], options: SpawnOptions = {}): Child
   // On Windows, detached processes allocate a new console window by default.
   // windowsHide: true suppresses this to prevent cmd windows from accumulating.
   const finalOptions: SpawnOptions = { ...options };
-  if (!isBunCompiled()) {
-    const finalEnv = { ...process.env, ...options.env };
+  const finalEnv = { ...process.env, ...options.env };
+  let shouldSetEnv = false;
+  if (compiledMode) {
+    finalEnv[HAPI_CLI_EXECUTABLE_ENV] = spawnCommand;
+    shouldSetEnv = true;
+  } else {
     const invokedCwd = finalEnv.HAPI_INVOKED_CWD?.trim();
     const hasExplicitCwd = 'cwd' in options && options.cwd !== undefined;
     finalEnv.HAPI_INVOKED_CWD = hasExplicitCwd
@@ -142,6 +168,9 @@ export function spawnHappyCLI(args: string[], options: SpawnOptions = {}): Child
       : invokedCwd && isCrossPlatformAbsolutePath(invokedCwd)
         ? invokedCwd
         : resolveInvokedCwd(options.cwd);
+    shouldSetEnv = true;
+  }
+  if (shouldSetEnv) {
     finalOptions.env = finalEnv;
   }
   if (process.platform === 'win32' && options.detached) {
