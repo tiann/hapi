@@ -40,11 +40,6 @@
                     if (scale === 0.8 || scale === 0.9 || scale === 1 || scale === 1.1 || scale === 1.2) {
                         document.documentElement.style.setProperty('--app-font-scale', String(scale))
                     }
-                    var rawWeight = localStorage.getItem('hapi-chat-font-weight')
-                    var weight = Number(rawWeight)
-                    if (weight === 350 || weight === 400 || weight === 500 || weight === 600) {
-                        document.documentElement.style.setProperty('--app-chat-font-weight', String(weight))
-                    }
                 } catch (error) {
                     // Ignore storage errors.
                 }
