@@ -312,6 +312,13 @@ export class SyncEngine {
         this.sessionCache.markMessageQueued(sessionId)
     }
 
+    cancelQueuedMessage(
+        sessionId: string,
+        messageId: string
+    ): { ok: boolean; alreadyGone: boolean } {
+        return this.messageService.cancelQueuedMessage(sessionId, messageId)
+    }
+
     async approvePermission(
         sessionId: string,
         requestId: string,

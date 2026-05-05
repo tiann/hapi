@@ -164,6 +164,21 @@ export function getMaxSeq(db: Database, sessionId: string): number {
     return row?.maxSeq ?? 0
 }
 
+/** Delete a queued (invoked_at IS NULL) message by session + message id.
+ *  Returns { changes: number } — 1 on success, 0 when already-invoked or not found.
+ *  The AND invoked_at IS NULL guard ensures cancel and invoke are mutually exclusive:
+ *  whichever arrives first at the DB wins (first-write-wins, mirrors markMessagesInvoked). */
+export function cancelQueuedMessage(
+    db: Database,
+    sessionId: string,
+    messageId: string
+): { changes: number } {
+    const result = db.prepare(
+        'DELETE FROM messages WHERE id = ? AND session_id = ? AND invoked_at IS NULL'
+    ).run(messageId, sessionId)
+    return { changes: result.changes }
+}
+
 /** Mark messages as invoked at the given server timestamp.
  *  Only updates rows whose local_id is in localIds.
  *  First-write-wins: rows with a non-NULL invoked_at are not updated.  A duplicate

@@ -51,6 +51,26 @@ export function createMessagesRoutes(getSyncEngine: () => SyncEngine | null): Ho
         return c.json(engine.getMessagesPage(sessionId, { limit, beforeSeq }))
     })
 
+    app.delete('/sessions/:id/messages/:messageId', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+        const sessionId = sessionResult.sessionId
+        const messageId = c.req.param('messageId')
+
+        const result = engine.cancelQueuedMessage(sessionId, messageId)
+        if (result.alreadyGone) {
+            return c.json({ ok: true, alreadyGone: true })
+        }
+        return c.json({ ok: true })
+    })
+
     app.post('/sessions/:id/messages', async (c) => {
         const engine = requireSyncEngine(c, getSyncEngine)
         if (engine instanceof Response) {

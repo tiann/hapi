@@ -1,5 +1,6 @@
 import type { AttachmentMetadata, DecryptedMessage } from '@hapi/protocol/types'
 import type { Server } from 'socket.io'
+import { randomUUID } from 'node:crypto'
 import type { Store } from '../store'
 import { EventPublisher } from './eventPublisher'
 
@@ -133,6 +134,39 @@ export class MessageService {
             createdAt: message.createdAt,
             invokedAt: message.invokedAt
         }))
+    }
+
+    cancelQueuedMessage(
+        sessionId: string,
+        messageId: string
+    ): { ok: boolean; alreadyGone: boolean } {
+        const result = this.store.messages.cancelQueuedMessage(sessionId, messageId)
+
+        if (result.changes === 0) {
+            return { ok: true, alreadyGone: true }
+        }
+
+        // Notify CLI: remove from in-memory queue if still waiting
+        // localId is not stored on this path, so we send the messageId for reference only.
+        // The CLI dispatcher matches by localId from the body; best-effort if missing.
+        this.io.of('/cli').to(`session:${sessionId}`).emit('update', {
+            id: randomUUID(),
+            seq: 0,
+            createdAt: Date.now(),
+            body: {
+                t: 'cancel-queued-message' as const,
+                sid: sessionId,
+                messageId
+            }
+        })
+
+        this.publisher.emit({
+            type: 'message-cancelled',
+            sessionId,
+            messageId
+        })
+
+        return { ok: true, alreadyGone: false }
     }
 
     async sendMessage(

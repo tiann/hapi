@@ -1,7 +1,7 @@
 import type { Database } from 'bun:sqlite'
 
 import type { StoredMessage } from './types'
-import { addMessage, getMessages, getMessagesAfter, getMessagesByPosition, getUninvokedLocalMessages, markMessagesInvoked, mergeSessionMessages } from './messages'
+import { addMessage, cancelQueuedMessage, getMessages, getMessagesAfter, getMessagesByPosition, getUninvokedLocalMessages, markMessagesInvoked, mergeSessionMessages } from './messages'
 
 export class MessageStore {
     private readonly db: Database
@@ -28,6 +28,10 @@ export class MessageStore {
 
     getUninvokedLocalMessages(sessionId: string): StoredMessage[] {
         return getUninvokedLocalMessages(this.db, sessionId)
+    }
+
+    cancelQueuedMessage(sessionId: string, messageId: string): { changes: number } {
+        return cancelQueuedMessage(this.db, sessionId, messageId)
     }
 
     markMessagesInvoked(sessionId: string, localIds: string[], invokedAt: number): void {
