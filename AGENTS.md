@@ -146,27 +146,3 @@ bun run build:single-exe # All-in-one binary
 2. Unsure: read more code; if still stuck, ask w/ short options.
 3. Conflicts: call out; pick safer path.
 4. Unrecognized changes: assume other agent; keep going; focus your changes. If it causes issues, stop + ask user.
-
-## Commit message convention
-
-Use the Angular/Conventional Commit style described in the Git commit message and changelog guide.
-
-Format:
-
-```text
-<type>(<scope>): <subject>
-
-<body>
-
-<footer>
-```
-
-Rules:
-- `Header` is required; `Body` and `Footer` are optional.
-- `type` must be one of: `feat`, `fix`, `docs`, `style`, `refactor`, `test`, `chore`.
-- `scope` is optional; use a short package or feature area such as `web`, `cli`, `hub`, `chat`, `tool-card`.
-- `subject` uses imperative mood, starts lowercase, has no trailing period, and should stay concise.
-- `body` explains what changed and why; wrap lines around 72 chars when practical.
-- `footer` is for breaking changes, issue references, and required tooling trailers; start breaking changes with `BREAKING CHANGE:`.
-- If the local commit hook requires trailers (for example `Tested:` or `Co-authored-by:`), keep them in the footer after the body while preserving the same header format.
-- Prefer focused commits. If a commit mixes areas, choose the dominant user-visible scope.
