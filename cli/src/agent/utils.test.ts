@@ -25,10 +25,11 @@ describe('agent tool name helpers', () => {
     });
 
     describe('kind=edit _meta.kind mapping (Gemini write_file / replace)', () => {
-        // Phase 3a Red tests (2026-05-05)
-        // kind=edit + _meta.kind=add  → 'Write'
-        // kind=edit + _meta.kind=modify → 'Edit'
-        // _meta absent → existing kind fallback unchanged
+        // Gemini ACP: kind=edit with _meta.kind distinguishes write_file (add)
+        // from replace (modify). Map to canonical Claude tool names.
+        //   kind=edit + metaKind=add    → 'Write'
+        //   kind=edit + metaKind=modify → 'Edit'
+        //   metaKind absent             → existing kind fallback ('edit')
 
         it('maps kind=edit + metaKind=add to Write', () => {
             const derived = deriveToolNameWithSource({

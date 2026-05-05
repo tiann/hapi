@@ -78,20 +78,25 @@ function deriveInputFromKindAndTitle(
     }
 }
 
+type HoistedDiff =
+    | { name: 'Write'; input: { file_path: string; content: string } }
+    | { name: 'Edit'; input: { file_path: string; old_string: string; new_string: string } };
+
 /**
  * Hoists the first diff block from a Gemini ACP content array into a
  * Claude-shaped tool input so the existing Write/Edit web views can render it.
  *
- * Mapping (mirrors the Gemini ACP quirks spec):
- *   _meta.kind='add'    → Write input  {file_path, content: newText}
- *   _meta.kind='modify' → Edit input   {file_path, old_string: oldText, new_string: newText}
+ * Mapping (mirrors the Gemini ACP quirks spec, see
+ * __fixtures__/gemini-3-flash-preview-{write,edit}-file.json):
+ *   _meta.kind='add'    → { name: 'Write', input: {file_path, content: newText} }
+ *   _meta.kind='modify' → { name: 'Edit',  input: {file_path, old_string, new_string} }
  *
  * Returns null when:
  *   - content is not an array or is empty
  *   - the first block is not a diff type
  *   - _meta.kind is absent or unrecognised (let callers keep the existing fallback)
  */
-function hoistDiffContentIntoInput(content: unknown): Record<string, unknown> | null {
+function hoistDiffContentIntoInput(content: unknown): HoistedDiff | null {
     if (!Array.isArray(content) || content.length === 0) return null;
     const first = content[0];
     if (!isObject(first) || first.type !== 'diff') return null;
@@ -105,12 +110,12 @@ function hoistDiffContentIntoInput(content: unknown): Record<string, unknown> | 
 
     if (metaKind === 'add') {
         const newText = typeof first.newText === 'string' ? first.newText : '';
-        return { file_path: path, content: newText };
+        return { name: 'Write', input: { file_path: path, content: newText } };
     }
     if (metaKind === 'modify') {
         const oldText = typeof first.oldText === 'string' ? first.oldText : '';
         const newText = typeof first.newText === 'string' ? first.newText : '';
-        return { file_path: path, old_string: oldText, new_string: newText };
+        return { name: 'Edit', input: { file_path: path, old_string: oldText, new_string: newText } };
     }
 
     return null;
@@ -416,7 +421,15 @@ export class AcpMessageHandler {
         const toolCallId = asString(update.toolCallId);
         if (!toolCallId) return;
 
-        const derivedName = deriveToolNameFromUpdate(update);
+        // Initial tool_call events (in_progress) never carry a completed diff block,
+        // so metaKind is always null here. Pass it explicitly to prevent a silent
+        // Write/Edit promotion if content ever appears unexpectedly on this path.
+        const derivedName = deriveToolNameWithSource({
+            title: asString(update.title),
+            kind: asString(update.kind),
+            rawInput: update.rawInput,
+            metaKind: null
+        });
         const name = derivedName.name;
         // Priority: rawInput > kind+title fallback.
         // Use `in` to distinguish "rawInput key absent" from "rawInput is {}".
@@ -498,16 +511,12 @@ export class AcpMessageHandler {
             if (status === 'completed' && update.rawInput == null && existing) {
                 const hoisted = hoistDiffContentIntoInput(update.content);
                 if (hoisted) {
-                    const metaKind = extractMetaKindFromContent(update.content);
-                    const name = metaKind === 'add' ? 'Write'
-                        : metaKind === 'modify' ? 'Edit'
-                        : existing.name;
-                    this.toolCalls.set(toolCallId, { name, input: hoisted });
+                    this.toolCalls.set(toolCallId, { name: hoisted.name, input: hoisted.input });
                     this.onMessage({
                         type: 'tool_call',
                         id: toolCallId,
-                        name,
-                        input: hoisted,
+                        name: hoisted.name,
+                        input: hoisted.input,
                         status
                     });
                 }

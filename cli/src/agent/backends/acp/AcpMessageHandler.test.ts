@@ -1402,10 +1402,10 @@ describe('AcpMessageHandler', () => {
     });
 
     describe('kind=edit input hoist — Gemini write_file / replace → Claude-shaped input', () => {
-        // Phase 3a Red tests (2026-05-05)
-        // Target behaviour:
-        //   - kind=edit + _meta.kind=add  → toolName 'Write' + input {file_path, content: newText}
-        //   - kind=edit + _meta.kind=modify → toolName 'Edit' + input {file_path, old_string, new_string}
+        // Gemini ACP kind=edit tools carry the diff in the completed tool_call_update
+        // content block rather than in rawInput. Map to canonical Claude shapes:
+        //   - _meta.kind='add'    → toolName 'Write' + input {file_path, content: newText}
+        //   - _meta.kind='modify' → toolName 'Edit'  + input {file_path, old_string, new_string}
         //   - _meta absent (race/inflight) → fallback: toolName unchanged, input {file_path: locations[0].path}
 
         function getToolCall(
@@ -1508,8 +1508,10 @@ describe('AcpMessageHandler', () => {
             });
         });
 
-        it('falls back to {file_path} input when content arrives without _meta (race / inflight)', () => {
-            // Initial tool_call without content → fallback {file_path} only
+        it('sets {file_path} input from locations on initial in_progress event', () => {
+            // Initial tool_call without content → fallback {file_path} only.
+            // This covers the "race / inflight" case where no diff block has
+            // arrived yet; hoist only fires on the completed update.
             const messages: AgentMessage[] = [];
             const handler = new AcpMessageHandler((m) => messages.push(m));
 
@@ -1525,6 +1527,53 @@ describe('AcpMessageHandler', () => {
             const tc = getToolCall(messages, 'edit-race-1');
             // Must still have a file_path (from locations) but no content/old_string
             expect(tc.input).toEqual({ file_path: '/abs/foo.txt' });
+        });
+
+        it('emits hoisted tool_call { status: completed } before tool_result', () => {
+            // Finding 3: verify emit order — reducerTools.ts merges tool_call updates
+            // by id, so the hoisted Write/Edit name+input must arrive before the
+            // tool_result that signals completion to the UI.
+            const messages: AgentMessage[] = [];
+            const handler = new AcpMessageHandler((m) => messages.push(m));
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+                toolCallId: 'edit-order-1',
+                title: 'Writing to foo.txt',
+                kind: 'edit',
+                locations: [{ path: '/abs/foo.txt' }],
+                status: 'in_progress'
+            });
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCallUpdate,
+                toolCallId: 'edit-order-1',
+                title: 'Writing to foo.txt',
+                kind: 'edit',
+                locations: [{ path: '/abs/foo.txt' }],
+                status: 'completed',
+                content: [{
+                    type: 'diff',
+                    path: '/abs/foo.txt',
+                    oldText: '',
+                    newText: 'new content\n',
+                    _meta: { kind: 'add' }
+                }]
+            });
+
+            type ToolMsg = Extract<AgentMessage, { type: 'tool_call' | 'tool_result' }>;
+            const relevant = messages.filter(
+                (m): m is ToolMsg =>
+                    (m.type === 'tool_call' || m.type === 'tool_result') &&
+                    (m as ToolMsg).id === 'edit-order-1'
+            );
+            // in_progress tool_call → completed tool_call (hoisted) → tool_result
+            expect(relevant).toHaveLength(3);
+            expect(relevant[0]!.type).toBe('tool_call');
+            expect((relevant[0] as Extract<AgentMessage, { type: 'tool_call' }>).status).toBe('in_progress');
+            expect(relevant[1]!.type).toBe('tool_call');
+            expect((relevant[1] as Extract<AgentMessage, { type: 'tool_call' }>).status).toBe('completed');
+            expect(relevant[2]!.type).toBe('tool_result');
         });
 
         it('falls back gracefully when content array is present but _meta.kind is absent', () => {
@@ -1562,8 +1611,10 @@ describe('AcpMessageHandler', () => {
                     m.type === 'tool_call' && m.id === 'edit-nometa-1'
             );
             const last = toolCalls[toolCalls.length - 1]!;
-            // Should not crash; input may be file_path fallback or null — either is safe
-            expect(last.input).not.toBeUndefined();
+            // hoistDiffContentIntoInput returns null when _meta.kind is absent,
+            // so no re-emit occurs. The last tool_call still carries the initial
+            // {file_path} fallback derived from locations at the in_progress event.
+            expect(last.input).toEqual({ file_path: '/abs/foo.txt' });
         });
 
         it('does not hoist or re-emit tool_call when status is failed', () => {
