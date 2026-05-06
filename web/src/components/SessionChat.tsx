@@ -8,6 +8,7 @@ import type {
     DecryptedMessage,
     PermissionMode,
     Session,
+    SkillSummary,
     SlashCommand
 } from '@/types/api'
 import type { ChatBlock, NormalizedMessage } from '@/chat/types'
@@ -65,6 +66,8 @@ export function SessionChat(props: {
     onAtBottomChange: (atBottom: boolean) => void
     onRetryMessage?: (localId: string) => void
     autocompleteSuggestions?: (query: string) => Promise<Suggestion[]>
+    availableSkills?: readonly SkillSummary[]
+    refreshSkills?: () => Promise<SkillSummary[]>
     availableSlashCommands?: readonly SlashCommand[]
 }) {
     const { haptic } = usePlatform()
@@ -504,6 +507,8 @@ export function SessionChat(props: {
                         onTerminal={props.session.active && terminalSupported ? handleViewTerminal : undefined}
                         terminalUnsupported={props.session.active && !terminalSupported}
                         autocompleteSuggestions={props.autocompleteSuggestions}
+                        availableSkills={props.availableSkills}
+                        refreshSkills={props.refreshSkills}
                         voiceStatus={voice?.status}
                         voiceMicMuted={voice?.micMuted}
                         onVoiceToggle={voice ? handleVoiceToggle : undefined}

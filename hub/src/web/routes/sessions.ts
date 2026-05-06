@@ -3,6 +3,7 @@ import { CodexCollaborationModeSchema, PermissionModeSchema } from '@hapi/protoc
 import { Hono } from 'hono'
 import { z } from 'zod'
 import type { SyncEngine, Session } from '../../sync/syncEngine'
+import { scanCodexSkillsForSession } from '../../skills/codexSkills'
 import type { WebAppEnv } from '../middleware/auth'
 import { requireSessionFromParam, requireSyncEngine } from './guards'
 
@@ -521,14 +522,15 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return sessionResult
         }
 
+        if (sessionResult.session.metadata?.flavor !== 'codex') {
+            return c.json([])
+        }
+
         try {
-            const result = await engine.listSkills(sessionResult.sessionId)
-            return c.json(result)
-        } catch (error) {
-            return c.json({
-                success: false,
-                error: error instanceof Error ? error.message : 'Failed to list skills'
-            })
+            const skills = await scanCodexSkillsForSession(sessionResult.session.metadata?.path)
+            return c.json(skills)
+        } catch {
+            return c.json([])
         }
     })
 

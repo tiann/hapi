@@ -26,7 +26,7 @@ import { useMachines } from '@/hooks/queries/useMachines'
 import { useSession } from '@/hooks/queries/useSession'
 import { useSessions } from '@/hooks/queries/useSessions'
 import { useSlashCommands } from '@/hooks/queries/useSlashCommands'
-import { useSkills } from '@/hooks/queries/useSkills'
+import { useSessionSkills } from '@/hooks/queries/useSkills'
 import { useSendMessage } from '@/hooks/mutations/useSendMessage'
 import { queryKeys } from '@/lib/query-keys'
 import { useToast } from '@/lib/toast-context'
@@ -333,15 +333,20 @@ function SessionPage() {
         getSuggestions: getSlashSuggestions,
     } = useSlashCommands(api, sessionId, agentType)
     const {
+        skills,
+        refreshSkills,
         getSuggestions: getSkillSuggestions,
-    } = useSkills(api, sessionId)
+    } = useSessionSkills(api, sessionId, agentType === 'codex')
 
     const getAutocompleteSuggestions = useCallback(async (query: string) => {
         if (query.startsWith('$')) {
+            if (agentType !== 'codex') {
+                return []
+            }
             return await getSkillSuggestions(query)
         }
         return await getSlashSuggestions(query)
-    }, [getSkillSuggestions, getSlashSuggestions])
+    }, [agentType, getSkillSuggestions, getSlashSuggestions])
 
     const refreshSelectedSession = useCallback(() => {
         void refetchSession()
@@ -376,6 +381,8 @@ function SessionPage() {
             onAtBottomChange={setAtBottom}
             onRetryMessage={retryMessage}
             autocompleteSuggestions={getAutocompleteSuggestions}
+            availableSkills={skills}
+            refreshSkills={refreshSkills}
             availableSlashCommands={slashCommands}
         />
     )
