@@ -241,6 +241,11 @@ export default {
   'composer.send': 'Send',
   'composer.stop': 'Stop',
   'composer.voice': 'Voice assistant',
+  'composer.skills': 'Skills',
+  'composer.continueShortcut.label': 'Agree and continue',
+  'composer.continueShortcut.confirmTitle': 'Send quick prompt?',
+  'composer.continueShortcut.confirmDescription': 'This will send the following prompt now:',
+  'composer.continueShortcut.confirmSend': 'Send',
   'composer.codexSlashUnsupported.title': 'Codex command unavailable',
   'composer.codexSlashUnsupported.body': 'HAPI remote mode does not yet run built-in Codex slash commands like {command}. Use natural language instead, or run it in the local Codex TUI.',
 

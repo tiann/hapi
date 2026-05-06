@@ -29,6 +29,7 @@ import { Autocomplete } from '@/components/ChatInput/Autocomplete'
 import { SkillPickerDialog } from '@/components/AssistantChat/SkillPickerDialog'
 import { StatusBar } from '@/components/AssistantChat/StatusBar'
 import { ComposerButtons } from '@/components/AssistantChat/ComposerButtons'
+import { CONTINUE_PROMPT, ContinuePromptDialog } from '@/components/AssistantChat/ContinuePromptDialog'
 import { AttachmentItem } from '@/components/AssistantChat/AttachmentItem'
 import { useTranslation } from '@/lib/use-translation'
 import { getModelOptionsForFlavor, getNextModelForFlavor } from './modelOptions'
@@ -79,6 +80,7 @@ export function HappyComposer(props: {
     autocompleteSuggestions?: (query: string) => Promise<Suggestion[]>
     availableSkills?: readonly SkillSummary[]
     refreshSkills?: () => Promise<SkillSummary[]>
+    onQuickSendPrompt?: (text: string) => void
     // Voice assistant props
     voiceStatus?: ConversationStatus
     voiceMicMuted?: boolean
@@ -117,6 +119,7 @@ export function HappyComposer(props: {
         autocompleteSuggestions = defaultSuggestionHandler,
         availableSkills = [],
         refreshSkills,
+        onQuickSendPrompt,
         voiceStatus = 'disconnected',
         voiceMicMuted = false,
         onVoiceToggle,
@@ -161,6 +164,7 @@ export function HappyComposer(props: {
     const [isSwitching, setIsSwitching] = useState(false)
     const [showContinueHint, setShowContinueHint] = useState(false)
     const [skillPickerAnchor, setSkillPickerAnchor] = useState<SkillPickerAnchor | null>(null)
+    const [continuePromptDialogOpen, setContinuePromptDialogOpen] = useState(false)
 
     const textareaRef = useRef<HTMLTextAreaElement>(null)
     const prevControlledByUser = useRef(controlledByUser)
@@ -301,6 +305,18 @@ export function HappyComposer(props: {
         })
         haptic('light')
     }, [agentFlavor, clearSuggestions, controlsDisabled, haptic, inputState.selection, inputState.text])
+
+    const handleContinuePromptShortcut = useCallback(() => {
+        if (controlsDisabled || !onQuickSendPrompt) return
+        setContinuePromptDialogOpen(true)
+        haptic('light')
+    }, [controlsDisabled, haptic, onQuickSendPrompt])
+
+    const handleContinuePromptConfirm = useCallback(() => {
+        if (controlsDisabled || !onQuickSendPrompt) return
+        onQuickSendPrompt(CONTINUE_PROMPT)
+        haptic('success')
+    }, [controlsDisabled, haptic, onQuickSendPrompt])
 
     const abortDisabled = controlsDisabled || isAborting || !threadIsRunning
     const switchDisabled = controlsDisabled || isSwitching || !controlledByUser
@@ -888,10 +904,18 @@ export function HappyComposer(props: {
                             showSkillPickerButton={agentFlavor === 'codex'}
                             skillPickerDisabled={controlsDisabled}
                             onSkillPickerOpen={handleSkillPickerShortcut}
+                            showContinuePromptButton={Boolean(onQuickSendPrompt)}
+                            continuePromptDisabled={controlsDisabled}
+                            onContinuePromptOpen={handleContinuePromptShortcut}
                             onSend={handleSend}
                         />
                     </div>
                 </ComposerPrimitive.Root>
+                <ContinuePromptDialog
+                    open={continuePromptDialogOpen}
+                    onOpenChange={setContinuePromptDialogOpen}
+                    onConfirm={handleContinuePromptConfirm}
+                />
                 <SkillPickerDialog
                     open={skillPickerAnchor !== null}
                     initialQuery={skillPickerAnchor?.query ?? ''}

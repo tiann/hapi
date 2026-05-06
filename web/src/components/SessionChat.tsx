@@ -509,6 +509,7 @@ export function SessionChat(props: {
                         autocompleteSuggestions={props.autocompleteSuggestions}
                         availableSkills={props.availableSkills}
                         refreshSkills={props.refreshSkills}
+                        onQuickSendPrompt={handleSend}
                         voiceStatus={voice?.status}
                         voiceMicMuted={voice?.micMuted}
                         onVoiceToggle={voice ? handleVoiceToggle : undefined}

@@ -151,6 +151,14 @@ function DollarIcon() {
     )
 }
 
+function ContinuePromptIcon() {
+    return (
+        <span aria-hidden="true" className="text-xs font-semibold leading-none">
+            继续
+        </span>
+    )
+}
+
 function AbortIcon(props: { spinning: boolean }) {
     if (props.spinning) {
         return (
@@ -329,6 +337,9 @@ export function ComposerButtons(props: {
     showSkillPickerButton?: boolean
     skillPickerDisabled?: boolean
     onSkillPickerOpen?: () => void
+    showContinuePromptButton?: boolean
+    continuePromptDisabled?: boolean
+    onContinuePromptOpen?: () => void
     onSend: () => void
 }) {
     const { t } = useTranslation()
@@ -349,13 +360,26 @@ export function ComposerButtons(props: {
                 {props.showSkillPickerButton ? (
                     <button
                         type="button"
-                        aria-label="Skills"
-                        title="Skills"
+                        aria-label={t('composer.skills')}
+                        title={t('composer.skills')}
                         disabled={props.skillPickerDisabled ?? props.controlsDisabled}
                         className="flex h-8 w-8 items-center justify-center rounded-full text-[var(--app-fg)]/60 transition-colors hover:bg-[var(--app-bg)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-50 sm:hidden"
                         onClick={props.onSkillPickerOpen}
                     >
                         <DollarIcon />
+                    </button>
+                ) : null}
+
+                {props.showContinuePromptButton ? (
+                    <button
+                        type="button"
+                        aria-label={t('composer.continueShortcut.label')}
+                        title={t('composer.continueShortcut.label')}
+                        disabled={props.continuePromptDisabled ?? props.controlsDisabled}
+                        className="flex h-8 min-w-8 items-center justify-center rounded-full px-1.5 text-[var(--app-fg)]/60 transition-colors hover:bg-[var(--app-bg)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-50 sm:hidden"
+                        onClick={props.onContinuePromptOpen}
+                    >
+                        <ContinuePromptIcon />
                     </button>
                 ) : null}
 

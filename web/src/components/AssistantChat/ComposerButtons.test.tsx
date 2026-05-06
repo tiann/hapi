@@ -58,7 +58,7 @@ describe('ComposerButtons', () => {
             onSkillPickerOpen,
         })
 
-        const button = screen.getByRole('button', { name: 'Skills' })
+        const button = screen.getByRole('button', { name: 'composer.skills' })
         expect(button).toHaveClass('sm:hidden')
 
         fireEvent.click(button)
@@ -68,7 +68,7 @@ describe('ComposerButtons', () => {
     it('omits the skill picker button when disabled by caller', () => {
         renderButtons({ showSkillPickerButton: false })
 
-        expect(screen.queryByRole('button', { name: 'Skills' })).not.toBeInTheDocument()
+        expect(screen.queryByRole('button', { name: 'composer.skills' })).not.toBeInTheDocument()
     })
 
     it('disables the skill picker button with composer controls', () => {
@@ -77,6 +77,29 @@ describe('ComposerButtons', () => {
             controlsDisabled: true,
         })
 
-        expect(screen.getByRole('button', { name: 'Skills' })).toBeDisabled()
+        expect(screen.getByRole('button', { name: 'composer.skills' })).toBeDisabled()
+    })
+
+    it('shows a mobile continue prompt button when enabled', () => {
+        const onContinuePromptOpen = vi.fn()
+        renderButtons({
+            showContinuePromptButton: true,
+            onContinuePromptOpen,
+        })
+
+        const button = screen.getByRole('button', { name: 'composer.continueShortcut.label' })
+        expect(button).toHaveClass('sm:hidden')
+
+        fireEvent.click(button)
+        expect(onContinuePromptOpen).toHaveBeenCalled()
+    })
+
+    it('disables the continue prompt button with composer controls', () => {
+        renderButtons({
+            showContinuePromptButton: true,
+            controlsDisabled: true,
+        })
+
+        expect(screen.getByRole('button', { name: 'composer.continueShortcut.label' })).toBeDisabled()
     })
 })

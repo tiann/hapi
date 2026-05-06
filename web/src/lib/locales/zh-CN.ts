@@ -243,6 +243,11 @@ export default {
   'composer.send': '发送',
   'composer.stop': '停止',
   'composer.voice': '语音助手',
+  'composer.skills': '技能',
+  'composer.continueShortcut.label': '同意, 继续',
+  'composer.continueShortcut.confirmTitle': '发送快捷提示？',
+  'composer.continueShortcut.confirmDescription': '将立即发送以下提示：',
+  'composer.continueShortcut.confirmSend': '发送',
   'composer.codexSlashUnsupported.title': '无法执行 Codex 命令',
   'composer.codexSlashUnsupported.body': 'HAPI 远程模式暂不支持 {command} 这类 Codex 内建 slash command，请改用自然语言，或在本地 Codex TUI 中执行。',
 
