@@ -17,6 +17,7 @@ import { SyntaxHighlighter } from '@/components/assistant-ui/shiki-highlighter'
 import { MermaidDiagram } from '@/components/assistant-ui/mermaid-diagram'
 import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
 import { CopyIcon, CheckIcon } from '@/components/icons'
+import { renderDocPathCopyChildren } from '@/components/assistant-ui/doc-path-copy'
 
 import type { MarkdownTextPrimitiveProps } from '@assistant-ui/react-markdown'
 
@@ -68,24 +69,57 @@ function Pre(props: ComponentPropsWithoutRef<'pre'>) {
 
 function Code(props: ComponentPropsWithoutRef<'code'>) {
     const isCodeBlock = useIsMarkdownCodeBlock()
+    const { className, children, ...rest } = props
 
     if (isCodeBlock) {
         return (
             <code
-                {...props}
-                className={cn('aui-md-codeblockcode font-mono', props.className)}
-            />
+                {...rest}
+                className={cn('aui-md-codeblockcode font-mono', className)}
+            >
+                {children}
+            </code>
         )
     }
 
     return (
         <code
-            {...props}
+            {...rest}
             className={cn(
                 'aui-md-code break-words rounded-md border border-[var(--app-inline-code-border)] bg-[var(--app-inline-code-bg)] px-[0.38em] py-[0.14em] font-mono text-[0.88em] text-[var(--app-inline-code-fg)]',
-                props.className
+                className
             )}
-        />
+        >
+            {children}
+        </code>
+    )
+}
+
+function AssistantCode(props: ComponentPropsWithoutRef<'code'>) {
+    const isCodeBlock = useIsMarkdownCodeBlock()
+    const { className, children, ...rest } = props
+
+    if (isCodeBlock) {
+        return (
+            <code
+                {...rest}
+                className={cn('aui-md-codeblockcode font-mono', className)}
+            >
+                {children}
+            </code>
+        )
+    }
+
+    return (
+        <code
+            {...rest}
+            className={cn(
+                'aui-md-code break-words rounded-md border border-[var(--app-inline-code-border)] bg-[var(--app-inline-code-bg)] px-[0.38em] py-[0.14em] font-mono text-[0.88em] text-[var(--app-inline-code-fg)]',
+                className
+            )}
+        >
+            {renderDocPathCopyChildren(children)}
+        </code>
     )
 }
 
@@ -103,6 +137,15 @@ function A(props: ComponentPropsWithoutRef<'a'>) {
 
 function Paragraph(props: ComponentPropsWithoutRef<'p'>) {
     return <p {...props} className={cn('aui-md-p my-2.5 leading-7 first:mt-0 last:mb-0', props.className)} />
+}
+
+function AssistantParagraph(props: ComponentPropsWithoutRef<'p'>) {
+    const { children, ...rest } = props
+    return (
+        <p {...rest} className={cn('aui-md-p my-2.5 leading-7 first:mt-0 last:mb-0', props.className)}>
+            {renderDocPathCopyChildren(children)}
+        </p>
+    )
 }
 
 function Blockquote(props: ComponentPropsWithoutRef<'blockquote'>) {
@@ -127,6 +170,15 @@ function OrderedList(props: ComponentPropsWithoutRef<'ol'>) {
 
 function ListItem(props: ComponentPropsWithoutRef<'li'>) {
     return <li {...props} className={cn('aui-md-li leading-7', props.className)} />
+}
+
+function AssistantListItem(props: ComponentPropsWithoutRef<'li'>) {
+    const { children, ...rest } = props
+    return (
+        <li {...rest} className={cn('aui-md-li leading-7', props.className)}>
+            {renderDocPathCopyChildren(children)}
+        </li>
+    )
 }
 
 function Hr(props: ComponentPropsWithoutRef<'hr'>) {
@@ -167,8 +219,32 @@ function Th(props: ComponentPropsWithoutRef<'th'>) {
     )
 }
 
+function AssistantTh(props: ComponentPropsWithoutRef<'th'>) {
+    const { children, ...rest } = props
+    return (
+        <th
+            {...rest}
+            className={cn(
+                'aui-md-th px-3 py-2 text-left font-semibold text-[var(--app-fg)] [[align=center]]:text-center [[align=right]]:text-right',
+                props.className
+            )}
+        >
+            {renderDocPathCopyChildren(children)}
+        </th>
+    )
+}
+
 function Td(props: ComponentPropsWithoutRef<'td'>) {
     return <td {...props} className={cn('aui-md-td px-3 py-2 align-top text-[var(--app-fg)] [[align=center]]:text-center [[align=right]]:text-right', props.className)} />
+}
+
+function AssistantTd(props: ComponentPropsWithoutRef<'td'>) {
+    const { children, ...rest } = props
+    return (
+        <td {...rest} className={cn('aui-md-td px-3 py-2 align-top text-[var(--app-fg)] [[align=center]]:text-center [[align=right]]:text-right', props.className)}>
+            {renderDocPathCopyChildren(children)}
+        </td>
+    )
 }
 
 function H1(props: ComponentPropsWithoutRef<'h1'>) {
@@ -236,12 +312,21 @@ export const defaultComponents = memoizeMarkdownComponents({
     img: Image,
 } as const)
 
+export const assistantMessageComponents = memoizeMarkdownComponents({
+    ...defaultComponents,
+    code: AssistantCode,
+    p: AssistantParagraph,
+    li: AssistantListItem,
+    th: AssistantTh,
+    td: AssistantTd,
+} as const)
+
 export function MarkdownText() {
     return (
         <MarkdownTextPrimitive
             remarkPlugins={MARKDOWN_PLUGINS}
             rehypePlugins={MARKDOWN_REHYPE_PLUGINS}
-            components={defaultComponents}
+            components={assistantMessageComponents}
             componentsByLanguage={MARKDOWN_COMPONENTS_BY_LANGUAGE}
             className={cn(MARKDOWN_CLASSNAME)}
         />

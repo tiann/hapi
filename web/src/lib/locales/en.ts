@@ -175,6 +175,7 @@ export default {
   // Code block
   'code.copy': 'Copy',
   'code.truncated': 'Preview truncated — open details for full output',
+  'markdown.copyDocPath': 'Copy document path {path}',
 
   // Diff view
   'diff.title': 'Diff',
