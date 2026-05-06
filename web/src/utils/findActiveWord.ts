@@ -29,26 +29,13 @@ function findActiveWordStart(
     prefixes: string[]
 ): number {
     let startIndex = selection.start - 1
-    let spaceIndex = -1
-    let foundPrefix = false
-    let prefixIndex = -1
 
     while (startIndex >= 0) {
         const char = content.charAt(startIndex)
 
         // Check if we hit a space
         if (char === ' ') {
-            if (foundPrefix) {
-                // We found a prefix earlier, return its position
-                return prefixIndex
-            }
-            if (spaceIndex >= 0) {
-                // Multiple spaces, stop here
-                return spaceIndex + 1
-            } else {
-                spaceIndex = startIndex
-                startIndex--
-            }
+            return startIndex + 1
         }
         // Check if this is a prefix character at word boundary
         else if (
@@ -57,8 +44,6 @@ function findActiveWordStart(
         ) {
             // For @ prefix, continue searching backwards to include the entire file path
             if (char === '@') {
-                foundPrefix = true
-                prefixIndex = startIndex
                 // Return immediately for @ at word boundary
                 return startIndex
             } else {
@@ -67,9 +52,6 @@ function findActiveWordStart(
         }
         // Check if we hit a stop character
         else if (STOP_CHARACTERS.includes(char)) {
-            if (foundPrefix) {
-                return prefixIndex
-            }
             return startIndex + 1
         }
         // Continue searching backwards
@@ -79,10 +61,7 @@ function findActiveWordStart(
     }
 
     // Reached beginning of text
-    if (foundPrefix) {
-        return prefixIndex
-    }
-    return (spaceIndex >= 0 ? spaceIndex : startIndex) + 1
+    return startIndex + 1
 }
 
 function findActiveWordEnd(
