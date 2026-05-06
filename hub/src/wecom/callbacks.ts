@@ -1,6 +1,6 @@
-import type { Session, SyncEngine } from '../sync/syncEngine'
+import type { SyncEngine } from '../sync/syncEngine'
 import type { Store } from '../store'
-import { ACTION_APPROVE, ACTION_DENY, parseCallbackData, findSessionByPrefix } from './renderer'
+import { ACTION_APPROVE, ACTION_DENY, parseCallbackData, findSessionById } from './renderer'
 import { buildSystemReplyCard, sessionUrl } from './sessionView'
 import type {
     EventMessageWith,
@@ -28,14 +28,12 @@ export interface CallbackCtx {
     }) => void
 }
 
-function findRequestByPrefix(session: Session, prefix: string): string | null {
-    if (!prefix) return null
-    const requests = session.agentState?.requests
-    if (!requests) return null
-    for (const id of Object.keys(requests)) {
-        if (id.startsWith(prefix)) return id
-    }
-    return null
+function findRequestById(
+    requests: Record<string, unknown> | null | undefined,
+    id: string
+): string | null {
+    if (!id || !requests) return null
+    return Object.prototype.hasOwnProperty.call(requests, id) ? id : null
 }
 
 function reply(
@@ -89,7 +87,7 @@ export async function handleTemplateCardEvent(
     }
 
     const sessions = ctx.syncEngine.getSessionsByNamespace(user.namespace)
-    const session = findSessionByPrefix(sessions, parsed.sessionPrefix)
+    const session = findSessionById(sessions, parsed.sessionId)
     if (!session) {
         reply(ctx, frame, 'Session not found', taskId)
         return
@@ -98,7 +96,7 @@ export async function handleTemplateCardEvent(
         reply(ctx, frame, 'Session inactive', taskId, session.id)
         return
     }
-    const requestId = findRequestByPrefix(session, parsed.extra ?? '')
+    const requestId = findRequestById(session.agentState?.requests, parsed.requestId ?? '')
     if (!requestId) {
         reply(ctx, frame, 'Already processed', taskId, session.id)
         return

@@ -138,8 +138,8 @@ describe('WecomBot.sendPermissionRequest', () => {
             const b = body as Extract<SendMsgBody, { msgtype: 'template_card' }>
             expect(b.msgtype).toBe('template_card')
             expect(b.template_card.card_type).toBe('button_interaction')
-            expect(b.template_card.button_list?.[0].key).toBe('ap:abcdef01:req98765')
-            expect(b.template_card.button_list?.[1].key).toBe('dn:abcdef01:req98765')
+            expect(b.template_card.button_list?.[0].key).toBe('ap:abcdef0123456789:req98765432abc')
+            expect(b.template_card.button_list?.[1].key).toBe('dn:abcdef0123456789:req98765432abc')
         }
         expect(client.sendMessage.mock.calls[0][0]).toBe('u1')
         expect(client.sendMessage.mock.calls[1][0]).toBe('u2')
@@ -278,7 +278,7 @@ function clickFrame(eventKey: string, userid: string, reqId: string): WsFrame {
 describe('WecomBot onEvent (template card click)', () => {
     it('dispatches approve and passes the original frame to updateTemplateCard', async () => {
         const { client, syncEngine } = makeBot()
-        client.emit('event.template_card_event', clickFrame('ap:abcdef01:req98765', 'wecom-user-1', 'cb-42'))
+        client.emit('event.template_card_event', clickFrame('ap:abcdef0123456789:req98765432abc', 'wecom-user-1', 'cb-42'))
         await tick()
 
         expect((syncEngine.approvePermission as unknown as { mock: { calls: unknown[][] } }).mock.calls).toHaveLength(1)
@@ -295,7 +295,7 @@ describe('WecomBot onEvent (template card click)', () => {
 
     it('denies and passes the original frame (with its req_id) to updateTemplateCard', async () => {
         const { client, syncEngine } = makeBot()
-        client.emit('event.template_card_event', clickFrame('dn:abcdef01:req98765', 'wecom-user-1', 'cb-43'))
+        client.emit('event.template_card_event', clickFrame('dn:abcdef0123456789:req98765432abc', 'wecom-user-1', 'cb-43'))
         await tick()
 
         expect((syncEngine.denyPermission as unknown as { mock: { calls: unknown[][] } }).mock.calls).toHaveLength(1)
