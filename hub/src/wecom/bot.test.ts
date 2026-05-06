@@ -257,6 +257,28 @@ describe('WecomBot binding', () => {
         const body = client.sendMessage.mock.calls[0][1] as Extract<SendMsgBody, { msgtype: 'markdown' }>
         expect(body.markdown.content).toContain('Already bound to namespace **nsA**')
     })
+
+    it('rejects "<token>:<a>:<b>" because parseAccessToken splits on the LAST colon', async () => {
+        // Old behaviour persisted namespace `foo:bar`, which no CLI/web client
+        // could ever authenticate into (parseAccessToken would parse the same
+        // string as baseToken=`TOKEN:foo`, namespace=`bar`).
+        const { client, addUser } = makeBot([])
+        client.emit('message.text', textFrame('u-new', 'TOKEN:foo:bar'))
+        await tick()
+        expect(addUser).not.toHaveBeenCalled()
+        expect(client.sendMessage.mock.calls).toHaveLength(0)
+    })
+
+    it('binds to the default namespace when only the bare token is sent', async () => {
+        // parseAccessToken returns { baseToken, namespace: 'default' } when the
+        // input has no colon — match that behaviour rather than silently dropping.
+        const { client, addUser } = makeBot([])
+        client.emit('message.text', textFrame('u-new', 'TOKEN'))
+        await tick()
+        expect(addUser).toHaveBeenCalledWith('wecom', 'u-new', 'default')
+        const body = client.sendMessage.mock.calls[0][1] as Extract<SendMsgBody, { msgtype: 'markdown' }>
+        expect(body.markdown.content).toContain('namespace **default**')
+    })
 })
 
 function clickFrame(eventKey: string, userid: string, reqId: string): WsFrame {
