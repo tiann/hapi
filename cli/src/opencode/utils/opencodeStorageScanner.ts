@@ -5,6 +5,7 @@ import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { isObject } from '@hapi/protocol';
 import type { OpencodeHookEvent } from '../types';
+import { Database } from 'bun:sqlite';
 
 export type OpencodeStorageScannerHandle = {
     cleanup: () => Promise<void>;
@@ -26,6 +27,30 @@ type OpencodeStorageScannerOptions = {
 type SessionCandidate = {
     sessionId: string;
     score: number;
+};
+
+type DbSessionRow = {
+    id: string;
+    directory: string;
+    time_created: number;
+    time_updated: number;
+};
+
+type DbMessageRow = {
+    id: string;
+    session_id: string;
+    time_created: number;
+    time_updated: number;
+    data: string;
+};
+
+type DbPartRow = {
+    id: string;
+    message_id: string;
+    session_id: string;
+    time_created: number;
+    time_updated: number;
+    data: string;
 };
 
 const DEFAULT_SESSION_START_WINDOW_MS = 2 * 60 * 1000;
@@ -50,6 +75,7 @@ export async function createOpencodeStorageScanner(
 
 class OpencodeStorageScanner {
     private readonly storageDir: string;
+    private readonly databasePath: string;
     private readonly targetCwd: string | null;
     private readonly onEvent: (event: OpencodeHookEvent) => void;
     private readonly onSessionFound?: (sessionId: string) => void;
@@ -65,13 +91,16 @@ class OpencodeStorageScanner {
     private matchFailed = false;
     private warnedMissingStorage = false;
     private scanning = false;
+    private db: Database | null = null;
+    private dbReady = false;
 
     private readonly messageRoles = new Map<string, string>();
-    private readonly messageFileMtime = new Map<string, number>();
-    private readonly partFileMtime = new Map<string, number>();
+    private readonly messageDbVersion = new Map<string, number>();
+    private readonly partDbVersion = new Map<string, number>();
 
     constructor(opts: OpencodeStorageScannerOptions) {
         this.storageDir = opts.storageDir ?? resolveOpencodeStorageDir();
+        this.databasePath = join(this.storageDir, '..', 'opencode.db');
         this.targetCwd = opts.cwd ? normalizePath(opts.cwd) : null;
         this.onEvent = opts.onEvent;
         this.onSessionFound = opts.onSessionFound;
@@ -95,16 +124,41 @@ class OpencodeStorageScanner {
         if (this.matchFailed) {
             return;
         }
+        try {
+            await this.initializeDatabase();
+        } catch (error) {
+            logger.debug(`[opencode-storage] Failed to initialize database: ${error}`);
+        }
         await this.scan();
         this.intervalId = setInterval(() => {
             void this.scan();
         }, this.intervalMs);
     }
 
+    private async initializeDatabase(): Promise<void> {
+        try {
+            this.db = new Database(this.databasePath, { readonly: true });
+            this.dbReady = true;
+            logger.debug(`[opencode-storage] Connected to SQLite database: ${this.databasePath}`);
+        } catch (error) {
+            logger.debug(`[opencode-storage] SQLite database not available: ${error}`);
+            this.db = null;
+            this.dbReady = false;
+        }
+    }
+
     async cleanup(): Promise<void> {
         if (this.intervalId) {
             clearInterval(this.intervalId);
             this.intervalId = null;
+        }
+        if (this.db) {
+            try {
+                this.db.close();
+                this.db = null;
+            } catch {
+                // ignore
+            }
         }
     }
 
@@ -121,8 +175,17 @@ class OpencodeStorageScanner {
         }
         this.scanning = true;
         try {
+            // Try to initialize database if not ready
+            if (!this.dbReady && !this.db) {
+                try {
+                    await this.initializeDatabase();
+                } catch {
+                    // ignore, will use file-based fallback
+                }
+            }
+
             const storageReady = await this.ensureStorageDir();
-            if (!storageReady) {
+            if (!storageReady && !this.dbReady) {
                 return;
             }
 
@@ -181,6 +244,79 @@ class OpencodeStorageScanner {
             return;
         }
 
+        let best: SessionCandidate | null = null;
+
+        // Try SQLite database first (preferred method)
+        if (this.dbReady && this.db) {
+            best = await this.discoverSessionFromDatabase();
+        }
+
+        // Fall back to file-based storage if database lookup failed
+        if (!best && (await this.ensureStorageDir())) {
+            best = await this.discoverSessionFromFiles();
+        }
+
+        if (best) {
+            await this.setActiveSession(best.sessionId);
+            return;
+        }
+
+        if (Date.now() > this.matchDeadlineMs) {
+            const message = `No OpenCode session found within ${this.sessionStartWindowMs}ms for cwd ${this.targetCwd}`;
+            logger.warn(`[opencode-storage] ${message}`);
+            this.matchFailed = true;
+            this.onSessionMatchFailed?.(message);
+        }
+    }
+
+    private async discoverSessionFromDatabase(): Promise<SessionCandidate | null> {
+        if (!this.db || !this.targetCwd) {
+            return null;
+        }
+
+        try {
+            const query = this.db.prepare(`
+                SELECT id, directory, time_created
+                FROM session
+                WHERE directory = ?
+                ORDER BY time_created DESC
+                LIMIT 10
+            `);
+            const rows = query.all(this.targetCwd) as DbSessionRow[];
+
+            let best: SessionCandidate | null = null;
+
+            for (const row of rows) {
+                if (!row.id || row.time_created === null) {
+                    continue;
+                }
+
+                if (row.time_created < this.referenceTimestampMs) {
+                    continue;
+                }
+
+                const diff = row.time_created - this.referenceTimestampMs;
+                if (diff > this.sessionStartWindowMs) {
+                    continue;
+                }
+
+                if (!best || diff < best.score) {
+                    best = { sessionId: row.id, score: diff };
+                }
+            }
+
+            if (best) {
+                logger.debug(`[opencode-storage] Session discovered from SQLite database: ${best.sessionId}`);
+            }
+
+            return best;
+        } catch (error) {
+            logger.debug(`[opencode-storage] Database query failed: ${error}`);
+            return null;
+        }
+    }
+
+    private async discoverSessionFromFiles(): Promise<SessionCandidate | null> {
         const sessionFiles = await listSessionInfoFiles(this.storageDir);
         let best: SessionCandidate | null = null;
 
@@ -209,16 +345,10 @@ class OpencodeStorageScanner {
         }
 
         if (best) {
-            await this.setActiveSession(best.sessionId);
-            return;
+            logger.debug(`[opencode-storage] Session discovered from file storage: ${best.sessionId}`);
         }
 
-        if (Date.now() > this.matchDeadlineMs) {
-            const message = `No OpenCode session found within ${this.sessionStartWindowMs}ms for cwd ${this.targetCwd}`;
-            logger.warn(`[opencode-storage] ${message}`);
-            this.matchFailed = true;
-            this.onSessionMatchFailed?.(message);
-        }
+        return best;
     }
 
     private async setActiveSession(sessionId: string): Promise<void> {
@@ -227,14 +357,96 @@ class OpencodeStorageScanner {
         }
         this.activeSessionId = sessionId;
         this.messageRoles.clear();
-        this.messageFileMtime.clear();
-        this.partFileMtime.clear();
-        await this.primeSessionFiles(sessionId);
+        this.messageDbVersion.clear();
+        this.partDbVersion.clear();
+
+        // Try database-based priming first
+        if (this.dbReady && this.db) {
+            await this.primeSessionFilesFromDatabase(sessionId);
+        } else {
+            // Fall back to file-based priming
+            await this.primeSessionFilesFromFiles(sessionId);
+        }
+
         this.onSessionFound?.(sessionId);
         logger.debug(`[opencode-storage] Tracking session ${sessionId}`);
     }
 
-    private async primeSessionFiles(sessionId: string): Promise<void> {
+    private async primeSessionFilesFromDatabase(sessionId: string): Promise<void> {
+        if (!this.db) {
+            return;
+        }
+
+        try {
+            const messageQuery = this.db.prepare(`
+                SELECT id, session_id, time_created, time_updated, data
+                FROM message
+                WHERE session_id = ?
+                ORDER BY time_created ASC
+            `);
+            const messages = messageQuery.all(sessionId) as DbMessageRow[];
+            const replayThresholdMs = this.referenceTimestampMs - REPLAY_CLOCK_SKEW_MS;
+            const messageIds: string[] = [];
+
+            for (const msg of messages) {
+                if (msg.id) {
+                    messageIds.push(msg.id);
+                    this.messageDbVersion.set(msg.id, msg.time_updated);
+
+                    if (msg.time_created >= replayThresholdMs) {
+                        try {
+                            const info = JSON.parse(msg.data) as Record<string, unknown>;
+                            const role = getString(info.role);
+                            if (role) {
+                                this.messageRoles.set(msg.id, role);
+                            }
+                            this.onEvent({
+                                event: 'message.updated',
+                                payload: { info },
+                                sessionId: sessionId || undefined
+                            });
+                        } catch {
+                            // ignore JSON parse errors
+                        }
+                    }
+                }
+            }
+
+            // Now load parts
+            for (const messageId of messageIds) {
+                const partQuery = this.db.prepare(`
+                    SELECT id, message_id, session_id, time_created, time_updated, data
+                    FROM part
+                    WHERE message_id = ?
+                    ORDER BY time_created ASC
+                `);
+                const parts = partQuery.all(messageId) as DbPartRow[];
+
+                for (const partRow of parts) {
+                    this.partDbVersion.set(partRow.id, partRow.time_updated);
+
+                    try {
+                        const part = JSON.parse(partRow.data) as Record<string, unknown>;
+                        if (this.shouldEmitPart(part, messageId)) {
+                            this.onEvent({
+                                event: 'message.part.updated',
+                                payload: { part },
+                                sessionId: sessionId || undefined
+                            });
+                        }
+                    } catch {
+                        // ignore JSON parse errors
+                    }
+                }
+            }
+
+            logger.debug(`[opencode-storage] Primed ${messages.length} messages and parts from database`);
+        } catch (error) {
+            logger.debug(`[opencode-storage] Failed to prime from database: ${error}`);
+        }
+    }
+
+    private async primeSessionFilesFromFiles(sessionId: string): Promise<void> {
         const messageDir = join(this.storageDir, 'message', sessionId);
         const messageFiles = await listJsonFiles(messageDir);
         const messageIds: string[] = [];
@@ -244,7 +456,7 @@ class OpencodeStorageScanner {
         for (const filePath of messageFiles) {
             const mtime = await readMtime(filePath);
             if (mtime !== null) {
-                this.messageFileMtime.set(filePath, mtime);
+                this.messageDbVersion.set(filePath, mtime);
             }
             const info = await readJsonRecord(filePath);
             const messageId = getString(info?.id) ?? filenameToId(filePath);
@@ -273,7 +485,7 @@ class OpencodeStorageScanner {
             for (const partPath of partFiles) {
                 const mtime = await readMtime(partPath);
                 if (mtime !== null) {
-                    this.partFileMtime.set(partPath, mtime);
+                    this.partDbVersion.set(partPath, mtime);
                 }
                 if (!replayMessageIds.has(messageId)) {
                     continue;
@@ -296,6 +508,96 @@ class OpencodeStorageScanner {
     }
 
     private async scanMessagesAndParts(sessionId: string): Promise<void> {
+        // Try database-based scanning first
+        if (this.dbReady && this.db) {
+            await this.scanMessagesAndPartsFromDatabase(sessionId);
+        } else {
+            // Fall back to file-based scanning
+            await this.scanMessagesAndPartsFromFiles(sessionId);
+        }
+    }
+
+    private async scanMessagesAndPartsFromDatabase(sessionId: string): Promise<void> {
+        if (!this.db) {
+            return;
+        }
+
+        try {
+            const messageQuery = this.db.prepare(`
+                SELECT id, session_id, time_created, time_updated, data
+                FROM message
+                WHERE session_id = ?
+                ORDER BY time_created ASC
+            `);
+            const messages = messageQuery.all(sessionId) as DbMessageRow[];
+
+            for (const msg of messages) {
+                if (!msg.id) {
+                    continue;
+                }
+
+                const previous = this.messageDbVersion.get(msg.id) ?? 0;
+                if (msg.time_updated <= previous) {
+                    continue;
+                }
+
+                this.messageDbVersion.set(msg.id, msg.time_updated);
+
+                try {
+                    const info = JSON.parse(msg.data) as Record<string, unknown>;
+                    const role = getString(info.role);
+                    if (role) {
+                        this.messageRoles.set(msg.id, role);
+                    }
+
+                    this.onEvent({
+                        event: 'message.updated',
+                        payload: { info },
+                        sessionId: sessionId || undefined
+                    });
+                } catch {
+                    // ignore JSON parse errors
+                }
+            }
+
+            // Scan parts
+            const partQuery = this.db.prepare(`
+                SELECT id, message_id, session_id, time_created, time_updated, data
+                FROM part
+                WHERE session_id = ?
+                ORDER BY time_created ASC
+            `);
+            const parts = partQuery.all(sessionId) as DbPartRow[];
+
+            for (const partRow of parts) {
+                const previous = this.partDbVersion.get(partRow.id) ?? 0;
+                if (partRow.time_updated <= previous) {
+                    continue;
+                }
+
+                this.partDbVersion.set(partRow.id, partRow.time_updated);
+
+                try {
+                    const part = JSON.parse(partRow.data) as Record<string, unknown>;
+                    if (!this.shouldEmitPart(part, partRow.message_id)) {
+                        continue;
+                    }
+
+                    this.onEvent({
+                        event: 'message.part.updated',
+                        payload: { part },
+                        sessionId: sessionId || undefined
+                    });
+                } catch {
+                    // ignore JSON parse errors
+                }
+            }
+        } catch (error) {
+            logger.debug(`[opencode-storage] Database scan failed: ${error}`);
+        }
+    }
+
+    private async scanMessagesAndPartsFromFiles(sessionId: string): Promise<void> {
         const messageDir = join(this.storageDir, 'message', sessionId);
         const messageFiles = await listJsonFiles(messageDir);
         const messageIds: string[] = [];
@@ -310,13 +612,13 @@ class OpencodeStorageScanner {
             if (mtime === null) {
                 continue;
             }
-            const previous = this.messageFileMtime.get(filePath) ?? 0;
+            const previous = this.messageDbVersion.get(filePath) ?? 0;
             if (mtime <= previous) {
                 continue;
             }
 
             const info = await readJsonRecord(filePath);
-            this.messageFileMtime.set(filePath, mtime);
+            this.messageDbVersion.set(filePath, mtime);
             if (!info) {
                 continue;
             }
@@ -346,13 +648,13 @@ class OpencodeStorageScanner {
                 if (mtime === null) {
                     continue;
                 }
-                const previous = this.partFileMtime.get(partPath) ?? 0;
+                const previous = this.partDbVersion.get(partPath) ?? 0;
                 if (mtime <= previous) {
                     continue;
                 }
 
                 const part = await readJsonRecord(partPath);
-                this.partFileMtime.set(partPath, mtime);
+                this.partDbVersion.set(partPath, mtime);
                 if (!part) {
                     continue;
                 }
