@@ -38,22 +38,26 @@ function session(overrides: Partial<Session> = {}): Session {
 }
 
 describe('buildPermissionCard', () => {
-    it('returns a button_interaction card with Allow / Deny keyed on session+request prefixes', () => {
+    it('returns a button_interaction card with Allow / Deny carrying the full session and request IDs', () => {
         const card = buildPermissionCard(session(), 'https://hapi.example.com')
         if (!card) throw new Error('expected a permission card')
         expect(card.card_type).toBe('button_interaction')
         expect(card.main_title?.title).toBe('Permission Request')
         expect(card.button_list).toHaveLength(2)
+        // Full IDs in the button key — see renderer.ts: WeCom button keys
+        // tolerate up to 1024 bytes, so we don't truncate (which used to risk
+        // prefix collisions resolving to the wrong session/request).
         expect(card.button_list![0]).toEqual({
             text: 'Allow',
             style: 1,
-            key: 'ap:abcdef01:req98765'
+            key: 'ap:abcdef0123456789:req98765432abcdef'
         })
         expect(card.button_list![1]).toEqual({
             text: 'Deny',
             style: 2,
-            key: 'dn:abcdef01:req98765'
+            key: 'dn:abcdef0123456789:req98765432abcdef'
         })
+        // task_id stays prefixed since WeCom limits it to 128 bytes / [0-9A-Za-z_-@].
         expect(card.task_id).toMatch(/^hapi-abcdef01-req98765-\d+$/)
     })
 

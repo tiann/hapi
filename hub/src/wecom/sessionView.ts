@@ -51,8 +51,6 @@ export function buildPermissionCard(session: Session, publicUrl: string): Templa
     if (!requestId) return null
     const request = requests[requestId]
 
-    const sidPrefix = session.id.slice(0, 8)
-    const reqPrefix = requestId.slice(0, 8)
     const name = getSessionName(session)
     const argsLine = formatArgs(request.tool, request.arguments)
 
@@ -62,12 +60,19 @@ export function buildPermissionCard(session: Session, publicUrl: string): Templa
         sub_title_text: argsLine
             ? `Tool: ${request.tool}\n${argsLine}`
             : `Tool: ${request.tool}`,
+        // Carry full IDs in the button key (WeCom allows up to 1024 bytes here)
+        // so handleTemplateCardEvent can resolve them by exact match instead of
+        // prefix — see renderer.ts for the rationale.
         button_list: [
-            { text: 'Allow', style: 1, key: createCallbackData(ACTION_APPROVE, session.id, reqPrefix) },
-            { text: 'Deny', style: 2, key: createCallbackData(ACTION_DENY, session.id, reqPrefix) }
+            { text: 'Allow', style: 1, key: createCallbackData(ACTION_APPROVE, session.id, requestId) },
+            { text: 'Deny', style: 2, key: createCallbackData(ACTION_DENY, session.id, requestId) }
         ],
         card_action: { type: 1, url: sessionUrl(publicUrl, session.id) },
-        task_id: `hapi-${sidPrefix}-${reqPrefix}-${Date.now()}`
+        // task_id only needs to uniquely identify the original card on the
+        // server so the update reply can target it. 8-char prefixes plus a
+        // millisecond timestamp keep us well under the 128-byte limit and
+        // within the [0-9A-Za-z_-@] charset WeCom requires for task_id.
+        task_id: `hapi-${session.id.slice(0, 8)}-${requestId.slice(0, 8)}-${Date.now()}`
     }
     return card
 }

@@ -98,7 +98,7 @@ describe('handleTemplateCardEvent', () => {
     it('approves and sends an "approved" update card threading the callback frame', async () => {
         const approve = mock(async () => {})
         const ctx = makeCtx({ session: makeSession(), userNamespace: 'default', approve })
-        const frame = makeFrame('ap:abcdef01:req98765')
+        const frame = makeFrame('ap:abcdef0123456789:req98765432abc')
 
         await handleTemplateCardEvent(frame, ctx)
 
@@ -115,7 +115,7 @@ describe('handleTemplateCardEvent', () => {
     it('denies and sends a "denied" update card', async () => {
         const deny = mock(async () => {})
         const ctx = makeCtx({ session: makeSession(), userNamespace: 'default', deny })
-        const frame = makeFrame('dn:abcdef01:req98765')
+        const frame = makeFrame('dn:abcdef0123456789:req98765432abc')
 
         await handleTemplateCardEvent(frame, ctx)
 
@@ -126,7 +126,7 @@ describe('handleTemplateCardEvent', () => {
 
     it('replies with "Not bound" when the userid has no binding', async () => {
         const ctx = makeCtx({ userNamespace: null })
-        await handleTemplateCardEvent(makeFrame('ap:abcdef01:req98765'), ctx)
+        await handleTemplateCardEvent(makeFrame('ap:abcdef0123456789:req98765432abc'), ctx)
         const [arg] = ctx.sendUpdate.mock.calls[0]
         expect(arg.card.main_title?.title).toBe('Not bound')
     })
@@ -136,7 +136,7 @@ describe('handleTemplateCardEvent', () => {
             session: makeSession({ active: false }),
             userNamespace: 'default'
         })
-        await handleTemplateCardEvent(makeFrame('ap:abcdef01:req98765'), ctx)
+        await handleTemplateCardEvent(makeFrame('ap:abcdef0123456789:req98765432abc'), ctx)
         const [arg] = ctx.sendUpdate.mock.calls[0]
         expect(arg.card.main_title?.title).toBe('Session inactive')
     })
@@ -146,20 +146,20 @@ describe('handleTemplateCardEvent', () => {
             session: makeSession({ agentState: { requests: {} } }),
             userNamespace: 'default'
         })
-        await handleTemplateCardEvent(makeFrame('ap:abcdef01:req98765'), ctx)
+        await handleTemplateCardEvent(makeFrame('ap:abcdef0123456789:req98765432abc'), ctx)
         const [arg] = ctx.sendUpdate.mock.calls[0]
         expect(arg.card.main_title?.title).toBe('Already processed')
     })
 
     it('ignores unknown actions', async () => {
         const ctx = makeCtx({ session: makeSession(), userNamespace: 'default' })
-        await handleTemplateCardEvent(makeFrame('xx:abcdef01:req98765'), ctx)
+        await handleTemplateCardEvent(makeFrame('xx:abcdef0123456789:req98765432abc'), ctx)
         expect(ctx.sendUpdate).not.toHaveBeenCalled()
     })
 
     it('replies with "Already processed" when the event_key has no request prefix', async () => {
         const ctx = makeCtx({ session: makeSession(), userNamespace: 'default' })
-        await handleTemplateCardEvent(makeFrame('ap:abcdef01'), ctx)
+        await handleTemplateCardEvent(makeFrame('ap:abcdef0123456789'), ctx)
         const [arg] = ctx.sendUpdate.mock.calls[0]
         expect(arg.card.main_title?.title).toBe('Already processed')
     })
@@ -167,7 +167,7 @@ describe('handleTemplateCardEvent', () => {
     it('accepts legacy flat event payloads (event_key/task_id on event root)', async () => {
         const approve = mock(async () => {})
         const ctx = makeCtx({ session: makeSession(), userNamespace: 'default', approve })
-        const frame = makeFlatFrame('ap:abcdef01:req98765')
+        const frame = makeFlatFrame('ap:abcdef0123456789:req98765432abc')
 
         await handleTemplateCardEvent(frame, ctx)
 
@@ -179,7 +179,7 @@ describe('handleTemplateCardEvent', () => {
 
     it('always includes card_action on update cards to satisfy WeCom errcode 42045', async () => {
         const ctx = makeCtx({ session: makeSession(), userNamespace: 'default' })
-        await handleTemplateCardEvent(makeFrame('ap:abcdef01:req98765'), ctx)
+        await handleTemplateCardEvent(makeFrame('ap:abcdef0123456789:req98765432abc'), ctx)
         const [arg] = ctx.sendUpdate.mock.calls[0]
         expect(arg.card.card_action?.type).toBe(1)
         expect(arg.card.card_action?.url).toMatch(/^https:\/\/hapi\.example\.com/)
