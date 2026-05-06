@@ -35,6 +35,14 @@ vi.mock('@/hooks/useTerminalFontSize', () => ({
     ],
 }))
 
+vi.mock('@/hooks/useComposerEnterBehavior', () => ({
+    useComposerEnterBehavior: () => ({ composerEnterBehavior: 'send', setComposerEnterBehavior: vi.fn() }),
+    getComposerEnterBehaviorOptions: () => [
+        { value: 'send', labelKey: 'settings.chat.enterBehavior.send' },
+        { value: 'newline', labelKey: 'settings.chat.enterBehavior.newline' },
+    ],
+}))
+
 // Mock useTheme hook
 vi.mock('@/hooks/useTheme', () => ({
     useAppearance: () => ({ appearance: 'system', setAppearance: vi.fn() }),
@@ -142,5 +150,19 @@ describe('SettingsPage', () => {
         renderWithProviders(<SettingsPage />)
         expect(screen.getAllByText('Terminal Font Size').length).toBeGreaterThanOrEqual(1)
         expect(screen.getAllByText('13px').length).toBeGreaterThanOrEqual(1)
+    })
+
+    it('renders the Enter Key setting', () => {
+        renderWithProviders(<SettingsPage />)
+        expect(screen.getAllByText('Enter Key').length).toBeGreaterThanOrEqual(1)
+        expect(screen.getAllByText('Send message').length).toBeGreaterThanOrEqual(1)
+    })
+
+    it('uses correct i18n keys for the Enter Key setting', () => {
+        const spyT = renderWithSpyT(<SettingsPage />)
+        const calledKeys = spyT.mock.calls.map((call) => call[0])
+        expect(calledKeys).toContain('settings.chat.title')
+        expect(calledKeys).toContain('settings.chat.enterBehavior')
+        expect(calledKeys).toContain('settings.chat.enterBehavior.send')
     })
 })

@@ -23,6 +23,7 @@ import { usePWAInstall } from '@/hooks/usePWAInstall'
 import { supportsEffort, supportsModelChange } from '@hapi/protocol'
 import { markSkillUsed } from '@/lib/recent-skills'
 import { useComposerDraft } from '@/hooks/useComposerDraft'
+import { useComposerEnterBehavior } from '@/hooks/useComposerEnterBehavior'
 import { FloatingOverlay } from '@/components/ChatInput/FloatingOverlay'
 import { Autocomplete } from '@/components/ChatInput/Autocomplete'
 import { StatusBar } from '@/components/AssistantChat/StatusBar'
@@ -119,6 +120,7 @@ export function HappyComposer(props: {
     const effort = rawEffort ?? null
 
     const api = useAssistantApi()
+    const { composerEnterBehavior } = useComposerEnterBehavior()
     const composerText = useAssistantState(({ composer }) => composer.text)
     const attachments = useAssistantState(({ composer }) => composer.attachments)
     const threadIsRunning = useAssistantState(({ thread }) => thread.isRunning)
@@ -316,6 +318,14 @@ export function HappyComposer(props: {
 
         // Only plain Enter (no modifiers) sends; other modifier combos are ignored
         if (key === 'Enter') {
+            if (composerEnterBehavior === 'newline') {
+                if ((e.ctrlKey || e.metaKey) && !e.altKey && canSend) {
+                    e.preventDefault()
+                    api.composer().send()
+                    setShowContinueHint(false)
+                }
+                return
+            }
             e.preventDefault()
             if (!e.ctrlKey && !e.altKey && !e.metaKey && canSend) {
                 api.composer().send()
@@ -376,7 +386,8 @@ export function HappyComposer(props: {
         permissionModes,
         canSend,
         api,
-        haptic
+        haptic,
+        composerEnterBehavior
     ])
 
     useEffect(() => {
