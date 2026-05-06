@@ -13,12 +13,41 @@
     --app-banner-text: var(--tg-theme-button-text-color, #ffffff);
     --app-secondary-bg: var(--tg-theme-secondary-bg-color, #f3f4f6);
 
+    --app-dialog-bg: #ffffff;
+    --app-chat-user-bg: #f2f4f6;
+    --app-chat-user-fg: #24292f;
+    --app-chat-user-chip-bg: #DBEAFE;
+    --app-chat-user-chip-fg: #1447E6;
+    --app-tool-card-bg: #f2f4f6;
+    --app-tool-card-hover-bg: #e9edf2;
+    --app-tool-card-accent: #7b8491;
+    --app-tool-card-muted-action-fg: #aeb4bd;
+    --app-tool-card-subtitle: #6b7280;
+    --app-code-header-bg: #eceff2;
+    --app-code-header-fg: #717784;
+    --app-code-copy-hover-bg: rgba(17, 24, 39, 0.06);
+    --app-inline-code-border: transparent;
+    --app-inline-code-fg: #2d333b;
+    --app-md-quote-bg: #f1f3f5;
+    --app-md-quote-border: #c9d0d8;
+    --app-md-quote-fg: #525965;
+    --app-md-table-bg: #f5f6f7;
+    --app-md-table-head-bg: #eceff2;
+    --app-reasoning-bg: #f2f4f6;
+    --app-mermaid-node-fill: #f8fbff;
+    --app-mermaid-node-border: #b8cdfd;
+    --app-mermaid-cluster-fill: #eef4ff;
+    --app-mermaid-text: #2d333b;
+    --app-link-muted: rgba(17, 24, 39, 0.18);
+    --app-scrollbar-thumb: rgba(107, 114, 128, 0.34);
+    --app-scrollbar-thumb-hover: rgba(107, 114, 128, 0.5);
+
     /* Theme-aware colors (light mode defaults) */
-    --app-border: rgba(0, 0, 0, 0.1);
-    --app-divider: rgba(0, 0, 0, 0.08);
-    --app-subtle-bg: rgba(0, 0, 0, 0.05);
-    --app-code-bg: #f6f8fa;
-    --app-inline-code-bg: rgba(0, 0, 0, 0.08);
+    --app-border: rgba(15, 23, 42, 0.08);
+    --app-divider: rgba(15, 23, 42, 0.08);
+    --app-subtle-bg: rgba(15, 23, 42, 0.04);
+    --app-code-bg: #f5f6f7;
+    --app-inline-code-bg: #ebecef;
 
     /* Diff colors (light) - from hapi-app */
     --app-diff-added-bg: #e6ffed;
@@ -45,6 +74,9 @@
     --app-badge-error-border: rgba(239, 68, 68, 0.3);
 
     --app-font-scale: 1;
+    --app-chat-font-size: 0.9375rem;
+    --app-chat-line-height: 1.75rem;
+    --app-message-action-size: 1.125rem;
 }
 
 [data-theme="dark"] {
@@ -59,11 +91,40 @@
     --app-banner-text: var(--tg-theme-button-text-color, #ffffff);
     --app-secondary-bg: var(--tg-theme-secondary-bg-color, #2C2C2E);
 
-    --app-border: rgba(255, 255, 255, 0.1);
+    --app-dialog-bg: #202226;
+    --app-chat-user-bg: #2b2f34;
+    --app-chat-user-fg: #f5f7fa;
+    --app-chat-user-chip-bg: rgba(37, 99, 235, 0.22);
+    --app-chat-user-chip-fg: #93c5fd;
+    --app-tool-card-bg: #2b2f34;
+    --app-tool-card-hover-bg: #343a41;
+    --app-tool-card-accent: #b8c0cb;
+    --app-tool-card-muted-action-fg: #7f8792;
+    --app-tool-card-subtitle: #b3bac5;
+    --app-code-header-bg: #353b43;
+    --app-code-header-fg: #c4cbd6;
+    --app-code-copy-hover-bg: rgba(255, 255, 255, 0.08);
+    --app-inline-code-border: transparent;
+    --app-inline-code-fg: #f5f7fa;
+    --app-md-quote-bg: #31363d;
+    --app-md-quote-border: #6b7481;
+    --app-md-quote-fg: #d7dde6;
+    --app-md-table-bg: #2a2f35;
+    --app-md-table-head-bg: #353b43;
+    --app-reasoning-bg: #2b3036;
+    --app-mermaid-node-fill: #323843;
+    --app-mermaid-node-border: #7aa2ff;
+    --app-mermaid-cluster-fill: #2d3440;
+    --app-mermaid-text: #edf1f5;
+    --app-link-muted: rgba(255, 255, 255, 0.2);
+    --app-scrollbar-thumb: rgba(196, 203, 214, 0.28);
+    --app-scrollbar-thumb-hover: rgba(196, 203, 214, 0.42);
+
+    --app-border: rgba(255, 255, 255, 0.08);
     --app-divider: rgba(255, 255, 255, 0.08);
     --app-subtle-bg: rgba(255, 255, 255, 0.05);
-    --app-code-bg: #282c34;
-    --app-inline-code-bg: rgba(255, 255, 255, 0.1);
+    --app-code-bg: #2a2f35;
+    --app-inline-code-bg: #383e47;
 
     /* Diff colors (dark) - from hapi-app */
     --app-diff-added-bg: #0d2e1f;
@@ -92,6 +153,42 @@
 
 html {
     font-size: calc(100% * var(--app-font-scale, 1));
+    color-scheme: light;
+    scrollbar-color: var(--app-scrollbar-thumb) transparent;
+    scrollbar-width: thin;
+}
+
+[data-theme="dark"] {
+    color-scheme: dark;
+}
+
+* {
+    scrollbar-color: var(--app-scrollbar-thumb) transparent;
+    scrollbar-width: thin;
+}
+
+*::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+    background-color: var(--app-scrollbar-thumb);
+    border: 3px solid transparent;
+    border-radius: 999px;
+    background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+    background-color: var(--app-scrollbar-thumb-hover);
+}
+
+*::-webkit-scrollbar-corner {
+    background: transparent;
 }
 
 button, [role="button"] {
@@ -206,13 +303,12 @@ body {
 }
 
 /*
- * content-visibility: auto lets the browser skip layout/paint for messages
- * scrolled out of the viewport. Big win on Windows with long conversations (#310).
- * contain-intrinsic-size gives a rough height hint so scrollbar doesn't jump.
+ * Keep message layout fully realized while scrolling. `content-visibility: auto`
+ * made Chromium replace rough intrinsic heights as older messages entered view,
+ * which could change scrollTop and bounce the chat away from the user's target.
  */
 .happy-thread-messages > * {
-    content-visibility: auto;
-    contain-intrinsic-size: auto 80px;
+    overflow-anchor: none;
 }
 
 /* Markdown styles */
@@ -223,9 +319,95 @@ body {
 .markdown-content table { border-collapse: collapse; width: 100%; }
 .markdown-content th, .markdown-content td { border: 1px solid var(--app-border); padding: 0.25rem 0.5rem; }
 
+.aui-md {
+    color: var(--app-fg);
+    font-size: var(--app-chat-font-size);
+    line-height: var(--app-chat-line-height);
+}
+
+.happy-chat-text {
+    font-size: var(--app-chat-font-size);
+    line-height: var(--app-chat-line-height);
+}
+
+
+.tool-result-quote :where(.aui-md, .aui-md-p, .aui-md-li, .aui-md-td, .aui-md-th, .aui-md-strong, .aui-md-em, .aui-md-h1, .aui-md-h2, .aui-md-h3, .aui-md-h4, .aui-md-h5, .aui-md-h6) {
+    color: inherit;
+    font-size: inherit;
+    line-height: inherit;
+}
+
+.tool-result-quote :where(.aui-md-table) {
+    font-size: inherit;
+}
+
+.tool-result-quote :where(.aui-md-a) {
+    color: var(--app-link);
+}
+
+.happy-message-actions-first-line {
+    align-self: flex-start;
+    margin-top: max(0px, calc((var(--app-chat-line-height) - var(--app-message-action-size)) / 2));
+}
+
+.aui-md :where(.contains-task-list) {
+    list-style: none;
+    padding-left: 0;
+}
+
+.aui-md :where(input[type="checkbox"]) {
+    margin-right: 0.55rem;
+}
+
+.aui-md :where(.katex-display) {
+    margin: 0.9rem 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding-bottom: 0.15rem;
+}
+
+.aui-md :where(pre) {
+    white-space: pre;
+}
+
+.aui-md :where(p + ul, p + ol, p + blockquote, p + .aui-md-table-wrapper) {
+    margin-top: 0.85rem;
+}
+
+.aui-mermaid-diagram svg {
+    height: auto;
+}
+
+.aui-mermaid-diagram svg .node rect,
+.aui-mermaid-diagram svg .node circle,
+.aui-mermaid-diagram svg .node ellipse,
+.aui-mermaid-diagram svg .node polygon,
+.aui-mermaid-diagram svg .label-container {
+    fill: var(--app-mermaid-node-fill) !important;
+    stroke: var(--app-mermaid-node-border) !important;
+}
+
+.aui-mermaid-diagram svg .cluster rect,
+.aui-mermaid-diagram svg .cluster polygon {
+    fill: var(--app-mermaid-cluster-fill) !important;
+    stroke: var(--app-mermaid-node-border) !important;
+}
+
+.aui-mermaid-diagram svg .nodeLabel,
+.aui-mermaid-diagram svg .label,
+.aui-mermaid-diagram svg .label text,
+.aui-mermaid-diagram svg text {
+    fill: var(--app-mermaid-text) !important;
+    color: var(--app-mermaid-text) !important;
+}
+
+.happy-user-bubble .aui-md {
+    color: inherit;
+}
+
 .aui-md-codeblock pre.shiki {
     margin: 0;
-    padding: 0.5rem;
+    padding: 0.75rem 1rem;
     background-color: transparent !important;
     font-size: 0.875rem;
 }

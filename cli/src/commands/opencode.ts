@@ -15,6 +15,7 @@ export const opencodeCommand: CommandDefinition = {
                 startedBy?: 'runner' | 'terminal'
                 startingMode?: 'local' | 'remote'
                 permissionMode?: OpencodePermissionMode
+                model?: string
                 resumeSessionId?: string
             } = {}
 
@@ -46,6 +47,12 @@ export const opencodeCommand: CommandDefinition = {
                         throw new Error('Missing --resume value')
                     }
                     options.resumeSessionId = sessionId
+                } else if (arg === '--model') {
+                    const model = commandArgs[++i]
+                    if (!model) {
+                        throw new Error('Missing --model value')
+                    }
+                    options.model = model
                 }
             }
 

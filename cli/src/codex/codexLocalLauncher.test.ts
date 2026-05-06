@@ -140,6 +140,19 @@ describe('codexLocalLauncher', () => {
     let tempDir = '';
 
     const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+    const writeTranscriptMeta = async (fileName: string, sessionId: string): Promise<string> => {
+        const transcriptPath = join(tempDir, fileName);
+        await writeFile(
+            transcriptPath,
+            JSON.stringify({
+                type: 'session_meta',
+                payload: {
+                    id: sessionId
+                }
+            }) + '\n'
+        );
+        return transcriptPath;
+    };
 
     beforeEach(async () => {
         tempDir = join(tmpdir(), `codex-local-launcher-${Date.now()}`);
@@ -333,6 +346,135 @@ describe('codexLocalLauncher', () => {
             message: 'hello from transcript',
             id: expect.any(String)
         });
+    });
+
+    it('does not let a later non-clear hook replace the primary session', async () => {
+        const primaryTranscriptPath = await writeTranscriptMeta('primary-later-hook.jsonl', 'primary-thread');
+        const otherTranscriptPath = await writeTranscriptMeta('later-other-transcript.jsonl', 'other-thread');
+        const { session } = createSessionStub('default');
+        let releaseRunBarrier: (() => void) | undefined;
+        harness.runBarrier = new Promise((resolve) => {
+            releaseRunBarrier = resolve;
+        });
+
+        const launcherPromise = codexLocalLauncher(session as never);
+        await wait(50);
+
+        harness.sessionHookHandlers[0]?.('primary-thread', {
+            transcript_path: primaryTranscriptPath,
+            source: 'startup'
+        });
+        await wait(100);
+
+        harness.sessionHookHandlers[0]?.('other-thread', {
+            transcript_path: otherTranscriptPath,
+            source: 'startup'
+        });
+        await wait(100);
+
+        if (releaseRunBarrier) {
+            releaseRunBarrier();
+        }
+        await launcherPromise;
+
+        expect(session.sessionId).toBe('primary-thread');
+        expect(session.transcriptPath).toBe(primaryTranscriptPath);
+    });
+
+    it('does not let a later hook without source replace the primary session', async () => {
+        const primaryTranscriptPath = await writeTranscriptMeta('primary-no-source.jsonl', 'primary-thread');
+        const otherTranscriptPath = await writeTranscriptMeta('other-no-source.jsonl', 'other-thread');
+        const { session } = createSessionStub('default');
+        let releaseRunBarrier: (() => void) | undefined;
+        harness.runBarrier = new Promise((resolve) => {
+            releaseRunBarrier = resolve;
+        });
+
+        const launcherPromise = codexLocalLauncher(session as never);
+        await wait(50);
+
+        harness.sessionHookHandlers[0]?.('primary-thread', {
+            transcript_path: primaryTranscriptPath
+        });
+        await wait(100);
+
+        harness.sessionHookHandlers[0]?.('other-thread', {
+            transcript_path: otherTranscriptPath
+        });
+        await wait(100);
+
+        if (releaseRunBarrier) {
+            releaseRunBarrier();
+        }
+        await launcherPromise;
+
+        expect(session.sessionId).toBe('primary-thread');
+        expect(session.transcriptPath).toBe(primaryTranscriptPath);
+    });
+
+    it('allows a clear hook to replace the primary session', async () => {
+        const primaryTranscriptPath = await writeTranscriptMeta('primary-before-clear.jsonl', 'primary-thread');
+        const clearTranscriptPath = await writeTranscriptMeta('clear-transcript.jsonl', 'clear-thread');
+        const { session } = createSessionStub('default');
+        let releaseRunBarrier: (() => void) | undefined;
+        harness.runBarrier = new Promise((resolve) => {
+            releaseRunBarrier = resolve;
+        });
+
+        const launcherPromise = codexLocalLauncher(session as never);
+        await wait(50);
+
+        harness.sessionHookHandlers[0]?.('primary-thread', {
+            transcript_path: primaryTranscriptPath,
+            source: 'startup'
+        });
+        await wait(100);
+
+        harness.sessionHookHandlers[0]?.('clear-thread', {
+            transcript_path: clearTranscriptPath,
+            source: 'clear'
+        });
+        await wait(100);
+
+        if (releaseRunBarrier) {
+            releaseRunBarrier();
+        }
+        await launcherPromise;
+
+        expect(session.sessionId).toBe('clear-thread');
+        expect(session.transcriptPath).toBe(clearTranscriptPath);
+    });
+
+    it('ignores mismatched session metadata from the active transcript scanner', async () => {
+        const transcriptPath = await writeTranscriptMeta('mismatched-scanner.jsonl', 'primary-thread');
+        const { session } = createSessionStub('default');
+        let releaseRunBarrier: (() => void) | undefined;
+        harness.runBarrier = new Promise((resolve) => {
+            releaseRunBarrier = resolve;
+        });
+
+        const launcherPromise = codexLocalLauncher(session as never);
+        await wait(50);
+
+        harness.sessionHookHandlers[0]?.('primary-thread', {
+            transcript_path: transcriptPath
+        });
+        await wait(100);
+
+        await appendFile(
+            transcriptPath,
+            JSON.stringify({ type: 'session_meta', payload: { id: 'unexpected-thread' } }) + '\n'
+        );
+
+        await wait(2300);
+
+        if (releaseRunBarrier) {
+            releaseRunBarrier();
+        }
+        await launcherPromise;
+
+        expect(session.sessionId).toBe('primary-thread');
+        expect(session.transcriptPath).toBe(transcriptPath);
     });
 
     it('does not leave transcript scanning alive after launcher teardown', async () => {

@@ -4,7 +4,7 @@ import type { ApiClient } from '@/api/client'
 import type { SlashCommand } from '@/types/api'
 import type { Suggestion } from '@/hooks/useActiveSuggestions'
 import { queryKeys } from '@/lib/query-keys'
-import { getBuiltinSlashCommands } from '@/lib/codexSlashCommands'
+import { getBuiltinSlashCommands, mergeSlashCommands } from '@/lib/codexSlashCommands'
 
 function levenshteinDistance(a: string, b: string): number {
     if (a.length === 0) return b.length
@@ -49,16 +49,14 @@ export function useSlashCommands(
         retry: false, // Don't retry RPC failures
     })
 
-    // Merge built-in commands with user-defined and plugin commands from API
+    // Merge local built-ins with commands discovered by the active CLI.
+    // The CLI can expose agent-specific built-ins plus user/plugin/project commands;
+    // keep local built-ins as an offline fallback, then append/override from RPC.
     const commands = useMemo(() => {
         const builtin = getBuiltinSlashCommands(agentType)
 
-        // If API succeeded, add user-defined and plugin commands
         if (query.data?.success && query.data.commands) {
-            const extraCommands = query.data.commands.filter(
-                cmd => cmd.source === 'user' || cmd.source === 'plugin' || cmd.source === 'project'
-            )
-            return [...builtin, ...extraCommands]
+            return mergeSlashCommands([...builtin, ...query.data.commands])
         }
 
         // Fallback to built-in commands only

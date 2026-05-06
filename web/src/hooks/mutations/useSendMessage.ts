@@ -44,6 +44,10 @@ function createOptimisticMessage(input: SendMessageInput, status: 'queued' | 'se
             }
         },
         createdAt: input.createdAt,
+        // Explicit null so the strict-null queued check matches. A pre-V8 hub
+        // response that omits the field entirely (`undefined`) is treated as
+        // already-invoked and stays in the thread, not the floating bar.
+        invokedAt: null,
         status,
         originalText: input.text,
     }

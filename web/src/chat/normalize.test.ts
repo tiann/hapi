@@ -372,4 +372,117 @@ describe('normalizeDecryptedMessage', () => {
             prompt: 'Some subagent text'
         })
     })
+
+    it('preserves Codex tool-call-result errors for timeline state', () => {
+        const message = makeMessage({
+            role: 'agent',
+            content: {
+                type: 'codex',
+                data: {
+                    type: 'tool-call-result',
+                    callId: 'call-1',
+                    output: 'tool failed',
+                    is_error: true,
+                    id: 'result-1'
+                }
+            }
+        })
+
+        const normalized = normalizeDecryptedMessage(message)
+
+        expect(normalized).toMatchObject({
+            role: 'agent',
+            content: [
+                {
+                    type: 'tool-result',
+                    tool_use_id: 'call-1',
+                    content: 'tool failed',
+                    is_error: true
+                }
+            ]
+        })
+    })
+
+    it('normalizes Codex plan updates as completed update_plan snapshots', () => {
+        const message = makeMessage({
+            role: 'agent',
+            content: {
+                type: 'codex',
+                data: {
+                    type: 'plan_update',
+                    plan: [
+                        { step: 'Inspect event stream', status: 'completed' },
+                        { step: 'Render plan card', status: 'in_progress' }
+                    ],
+                    id: 'plan-update-1'
+                }
+            }
+        })
+
+        const normalized = normalizeDecryptedMessage(message)
+
+        expect(normalized).toMatchObject({
+            role: 'agent',
+            content: [
+                {
+                    type: 'tool-call',
+                    id: 'codex-plan-state',
+                    name: 'update_plan',
+                    input: {
+                        plan: [
+                            { step: 'Inspect event stream', status: 'completed' },
+                            { step: 'Render plan card', status: 'in_progress' }
+                        ],
+                        source: 'codex'
+                    }
+                },
+                {
+                    type: 'tool-result',
+                    tool_use_id: 'codex-plan-state',
+                    content: {
+                        plan: [
+                            { step: 'Inspect event stream', status: 'completed' },
+                            { step: 'Render plan card', status: 'in_progress' }
+                        ],
+                        source: 'codex',
+                        status: 'updated'
+                    }
+                }
+            ]
+        })
+    })
+
+    it('normalizes Codex token_count as usage data for context display', () => {
+        const message = makeMessage({
+            role: 'agent',
+            content: {
+                type: 'codex',
+                data: {
+                    type: 'token_count',
+                    info: {
+                        total: {
+                            inputTokens: 82_503,
+                            cachedInputTokens: 71_808,
+                            outputTokens: 166
+                        },
+                        modelContextWindow: 258_400
+                    }
+                }
+            }
+        })
+
+        const normalized = normalizeDecryptedMessage(message)
+
+        expect(normalized).toMatchObject({
+            role: 'event',
+            content: {
+                type: 'token-count'
+            },
+            usage: {
+                input_tokens: 82503,
+                output_tokens: 166
+            }
+        })
+    })
+
 })

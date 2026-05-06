@@ -40,6 +40,7 @@ export type MessageStatus = 'queued' | 'sending' | 'sent' | 'failed'
 export type DecryptedMessage = ProtocolDecryptedMessage & {
     status?: MessageStatus
     originalText?: string
+    invokedAt?: number | null
 }
 
 export type RunnerState = {
@@ -87,8 +88,9 @@ export type MessagesResponse = {
     messages: DecryptedMessage[]
     page: {
         limit: number
-        beforeSeq: number | null
+        beforeSeq?: number | null
         nextBeforeSeq: number | null
+        nextBeforeAt?: number | null
         hasMore: boolean
     }
 }
@@ -220,6 +222,18 @@ export type CodexModelSummary = {
 export type CodexModelsResponse = {
     success: boolean
     models?: CodexModelSummary[]
+    error?: string
+}
+
+export type OpencodeModelSummary = {
+    modelId: string
+    name?: string
+}
+
+export type OpencodeModelsResponse = {
+    success: boolean
+    availableModels?: OpencodeModelSummary[]
+    currentModelId?: string | null
     error?: string
 }
 

@@ -39,6 +39,10 @@ export async function runGemini(opts: {
 
     const machineDefault = resolveGeminiRuntimeConfig().model;
     const runtimeConfig = resolveGeminiRuntimeConfig({ model: opts.model });
+    // Persist only when the user (or env/local config) chose the model. The hardcoded
+    // default remains undefined in the DB so it floats with the machine config across
+    // gemini-cli upgrades. Mid-session selections are persisted by the hub via the
+    // set-session-config RPC, not by this initial bootstrap.
     const persistedModel = runtimeConfig.modelSource === 'default'
         ? undefined
         : runtimeConfig.model;
@@ -108,6 +112,10 @@ export async function runGemini(opts: {
         }
         sessionInstance.setPermissionMode(currentPermissionMode);
         sessionInstance.setModel(sessionModel);
+
+        // Notify hub immediately to reflect changes in UI
+        sessionInstance.pushKeepAlive();
+
         logger.debug(`[gemini] Synced session config for keepalive: permissionMode=${currentPermissionMode}, model=${resolvedModel}`);
     };
 

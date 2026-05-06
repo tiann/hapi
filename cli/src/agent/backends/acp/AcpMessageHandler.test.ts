@@ -1022,4 +1022,382 @@ describe('AcpMessageHandler', () => {
             expect(result.output).toEqual(unknownContent);
         });
     });
+
+    describe('tool_call input fallback from kind+title (Gemini sends neither rawInput nor JSON thought)', () => {
+        it('derives { file_path } from read kind + title', () => {
+            const messages: AgentMessage[] = [];
+            const handler = new AcpMessageHandler((message) => messages.push(message));
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+                toolCallId: 'fb-read',
+                title: 'README.md',
+                kind: 'read',
+                status: 'in_progress'
+            });
+
+            const toolCall = messages.find(
+                (m): m is Extract<AgentMessage, { type: 'tool_call' }> => m.type === 'tool_call'
+            );
+            expect(toolCall!.input).toEqual({ file_path: 'README.md' });
+        });
+
+        it('derives { command } from execute kind + title', () => {
+            const messages: AgentMessage[] = [];
+            const handler = new AcpMessageHandler((message) => messages.push(message));
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+                toolCallId: 'fb-exec',
+                title: 'ls -la /tmp',
+                kind: 'execute',
+                status: 'in_progress'
+            });
+
+            const toolCall = messages.find(
+                (m): m is Extract<AgentMessage, { type: 'tool_call' }> => m.type === 'tool_call'
+            );
+            expect(toolCall!.input).toEqual({ command: 'ls -la /tmp' });
+        });
+
+        it('derives { pattern } from search kind + title', () => {
+            const messages: AgentMessage[] = [];
+            const handler = new AcpMessageHandler((message) => messages.push(message));
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+                toolCallId: 'fb-search',
+                title: "'**/AGENTS.md'",
+                kind: 'search',
+                status: 'in_progress'
+            });
+
+            const toolCall = messages.find(
+                (m): m is Extract<AgentMessage, { type: 'tool_call' }> => m.type === 'tool_call'
+            );
+            expect(toolCall!.input).toEqual({ pattern: "'**/AGENTS.md'" });
+        });
+
+        it('keeps input null for think kind (no semantic args mapping)', () => {
+            // think tool_calls carry topic-update text in title that has no clean
+            // mapping to a tool argument shape. Better to leave input null than to
+            // fabricate a misleading derived object.
+            const messages: AgentMessage[] = [];
+            const handler = new AcpMessageHandler((message) => messages.push(message));
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+                toolCallId: 'fb-think',
+                title: 'Update topic to: "Researching Project Overview"',
+                kind: 'think',
+                status: 'in_progress'
+            });
+
+            const toolCall = messages.find(
+                (m): m is Extract<AgentMessage, { type: 'tool_call' }> => m.type === 'tool_call'
+            );
+            expect(toolCall!.input).toBeNull();
+        });
+
+        it('keeps input null for unknown kind (conservative — only known kinds derive)', () => {
+            const messages: AgentMessage[] = [];
+            const handler = new AcpMessageHandler((message) => messages.push(message));
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+                toolCallId: 'fb-unknown',
+                title: 'something exotic',
+                kind: 'futuristic_kind',
+                status: 'in_progress'
+            });
+
+            const toolCall = messages.find(
+                (m): m is Extract<AgentMessage, { type: 'tool_call' }> => m.type === 'tool_call'
+            );
+            expect(toolCall!.input).toBeNull();
+        });
+
+        it('keeps input null when title is missing even for known kind', () => {
+            const messages: AgentMessage[] = [];
+            const handler = new AcpMessageHandler((message) => messages.push(message));
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+                toolCallId: 'fb-no-title',
+                kind: 'read',
+                status: 'in_progress'
+            });
+
+            const toolCall = messages.find(
+                (m): m is Extract<AgentMessage, { type: 'tool_call' }> => m.type === 'tool_call'
+            );
+            expect(toolCall!.input).toBeNull();
+        });
+
+        it('derives { file_path } from edit kind + locations[0].path (write/edit case)', () => {
+            // Gemini emits write_file / replace under kind="edit" with rawInput
+            // absent. The path lives on `locations[0].path` from the very first
+            // tool_call event (title is prose like "Writing to foo.txt", which
+            // is not a file_path candidate).
+            const messages: AgentMessage[] = [];
+            const handler = new AcpMessageHandler((message) => messages.push(message));
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+                toolCallId: 'fb-edit',
+                title: 'Writing to foo.txt',
+                kind: 'edit',
+                locations: [{ path: '/abs/path/foo.txt' }],
+                status: 'in_progress'
+            });
+
+            const toolCall = messages.find(
+                (m): m is Extract<AgentMessage, { type: 'tool_call' }> => m.type === 'tool_call'
+            );
+            expect(toolCall!.input).toEqual({ file_path: '/abs/path/foo.txt' });
+        });
+
+        it('keeps input null for edit kind when locations is empty (no path to derive)', () => {
+            // Title like "Writing to foo.txt" is prose, not a file path —
+            // synthesizing a file_path from it would be misleading.
+            const messages: AgentMessage[] = [];
+            const handler = new AcpMessageHandler((message) => messages.push(message));
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+                toolCallId: 'fb-edit-no-loc',
+                title: 'Writing to foo.txt',
+                kind: 'edit',
+                locations: [],
+                status: 'in_progress'
+            });
+
+            const toolCall = messages.find(
+                (m): m is Extract<AgentMessage, { type: 'tool_call' }> => m.type === 'tool_call'
+            );
+            expect(toolCall!.input).toBeNull();
+        });
+
+        it('rawInput wins over kind+title fallback (regression guard)', () => {
+            const messages: AgentMessage[] = [];
+            const handler = new AcpMessageHandler((message) => messages.push(message));
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+                toolCallId: 'fb-raw-wins',
+                title: 'README.md',
+                kind: 'read',
+                rawInput: { file_path: 'EXPLICIT.md', extra: 'flag' },
+                status: 'in_progress'
+            });
+
+            const toolCall = messages.find(
+                (m): m is Extract<AgentMessage, { type: 'tool_call' }> => m.type === 'tool_call'
+            );
+            expect(toolCall!.input).toEqual({ file_path: 'EXPLICIT.md', extra: 'flag' });
+        });
+
+        it('applies the same fallback on tool_call_update (when rawInput stays absent)', () => {
+            // tool_call_update may be the first place we learn kind/title for a
+            // call that started as a placeholder. The fallback must still derive.
+            const messages: AgentMessage[] = [];
+            const handler = new AcpMessageHandler((message) => messages.push(message));
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+                toolCallId: 'fb-update',
+                kind: 'execute',
+                title: 'ls -la /tmp',
+                status: 'in_progress'
+            });
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCallUpdate,
+                toolCallId: 'fb-update',
+                kind: 'execute',
+                title: 'ls -la /tmp',
+                status: 'completed',
+                content: [{ type: 'content', content: { type: 'text', text: 'demo\n' } }]
+            });
+
+            const calls = messages.filter(
+                (m): m is Extract<AgentMessage, { type: 'tool_call' }> => m.type === 'tool_call'
+            );
+            // Both initial and update emit a tool_call with derived input.
+            expect(calls.length).toBeGreaterThanOrEqual(1);
+            for (const tc of calls) {
+                expect(tc.input).toEqual({ command: 'ls -la /tmp' });
+            }
+        });
+    });
+
+    describe('real Gemini ACP fixtures (PR evidence)', () => {
+        // Each fixture was captured from a live Gemini CLI session via ACP stdio.
+        // These tests lock in the current behaviour under SHA a6f9379 so that
+        // future changes to AcpMessageHandler cannot silently regress the
+        // Gemini-specific handling.
+        //
+        // Observation from captured gemini-3-flash-preview: Gemini does NOT
+        // include rawInput in tool_call events and emits prose (non-JSON)
+        // thoughts. There is therefore no JSON-thought-hoisting trigger —
+        // tool_call input is null and the thought text surfaces as reasoning.
+        const fixtureDir = new URL('./__fixtures__', import.meta.url).pathname;
+
+        const fixtures = [
+            {
+                // read_file capture has zero agent_thought_chunk events: this
+                // model expresses reasoning as a `kind: think` tool_call rather
+                // than as a thought chunk, so the reasoning channel is empty.
+                name: 'gemini-3-flash-preview / read_file',
+                file: `${fixtureDir}/gemini-3-flash-preview-read-file.json`,
+                expectedMinToolCalls: 2,
+                expectedMinReasoning: 0,
+                hasMessageChunks: true,
+            },
+            {
+                name: 'gemini-3-flash-preview / run_shell',
+                file: `${fixtureDir}/gemini-3-flash-preview-run-shell.json`,
+                expectedMinToolCalls: 1,
+                expectedMinReasoning: 1,
+                hasMessageChunks: true,
+            },
+            {
+                // write_file: kind=edit, locations carries the file path.
+                // Same shape (and zero thought chunks) as read_file.
+                name: 'gemini-3-flash-preview / write_file',
+                file: `${fixtureDir}/gemini-3-flash-preview-write-file.json`,
+                expectedMinToolCalls: 2,
+                expectedMinReasoning: 0,
+                hasMessageChunks: true,
+            },
+            {
+                // replace (in-place edit): same kind=edit + locations pattern.
+                name: 'gemini-3-flash-preview / edit_file',
+                file: `${fixtureDir}/gemini-3-flash-preview-edit-file.json`,
+                expectedMinToolCalls: 2,
+                expectedMinReasoning: 0,
+                hasMessageChunks: true,
+            },
+            // ── gemini-3.1-pro-preview captures (live ACP, 2026-05-04) ──
+            // Same handler shape (rawInput omitted, kind+title fallback drives
+            // input derivation). The pro tier reuses the same think/read/
+            // execute/edit kinds and emits prose thoughts (not JSON), so the
+            // assertions below match the flash captures.
+            {
+                name: 'gemini-3.1-pro-preview / read_file',
+                file: `${fixtureDir}/gemini-3.1-pro-preview-read-file.json`,
+                expectedMinToolCalls: 2,
+                expectedMinReasoning: 0,
+                hasMessageChunks: true,
+            },
+            {
+                // run_shell: pro emits a single agent_thought_chunk in addition
+                // to the execute tool_call.
+                name: 'gemini-3.1-pro-preview / run_shell',
+                file: `${fixtureDir}/gemini-3.1-pro-preview-run-shell.json`,
+                expectedMinToolCalls: 1,
+                expectedMinReasoning: 1,
+                hasMessageChunks: true,
+            },
+            {
+                // write_file: kind=edit, locations carries the file path.
+                name: 'gemini-3.1-pro-preview / write_file',
+                file: `${fixtureDir}/gemini-3.1-pro-preview-write-file.json`,
+                expectedMinToolCalls: 1,
+                expectedMinReasoning: 0,
+                hasMessageChunks: true,
+            },
+            {
+                // replace (in-place edit): pro version interleaves think + read
+                // + edit kinds before the final agent_message_chunk burst.
+                name: 'gemini-3.1-pro-preview / edit_file',
+                file: `${fixtureDir}/gemini-3.1-pro-preview-edit-file.json`,
+                expectedMinToolCalls: 2,
+                expectedMinReasoning: 0,
+                hasMessageChunks: true,
+            },
+        ] as const;
+
+        for (const fx of fixtures) {
+            it(`replays ${fx.name} and produces sane AgentMessage stream`, () => {
+                // eslint-disable-next-line @typescript-eslint/no-require-imports
+                const data = require(fx.file) as {
+                    model: string;
+                    scenario: string;
+                    updates: unknown[];
+                };
+
+                const messages: AgentMessage[] = [];
+                const handler = new AcpMessageHandler((m) => messages.push(m));
+                for (const update of data.updates) {
+                    handler.handleUpdate(update);
+                }
+                handler.flushText();
+
+                // ── tool_call: at least one must have been emitted ────────────────
+                const toolCalls = messages.filter(
+                    (m): m is Extract<AgentMessage, { type: 'tool_call' }> => m.type === 'tool_call'
+                );
+                expect(toolCalls.length).toBeGreaterThanOrEqual(fx.expectedMinToolCalls);
+
+                // ── tool_call.input: derived from kind+title fallback when rawInput
+                //    and JSON thought are both absent. think kind has no semantic
+                //    args mapping → input stays null; read/execute/search derive
+                //    a typed object from the human-readable title. ───────────────
+                // Identify think tool_calls by their original kind in the fixture
+                // (deriveToolNameWithSource uses title first, so tc.name is the
+                // title string for these — kind isn't on AgentMessage.tool_call).
+                const thinkIds = new Set<string>();
+                for (const update of data.updates) {
+                    if (typeof update === 'object' && update !== null) {
+                        const u = update as Record<string, unknown>;
+                        if (u.sessionUpdate === 'tool_call' && u.kind === 'think') {
+                            const id = typeof u.toolCallId === 'string' ? u.toolCallId : null;
+                            if (id) thinkIds.add(id);
+                        }
+                    }
+                }
+                for (const tc of toolCalls) {
+                    if (thinkIds.has(tc.id)) {
+                        expect(tc.input).toBeNull();
+                    } else {
+                        // After fallback: read → {file_path}, execute → {command},
+                        // search → {pattern}. tc.input must be a truthy object.
+                        expect(tc.input).not.toBeNull();
+                        expect(typeof tc.input).toBe('object');
+                    }
+                }
+
+                // ── reasoning: at least one prose thought must have surfaced ───────
+                const reasoningMsgs = messages.filter(
+                    (m): m is Extract<AgentMessage, { type: 'reasoning' }> => m.type === 'reasoning'
+                );
+                expect(reasoningMsgs.length).toBeGreaterThanOrEqual(fx.expectedMinReasoning);
+
+                // ── no JSON reasoning leak: no reasoning message should be a bare
+                //    JSON object that was accidentally not hoisted into a tool_call ──
+                for (const r of reasoningMsgs) {
+                    const trimmed = r.text.trim();
+                    const isLeakedJson = trimmed.startsWith('{') && trimmed.endsWith('}');
+                    expect(isLeakedJson).toBe(false);
+                }
+
+                // ── text messages: none should be a raw JSON blob ─────────────────
+                const textMsgs = messages.filter(
+                    (m): m is Extract<AgentMessage, { type: 'text' }> => m.type === 'text'
+                );
+                for (const t of textMsgs) {
+                    const trimmed = t.text.trim();
+                    // A text message should never be a bare JSON object
+                    const looksLikeJson = trimmed.startsWith('{') && trimmed.endsWith('}');
+                    expect(looksLikeJson).toBe(false);
+                }
+
+                // ── optional: assert text messages exist for complete captures ─────
+                if (fx.hasMessageChunks) {
+                    expect(textMsgs.length).toBeGreaterThan(0);
+                }
+            });
+        }
+    });
 });

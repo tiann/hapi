@@ -75,6 +75,27 @@ describe('getEventPresentation — limit-reached', () => {
     })
 })
 
+describe('getEventPresentation — token-count', () => {
+    it('formats Codex token-count as compact context usage', () => {
+        const result = getEventPresentation({
+            type: 'token-count',
+            info: {
+                total: {
+                    totalTokens: 23745,
+                    inputTokens: 23631,
+                    cachedInputTokens: 18176,
+                    outputTokens: 114,
+                    reasoningOutputTokens: 0
+                },
+                modelContextWindow: 258400
+            }
+        })
+
+        expect(result.icon).toBe('◷')
+        expect(result.text).toBe('Context 23.6k / 258.4k (9%) · out 114 · cached 18.2k')
+    })
+})
+
 describe('formatResetTime', () => {
     it('formats a unix timestamp to a non-empty string', () => {
         const result = formatResetTime(1774278000)

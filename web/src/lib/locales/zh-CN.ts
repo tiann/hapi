@@ -45,6 +45,12 @@ export default {
   'sessions.empty.hint': '在 workspace 下任意目录启动一个会话，或先浏览目录树看看。',
   'sessions.empty.startSession': '启动会话',
   'sessions.empty.browse': '浏览 workspace',
+  'sessions.search.placeholder': '搜索会话…',
+  'sessions.search.clear': '清除搜索',
+  'sessions.search.count': '{n} / {total} 个会话',
+  'sessions.search.noResults': '没有匹配的会话。',
+  'sessions.group.showMore': '再显示 {n} 个',
+  'sessions.group.showLess': '收起',
 
   // Session list
   'session.item.path': '路径',
@@ -61,6 +67,12 @@ export default {
   // Session header
   'session.title': '文件',
   'session.more': '更多操作',
+  'session.outline.open': '会话大纲',
+  'session.outline.close': '关闭大纲',
+  'session.outline.title': '大纲',
+  'session.outline.loadOlder': '加载更早',
+  'session.outline.empty': '已加载消息中暂无大纲项',
+  'session.outline.kind.user': '用户',
 
   // Session actions
   'session.action.rename': '重命名',
@@ -113,6 +125,11 @@ export default {
   'newSession.effort': '思考强度',
   'newSession.model.optional': '可选',
   'newSession.model.loadFailed': '加载 Codex 模型失败',
+  'newSession.opencodeModel.loading': '正在发现 OpenCode 模型…',
+  'newSession.opencodeModel.loadFailed': '加载 OpenCode 模型失败',
+  'newSession.opencodeModel.retry': '重试',
+  'newSession.opencodeModel.empty': '未在此目录发现 OpenCode 模型',
+  'newSession.opencodeModel.default': '默认',
   'newSession.reasoningEffort': '推理强度',
   'newSession.yolo': 'YOLO 模式',
   'newSession.yolo.title': '跳过审批和沙箱',
@@ -159,6 +176,7 @@ export default {
 
   // Code block
   'code.copy': '复制',
+  'code.truncated': '预览已截断 — 打开详情查看完整输出',
 
   // Diff view
   'diff.title': '差异',
@@ -182,7 +200,14 @@ export default {
   'tool.exitPlan': '退出计划模式',
   'tool.patch': '补丁',
   'tool.input': '输入',
+  'tool.trace': '追踪',
+  'tool.trace.callsSuffix': '次调用',
   'tool.result': '结果',
+  'tool.semanticTitle.readFile': '读取文件',
+  'tool.semanticTitle.runShell': '运行命令',
+  'tool.semanticTitle.search': '搜索',
+  'tool.semanticTitle.openUrl': '打开链接',
+  'tool.semanticTitle.query': '查询',
   'tool.questionsAnswers': '问答',
   'tool.submit': '提交',
   'tool.submitting': '提交中…',
@@ -251,6 +276,12 @@ export default {
   // Send blocked
   'send.blocked.title': '无法发送消息',
   'send.blocked.noConnection': '未连接到服务器',
+  'resume.failed.title': '恢复会话失败',
+  'toast.ready.title': '等待输入',
+  'toast.ready.body': '{agent} 正在 {session} 等待你的输入',
+  'toast.permission.title': '权限请求',
+  'toast.task.completed': '任务完成',
+  'toast.task.failed': '任务失败',
 
   // Install prompt
   'install.title': '安装 HAPI',

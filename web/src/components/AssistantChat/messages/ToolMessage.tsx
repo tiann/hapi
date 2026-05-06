@@ -5,11 +5,11 @@ import { isObject, safeStringify } from '@hapi/protocol'
 import { getEventPresentation } from '@/chat/presentation'
 import { CodeBlock } from '@/components/CodeBlock'
 import { MarkdownRenderer } from '@/components/MarkdownRenderer'
-import { LazyRainbowText } from '@/components/LazyRainbowText'
 import { MessageStatusIndicator } from '@/components/AssistantChat/messages/MessageStatusIndicator'
 import { ToolCard } from '@/components/ToolCard/ToolCard'
 import { useHappyChatContext } from '@/components/AssistantChat/context'
 import { CliOutputBlock } from '@/components/CliOutputBlock'
+import { UserBubbleContent, getUserBubbleClassName, shouldShowMessageStatus } from '@/components/AssistantChat/messages/user-bubble'
 
 function isToolCallBlock(value: unknown): value is ToolCallBlock {
     if (!isObject(value)) return false
@@ -54,19 +54,19 @@ function HappyNestedBlockList(props: {
         <div className="flex flex-col gap-3">
             {props.blocks.map((block) => {
                 if (block.kind === 'user-text') {
-                    const userBubbleClass = 'w-fit max-w-[92%] ml-auto rounded-xl bg-[var(--app-secondary-bg)] px-3 py-2 text-[var(--app-fg)] shadow-sm'
                     const status = block.status
                     const canRetry = status === 'failed' && typeof block.localId === 'string' && Boolean(ctx.onRetryMessage)
                     const onRetry = canRetry ? () => ctx.onRetryMessage!(block.localId!) : undefined
+                    const showStatus = shouldShowMessageStatus(status)
 
                     return (
-                        <div key={`user:${block.id}`} className={userBubbleClass}>
-                            <div className="flex items-end gap-2">
-                                <div className="flex-1">
-                                    <LazyRainbowText text={block.text} />
+                        <div key={`user:${block.id}`} className={getUserBubbleClassName(status)}>
+                            <div className="flex items-start gap-2">
+                                <div className="min-w-0 flex-1">
+                                    <UserBubbleContent text={block.text} />
                                 </div>
-                                {status ? (
-                                    <div className="shrink-0 self-end pb-0.5">
+                                {showStatus ? (
+                                    <div className="happy-message-actions-first-line shrink-0">
                                         <MessageStatusIndicator status={status} onRetry={onRetry} />
                                     </div>
                                 ) : null}
@@ -169,9 +169,9 @@ export function HappyToolMessage(props: ToolCallMessagePartProps) {
 
         return (
             <div className="py-1 min-w-0 max-w-full overflow-x-hidden">
-                <div className="rounded-xl bg-[var(--app-secondary-bg)] p-3 shadow-sm">
+                <div className="overflow-hidden rounded-[20px] bg-[var(--app-tool-card-bg)] p-3 shadow-none">
                     <div className="flex items-center gap-2 text-xs">
-                        <div className="font-mono text-[var(--app-hint)]">
+                        <div className="font-mono text-[var(--app-tool-card-accent)]">
                             Tool: {props.toolName}
                         </div>
                         {props.isError ? (
@@ -184,13 +184,13 @@ export function HappyToolMessage(props: ToolCallMessagePartProps) {
 
                     {hasArgsText ? (
                         <div className="mt-2">
-                            <CodeBlock code={argsText} language="json" />
+                            <CodeBlock code={argsText} language="json" title="Input" />
                         </div>
                     ) : null}
 
                     {hasResult ? (
                         <div className="mt-2">
-                            <CodeBlock code={resultText} language={typeof props.result === 'string' ? 'text' : 'json'} />
+                            <CodeBlock code={resultText} language={typeof props.result === 'string' ? 'text' : 'json'} title="Output" />
                         </div>
                     ) : null}
                 </div>

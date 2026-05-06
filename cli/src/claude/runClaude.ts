@@ -282,6 +282,41 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
             return;
         }
 
+        if (specialCommand.type === 'plan') {
+            logger.debug('[start] Detected /plan command');
+            currentPermissionMode = specialCommand.mode ?? 'plan';
+            currentSessionRef.current?.setPermissionMode(currentPermissionMode);
+            currentSessionRef.current?.pushKeepAlive();
+            session.sendSessionEvent({
+                type: 'permission-mode-changed',
+                mode: currentPermissionMode
+            });
+
+            const enhancedMode: EnhancedMode = {
+                permissionMode: currentPermissionMode,
+                model: messageModel,
+                effort: messageEffort,
+                fallbackModel: messageFallbackModel,
+                customSystemPrompt: messageCustomSystemPrompt,
+                appendSystemPrompt: messageAppendSystemPrompt,
+                allowedTools: messageAllowedTools,
+                disallowedTools: messageDisallowedTools
+            };
+
+            if (!specialCommand.prompt) {
+                if (localId) {
+                    session.emitMessagesConsumed([localId]);
+                }
+                logger.debugLargeJson('[start] /plan command applied without prompt:', message);
+                return;
+            }
+
+            const planPrompt = formatMessageWithAttachments(specialCommand.prompt, message.content.attachments);
+            messageQueue.push(planPrompt, enhancedMode, localId);
+            logger.debugLargeJson('[start] /plan command prompt pushed to queue:', message);
+            return;
+        }
+
         // Push with resolved permission mode, model, system prompts, and tools
         const enhancedMode: EnhancedMode = {
             permissionMode: messagePermissionMode ?? 'default',

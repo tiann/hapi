@@ -186,4 +186,175 @@ describe('reduceTimeline', () => {
         const events = blocks.filter(b => b.kind === 'agent-event')
         expect(events).toHaveLength(1)
     })
+
+    it('merges turn-duration event into assistant block by targetMessageId', () => {
+        const assistantMsg = makeAgentMessage('Thinking...', { id: 'target-msg-id' })
+        const durationEvent: TracedMessage = {
+            id: 'event-1',
+            role: 'event',
+            createdAt: 1_700_000_002_000,
+            content: { type: 'turn-duration', durationMs: 1500, targetMessageId: 'target-msg-id' }
+        } as TracedMessage
+
+        const { blocks } = reduceTimeline([assistantMsg, durationEvent], makeContext())
+        const agentTextBlock = blocks.find(b => b.kind === 'agent-text') as any
+        expect(agentTextBlock).toBeDefined()
+        expect(agentTextBlock.durationMs).toBe(1500)
+    })
+
+    it('merges turn-duration event into the last assistant block as fallback', () => {
+        const assistantMsg = makeAgentMessage('Hello')
+        const durationEvent: TracedMessage = {
+            id: 'event-1',
+            role: 'event',
+            createdAt: 1_700_000_002_000,
+            content: { type: 'turn-duration', durationMs: 2500 } // No targetMessageId
+        } as TracedMessage
+
+        const { blocks } = reduceTimeline([assistantMsg, durationEvent], makeContext())
+        const agentTextBlock = blocks.find(b => b.kind === 'agent-text') as any
+        expect(agentTextBlock).toBeDefined()
+        expect(agentTextBlock.durationMs).toBe(2500)
+    })
+
+    it('propagates model information to assistant blocks', () => {
+        const assistantMsg = makeAgentMessage('Hello', { model: 'claude-3-opus' })
+        const { blocks } = reduceTimeline([assistantMsg], makeContext())
+
+        const agentTextBlock = blocks.find(b => b.kind === 'agent-text') as any
+        expect(agentTextBlock).toBeDefined()
+        expect(agentTextBlock.model).toBe('claude-3-opus')
+    })
+
+    it('preserves per-message model across mid-session model switches', () => {
+        const earlier = makeAgentMessage('Earlier reply', {
+            id: 'msg-earlier',
+            createdAt: 1_700_000_000_000,
+            model: 'claude-3-opus'
+        })
+        const later = makeAgentMessage('Later reply', {
+            id: 'msg-later',
+            createdAt: 1_700_000_001_000,
+            model: 'gemini-3-flash-preview',
+            content: [{ type: 'text', text: 'Later reply', uuid: 'u-2', parentUUID: null }]
+        })
+
+        const { blocks } = reduceTimeline([earlier, later], makeContext())
+        const earlierBlock = blocks.find(b => b.id === 'msg-earlier:0') as any
+        const laterBlock = blocks.find(b => b.id === 'msg-later:0') as any
+        expect(earlierBlock.model).toBe('claude-3-opus')
+        expect(laterBlock.model).toBe('gemini-3-flash-preview')
+    })
+
+    it('leaves model undefined when message lacks per-message model', () => {
+        const assistantMsg = makeAgentMessage('Hello without model')
+        const { blocks } = reduceTimeline([assistantMsg], makeContext())
+
+        const agentTextBlock = blocks.find(b => b.kind === 'agent-text') as any
+        expect(agentTextBlock).toBeDefined()
+        expect(agentTextBlock.model).toBeUndefined()
+    })
+
+    it('falls back to the last duration-bearing block when targetMessageId resolves to a non-duration block', () => {
+        // Regression: the matcher used to take the first id-prefix match and
+        // then silently drop the duration when that block was not duration-
+        // bearing (agent-event / user-text). The fallback search must run.
+        const userMsg = makeUserMessage('Earlier user text', { id: 'u-prefix' })
+        const assistantMsg = makeAgentMessage('Assistant reply', { id: 'asst-1' })
+        const durationEvent: TracedMessage = {
+            id: 'event-fallback',
+            role: 'event',
+            createdAt: 1_700_000_002_000,
+            // targetMessageId matches a user-text block id by prefix; the
+            // matcher must skip it (kind is not duration-bearing) and fall
+            // back to the last assistant-like block.
+            content: { type: 'turn-duration', durationMs: 9999, targetMessageId: 'u-prefix' }
+        } as TracedMessage
+
+        const { blocks } = reduceTimeline([userMsg, assistantMsg, durationEvent], makeContext())
+        const userBlock = blocks.find(b => b.kind === 'user-text') as any
+        const agentBlock = blocks.find(b => b.kind === 'agent-text') as any
+        expect((userBlock as { durationMs?: number }).durationMs).toBeUndefined()
+        expect(agentBlock.durationMs).toBe(9999)
+    })
+
+    it('preserves the original tool-call invokedAt when the matching tool-result message arrives later', () => {
+        // Regression: the second `ensureToolBlock` call (driven by a
+        // tool-result message) used to overwrite the tool-call's invokedAt
+        // with the result message's invokedAt, so the rendered "Invoke"
+        // timestamp told the user when the result was processed instead of
+        // when the tool was invoked.
+        const toolUseMsg: TracedMessage = {
+            id: 'msg-call',
+            localId: null,
+            createdAt: 1_700_000_000_000,
+            invokedAt: 1_700_000_000_500,
+            role: 'agent',
+            content: [{
+                type: 'tool-call',
+                id: 'tc-invoked-at',
+                name: 'Bash',
+                input: { command: 'ls' },
+                description: null,
+                uuid: 'u-1',
+                parentUUID: null
+            }],
+            isSidechain: false
+        } as TracedMessage
+        const toolResultMsg: TracedMessage = {
+            id: 'msg-result',
+            localId: null,
+            createdAt: 1_700_000_001_000,
+            invokedAt: 1_700_000_002_000, // would clobber the tool-call invokedAt without the guard
+            role: 'agent',
+            content: [{
+                type: 'tool-result',
+                tool_use_id: 'tc-invoked-at',
+                content: 'ok',
+                is_error: false,
+                uuid: 'u-2',
+                parentUUID: null
+            }],
+            isSidechain: false
+        } as TracedMessage
+
+        const { blocks } = reduceTimeline([toolUseMsg, toolResultMsg], makeContext())
+        const toolBlock = blocks.find(b => b.kind === 'tool-call') as any
+        expect(toolBlock).toBeDefined()
+        expect(toolBlock.invokedAt).toBe(1_700_000_000_500)
+    })
+
+    it('keeps toolBlocksById reference identity when applying turn-duration to a tool-call', () => {
+        const toolCallMsg: TracedMessage = {
+            id: 'msg-tool',
+            localId: null,
+            createdAt: 1_700_000_000_000,
+            role: 'agent',
+            content: [{
+                type: 'tool-call',
+                id: 'tc-1',
+                name: 'Bash',
+                input: { command: 'ls' },
+                description: null,
+                uuid: 'u-1',
+                parentUUID: null
+            }],
+            isSidechain: false
+        } as TracedMessage
+        const durationEvent: TracedMessage = {
+            id: 'event-1',
+            role: 'event',
+            createdAt: 1_700_000_001_000,
+            content: { type: 'turn-duration', durationMs: 1234, targetMessageId: 'msg-tool' }
+        } as TracedMessage
+
+        const { blocks, toolBlocksById } = reduceTimeline([toolCallMsg, durationEvent], makeContext())
+        const toolBlock = blocks.find(b => b.kind === 'tool-call') as any
+        expect(toolBlock).toBeDefined()
+        expect(toolBlock.durationMs).toBe(1234)
+        // The block in `blocks` and the one indexed in `toolBlocksById` must be
+        // the same object reference, so that subsequent permission/result
+        // mutations land on the rendered block instead of a stale clone.
+        expect(toolBlocksById.get('tc-1')).toBe(toolBlock)
+    })
 })

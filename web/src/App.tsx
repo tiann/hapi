@@ -239,14 +239,59 @@ function AppInner() {
         clearMessageWindow(event.sessionId)
         void fetchLatestMessages(api, event.sessionId)
     }, [api, selectedSessionId])
+    const translateIncomingToast = useCallback((title: string, body: string): { title: string; body: string } => {
+        const normalizedTitle = title.trim()
+        const normalizedBody = body.trim()
+
+        if (normalizedTitle === 'Ready for input') {
+            const waitingMatch = normalizedBody.match(/^(.+)\s+is waiting in\s+(.+)$/i)
+            if (waitingMatch) {
+                const agent = waitingMatch[1]?.trim() ?? ''
+                const sessionName = waitingMatch[2]?.trim() ?? ''
+                return {
+                    title: t('toast.ready.title'),
+                    body: t('toast.ready.body', { agent, session: sessionName })
+                }
+            }
+            return {
+                title: t('toast.ready.title'),
+                body: normalizedBody
+            }
+        }
+
+        if (normalizedTitle === 'Permission Request') {
+            return {
+                title: t('toast.permission.title'),
+                body: normalizedBody
+            }
+        }
+
+        if (normalizedTitle === 'Task completed') {
+            return {
+                title: t('toast.task.completed'),
+                body: normalizedBody
+            }
+        }
+
+        if (normalizedTitle === 'Task failed') {
+            return {
+                title: t('toast.task.failed'),
+                body: normalizedBody
+            }
+        }
+
+        return { title, body }
+    }, [t])
+
     const handleToast = useCallback((event: ToastEvent) => {
+        const localized = translateIncomingToast(event.data.title, event.data.body)
         addToast({
-            title: event.data.title,
-            body: event.data.body,
+            title: localized.title,
+            body: localized.body,
             sessionId: event.data.sessionId,
             url: event.data.url
         })
-    }, [addToast])
+    }, [addToast, translateIncomingToast])
 
     const eventSubscription = useMemo(() => {
         if (selectedSessionId) {

@@ -21,6 +21,8 @@ class GeminiRemoteLauncher extends RemoteLauncherBase {
     private abortController = new AbortController();
     private displayModel: string | null = null;
     private displayPermissionMode: PermissionMode | null = null;
+    private currentBackendModel: string | null = null;
+    private setModelSupported: boolean | undefined = undefined;
 
     constructor(session: GeminiSession, opts: { model?: string; hookSettingsPath?: string }) {
         super(process.env.DEBUG ? session.logPath : undefined);
@@ -102,7 +104,8 @@ class GeminiRemoteLauncher extends RemoteLauncherBase {
             backend,
             () => session.getPermissionMode() as PermissionMode | undefined
         );
-        this.applyDisplayMode(session.getPermissionMode() as PermissionMode, runtimeConfig.model);
+        this.currentBackendModel = runtimeConfig.model;
+        this.applyDisplayMode(session.getPermissionMode() as PermissionMode, this.currentBackendModel);
 
         this.setupAbortHandlers(session.client.rpcHandlerManager, {
             onAbort: () => this.handleAbort(),
@@ -120,6 +123,40 @@ class GeminiRemoteLauncher extends RemoteLauncherBase {
                     continue;
                 }
                 break;
+            }
+
+            // Inline model change via RPC. If the running gemini-cli build does not
+            // implement session/set_model, we learn that from the first method-not-found
+            // response and stop attempting it for the rest of this session.
+            if (batch.mode.model && batch.mode.model !== this.currentBackendModel) {
+                if (!backend.setModel || this.setModelSupported === false) {
+                    batch.mode.model = this.currentBackendModel!;
+                } else {
+                    logger.debug(`[gemini-remote] Switching model inline: ${this.currentBackendModel} -> ${batch.mode.model}`);
+                    try {
+                        await backend.setModel(acpSessionId, batch.mode.model);
+                        this.currentBackendModel = batch.mode.model;
+                        this.setModelSupported = true;
+                    } catch (error) {
+                        const message = error instanceof Error ? error.message : String(error);
+                        const methodNotFound = /method not found/i.test(message);
+                        if (methodNotFound && this.setModelSupported === undefined) {
+                            this.setModelSupported = false;
+                            logger.warn('[gemini-remote] Gemini CLI build does not support session/set_model; inline switching disabled for this session');
+                            session.sendSessionEvent({
+                                type: 'message',
+                                message: 'This Gemini CLI build does not support inline model switching. Restart the session to apply a different model.'
+                            });
+                        } else {
+                            logger.warn('[gemini-remote] Inline model switch failed', error);
+                            session.sendSessionEvent({
+                                type: 'message',
+                                message: `Failed to switch model to ${batch.mode.model}. Continuing with ${this.currentBackendModel}.`
+                            });
+                        }
+                        batch.mode.model = this.currentBackendModel!;
+                    }
+                }
             }
 
             this.applyDisplayMode(batch.mode.permissionMode, batch.mode.model);

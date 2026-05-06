@@ -2,7 +2,13 @@ import { useState, useEffect, type FC, type PropsWithChildren } from 'react'
 import { useMessage } from '@assistant-ui/react'
 import { MarkdownTextPrimitive } from '@assistant-ui/react-markdown'
 import { cn } from '@/lib/utils'
-import { defaultComponents, MARKDOWN_PLUGINS, MARKDOWN_REHYPE_PLUGINS } from '@/components/assistant-ui/markdown-text'
+import {
+    MARKDOWN_CLASSNAME,
+    MARKDOWN_COMPONENTS_BY_LANGUAGE,
+    MARKDOWN_PLUGINS,
+    MARKDOWN_REHYPE_PLUGINS,
+    defaultComponents,
+} from '@/components/assistant-ui/markdown-text'
 
 function ChevronIcon(props: { className?: string; open?: boolean }) {
     return (
@@ -29,38 +35,30 @@ function ChevronIcon(props: { className?: string; open?: boolean }) {
 
 function ShimmerDot() {
     return (
-        <span className="inline-block w-1.5 h-1.5 bg-current rounded-full animate-pulse" />
+        <span className="inline-block h-1.5 w-1.5 rounded-full bg-current animate-pulse" />
     )
 }
 
-/**
- * Renders individual reasoning message part content with markdown support.
- */
 export const Reasoning: FC = () => {
     return (
         <MarkdownTextPrimitive
             remarkPlugins={MARKDOWN_PLUGINS}
             rehypePlugins={MARKDOWN_REHYPE_PLUGINS}
             components={defaultComponents}
-            className={cn('aui-reasoning-content min-w-0 max-w-full break-words text-sm text-[var(--app-hint)]')}
+            componentsByLanguage={MARKDOWN_COMPONENTS_BY_LANGUAGE}
+            className={cn(MARKDOWN_CLASSNAME, 'aui-reasoning-content text-[13.5px] text-[var(--app-hint)]')}
         />
     )
 }
 
-/**
- * Wraps consecutive reasoning parts in a collapsible container.
- * Shows shimmer effect while reasoning is streaming.
- */
 export const ReasoningGroup: FC<PropsWithChildren> = ({ children }) => {
     const [isOpen, setIsOpen] = useState(false)
 
-    // Check if reasoning is still streaming
     const message = useMessage()
     const isStreaming = message.status?.type === 'running'
         && message.content.length > 0
         && message.content[message.content.length - 1]?.type === 'reasoning'
 
-    // Auto-expand while streaming
     useEffect(() => {
         if (isStreaming) {
             setIsOpen(true)
@@ -68,12 +66,12 @@ export const ReasoningGroup: FC<PropsWithChildren> = ({ children }) => {
     }, [isStreaming])
 
     return (
-        <div className="aui-reasoning-group my-2">
+        <div className="aui-reasoning-group my-3 overflow-hidden rounded-2xl bg-[var(--app-reasoning-bg)]">
             <button
                 type="button"
                 onClick={() => setIsOpen(!isOpen)}
                 className={cn(
-                    'flex items-center gap-1.5 text-xs font-medium',
+                    'flex w-full items-center gap-1.5 px-3.5 py-2.5 text-left text-xs font-medium',
                     'text-[var(--app-hint)] hover:text-[var(--app-fg)]',
                     'transition-colors cursor-pointer select-none'
                 )}
@@ -81,7 +79,7 @@ export const ReasoningGroup: FC<PropsWithChildren> = ({ children }) => {
                 <ChevronIcon open={isOpen} />
                 <span>Reasoning</span>
                 {isStreaming && (
-                    <span className="flex items-center gap-1 ml-1 text-[var(--app-hint)]">
+                    <span className="ml-1 flex items-center gap-1 text-[var(--app-hint)]">
                         <ShimmerDot />
                     </span>
                 )}
@@ -93,7 +91,7 @@ export const ReasoningGroup: FC<PropsWithChildren> = ({ children }) => {
                     isOpen ? 'max-h-[5000px] opacity-100' : 'max-h-0 opacity-0'
                 )}
             >
-                <div className="pl-4 pt-2 border-l-2 border-[var(--app-border)] ml-0.5">
+                <div className="border-t border-[var(--app-divider)] px-3.5 py-3">
                     {children}
                 </div>
             </div>

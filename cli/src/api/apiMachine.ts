@@ -15,6 +15,11 @@ import { backoff } from '@/utils/time'
 import { getInvokedCwd } from '@/utils/invokedCwd'
 import { RpcHandlerManager } from './rpc/RpcHandlerManager'
 import { registerCommonHandlers } from '../modules/common/registerCommonHandlers'
+import {
+    listOpencodeModelsForCwd,
+    type ListOpencodeModelsForCwdRequest,
+    type ListOpencodeModelsForCwdResponse
+} from '../modules/common/opencodeModels'
 import type { SpawnSessionOptions, SpawnSessionResult } from '../modules/common/rpcTypes'
 import { applyVersionedAck } from './versionedUpdate'
 import { buildSocketIoExtraHeaderOptions } from './hubExtraHeaders'
@@ -206,6 +211,30 @@ export class ApiMachineClient {
                 return { success: false, error: error instanceof Error ? error.message : 'Failed to list directory' }
             }
         })
+
+        // OpenCode model discovery spawns an `opencode acp` subprocess scoped to the
+        // requested cwd, so it must obey the same workspace-root containment as
+        // `list-directory` and `spawn-happy-session`. Re-register the handler that
+        // `registerCommonHandlers` installed unguarded with a guarded version that
+        // resolves symlinks and rejects paths outside the configured root before
+        // delegating to the lower-level probe. This intentionally overwrites the
+        // earlier registration on the same scoped method name.
+        this.rpcHandlerManager.registerHandler<ListOpencodeModelsForCwdRequest, ListOpencodeModelsForCwdResponse>(
+            'listOpencodeModelsForCwd',
+            async (params) => {
+                const rawCwd = typeof params?.cwd === 'string' ? params.cwd.trim() : ''
+                if (!rawCwd) {
+                    return { success: false, error: 'cwd is required' }
+                }
+
+                const resolvedCwd = await this.resolveForWorkspaceCheck(rawCwd)
+                if (!this.isWithinWorkspaceRoot(resolvedCwd)) {
+                    return { success: false, error: 'Path is outside workspace root' }
+                }
+
+                return await listOpencodeModelsForCwd(resolvedCwd)
+            }
+        )
     }
 
     private isWithinWorkspaceRoot(absolutePath: string): boolean {

@@ -1,0 +1,61 @@
+{
+  "model": "gemini-3-flash-preview",
+  "scenario": "run_shell",
+  "prompt": "Please list files in /tmp using ls -la /tmp",
+  "captured_at": "2026-04-30T03:18:23.000Z",
+  "updates": [
+    {
+      "sessionUpdate": "agent_thought_chunk",
+      "content": {
+        "type": "text",
+        "text": "[current working directory /home/lupin/workspace/hapi-fix-gemini-display/cli] (Listing files in /tmp to see the current directory contents.)"
+      }
+    },
+    {
+      "sessionUpdate": "tool_call",
+      "toolCallId": "run_shell_command-1777518846676-1",
+      "status": "in_progress",
+      "title": "ls -la /tmp",
+      "content": [],
+      "locations": [],
+      "kind": "execute"
+    },
+    {
+      "sessionUpdate": "tool_call_update",
+      "toolCallId": "run_shell_command-1777518846676-1",
+      "status": "completed",
+      "title": "ls -la /tmp",
+      "content": [],
+      "locations": [],
+      "kind": "execute"
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "The `/tmp` directory contains numerous files and subdirectories, many of which appear to be"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": " related to `hapi`, `gemini`, and various E2E testing artifacts (e.g., `hapi-cli"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": ".log`, `gemini-client-error-...json`, `hapi-e2e-...` directories). "
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "\n\nIs there a specific file or pattern you're looking for within these results?"
+      }
+    }
+  ]
+}

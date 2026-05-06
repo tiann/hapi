@@ -115,6 +115,8 @@ describe('appServerConfig', () => {
         expect(params.input).toEqual([{ type: 'text', text: 'hello' }]);
         expect(params.approvalPolicy).toBe('never');
         expect(params.sandboxPolicy).toEqual({ type: 'readOnly' });
+        expect(params.effort).toBe('high');
+        expect(params.summary).toBe('detailed');
         expect(params.collaborationMode).toEqual({
             mode: 'default',
             settings: {

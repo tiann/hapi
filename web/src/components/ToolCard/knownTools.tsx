@@ -159,7 +159,12 @@ export const knownTools: Record<string, {
             }
             return null
         },
-        minimal: true
+        minimal: (opts) => {
+            const result = isObject(opts.result) ? opts.result : null
+            const stdout = result && typeof result.stdout === 'string' ? result.stdout.trim() : ''
+            const stderr = result && typeof result.stderr === 'string' ? result.stderr.trim() : ''
+            return stdout.length === 0 && stderr.length === 0
+        }
     },
     CodexPermission: {
         icon: () => <QuestionIcon className={DEFAULT_ICON_CLASS} />,
@@ -441,7 +446,12 @@ export const knownTools: Record<string, {
     }
 }
 
-export function getToolPresentation(opts: Omit<ToolOpts, 'metadata'> & { metadata: SessionMetadataSummary | null }): ToolPresentation {
+type Translator = (key: string, params?: Record<string, string | number>) => string
+
+export function getToolPresentation(
+    opts: Omit<ToolOpts, 'metadata'> & { metadata: SessionMetadataSummary | null },
+    t?: Translator
+): ToolPresentation {
     if (opts.toolName.startsWith('mcp__')) {
         return {
             icon: <PuzzleIcon className={DEFAULT_ICON_CLASS} />,
@@ -470,10 +480,25 @@ export function getToolPresentation(opts: Omit<ToolOpts, 'metadata'> & { metadat
 
     const subtitle = filePath ?? command ?? pattern ?? url ?? query
 
+    // Some ACP agents emit `tool_call.title` as a verbatim argument (the shell
+    // command or the file path itself). When it equals the input field,
+    // promote a semantic label to the title slot and let the verbatim arg
+    // become the subtitle, so the card reads like a sentence instead of
+    // showing the same string twice. Labels are translated when a Translator
+    // is supplied; tests and call sites without i18n fall back to English.
+    let title = opts.toolName
+    if (subtitle && subtitle === title) {
+        if (filePath) title = t ? t('tool.semanticTitle.readFile') : 'Read file'
+        else if (command) title = t ? t('tool.semanticTitle.runShell') : 'Run shell'
+        else if (pattern) title = t ? t('tool.semanticTitle.search') : 'Search'
+        else if (url) title = t ? t('tool.semanticTitle.openUrl') : 'Open URL'
+        else if (query) title = t ? t('tool.semanticTitle.query') : 'Query'
+    }
+
     return {
         icon: <WrenchIcon className={DEFAULT_ICON_CLASS} />,
-        title: opts.toolName,
-        subtitle: subtitle ? truncate(subtitle, 80) : null,
+        title,
+        subtitle: subtitle && subtitle !== title ? truncate(subtitle, 80) : null,
         minimal: true
     }
 }

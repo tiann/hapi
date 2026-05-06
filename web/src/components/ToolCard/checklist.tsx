@@ -85,6 +85,7 @@ function checklistTone(item: ChecklistItem): string {
 
 function checklistIcon(item: ChecklistItem): ReactNode {
     if (item.status === 'completed') return '☑'
+    if (item.status === 'in_progress') return '◉'
     return '☐'
 }
 

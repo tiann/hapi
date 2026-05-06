@@ -69,15 +69,14 @@ describe('listSkills', () => {
         expect(skills.find((s) => s.name === 'alpha')?.description).toBe('Alpha from agents')
     })
 
-    it('lists user skills from ~/.codex/skills', async () => {
+    it('lists user skills from ~/.codex/skills including Codex bundled system skills', async () => {
         await writeSkill(join(homeDir, '.agents', 'skills', 'amis'), 'amis', 'AMIS guide')
         await writeSkill(join(homeDir, '.codex', 'skills', 'hello-agents'), 'helloagents', 'Main skill')
-        // Hidden directories (starting with .) are skipped
         await writeSkill(join(homeDir, '.codex', 'skills', '.system', 'skill-creator'), 'skill-creator', 'Create skills')
 
         const skills = await listSkills()
 
-        expect(skills.map((skill) => skill.name)).toEqual(['amis', 'helloagents'])
+        expect(skills.map((skill) => skill.name)).toEqual(['amis', 'helloagents', 'skill-creator'])
     })
 
     it('falls back to directory name when frontmatter is missing', async () => {
@@ -117,6 +116,20 @@ describe('listSkills', () => {
         const skills = await listSkills(workingDirectory)
 
         expect(skills.map((skill) => skill.name)).toEqual(['claude-local', 'claude-root'])
+    })
+
+    it('loads project skills from .codex/skills directories', async () => {
+        const repoRoot = join(sandboxDir, 'repo')
+        const workingDirectory = join(repoRoot, 'apps', 'web')
+
+        await mkdir(join(repoRoot, '.git'), { recursive: true })
+        await writeSkill(join(repoRoot, '.codex', 'skills', 'codex-root'), 'codex-root', 'Codex root skill')
+        await writeSkill(join(workingDirectory, '.codex', 'skills', 'codex-local'), 'codex-local', 'Codex local skill')
+        await writeSkill(join(workingDirectory, '.codex', 'skills', '.system', 'codex-system'), 'codex-system', 'Codex system skill')
+
+        const skills = await listSkills(workingDirectory)
+
+        expect(skills.map((skill) => skill.name)).toEqual(['codex-local', 'codex-root', 'codex-system'])
     })
 
     it('prefers .agents project skills over .claude project skills with same name', async () => {

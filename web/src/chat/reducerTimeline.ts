@@ -1,4 +1,4 @@
-import type { ChatBlock, ToolCallBlock, ToolPermission } from '@/chat/types'
+import type { AgentReasoningBlock, AgentTextBlock, ChatBlock, CliOutputBlock, ToolCallBlock, ToolPermission } from '@/chat/types'
 import type { TracedMessage } from '@/chat/tracer'
 import { createCliOutputBlock, isCliOutputText, mergeCliOutputBlocks } from '@/chat/reducerCliOutput'
 import { parseMessageAsEvent } from '@/chat/reducerEvents'
@@ -38,10 +38,43 @@ export function reduceTimeline(
                 hasReadyEvent = true
                 continue
             }
+            if (msg.content.type === 'token-count') {
+                continue
+            }
+            if (msg.content.type === 'turn-duration') {
+                const targetId = msg.content.targetMessageId
+                const durationMs = msg.content.durationMs as number
+                type DurationBearingBlock = AgentTextBlock | AgentReasoningBlock | CliOutputBlock | ToolCallBlock
+                const isDurationTarget = (b: ChatBlock): b is DurationBearingBlock =>
+                    b.kind === 'agent-text' || b.kind === 'agent-reasoning' || b.kind === 'cli-output' || b.kind === 'tool-call'
+                let foundIndex = -1
+
+                if (targetId) {
+                    foundIndex = blocks.findLastIndex(b => isDurationTarget(b) && (b.id === targetId || b.id.startsWith(`${targetId}:`)))
+                    if (foundIndex === -1) {
+                        foundIndex = blocks.findLastIndex(b => b.kind === 'tool-call' && b.tool.id === targetId)
+                    }
+                }
+
+                if (foundIndex === -1) {
+                    foundIndex = blocks.findLastIndex(isDurationTarget)
+                }
+
+                if (foundIndex !== -1) {
+                    const b = blocks[foundIndex]
+                    if (isDurationTarget(b)) {
+                        b.durationMs = durationMs
+                    }
+                }
+                continue
+            }
+
             blocks.push({
                 kind: 'agent-event',
                 id: msg.id,
                 createdAt: msg.createdAt,
+                invokedAt: msg.invokedAt,
+                model: msg.model,
                 event: msg.content,
                 meta: msg.meta
             })
@@ -54,6 +87,8 @@ export function reduceTimeline(
                 kind: 'agent-event',
                 id: msg.id,
                 createdAt: msg.createdAt,
+                invokedAt: msg.invokedAt,
+                model: msg.model,
                 event,
                 meta: msg.meta
             })
@@ -66,6 +101,7 @@ export function reduceTimeline(
                     id: msg.id,
                     localId: msg.localId,
                     createdAt: msg.createdAt,
+                    invokedAt: msg.invokedAt,
                     text: msg.content.text,
                     source: 'user',
                     meta: msg.meta
@@ -77,6 +113,7 @@ export function reduceTimeline(
                 id: msg.id,
                 localId: msg.localId,
                 createdAt: msg.createdAt,
+                invokedAt: msg.invokedAt,
                 text: msg.content.text,
                 attachments: msg.content.attachments,
                 status: msg.status,
@@ -133,6 +170,9 @@ export function reduceTimeline(
                             id: `${msg.id}:${idx}`,
                             localId: msg.localId,
                             createdAt: msg.createdAt,
+                            invokedAt: msg.invokedAt,
+                            usage: msg.usage,
+                            model: msg.model,
                             text: c.text,
                             source: 'assistant',
                             meta: msg.meta
@@ -144,6 +184,9 @@ export function reduceTimeline(
                         id: `${msg.id}:${idx}`,
                         localId: msg.localId,
                         createdAt: msg.createdAt,
+                        invokedAt: msg.invokedAt,
+                        usage: msg.usage,
+                        model: msg.model,
                         text: c.text,
                         meta: msg.meta
                     })
@@ -156,6 +199,9 @@ export function reduceTimeline(
                         id: `${msg.id}:${idx}`,
                         localId: msg.localId,
                         createdAt: msg.createdAt,
+                        invokedAt: msg.invokedAt,
+                        usage: msg.usage,
+                        model: msg.model,
                         text: c.text,
                         meta: msg.meta
                     })
@@ -167,6 +213,8 @@ export function reduceTimeline(
                         kind: 'agent-event',
                         id: `${msg.id}:${idx}`,
                         createdAt: msg.createdAt,
+                        invokedAt: msg.invokedAt,
+                        model: msg.model,
                         event: { type: 'message', message: c.summary },
                         meta: msg.meta
                     })
@@ -182,6 +230,8 @@ export function reduceTimeline(
                                 kind: 'agent-event',
                                 id: `${msg.id}:${idx}`,
                                 createdAt: msg.createdAt,
+                                invokedAt: msg.invokedAt,
+                                model: msg.model,
                                 event: { type: 'title-changed', title },
                                 meta: msg.meta
                             })
@@ -193,6 +243,9 @@ export function reduceTimeline(
 
                     const block = ensureToolBlock(blocks, toolBlocksById, c.id, {
                         createdAt: msg.createdAt,
+                        invokedAt: msg.invokedAt,
+                        usage: msg.usage,
+                        model: msg.model,
                         localId: msg.localId,
                         meta: msg.meta,
                         name: c.name,
@@ -227,6 +280,8 @@ export function reduceTimeline(
                                 kind: 'agent-event',
                                 id: `${msg.id}:${idx}`,
                                 createdAt: msg.createdAt,
+                                invokedAt: msg.invokedAt,
+                                model: msg.model,
                                 event: { type: 'title-changed', title },
                                 meta: msg.meta
                             })
@@ -258,6 +313,9 @@ export function reduceTimeline(
 
                     const block = ensureToolBlock(blocks, toolBlocksById, c.tool_use_id, {
                         createdAt: msg.createdAt,
+                        invokedAt: msg.invokedAt,
+                        usage: msg.usage,
+                        model: msg.model,
                         localId: msg.localId,
                         meta: msg.meta,
                         name: permissionEntry?.toolName ?? 'Tool',
@@ -282,6 +340,8 @@ export function reduceTimeline(
                                 kind: 'agent-event',
                                 id: `${msg.id}:${idx}`,
                                 createdAt: msg.createdAt,
+                                invokedAt: msg.invokedAt,
+                                model: msg.model,
                                 event: { type: 'message', message: summary },
                                 meta: msg.meta
                             })

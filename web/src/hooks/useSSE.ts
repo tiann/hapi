@@ -498,7 +498,7 @@ export function useSSE(options: {
             }
 
             if (event.type === 'messages-consumed') {
-                markMessagesConsumed(event.sessionId, event.localIds)
+                markMessagesConsumed(event.sessionId, event.localIds, event.invokedAt)
             }
 
             if (event.type === 'message-received') {

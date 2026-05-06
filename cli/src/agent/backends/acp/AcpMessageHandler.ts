@@ -22,6 +22,48 @@ function deriveToolNameFromUpdate(update: Record<string, unknown>): DerivedToolN
     });
 }
 
+/**
+ * Fallback for ACP agents that omit `rawInput` and emit prose thoughts
+ * (no JSON-form to hoist). The `tool_call` event still carries a
+ * human-readable `title`, a structural `kind`, and (for file-touching tools)
+ * a `locations` array. For known kinds we synthesize a minimal input object
+ * so the UI does not display "Input: null" while the title shows
+ * "README.md" / "ls -la /tmp".
+ *
+ * Conservative on purpose:
+ * - `read` / `execute` / `search` derive from `title`, which in those kinds
+ *   is the verbatim path / command / pattern.
+ * - `edit` (file-write / file-replace) derives from `locations[0].path`;
+ *   its title is prose ("Writing to foo.txt"), so the path must come from
+ *   the structured locations field, not the title.
+ * - `think` stays null — its title carries topic-update prose with no clean
+ *   argument mapping; fabricating one would mislead.
+ * - Unknown kinds fall through to null rather than guessing a shape.
+ */
+function deriveInputFromKindAndTitle(
+    kind: string | null,
+    title: string | null,
+    locations: unknown
+): Record<string, unknown> | null {
+    if (kind === 'edit') {
+        const arr = Array.isArray(locations) ? locations : [];
+        const first = arr[0];
+        const path = isObject(first) ? asString(first.path) : null;
+        return path ? { file_path: path } : null;
+    }
+    if (!title) return null;
+    switch (kind) {
+        case 'read':
+            return { file_path: title };
+        case 'execute':
+            return { command: title };
+        case 'search':
+            return { pattern: title };
+        default:
+            return null;
+    }
+}
+
 function extractTextContent(block: unknown): string | null {
     if (!isObject(block)) return null;
     if (block.type !== 'text') return null;
@@ -324,7 +366,11 @@ export class AcpMessageHandler {
 
         const derivedName = deriveToolNameFromUpdate(update);
         const name = derivedName.name;
-        const input = update.rawInput ?? null;
+        // Priority: rawInput > kind+title fallback.
+        // Use `in` to distinguish "rawInput key absent" from "rawInput is {}".
+        const input = 'rawInput' in update
+            ? update.rawInput
+            : deriveInputFromKindAndTitle(asString(update.kind), asString(update.title), update.locations);
         const status = normalizeStatus(update.status);
 
         this.toolCalls.set(toolCallId, { name, input });
@@ -357,14 +403,31 @@ export class AcpMessageHandler {
                 input,
                 status
             });
-        } else if (existing && (status === 'in_progress' || status === 'pending')) {
-            this.onMessage({
-                type: 'tool_call',
-                id: toolCallId,
-                name: existing.name,
-                input: existing.input,
-                status
-            });
+        } else if (existing) {
+            // Enrich existing.input from update's kind+title when initial tool_call
+            // had neither rawInput nor a hoistable thought. Re-emit when we just
+            // enriched the input or when the call is still active.
+            let input = existing.input;
+            let name = existing.name;
+            if (input == null) {
+                const fallback = deriveInputFromKindAndTitle(asString(update.kind), asString(update.title), update.locations);
+                if (fallback) {
+                    input = fallback;
+                    const derivedName = deriveToolNameFromUpdate(update);
+                    name = this.selectToolNameForUpdate(existing.name ?? null, derivedName);
+                    this.toolCalls.set(toolCallId, { name, input });
+                }
+            }
+            const justEnriched = existing.input == null && input != null;
+            if (status === 'in_progress' || status === 'pending' || justEnriched) {
+                this.onMessage({
+                    type: 'tool_call',
+                    id: toolCallId,
+                    name,
+                    input,
+                    status
+                });
+            }
         }
 
         if (status === 'completed' || status === 'failed') {
