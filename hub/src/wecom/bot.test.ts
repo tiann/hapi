@@ -215,14 +215,25 @@ describe('WecomBot binding', () => {
         expect(client.sendMessage.mock.calls).toHaveLength(0)
     })
 
-    it('rejects invalid namespace characters with a usage reply', async () => {
+    it('accepts namespaces with markdown metacharacters and escapes them in the reply', async () => {
         const { client, addUser } = makeBot([])
-        client.emit('message.text', textFrame('u-new', 'TOKEN:**bad ns**\n'))
+        client.emit('message.text', textFrame('u-new', 'TOKEN:**bad ns**'))
         await tick()
-        expect(addUser).not.toHaveBeenCalled()
-        expect(client.sendMessage.mock.calls).toHaveLength(1)
+        // Match parseAccessToken / /api/auth: any non-empty trimmed namespace is valid.
+        expect(addUser).toHaveBeenCalledWith('wecom', 'u-new', '**bad ns**')
         const body = client.sendMessage.mock.calls[0][1] as Extract<SendMsgBody, { msgtype: 'markdown' }>
-        expect(body.markdown.content).toContain('Invalid namespace')
+        // Asterisks must be escaped so the rendered card doesn't mis-bold.
+        expect(body.markdown.content).toContain('\\*\\*bad ns\\*\\*')
+        expect(body.markdown.content).not.toMatch(/\*\*bad ns\*\*/)
+    })
+
+    it('accepts namespaces with spaces and dots that the rest of HAPI also accepts', async () => {
+        const { client, addUser } = makeBot([])
+        client.emit('message.text', textFrame('u-new', 'TOKEN:team alpha.v2'))
+        await tick()
+        expect(addUser).toHaveBeenCalledWith('wecom', 'u-new', 'team alpha.v2')
+        const body = client.sendMessage.mock.calls[0][1] as Extract<SendMsgBody, { msgtype: 'markdown' }>
+        expect(body.markdown.content).toContain('team alpha.v2')
     })
 
     it('refuses to silently rebind an already-bound userid to a different namespace', async () => {
