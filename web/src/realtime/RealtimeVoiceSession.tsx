@@ -126,6 +126,7 @@ export interface RealtimeVoiceSessionProps {
     api: ApiClient
     micMuted?: boolean
     onStatusChange?: StatusCallback
+    onRegistered?: () => void
     getSession?: (sessionId: string) => Session | null
     sendMessage?: (sessionId: string, message: string) => void
     approvePermission?: (sessionId: string, requestId: string) => Promise<void>
@@ -136,6 +137,7 @@ export function RealtimeVoiceSession({
     api,
     micMuted: micMutedProp = false,
     onStatusChange,
+    onRegistered,
     getSession,
     sendMessage,
     approvePermission,
@@ -231,6 +233,7 @@ export function RealtimeVoiceSession({
             try {
                 registerVoiceSession(new RealtimeVoiceSessionImpl(api))
                 hasRegistered.current = true
+                onRegistered?.()
             } catch (error) {
                 console.error('[Voice] Failed to register voice session:', error)
             }

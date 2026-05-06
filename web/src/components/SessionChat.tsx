@@ -30,7 +30,7 @@ import { useSessionActions } from '@/hooks/mutations/useSessionActions'
 import { useCodexModels } from '@/hooks/queries/useCodexModels'
 import { useOpencodeModels } from '@/hooks/queries/useOpencodeModels'
 import { useVoiceOptional } from '@/lib/voice-context'
-import { RealtimeVoiceSession, registerSessionStore, registerVoiceHooksStore, voiceHooks } from '@/realtime'
+import { VoiceBackendSession, registerSessionStore, registerVoiceHooksStore, voiceHooks } from '@/realtime'
 import { isRemoteTerminalSupported } from '@/utils/terminalSupport'
 
 function getOutlineTitle(session: Session): string {
@@ -130,6 +130,7 @@ export function SessionChat(props: {
 
     // Voice assistant integration
     const voice = useVoiceOptional()
+    const [voiceBackendReady, setVoiceBackendReady] = useState(false)
 
     // Register session store for voice client tools
     useEffect(() => {
@@ -506,18 +507,19 @@ export function SessionChat(props: {
                         autocompleteSuggestions={props.autocompleteSuggestions}
                         voiceStatus={voice?.status}
                         voiceMicMuted={voice?.micMuted}
-                        onVoiceToggle={voice ? handleVoiceToggle : undefined}
-                        onVoiceMicToggle={voice ? handleVoiceMicToggle : undefined}
+                        onVoiceToggle={voice && voiceBackendReady ? handleVoiceToggle : undefined}
+                        onVoiceMicToggle={voice && voiceBackendReady ? handleVoiceMicToggle : undefined}
                     />
                 </div>
             </AssistantRuntimeProvider>
 
-            {/* Voice session component - renders nothing but initializes ElevenLabs */}
+            {/* Voice session component - renders nothing but initializes voice backend */}
             {voice && (
-                <RealtimeVoiceSession
+                <VoiceBackendSession
                     api={props.api}
                     micMuted={voice.micMuted}
                     onStatusChange={voice.setStatus}
+                    onReadyChange={setVoiceBackendReady}
                 />
             )}
         </div>
