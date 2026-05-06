@@ -500,6 +500,13 @@ export function useSSE(options: {
 
             if (event.type === 'messages-consumed') {
                 markMessagesConsumed(event.sessionId, event.localIds, event.invokedAt)
+                const state = getMessageWindowState(event.sessionId)
+                for (const localId of event.localIds) {
+                    const consumed = state.messages.find((message) => message.localId === localId)
+                    if (consumed) {
+                        ingestConversationOutlineMessage(event.sessionId, consumed)
+                    }
+                }
             }
 
             if (event.type === 'message-cancelled') {

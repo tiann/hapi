@@ -24,6 +24,11 @@ type PendingScrollRestore = {
     scrollHeight: number
 }
 
+type PendingLoadCompletion = {
+    reject: (error: unknown) => void
+    resolve: (loaded: boolean) => void
+}
+
 const MESSAGE_ANCHOR_SELECTOR = '.happy-thread-messages > [id]'
 const AUTO_SCROLL_RESUME_THRESHOLD_PX = 120
 const MANUAL_SCROLL_EPSILON_PX = 1
@@ -299,7 +304,10 @@ export function HappyThread(props: {
     outlineIsLocating: boolean
     onRetryOutlineHydration: () => Promise<void> | void
     onOutlineOpenChange: (open: boolean) => void
-    onOutlineItemClick?: (item: ConversationOutlineItem) => Promise<boolean> | boolean
+    onOutlineItemClick?: (
+        item: ConversationOutlineItem,
+        helpers: { loadMore: () => Promise<boolean> }
+    ) => Promise<boolean> | boolean
 }) {
     const { t } = useTranslation()
     const viewportRef = useRef<HTMLDivElement | null>(null)
@@ -309,6 +317,7 @@ export function HappyThread(props: {
     const pendingScrollRef = useRef<PendingScrollRestore | null>(null)
     const prevLoadingMoreRef = useRef(false)
     const loadStartedRef = useRef(false)
+    const pendingLoadCompletionRef = useRef<PendingLoadCompletion | null>(null)
     const isLoadingMoreRef = useRef(props.isLoadingMoreMessages)
     const hasMoreMessagesRef = useRef(props.hasMoreMessages)
     const isLoadingMessagesRef = useRef(props.isLoadingMessages)
@@ -507,46 +516,61 @@ export function HappyThread(props: {
         scrollToBottom()
     }, [props.forceScrollToken, scrollToBottom])
 
-    const handleLoadMore = useCallback(() => {
+    const loadMorePreservingScroll = useCallback(async (): Promise<boolean> => {
         if (
             isLoadingMessagesRef.current
             || !hasMoreMessagesRef.current
             || isLoadingMoreRef.current
             || loadLockRef.current
         ) {
-            return
+            return false
         }
         const viewport = viewportRef.current
         if (!viewport) {
-            return
+            return false
         }
-        pendingScrollRef.current = {
-            anchor: captureScrollAnchor(viewport),
-            scrollTop: viewport.scrollTop,
-            scrollHeight: viewport.scrollHeight
-        }
-        autoScrollEnabledRef.current = false
-        loadLockRef.current = true
-        loadStartedRef.current = false
-        let loadPromise: Promise<unknown>
-        try {
-            loadPromise = onLoadMoreRef.current()
-        } catch (error) {
-            pendingScrollRef.current = null
-            loadLockRef.current = false
-            throw error
-        }
-        void loadPromise.catch((error) => {
-            pendingScrollRef.current = null
-            loadLockRef.current = false
-            console.error('Failed to load older messages:', error)
-        }).finally(() => {
-            if (!loadStartedRef.current && !isLoadingMoreRef.current && pendingScrollRef.current) {
+        return await new Promise<boolean>((resolve, reject) => {
+            pendingScrollRef.current = {
+                anchor: captureScrollAnchor(viewport),
+                scrollTop: viewport.scrollTop,
+                scrollHeight: viewport.scrollHeight
+            }
+            autoScrollEnabledRef.current = false
+            loadLockRef.current = true
+            loadStartedRef.current = false
+            pendingLoadCompletionRef.current = { resolve, reject }
+            let loadPromise: Promise<unknown>
+            try {
+                loadPromise = onLoadMoreRef.current()
+            } catch (error) {
                 pendingScrollRef.current = null
                 loadLockRef.current = false
+                pendingLoadCompletionRef.current = null
+                reject(error)
+                return
             }
+            void loadPromise.catch((error) => {
+                pendingScrollRef.current = null
+                loadLockRef.current = false
+                const pending = pendingLoadCompletionRef.current
+                pendingLoadCompletionRef.current = null
+                pending?.reject(error)
+                console.error('Failed to load older messages:', error)
+            }).finally(() => {
+                if (!loadStartedRef.current && !isLoadingMoreRef.current && pendingScrollRef.current) {
+                    pendingScrollRef.current = null
+                    loadLockRef.current = false
+                    const pending = pendingLoadCompletionRef.current
+                    pendingLoadCompletionRef.current = null
+                    pending?.resolve(false)
+                }
+            })
         })
     }, [])
+
+    const handleLoadMore = useCallback(() => {
+        void loadMorePreservingScroll()
+    }, [loadMorePreservingScroll])
 
     const handleOutlineSelect = useCallback(async (item: ConversationOutlineItem) => {
         const target = document.getElementById(getConversationMessageAnchorId(item.targetMessageId))
@@ -557,12 +581,12 @@ export function HappyThread(props: {
             return
         }
         if (props.onOutlineItemClick) {
-            const handled = await props.onOutlineItemClick(item)
+            const handled = await props.onOutlineItemClick(item, { loadMore: loadMorePreservingScroll })
             if (handled !== false) {
                 props.onOutlineOpenChange(false)
             }
         }
-    }, [props.onOutlineItemClick, props.onOutlineOpenChange])
+    }, [loadMorePreservingScroll, props.onOutlineItemClick, props.onOutlineOpenChange])
 
     useEffect(() => {
         handleLoadMoreRef.current = handleLoadMore
@@ -629,6 +653,9 @@ export function HappyThread(props: {
             lastScrollTopRef.current = viewport.scrollTop
             pendingScrollRef.current = null
             loadLockRef.current = false
+            const pendingLoad = pendingLoadCompletionRef.current
+            pendingLoadCompletionRef.current = null
+            pendingLoad?.resolve(true)
             return
         }
         if (atBottomRef.current && autoScrollEnabledRef.current) {
@@ -644,6 +671,9 @@ export function HappyThread(props: {
         if (prevLoadingMoreRef.current && !props.isLoadingMoreMessages && pendingScrollRef.current) {
             pendingScrollRef.current = null
             loadLockRef.current = false
+            const pendingLoad = pendingLoadCompletionRef.current
+            pendingLoadCompletionRef.current = null
+            pendingLoad?.resolve(true)
         }
         prevLoadingMoreRef.current = props.isLoadingMoreMessages
     }, [props.isLoadingMoreMessages])

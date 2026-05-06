@@ -5,6 +5,7 @@ import {
     decryptedMessageToOutlineItem,
     mergeConversationOutlineItems,
 } from '@/chat/outline'
+import { isQueuedForInvocation } from '@/lib/messages'
 
 export type ConversationOutlineStatus = 'idle' | 'loading' | 'ready' | 'error'
 
@@ -92,6 +93,9 @@ function updateState(
 function extractOutlineItems(messages: readonly DecryptedMessage[]): ConversationOutlineItem[] {
     const items: ConversationOutlineItem[] = []
     for (const message of messages) {
+        if (isQueuedForInvocation(message)) {
+            continue
+        }
         const item = decryptedMessageToOutlineItem(message)
         if (item) {
             items.push(item)
@@ -178,6 +182,9 @@ export function resetConversationOutline(sessionId: string): void {
 }
 
 export function ingestConversationOutlineMessage(sessionId: string, message: DecryptedMessage): void {
+    if (isQueuedForInvocation(message)) {
+        return
+    }
     const item = decryptedMessageToOutlineItem(message)
     if (!item) {
         return

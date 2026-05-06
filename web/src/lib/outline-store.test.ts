@@ -151,6 +151,33 @@ describe('outline-store', () => {
         ])
     })
 
+    it('does not include queued user messages in outline state', async () => {
+        const api = makeApi([
+            {
+                messages: [{
+                    ...makeUserMessage('queued', 'Queued item', 100),
+                    invokedAt: null,
+                    status: 'queued',
+                }],
+                page: {
+                    nextBeforeAt: null,
+                    nextBeforeSeq: null,
+                    hasMore: false,
+                },
+            },
+        ])
+
+        await hydrateConversationOutline(api, SESSION_ID)
+        ingestConversationOutlineMessage(SESSION_ID, {
+            ...makeUserMessage('queued-live', 'Queued live item', 120),
+            invokedAt: null,
+            status: 'queued',
+        })
+
+        const state = getConversationOutlineState(SESSION_ID)
+        expect(state.items).toEqual([])
+    })
+
     it('tracks locating state and errors', () => {
         setConversationOutlineLocating(SESSION_ID, 'user:target')
         expect(getConversationOutlineState(SESSION_ID)).toMatchObject({

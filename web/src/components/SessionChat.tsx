@@ -56,7 +56,7 @@ function waitForNextPaint(): Promise<void> {
 export async function loadOutlineTarget(options: {
     findTarget: () => HTMLElement | null
     hasMore: () => boolean
-    loadMore: () => Promise<unknown>
+    loadMore: () => Promise<boolean>
     maxAttempts?: number
 }): Promise<boolean> {
     if (options.findTarget()) {
@@ -68,7 +68,10 @@ export async function loadOutlineTarget(options: {
 
     while (options.hasMore() && attempts < maxAttempts) {
         attempts += 1
-        await options.loadMore()
+        const loaded = await options.loadMore()
+        if (!loaded) {
+            break
+        }
         await waitForNextPaint()
         if (options.findTarget()) {
             return true
@@ -427,7 +430,10 @@ export function SessionChat(props: {
         setForceScrollToken((token) => token + 1)
     }, [props.onSend])
 
-    const handleOutlineItemClick = useCallback(async (item: ConversationOutlineItem) => {
+    const handleOutlineItemClick = useCallback(async (
+        item: ConversationOutlineItem,
+        helpers: { loadMore: () => Promise<boolean> }
+    ) => {
         const anchorId = getConversationMessageAnchorId(item.targetMessageId)
         const findTarget = () => document.getElementById(anchorId)
 
@@ -440,7 +446,7 @@ export function SessionChat(props: {
             const found = await loadOutlineTarget({
                 findTarget,
                 hasMore: () => hasMoreMessagesRef.current,
-                loadMore: () => onLoadMoreRef.current(),
+                loadMore: helpers.loadMore,
             })
             if (!found) {
                 outlineState.setLocating(null, t('session.outline.locateFailed'))

@@ -6,6 +6,7 @@ describe('loadOutlineTarget', () => {
         let loaded = false
         const loadMore = vi.fn(async () => {
             loaded = true
+            return true
         })
 
         const found = await loadOutlineTarget({
@@ -20,7 +21,7 @@ describe('loadOutlineTarget', () => {
     })
 
     it('stops when no older pages remain', async () => {
-        const loadMore = vi.fn()
+        const loadMore = vi.fn(async () => false)
 
         const found = await loadOutlineTarget({
             findTarget: () => null,
