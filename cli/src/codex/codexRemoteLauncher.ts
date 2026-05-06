@@ -389,6 +389,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         let turnInFlight = false;
         let allowAnonymousTerminalEvent = false;
         let invalidThreadId: string | null = null;
+        let childAgentActivityInCurrentTurn = false;
 
         const isCodexAgentToolName = (toolName: string | null): boolean => {
             return toolName === 'spawn_agent'
@@ -415,6 +416,46 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 && (asString(update.activity) === 'Closed' || asString(update.statusText ?? update.status_text) === 'Closed');
         };
 
+        const isScopeSensitiveCodexEvent = (type: string): boolean => {
+            return type === 'token_count' || type === 'context_compacted';
+        };
+
+        const hasKnownChildAgents = (): boolean => {
+            if (childAgentActivityInCurrentTurn) return true;
+            if (pendingAgentStartCardIds.size > 0) return true;
+            for (const agentId of new Set([...agentCardByAgentId.keys(), ...childAgentRuntimeById.keys()])) {
+                const status = agentStatusByAgentId.get(agentId);
+                if (!isTerminalAgentRunStatus(status)) {
+                    return true;
+                }
+            }
+            return false;
+        };
+
+        const buildCodexEventScope = (
+            threadId: string | null,
+            role: 'parent' | 'child',
+            agentId?: string | null
+        ): Record<string, unknown> => ({
+            role,
+            ...(threadId ? { threadId, thread_id: threadId } : {}),
+            ...(this.currentThreadId ? { parentThreadId: this.currentThreadId, parent_thread_id: this.currentThreadId } : {}),
+            ...(agentId ? { agentId, agent_id: agentId } : {})
+        });
+
+        const addCodexEventScope = (
+            event: Record<string, unknown>,
+            role: 'parent' | 'child',
+            threadId: string | null,
+            agentId?: string | null
+        ): Record<string, unknown> => ({
+            ...event,
+            ...(threadId ? { threadId, thread_id: threadId } : {}),
+            scopeRole: role,
+            scope_role: role,
+            scope: buildCodexEventScope(threadId, role, agentId)
+        });
+
         const extractAgentTargets = (input: unknown): string[] => {
             const record = asRecord(input);
             if (!record) return [];
@@ -427,13 +468,15 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         };
 
         const emitAgentRunEvent = (event: Record<string, unknown>): void => {
+            const agentId = asString(event.agentId ?? event.agent_id);
             session.sendAgentMessage({
-                ...event,
+                ...(agentId ? addCodexEventScope(event, 'child', agentId, agentId) : event),
                 id: randomUUID()
             });
         };
 
         const emitAgentRunStart = (cardId: string, input: unknown): void => {
+            childAgentActivityInCurrentTurn = true;
             const summary = summarizeAgentInput(input);
             if (summary) {
                 agentSummaryByCardId.set(cardId, summary);
@@ -703,6 +746,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             pendingAgentToolInputByCallId.delete(callId);
 
             if (name === 'spawn_agent') {
+                childAgentActivityInCurrentTurn = true;
                 const outputRecord = asRecord(output);
                 const agentId = asString(outputRecord?.agent_id ?? outputRecord?.agentId ?? outputRecord?.id)
                     ?? extractAgentTargets(pending?.input).at(0);
@@ -720,6 +764,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             }
 
             if (name === 'wait_agent') {
+                childAgentActivityInCurrentTurn = true;
                 const outputRecord = asRecord(output);
                 const statusMap = asRecord(outputRecord?.status) ?? {};
                 for (const [agentId, statusValue] of Object.entries(statusMap)) {
@@ -751,6 +796,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         const handleChildCodexEvent = (agentId: string, msg: Record<string, unknown>): void => {
             const msgType = asString(msg.type);
             if (!msgType) return;
+            childAgentActivityInCurrentTurn = true;
             const runtime = getChildRuntime(agentId);
             const isChildTerminalEvent = msgType === 'task_complete' || msgType === 'turn_aborted' || msgType === 'task_failed';
             if (runtime.blockedNestedAgent && !isChildTerminalEvent) {
@@ -769,6 +815,19 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     ...extra
                 });
             };
+
+            if (msgType === 'token_count') {
+                return;
+            }
+
+            if (msgType === 'context_compacted') {
+                emitAgentRunTraceMessage(agentId, {
+                    type: 'context_compacted',
+                    id: randomUUID()
+                });
+                updateActivity('Context compacted', 'compact');
+                return;
+            }
 
             if (msgType === 'task_started') {
                 runtime.reasoningPreview = '';
@@ -1123,6 +1182,14 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 return;
             }
 
+            if (!eventThreadId && this.currentThreadId && isScopeSensitiveCodexEvent(msgType) && hasKnownChildAgents()) {
+                logger.debug(
+                    `[Codex] Dropping unscoped scope-sensitive event while child agents are active; ` +
+                    `type=${msgType}, activeThread=${this.currentThreadId}`
+                );
+                return;
+            }
+
             if (msgType === 'task_started') {
                 const turnId = eventTurnId;
                 if (turnId) {
@@ -1218,6 +1285,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 appServerEventConverter.reset();
                 mcpTitleByCallId.clear();
                 pendingAgentToolInputByCallId.clear();
+                childAgentActivityInCurrentTurn = false;
             }
 
             if (isTerminalEvent && !turnInFlight) {
@@ -1287,8 +1355,19 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 }
             }
             if (msgType === 'token_count') {
+                const threadId = eventThreadId ?? this.currentThreadId;
                 session.sendAgentMessage({
-                    ...msg,
+                    ...addCodexEventScope(msg, 'parent', threadId),
+                    id: randomUUID()
+                });
+            }
+            if (msgType === 'context_compacted') {
+                const threadId = eventThreadId ?? this.currentThreadId;
+                session.sendAgentMessage({
+                    ...addCodexEventScope({
+                        type: 'context_compacted',
+                        ...(eventTurnId ? { turn_id: eventTurnId } : {})
+                    }, 'parent', threadId),
                     id: randomUUID()
                 });
             }

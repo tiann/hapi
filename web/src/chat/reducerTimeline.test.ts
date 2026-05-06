@@ -477,7 +477,7 @@ describe('reduceTimeline', () => {
             summary: 'Inspect files',
             activity: 'Completed: agent done'
         })
-        expect(agentBlock.children.some((child: any) => child.kind === 'tool-call' && child.tool.id === 'cmd-1')).toBe(true)
+        expect(agentBlock.children.some((child: any) => child.kind === 'tool-call' && child.tool.id === 'codex-agent:agent-1:call:cmd-1')).toBe(true)
         expect(agentBlock.children.some((child: any) => child.kind === 'agent-text' && child.text === 'agent done')).toBe(true)
     })
 
@@ -558,7 +558,88 @@ describe('reduceTimeline', () => {
         expect(blocks).toHaveLength(1)
         expect(agentBlock.tool.name).toBe('CodexAgent')
         expect(agentBlock.children.filter((child: any) => child.kind === 'tool-call')).toHaveLength(2)
-        expect(agentBlock.children.map((child: any) => child.kind === 'tool-call' ? child.tool.id : null).filter(Boolean)).toEqual(['cmd-1', 'cmd-2'])
+        expect(agentBlock.children.map((child: any) => child.kind === 'tool-call' ? child.tool.id : null).filter(Boolean)).toEqual([
+            'codex-agent:agent-1:call:cmd-1',
+            'codex-agent:agent-1:call:cmd-2'
+        ])
+    })
+
+    it('namespaces Codex child trace tool ids away from parent tool ids', () => {
+        const messages: TracedMessage[] = [
+            {
+                id: 'parent-tool',
+                localId: null,
+                createdAt: 1_700_000_000_000,
+                role: 'agent',
+                content: [{
+                    type: 'tool-call',
+                    id: 'cmd-1',
+                    name: 'CodexBash',
+                    input: { command: 'echo parent' },
+                    description: null,
+                    uuid: 'parent-tool',
+                    parentUUID: null
+                }],
+                isSidechain: false
+            } as TracedMessage,
+            {
+                id: 'agent-start',
+                localId: null,
+                createdAt: 1_700_000_001_000,
+                role: 'event',
+                content: {
+                    type: 'agent-run-start',
+                    cardId: 'spawn-1',
+                    input: { message: 'inspect files' },
+                    status: 'starting'
+                },
+                isSidechain: false
+            } as TracedMessage,
+            {
+                id: 'agent-update',
+                localId: null,
+                createdAt: 1_700_000_002_000,
+                role: 'event',
+                content: {
+                    type: 'agent-run-update',
+                    cardId: 'spawn-1',
+                    agentId: 'agent-1',
+                    status: 'running'
+                },
+                isSidechain: false
+            } as TracedMessage,
+            {
+                id: 'agent-trace-tool',
+                localId: null,
+                createdAt: 1_700_000_003_000,
+                role: 'event',
+                content: {
+                    type: 'agent-run-trace',
+                    cardId: 'spawn-1',
+                    agentId: 'agent-1',
+                    message: {
+                        type: 'tool-call',
+                        name: 'CodexBash',
+                        callId: 'cmd-1',
+                        input: { command: 'echo child' }
+                    }
+                },
+                isSidechain: false
+            } as TracedMessage
+        ]
+
+        const { blocks } = reduceTimeline(messages, makeContext())
+        const parentBlock = blocks.find((block: any) => block.kind === 'tool-call' && block.tool.id === 'cmd-1') as any
+        const agentBlock = blocks.find((block: any) => block.kind === 'tool-call' && block.tool.name === 'CodexAgent') as any
+
+        expect(parentBlock).toBeDefined()
+        expect(parentBlock.tool.input).toEqual({ command: 'echo parent' })
+        expect(agentBlock).toBeDefined()
+        expect(agentBlock.children.some((child: any) => (
+            child.kind === 'tool-call'
+            && child.tool.id === 'codex-agent:agent-1:call:cmd-1'
+            && child.tool.input.command === 'echo child'
+        ))).toBe(true)
     })
 
     it('merges fallback Codex agent card ids into the spawn card for the same agent', () => {
@@ -657,7 +738,7 @@ describe('reduceTimeline', () => {
             activity: 'Waiting for agent',
             activityKind: 'wait_agent'
         })
-        expect(agentBlocks[0].children.some((child: any) => child.kind === 'tool-call' && child.tool.id === 'cmd-1')).toBe(true)
+        expect(agentBlocks[0].children.some((child: any) => child.kind === 'tool-call' && child.tool.id === 'codex-agent:agent-1:call:cmd-1')).toBe(true)
     })
 
     it('does not create an orphan Codex agent card for fallback notFound updates', () => {

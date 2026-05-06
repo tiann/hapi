@@ -134,6 +134,11 @@ function isOrphanAgentRunBlock(block: ToolCallBlock): boolean {
     return true
 }
 
+function prefixAgentTraceId(agentId: string, kind: 'trace' | 'call', id: string): string {
+    const prefix = `codex-agent:${agentId}:`
+    return id.startsWith(prefix) ? id : `${prefix}${kind}:${id}`
+}
+
 function normalizeTraceMessage(
     agentId: string,
     message: unknown,
@@ -142,7 +147,7 @@ function normalizeTraceMessage(
     const data = isObject(message) ? message : null
     if (!data || typeof data.type !== 'string') return []
 
-    const traceId = asString(data.id) ?? `${source.id}:trace`
+    const traceId = prefixAgentTraceId(agentId, 'trace', asString(data.id) ?? `${source.id}:trace`)
     const createdAt = source.createdAt
     const base = {
         localId: null,
@@ -170,13 +175,14 @@ function normalizeTraceMessage(
     }
 
     if (data.type === 'tool-call' && typeof data.callId === 'string') {
+        const callId = prefixAgentTraceId(agentId, 'call', data.callId)
         return [{
             ...base,
             id: traceId,
             role: 'agent',
             content: [{
                 type: 'tool-call',
-                id: data.callId,
+                id: callId,
                 name: asString(data.name) ?? 'unknown',
                 input: data.input,
                 description: null,
@@ -187,13 +193,14 @@ function normalizeTraceMessage(
     }
 
     if (data.type === 'tool-call-result' && typeof data.callId === 'string') {
+        const callId = prefixAgentTraceId(agentId, 'call', data.callId)
         return [{
             ...base,
             id: traceId,
             role: 'agent',
             content: [{
                 type: 'tool-result',
-                tool_use_id: data.callId,
+                tool_use_id: callId,
                 content: data.output,
                 is_error: Boolean(data.is_error),
                 uuid: traceId,

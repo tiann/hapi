@@ -412,6 +412,60 @@ describe('AppServerEventConverter', () => {
         expect(events).toEqual([{ type: 'turn_diff', unified_diff: 'diff --git a b' }]);
     });
 
+    it('preserves scope on diff and token usage updates', () => {
+        const converter = new AppServerEventConverter();
+
+        const diffEvents = converter.handleNotification('turn/diff/updated', {
+            threadId: 'child-thread',
+            turnId: 'child-turn',
+            diff: 'diff --git a b'
+        });
+        expect(diffEvents).toEqual([{
+            type: 'turn_diff',
+            thread_id: 'child-thread',
+            turn_id: 'child-turn',
+            unified_diff: 'diff --git a b'
+        }]);
+
+        const tokenEvents = converter.handleNotification('thread/tokenUsage/updated', {
+            tokenUsage: {
+                thread_id: 'child-thread',
+                turn_id: 'child-turn',
+                last_token_usage: {
+                    input_tokens: 10,
+                    output_tokens: 2
+                }
+            }
+        });
+        expect(tokenEvents).toEqual([{
+            type: 'token_count',
+            thread_id: 'child-thread',
+            turn_id: 'child-turn',
+            info: {
+                thread_id: 'child-thread',
+                turn_id: 'child-turn',
+                last_token_usage: {
+                    input_tokens: 10,
+                    output_tokens: 2
+                }
+            }
+        }]);
+    });
+
+    it('maps compact notifications with scope', () => {
+        const converter = new AppServerEventConverter();
+
+        const direct = converter.handleNotification('thread/compacted', {
+            thread: { id: 'thread-1' }
+        });
+        expect(direct).toEqual([{ type: 'context_compacted', thread_id: 'thread-1' }]);
+
+        const wrapped = converter.handleNotification('codex/event/context_compacted', {
+            msg: { type: 'context_compacted', thread_id: 'thread-2', turn_id: 'turn-2' }
+        });
+        expect(wrapped).toEqual([{ type: 'context_compacted', thread_id: 'thread-2', turn_id: 'turn-2' }]);
+    });
+
     it('unwraps codex/event task lifecycle', () => {
         const converter = new AppServerEventConverter();
 

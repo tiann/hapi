@@ -170,12 +170,28 @@ function extractPlanUpdate(params: Record<string, unknown>): ConvertedEvent[] {
 function extractEventScope(params: Record<string, unknown>): Record<string, unknown> {
     const thread = asRecord(params.thread);
     const turn = asRecord(params.turn);
+    const tokenUsage = asRecord(params.tokenUsage ?? params.token_usage ?? params.info);
+    const tokenUsageThread = asRecord(tokenUsage?.thread);
+    const tokenUsageTurn = asRecord(tokenUsage?.turn);
+    const item = asRecord(params.item);
+    const itemThread = asRecord(item?.thread);
+    const itemTurn = asRecord(item?.turn);
     const threadId = asString(
         params.threadId
         ?? params.thread_id
         ?? thread?.threadId
         ?? thread?.thread_id
         ?? thread?.id
+        ?? tokenUsage?.threadId
+        ?? tokenUsage?.thread_id
+        ?? tokenUsageThread?.threadId
+        ?? tokenUsageThread?.thread_id
+        ?? tokenUsageThread?.id
+        ?? item?.threadId
+        ?? item?.thread_id
+        ?? itemThread?.threadId
+        ?? itemThread?.thread_id
+        ?? itemThread?.id
     );
     const turnId = asString(
         params.turnId
@@ -183,6 +199,16 @@ function extractEventScope(params: Record<string, unknown>): Record<string, unkn
         ?? turn?.turnId
         ?? turn?.turn_id
         ?? turn?.id
+        ?? tokenUsage?.turnId
+        ?? tokenUsage?.turn_id
+        ?? tokenUsageTurn?.turnId
+        ?? tokenUsageTurn?.turn_id
+        ?? tokenUsageTurn?.id
+        ?? item?.turnId
+        ?? item?.turn_id
+        ?? itemTurn?.turnId
+        ?? itemTurn?.turn_id
+        ?? itemTurn?.id
     );
 
     return {
@@ -416,11 +442,15 @@ export class AppServerEventConverter {
                 return [];
             }
             const error = asString(msg.message ?? msg.reason ?? errorRecord?.message);
-            return error ? [{ type: 'task_failed', error }] : [];
+            return error ? addEventScope([{ type: 'task_failed', error }], msgScope) : [];
         }
 
         if (msgType === 'plan_update') {
             return addEventScope(extractPlanUpdate(msg), msgScope);
+        }
+
+        if (msgType === 'context_compacted') {
+            return addEventScope([{ type: 'context_compacted' }], msgScope);
         }
 
         if (
@@ -429,14 +459,13 @@ export class AppServerEventConverter {
             msgType === 'skills_update_available' ||
             msgType === 'stream_error' ||
             msgType === 'warning' ||
-            msgType === 'context_compacted' ||
             msgType === 'terminal_interaction' ||
             msgType === 'user_message'
         ) {
             return [];
         }
 
-        return [msg as ConvertedEvent];
+        return addEventScope([msg as ConvertedEvent], msgScope);
     }
 
     handleNotification(method: string, params: unknown): ConvertedEvent[] {
@@ -456,7 +485,12 @@ export class AppServerEventConverter {
             return addEventScope(extractPlanUpdate(paramsRecord), eventScope);
         }
 
-        if (method === 'account/rateLimits/updated' || method === 'thread/compacted') {
+        if (method === 'account/rateLimits/updated') {
+            return events;
+        }
+
+        if (method === 'thread/compacted') {
+            events.push(scoped({ type: 'context_compacted' }));
             return events;
         }
 
@@ -518,7 +552,7 @@ export class AppServerEventConverter {
         if (method === 'turn/diff/updated') {
             const diff = asString(paramsRecord.diff ?? paramsRecord.unified_diff ?? paramsRecord.unifiedDiff);
             if (diff) {
-                events.push({ type: 'turn_diff', unified_diff: diff });
+                events.push(scoped({ type: 'turn_diff', unified_diff: diff }));
             }
             return events;
         }

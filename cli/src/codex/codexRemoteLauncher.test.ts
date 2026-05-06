@@ -14,6 +14,8 @@ const harness = vi.hoisted(() => ({
     suppressTurnCompletion: false,
     remainingThreadSystemErrors: 0,
     emitChildThreadEvents: false,
+    emitChildUsageEvents: false,
+    emitParentUsageEvents: false,
     emitChildNestedAgentTool: false,
     emitParentTitleChange: false,
     bridgeOptions: [] as unknown[]
@@ -131,6 +133,26 @@ vi.mock('./codexAppServerClient', () => {
                 };
                 harness.notifications.push({ method: 'item/completed', params: commandEnd });
                 this.notificationHandler?.('item/completed', commandEnd);
+
+                if (harness.emitParentUsageEvents) {
+                    const parentUsage = {
+                        tokenUsage: {
+                            thread_id: threadId,
+                            turn_id: turnId,
+                            last_token_usage: {
+                                input_tokens: 100,
+                                output_tokens: 10
+                            },
+                            model_context_window: 200_000
+                        }
+                    };
+                    harness.notifications.push({ method: 'thread/tokenUsage/updated', params: parentUsage });
+                    this.notificationHandler?.('thread/tokenUsage/updated', parentUsage);
+
+                    const parentCompact = { thread: { id: threadId } };
+                    harness.notifications.push({ method: 'thread/compacted', params: parentCompact });
+                    this.notificationHandler?.('thread/compacted', parentCompact);
+                }
             }
 
             if (harness.emitChildThreadEvents) {
@@ -149,6 +171,43 @@ vi.mock('./codexAppServerClient', () => {
                 };
                 harness.notifications.push({ method: 'item/completed', params: childMessageCompleted });
                 this.notificationHandler?.('item/completed', childMessageCompleted);
+
+                if (harness.emitChildUsageEvents) {
+                    const childUsage = {
+                        tokenUsage: {
+                            thread_id: childThreadId,
+                            turn_id: childTurnId,
+                            last_token_usage: {
+                                input_tokens: 30,
+                                output_tokens: 3
+                            },
+                            model_context_window: 200_000
+                        }
+                    };
+                    harness.notifications.push({ method: 'thread/tokenUsage/updated', params: childUsage });
+                    this.notificationHandler?.('thread/tokenUsage/updated', childUsage);
+
+                    const childCompact = {
+                        msg: {
+                            type: 'context_compacted',
+                            thread_id: childThreadId,
+                            turn_id: childTurnId
+                        }
+                    };
+                    harness.notifications.push({ method: 'codex/event/context_compacted', params: childCompact });
+                    this.notificationHandler?.('codex/event/context_compacted', childCompact);
+
+                    const ambiguousUsage = {
+                        tokenUsage: {
+                            last_token_usage: {
+                                input_tokens: 999,
+                                output_tokens: 1
+                            }
+                        }
+                    };
+                    harness.notifications.push({ method: 'thread/tokenUsage/updated', params: ambiguousUsage });
+                    this.notificationHandler?.('thread/tokenUsage/updated', ambiguousUsage);
+                }
 
                 const childCommandStart = {
                     item: {
@@ -446,6 +505,8 @@ describe('codexRemoteLauncher', () => {
         harness.suppressTurnCompletion = false;
         harness.remainingThreadSystemErrors = 0;
         harness.emitChildThreadEvents = false;
+        harness.emitChildUsageEvents = false;
+        harness.emitParentUsageEvents = false;
         harness.emitChildNestedAgentTool = false;
         harness.emitParentTitleChange = false;
         harness.bridgeOptions = [];
@@ -596,6 +657,64 @@ describe('codexRemoteLauncher', () => {
             result: 'child output should stay hidden',
             activity: 'Completed: child output should stay hidden',
             activityKind: 'completed'
+        }));
+    });
+
+    it('keeps child usage and compact events out of the parent context stream', async () => {
+        harness.emitChildThreadEvents = true;
+        harness.emitChildUsageEvents = true;
+        const { session, codexMessages } = createSessionStub();
+
+        await codexRemoteLauncher(session as never);
+
+        expect(codexMessages).not.toContainEqual(expect.objectContaining({
+            type: 'token_count',
+            thread_id: 'child-thread'
+        }));
+        expect(codexMessages).not.toContainEqual(expect.objectContaining({
+            type: 'token_count',
+            info: expect.objectContaining({
+                last_token_usage: expect.objectContaining({
+                    input_tokens: 999
+                })
+            })
+        }));
+        expect(codexMessages).toContainEqual(expect.objectContaining({
+            type: 'agent-run-trace',
+            agentId: 'child-thread',
+            message: expect.objectContaining({
+                type: 'context_compacted'
+            })
+        }));
+        expect(codexMessages).not.toContainEqual(expect.objectContaining({
+            type: 'context_compacted',
+            thread_id: 'child-thread'
+        }));
+    });
+
+    it('marks parent usage and compact events with parent scope', async () => {
+        harness.emitParentUsageEvents = true;
+        const { session, codexMessages } = createSessionStub();
+
+        await codexRemoteLauncher(session as never);
+
+        expect(codexMessages).toContainEqual(expect.objectContaining({
+            type: 'token_count',
+            thread_id: 'thread-1',
+            scope_role: 'parent',
+            scope: expect.objectContaining({
+                role: 'parent',
+                thread_id: 'thread-1'
+            })
+        }));
+        expect(codexMessages).toContainEqual(expect.objectContaining({
+            type: 'context_compacted',
+            thread_id: 'thread-1',
+            scope_role: 'parent',
+            scope: expect.objectContaining({
+                role: 'parent',
+                thread_id: 'thread-1'
+            })
         }));
     });
 
