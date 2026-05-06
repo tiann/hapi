@@ -123,6 +123,12 @@ export const UpdateCancelQueuedMessageBodySchema = z.object({
 
 export type UpdateCancelQueuedMessageBody = z.infer<typeof UpdateCancelQueuedMessageBodySchema>
 
+export const CancelQueuedMessageAckSchema = z.object({
+    removed: z.boolean()
+})
+
+export type CancelQueuedMessageAck = z.infer<typeof CancelQueuedMessageAckSchema>
+
 export const UpdateSchema = z.object({
     id: z.string(),
     seq: z.number(),
@@ -133,7 +139,7 @@ export const UpdateSchema = z.object({
 export type Update = z.infer<typeof UpdateSchema>
 
 export interface ServerToClientEvents {
-    update: (data: Update) => void
+    update: (data: Update, ack?: (response: CancelQueuedMessageAck) => void) => void
     'rpc-request': (data: { method: string; params: string }, callback: (response: string) => void) => void
     'terminal:open': (data: TerminalOpenPayload) => void
     'terminal:write': (data: TerminalWritePayload) => void

@@ -312,10 +312,10 @@ export class SyncEngine {
         this.sessionCache.markMessageQueued(sessionId)
     }
 
-    cancelQueuedMessage(
+    async cancelQueuedMessage(
         sessionId: string,
         messageId: string
-    ): CancelQueuedMessageResult {
+    ): Promise<CancelQueuedMessageResult> {
         return this.messageService.cancelQueuedMessage(sessionId, messageId)
     }
 

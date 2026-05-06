@@ -89,6 +89,7 @@ export async function runCursor(opts: {
     session.onCancelQueuedMessage((localId) => {
         const removed = messageQueue.cancelByLocalId(localId);
         logger.debug(`[cursor] cancelByLocalId(${localId}): ${removed ? 'removed' : 'not found (best-effort)'}`);
+        return removed;
     });
 
     const resolvePermissionMode = (value: unknown): PermissionMode => {

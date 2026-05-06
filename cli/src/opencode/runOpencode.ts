@@ -111,6 +111,7 @@ export async function runOpencode(opts: {
     session.onCancelQueuedMessage((localId) => {
         const removed = messageQueue.cancelByLocalId(localId);
         logger.debug(`[opencode] cancelByLocalId(${localId}): ${removed ? 'removed' : 'not found (best-effort)'}`);
+        return removed;
     });
 
     const resolvePermissionMode = (value: unknown): PermissionMode => {

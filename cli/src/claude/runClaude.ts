@@ -300,6 +300,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
     session.onCancelQueuedMessage((localId) => {
         const removed = messageQueue.cancelByLocalId(localId);
         logger.debug(`[claude] cancelByLocalId(${localId}): ${removed ? 'removed' : 'not found (best-effort)'}`);
+        return removed;
     });
 
     const resolvePermissionMode = (value: unknown): PermissionMode => {

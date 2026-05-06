@@ -131,6 +131,7 @@ export async function runGemini(opts: {
     session.onCancelQueuedMessage((localId) => {
         const removed = messageQueue.cancelByLocalId(localId);
         logger.debug(`[gemini] cancelByLocalId(${localId}): ${removed ? 'removed' : 'not found (best-effort)'}`);
+        return removed;
     });
 
     const resolvePermissionMode = (value: unknown): PermissionMode => {

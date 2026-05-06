@@ -136,40 +136,113 @@ export class MessageService {
         }))
     }
 
-    cancelQueuedMessage(
+    async cancelQueuedMessage(
         sessionId: string,
         messageId: string
-    ): CancelQueuedMessageResult {
-        const result = this.store.messages.cancelQueuedMessage(sessionId, messageId)
+    ): Promise<CancelQueuedMessageResult> {
+        // Phase 1: look up the row WITHOUT deleting it.
+        // This lets us ask the CLI first and only DELETE if the CLI confirms removal.
+        const lookup = this.store.messages.lookupQueuedMessage(sessionId, messageId)
 
-        if (result.status === 'invoked') {
-            // CLI already consumed this message — skip CLI notification and SSE.
-            // Return the full invoked row so the web client can restore authoritative
-            // state (with correct invokedAt) instead of a stale queued snapshot.
-            return result
+        if (lookup.status === 'absent') {
+            // Row not found — already cancelled or wrong id.
+            return { status: 'cancelled', localId: null }
         }
 
-        // status === 'cancelled': notify CLI to drop the entry from its in-memory queue,
-        // then broadcast SSE so all connected web clients remove the row.
-        this.io.of('/cli').to(`session:${sessionId}`).emit('update', {
-            id: randomUUID(),
-            seq: 0,
-            createdAt: Date.now(),
-            body: {
-                t: 'cancel-queued-message' as const,
-                sid: sessionId,
-                messageId,
-                ...(result.localId ? { localId: result.localId } : {})
-            }
-        })
+        if (lookup.status === 'invoked') {
+            // DB row already has invoked_at — CLI consumed it before we arrived.
+            // Return the full invoked row so the web client can restore authoritative
+            // state (with correct invokedAt) instead of a stale queued snapshot.
+            return lookup
+        }
 
+        // Phase 2: row is still queued.  Ask the CLI whether it already shifted the item
+        // (race window between collectBatch() shift and messages-consumed ack).
+        const { localId, resolvedId } = lookup
+
+        if (!localId) {
+            // No localId — row exists but has no cancel path; treat as cancelled.
+            this.store.messages.deleteQueuedMessageById(sessionId, resolvedId)
+            this.publisher.emit({ type: 'message-cancelled', sessionId, messageId })
+            return { status: 'cancelled', localId: null }
+        }
+
+        const ackResult = await this.requestCliCancelAck(sessionId, localId, messageId, 500)
+
+        if (ackResult === 'not-found' || ackResult === 'timeout') {
+            // CLI could not remove the item — it was already shift()-ed or CLI is
+            // offline.  Stamp invoked_at immediately so the message lands in the thread
+            // as 'sent' instead of disappearing.  The agent's later assistant message
+            // (if it produced one) joins the same thread normally.
+            // This shares the "best-effort" regime documented for the offline reconnect
+            // case in the PR follow-up section.
+            const invokedAt = Date.now()
+            this.store.messages.markMessagesInvoked(sessionId, [localId], invokedAt)
+            // Re-fetch the single row via lookupQueuedMessage to avoid the 200-row
+            // pagination cap of getMessages.  After markMessagesInvoked the row will
+            // have invoked_at set, so lookupQueuedMessage returns status='invoked'.
+            const recheck = this.store.messages.lookupQueuedMessage(sessionId, localId)
+            if (recheck.status === 'invoked') {
+                return recheck
+            }
+            // Row absent from DB after markMessagesInvoked — edge case, treat as cancelled
+            return { status: 'cancelled', localId }
+        }
+
+        // Phase 3: CLI confirmed removal.  Now DELETE the DB row and broadcast SSE.
+        this.store.messages.deleteQueuedMessageById(sessionId, resolvedId)
         this.publisher.emit({
             type: 'message-cancelled',
             sessionId,
             messageId
         })
 
-        return { status: 'cancelled', localId: result.localId }
+        return { status: 'cancelled', localId }
+    }
+
+    /**
+     * Ask the CLI (via socket.io ack) whether it removed the in-memory queue item.
+     * Returns 'removed', 'not-found', or 'timeout'.
+     *
+     * Re-uses the existing 'update' event channel with a cancel-queued-message body,
+     * matching the ack pattern already used by rpcGateway
+     * (socket.timeout(ms).emitWithAck / BroadcastOperator.timeout(ms).emit + ack cb).
+     */
+    private requestCliCancelAck(
+        sessionId: string,
+        localId: string,
+        messageId: string,
+        timeoutMs: number
+    ): Promise<'removed' | 'not-found' | 'timeout'> {
+        return new Promise((resolve) => {
+            const room = this.io.of('/cli').to(`session:${sessionId}`)
+            // socket.io v4 BroadcastOperator: .timeout(ms).emit(event, data, ackCb)
+            // ack signature: (err: Error | null, responses: T[])
+            room.timeout(timeoutMs).emit(
+                'update',
+                {
+                    id: randomUUID(),
+                    seq: 0,
+                    createdAt: Date.now(),
+                    body: {
+                        t: 'cancel-queued-message' as const,
+                        sid: sessionId,
+                        messageId,
+                        localId
+                    }
+                },
+                (err: Error | null, responses: Array<{ removed: boolean }>) => {
+                    if (err) {
+                        resolve('timeout')
+                        return
+                    }
+                    // Use .some() in case multiple CLI sockets are in the room
+                    // (e.g. reconnect overlap); any ack confirming removal is enough.
+                    const removed = responses?.some(r => r.removed === true) ?? false
+                    resolve(removed ? 'removed' : 'not-found')
+                }
+            )
+        })
     }
 
     async sendMessage(

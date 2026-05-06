@@ -59,6 +59,7 @@ export async function runAgentSession(opts: {
     session.onCancelQueuedMessage((localId) => {
         const removed = messageQueue.cancelByLocalId(localId);
         logger.debug(`[agent] cancelByLocalId(${localId}): ${removed ? 'removed' : 'not found (best-effort)'}`);
+        return removed;
     });
 
     let currentPermissionMode: SessionPermissionMode = opts.permissionMode ?? sessionInfo.permissionMode ?? 'default';

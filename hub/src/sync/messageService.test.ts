@@ -1,0 +1,193 @@
+/**
+ * MessageService.cancelQueuedMessage race scenario tests
+ *
+ * Race-A: CLI ack returns { removed: true }  → DB DELETE + status='cancelled'
+ * Race-B: CLI ack returns { removed: false } (already shift()-ed) → markMessagesInvoked + status='invoked'
+ * Race-C: CLI ack times out (500 ms)         → markMessagesInvoked + status='invoked'
+ */
+import { describe, expect, it, mock, beforeEach } from 'bun:test'
+import { MessageService } from './messageService'
+import { Store } from '../store'
+import type { Server, Socket } from 'socket.io'
+import type { SyncEvent } from '@hapi/protocol/types'
+
+// ---------------------------------------------------------------------------
+// Test helpers
+// ---------------------------------------------------------------------------
+
+function makeStore(): Store {
+    return new Store(':memory:')
+}
+
+function makeSession(store: Store, tag: string) {
+    return store.sessions.getOrCreateSession(tag, { path: `/tmp/${tag}` }, null, 'default')
+}
+
+type AckCallback = (err: Error | null, responses: Array<{ removed: boolean }>) => void
+
+function makeIo(onEmit: (ack: AckCallback) => void): Server {
+    const broadcastRoom = {
+        timeout: (_ms: number) => ({
+            emit: (_event: string, _data: unknown, callback: AckCallback) => {
+                onEmit(callback)
+            }
+        }),
+        emit: () => {}
+    }
+
+    return {
+        of: (_ns: string) => ({
+            to: (_room: string) => broadcastRoom
+        })
+    } as unknown as Server
+}
+
+function makePublisher() {
+    const events: SyncEvent[] = []
+    return {
+        emit: (event: SyncEvent) => { events.push(event) },
+        events
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+describe('MessageService.cancelQueuedMessage race scenarios', () => {
+    describe('Race-A: CLI ack removed:true → DELETE + status=cancelled', () => {
+        it('returns cancelled and emits message-cancelled SSE after CLI confirms removal', async () => {
+            const store = makeStore()
+            const session = makeSession(store, 'race-a')
+            const msg = store.messages.addMessage(
+                session.id,
+                { role: 'user', content: { type: 'text', text: 'hello' } },
+                'local-a'
+            )
+
+            const publisher = makePublisher()
+            const io = makeIo((callback) => {
+                // CLI confirms it removed the item
+                callback(null, [{ removed: true }])
+            })
+
+            const service = new MessageService(store, io, publisher as any)
+            const result = await service.cancelQueuedMessage(session.id, msg.id)
+
+            expect(result.status).toBe('cancelled')
+
+            // Row must be gone from the DB
+            const remaining = store.messages.getUninvokedLocalMessages(session.id)
+            expect(remaining).toHaveLength(0)
+
+            // SSE must have been broadcast
+            const cancelled = publisher.events.find(e => e.type === 'message-cancelled')
+            expect(cancelled).toBeDefined()
+        })
+    })
+
+    describe('Race-B: CLI ack removed:false (already shift()-ed) → markMessagesInvoked + status=invoked', () => {
+        it('returns invoked with message row when CLI says item was already consumed', async () => {
+            const store = makeStore()
+            const session = makeSession(store, 'race-b')
+            const msg = store.messages.addMessage(
+                session.id,
+                { role: 'user', content: { type: 'text', text: 'hello' } },
+                'local-b'
+            )
+
+            const publisher = makePublisher()
+            const io = makeIo((callback) => {
+                // CLI already shifted the item before the cancel arrived
+                callback(null, [{ removed: false }])
+            })
+
+            const service = new MessageService(store, io, publisher as any)
+            const result = await service.cancelQueuedMessage(session.id, msg.id)
+
+            expect(result.status).toBe('invoked')
+            if (result.status === 'invoked') {
+                expect(result.message.id).toBe(msg.id)
+                expect(result.message.localId).toBe('local-b')
+                expect(result.message.invokedAt).not.toBeNull()
+            }
+
+            // Row must still exist but now have invoked_at set
+            const rows = store.messages.getMessages(session.id)
+            const row = rows.find(r => r.id === msg.id)
+            expect(row).toBeDefined()
+            expect(row!.invokedAt).not.toBeNull()
+
+            // No message-cancelled SSE should have been emitted
+            const cancelled = publisher.events.find(e => e.type === 'message-cancelled')
+            expect(cancelled).toBeUndefined()
+        })
+    })
+
+    describe('Race-C: CLI ack timeout → markMessagesInvoked + status=invoked', () => {
+        it('returns invoked with message row when CLI does not respond within timeout', async () => {
+            const store = makeStore()
+            const session = makeSession(store, 'race-c')
+            const msg = store.messages.addMessage(
+                session.id,
+                { role: 'user', content: { type: 'text', text: 'hello' } },
+                'local-c'
+            )
+
+            const publisher = makePublisher()
+            const io = makeIo((callback) => {
+                // Simulate timeout: socket.io passes an error as first arg
+                callback(new Error('operation has timed out'), [])
+            })
+
+            const service = new MessageService(store, io, publisher as any)
+            const result = await service.cancelQueuedMessage(session.id, msg.id)
+
+            expect(result.status).toBe('invoked')
+            if (result.status === 'invoked') {
+                expect(result.message.id).toBe(msg.id)
+                expect(result.message.invokedAt).not.toBeNull()
+            }
+
+            // Row must still exist with invoked_at stamped
+            const rows = store.messages.getMessages(session.id)
+            const row = rows.find(r => r.id === msg.id)
+            expect(row!.invokedAt).not.toBeNull()
+
+            // No message-cancelled SSE
+            const cancelled = publisher.events.find(e => e.type === 'message-cancelled')
+            expect(cancelled).toBeUndefined()
+        })
+    })
+
+    describe('existing store-level invoked guard (DB first-write-wins) still respected', () => {
+        it('returns invoked without contacting CLI when DB row already has invoked_at', async () => {
+            const store = makeStore()
+            const session = makeSession(store, 'race-d-already-invoked')
+            const msg = store.messages.addMessage(
+                session.id,
+                { role: 'user', content: { type: 'text', text: 'hello' } },
+                'local-d'
+            )
+
+            // DB row was already marked invoked (e.g. by a concurrent messages-consumed)
+            const invokedAt = Date.now()
+            store.messages.markMessagesInvoked(session.id, ['local-d'], invokedAt)
+
+            let cliContacted = false
+            const io = makeIo(() => { cliContacted = true })
+            const publisher = makePublisher()
+
+            const service = new MessageService(store, io, publisher as any)
+            const result = await service.cancelQueuedMessage(session.id, msg.id)
+
+            expect(result.status).toBe('invoked')
+            // CLI must NOT have been contacted — DB guard should short-circuit before ack
+            expect(cliContacted).toBe(false)
+
+            if (result.status === 'invoked') {
+                expect(result.message.invokedAt).toBe(invokedAt)
+            }
+        })
+    })
+})

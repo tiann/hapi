@@ -64,7 +64,7 @@ export function createMessagesRoutes(getSyncEngine: () => SyncEngine | null): Ho
         const sessionId = sessionResult.sessionId
         const messageId = c.req.param('messageId')
 
-        const result = engine.cancelQueuedMessage(sessionId, messageId)
+        const result = await engine.cancelQueuedMessage(sessionId, messageId)
         return c.json(result)
     })
 
