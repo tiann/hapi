@@ -95,6 +95,31 @@ function makeTaskBlock(
     }
 }
 
+function makeAgentBlock(
+    children: ToolCallBlock[],
+    state: ToolCallBlock['tool']['state'] = 'completed',
+    result: unknown = null,
+): ToolCallBlock {
+    return {
+        kind: 'tool-call',
+        id: 'agent-1',
+        localId: null,
+        createdAt: 1000,
+        tool: {
+            id: 'agent-1',
+            name: 'Agent',
+            state,
+            input: { prompt: 'do stuff', subagent_type: 'general-purpose' },
+            createdAt: 1000,
+            startedAt: 1000,
+            completedAt: 2000,
+            description: null,
+            result,
+        },
+        children,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // getTaskTraceChildren
 // ---------------------------------------------------------------------------
@@ -137,6 +162,22 @@ describe('getTaskTraceChildren', () => {
                 name: 'Bash',
             },
         }
+        expect(getTaskTraceChildren(block)).toBeNull()
+    })
+
+    // Agent tool name (new SDK name for subagent invocations)
+    it('returns children for Agent blocks (same as Task)', () => {
+        const block = makeAgentBlock([
+            makeChild('c1', 'Glob'),
+            makeChild('c2', 'Grep'),
+        ])
+        const result = getTaskTraceChildren(block)
+        expect(result).not.toBeNull()
+        expect(result!.length).toBe(2)
+    })
+
+    it('returns null for Agent block with no tool-call children', () => {
+        const block = makeAgentBlock([])
         expect(getTaskTraceChildren(block)).toBeNull()
     })
 })
@@ -266,5 +307,30 @@ describe('TraceSection', () => {
         expect(screen.getByText('Input')).toBeInTheDocument()
         // Result section label must also be present
         expect(screen.getByText('Result')).toBeInTheDocument()
+    })
+
+    // Agent tool name — same Trace UX as Task
+    it('renders Trace header for Agent blocks', () => {
+        const block = makeAgentBlock([makeChild('c1', 'Glob'), makeChild('c2', 'Grep')])
+        const { container } = render(<TraceSection block={block} metadata={null} />)
+        // TraceSection must mount (non-null) for Agent blocks
+        expect(container.firstChild).not.toBeNull()
+        // header button with aria-expanded attribute must exist
+        const btn = container.querySelector('button[aria-expanded]')
+        expect(btn).not.toBeNull()
+    })
+
+    it('renders nothing for Agent block with no children', () => {
+        const block = makeAgentBlock([])
+        const { container } = render(<TraceSection block={block} metadata={null} />)
+        expect(container.firstChild).toBeNull()
+    })
+
+    it('expands Agent trace by default when running', () => {
+        const block = makeAgentBlock([makeChild('c1', 'Read')], 'running')
+        const { container } = render(<TraceSection block={block} metadata={null} />)
+        const headerBtn = container.querySelector('button[aria-expanded="true"]')
+        expect(headerBtn).not.toBeNull()
+        expect(container.querySelector('.border-l')).not.toBeNull()
     })
 })

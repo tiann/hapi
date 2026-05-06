@@ -294,13 +294,16 @@ export const knownTools: Record<string, {
         icon: () => <RocketIcon className={DEFAULT_ICON_CLASS} />,
         title: (opts) => {
             const description = getInputStringAny(opts.input, ['description'])
-            return description ?? 'Agent'
+            return description ?? 'Launch Agent'
         },
         subtitle: (opts) => {
+            // Subagent invocation: show prompt preview (same as Task)
+            const prompt = getInputStringAny(opts.input, ['prompt'])
+            if (prompt) return truncate(prompt, 120)
             const model = getInputStringAny(opts.input, ['subagent_type'])
             return model ?? null
         },
-        minimal: true
+        minimal: (opts) => opts.childrenCount === 0
     },
     CodexReasoning: {
         icon: () => <BulbIcon className={DEFAULT_ICON_CLASS} />,

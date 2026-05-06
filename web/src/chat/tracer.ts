@@ -1,5 +1,6 @@
 import type { NormalizedMessage } from '@/chat/types'
 import { isObject } from '@hapi/protocol'
+import { isSubagentToolName } from '@/chat/subagentTool'
 
 export type TracedMessage = NormalizedMessage & {
     sidechainId?: string
@@ -58,11 +59,11 @@ export function traceMessages(messages: NormalizedMessage[]): TracedMessage[] {
 
     const results: TracedMessage[] = []
 
-    // Index Task prompts (including those inside sidechains).
+    // Index Task/Agent prompts (including those inside sidechains).
     for (const message of messages) {
         if (message.role !== 'agent') continue
         for (const content of message.content) {
-            if (content.type !== 'tool-call' || content.name !== 'Task') continue
+            if (content.type !== 'tool-call' || !isSubagentToolName(content.name)) continue
             const input = content.input
             if (!isObject(input) || typeof input.prompt !== 'string') continue
             state.promptToTaskId.set(input.prompt, message.id)

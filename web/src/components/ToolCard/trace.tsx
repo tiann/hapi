@@ -1,5 +1,5 @@
 /**
- * TraceSection — shows child tool calls inside a Task tool dialog.
+ * TraceSection — shows child tool calls inside a Task/Agent tool dialog.
  * Placed between Input and Result sections.
  */
 import { useState } from 'react'
@@ -11,6 +11,7 @@ import { getToolResultViewComponent } from '@/components/ToolCard/views/_results
 import { formatTaskChildLabel, TaskStateIcon } from '@/components/ToolCard/helpers'
 import { CodeBlock } from '@/components/CodeBlock'
 import { useTranslation } from '@/lib/use-translation'
+import { isSubagentToolName } from '@/chat/subagentTool'
 
 // ---------------------------------------------------------------------------
 // Result type narrowing (trace.tsx-internal; do NOT move to shared protocol)
@@ -46,10 +47,10 @@ type _TaskToolResultSummary = TaskToolResultSummary
 // ---------------------------------------------------------------------------
 
 /**
- * Returns tool-call children of the given Task block, or null if none exist.
+ * Returns tool-call children of the given Task/Agent block, or null if none exist.
  */
 export function getTaskTraceChildren(block: ToolCallBlock): ToolCallBlock[] | null {
-    if (block.tool.name !== 'Task') return null
+    if (!isSubagentToolName(block.tool.name)) return null
     const children = block.children.filter(
         (c): c is ToolCallBlock => c.kind === 'tool-call',
     )

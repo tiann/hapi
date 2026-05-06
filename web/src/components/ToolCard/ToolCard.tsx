@@ -22,6 +22,7 @@ import { getInputString, getInputStringAny, truncate } from '@/lib/toolInputUtil
 import { cn } from '@/lib/utils'
 import { useTranslation } from '@/lib/use-translation'
 import { TraceSection } from '@/components/ToolCard/trace'
+import { isSubagentToolName } from '@/chat/subagentTool'
 
 const ELAPSED_INTERVAL_MS = 1000
 
@@ -47,7 +48,7 @@ function ElapsedView(props: { from: number; active: boolean }) {
 }
 
 function getTaskSummaryChildren(block: ToolCallBlock): { visible: ToolCallBlock[]; remaining: number } | null {
-    if (block.tool.name !== 'Task') return null
+    if (!isSubagentToolName(block.tool.name)) return null
 
     const children = block.children
         .filter((child): child is ToolCallBlock => child.kind === 'tool-call')
@@ -126,7 +127,7 @@ function renderToolInput(block: ToolCallBlock, surface: 'inline' | 'dialog' = 'i
     const toolName = block.tool.name
     const input = block.tool.input
 
-    if (toolName === 'Task' && isObject(input) && typeof input.prompt === 'string') {
+    if (isSubagentToolName(toolName) && isObject(input) && typeof input.prompt === 'string') {
         return <MarkdownRenderer content={input.prompt} />
     }
 
@@ -287,7 +288,7 @@ function ToolCardInner(props: ToolCardProps) {
     const subtitle = presentation.subtitle ?? props.block.tool.description
     const taskSummary = renderTaskSummary(props.block, props.metadata, t)
     const runningFrom = props.block.tool.startedAt ?? props.block.tool.createdAt
-    const showInline = !presentation.minimal && toolName !== 'Task'
+    const showInline = !presentation.minimal && !isSubagentToolName(toolName)
     const CompactToolView = showInline ? getToolViewComponent(toolName) : null
     const FullToolView = getToolFullViewComponent(toolName)
     const ResultToolView = getToolResultViewComponent(toolName)

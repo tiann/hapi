@@ -324,6 +324,88 @@ describe('reduceTimeline', () => {
         expect(toolBlock.invokedAt).toBe(1_700_000_000_500)
     })
 
+    it('populates block.children for Agent tool (same as Task)', () => {
+        // Agent tool_use message with a sidechain group
+        const agentToolMsg: TracedMessage = {
+            id: 'msg-agent',
+            localId: null,
+            createdAt: 1_700_000_000_000,
+            role: 'agent',
+            content: [{
+                type: 'tool-call',
+                id: 'tc-agent-1',
+                name: 'Agent',
+                input: { prompt: 'explore stuff', subagent_type: 'general-purpose' },
+                description: null,
+                uuid: 'u-agent',
+                parentUUID: null
+            }],
+            isSidechain: false
+        } as TracedMessage
+
+        // Sidechain child message that would be in the group for msg-agent
+        const sidechainChild: TracedMessage = {
+            id: 'sc-msg-1',
+            localId: null,
+            createdAt: 1_700_000_001_000,
+            role: 'agent',
+            content: [{
+                type: 'tool-call',
+                id: 'tc-glob-1',
+                name: 'Glob',
+                input: { pattern: '**/*.ts' },
+                description: null,
+                uuid: 'u-sc-1',
+                parentUUID: null
+            }],
+            isSidechain: true,
+            sidechainId: 'msg-agent'
+        } as TracedMessage
+
+        // Build groups map the way the real pipeline does it
+        const groups = new Map<string, TracedMessage[]>()
+        groups.set('msg-agent', [sidechainChild])
+
+        const ctx = { ...makeContext(), groups }
+        const { blocks } = reduceTimeline([agentToolMsg], ctx)
+
+        const agentBlock = blocks.find(b => b.kind === 'tool-call') as any
+        expect(agentBlock).toBeDefined()
+        // block.children must be populated for Agent (was broken before fix)
+        expect(agentBlock.children.length).toBeGreaterThan(0)
+    })
+
+    it('suppresses prompt-text duplicate for Agent tool (same as Task)', () => {
+        // When an agent message contains an Agent tool_use, Claude often writes
+        // the prompt as a text block before the tool_use. The reducer must skip
+        // that duplicate text just like it does for Task.
+        const prompt = 'explore the repository structure'
+        const agentMsg: TracedMessage = {
+            id: 'msg-agent-dup',
+            localId: null,
+            createdAt: 1_700_000_000_000,
+            role: 'agent',
+            content: [
+                { type: 'text', text: prompt, uuid: 'u-text', parentUUID: null },
+                {
+                    type: 'tool-call',
+                    id: 'tc-agent-2',
+                    name: 'Agent',
+                    input: { prompt, subagent_type: 'Explore' },
+                    description: null,
+                    uuid: 'u-agent',
+                    parentUUID: null
+                }
+            ],
+            isSidechain: false
+        } as TracedMessage
+
+        const { blocks } = reduceTimeline([agentMsg], makeContext())
+        // text block with same content as Agent.input.prompt must be suppressed
+        const textBlocks = blocks.filter(b => b.kind === 'agent-text')
+        expect(textBlocks).toHaveLength(0)
+    })
+
     it('keeps toolBlocksById reference identity when applying turn-duration to a tool-call', () => {
         const toolCallMsg: TracedMessage = {
             id: 'msg-tool',

@@ -2,6 +2,7 @@ import type { ToolCallMessagePartProps } from '@assistant-ui/react'
 import type { ChatBlock } from '@/chat/types'
 import type { ToolCallBlock } from '@/chat/types'
 import { isObject, safeStringify } from '@hapi/protocol'
+import { isSubagentToolName } from '@/chat/subagentTool'
 import { getEventPresentation } from '@/chat/presentation'
 import { CodeBlock } from '@/components/CodeBlock'
 import { MarkdownRenderer } from '@/components/MarkdownRenderer'
@@ -109,7 +110,7 @@ function HappyNestedBlockList(props: {
                 }
 
                 if (block.kind === 'tool-call') {
-                    const isTask = block.tool.name === 'Task'
+                    const isTask = isSubagentToolName(block.tool.name)
                     const taskChildren = isTask ? splitTaskChildren(block) : null
 
                     return (
@@ -199,7 +200,7 @@ export function HappyToolMessage(props: ToolCallMessagePartProps) {
     }
 
     const block = artifact
-    const isTask = block.tool.name === 'Task'
+    const isTask = isSubagentToolName(block.tool.name)
     const taskChildren = isTask ? splitTaskChildren(block) : null
 
     return (
