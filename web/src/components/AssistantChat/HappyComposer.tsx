@@ -254,9 +254,6 @@ export function HappyComposer(props: {
     const handleSuggestionSelect = useCallback((index: number) => {
         const suggestion = suggestions[index]
         if (!suggestion || !textareaRef.current) return
-        if (suggestion.text.startsWith('$')) {
-            markSkillUsed(suggestion.text.slice(1))
-        }
 
         const result = applySuggestion(
             inputState.text,
@@ -309,9 +306,7 @@ export function HappyComposer(props: {
 
     const handleSkillSelect = useCallback((suggestion: SkillSearchResult) => {
         if (!skillPickerAnchor) return
-        if (suggestion.text.startsWith('$')) {
-            markSkillUsed(suggestion.text.slice(1))
-        }
+        markSkillUsed(suggestion)
 
         const result = applySuggestion(
             skillPickerAnchor.text,
@@ -331,6 +326,23 @@ export function HappyComposer(props: {
         restoreTextareaFocus(result.cursorPosition)
         haptic('light')
     }, [api, haptic, restoreTextareaFocus, skillPickerAnchor])
+
+    const handleSkillPickerShortcut = useCallback(() => {
+        if (controlsDisabled || agentFlavor !== 'codex') return
+        clearSuggestions()
+        const el = textareaRef.current
+        const selection = el
+            ? { start: el.selectionStart, end: el.selectionEnd }
+            : inputState.selection
+        setDismissedSkillSignature(null)
+        setSkillPickerAnchor({
+            text: inputState.text,
+            selection,
+            query: '',
+            signature: `shortcut:${selection.start}:${selection.end}:${Date.now()}`,
+        })
+        haptic('light')
+    }, [agentFlavor, clearSuggestions, controlsDisabled, haptic, inputState.selection, inputState.text])
 
     const abortDisabled = controlsDisabled || isAborting || !threadIsRunning
     const switchDisabled = controlsDisabled || isSwitching || !controlledByUser
@@ -915,6 +927,9 @@ export function HappyComposer(props: {
                             voiceMicMuted={voiceMicMuted}
                             onVoiceToggle={onVoiceToggle ?? (() => {})}
                             onVoiceMicToggle={onVoiceMicToggle}
+                            showSkillPickerButton={agentFlavor === 'codex'}
+                            skillPickerDisabled={controlsDisabled}
+                            onSkillPickerOpen={handleSkillPickerShortcut}
                             onSend={handleSend}
                         />
                     </div>

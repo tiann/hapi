@@ -143,6 +143,14 @@ function AttachmentIcon() {
     )
 }
 
+function DollarIcon() {
+    return (
+        <span aria-hidden="true" className="text-base font-semibold leading-none">
+            $
+        </span>
+    )
+}
+
 function AbortIcon(props: { spinning: boolean }) {
     if (props.spinning) {
         return (
@@ -318,6 +326,9 @@ export function ComposerButtons(props: {
     voiceMicMuted?: boolean
     onVoiceToggle: () => void
     onVoiceMicToggle?: () => void
+    showSkillPickerButton?: boolean
+    skillPickerDisabled?: boolean
+    onSkillPickerOpen?: () => void
     onSend: () => void
 }) {
     const { t } = useTranslation()
@@ -334,6 +345,19 @@ export function ComposerButtons(props: {
                 >
                     <AttachmentIcon />
                 </ComposerPrimitive.AddAttachment>
+
+                {props.showSkillPickerButton ? (
+                    <button
+                        type="button"
+                        aria-label="Skills"
+                        title="Skills"
+                        disabled={props.skillPickerDisabled ?? props.controlsDisabled}
+                        className="flex h-8 w-8 items-center justify-center rounded-full text-[var(--app-fg)]/60 transition-colors hover:bg-[var(--app-bg)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-50 sm:hidden"
+                        onClick={props.onSkillPickerOpen}
+                    >
+                        <DollarIcon />
+                    </button>
+                ) : null}
 
                 {props.showSettingsButton ? (
                     <button

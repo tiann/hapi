@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import type { SkillSummary } from '@/types/api'
-import { searchSkills, type SkillSearchResult } from '@/lib/skill-search'
+import { searchSkills, skillToSearchResult, type SkillSearchResult } from '@/lib/skill-search'
+import { getRecentSkills, recentEntryToSkill, type RecentSkillEntry } from '@/lib/recent-skills'
 import {
     Dialog,
     DialogContent,
@@ -15,6 +16,12 @@ type SkillPickerDialogProps = {
     refreshSkills?: () => Promise<SkillSummary[]>
     onSelect: (suggestion: SkillSearchResult) => void
     onClose: () => void
+}
+
+type SkillPickerTab = 'recent' | 'all'
+
+function initialTab(query: string): SkillPickerTab {
+    return query.trim() ? 'all' : 'recent'
 }
 
 function scopeLabel(suggestion: SkillSearchResult): string {
@@ -34,6 +41,8 @@ export function SkillPickerDialog(props: SkillPickerDialogProps) {
     const { open, initialQuery, skills, refreshSkills, onSelect, onClose } = props
     const [query, setQuery] = useState(initialQuery)
     const [loadedSkills, setLoadedSkills] = useState<readonly SkillSummary[]>(skills)
+    const [recentSkills, setRecentSkills] = useState<readonly RecentSkillEntry[]>([])
+    const [activeTab, setActiveTab] = useState<SkillPickerTab>(() => initialTab(initialQuery))
     const [selectedIndex, setSelectedIndex] = useState(0)
     const inputRef = useRef<HTMLInputElement>(null)
     const listRef = useRef<HTMLDivElement>(null)
@@ -42,6 +51,8 @@ export function SkillPickerDialog(props: SkillPickerDialogProps) {
         if (!open) return
         setQuery(initialQuery)
         setLoadedSkills(skills)
+        setRecentSkills(getRecentSkills())
+        setActiveTab(initialTab(initialQuery))
         setSelectedIndex(0)
     }, [open, initialQuery, skills])
 
@@ -63,10 +74,33 @@ export function SkillPickerDialog(props: SkillPickerDialogProps) {
         }
     }, [open, refreshSkills])
 
-    const suggestions = useMemo(
+    const allSuggestions = useMemo(
         () => searchSkills(loadedSkills, `$${query}`),
         [loadedSkills, query]
     )
+    const currentSkillResultsByKey = useMemo(() => {
+        const entries = loadedSkills.map((skill) => {
+            const result = skillToSearchResult(skill)
+            return [result.key, result] as const
+        })
+        return new Map(entries)
+    }, [loadedSkills])
+    const recentSuggestions = useMemo(
+        () => recentSkills.map((entry) => (
+            currentSkillResultsByKey.get(entry.key) ?? skillToSearchResult(recentEntryToSkill(entry))
+        )),
+        [currentSkillResultsByKey, recentSkills]
+    )
+    const queryHasText = query.trim().length > 0
+    const suggestions = activeTab === 'recent' && !queryHasText
+        ? recentSuggestions
+        : allSuggestions
+
+    useEffect(() => {
+        if (queryHasText) {
+            setActiveTab('all')
+        }
+    }, [queryHasText])
 
     useEffect(() => {
         setSelectedIndex((current) => {
@@ -177,12 +211,49 @@ export function SkillPickerDialog(props: SkillPickerDialogProps) {
                         placeholder="Search skills"
                         className="mt-3 h-10 w-full rounded-md border border-[var(--app-divider)] bg-[var(--app-bg)] px-3 text-base text-[var(--app-fg)] outline-none focus:border-[var(--app-link)]"
                     />
+                    <div className="mt-3 grid grid-cols-2 border-b border-[var(--app-divider)]" role="tablist" aria-label="Skill views">
+                        <button
+                            type="button"
+                            role="tab"
+                            aria-selected={activeTab === 'recent' && !queryHasText}
+                            className={`relative py-2 text-center text-sm font-semibold transition-colors hover:bg-[var(--app-secondary-bg)] ${
+                                activeTab === 'recent' && !queryHasText ? 'text-[var(--app-fg)]' : 'text-[var(--app-hint)]'
+                            }`}
+                            onClick={() => {
+                                setQuery('')
+                                setActiveTab('recent')
+                            }}
+                        >
+                            Recent
+                            <span
+                                className={`absolute bottom-0 left-1/2 h-0.5 w-10 -translate-x-1/2 rounded-full ${
+                                    activeTab === 'recent' && !queryHasText ? 'bg-[var(--app-link)]' : 'bg-transparent'
+                                }`}
+                            />
+                        </button>
+                        <button
+                            type="button"
+                            role="tab"
+                            aria-selected={activeTab === 'all' || queryHasText}
+                            className={`relative py-2 text-center text-sm font-semibold transition-colors hover:bg-[var(--app-secondary-bg)] ${
+                                activeTab === 'all' || queryHasText ? 'text-[var(--app-fg)]' : 'text-[var(--app-hint)]'
+                            }`}
+                            onClick={() => setActiveTab('all')}
+                        >
+                            All
+                            <span
+                                className={`absolute bottom-0 left-1/2 h-0.5 w-10 -translate-x-1/2 rounded-full ${
+                                    activeTab === 'all' || queryHasText ? 'bg-[var(--app-link)]' : 'bg-transparent'
+                                }`}
+                            />
+                        </button>
+                    </div>
                 </DialogHeader>
 
                 <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto py-2">
                     {suggestions.length === 0 ? (
                         <div className="px-4 py-10 text-center text-sm text-[var(--app-hint)]">
-                            No matching skills
+                            {activeTab === 'recent' && !queryHasText ? 'No recent skills' : 'No matching skills'}
                         </div>
                     ) : suggestions.map((suggestion, index) => {
                         const selected = index === selectedIndex

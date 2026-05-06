@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { SkillSummary } from '@/types/api'
+import { markSkillUsed } from '@/lib/recent-skills'
+import { skillToSearchResult } from '@/lib/skill-search'
 import { SkillPickerDialog } from './SkillPickerDialog'
 
 const reviewSkill: SkillSummary = {
@@ -25,6 +27,7 @@ describe('SkillPickerDialog', () => {
 
     beforeEach(() => {
         vi.clearAllMocks()
+        localStorage.clear()
         Element.prototype.scrollIntoView = vi.fn()
         window.requestAnimationFrame = (callback: FrameRequestCallback) => {
             callback(0)
@@ -69,6 +72,59 @@ describe('SkillPickerDialog', () => {
         expect(screen.getByText('No matching skills')).toBeInTheDocument()
     })
 
+    it('defaults empty query opens to Recent with an empty state', async () => {
+        render(
+            <SkillPickerDialog
+                open={true}
+                initialQuery=""
+                skills={[reviewSkill, planSkill]}
+                onSelect={vi.fn()}
+                onClose={vi.fn()}
+            />
+        )
+
+        expect(screen.getByRole('tab', { name: 'Recent' })).toHaveAttribute('aria-selected', 'true')
+        expect(screen.getByText('No recent skills')).toBeInTheDocument()
+    })
+
+    it('shows recent skills on the Recent tab', async () => {
+        markSkillUsed(skillToSearchResult(planSkill))
+
+        render(
+            <SkillPickerDialog
+                open={true}
+                initialQuery=""
+                skills={[reviewSkill, planSkill]}
+                onSelect={vi.fn()}
+                onClose={vi.fn()}
+            />
+        )
+
+        expect(screen.getByRole('tab', { name: 'Recent' })).toHaveAttribute('aria-selected', 'true')
+        expect(await screen.findByText('$compound-engineering:ce-plan')).toBeInTheDocument()
+        expect(screen.queryByText('$review')).not.toBeInTheDocument()
+    })
+
+    it('switches to All when the search query changes', async () => {
+        markSkillUsed(skillToSearchResult(reviewSkill))
+
+        render(
+            <SkillPickerDialog
+                open={true}
+                initialQuery=""
+                skills={[reviewSkill, planSkill]}
+                onSelect={vi.fn()}
+                onClose={vi.fn()}
+            />
+        )
+
+        fireEvent.change(screen.getByPlaceholderText('Search skills'), { target: { value: 'pla' } })
+
+        expect(screen.getByRole('tab', { name: 'All' })).toHaveAttribute('aria-selected', 'true')
+        expect(await screen.findByText('$compound-engineering:ce-plan')).toBeInTheDocument()
+        expect(screen.queryByText('$review')).not.toBeInTheDocument()
+    })
+
     it('selects the highlighted skill with Enter', async () => {
         const onSelect = vi.fn()
 
@@ -82,6 +138,7 @@ describe('SkillPickerDialog', () => {
             />
         )
 
+        fireEvent.click(screen.getByRole('tab', { name: 'All' }))
         await screen.findByText('$review')
         fireEvent.keyDown(screen.getByPlaceholderText('Search skills'), { key: 'ArrowDown' })
         fireEvent.keyDown(screen.getByPlaceholderText('Search skills'), { key: 'Enter' })
@@ -104,6 +161,7 @@ describe('SkillPickerDialog', () => {
             />
         )
 
+        fireEvent.click(screen.getByRole('tab', { name: 'All' }))
         await screen.findByText('$review')
         fireEvent.keyDown(screen.getByPlaceholderText('Search skills'), { key: 'Tab' })
 
@@ -126,6 +184,7 @@ describe('SkillPickerDialog', () => {
             />
         )
 
+        fireEvent.click(screen.getByRole('tab', { name: 'All' }))
         await screen.findByText('$review')
         fireEvent.keyDown(screen.getByPlaceholderText('Search skills'), { key: 'Escape' })
 
