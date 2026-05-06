@@ -84,7 +84,8 @@ export class CodexAppServerClient {
                 return acc;
             }, {} as Record<string, string>),
             stdio: ['pipe', 'pipe', 'pipe'],
-            shell: process.platform === 'win32'
+            shell: process.platform === 'win32',
+            windowsHide: process.platform === 'win32'
         });
 
         this.process.stdout.setEncoding('utf8');
