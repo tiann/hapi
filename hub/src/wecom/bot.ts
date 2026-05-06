@@ -15,6 +15,8 @@ import {
     buildSessionCompletionCard,
     buildTaskCard
 } from './sessionView'
+import { parseAccessToken } from '../utils/accessToken'
+import { constantTimeEquals } from '../utils/crypto'
 
 /** 30 s cooldown before we try to reconnect after a server-initiated kick. */
 const SERVER_KICK_RECONNECT_DELAY_MS = 30_000
@@ -168,19 +170,22 @@ export class WecomBot implements NotificationChannel {
 
     private onTextMessage(frame: WsFrame): void {
         const body = frame.body as { text?: { content?: string }; from?: { userid?: string } } | undefined
-        const content = body?.text?.content?.trim()
+        const content = body?.text?.content
         const userid = body?.from?.userid
         if (!content || !userid) return
 
-        const prefix = `${this.cliApiToken}:`
-        if (!content.startsWith(prefix)) return
-        const namespace = content.slice(prefix.length).trim()
-        if (!namespace) return
+        // Use parseAccessToken (the same parser /api/auth and the CLI use) so we
+        // can't persist a binding that no client could authenticate into. The
+        // naive prefix-strip would accept `TOKEN:foo:bar` as namespace `foo:bar`
+        // even though parseAccessToken splits on the LAST colon and would reject
+        // that token (baseToken becomes `TOKEN:foo`, which is not our token).
+        const parsed = parseAccessToken(content)
+        if (!parsed || !constantTimeEquals(parsed.baseToken, this.cliApiToken)) return
+        const namespace = parsed.namespace
 
-        // Accept any non-empty namespace, matching parseAccessToken() and the
-        // /api/auth flow. Escape markdown metacharacters when interpolating
-        // into the confirmation reply so a namespace with `*` / `_` / `` ` ``
-        // can't break the rendered card.
+        // Escape markdown metacharacters when interpolating into the
+        // confirmation reply so a namespace with `*` / `_` / `` ` `` can't
+        // break the rendered card.
         const safeNamespace = escapeMarkdown(namespace)
         const safeUserid = escapeMarkdown(userid)
 
