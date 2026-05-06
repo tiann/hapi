@@ -1,5 +1,5 @@
 import type { ApiClient } from '@/api/client'
-import type { DecryptedMessage, MessageStatus } from '@/types/api'
+import type { DecryptedMessage, MessageStatus, MessagesResponse } from '@/types/api'
 import { normalizeDecryptedMessage } from '@/chat/normalize'
 import { isQueuedForInvocation, isUserMessage, mergeMessages } from '@/lib/messages'
 
@@ -22,6 +22,8 @@ export const VISIBLE_WINDOW_SIZE = 400
 export const PENDING_WINDOW_SIZE = 200
 const AGENT_RUN_WINDOW_SIZE = 800
 const PAGE_SIZE = 50
+const COLD_LOAD_BACKFILL_PAGE_SIZE = 200
+const COLD_LOAD_REGULAR_TARGET = PAGE_SIZE
 const PENDING_OVERFLOW_WARNING = 'New messages arrived while you were away. Scroll to bottom to refresh.'
 
 type InternalState = MessageWindowState & {
@@ -253,6 +255,79 @@ function isCodexAgentRunMessage(message: DecryptedMessage): boolean {
     return eventType === 'agent-run-start'
         || eventType === 'agent-run-update'
         || eventType === 'agent-run-trace'
+}
+
+function countRegularMessages(messages: DecryptedMessage[]): number {
+    let count = 0
+    const seen = new Set<string>()
+    for (const message of messages) {
+        if (seen.has(message.id)) continue
+        seen.add(message.id)
+        if (!isCodexAgentRunMessage(message)) {
+            count += 1
+        }
+    }
+    return count
+}
+
+function hasV8Cursor(response: MessagesResponse): boolean {
+    return response.page.nextBeforeAt !== undefined
+        && response.page.nextBeforeAt !== null
+        && response.page.nextBeforeSeq !== null
+}
+
+function sameCursor(a: MessagesResponse, b: MessagesResponse): boolean {
+    return (a.page.nextBeforeAt ?? null) === (b.page.nextBeforeAt ?? null)
+        && a.page.nextBeforeSeq === b.page.nextBeforeSeq
+}
+
+async function backfillColdLoadMessages(
+    api: ApiClient,
+    sessionId: string,
+    first: MessagesResponse
+): Promise<MessagesResponse> {
+    let combined = first
+    let regularCount = countRegularMessages(combined.messages)
+
+    // On a cold reload the hub's latest page can be filled entirely by Codex
+    // child-agent trace updates. The live path protects regular/root messages
+    // with a separate client budget, but that cannot help if those messages were
+    // never fetched. Walk older pages until the initial window has a small root
+    // conversation floor, or until history is exhausted.
+    while (combined.page.hasMore && regularCount < COLD_LOAD_REGULAR_TARGET) {
+        if (combined.page.nextBeforeSeq === null) break
+
+        const older = hasV8Cursor(combined)
+            ? await api.getMessages(sessionId, {
+                byPosition: true,
+                beforeAt: combined.page.nextBeforeAt!,
+                beforeSeq: combined.page.nextBeforeSeq,
+                limit: COLD_LOAD_BACKFILL_PAGE_SIZE
+            })
+            : await api.getMessages(sessionId, {
+                beforeSeq: combined.page.nextBeforeSeq,
+                limit: COLD_LOAD_BACKFILL_PAGE_SIZE
+            })
+
+        if (older.messages.length === 0 || sameCursor(combined, older)) {
+            combined = {
+                messages: combined.messages,
+                page: {
+                    ...combined.page,
+                    hasMore: false
+                }
+            }
+            break
+        }
+
+        combined = {
+            messages: mergeMessages(older.messages, combined.messages),
+            page: older.page
+        }
+        regularCount = countRegularMessages(combined.messages)
+    }
+
+    return combined
 }
 
 function sliceForTrim<T>(items: T[], limit: number, mode: 'append' | 'prepend'): { kept: T[]; dropped: T[] } {
@@ -502,7 +577,10 @@ export async function fetchLatestMessages(api: ApiClient, sessionId: string): Pr
         // Always request byPosition mode (V8). If the hub is V7 it ignores byPosition and
         // returns the standard seq-based response (no nextBeforeAt field) — we fall back
         // to seq-cursor mode seamlessly.
-        const response = await api.getMessages(sessionId, { byPosition: true, limit: PAGE_SIZE })
+        const firstResponse = await api.getMessages(sessionId, { byPosition: true, limit: PAGE_SIZE })
+        const response = initial.atBottom
+            ? await backfillColdLoadMessages(api, sessionId, firstResponse)
+            : firstResponse
         // Derive composite cursor pair from server response. Both values come from
         // the same row on the server; we keep them paired so the next older fetch
         // doesn't mix `beforeAt` from the server with a recomputed minimum `seq`.

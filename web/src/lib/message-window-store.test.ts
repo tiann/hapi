@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it } from 'vitest'
+import type { ApiClient } from '@/api/client'
 import type { DecryptedMessage, MessageStatus } from '@/types/api'
 import {
     appendOptimisticMessage,
     clearMessageWindow,
+    fetchLatestMessages,
     getMessageWindowState,
     ingestIncomingMessages,
     markMessagesConsumed,
@@ -274,5 +276,62 @@ describe('message-window-store visible trimming', () => {
         expect(state.messages.some((message) => message.id === 'agent-message-0')).toBe(false)
         expect(state.hasMore).toBe(true)
         expect(state.oldestSeq).toBe(2)
+    })
+
+    it('backfills cold latest load when the newest page is filled by Codex subagent events', async () => {
+        const baseTime = 1_700_000_200_000
+        const latestAgentRuns: DecryptedMessage[] = []
+        for (let i = 0; i < 50; i += 1) {
+            latestAgentRuns.push(makeAgentRunMessage({
+                id: `agent-run-latest-${i}`,
+                seq: i + 2,
+                createdAt: baseTime + i + 2
+            }))
+        }
+        const mainMessage = makeUserMessage({
+            id: 'main-user-before-agent-flood',
+            seq: 1,
+            text: 'main prompt before subagents',
+            createdAt: baseTime + 1
+        })
+
+        const calls: Array<{ beforeAt?: number | null; beforeSeq?: number | null; limit?: number }> = []
+        const api = {
+            getMessages: async (_sessionId: string, options: { beforeAt?: number | null; beforeSeq?: number | null; limit?: number }) => {
+                calls.push(options)
+                if (calls.length === 1) {
+                    return {
+                        messages: latestAgentRuns,
+                        page: {
+                            limit: options.limit ?? 50,
+                            nextBeforeSeq: 2,
+                            nextBeforeAt: baseTime + 2,
+                            hasMore: true
+                        }
+                    }
+                }
+                return {
+                    messages: [mainMessage],
+                    page: {
+                        limit: options.limit ?? 200,
+                        nextBeforeSeq: 1,
+                        nextBeforeAt: baseTime + 1,
+                        hasMore: false
+                    }
+                }
+            }
+        } as Pick<ApiClient, 'getMessages'>
+
+        await fetchLatestMessages(api as ApiClient, SESSION_ID)
+
+        const state = getMessageWindowState(SESSION_ID)
+        expect(calls).toHaveLength(2)
+        expect(calls[1]).toMatchObject({
+            beforeSeq: 2,
+            beforeAt: baseTime + 2,
+            limit: 200
+        })
+        expect(state.messages.some((message) => message.id === 'main-user-before-agent-flood')).toBe(true)
+        expect(state.messages.filter((message) => message.id.startsWith('agent-run-latest-'))).toHaveLength(50)
     })
 })
