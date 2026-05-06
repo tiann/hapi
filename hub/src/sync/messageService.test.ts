@@ -4,6 +4,7 @@
  * Race-A: CLI ack returns { removed: true }  → DB DELETE + status='cancelled'
  * Race-B: CLI ack returns { removed: false } (already shift()-ed) → markMessagesInvoked + status='invoked'
  * Race-C: CLI ack times out (500 ms)         → markMessagesInvoked + status='invoked'
+ * Race-D (CLI offline): no CLI socket in room → immediate DELETE, message-cancelled emit, no ack call
  */
 import { describe, expect, it } from 'bun:test'
 import { MessageService } from './messageService'
@@ -25,7 +26,7 @@ function makeSession(store: Store, tag: string) {
 
 type AckCallback = (err: Error | null, responses: Array<{ removed: boolean }>) => void
 
-function makeIo(onEmit: (ack: AckCallback) => void): Server {
+function makeIo(onEmit: (ack: AckCallback) => void, socketCount = 1): Server {
     const broadcastRoom = {
         timeout: (_ms: number) => ({
             emit: (_event: string, _data: unknown, callback: AckCallback) => {
@@ -35,9 +36,15 @@ function makeIo(onEmit: (ack: AckCallback) => void): Server {
         emit: () => {}
     }
 
+    // Pre-built set reused on every rooms.get() call (socketCount=0 → undefined)
+    const socketSet = socketCount > 0
+        ? new Set(Array.from({ length: socketCount }, (_, i) => `socket-${i}`))
+        : undefined
+
     return {
         of: (_ns: string) => ({
-            to: (_room: string) => broadcastRoom
+            to: (_room: string) => broadcastRoom,
+            adapter: { rooms: { get: (_roomName: string) => socketSet } }
         })
     } as unknown as Server
 }
@@ -188,6 +195,51 @@ describe('MessageService.cancelQueuedMessage race scenarios', () => {
             // messages-consumed must be emitted exactly once
             const consumedCount = publisher.events.filter(e => e.type === 'messages-consumed').length
             expect(consumedCount).toBe(1)
+        })
+    })
+
+    describe('Race-D: CLI offline (room socket count === 0) → immediate DELETE, no ack', () => {
+        it('returns cancelled and emits message-cancelled without calling ack when no CLI socket is connected', async () => {
+            const store = makeStore()
+            const session = makeSession(store, 'race-d-offline')
+            const msg = store.messages.addMessage(
+                session.id,
+                { role: 'user', content: { type: 'text', text: 'hello' } },
+                'local-offline'
+            )
+
+            let ackCalled = false
+            // socketCount=0 → adapter.rooms.get() returns undefined → cliCount = 0
+            const io = makeIo(() => { ackCalled = true }, 0)
+            const publisher = makePublisher()
+
+            const service = new MessageService(store, io, publisher as any)
+            const result = await service.cancelQueuedMessage(session.id, msg.id)
+
+            // Hub must return cancelled immediately
+            expect(result.status).toBe('cancelled')
+
+            // CLI ack must NOT have been called
+            expect(ackCalled).toBe(false)
+
+            // Row must be gone from the DB (immediate DELETE)
+            const remaining = store.messages.getUninvokedLocalMessages(session.id)
+            expect(remaining).toHaveLength(0)
+
+            // message-cancelled SSE must have been emitted with localId
+            const cancelled = publisher.events.find(e => e.type === 'message-cancelled')
+            expect(cancelled).toBeDefined()
+            if (cancelled?.type === 'message-cancelled') {
+                expect(cancelled.localId).toBe('local-offline')
+            }
+
+            // No messages-consumed (row was deleted, not invoked)
+            const consumedCount = publisher.events.filter(e => e.type === 'messages-consumed').length
+            expect(consumedCount).toBe(0)
+
+            // No invoked_at stamped (row deleted, not marked invoked)
+            const rows = store.messages.getMessages(session.id)
+            expect(rows.find(r => r.id === msg.id)).toBeUndefined()
         })
     })
 

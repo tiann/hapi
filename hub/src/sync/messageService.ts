@@ -167,6 +167,43 @@ export class MessageService {
             return { status: 'cancelled', localId: null }
         }
 
+        // Phase 2a: if no CLI socket is currently in the session room, the CLI is
+        // offline and there is nobody to ack with.  Delete the row immediately so a
+        // later CLI reconnect cannot pick it up via seq-backfill and re-enqueue the
+        // cancelled message.
+        //
+        // TOCTOU note: deleteQueuedMessageById already has an invoked_at IS NULL guard,
+        // so if a CLI socket joins between the cliCount read and the DELETE and wins the
+        // race by calling markMessagesInvoked first, the DELETE becomes a no-op.
+        // We re-read the row after the delete to detect that case and handle it exactly
+        // like Race-B (ack returned removed:false).
+        const roomName = `session:${sessionId}`
+        const cliCount = this.io.of('/cli').adapter.rooms.get(roomName)?.size ?? 0
+        if (cliCount === 0) {
+            this.store.messages.deleteQueuedMessageById(sessionId, resolvedId)
+            // Re-check: if CLI joined and invoked the message between our cliCount read
+            // and the DELETE, the delete was a no-op and the row now has invoked_at set.
+            const recheck = this.store.messages.lookupQueuedMessage(sessionId, resolvedId)
+            if (recheck.status === 'invoked') {
+                // CLI beat us — treat identically to Race-B (ack returned not-found).
+                this.publisher.emit({
+                    type: 'messages-consumed',
+                    sessionId,
+                    localIds: [localId],
+                    invokedAt: recheck.message.invokedAt!,
+                })
+                return recheck
+            }
+            // Row is gone (absent) — clean cancel.
+            this.publisher.emit({
+                type: 'message-cancelled',
+                sessionId,
+                messageId,
+                localId,
+            })
+            return { status: 'cancelled', localId }
+        }
+
         const ackResult = await this.requestCliCancelAck(sessionId, localId, messageId, 500)
 
         if (ackResult === 'not-found' || ackResult === 'timeout') {
