@@ -15,6 +15,7 @@ const harness = vi.hoisted(() => ({
     remainingThreadSystemErrors: 0,
     emitChildThreadEvents: false,
     emitChildUsageEvents: false,
+    emitChildReasoningBurst: false,
     emitParentUsageEvents: false,
     emitChildNestedAgentTool: false,
     emitParentTitleChange: false,
@@ -159,6 +160,22 @@ vi.mock('./codexAppServerClient', () => {
                 const childThreadId = 'child-thread';
                 const childTurnId = 'child-turn';
                 const childMessage = 'child output should stay hidden';
+
+                if (harness.emitChildReasoningBurst) {
+                    for (let i = 0; i < 20; i += 1) {
+                        const reasoningDelta = {
+                            msg: {
+                                type: 'reasoning_content_delta',
+                                item_id: 'child-reasoning',
+                                delta: `step-${i} `,
+                                thread_id: childThreadId,
+                                turn_id: childTurnId
+                            }
+                        };
+                        harness.notifications.push({ method: 'codex/event/reasoning_content_delta', params: reasoningDelta });
+                        this.notificationHandler?.('codex/event/reasoning_content_delta', reasoningDelta);
+                    }
+                }
 
                 const childMessageCompleted = {
                     item: {
@@ -506,6 +523,7 @@ describe('codexRemoteLauncher', () => {
         harness.remainingThreadSystemErrors = 0;
         harness.emitChildThreadEvents = false;
         harness.emitChildUsageEvents = false;
+        harness.emitChildReasoningBurst = false;
         harness.emitParentUsageEvents = false;
         harness.emitChildNestedAgentTool = false;
         harness.emitParentTitleChange = false;
@@ -658,6 +676,25 @@ describe('codexRemoteLauncher', () => {
             activity: 'Completed: child output should stay hidden',
             activityKind: 'completed'
         }));
+    });
+
+    it('throttles child agent reasoning activity updates instead of emitting one per delta', async () => {
+        harness.emitChildThreadEvents = true;
+        harness.emitChildReasoningBurst = true;
+        const { session, codexMessages } = createSessionStub();
+
+        await codexRemoteLauncher(session as never);
+
+        const thinkingUpdates = codexMessages.filter((message): message is Record<string, unknown> => {
+            return typeof message === 'object'
+                && message !== null
+                && (message as Record<string, unknown>).type === 'agent-run-update'
+                && (message as Record<string, unknown>).agentId === 'child-thread'
+                && (message as Record<string, unknown>).activityKind === 'thinking';
+        });
+
+        expect(thinkingUpdates.length).toBeLessThan(20);
+        expect(thinkingUpdates.length).toBeLessThanOrEqual(1);
     });
 
     it('keeps child usage and compact events out of the parent context stream', async () => {

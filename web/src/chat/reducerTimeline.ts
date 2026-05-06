@@ -9,6 +9,26 @@ function getEventString(event: Record<string, unknown>, key: string): string | n
     return asString(event[key])
 }
 
+function getEventNumber(event: Record<string, unknown>, key: string): number | null {
+    const value = event[key]
+    return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+function getAgentRunStartedAt(event: Record<string, unknown>): number | null {
+    return getEventNumber(event, 'startedAt') ?? getEventNumber(event, 'started_at')
+}
+
+function getAgentRunCompletedAt(event: Record<string, unknown>): number | null {
+    return getEventNumber(event, 'completedAt') ?? getEventNumber(event, 'completed_at')
+}
+
+function setEarliestStartedAt(block: ToolCallBlock, startedAt: number | null): void {
+    if (startedAt === null) return
+    block.tool.startedAt = block.tool.startedAt === null
+        ? startedAt
+        : Math.min(block.tool.startedAt, startedAt)
+}
+
 function getAgentRunCardId(event: Record<string, unknown>, fallback: string): string {
     return getEventString(event, 'cardId') ?? getEventString(event, 'card_id') ?? fallback
 }
@@ -337,8 +357,16 @@ export function reduceTimeline(
 
         toBlock.createdAt = Math.min(toBlock.createdAt, fromBlock.createdAt)
         toBlock.tool.createdAt = Math.min(toBlock.tool.createdAt, fromBlock.tool.createdAt)
-        toBlock.tool.startedAt = toBlock.tool.startedAt ?? fromBlock.tool.startedAt
-        toBlock.tool.completedAt = toBlock.tool.completedAt ?? fromBlock.tool.completedAt
+        if (fromBlock.tool.startedAt !== null) {
+            toBlock.tool.startedAt = toBlock.tool.startedAt === null
+                ? fromBlock.tool.startedAt
+                : Math.min(toBlock.tool.startedAt, fromBlock.tool.startedAt)
+        }
+        if (fromBlock.tool.completedAt !== null) {
+            toBlock.tool.completedAt = toBlock.tool.completedAt === null
+                ? fromBlock.tool.completedAt
+                : Math.max(toBlock.tool.completedAt, fromBlock.tool.completedAt)
+        }
         toBlock.durationMs = toBlock.durationMs ?? fromBlock.durationMs
         toBlock.usage = toBlock.usage ?? fromBlock.usage
         toBlock.model = toBlock.model ?? fromBlock.model
@@ -493,6 +521,7 @@ export function reduceTimeline(
 
                 if (msg.content.type === 'agent-run-start') {
                     const status = getEventString(event, 'status') ?? 'running'
+                    const startedAt = getAgentRunStartedAt(event) ?? msg.createdAt
                     patchAgentRunInput(block, {
                         agentId,
                         agentStatus: status,
@@ -500,8 +529,8 @@ export function reduceTimeline(
                         ...getAgentRunDisplayPatch(event)
                     })
                     block.tool.state = mapAgentRunStatusToToolState(status)
-                    if (block.tool.state === 'running' && !block.tool.startedAt) {
-                        block.tool.startedAt = msg.createdAt
+                    if (block.tool.state === 'running') {
+                        setEarliestStartedAt(block, startedAt)
                     }
                     continue
                 }
@@ -509,6 +538,7 @@ export function reduceTimeline(
                 if (msg.content.type === 'agent-run-update') {
                     const status = getEventString(event, 'status') ?? 'running'
                     const nextState = mapAgentRunStatusToToolState(status)
+                    const startedAt = getAgentRunStartedAt(event)
                     if (
                         shouldIgnoreAgentRunNonTerminalUpdateAfterTerminal(block, nextState, event)
                         || shouldIgnoreAgentRunCloseCleanupAfterTerminal(block, status, event)
@@ -522,11 +552,12 @@ export function reduceTimeline(
                         ...getAgentRunDisplayPatch(event)
                     })
                     block.tool.state = nextState
-                    if (block.tool.state === 'running' && !block.tool.startedAt) {
-                        block.tool.startedAt = msg.createdAt
+                    if (block.tool.state === 'running') {
+                        setEarliestStartedAt(block, startedAt ?? msg.createdAt)
                     }
                     if (block.tool.state === 'completed' || block.tool.state === 'error') {
-                        block.tool.completedAt = msg.createdAt
+                        setEarliestStartedAt(block, startedAt)
+                        block.tool.completedAt = getAgentRunCompletedAt(event) ?? msg.createdAt
                     }
                     if ('result' in event) {
                         block.tool.result = event.result
@@ -541,6 +572,7 @@ export function reduceTimeline(
                 if (msg.content.type === 'agent-run-trace') {
                     const traceAgentId = agentId
                     if (!traceAgentId) continue
+                    const startedAt = getAgentRunStartedAt(event)
                     const traceCardId = agentRunCardByAgentId.get(traceAgentId) ?? cardId
                     const traceBlock = ensureAgentRunBlock(traceCardId, {
                         createdAt: msg.createdAt,
@@ -567,7 +599,7 @@ export function reduceTimeline(
                     refreshAgentRunChildren(traceCardId)
                     if (traceBlock.tool.state !== 'completed' && traceBlock.tool.state !== 'error') {
                         traceBlock.tool.state = 'running'
-                        traceBlock.tool.startedAt = traceBlock.tool.startedAt ?? msg.createdAt
+                        setEarliestStartedAt(traceBlock, startedAt ?? msg.createdAt)
                     }
                     continue
                 }

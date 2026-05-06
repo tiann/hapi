@@ -30,13 +30,14 @@ function ElapsedView(props: { from: number; active: boolean }) {
 
     useEffect(() => {
         if (!props.active) return
+        setNow(Date.now())
         const id = setInterval(() => setNow(Date.now()), ELAPSED_INTERVAL_MS)
         return () => clearInterval(id)
-    }, [props.active])
+    }, [props.active, props.from])
 
     if (!props.active) return null
 
-    const elapsed = (now - props.from) / 1000
+    const elapsed = Math.max(0, now - props.from) / 1000
     if (!Number.isFinite(elapsed)) return null
 
     return (

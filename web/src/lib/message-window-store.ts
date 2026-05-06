@@ -20,6 +20,7 @@ export type MessageWindowState = {
 
 export const VISIBLE_WINDOW_SIZE = 400
 export const PENDING_WINDOW_SIZE = 200
+const AGENT_RUN_WINDOW_SIZE = 800
 const PAGE_SIZE = 50
 const PENDING_OVERFLOW_WARNING = 'New messages arrived while you were away. Scroll to bottom to refresh.'
 
@@ -214,6 +215,62 @@ function deriveSeqBounds(messages: DecryptedMessage[]): { oldestSeq: number | nu
     return { oldestSeq: oldest, newestSeq: newest }
 }
 
+function getMessagePositionAt(message: DecryptedMessage): number {
+    return message.invokedAt ?? message.createdAt
+}
+
+function deriveOldestPosition(messages: DecryptedMessage[]): { at: number; seq: number } | null {
+    let oldest: DecryptedMessage | null = null
+    for (const message of messages) {
+        if (typeof message.seq !== 'number') continue
+        if (!oldest) {
+            oldest = message
+            continue
+        }
+        const messageAt = getMessagePositionAt(message)
+        const oldestAt = getMessagePositionAt(oldest)
+        if (messageAt < oldestAt || (messageAt === oldestAt && message.seq < oldest.seq!)) {
+            oldest = message
+        }
+    }
+    return oldest && typeof oldest.seq === 'number'
+        ? { at: getMessagePositionAt(oldest), seq: oldest.seq }
+        : null
+}
+
+function isCodexAgentRunMessage(message: DecryptedMessage): boolean {
+    const content = message.content
+    if (!content || typeof content !== 'object') return false
+    const outer = content as { role?: unknown; content?: unknown }
+    if (outer.role !== 'agent') return false
+    const inner = outer.content
+    if (!inner || typeof inner !== 'object') return false
+    const payload = inner as { type?: unknown; data?: unknown }
+    if (payload.type !== 'codex') return false
+    const data = payload.data
+    if (!data || typeof data !== 'object') return false
+    const eventType = (data as { type?: unknown }).type
+    return eventType === 'agent-run-start'
+        || eventType === 'agent-run-update'
+        || eventType === 'agent-run-trace'
+}
+
+function sliceForTrim<T>(items: T[], limit: number, mode: 'append' | 'prepend'): { kept: T[]; dropped: T[] } {
+    if (items.length <= limit) {
+        return { kept: items, dropped: [] }
+    }
+    if (limit <= 0) {
+        return { kept: [], dropped: items }
+    }
+    const kept = mode === 'prepend'
+        ? items.slice(0, limit)
+        : items.slice(items.length - limit)
+    const dropped = mode === 'prepend'
+        ? items.slice(limit)
+        : items.slice(0, items.length - limit)
+    return { kept, dropped }
+}
+
 function buildState(
     prev: InternalState,
     updates: {
@@ -283,29 +340,49 @@ function trimPreservingQueued(
         return { kept: messages, dropped: [] }
     }
     const queued = messages.filter(isQueuedForInvocation)
-    if (queued.length === 0) {
-        const kept = mode === 'prepend'
-            ? messages.slice(0, limit)
-            : messages.slice(messages.length - limit)
-        const dropped = mode === 'prepend'
-            ? messages.slice(limit)
-            : messages.slice(0, messages.length - limit)
-        return { kept, dropped }
-    }
     const queuedIds = new Set(queued.map((message) => message.id))
-    const regular = messages.filter((message) => !queuedIds.has(message.id))
+    const nonQueued = messages.filter((message) => !queuedIds.has(message.id))
+    const agentRun = nonQueued.filter(isCodexAgentRunMessage)
+    const regular = nonQueued.filter((message) => !isCodexAgentRunMessage(message))
     const budget = Math.max(0, limit - queued.length)
-    const trimmedRegular = mode === 'prepend'
-        ? regular.slice(0, budget)
-        : regular.slice(Math.max(0, regular.length - budget))
-    const droppedRegular = mode === 'prepend'
-        ? regular.slice(budget)
-        : regular.slice(0, Math.max(0, regular.length - budget))
-    return { kept: mergeMessages(trimmedRegular, queued), dropped: droppedRegular }
+    const regularTrim = sliceForTrim(regular, budget, mode)
+    const agentRunTrim = sliceForTrim(agentRun, AGENT_RUN_WINDOW_SIZE, mode)
+    return {
+        kept: mergeMessages([...regularTrim.kept, ...agentRunTrim.kept], queued),
+        dropped: [...regularTrim.dropped, ...agentRunTrim.dropped]
+    }
 }
 
 function trimVisible(messages: DecryptedMessage[], mode: 'append' | 'prepend'): DecryptedMessage[] {
     return trimPreservingQueued(messages, VISIBLE_WINDOW_SIZE, mode).kept
+}
+
+function trimVisibleWithDropped(
+    messages: DecryptedMessage[],
+    mode: 'append' | 'prepend'
+): { kept: DecryptedMessage[]; dropped: DecryptedMessage[] } {
+    return trimPreservingQueued(messages, VISIBLE_WINDOW_SIZE, mode)
+}
+
+function cursorUpdatesAfterAppendTrim(
+    kept: DecryptedMessage[],
+    dropped: DecryptedMessage[]
+): {
+    hasMore?: boolean
+    oldestPositionAt?: number | null
+    oldestPositionSeq?: number | null
+} {
+    if (dropped.length === 0) {
+        return {}
+    }
+    const oldest = deriveOldestPosition(kept)
+    return {
+        hasMore: true,
+        ...(oldest ? {
+            oldestPositionAt: oldest.at,
+            oldestPositionSeq: oldest.seq
+        } : {})
+    }
 }
 
 function trimPending(
@@ -524,9 +601,13 @@ export function ingestIncomingMessages(sessionId: string, incoming: DecryptedMes
     updateState(sessionId, (prev) => {
         if (prev.atBottom) {
             const merged = mergeMessages(prev.messages, incoming)
-            const trimmed = trimVisible(merged, 'append')
-            const pending = filterPendingAgainstVisible(prev.pending, trimmed)
-            return buildState(prev, { messages: trimmed, pending })
+            const { kept, dropped } = trimVisibleWithDropped(merged, 'append')
+            const pending = filterPendingAgainstVisible(prev.pending, kept)
+            return buildState(prev, {
+                messages: kept,
+                pending,
+                ...cursorUpdatesAfterAppendTrim(kept, dropped)
+            })
         }
         // 不在底部时：agent 消息立即显示，user 消息才放入 pending
         // 原因：用户必须看到 AI 回复才能继续交互，pending 机制会导致回复滞后
@@ -536,9 +617,13 @@ export function ingestIncomingMessages(sessionId: string, incoming: DecryptedMes
         let state = prev
         if (agentMessages.length > 0) {
             const merged = mergeMessages(state.messages, agentMessages)
-            const trimmed = trimVisible(merged, 'append')
-            const pending = filterPendingAgainstVisible(state.pending, trimmed)
-            state = buildState(state, { messages: trimmed, pending })
+            const { kept, dropped } = trimVisibleWithDropped(merged, 'append')
+            const pending = filterPendingAgainstVisible(state.pending, kept)
+            state = buildState(state, {
+                messages: kept,
+                pending,
+                ...cursorUpdatesAfterAppendTrim(kept, dropped)
+            })
         }
         if (userMessages.length > 0) {
             const pendingResult = mergeIntoPending(state, userMessages)
@@ -562,14 +647,15 @@ export function flushPendingMessages(sessionId: string): boolean {
     const needsRefresh = current.pendingOverflowVisibleCount > 0
     updateState(sessionId, (prev) => {
         const merged = mergeMessages(prev.messages, prev.pending)
-        const trimmed = trimVisible(merged, 'append')
+        const { kept, dropped } = trimVisibleWithDropped(merged, 'append')
         return buildState(prev, {
-            messages: trimmed,
+            messages: kept,
             pending: [],
             pendingOverflowCount: 0,
             pendingVisibleCount: 0,
             pendingOverflowVisibleCount: 0,
             warning: needsRefresh ? (prev.warning ?? PENDING_OVERFLOW_WARNING) : prev.warning,
+            ...cursorUpdatesAfterAppendTrim(kept, dropped)
         })
     }, true)
     return needsRefresh
@@ -587,9 +673,14 @@ export function setAtBottom(sessionId: string, atBottom: boolean): void {
 export function appendOptimisticMessage(sessionId: string, message: DecryptedMessage): void {
     updateState(sessionId, (prev) => {
         const merged = mergeMessages(prev.messages, [message])
-        const trimmed = trimVisible(merged, 'append')
-        const pending = filterPendingAgainstVisible(prev.pending, trimmed)
-        return buildState(prev, { messages: trimmed, pending, atBottom: true })
+        const { kept, dropped } = trimVisibleWithDropped(merged, 'append')
+        const pending = filterPendingAgainstVisible(prev.pending, kept)
+        return buildState(prev, {
+            messages: kept,
+            pending,
+            atBottom: true,
+            ...cursorUpdatesAfterAppendTrim(kept, dropped)
+        })
     }, true)
 }
 
@@ -721,11 +812,16 @@ export function markMessagesConsumed(sessionId: string, localIds: string[], invo
         // After update, re-merge to re-sort by the position key (`invokedAt ?? createdAt`):
         // a queued message that just received `invokedAt` should move to its invocation
         // position, not stay at its original send-time slot until the next fetch.
-        const messages = mergeMessages(updateList(prev.messages), consumedFromPending)
+        const mergedMessages = mergeMessages(updateList(prev.messages), consumedFromPending)
+        const { kept, dropped } = trimVisibleWithDropped(mergedMessages, 'append')
         const pending = mergeMessages([], remainingPending)
         if (!changed) {
             return prev
         }
-        return buildState(prev, { messages, pending })
+        return buildState(prev, {
+            messages: kept,
+            pending,
+            ...cursorUpdatesAfterAppendTrim(kept, dropped)
+        })
     })
 }

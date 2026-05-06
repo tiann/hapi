@@ -937,6 +937,51 @@ describe('reduceTimeline', () => {
         })
     })
 
+    it('keeps Codex agent elapsed time stable when the start event fell out of the visible window', () => {
+        const messages: TracedMessage[] = [
+            {
+                id: 'agent-update',
+                localId: null,
+                createdAt: 1_700_000_010_000,
+                role: 'event',
+                content: {
+                    type: 'agent-run-update',
+                    cardId: 'spawn-1',
+                    agentId: 'agent-1',
+                    startedAt: 1_700_000_000_000,
+                    status: 'running',
+                    statusText: 'Running command',
+                    activity: 'Running command: test'
+                },
+                isSidechain: false
+            } as TracedMessage,
+            {
+                id: 'agent-trace',
+                localId: null,
+                createdAt: 1_700_000_020_000,
+                role: 'event',
+                content: {
+                    type: 'agent-run-trace',
+                    cardId: 'spawn-1',
+                    agentId: 'agent-1',
+                    startedAt: 1_700_000_000_000,
+                    message: {
+                        type: 'message',
+                        message: 'still running'
+                    }
+                },
+                isSidechain: false
+            } as TracedMessage
+        ]
+
+        const { blocks } = reduceTimeline(messages, makeContext())
+        const agentBlock = blocks[0] as any
+
+        expect(agentBlock.tool.name).toBe('CodexAgent')
+        expect(agentBlock.tool.state).toBe('running')
+        expect(agentBlock.tool.startedAt).toBe(1_700_000_000_000)
+    })
+
     it('does not turn a completed Codex agent card into an error when close_agent cleans it up', () => {
         const messages: TracedMessage[] = [
             {

@@ -39,6 +39,9 @@ type ChildAgentRuntime = {
     blockedNestedAgent: boolean;
 };
 
+const AGENT_RUN_UPDATE_THROTTLE_MS = 300;
+const THROTTLED_AGENT_RUN_ACTIVITY_KINDS = new Set(['thinking']);
+
 class CodexRemoteLauncher extends RemoteLauncherBase {
     private readonly session: CodexSession;
     private readonly appServerClient: CodexAppServerClient;
@@ -375,11 +378,20 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         const agentSummaryByCardId = new Map<string, string>();
         const agentSummaryByAgentId = new Map<string, string>();
         const agentStatusByAgentId = new Map<string, string>();
+        const agentStartedAtByCardId = new Map<string, number>();
+        const agentStartedAtByAgentId = new Map<string, number>();
         const pendingAgentStartCardIds = new Set<string>();
         const pendingAgentUpdatesByAgentId = new Map<string, Record<string, unknown>[]>();
         const pendingAgentTracesByAgentId = new Map<string, unknown[]>();
         const pendingAgentToolInputByCallId = new Map<string, { name: string; input: unknown }>();
         const childAgentRuntimeById = new Map<string, ChildAgentRuntime>();
+        const lastAgentRunUpdateAtByAgentId = new Map<string, number>();
+        const lastAgentRunUpdateSignatureByAgentId = new Map<string, string>();
+        const pendingThrottledAgentUpdateByAgentId = new Map<string, {
+            update: Record<string, unknown>;
+            cardIdOverride?: string | null;
+        }>();
+        const pendingThrottledAgentUpdateTimerByAgentId = new Map<string, ReturnType<typeof setTimeout>>();
         this.permissionHandler = permissionHandler;
         this.reasoningProcessor = reasoningProcessor;
         this.diffProcessor = diffProcessor;
@@ -477,6 +489,8 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
 
         const emitAgentRunStart = (cardId: string, input: unknown): void => {
             childAgentActivityInCurrentTurn = true;
+            const startedAt = Date.now();
+            agentStartedAtByCardId.set(cardId, startedAt);
             const summary = summarizeAgentInput(input);
             if (summary) {
                 agentSummaryByCardId.set(cardId, summary);
@@ -486,6 +500,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 type: 'agent-run-start',
                 cardId,
                 input,
+                startedAt,
                 status: 'starting',
                 statusText: 'Starting',
                 activity: 'Starting',
@@ -503,6 +518,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     type: 'agent-run-trace',
                     agentId,
                     cardId: agentCardByAgentId.get(agentId),
+                    ...(agentStartedAtByAgentId.has(agentId) ? { startedAt: agentStartedAtByAgentId.get(agentId) } : {}),
                     message
                 });
             }
@@ -511,6 +527,11 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         const linkAgentToCard = (agentId: string, cardId: string): void => {
             agentCardByAgentId.set(agentId, cardId);
             pendingAgentStartCardIds.delete(cardId);
+            const startedAt = agentStartedAtByCardId.get(cardId) ?? agentStartedAtByAgentId.get(agentId);
+            if (startedAt) {
+                agentStartedAtByCardId.set(cardId, startedAt);
+                agentStartedAtByAgentId.set(agentId, startedAt);
+            }
             const summary = agentSummaryByCardId.get(cardId);
             if (summary) {
                 agentSummaryByAgentId.set(agentId, summary);
@@ -527,7 +548,71 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             }
         };
 
-        const emitAgentRunUpdate = (
+        const stableStringify = (value: unknown): string => {
+            if (value === null || typeof value !== 'object') {
+                return JSON.stringify(value);
+            }
+            if (Array.isArray(value)) {
+                return `[${value.map(stableStringify).join(',')}]`;
+            }
+            const record = value as Record<string, unknown>;
+            return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`).join(',')}}`;
+        };
+
+        const getAgentRunUpdateSignature = (
+            agentId: string,
+            update: Record<string, unknown>,
+            cardIdOverride?: string | null
+        ): string => stableStringify({
+            agentId,
+            cardIdOverride: cardIdOverride ?? null,
+            update
+        });
+
+        const cancelPendingThrottledAgentRunUpdate = (agentId: string): void => {
+            const timer = pendingThrottledAgentUpdateTimerByAgentId.get(agentId);
+            if (timer) {
+                clearTimeout(timer);
+            }
+            pendingThrottledAgentUpdateTimerByAgentId.delete(agentId);
+            pendingThrottledAgentUpdateByAgentId.delete(agentId);
+        };
+
+        const cancelAllPendingThrottledAgentRunUpdates = (): void => {
+            for (const agentId of Array.from(pendingThrottledAgentUpdateTimerByAgentId.keys())) {
+                cancelPendingThrottledAgentRunUpdate(agentId);
+            }
+            pendingThrottledAgentUpdateByAgentId.clear();
+        };
+
+        const flushPendingThrottledAgentRunUpdate = (agentId: string): void => {
+            const pendingUpdate = pendingThrottledAgentUpdateByAgentId.get(agentId);
+            pendingThrottledAgentUpdateTimerByAgentId.delete(agentId);
+            pendingThrottledAgentUpdateByAgentId.delete(agentId);
+            if (!pendingUpdate) return;
+            emitAgentRunUpdateNow(agentId, pendingUpdate.update, pendingUpdate.cardIdOverride);
+        };
+
+        const scheduleThrottledAgentRunUpdate = (
+            agentId: string,
+            update: Record<string, unknown>,
+            cardIdOverride?: string | null
+        ): void => {
+            pendingThrottledAgentUpdateByAgentId.set(agentId, { update, cardIdOverride });
+            if (pendingThrottledAgentUpdateTimerByAgentId.has(agentId)) {
+                return;
+            }
+
+            const lastAt = lastAgentRunUpdateAtByAgentId.get(agentId) ?? 0;
+            const delay = Math.max(AGENT_RUN_UPDATE_THROTTLE_MS - (Date.now() - lastAt), 0);
+            const timer = setTimeout(() => {
+                flushPendingThrottledAgentRunUpdate(agentId);
+            }, delay);
+            timer.unref?.();
+            pendingThrottledAgentUpdateTimerByAgentId.set(agentId, timer);
+        };
+
+        const emitAgentRunUpdateNow = (
             agentId: string,
             update: Record<string, unknown>,
             cardIdOverride?: string | null
@@ -549,6 +634,11 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             if (!knownCardId) {
                 agentCardByAgentId.set(agentId, cardId);
             }
+            const startedAt = agentStartedAtByAgentId.get(agentId)
+                ?? agentStartedAtByCardId.get(cardId)
+                ?? Date.now();
+            agentStartedAtByAgentId.set(agentId, startedAt);
+            agentStartedAtByCardId.set(cardId, startedAt);
             const nextStatus = asString(update.status);
             const currentStatus = agentStatusByAgentId.get(agentId);
             const activityKind = asString(update.activityKind ?? update.activity_kind);
@@ -582,14 +672,51 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             if (nextStatus) {
                 agentStatusByAgentId.set(agentId, nextStatus);
             }
-            emitAgentRunEvent({
+            const event = {
                 type: 'agent-run-update',
                 agentId,
                 cardId,
+                startedAt,
+                ...(isTerminalAgentRunStatus(nextStatus) ? { completedAt: Date.now() } : {}),
                 ...(agentSummaryByAgentId.has(agentId) ? { summary: agentSummaryByAgentId.get(agentId) } : {}),
                 ...update
-            });
+            };
+            const signature = getAgentRunUpdateSignature(agentId, event, cardIdOverride);
+            if (lastAgentRunUpdateSignatureByAgentId.get(agentId) === signature) {
+                return;
+            }
+            lastAgentRunUpdateSignatureByAgentId.set(agentId, signature);
+            lastAgentRunUpdateAtByAgentId.set(agentId, Date.now());
+            emitAgentRunEvent(event);
             flushPendingAgentTraces(agentId);
+        };
+
+        const emitAgentRunUpdate = (
+            agentId: string,
+            update: Record<string, unknown>,
+            cardIdOverride?: string | null
+        ): void => {
+            const nextStatus = asString(update.status);
+            const terminal = isTerminalAgentRunStatus(nextStatus);
+            if (terminal) {
+                cancelPendingThrottledAgentRunUpdate(agentId);
+                emitAgentRunUpdateNow(agentId, update, cardIdOverride);
+                return;
+            }
+
+            const activityKind = asString(update.activityKind ?? update.activity_kind);
+            if (!activityKind || !THROTTLED_AGENT_RUN_ACTIVITY_KINDS.has(activityKind)) {
+                emitAgentRunUpdateNow(agentId, update, cardIdOverride);
+                return;
+            }
+
+            const lastAt = lastAgentRunUpdateAtByAgentId.get(agentId);
+            if (lastAt === undefined || Date.now() - lastAt >= AGENT_RUN_UPDATE_THROTTLE_MS) {
+                emitAgentRunUpdateNow(agentId, update, cardIdOverride);
+                return;
+            }
+
+            scheduleThrottledAgentRunUpdate(agentId, update, cardIdOverride);
         };
 
         const emitAgentRunTraceMessage = (agentId: string, message: unknown): void => {
@@ -604,6 +731,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 type: 'agent-run-trace',
                 agentId,
                 cardId,
+                ...(agentStartedAtByAgentId.has(agentId) ? { startedAt: agentStartedAtByAgentId.get(agentId) } : {}),
                 message
             });
         };
@@ -1913,6 +2041,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     mcpTitleByCallId.clear();
                     pendingAgentToolInputByCallId.clear();
                     pendingAgentTracesByAgentId.clear();
+                    cancelAllPendingThrottledAgentRunUpdates();
                     childAgentRuntimeById.clear();
                     session.onThinkingChange(false);
                     clearReadyAfterTurnTimer?.();
@@ -1926,6 +2055,8 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 logActiveHandles('after-turn');
             }
         }
+
+        cancelAllPendingThrottledAgentRunUpdates();
     }
 
     protected async cleanup(): Promise<void> {
