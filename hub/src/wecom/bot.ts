@@ -19,6 +19,10 @@ import {
 /** 30 s cooldown before we try to reconnect after a server-initiated kick. */
 const SERVER_KICK_RECONNECT_DELAY_MS = 30_000
 
+function escapeMarkdown(value: string): string {
+    return value.replace(/([\\_*`])/g, '\\$1')
+}
+
 /**
  * Shape of the WeCom SDK client that WecomBot needs. Kept narrow on purpose
  * so tests can supply a fake (an EventEmitter-backed stub) without having to
@@ -173,20 +177,18 @@ export class WecomBot implements NotificationChannel {
         const namespace = content.slice(prefix.length).trim()
         if (!namespace) return
 
-        // Whitelist: letters, digits, dash, underscore, up to 64 chars.
-        // Rejects markdown metacharacters that would break the confirmation
-        // card and keeps the `users.namespace` column to a known charset.
-        if (!/^[A-Za-z0-9_-]{1,64}$/.test(namespace)) {
-            void this.sendBindReply(userid,
-                'Invalid namespace. Allowed: letters, digits, `-`, `_`, max 64 chars.')
-            return
-        }
+        // Accept any non-empty namespace, matching parseAccessToken() and the
+        // /api/auth flow. Escape markdown metacharacters when interpolating
+        // into the confirmation reply so a namespace with `*` / `_` / `` ` ``
+        // can't break the rendered card.
+        const safeNamespace = escapeMarkdown(namespace)
+        const safeUserid = escapeMarkdown(userid)
 
         const existing = this.store.users.getUser('wecom', userid)
         if (existing) {
             if (existing.namespace === namespace) {
                 void this.sendBindReply(userid,
-                    `Already bound to namespace **${namespace}**.`)
+                    `Already bound to namespace **${safeNamespace}**.`)
             } else {
                 // Refuse to silently no-op: surface the conflict.
                 void this.sendBindReply(userid,
@@ -202,7 +204,7 @@ export class WecomBot implements NotificationChannel {
             return
         }
         void this.sendBindReply(userid,
-            `Bound WeCom user **${userid}** to namespace **${namespace}**.`)
+            `Bound WeCom user **${safeUserid}** to namespace **${safeNamespace}**.`)
     }
 
     private async sendBindReply(chatid: string, content: string): Promise<void> {
