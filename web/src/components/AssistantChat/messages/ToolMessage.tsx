@@ -110,6 +110,7 @@ function HappyNestedBlockList(props: {
 
                 if (block.kind === 'tool-call') {
                     const isTask = block.tool.name === 'Task'
+                    const hideChildren = block.tool.name === 'CodexAgent'
                     const taskChildren = isTask ? splitTaskChildren(block) : null
 
                     return (
@@ -122,7 +123,7 @@ function HappyNestedBlockList(props: {
                                 onDone={ctx.onRefresh}
                                 block={block}
                             />
-                            {block.children.length > 0 ? (
+                            {!hideChildren && block.children.length > 0 ? (
                                 isTask ? (
                                     <>
                                         {taskChildren && taskChildren.pending.length > 0 ? (
@@ -200,6 +201,7 @@ export function HappyToolMessage(props: ToolCallMessagePartProps) {
 
     const block = artifact
     const isTask = block.tool.name === 'Task'
+    const hideChildren = block.tool.name === 'CodexAgent'
     const taskChildren = isTask ? splitTaskChildren(block) : null
 
     return (
@@ -212,7 +214,7 @@ export function HappyToolMessage(props: ToolCallMessagePartProps) {
                 onDone={ctx.onRefresh}
                 block={block}
             />
-            {block.children.length > 0 ? (
+            {!hideChildren && block.children.length > 0 ? (
                 isTask ? (
                     <>
                         {taskChildren && taskChildren.pending.length > 0 ? (

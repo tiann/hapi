@@ -138,6 +138,11 @@ describe('getToolResultViewComponent registry', () => {
     it('uses a dedicated result view for CodexBash', () => {
         expect(getToolResultViewComponent('CodexBash')).not.toBe(getToolResultViewComponent('SomeUnknownTool'))
     })
+
+    it('uses a dedicated result view for Codex agent tools', () => {
+        expect(getToolResultViewComponent('spawn_agent')).not.toBe(getToolResultViewComponent('SomeUnknownTool'))
+        expect(getToolResultViewComponent('wait_agent')).toBe(getToolResultViewComponent('spawn_agent'))
+    })
 })
 
 describe('dialog result formatting', () => {
@@ -190,6 +195,138 @@ describe('dialog result formatting', () => {
         expect(container.querySelector('[class*="border-l-"]')).toBeNull()
         expect(container.querySelector('pre')).not.toBeNull()
         expect(container).toHaveTextContent('const value = 1')
+    })
+})
+
+describe('Codex agent result formatting', () => {
+    function renderToolResult(
+        toolName: string,
+        result: unknown,
+        input: unknown = {},
+        surface: 'inline' | 'dialog' = 'dialog'
+    ) {
+        const ResultView = getToolResultViewComponent(toolName)
+        const block: ToolCallBlock = {
+            id: 'tool-agent',
+            localId: null,
+            createdAt: 0,
+            kind: 'tool-call',
+            children: [],
+            tool: {
+                id: 'tool-agent',
+                name: toolName,
+                state: 'completed',
+                input,
+                result,
+                createdAt: 0,
+                startedAt: null,
+                completedAt: 0,
+                description: null
+            }
+        }
+
+        return render(
+            <I18nProvider>
+                <ResultView block={block} metadata={null} surface={surface} />
+            </I18nProvider>
+        )
+    }
+
+    it('renders spawn_agent JSON output as launch metadata', () => {
+        const { container } = renderToolResult(
+            'spawn_agent',
+            '{"agent_id":"agent-123","nickname":"Singer"}'
+        )
+
+        expect(container).toHaveTextContent('Agent launched')
+        expect(container).toHaveTextContent('Singer')
+        expect(container).toHaveTextContent('agent-123')
+    })
+
+    it('renders wait_agent completion output per agent', () => {
+        const { container } = renderToolResult(
+            'wait_agent',
+            '{"status":{"agent-123":{"completed":"42。"}},"timed_out":false}',
+            { targets: ['agent-123'] }
+        )
+
+        expect(container).toHaveTextContent('1 agent')
+        expect(container).toHaveTextContent('completed')
+        expect(container).toHaveTextContent('agent-123')
+        expect(container).toHaveTextContent('42。')
+    })
+
+    it('hides wait_agent completion text inline', () => {
+        const { container } = renderToolResult(
+            'wait_agent',
+            '{"status":{"agent-123":{"completed":"secret child output"}},"timed_out":false}',
+            { targets: ['agent-123'] },
+            'inline'
+        )
+
+        expect(container).toHaveTextContent('1 agent')
+        expect(container).toHaveTextContent('1 completed')
+        expect(container).not.toHaveTextContent('agent-123')
+        expect(container).not.toHaveTextContent('secret child output')
+    })
+
+    it('renders close_agent previous status', () => {
+        const { container } = renderToolResult(
+            'close_agent',
+            '{"previous_status":{"completed":"done"}}',
+            { target: 'agent-123' }
+        )
+
+        expect(container).toHaveTextContent('Agent closed')
+        expect(container).toHaveTextContent('agent-123')
+        expect(container).toHaveTextContent('done')
+    })
+
+    it('hides close_agent previous status text inline', () => {
+        const { container } = renderToolResult(
+            'close_agent',
+            '{"previous_status":{"completed":"secret close output"}}',
+            { target: 'agent-123' },
+            'inline'
+        )
+
+        expect(container).toHaveTextContent('Agent closed')
+        expect(container).toHaveTextContent('agent-123')
+        expect(container).not.toHaveTextContent('secret close output')
+    })
+
+    it('renders CodexAgent live activity while running without a result', () => {
+        const ResultView = getToolResultViewComponent('CodexAgent')
+        const block: ToolCallBlock = {
+            id: 'tool-agent',
+            localId: null,
+            createdAt: 0,
+            kind: 'tool-call',
+            children: [],
+            tool: {
+                id: 'tool-agent',
+                name: 'CodexAgent',
+                state: 'running',
+                input: {
+                    summary: 'Inspect README',
+                    activity: 'Reading file: README.md'
+                },
+                result: null,
+                createdAt: 0,
+                startedAt: 0,
+                completedAt: null,
+                description: null
+            }
+        }
+
+        const { container } = render(
+            <I18nProvider>
+                <ResultView block={block} metadata={null} surface="inline" />
+            </I18nProvider>
+        )
+
+        expect(container).toHaveTextContent('Reading file: README.md')
+        expect(container).not.toHaveTextContent('Running…')
     })
 })
 

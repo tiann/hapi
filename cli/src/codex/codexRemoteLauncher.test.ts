@@ -12,7 +12,11 @@ const harness = vi.hoisted(() => ({
     interruptedTurns: [] as Array<{ threadId: string; turnId: string }>,
     compactThreadIds: [] as string[],
     suppressTurnCompletion: false,
-    remainingThreadSystemErrors: 0
+    remainingThreadSystemErrors: 0,
+    emitChildThreadEvents: false,
+    emitChildNestedAgentTool: false,
+    emitParentTitleChange: false,
+    bridgeOptions: [] as unknown[]
 }));
 
 vi.mock('./codexAppServerClient', () => {
@@ -70,6 +74,40 @@ vi.mock('./codexAppServerClient', () => {
             }
 
             if (params?.threadId === 'thread-1') {
+                if (harness.emitParentTitleChange) {
+                    const titleStart = {
+                        item: {
+                            id: 'title-parent',
+                            type: 'mcpToolCall',
+                            server: 'hapi',
+                            tool: 'change_title',
+                            arguments: { title: 'Parent Title' }
+                        },
+                        threadId,
+                        turnId
+                    };
+                    harness.notifications.push({ method: 'item/started', params: titleStart });
+                    this.notificationHandler?.('item/started', titleStart);
+
+                    const titleEnd = {
+                        item: {
+                            id: 'title-parent',
+                            type: 'mcpToolCall',
+                            server: 'hapi',
+                            tool: 'change_title',
+                            result: {
+                                content: [
+                                    { type: 'text', text: 'Successfully changed chat title to: "Parent Title"' }
+                                ]
+                            }
+                        },
+                        threadId,
+                        turnId
+                    };
+                    harness.notifications.push({ method: 'item/completed', params: titleEnd });
+                    this.notificationHandler?.('item/completed', titleEnd);
+                }
+
                 const commandStart = {
                     item: {
                         id: 'cmd-1',
@@ -93,6 +131,154 @@ vi.mock('./codexAppServerClient', () => {
                 };
                 harness.notifications.push({ method: 'item/completed', params: commandEnd });
                 this.notificationHandler?.('item/completed', commandEnd);
+            }
+
+            if (harness.emitChildThreadEvents) {
+                const childThreadId = 'child-thread';
+                const childTurnId = 'child-turn';
+                const childMessage = 'child output should stay hidden';
+
+                const childMessageCompleted = {
+                    item: {
+                        id: 'child-msg-1',
+                        type: 'agentMessage',
+                        content: [{ type: 'text', text: childMessage }]
+                    },
+                    threadId: childThreadId,
+                    turnId: childTurnId
+                };
+                harness.notifications.push({ method: 'item/completed', params: childMessageCompleted });
+                this.notificationHandler?.('item/completed', childMessageCompleted);
+
+                const childCommandStart = {
+                    item: {
+                        id: 'child-cmd-1',
+                        type: 'commandExecution',
+                        command: 'echo child'
+                    },
+                    threadId: childThreadId,
+                    turnId: childTurnId
+                };
+                harness.notifications.push({ method: 'item/started', params: childCommandStart });
+                this.notificationHandler?.('item/started', childCommandStart);
+                this.notificationHandler?.('item/commandExecution/outputDelta', {
+                    itemId: 'child-cmd-1',
+                    delta: 'child stdout\n',
+                    threadId: childThreadId,
+                    turnId: childTurnId
+                });
+                const childCommandEnd = {
+                    item: {
+                        id: 'child-cmd-1',
+                        type: 'commandExecution',
+                        exitCode: 0
+                    },
+                    threadId: childThreadId,
+                    turnId: childTurnId
+                };
+                harness.notifications.push({ method: 'item/completed', params: childCommandEnd });
+                this.notificationHandler?.('item/completed', childCommandEnd);
+
+                const childTitleStart = {
+                    item: {
+                        id: 'title-child',
+                        type: 'mcpToolCall',
+                        server: 'hapi',
+                        tool: 'change_title',
+                        arguments: { title: 'Child Title' }
+                    },
+                    threadId: childThreadId,
+                    turnId: childTurnId
+                };
+                harness.notifications.push({ method: 'item/started', params: childTitleStart });
+                this.notificationHandler?.('item/started', childTitleStart);
+
+                const childTitleEnd = {
+                    item: {
+                        id: 'title-child',
+                        type: 'mcpToolCall',
+                        server: 'hapi',
+                        tool: 'change_title',
+                        result: {
+                            content: [
+                                { type: 'text', text: 'Successfully changed chat title to: "Child Title"' }
+                            ]
+                        }
+                    },
+                    threadId: childThreadId,
+                    turnId: childTurnId
+                };
+                harness.notifications.push({ method: 'item/completed', params: childTitleEnd });
+                this.notificationHandler?.('item/completed', childTitleEnd);
+
+                if (harness.emitChildNestedAgentTool) {
+                    const nestedSpawnStart = {
+                        item: {
+                            id: 'nested-spawn',
+                            type: 'collabAgentToolCall',
+                            tool: 'spawn',
+                            senderThreadId: childThreadId,
+                            receiverThreadIds: ['grandchild-thread'],
+                            prompt: 'do nested work'
+                        },
+                        threadId: childThreadId,
+                        turnId: childTurnId
+                    };
+                    harness.notifications.push({ method: 'item/started', params: nestedSpawnStart });
+                    this.notificationHandler?.('item/started', nestedSpawnStart);
+
+                    const nestedSpawnCompleted = {
+                        item: {
+                            id: 'nested-spawn',
+                            type: 'collabAgentToolCall',
+                            tool: 'spawn',
+                            status: 'completed',
+                            senderThreadId: childThreadId,
+                            receiverThreadIds: ['grandchild-thread'],
+                            agentsStates: {}
+                        },
+                        threadId: childThreadId,
+                        turnId: childTurnId
+                    };
+                    harness.notifications.push({ method: 'item/completed', params: nestedSpawnCompleted });
+                    this.notificationHandler?.('item/completed', nestedSpawnCompleted);
+                }
+
+                const waitStarted = {
+                    item: {
+                        id: 'wait-child',
+                        type: 'collabAgentToolCall',
+                        tool: 'wait',
+                        senderThreadId: threadId,
+                        receiverThreadIds: [childThreadId],
+                        agentsStates: {}
+                    },
+                    threadId,
+                    turnId
+                };
+                harness.notifications.push({ method: 'item/started', params: waitStarted });
+                this.notificationHandler?.('item/started', waitStarted);
+
+                const waitCompleted = {
+                    item: {
+                        id: 'wait-child',
+                        type: 'collabAgentToolCall',
+                        tool: 'wait',
+                        status: 'completed',
+                        senderThreadId: threadId,
+                        receiverThreadIds: [childThreadId],
+                        agentsStates: {
+                            [childThreadId]: {
+                                status: 'completed',
+                                message: childMessage
+                            }
+                        }
+                    },
+                    threadId,
+                    turnId
+                };
+                harness.notifications.push({ method: 'item/completed', params: waitCompleted });
+                this.notificationHandler?.('item/completed', waitCompleted);
             }
 
             const completed = { status: 'Completed', turn: { id: turnId } };
@@ -122,12 +308,15 @@ vi.mock('./codexAppServerClient', () => {
 });
 
 vi.mock('./utils/buildHapiMcpBridge', () => ({
-    buildHapiMcpBridge: async () => ({
+    buildHapiMcpBridge: async (_client: unknown, options?: unknown) => {
+        harness.bridgeOptions.push(options);
+        return {
         server: {
             stop: () => {}
         },
         mcpServers: {}
-    })
+        };
+    }
 }));
 
 import { codexRemoteLauncher } from './codexRemoteLauncher';
@@ -157,6 +346,7 @@ function createSessionStub(messages = ['hello from launcher test']) {
 
     const sessionEvents: Array<{ type: string; [key: string]: unknown }> = [];
     const codexMessages: unknown[] = [];
+    const summaryMessages: unknown[] = [];
     const thinkingChanges: boolean[] = [];
     const foundSessionIds: string[] = [];
     const resetThreadCalls: string[] = [];
@@ -180,6 +370,9 @@ function createSessionStub(messages = ['hello from launcher test']) {
             codexMessages.push(message);
         },
         sendUserMessage(_text: string) {},
+        sendClaudeSessionMessage(message: unknown) {
+            summaryMessages.push(message);
+        },
         sendSessionEvent(event: { type: string; [key: string]: unknown }) {
             sessionEvents.push(event);
         }
@@ -230,6 +423,7 @@ function createSessionStub(messages = ['hello from launcher test']) {
         session,
         sessionEvents,
         codexMessages,
+        summaryMessages,
         thinkingChanges,
         foundSessionIds,
         resetThreadCalls,
@@ -251,6 +445,10 @@ describe('codexRemoteLauncher', () => {
         harness.compactThreadIds = [];
         harness.suppressTurnCompletion = false;
         harness.remainingThreadSystemErrors = 0;
+        harness.emitChildThreadEvents = false;
+        harness.emitChildNestedAgentTool = false;
+        harness.emitParentTitleChange = false;
+        harness.bridgeOptions = [];
     });
 
     it('finishes a turn and emits ready when task lifecycle events include turn_id', async () => {
@@ -338,6 +536,129 @@ describe('codexRemoteLauncher', () => {
             output: expect.objectContaining({
                 output: 'ok\n'
             })
+        }));
+    });
+
+    it('routes child thread messages into agent-run trace while keeping them out of the parent timeline', async () => {
+        harness.emitChildThreadEvents = true;
+        const { session, codexMessages, summaryMessages } = createSessionStub();
+
+        await codexRemoteLauncher(session as never);
+
+        expect(codexMessages).not.toContainEqual(expect.objectContaining({
+            type: 'message',
+            message: 'child output should stay hidden'
+        }));
+        expect(codexMessages).not.toContainEqual(expect.objectContaining({
+            type: 'tool-call',
+            callId: 'child-cmd-1'
+        }));
+        expect(summaryMessages).not.toContainEqual(expect.objectContaining({
+            type: 'summary',
+            summary: 'Child Title'
+        }));
+        expect(codexMessages).not.toContainEqual(expect.objectContaining({
+            type: 'tool-call',
+            name: 'wait_agent',
+            callId: 'wait-child'
+        }));
+        expect(codexMessages).toContainEqual(expect.objectContaining({
+            type: 'agent-run-trace',
+            agentId: 'child-thread',
+            message: expect.objectContaining({
+                type: 'message',
+                message: 'child output should stay hidden'
+            })
+        }));
+        expect(codexMessages).toContainEqual(expect.objectContaining({
+            type: 'agent-run-trace',
+            agentId: 'child-thread',
+            message: expect.objectContaining({
+                type: 'tool-call',
+                callId: 'child-cmd-1'
+            })
+        }));
+        expect(codexMessages).toContainEqual(expect.objectContaining({
+            type: 'agent-run-update',
+            agentId: 'child-thread',
+            activity: 'Running command: echo child',
+            activityKind: 'running-command'
+        }));
+        expect(codexMessages).toContainEqual(expect.objectContaining({
+            type: 'agent-run-update',
+            agentId: 'child-thread',
+            summary: 'Child Title'
+        }));
+        expect(codexMessages).toContainEqual(expect.objectContaining({
+            type: 'agent-run-update',
+            agentId: 'child-thread',
+            status: 'completed',
+            result: 'child output should stay hidden',
+            activity: 'Completed: child output should stay hidden',
+            activityKind: 'completed'
+        }));
+    });
+
+    it('marks child agents failed when they attempt to start nested agents', async () => {
+        harness.emitChildThreadEvents = true;
+        harness.emitChildNestedAgentTool = true;
+        const { session, codexMessages } = createSessionStub();
+
+        await codexRemoteLauncher(session as never);
+
+        expect(codexMessages).toContainEqual(expect.objectContaining({
+            type: 'agent-run-trace',
+            agentId: 'child-thread',
+            message: expect.objectContaining({
+                type: 'tool-call',
+                name: 'spawn_agent',
+                callId: 'nested-spawn'
+            })
+        }));
+        expect(codexMessages).toContainEqual(expect.objectContaining({
+            type: 'agent-run-trace',
+            agentId: 'child-thread',
+            message: expect.objectContaining({
+                type: 'tool-call-result',
+                callId: 'nested-spawn',
+                is_error: true,
+                output: 'Nested agent calls are disabled for child agents.'
+            })
+        }));
+        expect(codexMessages).toContainEqual(expect.objectContaining({
+            type: 'agent-run-update',
+            agentId: 'child-thread',
+            status: 'failed',
+            activity: 'Failed: Nested agent calls are disabled for child agents.',
+            activityKind: 'failed'
+        }));
+        expect(codexMessages).not.toContainEqual(expect.objectContaining({
+            type: 'agent-run-update',
+            agentId: 'grandchild-thread'
+        }));
+    });
+
+    it('applies parent-thread hapi change_title after disabling MCP-side title writes', async () => {
+        harness.emitParentTitleChange = true;
+        const { session, codexMessages, summaryMessages } = createSessionStub();
+
+        await codexRemoteLauncher(session as never);
+
+        expect(harness.bridgeOptions).toEqual([{ emitTitleSummary: false }]);
+        expect(summaryMessages).toContainEqual(expect.objectContaining({
+            type: 'summary',
+            summary: 'Parent Title'
+        }));
+        expect(codexMessages).toContainEqual(expect.objectContaining({
+            type: 'tool-call',
+            name: 'mcp__hapi__change_title',
+            callId: 'title-parent',
+            input: { title: 'Parent Title' }
+        }));
+        expect(codexMessages).toContainEqual(expect.objectContaining({
+            type: 'tool-call-result',
+            callId: 'title-parent',
+            is_error: false
         }));
     });
 

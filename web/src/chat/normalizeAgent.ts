@@ -422,6 +422,22 @@ export function normalizeAgentRecord(
         const data = isObject(content.data) ? content.data : null
         if (!data || typeof data.type !== 'string') return null
 
+        if (
+            data.type === 'agent-run-start'
+            || data.type === 'agent-run-update'
+            || data.type === 'agent-run-trace'
+        ) {
+            return {
+                id: messageId,
+                localId,
+                createdAt,
+                role: 'event',
+                content: data as AgentEvent,
+                isSidechain: false,
+                meta
+            }
+        }
+
         if (data.type === 'message' && typeof data.message === 'string') {
             return {
                 id: messageId,

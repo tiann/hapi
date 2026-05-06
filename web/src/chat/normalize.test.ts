@@ -485,4 +485,29 @@ describe('normalizeDecryptedMessage', () => {
         })
     })
 
+    it('normalizes Codex agent-run events for timeline aggregation', () => {
+        const message = makeMessage({
+            role: 'agent',
+            content: {
+                type: 'codex',
+                data: {
+                    type: 'agent-run-start',
+                    cardId: 'spawn-1',
+                    input: { message: 'inspect files' },
+                    status: 'starting'
+                }
+            }
+        })
+
+        expect(normalizeDecryptedMessage(message)).toMatchObject({
+            role: 'event',
+            content: {
+                type: 'agent-run-start',
+                cardId: 'spawn-1',
+                input: { message: 'inspect files' },
+                status: 'starting'
+            }
+        })
+    })
+
 })

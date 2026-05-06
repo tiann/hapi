@@ -25,6 +25,19 @@ import {
 
 type HappyServer = Awaited<ReturnType<typeof buildHapiMcpBridge>>['server'];
 type QueuedMessage = { message: string; mode: EnhancedMode; isolate: boolean; hash: string };
+type ChildAgentRuntime = {
+    reasoningProcessor: ReasoningProcessor;
+    diffProcessor: DiffProcessor;
+    activeToolsByCallId: Map<string, {
+        name: string;
+        label: string;
+        activity: string;
+        activityKind: string;
+    }>;
+    pendingTitleByCallId: Map<string, string>;
+    reasoningPreview: string;
+    blockedNestedAgent: boolean;
+};
 
 class CodexRemoteLauncher extends RemoteLauncherBase {
     private readonly session: CodexSession;
@@ -160,6 +173,18 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             return `mcp__${serverName}__${toolName}`;
         };
 
+        const isHapiChangeTitleToolName = (toolName: string | null): boolean => {
+            return toolName === 'mcp__hapi__change_title';
+        };
+
+        const sendTitleSummary = (title: string): void => {
+            session.client.sendClaudeSessionMessage({
+                type: 'summary',
+                summary: title,
+                leafUuid: randomUUID()
+            });
+        };
+
         const formatOutputPreview = (value: unknown): string => {
             if (typeof value === 'string') return value;
             if (typeof value === 'number' || typeof value === 'boolean') return String(value);
@@ -169,6 +194,117 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             } catch {
                 return String(value);
             }
+        };
+
+        const compactText = (text: string): string => {
+            return text.replace(/\s+/g, ' ').trim();
+        };
+
+        const truncateText = (text: string, maxLength: number): string => {
+            const compacted = compactText(text);
+            if (compacted.length <= maxLength) return compacted;
+            return `${compacted.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
+        };
+
+        const previewText = (value: unknown, maxLength = 120): string | null => {
+            const text = formatOutputPreview(value);
+            const preview = truncateText(text, maxLength);
+            return preview.length > 0 ? preview : null;
+        };
+
+        const formatActivity = (verb: string, detail?: string | null, maxLength = 120): string => {
+            const normalizedDetail = detail ? truncateText(detail, maxLength) : '';
+            return normalizedDetail ? `${verb}: ${normalizedDetail}` : verb;
+        };
+
+        const extractTextItems = (input: unknown): string[] => {
+            const record = asRecord(input);
+            if (!record || !Array.isArray(record.items)) return [];
+            return record.items
+                .map((item) => {
+                    const itemRecord = asRecord(item);
+                    return asString(itemRecord?.text);
+                })
+                .filter((text): text is string => Boolean(text));
+        };
+
+        const extractAgentPrompt = (input: unknown): string | null => {
+            const record = asRecord(input);
+            if (!record) return null;
+
+            const direct = asString(record.message ?? record.prompt);
+            if (direct) return direct;
+
+            const textItems = extractTextItems(input);
+            return textItems.length > 0 ? textItems.join('\n\n') : null;
+        };
+
+        const cleanAgentPromptForSummary = (prompt: string): string => {
+            const withoutTags = prompt
+                .replace(/<[^>\n]+>/g, ' ')
+                .replace(/\r/g, '\n');
+            const noisePatterns = [
+                /not alone in the codebase/i,
+                /do not revert/i,
+                /don't revert/i,
+                /list the file paths/i,
+                /changed files/i,
+                /final answer/i,
+                /avoid merge conflicts/i,
+                /accommodate the changes/i
+            ];
+            const lines = withoutTags
+                .split('\n')
+                .map((line) => line.trim().replace(/^[-*]\s+/, '').replace(/^#{1,6}\s+/, ''))
+                .filter((line) => line.length > 0)
+                .filter((line) => !noisePatterns.some((pattern) => pattern.test(line)));
+            const candidate = lines.length > 0 ? lines.join(' ') : withoutTags;
+            return compactText(candidate)
+                .replace(/^(task|your task|request|prompt)\s*[:：]\s*/i, '')
+                .trim();
+        };
+
+        const summarizeAgentInput = (input: unknown): string | null => {
+            const prompt = extractAgentPrompt(input);
+            if (prompt) {
+                const cleaned = cleanAgentPromptForSummary(prompt);
+                if (cleaned.length > 0) {
+                    return truncateText(cleaned, 80);
+                }
+            }
+
+            const record = asRecord(input);
+            const agentType = asString(record?.agent_type ?? record?.subagent_type ?? record?.type);
+            return agentType ? `${agentType} agent` : null;
+        };
+
+        const getPatchFiles = (changes: unknown): string[] => {
+            const record = asRecord(changes);
+            if (!record) return [];
+            return Object.keys(record).filter((file) => file.length > 0);
+        };
+
+        const summarizeFiles = (files: string[]): string | null => {
+            if (files.length === 0) return null;
+            const first = files[0] ?? '';
+            const basename = first.split('/').filter(Boolean).pop() ?? first;
+            return files.length > 1 ? `${basename} (+${files.length - 1})` : basename;
+        };
+
+        const summarizeDiffFiles = (diff: string): string | null => {
+            const files: string[] = [];
+            for (const line of diff.split('\n')) {
+                if (!line.startsWith('+++ ')) continue;
+                const file = line.replace(/^\+\+\+ (b\/)?/, '').trim();
+                if (file && file !== '/dev/null') files.push(file);
+            }
+            return summarizeFiles([...new Set(files)]);
+        };
+
+        const displayMcpToolName = (toolName: string): string => {
+            const match = toolName.match(/^mcp__(.+?)__(.+)$/);
+            if (!match) return toolName;
+            return `${match[1]}.${match[2]}`;
         };
 
         const permissionHandler = new CodexPermissionHandler(session.client, () => {
@@ -234,6 +370,16 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         const diffProcessor = new DiffProcessor((message) => {
             session.sendAgentMessage(message);
         });
+        const mcpTitleByCallId = new Map<string, string>();
+        const agentCardByAgentId = new Map<string, string>();
+        const agentSummaryByCardId = new Map<string, string>();
+        const agentSummaryByAgentId = new Map<string, string>();
+        const agentStatusByAgentId = new Map<string, string>();
+        const pendingAgentStartCardIds = new Set<string>();
+        const pendingAgentUpdatesByAgentId = new Map<string, Record<string, unknown>[]>();
+        const pendingAgentTracesByAgentId = new Map<string, unknown[]>();
+        const pendingAgentToolInputByCallId = new Map<string, { name: string; input: unknown }>();
+        const childAgentRuntimeById = new Map<string, ChildAgentRuntime>();
         this.permissionHandler = permissionHandler;
         this.reasoningProcessor = reasoningProcessor;
         this.diffProcessor = diffProcessor;
@@ -243,6 +389,707 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         let turnInFlight = false;
         let allowAnonymousTerminalEvent = false;
         let invalidThreadId: string | null = null;
+
+        const isCodexAgentToolName = (toolName: string | null): boolean => {
+            return toolName === 'spawn_agent'
+                || toolName === 'send_input'
+                || toolName === 'resume_agent'
+                || toolName === 'wait_agent'
+                || toolName === 'close_agent';
+        };
+
+        const isTerminalAgentRunStatus = (status: string | null | undefined): boolean => {
+            return status === 'completed'
+                || status === 'failed'
+                || status === 'error'
+                || status === 'canceled'
+                || status === 'cancelled'
+                || status === 'notFound'
+                || status === 'not_found';
+        };
+
+        const isCloseAgentCleanupUpdate = (update: Record<string, unknown>): boolean => {
+            const activityKind = asString(update.activityKind ?? update.activity_kind);
+            if (activityKind === 'close_agent' || activityKind === 'closed') return true;
+            return activityKind === 'canceled'
+                && (asString(update.activity) === 'Closed' || asString(update.statusText ?? update.status_text) === 'Closed');
+        };
+
+        const extractAgentTargets = (input: unknown): string[] => {
+            const record = asRecord(input);
+            if (!record) return [];
+            const targets = Array.isArray(record.targets)
+                ? record.targets.filter((target): target is string => typeof target === 'string' && target.length > 0)
+                : [];
+            if (targets.length > 0) return targets;
+            return [record.target, record.agent_id, record.agentId, record.id]
+                .filter((target): target is string => typeof target === 'string' && target.length > 0);
+        };
+
+        const emitAgentRunEvent = (event: Record<string, unknown>): void => {
+            session.sendAgentMessage({
+                ...event,
+                id: randomUUID()
+            });
+        };
+
+        const emitAgentRunStart = (cardId: string, input: unknown): void => {
+            const summary = summarizeAgentInput(input);
+            if (summary) {
+                agentSummaryByCardId.set(cardId, summary);
+            }
+            pendingAgentStartCardIds.add(cardId);
+            emitAgentRunEvent({
+                type: 'agent-run-start',
+                cardId,
+                input,
+                status: 'starting',
+                statusText: 'Starting',
+                activity: 'Starting',
+                activityKind: 'starting',
+                ...(summary ? { summary } : {})
+            });
+        };
+
+        const flushPendingAgentTraces = (agentId: string): void => {
+            const traces = pendingAgentTracesByAgentId.get(agentId);
+            if (!traces || traces.length === 0) return;
+            pendingAgentTracesByAgentId.delete(agentId);
+            for (const message of traces) {
+                emitAgentRunEvent({
+                    type: 'agent-run-trace',
+                    agentId,
+                    cardId: agentCardByAgentId.get(agentId),
+                    message
+                });
+            }
+        };
+
+        const linkAgentToCard = (agentId: string, cardId: string): void => {
+            agentCardByAgentId.set(agentId, cardId);
+            pendingAgentStartCardIds.delete(cardId);
+            const summary = agentSummaryByCardId.get(cardId);
+            if (summary) {
+                agentSummaryByAgentId.set(agentId, summary);
+            }
+            flushPendingAgentTraces(agentId);
+        };
+
+        const flushPendingAgentUpdates = (agentId: string): void => {
+            const updates = pendingAgentUpdatesByAgentId.get(agentId);
+            if (!updates || updates.length === 0) return;
+            pendingAgentUpdatesByAgentId.delete(agentId);
+            for (const update of updates) {
+                emitAgentRunUpdate(agentId, update);
+            }
+        };
+
+        const emitAgentRunUpdate = (
+            agentId: string,
+            update: Record<string, unknown>,
+            cardIdOverride?: string | null
+        ): void => {
+            const knownCardId = agentCardByAgentId.get(agentId);
+            if (
+                !cardIdOverride
+                && !knownCardId
+                && pendingAgentStartCardIds.size > 0
+                && childAgentRuntimeById.has(agentId)
+            ) {
+                const updates = pendingAgentUpdatesByAgentId.get(agentId) ?? [];
+                updates.push(update);
+                pendingAgentUpdatesByAgentId.set(agentId, updates);
+                return;
+            }
+
+            const cardId = cardIdOverride ?? knownCardId ?? `codex-agent:${agentId}`;
+            if (!knownCardId) {
+                agentCardByAgentId.set(agentId, cardId);
+            }
+            const nextStatus = asString(update.status);
+            const currentStatus = agentStatusByAgentId.get(agentId);
+            const activityKind = asString(update.activityKind ?? update.activity_kind);
+            if (
+                isTerminalAgentRunStatus(currentStatus)
+                && !isTerminalAgentRunStatus(nextStatus)
+                && (activityKind === 'wait_agent' || activityKind === 'close_agent')
+            ) {
+                return;
+            }
+            if (
+                childAgentRuntimeById.get(agentId)?.blockedNestedAgent
+                && nextStatus !== 'failed'
+                && nextStatus !== 'error'
+            ) {
+                return;
+            }
+            if (
+                isTerminalAgentRunStatus(currentStatus)
+                && nextStatus !== 'failed'
+                && nextStatus !== 'error'
+                && isCloseAgentCleanupUpdate(update)
+            ) {
+                return;
+            }
+            const nextSummary = asString(update.summary);
+            if (nextSummary) {
+                agentSummaryByAgentId.set(agentId, nextSummary);
+                agentSummaryByCardId.set(cardId, nextSummary);
+            }
+            if (nextStatus) {
+                agentStatusByAgentId.set(agentId, nextStatus);
+            }
+            emitAgentRunEvent({
+                type: 'agent-run-update',
+                agentId,
+                cardId,
+                ...(agentSummaryByAgentId.has(agentId) ? { summary: agentSummaryByAgentId.get(agentId) } : {}),
+                ...update
+            });
+            flushPendingAgentTraces(agentId);
+        };
+
+        const emitAgentRunTraceMessage = (agentId: string, message: unknown): void => {
+            const cardId = agentCardByAgentId.get(agentId);
+            if (!cardId) {
+                const traces = pendingAgentTracesByAgentId.get(agentId) ?? [];
+                traces.push(message);
+                pendingAgentTracesByAgentId.set(agentId, traces);
+                return;
+            }
+            emitAgentRunEvent({
+                type: 'agent-run-trace',
+                agentId,
+                cardId,
+                message
+            });
+        };
+
+        const getChildRuntime = (agentId: string) => {
+            const existing = childAgentRuntimeById.get(agentId);
+            if (existing) return existing;
+            const runtime = {
+                reasoningProcessor: new ReasoningProcessor((message) => {
+                    emitAgentRunTraceMessage(agentId, message);
+                }),
+                diffProcessor: new DiffProcessor((message) => {
+                    emitAgentRunTraceMessage(agentId, message);
+                }),
+                activeToolsByCallId: new Map(),
+                pendingTitleByCallId: new Map(),
+                reasoningPreview: '',
+                blockedNestedAgent: false
+            };
+            childAgentRuntimeById.set(agentId, runtime);
+            return runtime;
+        };
+
+        const normalizeAgentStatusUpdate = (value: unknown): Record<string, unknown> => {
+            if (typeof value === 'string') {
+                const activity = formatActivity('Completed', previewText(value));
+                return {
+                    status: 'completed',
+                    statusText: 'Completed',
+                    activity,
+                    activityKind: 'completed',
+                    result: value
+                };
+            }
+
+            const record = asRecord(value);
+            if (!record) {
+                const activity = formatActivity('Completed', previewText(value));
+                return {
+                    status: 'completed',
+                    statusText: 'Completed',
+                    activity,
+                    activityKind: 'completed',
+                    result: value
+                };
+            }
+
+            const completed = asString(record.completed);
+            if (completed) {
+                return {
+                    status: 'completed',
+                    statusText: 'Completed',
+                    activity: formatActivity('Completed', completed),
+                    activityKind: 'completed',
+                    result: completed
+                };
+            }
+            const failed = asString(record.failed ?? record.error);
+            if (failed) {
+                return {
+                    status: 'failed',
+                    statusText: 'Failed',
+                    activity: formatActivity('Failed', failed),
+                    activityKind: 'failed',
+                    error: failed
+                };
+            }
+            const canceled = asString(record.canceled ?? record.cancelled);
+            if (canceled) {
+                return {
+                    status: 'canceled',
+                    statusText: 'Canceled',
+                    activity: formatActivity('Canceled', canceled),
+                    activityKind: 'canceled',
+                    error: canceled
+                };
+            }
+
+            const rawStatus = asString(record.status ?? record.state);
+            if (rawStatus === 'notFound' || rawStatus === 'not_found') {
+                const error = record.message ?? record.error ?? value;
+                return {
+                    status: 'failed',
+                    statusText: 'Not found',
+                    activity: formatActivity('Agent not found', previewText(error)),
+                    activityKind: 'not_found',
+                    error
+                };
+            }
+            if (rawStatus === 'completed') {
+                const result = record.message ?? record.output ?? value;
+                return {
+                    status: 'completed',
+                    statusText: 'Completed',
+                    activity: formatActivity('Completed', previewText(result)),
+                    activityKind: 'completed',
+                    result
+                };
+            }
+            if (rawStatus === 'failed' || rawStatus === 'error') {
+                const error = record.message ?? record.error ?? value;
+                return {
+                    status: 'failed',
+                    statusText: 'Failed',
+                    activity: formatActivity('Failed', previewText(error)),
+                    activityKind: 'failed',
+                    error
+                };
+            }
+            if (rawStatus === 'canceled' || rawStatus === 'cancelled') {
+                const error = record.message ?? record.error ?? value;
+                return {
+                    status: 'canceled',
+                    statusText: 'Canceled',
+                    activity: formatActivity('Canceled', previewText(error)),
+                    activityKind: 'canceled',
+                    error
+                };
+            }
+
+            return {
+                status: rawStatus ?? 'running',
+                statusText: rawStatus ?? 'Running',
+                activity: formatActivity(rawStatus ?? 'Running', previewText(record.message ?? record.output ?? value)),
+                activityKind: rawStatus ?? 'running',
+                result: value
+            };
+        };
+
+        const isAgentNotFoundStatusUpdate = (update: Record<string, unknown>): boolean => {
+            const status = asString(update.status);
+            const activityKind = asString(update.activityKind ?? update.activity_kind);
+            return status === 'notFound'
+                || status === 'not_found'
+                || activityKind === 'not_found';
+        };
+
+        const handleAgentToolEnd = (callId: string, name: string, output: unknown, isError: boolean): void => {
+            const pending = pendingAgentToolInputByCallId.get(callId);
+            pendingAgentToolInputByCallId.delete(callId);
+
+            if (name === 'spawn_agent') {
+                const outputRecord = asRecord(output);
+                const agentId = asString(outputRecord?.agent_id ?? outputRecord?.agentId ?? outputRecord?.id)
+                    ?? extractAgentTargets(pending?.input).at(0);
+                if (!agentId) return;
+                linkAgentToCard(agentId, callId);
+                emitAgentRunUpdate(agentId, {
+                    status: isError ? 'failed' : 'running',
+                    statusText: isError ? 'Failed to start' : 'Running',
+                    activity: isError ? formatActivity('Failed to start', previewText(output)) : 'Started',
+                    activityKind: isError ? 'failed' : 'running',
+                    ...(isError ? { error: output } : { spawnResult: output })
+                }, callId);
+                flushPendingAgentUpdates(agentId);
+                return;
+            }
+
+            if (name === 'wait_agent') {
+                const outputRecord = asRecord(output);
+                const statusMap = asRecord(outputRecord?.status) ?? {};
+                for (const [agentId, statusValue] of Object.entries(statusMap)) {
+                    const update = normalizeAgentStatusUpdate(statusValue);
+                    if (!agentCardByAgentId.has(agentId) && isAgentNotFoundStatusUpdate(update)) {
+                        continue;
+                    }
+                    emitAgentRunUpdate(agentId, update);
+                }
+                return;
+            }
+
+            if (name === 'close_agent') {
+                const outputRecord = asRecord(output);
+                const agentId = asString(outputRecord?.agent_id ?? outputRecord?.agentId)
+                    ?? extractAgentTargets(pending?.input).at(0);
+                if (!agentId) return;
+                emitAgentRunUpdate(agentId, {
+                    status: isError ? 'failed' : 'completed',
+                    statusText: isError ? 'Close failed' : 'Closed',
+                    activity: isError ? formatActivity('Close failed', previewText(output)) : 'Closed',
+                    activityKind: isError ? 'failed' : 'closed',
+                    ...(isError ? { error: output } : { result: output })
+                });
+                return;
+            }
+        };
+
+        const handleChildCodexEvent = (agentId: string, msg: Record<string, unknown>): void => {
+            const msgType = asString(msg.type);
+            if (!msgType) return;
+            const runtime = getChildRuntime(agentId);
+            const isChildTerminalEvent = msgType === 'task_complete' || msgType === 'turn_aborted' || msgType === 'task_failed';
+            if (runtime.blockedNestedAgent && !isChildTerminalEvent) {
+                return;
+            }
+            const updateActivity = (
+                activity: string,
+                activityKind: string,
+                extra?: Record<string, unknown>
+            ): void => {
+                emitAgentRunUpdate(agentId, {
+                    status: 'running',
+                    statusText: activity,
+                    activity,
+                    activityKind,
+                    ...extra
+                });
+            };
+
+            if (msgType === 'task_started') {
+                runtime.reasoningPreview = '';
+                updateActivity('Starting task', 'starting');
+                return;
+            }
+            if (msgType === 'agent_reasoning_section_break') {
+                runtime.reasoningProcessor.handleSectionBreak();
+                runtime.reasoningPreview = '';
+                updateActivity('Thinking', 'thinking');
+                return;
+            }
+            if (msgType === 'agent_reasoning_delta') {
+                const delta = asString(msg.delta);
+                if (delta) {
+                    runtime.reasoningProcessor.processDelta(delta);
+                    runtime.reasoningPreview = truncateText(`${runtime.reasoningPreview}${delta}`, 160);
+                }
+                updateActivity(formatActivity('Thinking', runtime.reasoningPreview || null), 'thinking');
+                return;
+            }
+            if (msgType === 'agent_reasoning') {
+                const text = asString(msg.text);
+                if (text) {
+                    runtime.reasoningProcessor.complete(text);
+                    runtime.reasoningPreview = truncateText(text, 160);
+                }
+                updateActivity(formatActivity('Thinking', runtime.reasoningPreview || null), 'thinking');
+                return;
+            }
+            if (msgType === 'agent_message') {
+                const message = asString(msg.message);
+                if (message) {
+                    emitAgentRunTraceMessage(agentId, {
+                        type: 'message',
+                        message,
+                        id: randomUUID()
+                    });
+                }
+                updateActivity(formatActivity('Writing', message), 'writing');
+                return;
+            }
+            if (msgType === 'exec_command_begin' || msgType === 'exec_approval_request') {
+                const callId = asString(msg.call_id ?? msg.callId);
+                if (callId) {
+                    const inputs: Record<string, unknown> = { ...msg };
+                    delete inputs.type;
+                    delete inputs.call_id;
+                    delete inputs.callId;
+                    emitAgentRunTraceMessage(agentId, {
+                        type: 'tool-call',
+                        name: 'CodexBash',
+                        callId,
+                        input: inputs,
+                        id: randomUUID()
+                    });
+                    const command = normalizeCommand(inputs.command) ?? 'command';
+                    runtime.activeToolsByCallId.set(callId, {
+                        name: 'CodexBash',
+                        label: command,
+                        activity: formatActivity('Running command', command),
+                        activityKind: 'running-command'
+                    });
+                    emitAgentRunUpdate(agentId, {
+                        status: 'running',
+                        statusText: formatActivity('Running command', command),
+                        activity: formatActivity('Running command', command),
+                        activityKind: 'running-command'
+                    });
+                }
+                return;
+            }
+            if (msgType === 'exec_command_end') {
+                const callId = asString(msg.call_id ?? msg.callId);
+                if (callId) {
+                    const activeTool = runtime.activeToolsByCallId.get(callId);
+                    runtime.activeToolsByCallId.delete(callId);
+                    const output: Record<string, unknown> = { ...msg };
+                    delete output.type;
+                    delete output.call_id;
+                    delete output.callId;
+                    output.stdout = output.output;
+                    delete output.output;
+                    emitAgentRunTraceMessage(agentId, {
+                        type: 'tool-call-result',
+                        callId,
+                        output,
+                        is_error: Boolean(output.error),
+                        id: randomUUID()
+                    });
+                    const label = activeTool?.label ?? normalizeCommand(output.command) ?? 'command';
+                    const isError = Boolean(output.error);
+                    updateActivity(
+                        formatActivity(isError ? 'Command failed' : 'Command finished', label),
+                        isError ? 'command-failed' : 'command-completed'
+                    );
+                }
+                return;
+            }
+            if (msgType === 'patch_apply_begin') {
+                const callId = asString(msg.call_id ?? msg.callId);
+                if (callId) {
+                    const changes = asRecord(msg.changes) ?? {};
+                    const files = getPatchFiles(changes);
+                    const fileSummary = summarizeFiles(files);
+                    emitAgentRunTraceMessage(agentId, {
+                        type: 'tool-call',
+                        name: 'CodexPatch',
+                        callId,
+                        input: {
+                            auto_approved: msg.auto_approved ?? msg.autoApproved,
+                            changes
+                        },
+                        id: randomUUID()
+                    });
+                    runtime.activeToolsByCallId.set(callId, {
+                        name: 'CodexPatch',
+                        label: fileSummary ?? 'files',
+                        activity: formatActivity('Editing files', fileSummary),
+                        activityKind: 'editing'
+                    });
+                    updateActivity(formatActivity('Editing files', fileSummary), 'editing');
+                }
+                return;
+            }
+            if (msgType === 'patch_apply_end') {
+                const callId = asString(msg.call_id ?? msg.callId);
+                if (callId) {
+                    const activeTool = runtime.activeToolsByCallId.get(callId);
+                    runtime.activeToolsByCallId.delete(callId);
+                    const stdout = asString(msg.stdout);
+                    const stderr = asString(msg.stderr);
+                    const success = Boolean(msg.success);
+                    emitAgentRunTraceMessage(agentId, {
+                        type: 'tool-call-result',
+                        callId,
+                        output: { stdout, stderr, success },
+                        is_error: !success,
+                        id: randomUUID()
+                    });
+                    updateActivity(
+                        formatActivity(success ? 'Files edited' : 'Edit failed', activeTool?.label ?? previewText(stderr ?? stdout)),
+                        success ? 'edited' : 'edit-failed'
+                    );
+                }
+                return;
+            }
+            if (msgType === 'mcp_tool_call_begin') {
+                const callId = asString(msg.call_id ?? msg.callId);
+                const invocation = asRecord(msg.invocation) ?? {};
+                const name = buildMcpToolName(
+                    invocation.server ?? invocation.server_name ?? msg.server,
+                    invocation.tool ?? invocation.tool_name ?? msg.tool
+                );
+                if (callId && name) {
+                    const input = invocation.arguments ?? invocation.input ?? msg.arguments ?? msg.input ?? {};
+                    const inputRecord = asRecord(input);
+                    const requestedTitle = inputRecord ? asString(inputRecord.title) : null;
+                    if (isHapiChangeTitleToolName(name) && requestedTitle) {
+                        runtime.pendingTitleByCallId.set(callId, requestedTitle);
+                    }
+                    emitAgentRunTraceMessage(agentId, {
+                        type: 'tool-call',
+                        name,
+                        callId,
+                        input,
+                        id: randomUUID()
+                    });
+                    const label = displayMcpToolName(name);
+                    runtime.activeToolsByCallId.set(callId, {
+                        name,
+                        label,
+                        activity: formatActivity('Calling tool', label),
+                        activityKind: 'tool'
+                    });
+                    updateActivity(formatActivity('Calling tool', label), 'tool');
+                }
+                return;
+            }
+            if (msgType === 'mcp_tool_call_end') {
+                const callId = asString(msg.call_id ?? msg.callId);
+                if (callId) {
+                    const activeTool = runtime.activeToolsByCallId.get(callId);
+                    runtime.activeToolsByCallId.delete(callId);
+                    const rawResult = msg.result;
+                    let output = rawResult;
+                    let isError = false;
+                    const resultRecord = asRecord(rawResult);
+                    if (resultRecord) {
+                        if (Object.prototype.hasOwnProperty.call(resultRecord, 'Ok')) {
+                            output = resultRecord.Ok;
+                        } else if (Object.prototype.hasOwnProperty.call(resultRecord, 'Err')) {
+                            output = resultRecord.Err;
+                            isError = true;
+                        }
+                    }
+                    emitAgentRunTraceMessage(agentId, {
+                        type: 'tool-call-result',
+                        callId,
+                        output,
+                        is_error: isError,
+                        id: randomUUID()
+                    });
+                    const title = runtime.pendingTitleByCallId.get(callId);
+                    runtime.pendingTitleByCallId.delete(callId);
+                    updateActivity(
+                        formatActivity(isError ? 'Tool failed' : 'Tool finished', activeTool?.label ?? displayMcpToolName(asString(msg.tool) ?? 'tool')),
+                        isError ? 'tool-failed' : 'tool-completed',
+                        !isError && title ? { summary: title } : undefined
+                    );
+                }
+                return;
+            }
+            if (msgType === 'codex_tool_call_begin') {
+                const callId = asString(msg.call_id ?? msg.callId);
+                const name = asString(msg.name);
+                if (callId && name) {
+                    if (isCodexAgentToolName(name)) {
+                        const error = 'Nested agent calls are disabled for child agents.';
+                        runtime.blockedNestedAgent = true;
+                        emitAgentRunTraceMessage(agentId, {
+                            type: 'tool-call',
+                            name,
+                            callId,
+                            input: msg.input ?? {},
+                            id: randomUUID()
+                        });
+                        emitAgentRunTraceMessage(agentId, {
+                            type: 'tool-call-result',
+                            callId,
+                            output: error,
+                            is_error: true,
+                            id: randomUUID()
+                        });
+                        emitAgentRunUpdate(agentId, {
+                            status: 'failed',
+                            statusText: 'Failed',
+                            activity: formatActivity('Failed', error),
+                            activityKind: 'failed',
+                            error
+                        });
+                        return;
+                    }
+                    const activity = formatActivity('Running tool', name);
+                    emitAgentRunTraceMessage(agentId, {
+                        type: 'tool-call',
+                        name,
+                        callId,
+                        input: msg.input ?? {},
+                        id: randomUUID()
+                    });
+                    runtime.activeToolsByCallId.set(callId, {
+                        name,
+                        label: name,
+                        activity,
+                        activityKind: 'tool'
+                    });
+                    updateActivity(activity, 'tool');
+                }
+                return;
+            }
+            if (msgType === 'codex_tool_call_end') {
+                const callId = asString(msg.call_id ?? msg.callId);
+                if (callId) {
+                    const activeTool = runtime.activeToolsByCallId.get(callId);
+                    runtime.activeToolsByCallId.delete(callId);
+                    const isError = Boolean(msg.is_error ?? msg.isError);
+                    emitAgentRunTraceMessage(agentId, {
+                        type: 'tool-call-result',
+                        callId,
+                        output: msg.output,
+                        is_error: isError,
+                        id: randomUUID()
+                    });
+                    updateActivity(
+                        formatActivity(isError ? 'Tool failed' : 'Tool finished', activeTool?.label ?? 'tool'),
+                        isError ? 'tool-failed' : 'tool-completed'
+                    );
+                }
+                return;
+            }
+            if (msgType === 'turn_diff') {
+                const diff = asString(msg.unified_diff);
+                if (diff) {
+                    runtime.diffProcessor.processDiff(diff);
+                    updateActivity(formatActivity('Editing files', summarizeDiffFiles(diff)), 'editing');
+                }
+                return;
+            }
+            if (isChildTerminalEvent) {
+                runtime.reasoningProcessor.reset();
+                runtime.diffProcessor.reset();
+                runtime.activeToolsByCallId.clear();
+                runtime.pendingTitleByCallId.clear();
+                runtime.reasoningPreview = '';
+                if (msgType === 'task_failed') {
+                    const error = asString(msg.error) ?? 'Task failed';
+                    emitAgentRunUpdate(agentId, {
+                        status: 'failed',
+                        statusText: 'Failed',
+                        activity: formatActivity('Failed', error),
+                        activityKind: 'failed',
+                        error
+                    });
+                } else if (msgType === 'turn_aborted') {
+                    emitAgentRunUpdate(agentId, {
+                        status: 'canceled',
+                        statusText: 'Canceled',
+                        activity: 'Canceled',
+                        activityKind: 'canceled'
+                    });
+                } else {
+                    emitAgentRunUpdate(agentId, {
+                        status: 'completed',
+                        statusText: 'Completed',
+                        activity: 'Completed',
+                        activityKind: 'completed'
+                    });
+                }
+            }
+        };
 
         const handleCodexEvent = (msg: Record<string, unknown>) => {
             const msgType = asString(msg.type);
@@ -254,9 +1101,25 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             if (msgType === 'thread_started') {
                 const threadId = asString(msg.thread_id ?? msg.threadId);
                 if (threadId) {
-                    this.currentThreadId = threadId;
-                    session.onSessionFound(threadId);
+                    if (!this.currentThreadId || this.currentThreadId === threadId) {
+                        this.currentThreadId = threadId;
+                        session.onSessionFound(threadId);
+                    } else {
+                        logger.debug(
+                            `[Codex] Ignoring thread_started for non-active thread; ` +
+                            `eventThreadId=${threadId}, activeThread=${this.currentThreadId}`
+                        );
+                    }
                 }
+                return;
+            }
+
+            if (eventThreadId && this.currentThreadId && eventThreadId !== this.currentThreadId) {
+                logger.debug(
+                    `[Codex] Routing event from non-active thread into agent trace; ` +
+                    `type=${msgType}, eventThreadId=${eventThreadId}, activeThread=${this.currentThreadId}`
+                );
+                handleChildCodexEvent(eventThreadId, msg);
                 return;
             }
 
@@ -353,6 +1216,8 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 }
                 diffProcessor.reset();
                 appServerEventConverter.reset();
+                mcpTitleByCallId.clear();
+                pendingAgentToolInputByCallId.clear();
             }
 
             if (isTerminalEvent && !turnInFlight) {
@@ -504,11 +1369,17 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     invocation.tool ?? invocation.tool_name ?? msg.tool
                 );
                 if (callId && name) {
+                    const input = invocation.arguments ?? invocation.input ?? msg.arguments ?? msg.input ?? {};
+                    const inputRecord = asRecord(input);
+                    const requestedTitle = inputRecord ? asString(inputRecord.title) : null;
+                    if (isHapiChangeTitleToolName(name) && requestedTitle) {
+                        mcpTitleByCallId.set(callId, requestedTitle);
+                    }
                     session.sendAgentMessage({
                         type: 'tool-call',
                         name,
                         callId,
-                        input: invocation.arguments ?? invocation.input ?? msg.arguments ?? msg.input ?? {},
+                        input,
                         id: randomUUID()
                     });
                 }
@@ -529,11 +1400,76 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 }
 
                 if (callId) {
+                    const title = mcpTitleByCallId.get(callId);
+                    mcpTitleByCallId.delete(callId);
+                    if (!isError && title) {
+                        sendTitleSummary(title);
+                    }
+
                     session.sendAgentMessage({
                         type: 'tool-call-result',
                         callId,
                         output,
                         is_error: isError,
+                        id: randomUUID()
+                    });
+                }
+            }
+            if (msgType === 'codex_tool_call_begin') {
+                const callId = asString(msg.call_id ?? msg.callId);
+                const name = asString(msg.name);
+                if (callId && name) {
+                    if (isCodexAgentToolName(name)) {
+                            const input = msg.input ?? {};
+                            pendingAgentToolInputByCallId.set(callId, { name, input });
+                            if (name === 'spawn_agent') {
+                                emitAgentRunStart(callId, input);
+                            } else {
+                                for (const agentId of extractAgentTargets(input)) {
+                                    if (!agentCardByAgentId.has(agentId)) {
+                                        continue;
+                                    }
+                                    const activity = name === 'wait_agent'
+                                        ? 'Waiting for agent'
+                                        : name === 'send_input'
+                                            ? 'Sending input'
+                                        : name === 'resume_agent'
+                                            ? 'Resuming agent'
+                                            : name === 'close_agent'
+                                                ? 'Closing agent'
+                                                : 'Running agent tool';
+                                emitAgentRunUpdate(agentId, {
+                                    status: 'running',
+                                    statusText: activity,
+                                    activity,
+                                    activityKind: name
+                                });
+                            }
+                        }
+                        return;
+                    }
+                    session.sendAgentMessage({
+                        type: 'tool-call',
+                        name,
+                        callId,
+                        input: msg.input ?? {},
+                        id: randomUUID()
+                    });
+                }
+            }
+            if (msgType === 'codex_tool_call_end') {
+                const callId = asString(msg.call_id ?? msg.callId);
+                const name = asString(msg.name) ?? pendingAgentToolInputByCallId.get(callId ?? '')?.name ?? null;
+                if (callId) {
+                    if (name && isCodexAgentToolName(name)) {
+                        handleAgentToolEnd(callId, name, msg.output, Boolean(msg.is_error ?? msg.isError));
+                        return;
+                    }
+                    session.sendAgentMessage({
+                        type: 'tool-call-result',
+                        callId,
+                        output: msg.output,
+                        is_error: Boolean(msg.is_error ?? msg.isError),
                         id: randomUUID()
                     });
                 }
@@ -574,7 +1510,14 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             }
         });
 
-        const { server: happyServer, mcpServers } = await buildHapiMcpBridge(session.client);
+        const { server: happyServer, mcpServers } = await buildHapiMcpBridge(session.client, {
+            // In app-server/collab mode, child agents share this MCP bridge.
+            // If the MCP handler writes the title directly, child title calls
+            // leak into the parent HAPI session. Defer the side effect until
+            // parent-thread mcp_tool_call_end reaches this launcher; child
+            // events are filtered above by thread id.
+            emitTitleSummary: false
+        });
         this.happyServer = happyServer;
 
         this.setupAbortHandlers(session.client.rpcHandlerManager, {
@@ -888,6 +1831,10 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     reasoningProcessor.abort();
                     diffProcessor.reset();
                     appServerEventConverter.reset();
+                    mcpTitleByCallId.clear();
+                    pendingAgentToolInputByCallId.clear();
+                    pendingAgentTracesByAgentId.clear();
+                    childAgentRuntimeById.clear();
                     session.onThinkingChange(false);
                     clearReadyAfterTurnTimer?.();
                     emitReadyIfIdle({

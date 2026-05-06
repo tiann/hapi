@@ -295,6 +295,7 @@ function ToolCardInner(props: ToolCardProps) {
     const isAskUserQuestion = isAskUserQuestionToolName(toolName)
     const isRequestUserInput = isRequestUserInputToolName(toolName)
     const isQuestionTool = isAskUserQuestion || isRequestUserInput
+    const isCodexAgentCard = toolName === 'CodexAgent'
     const showsPermissionFooter = Boolean(permission && (
         permission.status === 'pending'
         || ((permission.status === 'denied' || permission.status === 'canceled') && Boolean(permission.reason))
@@ -305,18 +306,24 @@ function ToolCardInner(props: ToolCardProps) {
 
     const header = (
         <div className="flex items-center justify-between gap-3">
-            <div className="min-w-0 flex flex-col gap-1">
+            <div className="min-w-0 flex flex-1 flex-col gap-1">
                 <div className="min-w-0 flex items-center gap-2">
                     <div className="shrink-0 flex h-3.5 w-3.5 items-center justify-center text-[var(--app-tool-card-accent)] leading-none">
                         {presentation.icon}
                     </div>
-                    <CardTitle className="min-w-0 text-sm font-medium leading-tight break-words text-[var(--app-fg)]">
+                    <CardTitle className={cn(
+                        'min-w-0 text-sm font-medium leading-tight text-[var(--app-fg)]',
+                        isCodexAgentCard ? 'truncate whitespace-nowrap' : 'break-words'
+                    )}>
                         {toolTitle}
                     </CardTitle>
                 </div>
 
                 {subtitle ? (
-                    <CardDescription className="font-mono text-xs break-all text-[var(--app-tool-card-subtitle)]">
+                    <CardDescription className={cn(
+                        'font-mono text-xs text-[var(--app-tool-card-subtitle)]',
+                        isCodexAgentCard ? 'truncate whitespace-nowrap' : 'break-all'
+                    )}>
                         {truncate(subtitle, 160)}
                     </CardDescription>
                 ) : null}

@@ -95,6 +95,30 @@ function makeTaskBlock(
     }
 }
 
+function makeCodexAgentBlock(
+    children: ToolCallBlock[],
+    state: ToolCallBlock['tool']['state'] = 'completed',
+): ToolCallBlock {
+    return {
+        kind: 'tool-call',
+        id: 'agent-1',
+        localId: null,
+        createdAt: 1000,
+        tool: {
+            id: 'agent-1',
+            name: 'CodexAgent',
+            state,
+            input: { message: 'inspect repo', agentId: 'subagent-1' },
+            createdAt: 1000,
+            startedAt: 1000,
+            completedAt: 2000,
+            description: null,
+            result: 'done',
+        },
+        children,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // getTaskTraceChildren
 // ---------------------------------------------------------------------------
@@ -266,5 +290,15 @@ describe('TraceSection', () => {
         expect(screen.getByText('Input')).toBeInTheDocument()
         // Result section label must also be present
         expect(screen.getByText('Result')).toBeInTheDocument()
+    })
+
+    it('opens CodexAgent trace by default and expands all child rows without nested indentation', () => {
+        const block = makeCodexAgentBlock([makeChild('c1', 'Bash'), makeChild('c2', 'Read')], 'completed')
+        const { container } = render(<TraceSection block={block} metadata={null} />)
+
+        expect(container.querySelector('button[aria-expanded="true"]')).not.toBeNull()
+        expect(container.querySelector('.border-l')).toBeNull()
+        expect(screen.getAllByText('Input').length).toBeGreaterThanOrEqual(2)
+        expect(screen.getAllByText('Result').length).toBeGreaterThanOrEqual(2)
     })
 })

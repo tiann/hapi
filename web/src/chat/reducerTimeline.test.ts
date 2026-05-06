@@ -357,4 +357,643 @@ describe('reduceTimeline', () => {
         // mutations land on the rendered block instead of a stale clone.
         expect(toolBlocksById.get('tc-1')).toBe(toolBlock)
     })
+
+    it('aggregates Codex agent-run events into one agent block with child trace', () => {
+        const messages: TracedMessage[] = [
+            {
+                id: 'agent-start',
+                localId: null,
+                createdAt: 1_700_000_000_000,
+                role: 'event',
+                content: {
+                    type: 'agent-run-start',
+                    cardId: 'spawn-1',
+                    input: { message: 'inspect files', agent_type: 'explorer' },
+                    status: 'starting',
+                    statusText: 'Starting',
+                    summary: 'Inspect files',
+                    activity: 'Starting task',
+                    activityKind: 'starting'
+                },
+                isSidechain: false
+            } as TracedMessage,
+            {
+                id: 'agent-update',
+                localId: null,
+                createdAt: 1_700_000_001_000,
+                role: 'event',
+                content: {
+                    type: 'agent-run-update',
+                    cardId: 'spawn-1',
+                    agentId: 'agent-1',
+                    status: 'running',
+                    statusText: 'Running',
+                    activity: 'Running command: ls'
+                },
+                isSidechain: false
+            } as TracedMessage,
+            {
+                id: 'agent-trace-tool',
+                localId: null,
+                createdAt: 1_700_000_002_000,
+                role: 'event',
+                content: {
+                    type: 'agent-run-trace',
+                    cardId: 'spawn-1',
+                    agentId: 'agent-1',
+                    message: {
+                        type: 'tool-call',
+                        name: 'CodexBash',
+                        callId: 'cmd-1',
+                        input: { command: 'ls' }
+                    }
+                },
+                isSidechain: false
+            } as TracedMessage,
+            {
+                id: 'agent-trace-result',
+                localId: null,
+                createdAt: 1_700_000_003_000,
+                role: 'event',
+                content: {
+                    type: 'agent-run-trace',
+                    cardId: 'spawn-1',
+                    agentId: 'agent-1',
+                    message: {
+                        type: 'tool-call-result',
+                        callId: 'cmd-1',
+                        output: { stdout: 'ok\n', exit_code: 0 },
+                        is_error: false
+                    }
+                },
+                isSidechain: false
+            } as TracedMessage,
+            {
+                id: 'agent-trace-message',
+                localId: null,
+                createdAt: 1_700_000_004_000,
+                role: 'event',
+                content: {
+                    type: 'agent-run-trace',
+                    cardId: 'spawn-1',
+                    agentId: 'agent-1',
+                    message: {
+                        type: 'message',
+                        message: 'agent done'
+                    }
+                },
+                isSidechain: false
+            } as TracedMessage,
+            {
+                id: 'agent-done',
+                localId: null,
+                createdAt: 1_700_000_005_000,
+                role: 'event',
+                content: {
+                    type: 'agent-run-update',
+                    cardId: 'spawn-1',
+                    agentId: 'agent-1',
+                    status: 'completed',
+                    statusText: 'Completed',
+                    activity: 'Completed: agent done',
+                    result: 'agent done'
+                },
+                isSidechain: false
+            } as TracedMessage
+        ]
+
+        const { blocks } = reduceTimeline(messages, makeContext())
+
+        expect(blocks).toHaveLength(1)
+        const agentBlock = blocks[0] as any
+        expect(agentBlock.kind).toBe('tool-call')
+        expect(agentBlock.tool.name).toBe('CodexAgent')
+        expect(agentBlock.tool.state).toBe('completed')
+        expect(agentBlock.tool.result).toBe('agent done')
+        expect(agentBlock.tool.input).toMatchObject({
+            agent_type: 'explorer',
+            agentId: 'agent-1',
+            statusText: 'Completed',
+            summary: 'Inspect files',
+            activity: 'Completed: agent done'
+        })
+        expect(agentBlock.children.some((child: any) => child.kind === 'tool-call' && child.tool.id === 'cmd-1')).toBe(true)
+        expect(agentBlock.children.some((child: any) => child.kind === 'agent-text' && child.text === 'agent done')).toBe(true)
+    })
+
+    it('keeps new Codex agent trace commands nested under the existing agent block', () => {
+        const messages: TracedMessage[] = [
+            {
+                id: 'agent-start',
+                localId: null,
+                createdAt: 1_700_000_000_000,
+                role: 'event',
+                content: {
+                    type: 'agent-run-start',
+                    cardId: 'spawn-1',
+                    input: { message: 'inspect files' },
+                    status: 'starting',
+                    summary: 'Inspect files',
+                    activity: 'Starting'
+                },
+                isSidechain: false
+            } as TracedMessage,
+            {
+                id: 'agent-update',
+                localId: null,
+                createdAt: 1_700_000_001_000,
+                role: 'event',
+                content: {
+                    type: 'agent-run-update',
+                    cardId: 'spawn-1',
+                    agentId: 'agent-1',
+                    status: 'running',
+                    activity: 'Running command: ls'
+                },
+                isSidechain: false
+            } as TracedMessage,
+            ...['cmd-1', 'cmd-2'].flatMap((callId, index) => ([
+                {
+                    id: `${callId}-trace`,
+                    localId: null,
+                    createdAt: 1_700_000_002_000 + index * 2,
+                    role: 'event',
+                    content: {
+                        type: 'agent-run-trace',
+                        cardId: 'spawn-1',
+                        agentId: 'agent-1',
+                        message: {
+                            type: 'tool-call',
+                            name: 'CodexBash',
+                            callId,
+                            input: { command: callId === 'cmd-1' ? 'ls' : 'pwd' }
+                        }
+                    },
+                    isSidechain: false
+                } as TracedMessage,
+                {
+                    id: `${callId}-result`,
+                    localId: null,
+                    createdAt: 1_700_000_003_000 + index * 2,
+                    role: 'event',
+                    content: {
+                        type: 'agent-run-trace',
+                        cardId: 'spawn-1',
+                        agentId: 'agent-1',
+                        message: {
+                            type: 'tool-call-result',
+                            callId,
+                            output: { stdout: 'ok\n', exit_code: 0 },
+                            is_error: false
+                        }
+                    },
+                    isSidechain: false
+                } as TracedMessage
+            ]))
+        ]
+
+        const { blocks } = reduceTimeline(messages, makeContext())
+        const agentBlock = blocks[0] as any
+
+        expect(blocks).toHaveLength(1)
+        expect(agentBlock.tool.name).toBe('CodexAgent')
+        expect(agentBlock.children.filter((child: any) => child.kind === 'tool-call')).toHaveLength(2)
+        expect(agentBlock.children.map((child: any) => child.kind === 'tool-call' ? child.tool.id : null).filter(Boolean)).toEqual(['cmd-1', 'cmd-2'])
+    })
+
+    it('merges fallback Codex agent card ids into the spawn card for the same agent', () => {
+        const messages: TracedMessage[] = [
+            {
+                id: 'agent-start',
+                localId: null,
+                createdAt: 1_700_000_000_000,
+                role: 'event',
+                content: {
+                    type: 'agent-run-start',
+                    cardId: 'spawn-1',
+                    input: { message: 'inspect README' },
+                    status: 'starting',
+                    summary: 'Inspect README',
+                    activity: 'Starting'
+                },
+                isSidechain: false
+            } as TracedMessage,
+            {
+                id: 'agent-early-update',
+                localId: null,
+                createdAt: 1_700_000_001_000,
+                role: 'event',
+                content: {
+                    type: 'agent-run-update',
+                    cardId: 'codex-agent:agent-1',
+                    agentId: 'agent-1',
+                    status: 'running',
+                    statusText: 'Running',
+                    activity: 'Starting task'
+                },
+                isSidechain: false
+            } as TracedMessage,
+            {
+                id: 'agent-early-trace',
+                localId: null,
+                createdAt: 1_700_000_001_500,
+                role: 'event',
+                content: {
+                    type: 'agent-run-trace',
+                    cardId: 'codex-agent:agent-1',
+                    agentId: 'agent-1',
+                    message: {
+                        type: 'tool-call',
+                        name: 'CodexBash',
+                        callId: 'cmd-1',
+                        input: { command: 'pwd' }
+                    }
+                },
+                isSidechain: false
+            } as TracedMessage,
+            {
+                id: 'agent-linked-update',
+                localId: null,
+                createdAt: 1_700_000_002_000,
+                role: 'event',
+                content: {
+                    type: 'agent-run-update',
+                    cardId: 'spawn-1',
+                    agentId: 'agent-1',
+                    status: 'running',
+                    statusText: 'Running',
+                    activity: 'Started'
+                },
+                isSidechain: false
+            } as TracedMessage,
+            {
+                id: 'agent-late-fallback-update',
+                localId: null,
+                createdAt: 1_700_000_003_000,
+                role: 'event',
+                content: {
+                    type: 'agent-run-update',
+                    cardId: 'codex-agent:agent-1',
+                    agentId: 'agent-1',
+                    status: 'running',
+                    statusText: 'Waiting for agent',
+                    activity: 'Waiting for agent',
+                    activityKind: 'wait_agent'
+                },
+                isSidechain: false
+            } as TracedMessage
+        ]
+
+        const { blocks, toolBlocksById } = reduceTimeline(messages, makeContext())
+        const agentBlocks = blocks.filter((block: any) => block.kind === 'tool-call' && block.tool.name === 'CodexAgent') as any[]
+
+        expect(agentBlocks).toHaveLength(1)
+        expect(agentBlocks[0].id).toBe('spawn-1')
+        expect(toolBlocksById.has('spawn-1')).toBe(true)
+        expect(toolBlocksById.has('codex-agent:agent-1')).toBe(false)
+        expect(agentBlocks[0].tool.input).toMatchObject({
+            agentId: 'agent-1',
+            summary: 'Inspect README',
+            activity: 'Waiting for agent',
+            activityKind: 'wait_agent'
+        })
+        expect(agentBlocks[0].children.some((child: any) => child.kind === 'tool-call' && child.tool.id === 'cmd-1')).toBe(true)
+    })
+
+    it('does not create an orphan Codex agent card for fallback notFound updates', () => {
+        const messages: TracedMessage[] = [
+            {
+                id: 'stale-agent-wait',
+                localId: null,
+                createdAt: 1_700_000_000_000,
+                role: 'event',
+                content: {
+                    type: 'agent-run-update',
+                    cardId: 'codex-agent:stale-agent',
+                    agentId: 'stale-agent',
+                    status: 'running',
+                    statusText: 'Waiting for agent',
+                    activity: 'Waiting for agent',
+                    activityKind: 'wait_agent'
+                },
+                isSidechain: false
+            } as TracedMessage,
+            {
+                id: 'stale-agent-not-found',
+                localId: null,
+                createdAt: 1_700_000_000_500,
+                role: 'event',
+                content: {
+                    type: 'agent-run-update',
+                    cardId: 'codex-agent:stale-agent',
+                    agentId: 'stale-agent',
+                    status: 'notFound',
+                    statusText: 'notFound',
+                    activity: 'notFound: {"status":"notFound","message":null}'
+                },
+                isSidechain: false
+            } as TracedMessage,
+            {
+                id: 'new-agent-start',
+                localId: null,
+                createdAt: 1_700_000_001_000,
+                role: 'event',
+                content: {
+                    type: 'agent-run-start',
+                    cardId: 'spawn-1',
+                    input: { message: 'inspect README' },
+                    status: 'starting',
+                    summary: 'Inspect README',
+                    activity: 'Starting'
+                },
+                isSidechain: false
+            } as TracedMessage,
+            {
+                id: 'new-agent-done',
+                localId: null,
+                createdAt: 1_700_000_002_000,
+                role: 'event',
+                content: {
+                    type: 'agent-run-update',
+                    cardId: 'spawn-1',
+                    agentId: 'agent-1',
+                    status: 'completed',
+                    statusText: 'Completed',
+                    activity: 'Completed: ok',
+                    result: 'ok'
+                },
+                isSidechain: false
+            } as TracedMessage
+        ]
+
+        const { blocks, toolBlocksById } = reduceTimeline(messages, makeContext())
+        const agentBlocks = blocks.filter((block: any) => block.kind === 'tool-call' && block.tool.name === 'CodexAgent') as any[]
+
+        expect(agentBlocks).toHaveLength(1)
+        expect(agentBlocks[0].id).toBe('spawn-1')
+        expect(toolBlocksById.has('codex-agent:stale-agent')).toBe(false)
+    })
+
+    it('shows notFound as an error when it belongs to a known Codex agent card', () => {
+        const messages: TracedMessage[] = [
+            {
+                id: 'agent-start',
+                localId: null,
+                createdAt: 1_700_000_000_000,
+                role: 'event',
+                content: {
+                    type: 'agent-run-start',
+                    cardId: 'spawn-1',
+                    input: { message: 'inspect README' },
+                    status: 'starting',
+                    summary: 'Inspect README',
+                    activity: 'Starting'
+                },
+                isSidechain: false
+            } as TracedMessage,
+            {
+                id: 'agent-linked',
+                localId: null,
+                createdAt: 1_700_000_001_000,
+                role: 'event',
+                content: {
+                    type: 'agent-run-update',
+                    cardId: 'spawn-1',
+                    agentId: 'agent-1',
+                    status: 'running',
+                    activity: 'Started'
+                },
+                isSidechain: false
+            } as TracedMessage,
+            {
+                id: 'agent-not-found',
+                localId: null,
+                createdAt: 1_700_000_002_000,
+                role: 'event',
+                content: {
+                    type: 'agent-run-update',
+                    cardId: 'codex-agent:agent-1',
+                    agentId: 'agent-1',
+                    status: 'notFound',
+                    statusText: 'notFound',
+                    activity: 'notFound: {"status":"notFound","message":null}'
+                },
+                isSidechain: false
+            } as TracedMessage
+        ]
+
+        const { blocks } = reduceTimeline(messages, makeContext())
+        const agentBlock = blocks[0] as any
+
+        expect(blocks).toHaveLength(1)
+        expect(agentBlock.id).toBe('spawn-1')
+        expect(agentBlock.tool.state).toBe('error')
+        expect(agentBlock.tool.input).toMatchObject({
+            agentId: 'agent-1',
+            agentStatus: 'notFound'
+        })
+    })
+
+    it('does not regress a completed Codex agent card to running on a later wait_agent begin', () => {
+        const messages: TracedMessage[] = [
+            {
+                id: 'agent-start',
+                localId: null,
+                createdAt: 1_700_000_000_000,
+                role: 'event',
+                content: {
+                    type: 'agent-run-start',
+                    cardId: 'spawn-1',
+                    input: { message: 'inspect files' },
+                    status: 'starting',
+                    summary: 'Inspect files',
+                    activity: 'Starting'
+                },
+                isSidechain: false
+            } as TracedMessage,
+            {
+                id: 'agent-done',
+                localId: null,
+                createdAt: 1_700_000_001_000,
+                role: 'event',
+                content: {
+                    type: 'agent-run-update',
+                    cardId: 'spawn-1',
+                    agentId: 'agent-1',
+                    status: 'completed',
+                    statusText: 'Completed',
+                    activity: 'Completed: done',
+                    result: 'done'
+                },
+                isSidechain: false
+            } as TracedMessage,
+            {
+                id: 'agent-wait-begin',
+                localId: null,
+                createdAt: 1_700_000_002_000,
+                role: 'event',
+                content: {
+                    type: 'agent-run-update',
+                    cardId: 'spawn-1',
+                    agentId: 'agent-1',
+                    status: 'running',
+                    statusText: 'Waiting for agent',
+                    activity: 'Waiting for agent',
+                    activityKind: 'wait_agent'
+                },
+                isSidechain: false
+            } as TracedMessage
+        ]
+
+        const { blocks } = reduceTimeline(messages, makeContext())
+        const agentBlock = blocks[0] as any
+
+        expect(agentBlock.tool.state).toBe('completed')
+        expect(agentBlock.tool.input).toMatchObject({
+            agentStatus: 'completed',
+            statusText: 'Completed',
+            activity: 'Completed: done'
+        })
+    })
+
+    it('does not turn a completed Codex agent card into an error when close_agent cleans it up', () => {
+        const messages: TracedMessage[] = [
+            {
+                id: 'agent-start',
+                localId: null,
+                createdAt: 1_700_000_000_000,
+                role: 'event',
+                content: {
+                    type: 'agent-run-start',
+                    cardId: 'spawn-1',
+                    input: { message: 'review diff' },
+                    status: 'starting',
+                    summary: 'Review diff',
+                    activity: 'Starting'
+                },
+                isSidechain: false
+            } as TracedMessage,
+            {
+                id: 'agent-done',
+                localId: null,
+                createdAt: 1_700_000_001_000,
+                role: 'event',
+                content: {
+                    type: 'agent-run-update',
+                    cardId: 'spawn-1',
+                    agentId: 'agent-1',
+                    status: 'completed',
+                    statusText: 'Completed',
+                    activity: 'Completed: approved',
+                    result: 'approved'
+                },
+                isSidechain: false
+            } as TracedMessage,
+            {
+                id: 'agent-close-begin',
+                localId: null,
+                createdAt: 1_700_000_002_000,
+                role: 'event',
+                content: {
+                    type: 'agent-run-update',
+                    cardId: 'spawn-1',
+                    agentId: 'agent-1',
+                    status: 'running',
+                    statusText: 'Closing agent',
+                    activity: 'Closing agent',
+                    activityKind: 'close_agent'
+                },
+                isSidechain: false
+            } as TracedMessage,
+            {
+                id: 'agent-close-end',
+                localId: null,
+                createdAt: 1_700_000_003_000,
+                role: 'event',
+                content: {
+                    type: 'agent-run-update',
+                    cardId: 'spawn-1',
+                    agentId: 'agent-1',
+                    status: 'canceled',
+                    statusText: 'Closed',
+                    activity: 'Closed',
+                    activityKind: 'canceled',
+                    result: { previous_status: { completed: 'approved' }, agent_id: 'agent-1' }
+                },
+                isSidechain: false
+            } as TracedMessage
+        ]
+
+        const { blocks } = reduceTimeline(messages, makeContext())
+        const agentBlock = blocks[0] as any
+
+        expect(agentBlock.tool.state).toBe('completed')
+        expect(agentBlock.tool.result).toBe('approved')
+        expect(agentBlock.tool.input).toMatchObject({
+            agentStatus: 'completed',
+            activity: 'Completed: approved'
+        })
+    })
+
+    it('drops duplicate orphan Codex agent starts with the same work summary', () => {
+        const messages: TracedMessage[] = [
+            {
+                id: 'orphan-start',
+                localId: null,
+                createdAt: 1_700_000_000_000,
+                role: 'event',
+                content: {
+                    type: 'agent-run-start',
+                    cardId: 'spawn-orphan',
+                    input: { message: 'inspect README' },
+                    status: 'starting',
+                    summary: 'Inspect README',
+                    activity: 'Starting'
+                },
+                isSidechain: false
+            } as TracedMessage,
+            {
+                id: 'real-start',
+                localId: null,
+                createdAt: 1_700_000_001_000,
+                role: 'event',
+                content: {
+                    type: 'agent-run-start',
+                    cardId: 'spawn-real',
+                    input: { message: 'inspect README' },
+                    status: 'starting',
+                    summary: 'Inspect README',
+                    activity: 'Starting'
+                },
+                isSidechain: false
+            } as TracedMessage,
+            {
+                id: 'real-update',
+                localId: null,
+                createdAt: 1_700_000_002_000,
+                role: 'event',
+                content: {
+                    type: 'agent-run-update',
+                    cardId: 'spawn-real',
+                    agentId: 'agent-real',
+                    status: 'completed',
+                    summary: 'Inspect README',
+                    activity: 'Completed: ok',
+                    result: 'ok'
+                },
+                isSidechain: false
+            } as TracedMessage
+        ]
+
+        const { blocks } = reduceTimeline(messages, makeContext())
+        const agentBlocks = blocks.filter((block: any) => block.kind === 'tool-call' && block.tool.name === 'CodexAgent') as any[]
+
+        expect(agentBlocks).toHaveLength(1)
+        expect(agentBlocks[0].id).toBe('spawn-real')
+        expect(agentBlocks[0].tool.input).toMatchObject({
+            agentId: 'agent-real',
+            summary: 'Inspect README',
+            activity: 'Completed: ok'
+        })
+    })
 })

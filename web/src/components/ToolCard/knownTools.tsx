@@ -6,6 +6,15 @@ import type { ChecklistItem } from '@/components/ToolCard/checklist'
 import { extractTodoChecklist, extractUpdatePlanChecklist } from '@/components/ToolCard/checklist'
 import { basename, resolveDisplayPath } from '@/utils/path'
 import { getInputStringAny, truncate } from '@/lib/toolInputUtils'
+import {
+    getCodexAgentActivity,
+    getCodexAgentPrompt,
+    getCodexAgentReasoningEffortLabel,
+    getCodexAgentSummary,
+    getCodexAgentTargets,
+    getCodexAgentType,
+    summarizeCodexAgentResult
+} from '@/components/ToolCard/codexAgents'
 
 const DEFAULT_ICON_CLASS = 'h-3.5 w-3.5'
 // Tool presentation registry for `hapi/web` (aligned with `hapi-app`).
@@ -175,6 +184,24 @@ export const knownTools: Record<string, {
         subtitle: (opts) => getInputStringAny(opts.input, ['message', 'command']) ?? null,
         minimal: true
     },
+    CodexAgent: {
+        icon: () => <RocketIcon className={DEFAULT_ICON_CLASS} />,
+        title: (opts) => {
+            const summary = getCodexAgentSummary(opts.input)
+            if (summary) return `Agent: ${summary}`
+            return 'Agent'
+        },
+        subtitle: (opts) => {
+            const activity = getCodexAgentActivity(opts.input)
+            const result = summarizeCodexAgentResult('wait_agent', opts.result)
+            const prompt = getCodexAgentPrompt(opts.input)
+            const status = activity ?? result ?? (prompt ? truncate(prompt, 120) : null)
+            const effort = getCodexAgentReasoningEffortLabel(opts.input)
+            if (effort && status) return `${effort} · ${status}`
+            return effort ?? status
+        },
+        minimal: true
+    },
     shell_command: {
         icon: () => <TerminalIcon className={DEFAULT_ICON_CLASS} />,
         title: (opts) => opts.description ?? 'Terminal',
@@ -299,6 +326,63 @@ export const knownTools: Record<string, {
         subtitle: (opts) => {
             const model = getInputStringAny(opts.input, ['subagent_type'])
             return model ?? null
+        },
+        minimal: true
+    },
+    spawn_agent: {
+        icon: () => <RocketIcon className={DEFAULT_ICON_CLASS} />,
+        title: (opts) => {
+            const agentType = getCodexAgentType(opts.input)
+            return agentType ? `Spawn ${agentType} agent` : 'Spawn agent'
+        },
+        subtitle: (opts) => {
+            const summary = summarizeCodexAgentResult(opts.toolName, opts.result)
+            if (summary) return summary
+            const agentType = getCodexAgentType(opts.input)
+            return agentType ? `${agentType} agent` : 'Background agent'
+        },
+        minimal: true
+    },
+    send_input: {
+        icon: () => <MessageSquareIcon className={DEFAULT_ICON_CLASS} />,
+        title: () => 'Message agent',
+        subtitle: (opts) => {
+            const targets = getCodexAgentTargets(opts.input)
+            return targets.length > 0 ? targets.join(', ') : 'Background message'
+        },
+        minimal: true
+    },
+    resume_agent: {
+        icon: () => <RocketIcon className={DEFAULT_ICON_CLASS} />,
+        title: () => 'Resume agent',
+        subtitle: (opts) => {
+            const targets = getCodexAgentTargets(opts.input)
+            return targets.length > 0 ? targets.join(', ') : null
+        },
+        minimal: true
+    },
+    wait_agent: {
+        icon: () => <RocketIcon className={DEFAULT_ICON_CLASS} />,
+        title: (opts) => {
+            const targets = getCodexAgentTargets(opts.input)
+            return targets.length > 1 ? `Wait for ${targets.length} agents` : 'Wait for agent'
+        },
+        subtitle: (opts) => {
+            const summary = summarizeCodexAgentResult(opts.toolName, opts.result)
+            if (summary) return summary
+            const targets = getCodexAgentTargets(opts.input)
+            return targets.length > 0 ? targets.join(', ') : null
+        },
+        minimal: true
+    },
+    close_agent: {
+        icon: () => <RocketIcon className={DEFAULT_ICON_CLASS} />,
+        title: () => 'Close agent',
+        subtitle: (opts) => {
+            const summary = summarizeCodexAgentResult(opts.toolName, opts.result)
+            if (summary) return summary
+            const targets = getCodexAgentTargets(opts.input)
+            return targets.length > 0 ? targets.join(', ') : null
         },
         minimal: true
     },

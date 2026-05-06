@@ -19,7 +19,14 @@ export const TITLE_INSTRUCTION = trimIdent(`
     If the task focus changes significantly later, call the title tool again with a better title.
 `);
 
+export const SUBAGENT_RESTRICTION_INSTRUCTION = trimIdent(`
+    Subagent nesting rule:
+    - The main/root agent may start direct child agents when useful.
+    - A child/subagent must never start, resume, message, wait for, close, or otherwise delegate to another agent.
+    - If you are running as a spawned agent, do the assigned work yourself and report back to the parent agent.
+`);
+
 /**
  * The system prompt to inject via developer_instructions in local mode.
  */
-export const codexSystemPrompt = TITLE_INSTRUCTION;
+export const codexSystemPrompt = `${TITLE_INSTRUCTION}\n\n${SUBAGENT_RESTRICTION_INSTRUCTION}`;
