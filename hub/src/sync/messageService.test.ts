@@ -5,10 +5,10 @@
  * Race-B: CLI ack returns { removed: false } (already shift()-ed) → markMessagesInvoked + status='invoked'
  * Race-C: CLI ack times out (500 ms)         → markMessagesInvoked + status='invoked'
  */
-import { describe, expect, it, mock, beforeEach } from 'bun:test'
+import { describe, expect, it } from 'bun:test'
 import { MessageService } from './messageService'
 import { Store } from '../store'
-import type { Server, Socket } from 'socket.io'
+import type { Server } from 'socket.io'
 import type { SyncEvent } from '@hapi/protocol/types'
 
 // ---------------------------------------------------------------------------
@@ -169,6 +169,7 @@ describe('MessageService.cancelQueuedMessage race scenarios', () => {
             // Row must still exist with invoked_at stamped
             const rows = store.messages.getMessages(session.id)
             const row = rows.find(r => r.id === msg.id)
+            expect(row).toBeDefined()
             expect(row!.invokedAt).not.toBeNull()
 
             // No message-cancelled SSE

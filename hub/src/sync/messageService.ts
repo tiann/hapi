@@ -174,10 +174,14 @@ export class MessageService {
             // offline.  Stamp invoked_at immediately so the message lands in the thread
             // as 'sent' instead of disappearing.  The agent's later assistant message
             // (if it produced one) joins the same thread normally.
-            // This shares the "best-effort" regime documented for the offline reconnect
-            // case in the PR follow-up section.
             const invokedAt = Date.now()
-            this.store.messages.markMessagesInvoked(sessionId, [localId], invokedAt)
+            try {
+                this.store.messages.markMessagesInvoked(sessionId, [localId], invokedAt)
+            } catch (err) {
+                console.error('cancelQueuedMessage: markMessagesInvoked failed', err)
+                // DB write failed — let the HTTP 500 surface to the caller.
+                throw err
+            }
             // Notify all SSE subscribers (other open tabs) that this queued row is now
             // invoked so they remove it from the floating bar.  Without this emit, only
             // the tab that sent the DELETE request learns about the status change via the
