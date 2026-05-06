@@ -601,7 +601,7 @@ export function updateMessageStatus(sessionId: string, localId: string, status: 
         let changed = false
         const updateList = (list: DecryptedMessage[]) => {
             return list.map((message) => {
-                if (message.localId !== localId || !isOptimisticMessage(message)) {
+                if (message.localId !== localId) {
                     return message
                 }
                 if (message.status === status) {

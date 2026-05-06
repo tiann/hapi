@@ -46,3 +46,42 @@ try {
 } catch {
     installMemoryLocalStorage()
 }
+
+if (!('IntersectionObserver' in globalThis)) {
+    class MockIntersectionObserver implements IntersectionObserver {
+        readonly root = null
+        readonly rootMargin = ''
+        readonly thresholds = []
+
+        disconnect() {}
+        observe() {}
+        takeRecords(): IntersectionObserverEntry[] { return [] }
+        unobserve() {}
+    }
+
+    Object.defineProperty(globalThis, 'IntersectionObserver', {
+        value: MockIntersectionObserver,
+        configurable: true
+    })
+    Object.defineProperty(window, 'IntersectionObserver', {
+        value: MockIntersectionObserver,
+        configurable: true
+    })
+}
+
+if (typeof window.matchMedia !== 'function') {
+    Object.defineProperty(window, 'matchMedia', {
+        writable: true,
+        configurable: true,
+        value: (query: string) => ({
+            matches: false,
+            media: query,
+            onchange: null,
+            addListener() {},
+            removeListener() {},
+            addEventListener() {},
+            removeEventListener() {},
+            dispatchEvent() { return false },
+        }),
+    })
+}

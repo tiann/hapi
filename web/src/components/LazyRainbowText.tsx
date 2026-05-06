@@ -102,9 +102,9 @@ function processChildrenForRainbow(children: React.ReactNode): React.ReactNode {
     })
 }
 
-export function LazyRainbowText(props: { text: string }) {
+export function LazyRainbowText(props: { text: string; inline?: boolean }) {
     const text = props.text
-    const ref = useRef<HTMLDivElement>(null)
+    const ref = useRef<HTMLElement>(null)
     const [hasBeenVisible, setHasBeenVisible] = useState(false)
 
     useEffect(() => {
@@ -129,16 +129,44 @@ export function LazyRainbowText(props: { text: string }) {
 
     const rainbowComponents = useMemo(() => ({
         p: ({ children }: { children?: React.ReactNode }) => (
-            <p>{processChildrenForRainbow(children)}</p>
+            props.inline
+                ? <span className="whitespace-pre-wrap">{processChildrenForRainbow(children)}</span>
+                : <p>{processChildrenForRainbow(children)}</p>
         ),
-    }), [])
+    }), [props.inline])
+
+    const inlineComponents = useMemo(() => {
+        if (!props.inline) return undefined
+        return {
+            p: ({ children }: { children?: React.ReactNode }) => (
+                <span className="whitespace-pre-wrap">{children}</span>
+            ),
+        }
+    }, [props.inline])
+
+    const content = (
+        <MarkdownRenderer
+            content={text}
+            className={props.inline ? 'inline' : undefined}
+            components={
+                hasSpecialWord && hasBeenVisible
+                    ? rainbowComponents
+                    : inlineComponents
+            }
+        />
+    )
+
+    if (props.inline) {
+        return (
+            <span ref={(element) => { ref.current = element }} className="inline min-w-0">
+                {content}
+            </span>
+        )
+    }
 
     return (
-        <div ref={ref}>
-            <MarkdownRenderer
-                content={text}
-                components={hasSpecialWord && hasBeenVisible ? rainbowComponents : undefined}
-            />
+        <div ref={(element) => { ref.current = element }}>
+            {content}
         </div>
     )
 }

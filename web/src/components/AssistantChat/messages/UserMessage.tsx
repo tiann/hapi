@@ -1,10 +1,10 @@
 import { useCallback, useState, type KeyboardEvent, type MouseEvent } from 'react'
 import { MessagePrimitive, useAssistantState } from '@assistant-ui/react'
-import { LazyRainbowText } from '@/components/LazyRainbowText'
 import { useHappyChatContext } from '@/components/AssistantChat/context'
 import type { HappyChatMessageMetadata } from '@/lib/assistant-runtime'
 import { MessageStatusIndicator } from '@/components/AssistantChat/messages/MessageStatusIndicator'
 import { MessageAttachments } from '@/components/AssistantChat/messages/MessageAttachments'
+import { UserBubbleContent, getUserBubbleClassName, shouldShowMessageStatus } from '@/components/AssistantChat/messages/user-bubble'
 import { CliOutputBlock } from '@/components/CliOutputBlock'
 import { CopyIcon, CheckIcon } from '@/components/icons'
 import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
@@ -50,7 +50,6 @@ export function HappyUserMessage() {
         if (custom?.kind !== 'cli-output') return ''
         return message.content.find((part) => part.type === 'text')?.text ?? ''
     })
-
     const invokedAt = useAssistantState(({ message }) => (message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined)?.invokedAt)
 
     const hasMetadata = invokedAt != null
@@ -66,8 +65,7 @@ export function HappyUserMessage() {
     if (role !== 'user') return null
     const canRetry = status === 'failed' && typeof localId === 'string' && Boolean(ctx.onRetryMessage)
     const onRetry = canRetry ? () => ctx.onRetryMessage!(localId) : undefined
-
-    const userBubbleClass = `w-fit min-w-0 max-w-[92%] ml-auto rounded-xl bg-[var(--app-secondary-bg)] px-3 py-2 text-[var(--app-fg)] shadow-sm`
+    const showStatus = shouldShowMessageStatus(status)
 
     if (isCliOutput) {
         return (
@@ -83,7 +81,7 @@ export function HappyUserMessage() {
                                 type="button"
                                 onClick={() => setShowMetadata((open) => !open)}
                                 aria-expanded={showMetadata}
-                                className="text-[10px] text-[var(--app-hint)] hover:text-[var(--app-fg)] underline-offset-2 hover:underline"
+                                className="text-[10px] text-[var(--app-hint)] underline-offset-2 hover:text-[var(--app-fg)] hover:underline"
                             >
                                 {showMetadata ? 'Hide metadata' : 'Show metadata'}
                             </button>
@@ -103,7 +101,7 @@ export function HappyUserMessage() {
     return (
         <MessagePrimitive.Root
             id={getConversationMessageAnchorId(messageId)}
-            className={`${userBubbleClass} group/msg scroll-mt-4 ${hasMetadata ? 'cursor-pointer' : ''}`}
+            className={`${getUserBubbleClassName(status)} group/msg scroll-mt-4 ${hasMetadata ? 'cursor-pointer' : ''}`}
             onClick={hasMetadata ? toggleMetadata : undefined}
             onKeyDown={hasMetadata ? onMetadataKeyDown : undefined}
             role={hasMetadata ? 'button' : undefined}
@@ -111,20 +109,20 @@ export function HappyUserMessage() {
             aria-expanded={hasMetadata ? showMetadata : undefined}
         >
             <div className="flex flex-col gap-1">
-                <div className="flex items-end gap-2">
-                    <div className="flex-1 min-w-0">
-                        {hasText && <LazyRainbowText text={text} />}
-                        {hasAttachments && <MessageAttachments attachments={attachments} />}
+                <div className="flex items-start gap-2">
+                    <div className="min-w-0 flex-1">
+                        {hasText ? <UserBubbleContent text={text} /> : null}
+                        {hasAttachments ? <MessageAttachments attachments={attachments} /> : null}
                     </div>
-                    {(hasText || status) && (
-                        <div className="shrink-0 self-end pb-0.5 flex items-center gap-1">
+                    {(hasText || showStatus) && (
+                        <div className="happy-message-actions-first-line flex shrink-0 items-center gap-1">
                             {hasText && (
                                 <button
                                     type="button"
                                     title="Copy"
-                                    className="opacity-60 sm:opacity-0 sm:group-hover/msg:opacity-100 transition-[opacity,background-color] p-0.5 rounded hover:bg-[var(--app-subtle-bg)]"
-                                    onClick={(e) => {
-                                        e.stopPropagation()
+                                    className="rounded-md p-0.5 opacity-60 transition-[opacity,background-color] hover:bg-[var(--app-chat-user-chip-bg)] sm:opacity-0 sm:group-hover/msg:opacity-100"
+                                    onClick={(event) => {
+                                        event.stopPropagation()
                                         copy(text)
                                     }}
                                 >
@@ -133,7 +131,7 @@ export function HappyUserMessage() {
                                         : <CopyIcon className="h-3.5 w-3.5 text-[var(--app-hint)]" />}
                                 </button>
                             )}
-                            {status && <MessageStatusIndicator status={status} onRetry={onRetry} />}
+                            {showStatus ? <MessageStatusIndicator status={status} onRetry={onRetry} /> : null}
                         </div>
                     )}
                 </div>

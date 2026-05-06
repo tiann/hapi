@@ -84,7 +84,7 @@ export function HappyAssistantMessage() {
                         type="button"
                         onClick={() => setShowMetadata((open) => !open)}
                         aria-expanded={showMetadata}
-                        className="mt-1 text-[10px] text-[var(--app-hint)] hover:text-[var(--app-fg)] underline-offset-2 hover:underline"
+                        className="mt-1 text-[10px] text-[var(--app-hint)] underline-offset-2 hover:text-[var(--app-fg)] hover:underline"
                     >
                         {showMetadata ? 'Hide metadata' : 'Show metadata'}
                     </button>
@@ -107,39 +107,41 @@ export function HappyAssistantMessage() {
             id={getConversationMessageAnchorId(messageId)}
             className={`${rootClass} ${copyText ? 'group/msg' : ''} scroll-mt-4`}
         >
-            <div
-                className={hasMetadata ? 'min-w-0 cursor-pointer' : 'min-w-0'}
-                onClick={hasMetadata ? toggleMetadata : undefined}
-                onKeyDown={hasMetadata ? onMetadataKeyDown : undefined}
-                role={hasMetadata ? 'button' : undefined}
-                tabIndex={hasMetadata ? 0 : undefined}
-                aria-expanded={hasMetadata ? showMetadata : undefined}
-            >
-                <MessagePrimitive.Content components={MESSAGE_PART_COMPONENTS} />
-            </div>
-            {showMetadata && (
-                <MessageMetadata
-                    invokedAt={invokedAt}
-                    durationMs={durationMs}
-                    usage={usage}
-                    model={messageModel ?? null}
-                    className="mt-1"
-                />
-            )}
-            {copyText && (
-                <div className="hidden sm:flex justify-end mt-1 opacity-0 group-hover/msg:opacity-100 transition-opacity">
-                    <button
-                        type="button"
-                        title="Copy"
-                        className="p-0.5 rounded hover:bg-[var(--app-subtle-bg)] transition-colors"
-                        onClick={() => copy(copyText)}
-                    >
-                        {copied
-                            ? <CheckIcon className="h-3.5 w-3.5 text-green-500" />
-                            : <CopyIcon className="h-3.5 w-3.5 text-[var(--app-hint)]" />}
-                    </button>
+            <div className="flex items-start gap-2">
+                <div
+                    className={hasMetadata ? 'min-w-0 flex-1 cursor-pointer' : 'min-w-0 flex-1'}
+                    onClick={hasMetadata ? toggleMetadata : undefined}
+                    onKeyDown={hasMetadata ? onMetadataKeyDown : undefined}
+                    role={hasMetadata ? 'button' : undefined}
+                    tabIndex={hasMetadata ? 0 : undefined}
+                    aria-expanded={hasMetadata ? showMetadata : undefined}
+                >
+                    <MessagePrimitive.Content components={MESSAGE_PART_COMPONENTS} />
+                    {showMetadata && (
+                        <MessageMetadata
+                            invokedAt={invokedAt}
+                            durationMs={durationMs}
+                            usage={usage}
+                            model={messageModel ?? null}
+                            className="mt-1"
+                        />
+                    )}
                 </div>
-            )}
+                {copyText ? (
+                    <div className="happy-message-actions-first-line hidden sm:flex shrink-0 opacity-0 group-hover/msg:opacity-100 transition-opacity">
+                        <button
+                            type="button"
+                            title="Copy"
+                            className="p-0.5 rounded hover:bg-[var(--app-subtle-bg)] transition-colors"
+                            onClick={() => copy(copyText)}
+                        >
+                            {copied
+                                ? <CheckIcon className="h-3.5 w-3.5 text-green-500" />
+                                : <CopyIcon className="h-3.5 w-3.5 text-[var(--app-hint)]" />}
+                        </button>
+                    </div>
+                ) : null}
+            </div>
         </MessagePrimitive.Root>
     )
 }

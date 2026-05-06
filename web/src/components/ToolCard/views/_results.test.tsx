@@ -1,5 +1,14 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+import { render, screen } from '@testing-library/react'
+import type { ToolCallBlock } from '@/chat/types'
 import { extractCodexBashDisplay, extractTextFromResult, getMutationResultRenderMode, getToolResultViewComponent } from '@/components/ToolCard/views/_results'
+import { I18nProvider } from '@/lib/i18n-context'
+
+vi.mock('@/components/MarkdownRenderer', () => ({
+    MarkdownRenderer: (props: { content: string; className?: string }) => (
+        <div className={props.className}>{props.content}</div>
+    )
+}))
 
 describe('extractTextFromResult', () => {
     it('returns string directly', () => {
@@ -128,5 +137,143 @@ describe('getToolResultViewComponent registry', () => {
 
     it('uses a dedicated result view for CodexBash', () => {
         expect(getToolResultViewComponent('CodexBash')).not.toBe(getToolResultViewComponent('SomeUnknownTool'))
+    })
+})
+
+describe('dialog result formatting', () => {
+    const ResultView = getToolResultViewComponent('SomeUnknownTool')
+
+    function renderResult(result: unknown) {
+        const block: ToolCallBlock = {
+            id: 'tool-1',
+            localId: null,
+            createdAt: 0,
+            kind: 'tool-call',
+            children: [],
+            tool: {
+                id: 'tool-1',
+                name: 'SomeUnknownTool',
+                state: 'completed',
+                input: {},
+                result,
+                createdAt: 0,
+                startedAt: null,
+                completedAt: 0,
+                description: null
+            }
+        }
+
+        return render(
+            <I18nProvider>
+                <ResultView
+                    block={block}
+                    metadata={null}
+                    surface="dialog"
+                />
+            </I18nProvider>
+        )
+    }
+
+    it('quotes markdown result body without putting Raw JSON inside the quote', () => {
+        const { container } = renderResult({ content: 'Done' })
+        const quote = container.querySelector('[class*="border-l-"]')
+
+        expect(quote).toHaveTextContent('Done')
+        expect(quote).toHaveClass('tool-result-quote')
+        expect(quote).not.toHaveTextContent('Raw JSON')
+        expect(screen.getAllByText('Raw JSON').length).toBeGreaterThan(0)
+    })
+
+    it('does not quote a standalone fenced code block result', () => {
+        const { container } = renderResult('```ts\nconst value = 1\n```')
+
+        expect(container.querySelector('[class*="border-l-"]')).toBeNull()
+        expect(container.querySelector('pre')).not.toBeNull()
+        expect(container).toHaveTextContent('const value = 1')
+    })
+})
+
+describe('read file result formatting', () => {
+    function renderToolResult(toolName: string, result: unknown, input: unknown = {}) {
+        const ResultView = getToolResultViewComponent(toolName)
+        const block: ToolCallBlock = {
+            id: 'tool-read',
+            localId: null,
+            createdAt: 0,
+            kind: 'tool-call',
+            children: [],
+            tool: {
+                id: 'tool-read',
+                name: toolName,
+                state: 'completed',
+                input,
+                result,
+                createdAt: 0,
+                startedAt: null,
+                completedAt: 0,
+                description: null
+            }
+        }
+
+        return render(
+            <I18nProvider>
+                <ResultView block={block} metadata={null} surface="dialog" />
+            </I18nProvider>
+        )
+    }
+
+    it('renders source file content as a code block', () => {
+        const { container } = renderToolResult('Read', {
+            file: {
+                filePath: '/tmp/example.ts',
+                content: 'const value = 1\nexport { value }'
+            }
+        })
+
+        expect(container.querySelector('[class*="border-l-"]')).toBeNull()
+        expect(container.querySelector('pre')).not.toBeNull()
+        expect(container).toHaveTextContent('File content')
+        expect(container).toHaveTextContent('const value = 1')
+        expect(screen.getAllByText('Raw JSON').length).toBeGreaterThan(0)
+    })
+
+    it('renders plain read output as a quote', () => {
+        const { container } = renderToolResult('Read', {
+            file: {
+                filePath: '/tmp/notes.txt',
+                content: 'plain notes from the workspace'
+            }
+        })
+        const quote = container.querySelector('[class*="border-l-"]')
+
+        expect(quote).toHaveTextContent('plain notes from the workspace')
+        expect(quote).toHaveClass('tool-result-quote')
+        expect(quote?.querySelector('pre')).toBeNull()
+        expect(screen.getAllByText('Raw JSON').length).toBeGreaterThan(0)
+    })
+
+    it('renders parsed Codex read command output as a quote', () => {
+        const { container } = renderToolResult(
+            'CodexBash',
+            'Exit code: 0\nWall time: 0.1s\nOutput:\nhello from file',
+            { parsed_cmd: [{ type: 'read', name: 'debug.txt' }] }
+        )
+        const quote = container.querySelector('[class*="border-l-"]')
+
+        expect(quote).toHaveTextContent('hello from file')
+        expect(quote?.querySelector('pre')).toBeNull()
+    })
+
+    it('renders parsed Codex read command source output as a code block', () => {
+        const { container } = renderToolResult(
+            'CodexBash',
+            'Exit code: 0\nWall time: 0.1s\nOutput:\nconst value = 1',
+            { parsed_cmd: [{ type: 'read', name: 'debug.ts' }] }
+        )
+
+        expect(container.querySelector('[class*="border-l-"]')).toBeNull()
+        expect(container.querySelector('pre')).not.toBeNull()
+        expect(container).toHaveTextContent('File content')
+        expect(container).toHaveTextContent('const value = 1')
     })
 })

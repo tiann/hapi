@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseCompact, parseClear, parseSpecialCommand } from './specialCommands';
+import { parseCompact, parseClear, parsePlan, parseSpecialCommand } from './specialCommands';
 
 describe('parseCompact', () => {
     it('should parse /compact command with argument', () => {
@@ -49,6 +49,49 @@ describe('parseClear', () => {
     });
 });
 
+describe('parsePlan', () => {
+    it('should parse /plan without a prompt', () => {
+        const result = parsePlan('/plan');
+        expect(result).toEqual({
+            isPlan: true,
+            mode: 'plan',
+            prompt: undefined
+        });
+    });
+
+    it('should parse /plan with a prompt', () => {
+        const result = parsePlan('/plan 帮我规划五一行程');
+        expect(result).toEqual({
+            isPlan: true,
+            mode: 'plan',
+            prompt: '帮我规划五一行程'
+        });
+    });
+
+    it('should strip matching quotes around the prompt', () => {
+        const result = parsePlan('/plan "帮我规划五一行程"');
+        expect(result).toEqual({
+            isPlan: true,
+            mode: 'plan',
+            prompt: '帮我规划五一行程'
+        });
+    });
+
+    it('should parse /plan off as default mode', () => {
+        const result = parsePlan('/plan off');
+        expect(result).toEqual({
+            isPlan: true,
+            mode: 'default',
+            prompt: undefined
+        });
+    });
+
+    it('should not parse partial matches', () => {
+        expect(parsePlan('/planner test').isPlan).toBe(false);
+        expect(parsePlan('please /plan this').isPlan).toBe(false);
+    });
+});
+
 describe('parseSpecialCommand', () => {
     it('should detect compact command', () => {
         const result = parseSpecialCommand('/compact optimize');
@@ -62,6 +105,13 @@ describe('parseSpecialCommand', () => {
         expect(result.originalMessage).toBeUndefined();
     });
 
+    it('should detect plan command with prompt', () => {
+        const result = parseSpecialCommand('/plan "帮我规划五一行程"');
+        expect(result.type).toBe('plan');
+        expect(result.mode).toBe('plan');
+        expect(result.prompt).toBe('帮我规划五一行程');
+    });
+
     it('should return null for regular messages', () => {
         const result = parseSpecialCommand('hello world');
         expect(result.type).toBeNull();
@@ -72,10 +122,12 @@ describe('parseSpecialCommand', () => {
         // Test with extra whitespace
         expect(parseSpecialCommand('  /compact test  ').type).toBe('compact');
         expect(parseSpecialCommand('  /clear  ').type).toBe('clear');
+        expect(parseSpecialCommand('  /plan test  ').type).toBe('plan');
         
         // Test partial matches should not trigger
         expect(parseSpecialCommand('some /compact text').type).toBeNull();
         expect(parseSpecialCommand('/compactor').type).toBeNull();
         expect(parseSpecialCommand('/clearing').type).toBeNull();
+        expect(parseSpecialCommand('/planner').type).toBeNull();
     });
 });

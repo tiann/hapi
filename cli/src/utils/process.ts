@@ -17,16 +17,31 @@ export function isProcessAlive(pid: number): boolean {
 }
 
 function killProcessWindows(pid: number, force: boolean): boolean {
+  if (!isProcessAlive(pid)) {
+    return true;
+  }
+
   const args = ['/T', '/PID', pid.toString()];
   if (force) {
     args.unshift('/F');
   }
   try {
-    const result = spawn.sync('taskkill', args, { stdio: 'pipe' });
+    const result = spawn.sync('taskkill', args, {
+      stdio: 'pipe',
+      windowsHide: true
+    });
     if (result.error) {
       return false;
     }
-    return result.status === 0;
+
+    if (result.status === 0) {
+      return true;
+    }
+
+    // Process teardown on Windows is racy: by the time taskkill runs, the target
+    // may already be gone, which commonly surfaces as non-zero exit codes
+    // (including 128 in some shells). Treat this as success if PID is no longer alive.
+    return !isProcessAlive(pid);
   } catch {
     return false;
   }

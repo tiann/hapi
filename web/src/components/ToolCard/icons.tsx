@@ -118,6 +118,17 @@ export function RocketIcon(props: IconProps) {
     )
 }
 
+export function SparklesIcon(props: IconProps) {
+    return createIcon(
+        <>
+            <path d="M12 3l1.1 3.2L16 7.3l-2.9 1.1L12 11.6l-1.1-3.2L8 7.3l2.9-1.1L12 3z" />
+            <path d="M18.5 11.5l.6 1.8 1.8.6-1.8.6-.6 1.8-.6-1.8-1.8-.6 1.8-.6.6-1.8z" />
+            <path d="M6 13l.9 2.6 2.6.9-2.6.9L6 20l-.9-2.6-2.6-.9 2.6-.9L6 13z" />
+        </>,
+        props
+    )
+}
+
 export function WrenchIcon(props: IconProps) {
     return createIcon(
         <>
