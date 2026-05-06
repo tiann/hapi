@@ -7,6 +7,7 @@ import {
     ingestIncomingMessages,
     markMessagesConsumed,
     removeOptimisticMessage,
+    subscribeMessageWindow,
     updateMessageStatus,
 } from '@/lib/message-window-store'
 
@@ -164,5 +165,26 @@ describe('message-window-store status updates', () => {
 
         const message = getMessageWindowState(SESSION_ID).messages.find((entry) => entry.id === 'server-queued')
         expect(message?.status).toBe('sent')
+    })
+})
+
+describe('message-window-store cache retention', () => {
+    const SESSION_ID = 'session-message-window-cache-test'
+
+    afterEach(() => {
+        clearMessageWindow(SESSION_ID)
+    })
+
+    it('keeps loaded messages after the last subscriber unsubscribes', () => {
+        const unsubscribe = subscribeMessageWindow(SESSION_ID, () => {})
+        appendOptimisticMessage(SESSION_ID, makeUserMessage({
+            id: 'cached-1',
+            localId: 'cached-1',
+            status: 'sent',
+        }))
+
+        unsubscribe()
+
+        expect(getMessageWindowState(SESSION_ID).messages.map((message) => message.id)).toEqual(['cached-1'])
     })
 })

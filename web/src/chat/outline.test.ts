@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import type { AgentEvent, ChatBlock } from '@/chat/types'
-import { buildConversationOutline, truncateOutlineLabel } from '@/chat/outline'
+import type { AgentEvent, ChatBlock, NormalizedMessage } from '@/chat/types'
+import type { DecryptedMessage } from '@/types/api'
+import {
+    buildConversationOutline,
+    decryptedMessageToOutlineItem,
+    mergeConversationOutlineItems,
+    normalizedMessageToOutlineItem,
+    truncateOutlineLabel
+} from '@/chat/outline'
 
 function userBlock(id: string, text: string, createdAt: number): ChatBlock {
     return {
@@ -64,6 +71,103 @@ describe('conversation outline', () => {
         expect(items.map((item) => item.id)).toEqual([
             'outline:user:first',
             'outline:user:second'
+        ])
+    })
+
+    it('builds outline items from normalized user messages', () => {
+        const normalized: NormalizedMessage = {
+            id: 'm1',
+            localId: null,
+            createdAt: 123,
+            role: 'user',
+            isSidechain: false,
+            content: {
+                type: 'text',
+                text: 'Outline me'
+            }
+        }
+
+        expect(normalizedMessageToOutlineItem(normalized)).toEqual({
+            id: 'outline:user:m1',
+            targetMessageId: 'user:m1',
+            kind: 'user',
+            label: 'Outline me',
+            createdAt: 123
+        })
+    })
+
+    it('ignores non-user normalized messages', () => {
+        const normalized: NormalizedMessage = {
+            id: 'a1',
+            localId: null,
+            createdAt: 123,
+            role: 'agent',
+            isSidechain: false,
+            content: [{
+                type: 'text',
+                text: 'Ignore me',
+                uuid: 'a1',
+                parentUUID: null
+            }]
+        }
+
+        expect(normalizedMessageToOutlineItem(normalized)).toBeNull()
+    })
+
+    it('builds outline items from decrypted user messages', () => {
+        const message: DecryptedMessage = {
+            id: 'server-1',
+            seq: 1,
+            localId: null,
+            createdAt: 456,
+            invokedAt: null,
+            content: {
+                role: 'user',
+                content: {
+                    type: 'text',
+                    text: 'Hydrated outline'
+                }
+            }
+        }
+
+        expect(decryptedMessageToOutlineItem(message)).toEqual({
+            id: 'outline:user:server-1',
+            targetMessageId: 'user:server-1',
+            kind: 'user',
+            label: 'Hydrated outline',
+            createdAt: 456
+        })
+    })
+
+    it('merges outline items without duplicates and keeps chronological order', () => {
+        const merged = mergeConversationOutlineItems([
+            {
+                id: 'outline:user:newer',
+                targetMessageId: 'user:newer',
+                kind: 'user',
+                label: 'Newer',
+                createdAt: 200
+            }
+        ], [
+            {
+                id: 'outline:user:older',
+                targetMessageId: 'user:older',
+                kind: 'user',
+                label: 'Older',
+                createdAt: 100
+            },
+            {
+                id: 'outline:user:newer-duplicate',
+                targetMessageId: 'user:newer',
+                kind: 'user',
+                label: 'Duplicate',
+                createdAt: 200
+            }
+        ])
+
+        expect(merged.map((item) => item.targetMessageId)).toEqual([
+            'user:older',
+            'user:newer'
         ])
     })
 })

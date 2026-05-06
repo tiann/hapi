@@ -20,6 +20,7 @@ export type MessageWindowState = {
 
 export const VISIBLE_WINDOW_SIZE = 400
 export const PENDING_WINDOW_SIZE = 200
+const INITIAL_PAGE_SIZE = VISIBLE_WINDOW_SIZE
 const PAGE_SIZE = 50
 const PENDING_OVERFLOW_WARNING = 'New messages arrived while you were away. Scroll to bottom to refresh.'
 
@@ -378,8 +379,6 @@ export function subscribeMessageWindow(sessionId: string, listener: () => void):
         current.delete(listener)
         if (current.size === 0) {
             listeners.delete(sessionId)
-            states.delete(sessionId)
-            clearPendingVisibilityCache(sessionId)
         }
     }
 }
@@ -422,10 +421,11 @@ export async function fetchLatestMessages(api: ApiClient, sessionId: string): Pr
     updateState(sessionId, (prev) => buildState(prev, { isLoading: true, warning: null }))
 
     try {
+        const limit = initial.messages.length > 0 ? PAGE_SIZE : INITIAL_PAGE_SIZE
         // Always request byPosition mode (V8). If the hub is V7 it ignores byPosition and
         // returns the standard seq-based response (no nextBeforeAt field) — we fall back
         // to seq-cursor mode seamlessly.
-        const response = await api.getMessages(sessionId, { byPosition: true, limit: PAGE_SIZE })
+        const response = await api.getMessages(sessionId, { byPosition: true, limit })
         // Derive composite cursor pair from server response. Both values come from
         // the same row on the server; we keep them paired so the next older fetch
         // doesn't mix `beforeAt` from the server with a recomputed minimum `seq`.

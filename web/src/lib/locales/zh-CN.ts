@@ -73,6 +73,11 @@ export default {
   'session.outline.loadOlder': '加载更早',
   'session.outline.empty': '已加载消息中暂无大纲项',
   'session.outline.kind.user': '用户',
+  'session.outline.hydrating': '正在补全大纲…',
+  'session.outline.complete': '大纲已完整',
+  'session.outline.retry': '重试补全',
+  'session.outline.locating': '正在定位消息…',
+  'session.outline.locateFailed': '未能定位到该消息',
 
   // Session actions
   'session.action.rename': '重命名',

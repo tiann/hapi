@@ -47,9 +47,15 @@ function renderPanel(props: Partial<ComponentProps<typeof ConversationOutlinePan
             <ConversationOutlinePanel
                 title="project"
                 items={outlineItems}
+                status="ready"
+                complete={false}
+                error={null}
+                locateError={null}
+                isLocating={false}
                 hasMoreMessages={false}
                 isLoadingMoreMessages={false}
                 onLoadMore={vi.fn()}
+                onRetryHydration={vi.fn()}
                 onSelect={vi.fn()}
                 onClose={vi.fn()}
                 {...props}
@@ -81,6 +87,38 @@ describe('ConversationOutlinePanel', () => {
         renderPanel({ items: [] })
 
         expect(screen.getByText('No outline items in loaded messages')).toBeInTheDocument()
+    })
+
+    it('shows hydration and locating statuses', () => {
+        renderPanel({
+            status: 'loading',
+            complete: false,
+            isLocating: true
+        })
+
+        expect(screen.getByText('Completing outline…')).toBeInTheDocument()
+        expect(screen.getByText('Locating message…')).toBeInTheDocument()
+    })
+
+    it('shows completion status', () => {
+        renderPanel({
+            complete: true,
+        })
+
+        expect(screen.getByText('Outline complete')).toBeInTheDocument()
+    })
+
+    it('shows retry action on outline error', () => {
+        const onRetryHydration = vi.fn()
+        renderPanel({
+            status: 'error',
+            error: 'Failed to hydrate outline',
+            onRetryHydration
+        })
+
+        fireEvent.click(screen.getByText('Retry hydration'))
+
+        expect(onRetryHydration).toHaveBeenCalledTimes(1)
     })
 })
 
@@ -146,6 +184,21 @@ describe('scroll anchor helpers', () => {
 
         expect(intent).toMatchObject({
             distanceFromBottom: 182,
+            isScrollingUp: true
+        })
+        expect(shouldCancelInitialScrollSettling(intent)).toBe(true)
+    })
+
+    it('cancels initial scroll settling on deliberate upward scrolling even near the bottom', () => {
+        const intent = getScrollIntent({
+            scrollTop: 690,
+            previousScrollTop: 702,
+            scrollHeight: 1232,
+            clientHeight: 530
+        })
+
+        expect(intent).toMatchObject({
+            distanceFromBottom: 12,
             isScrollingUp: true
         })
         expect(shouldCancelInitialScrollSettling(intent)).toBe(true)

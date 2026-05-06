@@ -73,6 +73,11 @@ export default {
   'session.outline.loadOlder': 'Load earlier',
   'session.outline.empty': 'No outline items in loaded messages',
   'session.outline.kind.user': 'User',
+  'session.outline.hydrating': 'Completing outline…',
+  'session.outline.complete': 'Outline complete',
+  'session.outline.retry': 'Retry hydration',
+  'session.outline.locating': 'Locating message…',
+  'session.outline.locateFailed': 'Could not locate that message',
 
   // Session actions
   'session.action.rename': 'Rename',

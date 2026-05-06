@@ -15,7 +15,7 @@ import type { Suggestion } from '@/hooks/useActiveSuggestions'
 import { normalizeDecryptedMessage } from '@/chat/normalize'
 import { reduceChatBlocks } from '@/chat/reducer'
 import { reconcileChatBlocks } from '@/chat/reconcile'
-import { buildConversationOutline } from '@/chat/outline'
+import { buildConversationOutline, getConversationMessageAnchorId, type ConversationOutlineItem } from '@/chat/outline'
 import { isQueuedForInvocation } from '@/lib/messages'
 import { HappyComposer } from '@/components/AssistantChat/HappyComposer'
 import { HappyThread } from '@/components/AssistantChat/HappyThread'
@@ -28,6 +28,7 @@ import { TeamPanel } from '@/components/TeamPanel'
 import { usePlatform } from '@/hooks/usePlatform'
 import { useSessionActions } from '@/hooks/mutations/useSessionActions'
 import { useCodexModels } from '@/hooks/queries/useCodexModels'
+import { useConversationOutline } from '@/hooks/queries/useConversationOutline'
 import { useOpencodeModels } from '@/hooks/queries/useOpencodeModels'
 import { useVoiceOptional } from '@/lib/voice-context'
 import { RealtimeVoiceSession, registerSessionStore, registerVoiceHooksStore, voiceHooks } from '@/realtime'
@@ -44,6 +45,37 @@ function getOutlineTitle(session: Session): string {
         return session.metadata.path
     }
     return session.id.slice(0, 8)
+}
+
+function waitForNextPaint(): Promise<void> {
+    return new Promise((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+    })
+}
+
+export async function loadOutlineTarget(options: {
+    findTarget: () => HTMLElement | null
+    hasMore: () => boolean
+    loadMore: () => Promise<unknown>
+    maxAttempts?: number
+}): Promise<boolean> {
+    if (options.findTarget()) {
+        return true
+    }
+
+    const maxAttempts = options.maxAttempts ?? 200
+    let attempts = 0
+
+    while (options.hasMore() && attempts < maxAttempts) {
+        attempts += 1
+        await options.loadMore()
+        await waitForNextPaint()
+        if (options.findTarget()) {
+            return true
+        }
+    }
+
+    return options.findTarget() !== null
 }
 
 export function SessionChat(props: {
@@ -76,6 +108,8 @@ export function SessionChat(props: {
     const blocksByIdRef = useRef<Map<string, ChatBlock>>(new Map())
     const [forceScrollToken, setForceScrollToken] = useState(0)
     const [outlineOpen, setOutlineOpen] = useState(false)
+    const hasMoreMessagesRef = useRef(props.hasMoreMessages)
+    const onLoadMoreRef = useRef(props.onLoadMore)
     const agentFlavor = props.session.metadata?.flavor ?? null
     const controlledByUser = props.session.agentState?.controlledByUser === true
     const codexCollaborationModeSupported = agentFlavor === 'codex' && !controlledByUser
@@ -283,11 +317,27 @@ export function SessionChat(props: {
         () => buildConversationOutline(reconciled.blocks),
         [reconciled.blocks]
     )
+    const outlineState = useConversationOutline(props.api, props.session.id, outlineItems)
 
     const outlineTitle = useMemo(
         () => getOutlineTitle(props.session),
         [props.session]
     )
+
+    useEffect(() => {
+        hasMoreMessagesRef.current = props.hasMoreMessages
+    }, [props.hasMoreMessages])
+
+    useEffect(() => {
+        onLoadMoreRef.current = props.onLoadMore
+    }, [props.onLoadMore])
+
+    useEffect(() => {
+        if (!outlineOpen || outlineState.complete || outlineState.status === 'loading' || outlineState.status === 'error') {
+            return
+        }
+        void outlineState.startHydrating()
+    }, [outlineOpen, outlineState.complete, outlineState.startHydrating, outlineState.status])
 
     // Permission mode change handler
     const handlePermissionModeChange = useCallback(async (mode: PermissionMode) => {
@@ -377,6 +427,42 @@ export function SessionChat(props: {
         setForceScrollToken((token) => token + 1)
     }, [props.onSend])
 
+    const handleOutlineItemClick = useCallback(async (item: ConversationOutlineItem) => {
+        const anchorId = getConversationMessageAnchorId(item.targetMessageId)
+        const findTarget = () => document.getElementById(anchorId)
+
+        if (findTarget()) {
+            return true
+        }
+
+        outlineState.setLocating(item.targetMessageId, null)
+        try {
+            const found = await loadOutlineTarget({
+                findTarget,
+                hasMore: () => hasMoreMessagesRef.current,
+                loadMore: () => onLoadMoreRef.current(),
+            })
+            if (!found) {
+                outlineState.setLocating(null, t('session.outline.locateFailed'))
+                return false
+            }
+
+            const target = findTarget()
+            if (!target) {
+                outlineState.setLocating(null, t('session.outline.locateFailed'))
+                return false
+            }
+
+            target.scrollIntoView({ block: 'start', behavior: 'smooth' })
+            outlineState.setLocating(null, null)
+            return true
+        } catch (error) {
+            const message = error instanceof Error ? error.message : t('session.outline.locateFailed')
+            outlineState.setLocating(null, message)
+            return false
+        }
+    }, [outlineState, t])
+
     const attachmentAdapter = useMemo(() => {
         if (!props.session.active) {
             return undefined
@@ -441,8 +527,15 @@ export function SessionChat(props: {
                         forceScrollToken={forceScrollToken}
                         outlineOpen={outlineOpen}
                         outlineTitle={outlineTitle}
-                        outlineItems={outlineItems}
+                        outlineItems={outlineState.items}
+                        outlineStatus={outlineState.status}
+                        outlineComplete={outlineState.complete}
+                        outlineError={outlineState.error}
+                        outlineLocateError={outlineState.locateError}
+                        outlineIsLocating={outlineState.isLocating}
+                        onRetryOutlineHydration={outlineState.retryHydrating}
                         onOutlineOpenChange={setOutlineOpen}
+                        onOutlineItemClick={handleOutlineItemClick}
                     />
 
                     {codexCollaborationModeSupported && codexModelsState.error ? (

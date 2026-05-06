@@ -53,7 +53,7 @@ export function getScrollIntent(params: {
 }
 
 export function shouldCancelInitialScrollSettling(intent: ScrollIntent): boolean {
-    return intent.isScrollingUp && intent.distanceFromBottom > MANUAL_SCROLL_EPSILON_PX
+    return intent.isScrollingUp
 }
 
 export function captureScrollAnchor(viewport: HTMLElement): ScrollAnchor | null {
@@ -130,10 +130,16 @@ const THREAD_MESSAGE_COMPONENTS = {
 export function ConversationOutlinePanel(props: {
     title: string
     items: readonly ConversationOutlineItem[]
+    status: 'idle' | 'loading' | 'ready' | 'error'
+    complete: boolean
+    error: string | null
+    locateError: string | null
+    isLocating: boolean
     hasMoreMessages: boolean
     isLoadingMoreMessages: boolean
     onLoadMore: () => void
-    onSelect: (item: ConversationOutlineItem) => void
+    onRetryHydration: () => void
+    onSelect: (item: ConversationOutlineItem) => Promise<void> | void
     onClose: () => void
 }) {
     const { t } = useTranslation()
@@ -184,6 +190,51 @@ export function ConversationOutlinePanel(props: {
                 </div>
             ) : null}
 
+            {props.status === 'loading' && !props.complete ? (
+                <div className="border-b border-[var(--app-border)] px-3 py-2 text-xs text-[var(--app-hint)]">
+                    <div className="flex items-center gap-2">
+                        <Spinner size="sm" label={null} className="text-current" />
+                        <span>{t('session.outline.hydrating')}</span>
+                    </div>
+                </div>
+            ) : null}
+
+            {props.complete ? (
+                <div className="border-b border-[var(--app-border)] px-3 py-2 text-xs text-[var(--app-hint)]">
+                    {t('session.outline.complete')}
+                </div>
+            ) : null}
+
+            {props.error ? (
+                <div className="border-b border-[var(--app-border)] p-3">
+                    <div className="rounded-md bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-300">
+                        <div>{props.error}</div>
+                        <button
+                            type="button"
+                            onClick={props.onRetryHydration}
+                            className="mt-2 text-[var(--app-link)] underline underline-offset-2"
+                        >
+                            {t('session.outline.retry')}
+                        </button>
+                    </div>
+                </div>
+            ) : null}
+
+            {props.isLocating ? (
+                <div className="border-b border-[var(--app-border)] px-3 py-2 text-xs text-[var(--app-hint)]">
+                    <div className="flex items-center gap-2">
+                        <Spinner size="sm" label={null} className="text-current" />
+                        <span>{t('session.outline.locating')}</span>
+                    </div>
+                </div>
+            ) : null}
+
+            {props.locateError ? (
+                <div className="border-b border-[var(--app-border)] px-3 py-2 text-xs text-red-600">
+                    {props.locateError}
+                </div>
+            ) : null}
+
             <div className="app-scroll-y min-h-0 flex-1 p-2">
                 {props.items.length === 0 ? (
                     <div className="px-2 py-8 text-center text-sm text-[var(--app-hint)]">
@@ -196,7 +247,8 @@ export function ConversationOutlinePanel(props: {
                                 <button
                                     key={item.id}
                                     type="button"
-                                    onClick={() => props.onSelect(item)}
+                                    onClick={() => void props.onSelect(item)}
+                                    disabled={props.isLocating}
                                     className="group flex w-full min-w-0 items-start gap-2 rounded-md px-2 py-2 text-left transition-colors hover:bg-[var(--app-subtle-bg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]"
                                 >
                                     <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-[var(--app-button)]" aria-hidden="true" />
@@ -240,8 +292,14 @@ export function HappyThread(props: {
     outlineOpen: boolean
     outlineTitle: string
     outlineItems: readonly ConversationOutlineItem[]
+    outlineStatus: 'idle' | 'loading' | 'ready' | 'error'
+    outlineComplete: boolean
+    outlineError: string | null
+    outlineLocateError: string | null
+    outlineIsLocating: boolean
+    onRetryOutlineHydration: () => Promise<void> | void
     onOutlineOpenChange: (open: boolean) => void
-    onOutlineItemClick?: (item: ConversationOutlineItem) => void
+    onOutlineItemClick?: (item: ConversationOutlineItem) => Promise<boolean> | boolean
 }) {
     const { t } = useTranslation()
     const viewportRef = useRef<HTMLDivElement | null>(null)
@@ -451,8 +509,7 @@ export function HappyThread(props: {
 
     const handleLoadMore = useCallback(() => {
         if (
-            isInitialScrollSettling()
-            || isLoadingMessagesRef.current
+            isLoadingMessagesRef.current
             || !hasMoreMessagesRef.current
             || isLoadingMoreRef.current
             || loadLockRef.current
@@ -489,16 +546,22 @@ export function HappyThread(props: {
                 loadLockRef.current = false
             }
         })
-    }, [isInitialScrollSettling])
+    }, [])
 
-    const handleOutlineSelect = useCallback((item: ConversationOutlineItem) => {
+    const handleOutlineSelect = useCallback(async (item: ConversationOutlineItem) => {
         const target = document.getElementById(getConversationMessageAnchorId(item.targetMessageId))
         if (target) {
             target.scrollIntoView({ block: 'start', behavior: 'smooth' })
             autoScrollEnabledRef.current = false
+            props.onOutlineOpenChange(false)
+            return
         }
-        props.onOutlineItemClick?.(item)
-        props.onOutlineOpenChange(false)
+        if (props.onOutlineItemClick) {
+            const handled = await props.onOutlineItemClick(item)
+            if (handled !== false) {
+                props.onOutlineOpenChange(false)
+            }
+        }
     }, [props.onOutlineItemClick, props.onOutlineOpenChange])
 
     useEffect(() => {
@@ -669,9 +732,15 @@ export function HappyThread(props: {
                         <ConversationOutlinePanel
                             title={props.outlineTitle}
                             items={props.outlineItems}
+                            status={props.outlineStatus}
+                            complete={props.outlineComplete}
+                            error={props.outlineError}
+                            locateError={props.outlineLocateError}
+                            isLocating={props.outlineIsLocating}
                             hasMoreMessages={props.hasMoreMessages}
                             isLoadingMoreMessages={props.isLoadingMoreMessages}
                             onLoadMore={handleLoadMore}
+                            onRetryHydration={props.onRetryOutlineHydration}
                             onSelect={handleOutlineSelect}
                             onClose={() => props.onOutlineOpenChange(false)}
                         />
