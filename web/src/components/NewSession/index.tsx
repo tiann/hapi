@@ -290,11 +290,11 @@ export function NewSession(props: {
     }, [suggestions, selectedIndex, moveUp, moveDown, clearSuggestions, handleSuggestionSelect])
 
     const chooseFolderCallback = props.onChooseFolder
-    const workspaceRootAvailable = Boolean(selectedMachine?.metadata?.workspaceRoot)
+    const workspaceRootsAvailable = Boolean(selectedMachine?.metadata?.workspaceRoots?.length)
     const handleChooseFolder = useMemo(() => {
-        if (!chooseFolderCallback || !workspaceRootAvailable) return undefined
+        if (!chooseFolderCallback || !workspaceRootsAvailable) return undefined
         return () => chooseFolderCallback({ machineId, directory: trimmedDirectory })
-    }, [chooseFolderCallback, workspaceRootAvailable, machineId, trimmedDirectory])
+    }, [chooseFolderCallback, workspaceRootsAvailable, machineId, trimmedDirectory])
 
     async function handleCreate() {
         if (!machineId || !trimmedDirectory) return

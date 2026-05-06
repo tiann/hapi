@@ -320,9 +320,9 @@ export default {
   'browse.startSession': '启动会话',
   'browse.nav': '浏览',
   'browse.noRootTitle': '未启用 workspace 浏览',
-  'browse.noRootHint': '浏览功能是可选的。带 --workspace-root 参数重启 runner，即可启用文件树浏览和受限的会话启动。',
+  'browse.noRootHint': '浏览功能是可选的。带一个或多个 --workspace-root 参数重启 runner，即可启用文件树浏览和受限的会话启动。',
   'browse.noRootFooter': '你仍然可以在「新建会话」页面直接创建会话。',
-  'browse.noMachinesConnected': '没有已连接的 CLI。在某台机器上运行 `hapi runner start --workspace-root /path` 来开始。',
+  'browse.noMachinesConnected': '没有已连接的 CLI。在某台机器上运行 `hapi runner start --workspace-root /path/a --workspace-root /path/b` 来开始。',
 
   // Misc
   'misc.noMachines': '无可用机器',

@@ -58,33 +58,85 @@ function getMachineTitle(machine: Machine): string {
     return machine.id.slice(0, 8)
 }
 
+function getMachineRootsSummary(machine: Machine): string {
+    const roots = machine.metadata?.workspaceRoots ?? []
+    if (roots.length === 0) return ''
+    if (roots.length === 1) return roots[0]
+    return `${roots[0]} (+${roots.length - 1})`
+}
+
+function isWindowsStylePath(path: string): boolean {
+    return /^[A-Za-z]:[\\/]/.test(path) || path.includes('\\')
+}
+
+function getPathSeparator(path: string): '/' | '\\' {
+    return isWindowsStylePath(path) ? '\\' : '/'
+}
+
+function normalizePathForComparison(path: string): string {
+    const normalized = path.replace(/[\\/]+/g, '/')
+    if (/^[A-Za-z]:\/$/.test(normalized) || normalized === '/') {
+        return normalized
+    }
+    if (/^[A-Za-z]:$/.test(normalized)) {
+        return `${normalized}/`
+    }
+    return normalized.replace(/\/+$/, '')
+}
+
+function denormalizePath(path: string, sample: string): string {
+    return getPathSeparator(sample) === '\\'
+        ? path.replace(/\//g, '\\')
+        : path
+}
+
 function joinPath(base: string, name: string): string {
-    return base.endsWith('/') ? base + name : base + '/' + name
+    const normalizedBase = normalizePathForComparison(base)
+    const joined = normalizedBase === '/' || /^[A-Za-z]:\/$/.test(normalizedBase)
+        ? `${normalizedBase}${name}`
+        : `${normalizedBase}/${name}`
+    return denormalizePath(joined, base)
 }
 
 function parentPath(path: string): string {
-    const stripped = path.replace(/\/+$/, '')
-    const idx = stripped.lastIndexOf('/')
-    if (idx <= 0) return '/'
-    return stripped.slice(0, idx)
+    const normalizedPath = normalizePathForComparison(path)
+    if (normalizedPath === '/' || /^[A-Za-z]:\/$/.test(normalizedPath)) {
+        return denormalizePath(normalizedPath, path)
+    }
+
+    const idx = normalizedPath.lastIndexOf('/')
+    const parent = idx <= 0 ? '/' : normalizedPath.slice(0, idx)
+    const resolvedParent = /^[A-Za-z]:$/.test(parent) ? `${parent}/` : parent
+    return denormalizePath(resolvedParent, path)
 }
 
 function isPathWithin(candidate: string, root: string): boolean {
-    const c = candidate.replace(/\/+$/, '') || '/'
-    const r = root.replace(/\/+$/, '') || '/'
-    return c === r || c.startsWith(r + '/')
+    const c = normalizePathForComparison(candidate)
+    const r = normalizePathForComparison(root)
+    return c === r || c.startsWith(r.endsWith('/') ? r : `${r}/`)
 }
 
 function buildBreadcrumbs(currentPath: string, root: string): { label: string; path: string }[] {
-    const rootTrimmed = root.replace(/\/+$/, '')
-    const relative = currentPath.slice(rootTrimmed.length).replace(/^\/+/, '')
-    const crumbs: { label: string; path: string }[] = [{ label: rootTrimmed.split('/').pop() || '/', path: rootTrimmed || '/' }]
+    const normalizedRoot = normalizePathForComparison(root)
+    const normalizedCurrent = normalizePathForComparison(currentPath)
+    const rootLabel = (() => {
+        if (normalizedRoot === '/') return '/'
+        if (/^[A-Za-z]:\/$/.test(normalizedRoot)) return normalizedRoot.slice(0, 2)
+        return normalizedRoot.split('/').pop() || normalizedRoot
+    })()
+    const relative = normalizedCurrent.slice(normalizedRoot.length).replace(/^\/+/, '')
+    const crumbs: { label: string; path: string }[] = [{
+        label: rootLabel,
+        path: denormalizePath(normalizedRoot, root)
+    }]
     if (!relative) return crumbs
     const parts = relative.split('/').filter(Boolean)
-    let acc = rootTrimmed
+    let acc = normalizedRoot
     for (const part of parts) {
-        acc = acc + '/' + part
-        crumbs.push({ label: part, path: acc })
+        acc = acc === '/' || /^[A-Za-z]:\/$/.test(acc)
+            ? `${acc}${part}`
+            : `${acc}/${part}`
+        crumbs.push({ label: part, path: denormalizePath(acc, root) })
     }
     return crumbs
 }
@@ -101,6 +153,7 @@ export function WorkspaceBrowser(props: {
     const queryClient = useQueryClient()
 
     const [machineId, setMachineId] = useState<string | null>(initialMachineId ?? null)
+    const [selectedRoot, setSelectedRoot] = useState<string | null>(null)
     const [currentPath, setCurrentPath] = useState<string | null>(null)
     const [entries, setEntries] = useState<MachineDirectoryEntry[]>([])
     const [isLoading, setIsLoading] = useState(false)
@@ -131,7 +184,7 @@ export function WorkspaceBrowser(props: {
         () => machineId ? machines.find(m => m.id === machineId) ?? null : null,
         [machineId, machines]
     )
-    const workspaceRoot = selectedMachine?.metadata?.workspaceRoot ?? null
+    const workspaceRoots = selectedMachine?.metadata?.workspaceRoots ?? []
 
     const loadDirectory = useCallback(async (path: string) => {
         if (!machineId) return
@@ -144,7 +197,7 @@ export function WorkspaceBrowser(props: {
                 setCurrentPath(path)
             } else {
                 setError(result.error ?? 'Failed to list directory')
-                // CLI may have just pushed new metadata (e.g. a workspaceRoot)
+                // CLI may have just pushed new metadata (e.g. workspaceRoots)
                 // that we haven't picked up yet — refetch so the UI can
                 // transition out of the no-root state if applicable.
                 void queryClient.invalidateQueries({ queryKey: queryKeys.machines })
@@ -157,15 +210,25 @@ export function WorkspaceBrowser(props: {
         }
     }, [api, machineId, queryClient])
 
-    // Auto-load workspace root when a machine with a root is selected
     useEffect(() => {
-        if (!machineId || !workspaceRoot) return
-        if (currentPath && isPathWithin(currentPath, workspaceRoot)) return
-        void loadDirectory(workspaceRoot)
-    }, [machineId, workspaceRoot, currentPath, loadDirectory])
+        if (workspaceRoots.length === 0) {
+            if (selectedRoot !== null) setSelectedRoot(null)
+            return
+        }
+        if (selectedRoot && workspaceRoots.includes(selectedRoot)) return
+        setSelectedRoot(workspaceRoots[0] ?? null)
+    }, [workspaceRoots, selectedRoot])
+
+    // Auto-load selected root when a machine/root is selected
+    useEffect(() => {
+        if (!machineId || !selectedRoot) return
+        if (currentPath && isPathWithin(currentPath, selectedRoot)) return
+        void loadDirectory(selectedRoot)
+    }, [machineId, selectedRoot, currentPath, loadDirectory])
 
     // If switching machines, reset view
     useEffect(() => {
+        setSelectedRoot(null)
         setCurrentPath(null)
         setEntries([])
         setError(null)
@@ -177,12 +240,12 @@ export function WorkspaceBrowser(props: {
     }, [currentPath, loadDirectory])
 
     const handleGoUp = useCallback(() => {
-        if (!currentPath || !workspaceRoot) return
-        if (currentPath.replace(/\/+$/, '') === workspaceRoot.replace(/\/+$/, '')) return
+        if (!currentPath || !selectedRoot) return
+        if (normalizePathForComparison(currentPath) === normalizePathForComparison(selectedRoot)) return
         const parent = parentPath(currentPath)
-        if (!isPathWithin(parent, workspaceRoot)) return
+        if (!isPathWithin(parent, selectedRoot)) return
         void loadDirectory(parent)
-    }, [currentPath, workspaceRoot, loadDirectory])
+    }, [currentPath, selectedRoot, loadDirectory])
 
     const handleRefresh = useCallback(() => {
         if (currentPath) void loadDirectory(currentPath)
@@ -194,12 +257,12 @@ export function WorkspaceBrowser(props: {
     }, [machineId, currentPath, props])
 
     const breadcrumbs = useMemo(() => {
-        if (!currentPath || !workspaceRoot) return []
-        return buildBreadcrumbs(currentPath, workspaceRoot)
-    }, [currentPath, workspaceRoot])
+        if (!currentPath || !selectedRoot) return []
+        return buildBreadcrumbs(currentPath, selectedRoot)
+    }, [currentPath, selectedRoot])
 
     const directories = useMemo(() => entries.filter(e => e.type === 'directory'), [entries])
-    const atRoot = !!(currentPath && workspaceRoot && currentPath.replace(/\/+$/, '') === workspaceRoot.replace(/\/+$/, ''))
+    const atRoot = !!(currentPath && selectedRoot && normalizePathForComparison(currentPath) === normalizePathForComparison(selectedRoot))
 
     const machineSelector = (
         <div className="flex items-center gap-2">
@@ -213,7 +276,7 @@ export function WorkspaceBrowser(props: {
                 {machines.map(m => (
                     <option key={m.id} value={m.id}>
                         {getMachineTitle(m)}
-                        {m.metadata?.workspaceRoot ? ` — ${m.metadata.workspaceRoot}` : ''}
+                        {getMachineRootsSummary(m) ? ` — ${getMachineRootsSummary(m)}` : ''}
                     </option>
                 ))}
                 {machines.length === 0 && (
@@ -235,9 +298,9 @@ export function WorkspaceBrowser(props: {
         )
     }
 
-    // Selected machine hasn't reported a workspaceRoot — show an info state.
+    // Selected machine hasn't reported workspace roots — show an info state.
     // Browsing is opt-in, triggered by `--workspace-root`.
-    if (selectedMachine && !workspaceRoot) {
+    if (selectedMachine && workspaceRoots.length === 0) {
         return (
             <div className="flex flex-col h-full">
                 <div className="px-3 py-2 border-b border-[var(--app-divider)]">{machineSelector}</div>
@@ -245,7 +308,7 @@ export function WorkspaceBrowser(props: {
                     <div className="text-sm text-[var(--app-fg)] font-medium">{t('browse.noRootTitle')}</div>
                     <div className="max-w-md text-sm text-[var(--app-hint)]">{t('browse.noRootHint')}</div>
                     <code className="px-3 py-1.5 text-xs rounded bg-[var(--app-subtle-bg)] text-[var(--app-fg)]">
-                        hapi runner start --workspace-root /path/to/folder
+                        hapi runner start --workspace-root /path/a --workspace-root /path/b
                     </code>
                     <div className="text-xs text-[var(--app-hint)] mt-2">
                         {t('browse.noRootFooter')}
@@ -259,6 +322,22 @@ export function WorkspaceBrowser(props: {
         <div className="flex flex-col h-full">
             <div className="px-3 py-2 border-b border-[var(--app-divider)]">
                 {machineSelector}
+
+                {workspaceRoots.length > 1 && (
+                    <div className="mt-2">
+                        <select
+                            value={selectedRoot ?? ''}
+                            onChange={(e) => setSelectedRoot(e.target.value || null)}
+                            className="w-full bg-transparent text-xs text-[var(--app-hint)] outline-none"
+                        >
+                            {workspaceRoots.map((root) => (
+                                <option key={root} value={root}>
+                                    {root}
+                                </option>
+                            ))}
+                        </select>
+                    </div>
+                )}
 
                 {currentPath && (
                     <div className="mt-2 flex items-center gap-1 text-xs overflow-x-auto">

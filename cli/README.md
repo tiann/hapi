@@ -52,10 +52,10 @@ See `src/commands/auth.ts`.
 - `hapi runner stop-session <sessionId>` - Terminate specific session.
 - `hapi runner logs` - Print path to latest runner log file.
 
-Both `start` and `start-sync` accept `--workspace-root <path>` (or `--workspace-root=<path>`). When set:
+Both `start` and `start-sync` accept repeatable `--workspace-root <path>` (or `--workspace-root=<path>`). When set:
 
-- The web `/browse` page surfaces a scoped file tree rooted at that path.
-- The runner refuses `list-directory` and `spawn-session` requests for paths outside the root.
+- The web `/browse` page surfaces scoped file trees rooted at those paths.
+- The runner refuses `list-directory` and `spawn-session` requests for paths outside the configured roots.
 - `~` and `~/foo` are expanded.
 
 Omitting the flag keeps the legacy behavior: no scoping, no `/browse` feature.
