@@ -10,6 +10,17 @@ vi.mock('@/components/MarkdownRenderer', () => ({
     )
 }))
 
+vi.mock('@/components/CodeBlock', () => ({
+    CodeBlock: (props: { code: string; language?: string; title?: string; className?: string }) => (
+        <div className={props.className}>
+            {props.title ? <div>{props.title}</div> : null}
+            <pre data-language={props.language ?? 'text'}>
+                <code>{props.code}</code>
+            </pre>
+        </div>
+    )
+}))
+
 describe('extractTextFromResult', () => {
     it('returns string directly', () => {
         expect(extractTextFromResult('hello')).toBe('hello')
