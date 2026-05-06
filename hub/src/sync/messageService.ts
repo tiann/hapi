@@ -13,6 +13,17 @@ export class MessageService {
     ) {
     }
 
+    getMessages(sessionId: string, limit: number = 200): DecryptedMessage[] {
+        const stored = this.store.messages.getMessages(sessionId, limit)
+        return stored.map((message) => ({
+            id: message.id,
+            seq: message.seq,
+            localId: message.localId,
+            content: message.content,
+            createdAt: message.createdAt
+        }))
+    }
+
     getMessagesPage(sessionId: string, options: { limit: number; beforeSeq: number | null }): {
         messages: DecryptedMessage[]
         page: {

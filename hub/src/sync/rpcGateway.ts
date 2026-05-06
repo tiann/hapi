@@ -2,6 +2,9 @@ import type { CodexCollaborationMode, PermissionMode } from '@hapi/protocol/type
 import type { Server } from 'socket.io'
 import type { RpcRegistry } from '../socket/rpcRegistry'
 
+const DEFAULT_RPC_TIMEOUT_MS = 30_000
+const MODEL_LIST_RPC_TIMEOUT_MS = 120_000
+
 export type RpcCommandResponse = {
     success: boolean
     stdout?: string
@@ -267,11 +270,11 @@ export class RpcGateway {
     }
 
     async listCodexModelsForSession(sessionId: string): Promise<RpcListCodexModelsResponse> {
-        return await this.sessionRpc(sessionId, 'listCodexModels', {}) as RpcListCodexModelsResponse
+        return await this.sessionRpc(sessionId, 'listCodexModels', {}, MODEL_LIST_RPC_TIMEOUT_MS) as RpcListCodexModelsResponse
     }
 
     async listCodexModelsForMachine(machineId: string): Promise<RpcListCodexModelsResponse> {
-        return await this.machineRpc(machineId, 'listCodexModels', {}) as RpcListCodexModelsResponse
+        return await this.machineRpc(machineId, 'listCodexModels', {}, MODEL_LIST_RPC_TIMEOUT_MS) as RpcListCodexModelsResponse
     }
 
     async listOpencodeModelsForSession(sessionId: string): Promise<RpcListOpencodeModelsResponse> {
@@ -282,15 +285,25 @@ export class RpcGateway {
         return await this.machineRpc(machineId, 'listOpencodeModelsForCwd', { cwd }) as RpcListOpencodeModelsResponse
     }
 
-    private async sessionRpc(sessionId: string, method: string, params: unknown): Promise<unknown> {
-        return await this.rpcCall(`${sessionId}:${method}`, params)
+    private async sessionRpc(
+        sessionId: string,
+        method: string,
+        params: unknown,
+        timeoutMs: number = DEFAULT_RPC_TIMEOUT_MS
+    ): Promise<unknown> {
+        return await this.rpcCall(`${sessionId}:${method}`, params, timeoutMs)
     }
 
-    private async machineRpc(machineId: string, method: string, params: unknown): Promise<unknown> {
-        return await this.rpcCall(`${machineId}:${method}`, params)
+    private async machineRpc(
+        machineId: string,
+        method: string,
+        params: unknown,
+        timeoutMs: number = DEFAULT_RPC_TIMEOUT_MS
+    ): Promise<unknown> {
+        return await this.rpcCall(`${machineId}:${method}`, params, timeoutMs)
     }
 
-    private async rpcCall(method: string, params: unknown): Promise<unknown> {
+    private async rpcCall(method: string, params: unknown, timeoutMs: number = DEFAULT_RPC_TIMEOUT_MS): Promise<unknown> {
         const socketId = this.rpcRegistry.getSocketIdForMethod(method)
         if (!socketId) {
             throw new Error(`RPC handler not registered: ${method}`)
@@ -301,7 +314,7 @@ export class RpcGateway {
             throw new Error(`RPC socket disconnected: ${method}`)
         }
 
-        const response = await socket.timeout(30_000).emitWithAck('rpc-request', {
+        const response = await socket.timeout(timeoutMs).emitWithAck('rpc-request', {
             method,
             params: JSON.stringify(params)
         }) as unknown

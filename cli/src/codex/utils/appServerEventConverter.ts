@@ -450,7 +450,19 @@ export class AppServerEventConverter {
         }
 
         if (msgType === 'context_compacted') {
-            return addEventScope([{ type: 'context_compacted' }], msgScope);
+            const threadId = asString(msg.thread_id ?? msg.threadId ?? msgScope.thread_id);
+            if (!threadId) {
+                return [];
+            }
+            const turnId = asString(msg.turn_id ?? msg.turnId ?? msgScope.turn_id);
+            return [
+                {
+                    type: 'thread_compacted',
+                    thread_id: threadId,
+                    ...(turnId ? { turn_id: turnId } : {})
+                },
+                ...addEventScope([{ type: 'context_compacted' }], msgScope)
+            ];
         }
 
         if (
@@ -490,6 +502,16 @@ export class AppServerEventConverter {
         }
 
         if (method === 'thread/compacted') {
+            const threadId = asString(paramsRecord.threadId ?? paramsRecord.thread_id ?? eventScope.thread_id);
+            if (!threadId) {
+                return events;
+            }
+            const turnId = asString(paramsRecord.turnId ?? paramsRecord.turn_id ?? eventScope.turn_id);
+            events.push({
+                type: 'thread_compacted',
+                thread_id: threadId,
+                ...(turnId ? { turn_id: turnId } : {})
+            });
             events.push(scoped({ type: 'context_compacted' }));
             return events;
         }
