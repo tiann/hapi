@@ -18,7 +18,6 @@ import type { SkillSearchResult } from '@/lib/skill-search'
 import type { ConversationStatus } from '@/realtime/types'
 import { useActiveWord } from '@/hooks/useActiveWord'
 import { useActiveSuggestions } from '@/hooks/useActiveSuggestions'
-import { findActiveWord } from '@/utils/findActiveWord'
 import { applySuggestion } from '@/utils/applySuggestion'
 import { usePlatform } from '@/hooks/usePlatform'
 import { usePWAInstall } from '@/hooks/usePWAInstall'
@@ -45,7 +44,6 @@ type SkillPickerAnchor = {
     text: string
     selection: { start: number; end: number }
     query: string
-    signature: string
 }
 
 const defaultSuggestionHandler = async (): Promise<Suggestion[]> => []
@@ -163,7 +161,6 @@ export function HappyComposer(props: {
     const [isSwitching, setIsSwitching] = useState(false)
     const [showContinueHint, setShowContinueHint] = useState(false)
     const [skillPickerAnchor, setSkillPickerAnchor] = useState<SkillPickerAnchor | null>(null)
-    const [dismissedSkillSignature, setDismissedSkillSignature] = useState<string | null>(null)
 
     const textareaRef = useRef<HTMLTextAreaElement>(null)
     const prevControlledByUser = useRef(controlledByUser)
@@ -200,46 +197,11 @@ export function HappyComposer(props: {
         [autocompletePrefixes]
     )
     const activeWord = useActiveWord(inputState.text, inputState.selection, compactAutocompletePrefixes)
-    const activeSkillWord = useMemo(
-        () => agentFlavor === 'codex'
-            ? findActiveWord(inputState.text, inputState.selection, ['$'])
-            : undefined,
-        [agentFlavor, inputState.text, inputState.selection]
-    )
-    const activeSkillSignature = activeSkillWord
-        ? `${activeSkillWord.offset}:${activeSkillWord.activeWord}:${activeSkillWord.endOffset}`
-        : null
     const [suggestions, selectedIndex, moveUp, moveDown, clearSuggestions] = useActiveSuggestions(
         activeWord,
         autocompleteSuggestions,
         { clampSelection: true, wrapAround: true }
     )
-
-    useEffect(() => {
-        if (!activeSkillWord) {
-            setDismissedSkillSignature(null)
-            return
-        }
-
-        if (!activeSkillSignature || dismissedSkillSignature === activeSkillSignature) {
-            return
-        }
-
-        clearSuggestions()
-        setSkillPickerAnchor((current) => current?.signature === activeSkillSignature ? current : {
-            text: inputState.text,
-            selection: inputState.selection,
-            query: activeSkillWord.activeWord.slice(1),
-            signature: activeSkillSignature,
-        })
-    }, [
-        activeSkillSignature,
-        activeSkillWord?.activeWord,
-        clearSuggestions,
-        dismissedSkillSignature,
-        inputState.selection,
-        inputState.text,
-    ])
 
     const haptic = useCallback((type: 'light' | 'success' | 'error' = 'light') => {
         if (type === 'light') {
@@ -299,10 +261,9 @@ export function HappyComposer(props: {
     }, [])
 
     const handleSkillPickerClose = useCallback(() => {
-        setDismissedSkillSignature(skillPickerAnchor?.signature ?? null)
         setSkillPickerAnchor(null)
         restoreTextareaFocus()
-    }, [restoreTextareaFocus, skillPickerAnchor?.signature])
+    }, [restoreTextareaFocus])
 
     const handleSkillSelect = useCallback((suggestion: SkillSearchResult) => {
         if (!skillPickerAnchor) return
@@ -321,7 +282,6 @@ export function HappyComposer(props: {
             text: result.text,
             selection: { start: result.cursorPosition, end: result.cursorPosition }
         })
-        setDismissedSkillSignature(null)
         setSkillPickerAnchor(null)
         restoreTextareaFocus(result.cursorPosition)
         haptic('light')
@@ -334,12 +294,10 @@ export function HappyComposer(props: {
         const selection = el
             ? { start: el.selectionStart, end: el.selectionEnd }
             : inputState.selection
-        setDismissedSkillSignature(null)
         setSkillPickerAnchor({
             text: inputState.text,
             selection,
             query: '',
-            signature: `shortcut:${selection.start}:${selection.end}:${Date.now()}`,
         })
         haptic('light')
     }, [agentFlavor, clearSuggestions, controlsDisabled, haptic, inputState.selection, inputState.text])
