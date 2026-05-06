@@ -80,9 +80,13 @@ describe('MessageService.cancelQueuedMessage race scenarios', () => {
             const remaining = store.messages.getUninvokedLocalMessages(session.id)
             expect(remaining).toHaveLength(0)
 
-            // SSE must have been broadcast
+            // message-cancelled SSE must have been broadcast
             const cancelled = publisher.events.find(e => e.type === 'message-cancelled')
             expect(cancelled).toBeDefined()
+
+            // No messages-consumed for cancelled path (row is deleted, not invoked)
+            const consumedCount = publisher.events.filter(e => e.type === 'messages-consumed').length
+            expect(consumedCount).toBe(0)
         })
     })
 
@@ -121,6 +125,19 @@ describe('MessageService.cancelQueuedMessage race scenarios', () => {
             // No message-cancelled SSE should have been emitted
             const cancelled = publisher.events.find(e => e.type === 'message-cancelled')
             expect(cancelled).toBeUndefined()
+
+            // messages-consumed SSE must be broadcast so other web clients clear the queued row
+            const consumed = publisher.events.find(e => e.type === 'messages-consumed')
+            expect(consumed).toBeDefined()
+            if (consumed?.type === 'messages-consumed') {
+                expect(consumed.sessionId).toBe(session.id)
+                expect(consumed.localIds).toEqual(['local-b'])
+                expect(typeof consumed.invokedAt).toBe('number')
+            }
+
+            // messages-consumed must be emitted exactly once
+            const consumedCount = publisher.events.filter(e => e.type === 'messages-consumed').length
+            expect(consumedCount).toBe(1)
         })
     })
 
@@ -157,6 +174,19 @@ describe('MessageService.cancelQueuedMessage race scenarios', () => {
             // No message-cancelled SSE
             const cancelled = publisher.events.find(e => e.type === 'message-cancelled')
             expect(cancelled).toBeUndefined()
+
+            // messages-consumed SSE must be broadcast so other web clients clear the queued row
+            const consumed = publisher.events.find(e => e.type === 'messages-consumed')
+            expect(consumed).toBeDefined()
+            if (consumed?.type === 'messages-consumed') {
+                expect(consumed.sessionId).toBe(session.id)
+                expect(consumed.localIds).toEqual(['local-c'])
+                expect(typeof consumed.invokedAt).toBe('number')
+            }
+
+            // messages-consumed must be emitted exactly once
+            const consumedCount = publisher.events.filter(e => e.type === 'messages-consumed').length
+            expect(consumedCount).toBe(1)
         })
     })
 
@@ -188,6 +218,11 @@ describe('MessageService.cancelQueuedMessage race scenarios', () => {
             if (result.status === 'invoked') {
                 expect(result.message.invokedAt).toBe(invokedAt)
             }
+
+            // DB guard path: messages-consumed was already published by the prior
+            // messages-consumed flow that set invoked_at.  No additional emit here.
+            const consumedCount = publisher.events.filter(e => e.type === 'messages-consumed').length
+            expect(consumedCount).toBe(0)
         })
     })
 })

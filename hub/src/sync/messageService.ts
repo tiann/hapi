@@ -178,6 +178,18 @@ export class MessageService {
             // case in the PR follow-up section.
             const invokedAt = Date.now()
             this.store.messages.markMessagesInvoked(sessionId, [localId], invokedAt)
+            // Notify all SSE subscribers (other open tabs) that this queued row is now
+            // invoked so they remove it from the floating bar.  Without this emit, only
+            // the tab that sent the DELETE request learns about the status change via the
+            // HTTP response; every other subscriber keeps the row in the queued bar until
+            // a refresh or a later event.  Mirrors the identical publish in the normal
+            // CLI-driven path (sessionHandlers.ts messages-consumed handler).
+            this.publisher.emit({
+                type: 'messages-consumed',
+                sessionId,
+                localIds: [localId],
+                invokedAt,
+            })
             // Re-fetch the single row via lookupQueuedMessage to avoid the 200-row
             // pagination cap of getMessages.  After markMessagesInvoked the row will
             // have invoked_at set, so lookupQueuedMessage returns status='invoked'.
