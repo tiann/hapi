@@ -285,14 +285,20 @@ export class MessageService {
                     }
                 },
                 (err: Error | null, responses: Array<{ removed: boolean }>) => {
+                    // Check responses before err: in a reconnect overlap or any room with
+                    // multiple CLI sockets, Socket.IO may set err (one socket timed out)
+                    // while still delivering successful responses from the sockets that did
+                    // ack. Any confirmed removal wins over the partial timeout.
+                    const removed = responses?.some((r) => r.removed === true) ?? false
+                    if (removed) {
+                        resolve('removed')
+                        return
+                    }
                     if (err) {
                         resolve('timeout')
                         return
                     }
-                    // Use .some() in case multiple CLI sockets are in the room
-                    // (e.g. reconnect overlap); any ack confirming removal is enough.
-                    const removed = responses?.some(r => r.removed === true) ?? false
-                    resolve(removed ? 'removed' : 'not-found')
+                    resolve('not-found')
                 }
             )
         })

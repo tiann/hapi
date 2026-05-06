@@ -5,6 +5,7 @@
  * Race-B: CLI ack returns { removed: false } (already shift()-ed) → markMessagesInvoked + status='invoked'
  * Race-C: CLI ack times out (500 ms)         → markMessagesInvoked + status='invoked'
  * Race-D (CLI offline): no CLI socket in room → immediate DELETE, message-cancelled emit, no ack call
+ * Race-E (partial ack): broadcast ack receives err + [{ removed: true }] → DELETE + status='cancelled'
  */
 import { describe, expect, it } from 'bun:test'
 import { MessageService } from './messageService'
@@ -274,6 +275,43 @@ describe('MessageService.cancelQueuedMessage race scenarios', () => {
 
             // DB guard path: messages-consumed was already published by the prior
             // messages-consumed flow that set invoked_at.  No additional emit here.
+            const consumedCount = publisher.events.filter(e => e.type === 'messages-consumed').length
+            expect(consumedCount).toBe(0)
+        })
+    })
+
+    describe('Race-E: partial ack — broadcast callback receives err + [{ removed: true }]', () => {
+        it('returns cancelled and deletes row when at least one socket acked removal, even if err is set', async () => {
+            const store = makeStore()
+            const session = makeSession(store, 'race-e')
+            const msg = store.messages.addMessage(
+                session.id,
+                { role: 'user', content: { type: 'text', text: 'hello' } },
+                'local-e'
+            )
+
+            const publisher = makePublisher()
+            // Reconnect-overlap scenario: one socket timed out (err set by Socket.IO),
+            // but the live socket confirmed removal in responses.
+            const io = makeIo((callback) => {
+                callback(new Error('operation has timed out'), [{ removed: true }])
+            })
+
+            const service = new MessageService(store, io, publisher as any)
+            const result = await service.cancelQueuedMessage(session.id, msg.id)
+
+            // The live socket's ack must win — cancel is confirmed
+            expect(result.status).toBe('cancelled')
+
+            // Row must be deleted
+            const remaining = store.messages.getUninvokedLocalMessages(session.id)
+            expect(remaining).toHaveLength(0)
+
+            // message-cancelled SSE must have been emitted
+            const cancelled = publisher.events.find(e => e.type === 'message-cancelled')
+            expect(cancelled).toBeDefined()
+
+            // No messages-consumed (row deleted, not invoked)
             const consumedCount = publisher.events.filter(e => e.type === 'messages-consumed').length
             expect(consumedCount).toBe(0)
         })
