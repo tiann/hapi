@@ -138,6 +138,12 @@ describe('getToolResultViewComponent registry', () => {
     it('uses a dedicated result view for CodexBash', () => {
         expect(getToolResultViewComponent('CodexBash')).not.toBe(getToolResultViewComponent('SomeUnknownTool'))
     })
+
+    it('Agent falls back to GenericResultView (no dedicated view — view layer must not filter content)', () => {
+        const agentView = getToolResultViewComponent('Agent')
+        const genericView = getToolResultViewComponent('SomeUnknownTool')
+        expect(agentView).toBe(genericView)
+    })
 })
 
 describe('dialog result formatting', () => {
