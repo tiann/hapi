@@ -187,7 +187,6 @@ type TraceChildListProps = {
 
 function TraceChildList({ items, metadata, mode }: TraceChildListProps) {
     const [expandedId, setExpandedId] = useState<string | null>(null)
-    const expandAll = mode === 'session'
 
     return (
         <div className={mode === 'session'
@@ -199,11 +198,8 @@ function TraceChildList({ items, metadata, mode }: TraceChildListProps) {
                     key={child.id}
                     child={child}
                     metadata={metadata}
-                    expanded={expandAll || expandedId === child.id}
-                    onToggle={expandAll
-                        ? undefined
-                        : () => setExpandedId((prev) => (prev === child.id ? null : child.id))
-                    }
+                    expanded={expandedId === child.id}
+                    onToggle={() => setExpandedId((prev) => (prev === child.id ? null : child.id))}
                     mode={mode}
                 />
             ))}

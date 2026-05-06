@@ -292,13 +292,23 @@ describe('TraceSection', () => {
         expect(screen.getByText('Result')).toBeInTheDocument()
     })
 
-    it('opens CodexAgent trace by default and expands all child rows without nested indentation', () => {
+    it('opens CodexAgent trace by default but leaves child rows collapsed', () => {
         const block = makeCodexAgentBlock([makeChild('c1', 'Bash'), makeChild('c2', 'Read')], 'completed')
         const { container } = render(<TraceSection block={block} metadata={null} />)
 
         expect(container.querySelector('button[aria-expanded="true"]')).not.toBeNull()
         expect(container.querySelector('.border-l')).toBeNull()
-        expect(screen.getAllByText('Input').length).toBeGreaterThanOrEqual(2)
-        expect(screen.getAllByText('Result').length).toBeGreaterThanOrEqual(2)
+        expect(container.textContent).toContain('Terminal')
+        expect(container.textContent).toContain('file-c2.ts')
+        expect(container.textContent).not.toContain('Input')
+        expect(container.textContent).not.toContain('Result')
+
+        const childButtons = Array.from(container.querySelectorAll('button'))
+            .filter((button) => button.getAttribute('aria-expanded') === null)
+        expect(childButtons).toHaveLength(2)
+
+        fireEvent.click(childButtons[0])
+        expect(container.textContent).toContain('Input')
+        expect(container.textContent).toContain('Result')
     })
 })
