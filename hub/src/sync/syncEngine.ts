@@ -529,8 +529,8 @@ export class SyncEngine {
 
     private recoverClaudeSessionIdFromMessages(sessionId: string, namespace: string): string | null {
         const messages = this.messageService.getMessages(sessionId, 200)
-        for (const message of messages) {
-            const found = this.extractClaudeSessionId(message.content)
+        for (let i = messages.length - 1; i >= 0; i -= 1) {
+            const found = this.extractClaudeSessionId(messages[i].content)
             if (!found) continue
 
             this.persistRecoveredClaudeSessionId(sessionId, namespace, found)
