@@ -88,6 +88,7 @@ class OpencodeStorageScanner {
 
     private intervalId: ReturnType<typeof setInterval> | null = null;
     private activeSessionId: string | null = null;
+    private activeStorageSource: 'database' | 'files' | null = null;
     private matchFailed = false;
     private warnedMissingStorage = false;
     private scanning = false;
@@ -359,17 +360,27 @@ class OpencodeStorageScanner {
         this.messageRoles.clear();
         this.messageDbVersion.clear();
         this.partDbVersion.clear();
+        this.activeStorageSource = null;
 
         // Try database-based priming first
         if (this.dbReady && this.db) {
-            await this.primeSessionFilesFromDatabase(sessionId);
-        } else {
-            // Fall back to file-based priming
+            try {
+                await this.primeSessionFilesFromDatabase(sessionId);
+                this.activeStorageSource = 'database';
+            } catch (error) {
+                logger.debug(`[opencode-storage] Database priming failed, falling back to files: ${error}`);
+                this.activeStorageSource = null;
+            }
+        }
+
+        // Fall back to file-based priming if database failed or unavailable
+        if (!this.activeStorageSource && await this.ensureStorageDir()) {
             await this.primeSessionFilesFromFiles(sessionId);
+            this.activeStorageSource = 'files';
         }
 
         this.onSessionFound?.(sessionId);
-        logger.debug(`[opencode-storage] Tracking session ${sessionId}`);
+        logger.debug(`[opencode-storage] Tracking session ${sessionId} (source: ${this.activeStorageSource})`);
     }
 
     private async primeSessionFilesFromDatabase(sessionId: string): Promise<void> {
@@ -395,7 +406,11 @@ class OpencodeStorageScanner {
 
                     if (msg.time_created >= replayThresholdMs) {
                         try {
-                            const info = JSON.parse(msg.data) as Record<string, unknown>;
+                            const info = {
+                                ...(JSON.parse(msg.data) as Record<string, unknown>),
+                                id: msg.id,
+                                sessionID: msg.session_id
+                            } as Record<string, unknown>;
                             const role = getString(info.role);
                             if (role) {
                                 this.messageRoles.set(msg.id, role);
@@ -403,7 +418,7 @@ class OpencodeStorageScanner {
                             this.onEvent({
                                 event: 'message.updated',
                                 payload: { info },
-                                sessionId: sessionId || undefined
+                                sessionId: msg.session_id || undefined
                             });
                         } catch {
                             // ignore JSON parse errors
@@ -426,12 +441,17 @@ class OpencodeStorageScanner {
                     this.partDbVersion.set(partRow.id, partRow.time_updated);
 
                     try {
-                        const part = JSON.parse(partRow.data) as Record<string, unknown>;
+                        const part = {
+                            ...(JSON.parse(partRow.data) as Record<string, unknown>),
+                            id: partRow.id,
+                            messageID: partRow.message_id,
+                            sessionID: partRow.session_id
+                        };
                         if (this.shouldEmitPart(part, messageId)) {
                             this.onEvent({
                                 event: 'message.part.updated',
                                 payload: { part },
-                                sessionId: sessionId || undefined
+                                sessionId: partRow.session_id || undefined
                             });
                         }
                     } catch {
@@ -443,6 +463,7 @@ class OpencodeStorageScanner {
             logger.debug(`[opencode-storage] Primed ${messages.length} messages and parts from database`);
         } catch (error) {
             logger.debug(`[opencode-storage] Failed to prime from database: ${error}`);
+            throw error;
         }
     }
 
@@ -508,11 +529,10 @@ class OpencodeStorageScanner {
     }
 
     private async scanMessagesAndParts(sessionId: string): Promise<void> {
-        // Try database-based scanning first
-        if (this.dbReady && this.db) {
+        // Use the same storage source as setActiveSession for consistency
+        if (this.activeStorageSource === 'database' && this.dbReady && this.db) {
             await this.scanMessagesAndPartsFromDatabase(sessionId);
-        } else {
-            // Fall back to file-based scanning
+        } else if (this.activeStorageSource === 'files' || !this.activeStorageSource) {
             await this.scanMessagesAndPartsFromFiles(sessionId);
         }
     }
@@ -544,7 +564,11 @@ class OpencodeStorageScanner {
                 this.messageDbVersion.set(msg.id, msg.time_updated);
 
                 try {
-                    const info = JSON.parse(msg.data) as Record<string, unknown>;
+                    const info = {
+                        ...(JSON.parse(msg.data) as Record<string, unknown>),
+                        id: msg.id,
+                        sessionID: msg.session_id
+                    } as Record<string, unknown>;
                     const role = getString(info.role);
                     if (role) {
                         this.messageRoles.set(msg.id, role);
@@ -553,7 +577,7 @@ class OpencodeStorageScanner {
                     this.onEvent({
                         event: 'message.updated',
                         payload: { info },
-                        sessionId: sessionId || undefined
+                        sessionId: msg.session_id || undefined
                     });
                 } catch {
                     // ignore JSON parse errors
@@ -578,7 +602,12 @@ class OpencodeStorageScanner {
                 this.partDbVersion.set(partRow.id, partRow.time_updated);
 
                 try {
-                    const part = JSON.parse(partRow.data) as Record<string, unknown>;
+                    const part = {
+                        ...(JSON.parse(partRow.data) as Record<string, unknown>),
+                        id: partRow.id,
+                        messageID: partRow.message_id,
+                        sessionID: partRow.session_id
+                    };
                     if (!this.shouldEmitPart(part, partRow.message_id)) {
                         continue;
                     }
@@ -586,7 +615,7 @@ class OpencodeStorageScanner {
                     this.onEvent({
                         event: 'message.part.updated',
                         payload: { part },
-                        sessionId: sessionId || undefined
+                        sessionId: partRow.session_id || undefined
                     });
                 } catch {
                     // ignore JSON parse errors
