@@ -543,13 +543,20 @@ export function HappyThread(props: {
         }
 
         const observer = new ResizeObserver(() => {
-            if (isInitialScrollSettling() && autoScrollEnabledRef.current && !pendingScrollRef.current) {
+            // Message DOM can grow after messagesVersion commits (assistant-ui
+            // updates its external runtime in an effect, then markdown/tool
+            // content may resize). Keep following while the user is at bottom.
+            if (
+                autoScrollEnabledRef.current
+                && atBottomRef.current
+                && !pendingScrollRef.current
+            ) {
                 scrollToBottomInstant()
             }
         })
         observer.observe(content)
         return () => observer.disconnect()
-    }, [isInitialScrollSettling, scrollToBottomInstant])
+    }, [scrollToBottomInstant])
 
     useLayoutEffect(() => {
         const pending = pendingScrollRef.current
