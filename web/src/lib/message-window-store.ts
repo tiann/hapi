@@ -30,7 +30,8 @@ type InternalState = MessageWindowState & {
     pendingOverflowCount: number
     pendingVisibleCount: number
     pendingOverflowVisibleCount: number
-    generation: number
+    latestGeneration: number
+    olderGeneration: number
     // V8 composite cursor: defined when hub responded with nextBeforeAt
     oldestPositionAt: number | null
     // Paired with oldestPositionAt — the server returns both as a cursor; keep them
@@ -44,6 +45,8 @@ type PendingVisibilityCacheEntry = {
     source: DecryptedMessage
     visible: boolean
 }
+
+type AsyncGenerationKind = 'latest' | 'older'
 
 type PersistedMessageWindowState = {
     messages: DecryptedMessage[]
@@ -260,7 +263,8 @@ function createState(sessionId: string): InternalState {
         atBottom: true,
         messagesVersion: 0,
         pendingOverflowCount: 0,
-        generation: 0,
+        latestGeneration: 0,
+        olderGeneration: 0,
     }
 }
 
@@ -339,31 +343,40 @@ function updateState(sessionId: string, updater: (prev: InternalState) => Intern
 
 function beginAsyncGeneration(
     sessionId: string,
+    kind: AsyncGenerationKind,
     updates: Parameters<typeof buildState>[1]
 ): number {
     let generation = 0
     updateState(sessionId, (prev) => {
-        generation = prev.generation + 1
-        return {
-            ...buildState(prev, updates),
-            generation
-        }
+        generation = getGeneration(prev, kind) + 1
+        return setGeneration(buildState(prev, updates), kind, generation)
     })
     return generation
 }
 
-function isCurrentGeneration(sessionId: string, generation: number): boolean {
-    return getState(sessionId).generation === generation
+function getGeneration(state: InternalState, kind: AsyncGenerationKind): number {
+    return kind === 'latest' ? state.latestGeneration : state.olderGeneration
+}
+
+function setGeneration(state: InternalState, kind: AsyncGenerationKind, generation: number): InternalState {
+    return kind === 'latest'
+        ? { ...state, latestGeneration: generation }
+        : { ...state, olderGeneration: generation }
+}
+
+function isCurrentGeneration(sessionId: string, kind: AsyncGenerationKind, generation: number): boolean {
+    return getGeneration(getState(sessionId), kind) === generation
 }
 
 function updateStateForGeneration(
     sessionId: string,
+    kind: AsyncGenerationKind,
     generation: number,
     updater: (prev: InternalState) => InternalState,
     immediate?: boolean
 ): void {
     updateState(sessionId, (prev) => {
-        if (prev.generation !== generation) {
+        if (getGeneration(prev, kind) !== generation) {
             return prev
         }
         return updater(prev)
@@ -722,7 +735,8 @@ export function clearMessageWindow(sessionId: string): void {
     }
     setState(sessionId, {
         ...createState(sessionId),
-        generation: previous.generation + 1
+        latestGeneration: previous.latestGeneration + 1,
+        olderGeneration: previous.olderGeneration + 1,
     }, true)
 }
 
@@ -747,7 +761,8 @@ export function seedMessageWindowFromSession(fromSessionId: string, toSessionId:
     })
     setState(toSessionId, {
         ...next,
-        generation: source.generation
+        latestGeneration: source.latestGeneration,
+        olderGeneration: source.olderGeneration,
     })
 }
 
@@ -756,7 +771,7 @@ export async function fetchLatestMessages(api: ApiClient, sessionId: string): Pr
     if (initial.isLoading) {
         return
     }
-    const generation = beginAsyncGeneration(sessionId, { isLoading: true, warning: null })
+    const generation = beginAsyncGeneration(sessionId, 'latest', { isLoading: true, warning: null })
 
     try {
         // Always request byPosition mode (V8). If the hub is V7 it ignores byPosition and
@@ -764,9 +779,9 @@ export async function fetchLatestMessages(api: ApiClient, sessionId: string): Pr
         // to seq-cursor mode seamlessly.
         const firstResponse = await api.getMessages(sessionId, { byPosition: true, limit: PAGE_SIZE })
         const response = initial.atBottom
-            ? await backfillColdLoadMessages(api, sessionId, firstResponse, () => isCurrentGeneration(sessionId, generation))
+            ? await backfillColdLoadMessages(api, sessionId, firstResponse, () => isCurrentGeneration(sessionId, 'latest', generation))
             : firstResponse
-        if (!isCurrentGeneration(sessionId, generation)) {
+        if (!isCurrentGeneration(sessionId, 'latest', generation)) {
             return
         }
         // Derive composite cursor pair from server response. Both values come from
@@ -776,7 +791,7 @@ export async function fetchLatestMessages(api: ApiClient, sessionId: string): Pr
         const nextBeforeSeq = response.page.nextBeforeSeq ?? null
         const isV8Cursor = nextBeforeAt !== null && nextBeforeSeq !== null
 
-        updateStateForGeneration(sessionId, generation, (prev) => {
+        updateStateForGeneration(sessionId, 'latest', generation, (prev) => {
             if (prev.atBottom) {
                 const merged = mergeMessages(prev.messages, [...prev.pending, ...response.messages])
                 const trimmed = trimVisible(merged, 'append')
@@ -810,11 +825,11 @@ export async function fetchLatestMessages(api: ApiClient, sessionId: string): Pr
             })
         })
     } catch (error) {
-        if (!isCurrentGeneration(sessionId, generation)) {
+        if (!isCurrentGeneration(sessionId, 'latest', generation)) {
             return
         }
         const message = error instanceof Error ? error.message : 'Failed to load messages'
-        updateStateForGeneration(sessionId, generation, (prev) => buildState(prev, { isLoading: false, warning: message }))
+        updateStateForGeneration(sessionId, 'latest', generation, (prev) => buildState(prev, { isLoading: false, warning: message }))
     }
 }
 
@@ -826,7 +841,7 @@ export async function fetchOlderMessages(api: ApiClient, sessionId: string): Pro
     if (initial.oldestSeq === null) {
         return
     }
-    const generation = beginAsyncGeneration(sessionId, { isLoadingMore: true })
+    const generation = beginAsyncGeneration(sessionId, 'older', { isLoadingMore: true })
 
     try {
         // V8 mode: use the server-provided cursor pair as-is. Mixing `beforeAt` from
@@ -846,7 +861,7 @@ export async function fetchOlderMessages(api: ApiClient, sessionId: string): Pro
         const nextBeforeSeq = response.page.nextBeforeSeq ?? null
         const isV8Cursor = nextBeforeAt !== null && nextBeforeSeq !== null
 
-        updateStateForGeneration(sessionId, generation, (prev) => {
+        updateStateForGeneration(sessionId, 'older', generation, (prev) => {
             const merged = mergeMessages(response.messages, prev.messages)
             const trimmed = trimVisible(merged, 'prepend')
             return buildState(prev, {
@@ -858,11 +873,11 @@ export async function fetchOlderMessages(api: ApiClient, sessionId: string): Pro
             })
         })
     } catch (error) {
-        if (!isCurrentGeneration(sessionId, generation)) {
+        if (!isCurrentGeneration(sessionId, 'older', generation)) {
             return
         }
         const message = error instanceof Error ? error.message : 'Failed to load messages'
-        updateStateForGeneration(sessionId, generation, (prev) => buildState(prev, { isLoadingMore: false, warning: message }))
+        updateStateForGeneration(sessionId, 'older', generation, (prev) => buildState(prev, { isLoadingMore: false, warning: message }))
     }
 }
 
