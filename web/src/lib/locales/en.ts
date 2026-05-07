@@ -302,6 +302,10 @@ export default {
   'settings.display.appearance.light': 'Light',
   'settings.display.fontSize': 'Font Size',
   'settings.display.terminalFontSize': 'Terminal Font Size',
+  'settings.chat.title': 'Chat',
+  'settings.chat.enterBehavior': 'Enter Key',
+  'settings.chat.enterBehavior.send': 'Send message',
+  'settings.chat.enterBehavior.newline': 'Insert newline',
   'settings.voice.title': 'Voice Assistant',
   'settings.voice.language': 'Voice Language',
   'settings.voice.autoDetect': 'Auto-detect',
@@ -318,9 +322,9 @@ export default {
   'browse.startSession': 'Start Session',
   'browse.nav': 'Browse',
   'browse.noRootTitle': 'Workspace browsing is off',
-  'browse.noRootHint': 'Browsing is opt-in. Restart the runner with a workspace root to enable file-tree navigation and scoped session spawning.',
+  'browse.noRootHint': 'Browsing is opt-in. Restart the runner with one or more workspace roots to enable file-tree navigation and scoped session spawning.',
   'browse.noRootFooter': 'You can still create sessions from the “New Session” page.',
-  'browse.noMachinesConnected': 'No CLI connected. Run `hapi runner start --workspace-root /path` on a machine to get started.',
+  'browse.noMachinesConnected': 'No CLI connected. Run `hapi runner start --workspace-root /path/a --workspace-root /path/b` on a machine to get started.',
 
   // Misc
   'misc.noMachines': 'No machines available',

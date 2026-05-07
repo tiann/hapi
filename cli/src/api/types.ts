@@ -37,7 +37,21 @@ export const MachineMetadataSchema = z.object({
     homeDir: z.string(),
     happyHomeDir: z.string(),
     happyLibDir: z.string(),
-    workspaceRoot: z.string().optional()
+    workspaceRoot: z.string().optional(),
+    workspaceRoots: z.array(z.string()).optional()
+}).transform(({ workspaceRoot, workspaceRoots, ...rest }) => {
+    const normalizedWorkspaceRoots = Array.from(new Set(
+        Array.isArray(workspaceRoots)
+            ? workspaceRoots.filter((path): path is string => typeof path === 'string' && path.trim().length > 0)
+            : workspaceRoot
+                ? [workspaceRoot]
+                : []
+    ))
+
+    return {
+        ...rest,
+        workspaceRoots: normalizedWorkspaceRoots.length > 0 ? normalizedWorkspaceRoots : undefined
+    }
 })
 
 export type MachineMetadata = z.infer<typeof MachineMetadataSchema>

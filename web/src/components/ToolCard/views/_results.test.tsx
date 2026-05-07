@@ -154,6 +154,12 @@ describe('getToolResultViewComponent registry', () => {
         expect(getToolResultViewComponent('spawn_agent')).not.toBe(getToolResultViewComponent('SomeUnknownTool'))
         expect(getToolResultViewComponent('wait_agent')).toBe(getToolResultViewComponent('spawn_agent'))
     })
+
+    it('Agent falls back to GenericResultView (no dedicated view — view layer must not filter content)', () => {
+        const agentView = getToolResultViewComponent('Agent')
+        const genericView = getToolResultViewComponent('SomeUnknownTool')
+        expect(agentView).toBe(genericView)
+    })
 })
 
 describe('dialog result formatting', () => {

@@ -758,46 +758,6 @@ const TodoWriteResultView: ToolViewComponent = (props: ToolViewProps) => {
     return <ChecklistList items={todos} />
 }
 
-const AgentResultView: ToolViewComponent = (props: ToolViewProps) => {
-    const { state, result } = props.block.tool
-
-    if (result === undefined || result === null) {
-        return <ResultStatusPill text={placeholderForState(state)} />
-    }
-
-    // For errors, show the error text
-    if (state === 'error') {
-        const text = extractTextFromResult(result)
-        return (
-            <div className="text-sm text-red-600">
-                {text?.trim() ? text : 'Agent failed'}
-            </div>
-        )
-    }
-
-    const text = extractTextFromResult(result)
-    if (!text) {
-        return <ResultStatusPill text={state === 'completed' ? 'Done' : placeholderForState(state)} />
-    }
-
-    // Detect internal launch metadata. Check structurally first (result object
-    // may carry agentId/output_file keys), then fall back to a strict text
-    // pattern that is unlikely to appear in normal agent prose.
-    const isInternalMeta = isObject(result) && ('agentId' in result || 'output_file' in result)
-        || (text.startsWith('Async agent launched successfully.') && text.includes('agentId:'))
-
-    if (isInternalMeta) {
-        return <ResultStatusPill text="Agent launched" />
-    }
-
-    return (
-        <>
-            {renderResultBody(renderMarkdown(text, props.surface), props.surface)}
-            <RawJsonDevOnly value={result} surface={props.surface} />
-        </>
-    )
-}
-
 function AgentIdPill(props: { label: string; value: string }) {
     return (
         <ResultMetaPill>
@@ -1018,7 +978,6 @@ export const toolResultViewRegistry: Record<string, ToolViewComponent> = {
     CodexDiff: CodexDiffResultView,
     CodexAgent: CodexAgentResultView,
     Skill: SkillResultView,
-    Agent: AgentResultView,
     spawn_agent: CodexAgentResultView,
     send_input: CodexAgentResultView,
     resume_agent: CodexAgentResultView,

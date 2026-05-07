@@ -3,6 +3,7 @@ import type { TracedMessage } from '@/chat/tracer'
 import { createCliOutputBlock, isCliOutputText, mergeCliOutputBlocks } from '@/chat/reducerCliOutput'
 import { parseMessageAsEvent } from '@/chat/reducerEvents'
 import { collectTitleChanges, ensureToolBlock, extractTitleFromChangeTitleInput, isChangeTitleToolName, type PermissionEntry } from '@/chat/reducerTools'
+import { isSubagentToolName } from '@/chat/subagentTool'
 import { asString, isObject } from '@hapi/protocol'
 
 function getEventString(event: Record<string, unknown>, key: string): string | null {
@@ -660,11 +661,11 @@ export function reduceTimeline(
         }
 
         if (msg.role === 'agent') {
-            // When the message contains a Task tool_use, Claude often writes the
-            // prompt as a text block before the tool_use block.  We only want to
+            // When the message contains a Task/Agent tool_use, Claude often writes
+            // the prompt as a text block before the tool_use block.  We only want to
             // suppress that exact prompt text — not every text block in the message.
             const taskToolCall = msg.content.find(
-                (c) => c.type === 'tool-call' && c.name === 'Task'
+                (c) => c.type === 'tool-call' && isSubagentToolName(c.name)
             )
             const taskPromptText: string | null = (() => {
                 if (!taskToolCall || taskToolCall.type !== 'tool-call') return null
@@ -795,7 +796,7 @@ export function reduceTimeline(
                         block.tool.startedAt = msg.createdAt
                     }
 
-                    if (c.name === 'Task' && !context.consumedGroupIds.has(msg.id)) {
+                    if (isSubagentToolName(c.name) && !context.consumedGroupIds.has(msg.id)) {
                         const sidechain = context.groups.get(msg.id) ?? null
                         if (sidechain && sidechain.length > 0) {
                             context.consumedGroupIds.add(msg.id)

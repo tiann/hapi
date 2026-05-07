@@ -11,7 +11,6 @@ import { MultiEditFullView, MultiEditView } from '@/components/ToolCard/views/Mu
 import { TodoWriteView } from '@/components/ToolCard/views/TodoWriteView'
 import { UpdatePlanView } from '@/components/ToolCard/views/UpdatePlanView'
 import { WriteView } from '@/components/ToolCard/views/WriteView'
-import { isObject } from '@hapi/protocol'
 import { getInputStringAny } from '@/lib/toolInputUtils'
 import {
     getCodexAgentFieldRows,
@@ -32,25 +31,6 @@ const SkillFullView: ToolViewComponent = ({ block }: ToolViewProps) => {
     return (
         <div className="text-sm text-[var(--app-fg)]">
             {skillName ?? 'Unknown skill'}
-        </div>
-    )
-}
-
-const AgentFullView: ToolViewComponent = ({ block }: ToolViewProps) => {
-    const input = block.tool.input
-    const description = getInputStringAny(input, ['description'])
-    const subagentType = getInputStringAny(input, ['subagent_type'])
-    const runInBackground = isObject(input) && input.run_in_background === true
-
-    return (
-        <div className="flex flex-col gap-1 text-sm">
-            {description && (
-                <div className="text-[var(--app-fg)]">{description}</div>
-            )}
-            <div className="flex gap-3 text-[var(--app-hint)]">
-                {subagentType && <span>Type: {subagentType}</span>}
-                {runInBackground && <span>Background</span>}
-            </div>
         </div>
     )
 }
@@ -121,7 +101,6 @@ export const toolFullViewRegistry: Record<string, ToolViewComponent> = {
     CodexPatch: CodexPatchView,
     CodexAgent: CodexAgentView,
     Skill: SkillFullView,
-    Agent: AgentFullView,
     spawn_agent: CodexAgentView,
     send_input: CodexAgentView,
     resume_agent: CodexAgentView,

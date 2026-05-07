@@ -67,7 +67,7 @@ export type Machine = {
         platform: string
         happyCliVersion: string
         displayName?: string
-        workspaceRoot?: string
+        workspaceRoots?: string[]
     } | null
     runnerState?: RunnerState | null
 }
