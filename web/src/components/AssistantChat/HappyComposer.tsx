@@ -28,6 +28,7 @@ import { FloatingOverlay } from '@/components/ChatInput/FloatingOverlay'
 import { Autocomplete } from '@/components/ChatInput/Autocomplete'
 import { StatusBar } from '@/components/AssistantChat/StatusBar'
 import { ComposerButtons } from '@/components/AssistantChat/ComposerButtons'
+import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
 import { AttachmentItem } from '@/components/AssistantChat/AttachmentItem'
 import { useTranslation } from '@/lib/use-translation'
 import { getModelOptionsForFlavor, getNextModelForFlavor } from './modelOptions'
@@ -76,6 +77,10 @@ export function HappyComposer(props: {
     voiceMicMuted?: boolean
     onVoiceToggle?: () => void
     onVoiceMicToggle?: () => void
+    // Schedule props (lifted from internal state when provided)
+    pendingSchedule?: PendingSchedule | null
+    onSchedule?: (pending: PendingSchedule) => void
+    onClearSchedule?: () => void
 }) {
     const { t } = useTranslation()
     const {
@@ -111,7 +116,10 @@ export function HappyComposer(props: {
         voiceStatus = 'disconnected',
         voiceMicMuted = false,
         onVoiceToggle,
-        onVoiceMicToggle
+        onVoiceMicToggle,
+        pendingSchedule: pendingScheduleProp,
+        onSchedule: onScheduleProp,
+        onClearSchedule: onClearScheduleProp
     } = props
 
     // Use ?? so missing values fall back to default (destructuring defaults only handle undefined)
@@ -152,6 +160,11 @@ export function HappyComposer(props: {
     const [isAborting, setIsAborting] = useState(false)
     const [isSwitching, setIsSwitching] = useState(false)
     const [showContinueHint, setShowContinueHint] = useState(false)
+    // pendingSchedule is controlled externally when onSchedule prop is provided; otherwise local state
+    const [pendingScheduleLocal, setPendingScheduleLocal] = useState<PendingSchedule | null>(null)
+    const isControlled = onScheduleProp !== undefined
+    const pendingSchedule = isControlled ? (pendingScheduleProp ?? null) : pendingScheduleLocal
+    const setPendingSchedule = isControlled ? onScheduleProp : setPendingScheduleLocal
 
     const textareaRef = useRef<HTMLTextAreaElement>(null)
     const prevControlledByUser = useRef(controlledByUser)
@@ -427,6 +440,16 @@ export function HappyComposer(props: {
 
         if (imageFiles.length === 0) return
 
+        // The backend rejects scheduledAt + attachments (per-CLI upload dir is
+        // torn down before a mature emit could read the files). The button-based
+        // attachment flow is disabled by ComposerButtons.hasAttachments, but the
+        // paste path bypasses that — guard here so a pasted image while a
+        // schedule is active cannot produce a submission the hub will reject.
+        if (pendingSchedule != null) {
+            e.preventDefault()
+            return
+        }
+
         e.preventDefault()
 
         try {
@@ -436,7 +459,7 @@ export function HappyComposer(props: {
         } catch (error) {
             console.error('Error adding pasted image:', error)
         }
-    }, [api])
+    }, [api, pendingSchedule])
 
     const handleSettingsToggle = useCallback(() => {
         haptic('light')
@@ -503,6 +526,11 @@ export function HappyComposer(props: {
 
     const handleSend = useCallback(() => {
         api.composer().send()
+        // SessionChat owns clearing the schedule — it clears only after awaiting
+        // the send hook's accepted result, which covers both pre-mutation guards
+        // and async inactive-session resume failure. Clearing here unconditionally
+        // would race ahead of that check and drop the user's schedule on every
+        // rejected send path.
     }, [api])
 
     const overlays = useMemo(() => {
@@ -829,6 +857,10 @@ export function HappyComposer(props: {
                             onVoiceToggle={onVoiceToggle ?? (() => {})}
                             onVoiceMicToggle={onVoiceMicToggle}
                             onSend={handleSend}
+                            pendingSchedule={pendingSchedule}
+                            onSchedule={setPendingSchedule}
+                            onClearSchedule={isControlled ? onClearScheduleProp : () => setPendingScheduleLocal(null)}
+                            hasAttachments={hasAttachments}
                         />
                     </div>
                 </ComposerPrimitive.Root>

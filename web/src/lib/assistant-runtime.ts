@@ -1,6 +1,9 @@
 import { useCallback, useMemo } from 'react'
+import type React from 'react'
 import type { AppendMessage, AttachmentAdapter, ThreadMessageLike } from '@assistant-ui/react'
 import { useExternalMessageConverter, useExternalStoreRuntime } from '@assistant-ui/react'
+import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
+import { resolvePendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
 import { safeStringify } from '@hapi/protocol'
 import { renderEventLabel } from '@/chat/presentation'
 import type { ChatBlock, CliOutputBlock, UsageData } from '@/chat/types'
@@ -255,10 +258,11 @@ export function useHappyRuntime(props: {
     blocks: readonly VisibleChatBlock[]
     isSending: boolean
     isRunning?: boolean
-    onSendMessage: (text: string, attachments?: AttachmentMetadata[]) => void
+    onSendMessage: (text: string, attachments?: AttachmentMetadata[], scheduledAt?: number | null) => void
     onAbort: () => Promise<void>
     attachmentAdapter?: AttachmentAdapter
     allowSendWhenInactive?: boolean
+    pendingScheduleRef?: React.RefObject<PendingSchedule | null>
 }) {
     const isRunning = props.isRunning ?? props.session.thinking
 
@@ -273,8 +277,13 @@ export function useHappyRuntime(props: {
     const onNew = useCallback(async (message: AppendMessage) => {
         const { text, attachments } = extractMessageContent(message)
         if (!text && attachments.length === 0) return
-        props.onSendMessage(text, attachments.length > 0 ? attachments : undefined)
-    }, [props.onSendMessage])
+        // Resolve pendingSchedule at send time (Date.now()) so preset-type schedules
+        // ("5 minutes from now") are relative to the actual send action, not the
+        // moment the user clicked the preset button.
+        const sendNow = Date.now()
+        const scheduledAt = resolvePendingSchedule(props.pendingScheduleRef?.current ?? null, sendNow)
+        props.onSendMessage(text, attachments.length > 0 ? attachments : undefined, scheduledAt)
+    }, [props.onSendMessage, props.pendingScheduleRef])
 
     const onCancel = useCallback(async () => {
         await props.onAbort()
@@ -300,6 +309,10 @@ export function useHappyRuntime(props: {
         onCancel,
         props.attachmentAdapter
     ])
+
+    // Note: pendingScheduleRef is intentionally not in the deps above.
+    // The ref is read at send time inside onNew (not at render time), so changes
+    // to pendingSchedule do not need to invalidate the adapter or re-run onNew.
 
     return useExternalStoreRuntime(adapter)
 }

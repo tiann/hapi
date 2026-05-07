@@ -1,6 +1,28 @@
 import { ComposerPrimitive } from '@assistant-ui/react'
 import type { ConversationStatus } from '@/realtime/types'
 import { useTranslation } from '@/lib/use-translation'
+import { ScheduleTimePicker } from './ScheduleTimePicker'
+import type { PendingSchedule } from './ScheduleTimePicker'
+import { useRef, useState } from 'react'
+
+function ScheduleIcon() {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+        >
+            <circle cx="12" cy="12" r="9" />
+            <polyline points="12 7 12 12 15.5 14" />
+        </svg>
+    )
+}
 
 function VoiceAssistantIcon() {
     return (
@@ -319,9 +341,22 @@ export function ComposerButtons(props: {
     onVoiceToggle: () => void
     onVoiceMicToggle?: () => void
     onSend: () => void
+    pendingSchedule?: PendingSchedule | null
+    onSchedule?: (pending: PendingSchedule) => void
+    onClearSchedule?: () => void
+    // The backend rejects scheduled-send + attachment combinations (the per-CLI
+    // upload directory is torn down before a mature emit could read the files).
+    // The composer must surface that constraint at UI time so the user never
+    // builds a submission the hub will reject — see hub/web/routes/messages.ts.
+    hasAttachments?: boolean
 }) {
     const { t } = useTranslation()
     const isVoiceConnected = props.voiceStatus === 'connected'
+    const [showSchedulePicker, setShowSchedulePicker] = useState(false)
+    const scheduleButtonRef = useRef<HTMLButtonElement>(null)
+
+    const hasSchedule = props.pendingSchedule != null
+    const hasAttachments = props.hasAttachments ?? false
 
     return (
         <div className="flex items-center justify-between px-2 pb-2">
@@ -329,7 +364,7 @@ export function ComposerButtons(props: {
                 <ComposerPrimitive.AddAttachment
                     aria-label={t('composer.attach')}
                     title={t('composer.attach')}
-                    disabled={props.controlsDisabled}
+                    disabled={props.controlsDisabled || hasSchedule}
                     className="flex h-8 w-8 items-center justify-center rounded-full text-[var(--app-fg)]/60 transition-colors hover:bg-[var(--app-bg)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-50"
                 >
                     <AttachmentIcon />
@@ -401,6 +436,44 @@ export function ComposerButtons(props: {
                     >
                         <SpeakerIcon muted={props.voiceMicMuted} />
                     </button>
+                ) : null}
+
+                {/* Schedule button — only shown when onSchedule handler is provided */}
+                {props.onSchedule ? (
+                    <>
+                        <button
+                            ref={scheduleButtonRef}
+                            type="button"
+                            aria-label={t('composer.scheduleSend')}
+                            title={t('composer.scheduleSend')}
+                            disabled={props.controlsDisabled || hasAttachments}
+                            onClick={() => {
+                                if (hasSchedule && props.onClearSchedule) {
+                                    props.onClearSchedule()
+                                } else {
+                                    setShowSchedulePicker((v) => !v)
+                                }
+                            }}
+                            className={`flex h-8 w-8 items-center justify-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                                hasSchedule
+                                    ? 'bg-blue-500 text-white hover:bg-blue-600'
+                                    : 'text-[var(--app-fg)]/60 hover:bg-[var(--app-bg)] hover:text-[var(--app-fg)]'
+                            }`}
+                        >
+                            <ScheduleIcon />
+                        </button>
+                        {showSchedulePicker && (
+                            <ScheduleTimePicker
+                                anchorRef={scheduleButtonRef}
+                                onSchedule={(pending) => {
+                                    props.onSchedule!(pending)
+                                    setShowSchedulePicker(false)
+                                }}
+                                onClose={() => setShowSchedulePicker(false)}
+                                pendingSchedule={props.pendingSchedule}
+                            />
+                        )}
+                    </>
                 ) : null}
             </div>
 
