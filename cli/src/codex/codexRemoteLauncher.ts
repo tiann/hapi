@@ -990,6 +990,30 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 return;
             }
 
+            if (name === 'send_input' || name === 'resume_agent') {
+                childAgentActivityInCurrentTurn = true;
+                const outputRecord = asRecord(output);
+                const targets = Array.from(new Set([
+                    ...extractAgentTargets(pending?.input),
+                    ...extractAgentTargets(outputRecord)
+                ]));
+                const label = name === 'send_input' ? 'Send input' : 'Resume';
+                const successActivity = name === 'send_input' ? 'Input sent' : 'Resumed';
+                const errorDetail = asString(outputRecord?.error ?? outputRecord?.message) ?? output;
+
+                for (const agentId of targets) {
+                    if (!agentCardByAgentId.has(agentId)) continue;
+                    emitAgentRunUpdate(agentId, {
+                        status: isError ? 'failed' : 'running',
+                        statusText: isError ? `${label} failed` : successActivity,
+                        activity: isError ? formatActivity(`${label} failed`, previewText(errorDetail)) : successActivity,
+                        activityKind: isError ? 'failed' : name,
+                        ...(isError ? { error: output } : { result: output })
+                    });
+                }
+                return;
+            }
+
             if (name === 'close_agent') {
                 const outputRecord = asRecord(output);
                 const agentId = asString(outputRecord?.agent_id ?? outputRecord?.agentId)

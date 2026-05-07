@@ -26,6 +26,8 @@ const harness = vi.hoisted(() => ({
     emitParentTitleChange: false,
     emitParentSpawnFailureWithoutAgentId: false,
     emitParentSpawnStartWithoutEnd: false,
+    emitParentSendInputFailure: false,
+    emitParentResumeSuccess: false,
     bridgeOptions: [] as unknown[]
 }));
 
@@ -421,6 +423,72 @@ vi.mock('./codexAppServerClient', () => {
                 };
                 harness.notifications.push({ method: 'item/completed', params: waitCompleted });
                 this.notificationHandler?.('item/completed', waitCompleted);
+
+                if (harness.emitParentSendInputFailure) {
+                    const sendInputStarted = {
+                        item: {
+                            id: 'send-child',
+                            type: 'collabAgentToolCall',
+                            tool: 'sendInput',
+                            senderThreadId: threadId,
+                            receiverThreadIds: [childThreadId],
+                            message: 'follow up'
+                        },
+                        threadId,
+                        turnId
+                    };
+                    harness.notifications.push({ method: 'item/started', params: sendInputStarted });
+                    this.notificationHandler?.('item/started', sendInputStarted);
+
+                    const sendInputCompleted = {
+                        item: {
+                            id: 'send-child',
+                            type: 'collabAgentToolCall',
+                            tool: 'sendInput',
+                            status: 'failed',
+                            error: 'send failed',
+                            senderThreadId: threadId,
+                            receiverThreadIds: [childThreadId],
+                            agentsStates: {}
+                        },
+                        threadId,
+                        turnId
+                    };
+                    harness.notifications.push({ method: 'item/completed', params: sendInputCompleted });
+                    this.notificationHandler?.('item/completed', sendInputCompleted);
+                }
+
+                if (harness.emitParentResumeSuccess) {
+                    const resumeStarted = {
+                        item: {
+                            id: 'resume-child',
+                            type: 'collabAgentToolCall',
+                            tool: 'resumeAgent',
+                            senderThreadId: threadId,
+                            receiverThreadIds: [childThreadId]
+                        },
+                        threadId,
+                        turnId
+                    };
+                    harness.notifications.push({ method: 'item/started', params: resumeStarted });
+                    this.notificationHandler?.('item/started', resumeStarted);
+
+                    const resumeCompleted = {
+                        item: {
+                            id: 'resume-child',
+                            type: 'collabAgentToolCall',
+                            tool: 'resumeAgent',
+                            status: 'completed',
+                            senderThreadId: threadId,
+                            receiverThreadIds: [childThreadId],
+                            agentsStates: {}
+                        },
+                        threadId,
+                        turnId
+                    };
+                    harness.notifications.push({ method: 'item/completed', params: resumeCompleted });
+                    this.notificationHandler?.('item/completed', resumeCompleted);
+                }
             }
 
             const completed = { status: 'Completed', turn: { id: turnId } };
@@ -595,6 +663,8 @@ describe('codexRemoteLauncher', () => {
         harness.emitParentTitleChange = false;
         harness.emitParentSpawnFailureWithoutAgentId = false;
         harness.emitParentSpawnStartWithoutEnd = false;
+        harness.emitParentSendInputFailure = false;
+        harness.emitParentResumeSuccess = false;
         harness.bridgeOptions = [];
     });
 
@@ -881,6 +951,63 @@ describe('codexRemoteLauncher', () => {
             result: 'child output should stay hidden',
             activity: 'Completed: child output should stay hidden',
             activityKind: 'completed'
+        }));
+    });
+
+    it('surfaces send_input failures on the target child agent card', async () => {
+        harness.emitChildThreadEvents = true;
+        harness.emitParentSendInputFailure = true;
+        const { session, codexMessages } = createSessionStub();
+
+        await codexRemoteLauncher(session as never);
+
+        expect(codexMessages).toContainEqual(expect.objectContaining({
+            type: 'agent-run-update',
+            agentId: 'child-thread',
+            status: 'running',
+            statusText: 'Sending input',
+            activity: 'Sending input',
+            activityKind: 'send_input'
+        }));
+        expect(codexMessages).toContainEqual(expect.objectContaining({
+            type: 'agent-run-update',
+            agentId: 'child-thread',
+            status: 'failed',
+            statusText: 'Send input failed',
+            activity: 'Send input failed: send failed',
+            activityKind: 'failed',
+            error: expect.objectContaining({
+                error: 'send failed'
+            })
+        }));
+    });
+
+    it('updates the target child agent card when resume_agent completes', async () => {
+        harness.emitChildThreadEvents = true;
+        harness.emitParentResumeSuccess = true;
+        const { session, codexMessages } = createSessionStub();
+
+        await codexRemoteLauncher(session as never);
+
+        expect(codexMessages).toContainEqual(expect.objectContaining({
+            type: 'agent-run-update',
+            agentId: 'child-thread',
+            status: 'running',
+            statusText: 'Resuming agent',
+            activity: 'Resuming agent',
+            activityKind: 'resume_agent'
+        }));
+        expect(codexMessages).toContainEqual(expect.objectContaining({
+            type: 'agent-run-update',
+            agentId: 'child-thread',
+            status: 'running',
+            statusText: 'Resumed',
+            activity: 'Resumed',
+            activityKind: 'resume_agent',
+            result: expect.objectContaining({
+                status: 'completed',
+                targets: ['child-thread']
+            })
         }));
     });
 
