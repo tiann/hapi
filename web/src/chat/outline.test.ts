@@ -2,13 +2,19 @@ import { describe, expect, it } from 'vitest'
 import type { AgentEvent, ChatBlock } from '@/chat/types'
 import { buildConversationOutline, truncateOutlineLabel } from '@/chat/outline'
 
-function userBlock(id: string, text: string, createdAt: number): ChatBlock {
+function userBlock(
+    id: string,
+    text: string,
+    createdAt: number,
+    overrides: Partial<Extract<ChatBlock, { kind: 'user-text' }>> = {}
+): ChatBlock {
     return {
         kind: 'user-text',
         id,
         localId: null,
         createdAt,
-        text
+        text,
+        ...overrides
     }
 }
 
@@ -52,6 +58,17 @@ describe('conversation outline', () => {
         ])[0]?.label).toBe('Empty message')
 
         expect(truncateOutlineLabel('a '.repeat(80), 20)).toBe('a a a a a a a a a...')
+    })
+
+    it('filters queued user messages that are not yet locatable in the thread', () => {
+        const items = buildConversationOutline([
+            userBlock('queued', 'Queued prompt', 1000, { status: 'queued', invokedAt: null }),
+            userBlock('sent', 'Visible prompt', 2000, { status: 'sent', invokedAt: 2500 }),
+        ])
+
+        expect(items.map((item) => item.id)).toEqual([
+            'outline:user:sent'
+        ])
     })
 
     it('keeps block order stable', () => {

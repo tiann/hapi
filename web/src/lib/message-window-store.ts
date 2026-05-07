@@ -30,6 +30,7 @@ type InternalState = MessageWindowState & {
     pendingOverflowCount: number
     pendingVisibleCount: number
     pendingOverflowVisibleCount: number
+    generation: number
     // V8 composite cursor: defined when hub responded with nextBeforeAt
     oldestPositionAt: number | null
     // Paired with oldestPositionAt — the server returns both as a cursor; keep them
@@ -44,6 +45,18 @@ type PendingVisibilityCacheEntry = {
     visible: boolean
 }
 
+type PersistedMessageWindowState = {
+    messages: DecryptedMessage[]
+    pending: DecryptedMessage[]
+    pendingOverflowCount: number
+    pendingOverflowVisibleCount: number
+    hasMore: boolean
+    oldestPositionAt: number | null
+    oldestPositionSeq: number | null
+    warning: string | null
+    atBottom: boolean
+}
+
 const states = new Map<string, InternalState>()
 const listeners = new Map<string, Set<() => void>>()
 const pendingVisibilityCacheBySession = new Map<string, Map<string, PendingVisibilityCacheEntry>>()
@@ -52,8 +65,12 @@ const pendingVisibilityCacheBySession = new Map<string, Map<string, PendingVisib
 // notification per NOTIFY_THROTTLE_MS during streaming. This prevents
 // Windows UI jank caused by excessive React re-renders during SSE streaming.
 const NOTIFY_THROTTLE_MS = 150
+const PERSIST_THROTTLE_MS = 200
+const STORAGE_KEY_PREFIX = 'hapi:message-window:v1:'
 const pendingNotifySessionIds = new Set<string>()
+const pendingPersistSessionIds = new Set<string>()
 let notifyRafId: ReturnType<typeof requestAnimationFrame> | null = null
+let persistTimerId: ReturnType<typeof setTimeout> | null = null
 let lastNotifyAt = 0
 
 function scheduleNotify(sessionId: string): void {
@@ -88,6 +105,92 @@ function flushNotifications(): void {
             listener()
         }
     }
+}
+
+function getStorageKey(sessionId: string): string {
+    return `${STORAGE_KEY_PREFIX}${sessionId}`
+}
+
+function isSessionStorageAvailable(): boolean {
+    try {
+        return typeof sessionStorage?.getItem === 'function'
+    } catch {
+        return false
+    }
+}
+
+function toNullableNumber(value: unknown): number | null {
+    return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+function shouldPersistState(state: InternalState): boolean {
+    return state.messages.length > 0
+        || state.pending.length > 0
+        || state.pendingOverflowCount > 0
+        || state.pendingOverflowVisibleCount > 0
+        || state.hasMore
+        || state.warning !== null
+}
+
+function persistState(sessionId: string, state: InternalState): void {
+    if (!isSessionStorageAvailable()) {
+        return
+    }
+    try {
+        if (!shouldPersistState(state)) {
+            sessionStorage.removeItem(getStorageKey(sessionId))
+            return
+        }
+        const persisted: PersistedMessageWindowState = {
+            messages: state.messages,
+            pending: state.pending,
+            pendingOverflowCount: state.pendingOverflowCount,
+            pendingOverflowVisibleCount: state.pendingOverflowVisibleCount,
+            hasMore: state.hasMore,
+            oldestPositionAt: state.oldestPositionAt,
+            oldestPositionSeq: state.oldestPositionSeq,
+            warning: state.warning,
+            atBottom: state.atBottom,
+        }
+        sessionStorage.setItem(getStorageKey(sessionId), JSON.stringify(persisted))
+    } catch {
+    }
+}
+
+function clearPersistedState(sessionId: string): void {
+    pendingPersistSessionIds.delete(sessionId)
+    if (!isSessionStorageAvailable()) {
+        return
+    }
+    try {
+        sessionStorage.removeItem(getStorageKey(sessionId))
+    } catch {
+    }
+}
+
+function flushPersistedStates(): void {
+    persistTimerId = null
+    const sessionIds = Array.from(pendingPersistSessionIds)
+    pendingPersistSessionIds.clear()
+    for (const sessionId of sessionIds) {
+        const state = states.get(sessionId)
+        if (!state) {
+            clearPersistedState(sessionId)
+            continue
+        }
+        persistState(sessionId, state)
+    }
+}
+
+function schedulePersist(sessionId: string): void {
+    if (!isSessionStorageAvailable()) {
+        return
+    }
+    pendingPersistSessionIds.add(sessionId)
+    if (persistTimerId !== null) {
+        return
+    }
+    persistTimerId = setTimeout(flushPersistedStates, PERSIST_THROTTLE_MS)
 }
 
 function getPendingVisibilityCache(sessionId: string): Map<string, PendingVisibilityCacheEntry> {
@@ -157,6 +260,39 @@ function createState(sessionId: string): InternalState {
         atBottom: true,
         messagesVersion: 0,
         pendingOverflowCount: 0,
+        generation: 0,
+    }
+}
+
+function hydrateState(sessionId: string): InternalState | null {
+    if (!isSessionStorageAvailable()) {
+        return null
+    }
+    try {
+        const raw = sessionStorage.getItem(getStorageKey(sessionId))
+        if (!raw) {
+            return null
+        }
+        const parsed = JSON.parse(raw) as Partial<PersistedMessageWindowState> | null
+        if (!parsed || !Array.isArray(parsed.messages) || !Array.isArray(parsed.pending)) {
+            clearPersistedState(sessionId)
+            return null
+        }
+        const base = createState(sessionId)
+        return buildState(base, {
+            messages: parsed.messages,
+            pending: parsed.pending,
+            pendingOverflowCount: typeof parsed.pendingOverflowCount === 'number' ? parsed.pendingOverflowCount : 0,
+            pendingOverflowVisibleCount: typeof parsed.pendingOverflowVisibleCount === 'number' ? parsed.pendingOverflowVisibleCount : 0,
+            hasMore: parsed.hasMore === true,
+            oldestPositionAt: toNullableNumber(parsed.oldestPositionAt),
+            oldestPositionSeq: toNullableNumber(parsed.oldestPositionSeq),
+            warning: typeof parsed.warning === 'string' ? parsed.warning : null,
+            atBottom: parsed.atBottom !== false,
+        })
+    } catch {
+        clearPersistedState(sessionId)
+        return null
     }
 }
 
@@ -165,7 +301,7 @@ function getState(sessionId: string): InternalState {
     if (existing) {
         return existing
     }
-    const created = createState(sessionId)
+    const created = hydrateState(sessionId) ?? createState(sessionId)
     states.set(sessionId, created)
     return created
 }
@@ -185,6 +321,7 @@ function notifyImmediate(sessionId: string): void {
 
 function setState(sessionId: string, next: InternalState, immediate?: boolean): void {
     states.set(sessionId, next)
+    schedulePersist(sessionId)
     if (immediate) {
         notifyImmediate(sessionId)
     } else {
@@ -198,6 +335,39 @@ function updateState(sessionId: string, updater: (prev: InternalState) => Intern
     if (next !== prev) {
         setState(sessionId, next, immediate)
     }
+}
+
+function beginAsyncGeneration(
+    sessionId: string,
+    updates: Parameters<typeof buildState>[1]
+): number {
+    let generation = 0
+    updateState(sessionId, (prev) => {
+        generation = prev.generation + 1
+        return {
+            ...buildState(prev, updates),
+            generation
+        }
+    })
+    return generation
+}
+
+function isCurrentGeneration(sessionId: string, generation: number): boolean {
+    return getState(sessionId).generation === generation
+}
+
+function updateStateForGeneration(
+    sessionId: string,
+    generation: number,
+    updater: (prev: InternalState) => InternalState,
+    immediate?: boolean
+): void {
+    updateState(sessionId, (prev) => {
+        if (prev.generation !== generation) {
+            return prev
+        }
+        return updater(prev)
+    }, immediate)
 }
 
 function deriveSeqBounds(messages: DecryptedMessage[]): { oldestSeq: number | null; newestSeq: number | null } {
@@ -284,7 +454,8 @@ function sameCursor(a: MessagesResponse, b: MessagesResponse): boolean {
 async function backfillColdLoadMessages(
     api: ApiClient,
     sessionId: string,
-    first: MessagesResponse
+    first: MessagesResponse,
+    isCurrent?: () => boolean
 ): Promise<MessagesResponse> {
     let combined = first
     let regularCount = countRegularMessages(combined.messages)
@@ -295,6 +466,9 @@ async function backfillColdLoadMessages(
     // never fetched. Walk older pages until the initial window has a small root
     // conversation floor, or until history is exhausted.
     while (combined.page.hasMore && regularCount < COLD_LOAD_REGULAR_TARGET) {
+        if (isCurrent && !isCurrent()) {
+            return combined
+        }
         if (combined.page.nextBeforeSeq === null) break
 
         const older = hasV8Cursor(combined)
@@ -308,6 +482,10 @@ async function backfillColdLoadMessages(
                 beforeSeq: combined.page.nextBeforeSeq,
                 limit: COLD_LOAD_BACKFILL_PAGE_SIZE
             })
+
+        if (isCurrent && !isCurrent()) {
+            return combined
+        }
 
         if (older.messages.length === 0 || sameCursor(combined, older)) {
             combined = {
@@ -530,7 +708,6 @@ export function subscribeMessageWindow(sessionId: string, listener: () => void):
         current.delete(listener)
         if (current.size === 0) {
             listeners.delete(sessionId)
-            states.delete(sessionId)
             clearPendingVisibilityCache(sessionId)
         }
     }
@@ -538,10 +715,15 @@ export function subscribeMessageWindow(sessionId: string, listener: () => void):
 
 export function clearMessageWindow(sessionId: string): void {
     clearPendingVisibilityCache(sessionId)
-    if (!states.has(sessionId)) {
+    clearPersistedState(sessionId)
+    const previous = states.get(sessionId)
+    if (!previous) {
         return
     }
-    setState(sessionId, createState(sessionId), true)
+    setState(sessionId, {
+        ...createState(sessionId),
+        generation: previous.generation + 1
+    }, true)
 }
 
 export function seedMessageWindowFromSession(fromSessionId: string, toSessionId: string): void {
@@ -563,7 +745,10 @@ export function seedMessageWindowFromSession(fromSessionId: string, toSessionId:
         isLoading: false,
         isLoadingMore: false,
     })
-    setState(toSessionId, next)
+    setState(toSessionId, {
+        ...next,
+        generation: source.generation
+    })
 }
 
 export async function fetchLatestMessages(api: ApiClient, sessionId: string): Promise<void> {
@@ -571,7 +756,7 @@ export async function fetchLatestMessages(api: ApiClient, sessionId: string): Pr
     if (initial.isLoading) {
         return
     }
-    updateState(sessionId, (prev) => buildState(prev, { isLoading: true, warning: null }))
+    const generation = beginAsyncGeneration(sessionId, { isLoading: true, warning: null })
 
     try {
         // Always request byPosition mode (V8). If the hub is V7 it ignores byPosition and
@@ -579,8 +764,11 @@ export async function fetchLatestMessages(api: ApiClient, sessionId: string): Pr
         // to seq-cursor mode seamlessly.
         const firstResponse = await api.getMessages(sessionId, { byPosition: true, limit: PAGE_SIZE })
         const response = initial.atBottom
-            ? await backfillColdLoadMessages(api, sessionId, firstResponse)
+            ? await backfillColdLoadMessages(api, sessionId, firstResponse, () => isCurrentGeneration(sessionId, generation))
             : firstResponse
+        if (!isCurrentGeneration(sessionId, generation)) {
+            return
+        }
         // Derive composite cursor pair from server response. Both values come from
         // the same row on the server; we keep them paired so the next older fetch
         // doesn't mix `beforeAt` from the server with a recomputed minimum `seq`.
@@ -588,7 +776,7 @@ export async function fetchLatestMessages(api: ApiClient, sessionId: string): Pr
         const nextBeforeSeq = response.page.nextBeforeSeq ?? null
         const isV8Cursor = nextBeforeAt !== null && nextBeforeSeq !== null
 
-        updateState(sessionId, (prev) => {
+        updateStateForGeneration(sessionId, generation, (prev) => {
             if (prev.atBottom) {
                 const merged = mergeMessages(prev.messages, [...prev.pending, ...response.messages])
                 const trimmed = trimVisible(merged, 'append')
@@ -622,8 +810,11 @@ export async function fetchLatestMessages(api: ApiClient, sessionId: string): Pr
             })
         })
     } catch (error) {
+        if (!isCurrentGeneration(sessionId, generation)) {
+            return
+        }
         const message = error instanceof Error ? error.message : 'Failed to load messages'
-        updateState(sessionId, (prev) => buildState(prev, { isLoading: false, warning: message }))
+        updateStateForGeneration(sessionId, generation, (prev) => buildState(prev, { isLoading: false, warning: message }))
     }
 }
 
@@ -635,7 +826,7 @@ export async function fetchOlderMessages(api: ApiClient, sessionId: string): Pro
     if (initial.oldestSeq === null) {
         return
     }
-    updateState(sessionId, (prev) => buildState(prev, { isLoadingMore: true }))
+    const generation = beginAsyncGeneration(sessionId, { isLoadingMore: true })
 
     try {
         // V8 mode: use the server-provided cursor pair as-is. Mixing `beforeAt` from
@@ -655,7 +846,7 @@ export async function fetchOlderMessages(api: ApiClient, sessionId: string): Pro
         const nextBeforeSeq = response.page.nextBeforeSeq ?? null
         const isV8Cursor = nextBeforeAt !== null && nextBeforeSeq !== null
 
-        updateState(sessionId, (prev) => {
+        updateStateForGeneration(sessionId, generation, (prev) => {
             const merged = mergeMessages(response.messages, prev.messages)
             const trimmed = trimVisible(merged, 'prepend')
             return buildState(prev, {
@@ -667,8 +858,11 @@ export async function fetchOlderMessages(api: ApiClient, sessionId: string): Pro
             })
         })
     } catch (error) {
+        if (!isCurrentGeneration(sessionId, generation)) {
+            return
+        }
         const message = error instanceof Error ? error.message : 'Failed to load messages'
-        updateState(sessionId, (prev) => buildState(prev, { isLoadingMore: false, warning: message }))
+        updateStateForGeneration(sessionId, generation, (prev) => buildState(prev, { isLoadingMore: false, warning: message }))
     }
 }
 
