@@ -291,12 +291,17 @@ export async function hydrateConversationOutline(
             }
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Failed to hydrate outline'
-            updateState(sessionId, (prev) => ({
-                ...prev,
-                status: 'error',
-                error: message,
-                hydratePromise: null,
-            }))
+            updateState(sessionId, (prev) => {
+                if (prev.generation !== generation) {
+                    return prev
+                }
+                return {
+                    ...prev,
+                    status: 'error',
+                    error: message,
+                    hydratePromise: null,
+                }
+            })
         }
     })()
 

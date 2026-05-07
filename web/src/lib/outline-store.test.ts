@@ -178,6 +178,52 @@ describe('outline-store', () => {
         expect(state.items).toEqual([])
     })
 
+    it('ignores stale hydrate failures after reset and retry', async () => {
+        let rejectFirstPage: ((reason?: unknown) => void) | null = null
+
+        const api = {
+            getMessages: vi
+                .fn()
+                .mockImplementationOnce(async () => await new Promise<never>((_resolve, reject) => {
+                    rejectFirstPage = reject
+                }))
+                .mockResolvedValueOnce({
+                    messages: [makeUserMessage('fresh', 'Fresh item', 300)],
+                    page: {
+                        limit: 50,
+                        nextBeforeAt: null,
+                        nextBeforeSeq: null,
+                        hasMore: false,
+                    },
+                }),
+        } as unknown as ApiClient
+
+        const staleHydrate = hydrateConversationOutline(api, SESSION_ID)
+        resetConversationOutline(SESSION_ID)
+        await hydrateConversationOutline(api, SESSION_ID)
+
+        expect(getConversationOutlineState(SESSION_ID)).toMatchObject({
+            status: 'ready',
+            complete: true,
+            error: null,
+        })
+
+        const rejectStaleHydrate = rejectFirstPage
+        if (!rejectStaleHydrate) {
+            throw new Error('Expected stale hydrate request to be pending')
+        }
+        ;(rejectStaleHydrate as (reason?: unknown) => void)(new Error('stale failure'))
+        await staleHydrate
+
+        const state = getConversationOutlineState(SESSION_ID)
+        expect(state).toMatchObject({
+            status: 'ready',
+            complete: true,
+            error: null,
+        })
+        expect(state.items.map((item) => item.targetMessageId)).toEqual(['user:fresh'])
+    })
+
     it('tracks locating state and errors', () => {
         setConversationOutlineLocating(SESSION_ID, 'user:target')
         expect(getConversationOutlineState(SESSION_ID)).toMatchObject({
