@@ -40,7 +40,8 @@ export class MessageService {
             localId: message.localId,
             content: message.content,
             createdAt: message.createdAt,
-            invokedAt: message.invokedAt
+            invokedAt: message.invokedAt,
+            scheduledAt: message.scheduledAt
         }))
 
         let oldestSeq: number | null = null
@@ -105,7 +106,8 @@ export class MessageService {
             localId: message.localId,
             content: message.content,
             createdAt: message.createdAt,
-            invokedAt: message.invokedAt
+            invokedAt: message.invokedAt,
+            scheduledAt: message.scheduledAt
         }))
 
         // The cursor is the oldest row in the actual position-ordered page (pageRows[0]).
@@ -135,15 +137,23 @@ export class MessageService {
         }
     }
 
-    getMessagesAfter(sessionId: string, options: { afterSeq: number; limit: number }): DecryptedMessage[] {
-        const stored = this.store.messages.getMessagesAfter(sessionId, options.afterSeq, options.limit)
+    /** CLI reconnect backfill — excludes future-scheduled rows so the runner does
+     *  not consume them ahead of their scheduled_at.  See messages.ts:getDeliverableMessagesAfter. */
+    getDeliverableMessagesAfter(sessionId: string, options: { afterSeq: number; limit: number; now: number }): DecryptedMessage[] {
+        const stored = this.store.messages.getDeliverableMessagesAfter(
+            sessionId,
+            options.afterSeq,
+            options.now,
+            options.limit
+        )
         return stored.map((message) => ({
             id: message.id,
             seq: message.seq,
             localId: message.localId,
             content: message.content,
             createdAt: message.createdAt,
-            invokedAt: message.invokedAt
+            invokedAt: message.invokedAt,
+            scheduledAt: message.scheduledAt
         }))
     }
 
@@ -169,13 +179,36 @@ export class MessageService {
 
         // Phase 2: row is still queued.  Ask the CLI whether it already shifted the item
         // (race window between collectBatch() shift and messages-consumed ack).
-        const { localId, resolvedId } = lookup
+        const { localId, resolvedId, scheduledAt } = lookup
 
         if (!localId) {
             // No localId — row exists but has no cancel path; treat as cancelled.
             this.store.messages.deleteQueuedMessageById(sessionId, resolvedId)
             this.publisher.emit({ type: 'message-cancelled', sessionId, messageId })
             return { status: 'cancelled', localId: null }
+        }
+
+        // Phase 2b: future-scheduled messages were never emitted to the CLI, so they
+        // are not in the CLI's in-memory queue.  Asking the CLI whether it can remove
+        // the item would always return 'not-found', which the normal ack path
+        // misinterprets as "CLI already consumed it" and stamps invoked_at.
+        // Short-circuit: delete the row directly without a CLI ack round-trip.
+        //
+        // Single event loop turn: the scheduledAt > now check and the
+        // deleteQueuedMessageById call execute atomically with no await between
+        // them, so the offline-CLI path's re-check pattern is unnecessary here.
+        // The offline path needs the re-check because it awaits the
+        // markInvoked between the lookup and the delete.
+        const now = Date.now()
+        if (scheduledAt !== null && scheduledAt > now) {
+            this.store.messages.deleteQueuedMessageById(sessionId, resolvedId)
+            this.publisher.emit({
+                type: 'message-cancelled',
+                sessionId,
+                messageId,
+                localId,
+            })
+            return { status: 'cancelled', localId }
         }
 
         // Phase 2a: if no CLI socket is currently in the session room, the CLI is
@@ -322,8 +355,21 @@ export class MessageService {
             localId?: string | null
             attachments?: AttachmentMetadata[]
             sentFrom?: 'telegram-bot' | 'webapp'
+            scheduledAt?: number | null
         }
     ): Promise<void> {
+        // Defence-in-depth invariant for non-REST callers (Telegram bot, MCP,
+        // internal callers).  Attachment paths live under the CLI session's
+        // upload directory which `cleanupUploadDir` purges on session end; a
+        // mature scheduled emit after the CLI exits would dereference deleted
+        // files via the @path attachment formatter.  REST already rejects this
+        // combination at the Zod layer, but enforcing it here keeps the rule in
+        // one structural place — same pattern as `addMessage`'s scheduledAt +
+        // !localId throw.
+        if (payload.scheduledAt != null && (payload.attachments?.length ?? 0) > 0) {
+            throw new Error('sendMessage: scheduled messages with attachments are not supported')
+        }
+
         const sentFrom = payload.sentFrom ?? 'webapp'
 
         const content = {
@@ -338,27 +384,42 @@ export class MessageService {
             }
         }
 
-        const msg = this.store.messages.addMessage(sessionId, content, payload.localId ?? undefined)
+        const msg = this.store.messages.addMessage(
+            sessionId,
+            content,
+            payload.localId ?? undefined,
+            payload.scheduledAt ?? null
+        )
         this.onSessionActivity?.(sessionId, msg.createdAt)
 
-        const update = {
-            id: msg.id,
-            seq: msg.seq,
-            createdAt: msg.createdAt,
-            body: {
-                t: 'new-message' as const,
-                sid: sessionId,
-                message: {
-                    id: msg.id,
-                    seq: msg.seq,
-                    createdAt: msg.createdAt,
-                    localId: msg.localId,
-                    content: msg.content
+        // Only emit to CLI if the message is not scheduled for the future.
+        // Mature or non-scheduled messages go through immediately; future scheduled
+        // messages wait for the 5-second tick in releaseMatureScheduledMessages.
+        // Re-measure Date.now() after addMessage to avoid a TOCTOU window where
+        // the pre-insert `now` capture could misclassify a borderline scheduledAt
+        // as future when it has already become past by the time we check.
+        const isFutureScheduled = msg.scheduledAt !== null && msg.scheduledAt > Date.now()
+        if (!isFutureScheduled) {
+            const update = {
+                id: msg.id,
+                seq: msg.seq,
+                createdAt: msg.createdAt,
+                body: {
+                    t: 'new-message' as const,
+                    sid: sessionId,
+                    message: {
+                        id: msg.id,
+                        seq: msg.seq,
+                        createdAt: msg.createdAt,
+                        localId: msg.localId,
+                        content: msg.content
+                    }
                 }
             }
+            this.io.of('/cli').to(`session:${sessionId}`).emit('update', update)
         }
-        this.io.of('/cli').to(`session:${sessionId}`).emit('update', update)
 
+        // Always emit message-received to Web SSE so the floating bar renders.
         this.publisher.emit({
             type: 'message-received',
             sessionId,
@@ -368,8 +429,79 @@ export class MessageService {
                 localId: msg.localId,
                 content: msg.content,
                 createdAt: msg.createdAt,
-                invokedAt: msg.invokedAt
+                invokedAt: msg.invokedAt,
+                scheduledAt: msg.scheduledAt
             }
         })
+    }
+
+    /**
+     * Force-invoke all immediate-queued messages for a session at session end.
+     *
+     * Called by sessionHandlers when the CLI sends 'session-end', so that
+     * the floating bar is cleared without leaving queued rows pinned forever.
+     *
+     * **All scheduled rows are intentionally skipped** (mature or future).  The
+     * mature-scan path (releaseMatureScheduledMessages) is the sole emit channel
+     * for scheduled rows and relies on the CLI ack to write invoked_at; if this
+     * sweep stamped a mature scheduled row, a subsequent re-attach would never
+     * see the row in the next mature-scan tick and the user's prompt would be
+     * silently dropped.  See HAPI Bot R4 finding.
+     *
+     * Returns the list of localIds that were stamped and the invokedAt timestamp,
+     * or null if no messages needed sweeping.
+     */
+    sweepImmediateQueuedOnSessionEnd(
+        sessionId: string,
+        invokedAt: number
+    ): { localIds: string[]; invokedAt: number } | null {
+        const queued = this.store.messages.getImmediateQueuedLocalMessages(sessionId)
+        const localIds = queued
+            .map((m) => m.localId)
+            .filter((id): id is string => typeof id === 'string')
+        if (localIds.length === 0) return null
+        this.store.messages.markMessagesInvoked(sessionId, localIds, invokedAt)
+        this.publisher.emit({ type: 'messages-consumed', sessionId, localIds, invokedAt })
+        return { localIds, invokedAt }
+    }
+
+    /** Called by the hub 5-second tick (syncEngine.expireInactive).
+     *
+     * Finds all scheduled messages whose scheduled_at <= now and emits them to
+     * the CLI via socket.io.  Does NOT call markMessagesInvoked — the CLI ack
+     * (messages-consumed) handles that.  This means a message is re-emitted on
+     * each tick until the CLI acks it, which is the correct behaviour for hub
+     * restart scenarios (pitfall #2 guard).
+     *
+     * Race window with cancel: this tick widens the cancel race to 5 s for
+     * scheduled messages (vs near-zero for immediate-queued ones).  If the CLI
+     * has already shift()-ed the row when cancel arrives, cancelQueuedMessage
+     * gets 'not-found' from the CLI ack and stamps invoked_at (PR #568 contract
+     * preserved).  Web client surfaces this as 'sent' in the thread.
+     * See messageService.test.ts "cancel × mature race" for the documented
+     * expected behaviour. */
+    releaseMatureScheduledMessages(now: number): void {
+        const mature = this.store.messages.getMatureScheduledMessages(now)
+        for (const msg of mature) {
+            const update = {
+                id: msg.id,
+                seq: msg.seq,
+                createdAt: msg.createdAt,
+                body: {
+                    t: 'new-message' as const,
+                    sid: msg.sessionId,
+                    message: {
+                        id: msg.id,
+                        seq: msg.seq,
+                        createdAt: msg.createdAt,
+                        localId: msg.localId,
+                        content: msg.content
+                    }
+                }
+            }
+            this.io.of('/cli').to(`session:${msg.sessionId}`).emit('update', update)
+            // NOTE: do NOT call markMessagesInvoked here (pitfall #2).
+            // CLI ack (messages-consumed) will handle invoked_at stamping.
+        }
     }
 }

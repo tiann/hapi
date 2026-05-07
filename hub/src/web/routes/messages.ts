@@ -15,8 +15,30 @@ const querySchema = z.object({
 const sendMessageBodySchema = z.object({
     text: z.string(),
     localId: z.string().min(1).optional(),
-    attachments: z.array(AttachmentMetadataSchema).optional()
-})
+    attachments: z.array(AttachmentMetadataSchema).optional(),
+    scheduledAt: z.number().int().positive().nullable().optional()
+}).refine(
+    // Scheduled messages need a localId so the ack flow (markMessagesInvoked
+    // by localId) can flip invoked_at after the CLI consumes them.  Without
+    // a localId, addMessage stamps invoked_at immediately, which would
+    // silently swallow the schedule.
+    (data) => data.scheduledAt == null || typeof data.localId === 'string',
+    { message: 'scheduledAt requires localId', path: ['localId'] }
+).refine(
+    // Cap scheduledAt at 7 days from now to prevent zombie rows.  REST/Telegram/
+    // automation callers bypass the frontend 7-day clamp, so we enforce it here.
+    // Evaluated at request time so Date.now() is fresh on every call.
+    (data) => data.scheduledAt == null || data.scheduledAt <= Date.now() + 7 * 24 * 60 * 60 * 1000,
+    { message: 'scheduledAt must be within 7 days from now', path: ['scheduledAt'] }
+).refine(
+    // Attachment paths are stored under the CLI session's upload directory and
+    // purged on session end (cleanupUploadDir in apiSession.ts:sendSessionDeath).
+    // A scheduled message that matures after the CLI exits would dereference
+    // deleted files via the @path attachment formatter.  Reject the combination
+    // until uploads are retained through invocation.
+    (data) => data.scheduledAt == null || !data.attachments?.length,
+    { message: 'scheduled messages with attachments are not supported', path: ['attachments'] }
+)
 
 export function createMessagesRoutes(getSyncEngine: () => SyncEngine | null): Hono<WebAppEnv> {
     const app = new Hono<WebAppEnv>()
@@ -83,7 +105,7 @@ export function createMessagesRoutes(getSyncEngine: () => SyncEngine | null): Ho
         const body = await c.req.json().catch(() => null)
         const parsed = sendMessageBodySchema.safeParse(body)
         if (!parsed.success) {
-            return c.json({ error: 'Invalid body' }, 400)
+            return c.json({ error: 'Invalid body', issues: parsed.error.flatten() }, 400)
         }
 
         // Require text or attachments
@@ -95,7 +117,8 @@ export function createMessagesRoutes(getSyncEngine: () => SyncEngine | null): Ho
             text: parsed.data.text,
             localId: parsed.data.localId,
             attachments: parsed.data.attachments,
-            sentFrom: 'webapp'
+            sentFrom: 'webapp',
+            scheduledAt: parsed.data.scheduledAt
         })
         return c.json({ ok: true })
     })

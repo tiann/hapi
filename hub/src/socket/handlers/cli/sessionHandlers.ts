@@ -64,10 +64,12 @@ export type SessionHandlersDeps = {
     onWebappEvent?: (event: SyncEvent) => void
     onBackgroundTaskDelta?: (sessionId: string, delta: { started: number; completed: number }) => void
     onSessionActivity?: (sessionId: string, updatedAt: number) => void
+    /** Delegates session-end immediate-queue sweep to the MessageService layer. */
+    onSweepImmediateQueued?: (sessionId: string, now: number) => void
 }
 
 export function registerSessionHandlers(socket: CliSocketWithData, deps: SessionHandlersDeps): void {
-    const { store, resolveSessionAccess, emitAccessError, onSessionAlive, onSessionEnd, onWebappEvent, onBackgroundTaskDelta, onSessionActivity } = deps
+    const { store, resolveSessionAccess, emitAccessError, onSessionAlive, onSessionEnd, onWebappEvent, onBackgroundTaskDelta, onSessionActivity, onSweepImmediateQueued } = deps
 
     socket.on('message', (data: unknown) => {
         const parsed = messageSchema.safeParse(data)
@@ -299,27 +301,22 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             return
         }
 
-        // Force-invoke any user messages that are still queued at session end.
-        // Without this, the floating bar pins the queued rows after the CLI is
-        // gone — there is no longer an ack path (no CLI to emit
-        // messages-consumed) so they would stay queued forever.
+        // Force-invoke only immediate-queued messages (scheduled_at IS NULL) at
+        // session end.  *All* scheduled rows — mature or future — are deliberately
+        // preserved in DB so the mature-scan path (releaseMatureScheduledMessages)
+        // remains the sole emit channel and the CLI ack remains the sole writer of
+        // invoked_at.  See HAPI Bot R4: stamping a mature scheduled row here would
+        // make the next mature-scan tick skip it (filter on invoked_at IS NULL) and
+        // silently drop the user's prompt.
+        //
+        // Without this sweep for immediate rows, the floating bar would pin queued
+        // rows after the CLI exits — there is no longer an ack path, so they would
+        // stay queued forever.  The 5-second tick in syncEngine.expireInactive
+        // emits scheduled rows when they mature, regardless of session end.
         try {
-            const queued = store.messages.getUninvokedLocalMessages(data.sid)
-            const localIds = queued
-                .map((m) => m.localId)
-                .filter((id): id is string => typeof id === 'string')
-            if (localIds.length > 0) {
-                const invokedAt = Date.now()
-                store.messages.markMessagesInvoked(data.sid, localIds, invokedAt)
-                onWebappEvent?.({
-                    type: 'messages-consumed',
-                    sessionId: data.sid,
-                    localIds,
-                    invokedAt
-                })
-            }
+            onSweepImmediateQueued?.(data.sid, Date.now())
         } catch (err) {
-            console.error('session-end markMessagesInvoked failed', err)
+            console.error('session-end sweep failed', err)
         }
 
         onSessionEnd?.(data)

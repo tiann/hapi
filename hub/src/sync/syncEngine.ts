@@ -187,8 +187,8 @@ export class SyncEngine {
         return this.messageService.getMessagesPageByPosition(sessionId, options)
     }
 
-    getMessagesAfter(sessionId: string, options: { afterSeq: number; limit: number }): DecryptedMessage[] {
-        return this.messageService.getMessagesAfter(sessionId, options)
+    getDeliverableMessagesAfter(sessionId: string, options: { afterSeq: number; limit: number; now: number }): DecryptedMessage[] {
+        return this.messageService.getDeliverableMessagesAfter(sessionId, options)
     }
 
     handleRealtimeEvent(event: SyncEvent): void {
@@ -271,6 +271,9 @@ export class SyncEngine {
             this.triggerDedupIfNeeded(session.id)
         }
         this.machineCache.expireInactive()
+        // Piggybacked on the inactivity tick; not a logical part of expireInactive
+        // but shares its 5s cadence (avoids a second timer).
+        this.messageService.releaseMatureScheduledMessages(Date.now())
     }
 
     private reloadAll(): void {
@@ -308,6 +311,7 @@ export class SyncEngine {
                 previewUrl?: string
             }>
             sentFrom?: 'telegram-bot' | 'webapp'
+            scheduledAt?: number | null
         }
     ): Promise<void> {
         await this.messageService.sendMessage(sessionId, payload)
@@ -319,6 +323,10 @@ export class SyncEngine {
         messageId: string
     ): Promise<CancelQueuedMessageResult> {
         return this.messageService.cancelQueuedMessage(sessionId, messageId)
+    }
+
+    sweepImmediateQueuedOnSessionEnd(sessionId: string, invokedAt: number): void {
+        this.messageService.sweepImmediateQueuedOnSessionEnd(sessionId, invokedAt)
     }
 
     async approvePermission(
