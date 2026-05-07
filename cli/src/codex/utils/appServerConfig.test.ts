@@ -1,9 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { buildThreadStartParams, buildTurnStartParams } from './appServerConfig';
+import {
+    buildThreadStartParams,
+    buildTurnStartParams,
+    codexCollaborationSpawnAgentInstructions
+} from './appServerConfig';
 import { codexSystemPrompt } from './systemPrompt';
 
 describe('appServerConfig', () => {
     const mcpServers = { hapi: { command: 'node', args: ['mcp'] } };
+    const withCollaborationInstructions = (developerInstructions: string): string => {
+        return `${developerInstructions}\n\n${codexCollaborationSpawnAgentInstructions}`;
+    };
 
     it('applies CLI overrides when permission mode is default', () => {
         const params = buildThreadStartParams({
@@ -122,7 +129,7 @@ describe('appServerConfig', () => {
             settings: {
                 model: 'o3',
                 reasoning_effort: 'high',
-                developer_instructions: codexSystemPrompt
+                developer_instructions: withCollaborationInstructions(codexSystemPrompt)
             }
         });
         expect(params.model).toBeUndefined();
@@ -146,7 +153,7 @@ describe('appServerConfig', () => {
             settings: {
                 model: 'o3',
                 reasoning_effort: 'high',
-                developer_instructions: codexSystemPrompt
+                developer_instructions: withCollaborationInstructions(codexSystemPrompt)
             }
         });
         expect(params.model).toBeUndefined();
@@ -165,9 +172,23 @@ describe('appServerConfig', () => {
             mode: 'plan',
             settings: {
                 model: 'o3',
-                developer_instructions: `${codexSystemPrompt}\n\nOnly respond in Chinese.`
+                developer_instructions: withCollaborationInstructions(`${codexSystemPrompt}\n\nOnly respond in Chinese.`)
             }
         });
+    });
+
+    it('injects spawn_agent argument rules into collaboration mode instructions', () => {
+        const params = buildTurnStartParams({
+            threadId: 'thread-1',
+            message: 'hello',
+            cwd: '/workspace/project',
+            mode: { permissionMode: 'default', model: 'o3', collaborationMode: 'default' }
+        });
+
+        const instructions = params.collaborationMode?.settings.developer_instructions;
+        expect(instructions).toContain('If you call spawn_agent with fork_context: true');
+        expect(instructions).toContain('do not set agent_type, model, or reasoning_effort');
+        expect(instructions).toContain('omit fork_context or set fork_context: false');
     });
 
     it('rejects collaboration mode payloads without a resolved model', () => {
@@ -194,7 +215,7 @@ describe('appServerConfig', () => {
             mode: 'default',
             settings: {
                 model: 'o3',
-                developer_instructions: codexSystemPrompt
+                developer_instructions: withCollaborationInstructions(codexSystemPrompt)
             }
         });
     });
@@ -214,7 +235,7 @@ describe('appServerConfig', () => {
             mode: 'default',
             settings: {
                 model: 'o3',
-                developer_instructions: codexSystemPrompt
+                developer_instructions: withCollaborationInstructions(codexSystemPrompt)
             }
         });
     });
@@ -233,7 +254,7 @@ describe('appServerConfig', () => {
             mode: 'default',
             settings: {
                 model: 'gpt-5',
-                developer_instructions: codexSystemPrompt
+                developer_instructions: withCollaborationInstructions(codexSystemPrompt)
             }
         });
         expect(params.model).toBeUndefined();

@@ -40,6 +40,7 @@ type ChildAgentRuntime = {
 };
 
 const AGENT_RUN_UPDATE_THROTTLE_MS = 300;
+const AGENT_RUN_START_TIMEOUT_MS = 30 * 1000;
 const THROTTLED_AGENT_RUN_ACTIVITY_KINDS = new Set(['thinking']);
 
 const SAME_THREAD_RETRYABLE_ERROR_PATTERNS = [
@@ -421,6 +422,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             cardIdOverride?: string | null;
         }>();
         const pendingThrottledAgentUpdateTimerByAgentId = new Map<string, ReturnType<typeof setTimeout>>();
+        const pendingAgentStartTimersByCardId = new Map<string, ReturnType<typeof setTimeout>>();
         this.permissionHandler = permissionHandler;
         this.reasoningProcessor = reasoningProcessor;
         this.diffProcessor = diffProcessor;
@@ -516,6 +518,17 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             });
         };
 
+        const clearPendingAgentStart = (cardId: string): void => {
+            const timer = pendingAgentStartTimersByCardId.get(cardId);
+            if (timer) {
+                clearTimeout(timer);
+            }
+            pendingAgentStartTimersByCardId.delete(cardId);
+            pendingAgentStartCardIds.delete(cardId);
+        };
+
+        let failAgentStartCard = (_cardId: string, _error: unknown): void => {};
+
         const emitAgentRunStart = (cardId: string, input: unknown): void => {
             childAgentActivityInCurrentTurn = true;
             const startedAt = Date.now();
@@ -524,7 +537,16 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             if (summary) {
                 agentSummaryByCardId.set(cardId, summary);
             }
+            clearPendingAgentStart(cardId);
             pendingAgentStartCardIds.add(cardId);
+            const timer = setTimeout(() => {
+                failAgentStartCard(
+                    cardId,
+                    `spawn_agent did not return an agent id within ${AGENT_RUN_START_TIMEOUT_MS / 1000}s`
+                );
+            }, AGENT_RUN_START_TIMEOUT_MS);
+            timer.unref?.();
+            pendingAgentStartTimersByCardId.set(cardId, timer);
             emitAgentRunEvent({
                 type: 'agent-run-start',
                 cardId,
@@ -555,7 +577,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
 
         const linkAgentToCard = (agentId: string, cardId: string): void => {
             agentCardByAgentId.set(agentId, cardId);
-            pendingAgentStartCardIds.delete(cardId);
+            clearPendingAgentStart(cardId);
             const startedAt = agentStartedAtByCardId.get(cardId) ?? agentStartedAtByAgentId.get(agentId);
             if (startedAt) {
                 agentStartedAtByCardId.set(cardId, startedAt);
@@ -748,6 +770,28 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             scheduleThrottledAgentRunUpdate(agentId, update, cardIdOverride);
         };
 
+        failAgentStartCard = (cardId: string, error: unknown): void => {
+            if (!pendingAgentStartCardIds.has(cardId) && !pendingAgentStartTimersByCardId.has(cardId)) {
+                return;
+            }
+
+            const agentId = `spawn-error:${cardId}`;
+            linkAgentToCard(agentId, cardId);
+            emitAgentRunUpdate(agentId, {
+                status: 'failed',
+                statusText: 'Failed to start',
+                activity: formatActivity('Failed to start', previewText(error)),
+                activityKind: 'failed',
+                error
+            }, cardId);
+        };
+
+        const failPendingAgentStarts = (error: unknown): void => {
+            for (const cardId of Array.from(pendingAgentStartCardIds)) {
+                failAgentStartCard(cardId, error);
+            }
+        };
+
         const emitAgentRunTraceMessage = (agentId: string, message: unknown): void => {
             const cardId = agentCardByAgentId.get(agentId);
             if (!cardId) {
@@ -905,9 +949,21 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             if (name === 'spawn_agent') {
                 childAgentActivityInCurrentTurn = true;
                 const outputRecord = asRecord(output);
+                const agentsStates = asRecord(outputRecord?.agentsStates ?? outputRecord?.agents_states);
+                const agentIdsFromState = agentsStates ? Object.keys(agentsStates) : [];
                 const agentId = asString(outputRecord?.agent_id ?? outputRecord?.agentId ?? outputRecord?.id)
+                    ?? (agentIdsFromState.length === 1 ? agentIdsFromState[0] : null)
                     ?? extractAgentTargets(pending?.input).at(0);
-                if (!agentId) return;
+                if (!agentId) {
+                    const detail = isError
+                        ? output
+                        : {
+                            message: 'spawn_agent completed without returning an agent id',
+                            output
+                        };
+                    failAgentStartCard(callId, detail);
+                    return;
+                }
                 linkAgentToCard(agentId, callId);
                 emitAgentRunUpdate(agentId, {
                     status: isError ? 'failed' : 'running',
@@ -2267,6 +2323,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             }
         }
 
+        failPendingAgentStarts('spawn_agent did not return an agent id before the Codex session ended');
         cancelAllPendingThrottledAgentRunUpdates();
     }
 

@@ -24,6 +24,8 @@ const harness = vi.hoisted(() => ({
     emitParentUsageEvents: false,
     emitChildNestedAgentTool: false,
     emitParentTitleChange: false,
+    emitParentSpawnFailureWithoutAgentId: false,
+    emitParentSpawnStartWithoutEnd: false,
     bridgeOptions: [] as unknown[]
 }));
 
@@ -180,6 +182,43 @@ vi.mock('./codexAppServerClient', () => {
                     const parentCompact = { thread: { id: threadId } };
                     harness.notifications.push({ method: 'thread/compacted', params: parentCompact });
                     this.notificationHandler?.('thread/compacted', parentCompact);
+                }
+
+                if (harness.emitParentSpawnFailureWithoutAgentId || harness.emitParentSpawnStartWithoutEnd) {
+                    const spawnStart = {
+                        item: {
+                            id: 'failed-spawn',
+                            type: 'collabAgentToolCall',
+                            tool: 'spawnAgent',
+                            prompt: 'do side work',
+                            reasoningEffort: 'medium',
+                            senderThreadId: threadId,
+                            receiverThreadIds: []
+                        },
+                        threadId,
+                        turnId
+                    };
+                    harness.notifications.push({ method: 'item/started', params: spawnStart });
+                    this.notificationHandler?.('item/started', spawnStart);
+
+                    if (harness.emitParentSpawnFailureWithoutAgentId) {
+                        const spawnCompleted = {
+                            item: {
+                                id: 'failed-spawn',
+                                type: 'collabAgentToolCall',
+                                tool: 'spawnAgent',
+                                status: 'failed',
+                                error: 'invalid spawn arguments',
+                                senderThreadId: threadId,
+                                receiverThreadIds: [],
+                                agentsStates: {}
+                            },
+                            threadId,
+                            turnId
+                        };
+                        harness.notifications.push({ method: 'item/completed', params: spawnCompleted });
+                        this.notificationHandler?.('item/completed', spawnCompleted);
+                    }
                 }
             }
 
@@ -554,6 +593,8 @@ describe('codexRemoteLauncher', () => {
         harness.emitParentUsageEvents = false;
         harness.emitChildNestedAgentTool = false;
         harness.emitParentTitleChange = false;
+        harness.emitParentSpawnFailureWithoutAgentId = false;
+        harness.emitParentSpawnStartWithoutEnd = false;
         harness.bridgeOptions = [];
     });
 
@@ -956,6 +997,53 @@ describe('codexRemoteLauncher', () => {
         expect(codexMessages).not.toContainEqual(expect.objectContaining({
             type: 'agent-run-update',
             agentId: 'grandchild-thread'
+        }));
+    });
+
+    it('marks spawn_agent cards failed when Codex returns no agent id', async () => {
+        harness.emitParentSpawnFailureWithoutAgentId = true;
+        const { session, codexMessages } = createSessionStub();
+
+        await codexRemoteLauncher(session as never);
+
+        expect(codexMessages).toContainEqual(expect.objectContaining({
+            type: 'agent-run-start',
+            cardId: 'failed-spawn',
+            status: 'starting'
+        }));
+        expect(codexMessages).toContainEqual(expect.objectContaining({
+            type: 'agent-run-update',
+            agentId: 'spawn-error:failed-spawn',
+            cardId: 'failed-spawn',
+            status: 'failed',
+            statusText: 'Failed to start',
+            activityKind: 'failed',
+            error: expect.objectContaining({
+                status: 'failed',
+                error: 'invalid spawn arguments'
+            })
+        }));
+    });
+
+    it('marks pending spawn_agent cards failed when the session ends before a result', async () => {
+        harness.emitParentSpawnStartWithoutEnd = true;
+        const { session, codexMessages } = createSessionStub();
+
+        await codexRemoteLauncher(session as never);
+
+        expect(codexMessages).toContainEqual(expect.objectContaining({
+            type: 'agent-run-start',
+            cardId: 'failed-spawn',
+            status: 'starting'
+        }));
+        expect(codexMessages).toContainEqual(expect.objectContaining({
+            type: 'agent-run-update',
+            agentId: 'spawn-error:failed-spawn',
+            cardId: 'failed-spawn',
+            status: 'failed',
+            statusText: 'Failed to start',
+            activityKind: 'failed',
+            error: 'spawn_agent did not return an agent id before the Codex session ended'
         }));
     });
 

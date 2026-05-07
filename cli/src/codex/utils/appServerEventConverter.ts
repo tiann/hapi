@@ -256,6 +256,16 @@ function buildCollabAgentInput(item: Record<string, unknown>, toolName: string):
         input.message = prompt;
     }
 
+    const agentType = asString(item.agentType ?? item.agent_type);
+    if (agentType) {
+        input.agent_type = agentType;
+    }
+
+    const forkContext = asBoolean(item.forkContext ?? item.fork_context);
+    if (forkContext !== null) {
+        input.fork_context = forkContext;
+    }
+
     const model = asString(item.model);
     if (model) {
         input.model = model;
@@ -297,12 +307,15 @@ function buildCollabAgentOutput(item: Record<string, unknown>, toolName: string)
     const targets = extractStringArray(item.receiverThreadIds ?? item.receiver_thread_ids ?? item.targets);
     const agentsStates = asRecord(item.agentsStates ?? item.agents_states) ?? {};
     const status = asString(item.status);
+    const error = asString(item.error ?? item.message);
+    const errorFields = error ? { error, message: error } : {};
 
     if (toolName === 'spawn_agent') {
         const agentId = targets[0] ?? null;
         return {
             ...(agentId ? { agent_id: agentId, agentId } : {}),
             ...(status ? { status } : {}),
+            ...errorFields,
             agentsStates
         };
     }
@@ -314,6 +327,7 @@ function buildCollabAgentOutput(item: Record<string, unknown>, toolName: string)
         }
         return {
             status: normalizedStatus,
+            ...errorFields,
             timed_out: status === 'timedOut' || status === 'timed_out'
         };
     }
@@ -322,6 +336,7 @@ function buildCollabAgentOutput(item: Record<string, unknown>, toolName: string)
         const firstStatus = targets[0] ? agentsStates[targets[0]] : Object.values(agentsStates)[0];
         return {
             previous_status: statusObjectFromAgentState(firstStatus),
+            ...errorFields,
             ...(targets[0] ? { agent_id: targets[0] } : {})
         };
     }
@@ -329,6 +344,7 @@ function buildCollabAgentOutput(item: Record<string, unknown>, toolName: string)
     return {
         ...(targets.length > 0 ? { targets } : {}),
         ...(status ? { status } : {}),
+        ...errorFields,
         agentsStates
     };
 }

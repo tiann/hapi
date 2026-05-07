@@ -11,6 +11,12 @@ import type {
 } from '../appServerTypes';
 import { resolveCodexPermissionModeConfig } from './permissionModeConfig';
 
+export const codexCollaborationSpawnAgentInstructions = [
+    'Codex sub-agent spawning rules:',
+    '- If you call spawn_agent with fork_context: true, do not set agent_type, model, or reasoning_effort; full-history forked agents inherit these values from the parent.',
+    '- If you need a specific agent_type, model, or reasoning_effort, omit fork_context or set fork_context: false, and include only the necessary context in the message.'
+].join('\n');
+
 function resolveApprovalPolicy(mode: EnhancedMode): ApprovalPolicy {
     return resolveCodexPermissionModeConfig(mode.permissionMode).approvalPolicy;
 }
@@ -61,6 +67,10 @@ function resolveInstructions(args: {
         baseInstructions,
         developerInstructions
     };
+}
+
+function appendCollaborationInstructions(developerInstructions: string): string {
+    return `${developerInstructions}\n\n${codexCollaborationSpawnAgentInstructions}`;
 }
 
 export function buildThreadStartParams(args: {
@@ -158,7 +168,7 @@ export function buildTurnStartParams(args: {
             settings: {
                 model,
                 ...(args.mode?.modelReasoningEffort ? { reasoning_effort: args.mode.modelReasoningEffort } : {}),
-                developer_instructions: developerInstructions
+                developer_instructions: appendCollaborationInstructions(developerInstructions)
             }
         };
     } else if (model) {

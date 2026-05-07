@@ -201,6 +201,8 @@ describe('AppServerEventConverter', () => {
                 type: 'collabAgentToolCall',
                 tool: 'spawnAgent',
                 prompt: 'Do side work',
+                agentType: 'explorer',
+                forkContext: true,
                 model: 'gpt-5.5',
                 reasoningEffort: 'low',
                 senderThreadId: 'parent-thread',
@@ -213,6 +215,8 @@ describe('AppServerEventConverter', () => {
             name: 'spawn_agent',
             input: {
                 message: 'Do side work',
+                agent_type: 'explorer',
+                fork_context: true,
                 model: 'gpt-5.5',
                 reasoning_effort: 'low',
                 sender_thread_id: 'parent-thread'
