@@ -12,6 +12,7 @@ type DbMessageRow = {
     seq: number
     local_id: string | null
     invoked_at: number | null
+    scheduled_at: number | null
 }
 
 function toStoredMessage(row: DbMessageRow): StoredMessage {
@@ -22,7 +23,8 @@ function toStoredMessage(row: DbMessageRow): StoredMessage {
         createdAt: row.created_at,
         seq: row.seq,
         localId: row.local_id,
-        invokedAt: row.invoked_at ?? null
+        invokedAt: row.invoked_at ?? null,
+        scheduledAt: row.scheduled_at ?? null
     }
 }
 
@@ -30,9 +32,19 @@ export function addMessage(
     db: Database,
     sessionId: string,
     content: unknown,
-    localId?: string
+    localId?: string,
+    scheduledAt?: number | null
 ): StoredMessage {
     const now = Date.now()
+
+    // Without a localId, invoked_at is stamped immediately below — there is no
+    // ack path to flip it later.  A scheduled message in that state would be
+    // skipped by the future-emit branch and never picked up by
+    // getMatureScheduledMessages (which filters on invoked_at IS NULL), so
+    // the schedule would be silently lost.
+    if (scheduledAt != null && !localId) {
+        throw new Error('addMessage: scheduledAt requires a localId for the ack flow')
+    }
 
     if (localId) {
         const existing = db.prepare(
@@ -58,9 +70,9 @@ export function addMessage(
 
     db.prepare(`
         INSERT INTO messages (
-            id, session_id, content, created_at, seq, local_id, invoked_at
+            id, session_id, content, created_at, seq, local_id, invoked_at, scheduled_at
         ) VALUES (
-            @id, @session_id, @content, @created_at, @seq, @local_id, @invoked_at
+            @id, @session_id, @content, @created_at, @seq, @local_id, @invoked_at, @scheduled_at
         )
     `).run({
         id,
@@ -69,7 +81,8 @@ export function addMessage(
         created_at: now,
         seq: msgSeq,
         local_id: localId ?? null,
-        invoked_at: invokedAt
+        invoked_at: invokedAt,
+        scheduled_at: scheduledAt ?? null
     })
 
     const row = db.prepare('SELECT * FROM messages WHERE id = ?').get(id) as DbMessageRow | undefined
@@ -98,18 +111,32 @@ export function getMessages(
     return rows.reverse().map(toStoredMessage)
 }
 
-export function getMessagesAfter(
+/** CLI reconnect backfill: returns messages above the seq cursor that are
+ *  deliverable now, i.e. excludes future-scheduled rows (scheduled_at > now).
+ *  Without this filter, a CLI reconnect between schedule time and release time
+ *  would replay future-scheduled rows via the normal message stream and the
+ *  runner would consume them immediately, bypassing the mature-scan path.
+ *  Only the CLI backfill route should use this; the Web thread API still calls
+ *  byPosition / getMessages and needs the full set so scheduled rows surface in
+ *  the queued floating bar. */
+export function getDeliverableMessagesAfter(
     db: Database,
     sessionId: string,
     afterSeq: number,
+    now: number,
     limit: number = 200
 ): StoredMessage[] {
     const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.min(200, limit)) : 200
     const safeAfterSeq = Number.isFinite(afterSeq) ? afterSeq : 0
 
-    const rows = db.prepare(
-        'SELECT * FROM messages WHERE session_id = ? AND seq > ? ORDER BY seq ASC LIMIT ?'
-    ).all(sessionId, safeAfterSeq, safeLimit) as DbMessageRow[]
+    const rows = db.prepare(`
+        SELECT * FROM messages
+        WHERE session_id = ?
+          AND seq > ?
+          AND (scheduled_at IS NULL OR scheduled_at <= ?)
+        ORDER BY seq ASC
+        LIMIT ?
+    `).all(sessionId, safeAfterSeq, now, safeLimit) as DbMessageRow[]
 
     return rows.map(toStoredMessage)
 }
@@ -144,9 +171,8 @@ export function getMessagesByPosition(
 }
 
 /** Returns user messages that have a localId but no invoked_at.
- *  Used to surface queued messages on refresh / secondary clients even when they
- *  fall outside the latest position-ordered page (their position key is the send
- *  time, but the floating bar still needs to render them). */
+ *  Includes future scheduled messages — used to surface all queued messages
+ *  (including scheduled) for the Web floating bar on refresh / secondary clients. */
 export function getUninvokedLocalMessages(
     db: Database,
     sessionId: string
@@ -154,6 +180,47 @@ export function getUninvokedLocalMessages(
     const rows = db.prepare(
         'SELECT * FROM messages WHERE session_id = ? AND invoked_at IS NULL AND local_id IS NOT NULL ORDER BY seq ASC'
     ).all(sessionId) as DbMessageRow[]
+    return rows.map(toStoredMessage)
+}
+
+/** Returns scheduled messages across all sessions whose scheduled_at <= beforeTime
+ *  and have not yet been invoked.  Used by the hub tick to emit mature messages to CLI.
+ *  Ordered by scheduled_at ASC (oldest first). */
+export function getMatureScheduledMessages(
+    db: Database,
+    beforeTime: number
+): StoredMessage[] {
+    const rows = db.prepare(
+        'SELECT * FROM messages WHERE scheduled_at IS NOT NULL AND scheduled_at <= ? AND invoked_at IS NULL ORDER BY scheduled_at ASC'
+    ).all(beforeTime) as DbMessageRow[]
+    return rows.map(toStoredMessage)
+}
+
+/** Returns immediate-queued local messages for a session — i.e. rows that have
+ *  no scheduled_at (scheduled_at IS NULL).  Used by the session-end sweep
+ *  (sweepImmediateQueuedOnSessionEnd): these are messages the user posted to a
+ *  CLI session that ended before the runner consumed them, so they cannot ever
+ *  be delivered and must be force-invoked to clear the floating bar.
+ *
+ *  Scheduled rows (scheduled_at IS NOT NULL) are *deliberately excluded*, mature
+ *  or not.  The mature-scan path (releaseMatureScheduledMessages) is the sole
+ *  emit channel for scheduled rows and it does not write invoked_at — the CLI
+ *  ack does.  If the session-end sweep stamped a mature scheduled row as
+ *  invoked, a subsequent CLI re-attach would never see the row in the
+ *  mature-scan results (it filters on invoked_at IS NULL), and the user's
+ *  scheduled prompt would be silently dropped.  See HAPI Bot R4 finding. */
+export function getImmediateQueuedLocalMessages(
+    db: Database,
+    sessionId: string
+): StoredMessage[] {
+    const rows = db.prepare(`
+        SELECT * FROM messages
+        WHERE session_id = ?
+          AND invoked_at IS NULL
+          AND local_id IS NOT NULL
+          AND scheduled_at IS NULL
+        ORDER BY seq ASC
+    `).all(sessionId) as DbMessageRow[]
     return rows.map(toStoredMessage)
 }
 
@@ -221,7 +288,7 @@ export function cancelQueuedMessage(
 export type LookupQueuedMessageResult =
     | { status: 'absent' }
     | { status: 'invoked'; message: StoredMessage }
-    | { status: 'queued'; localId: string | null; resolvedId: string }
+    | { status: 'queued'; localId: string | null; resolvedId: string; scheduledAt: number | null }
 
 /** Look up a queued message without deleting it.
  *
@@ -251,7 +318,7 @@ export function lookupQueuedMessage(
         return { status: 'invoked' as const, message: toStoredMessage(row) }
     }
 
-    return { status: 'queued' as const, localId: row.local_id, resolvedId: row.id }
+    return { status: 'queued' as const, localId: row.local_id, resolvedId: row.id, scheduledAt: row.scheduled_at }
 }
 
 /** Delete a queued (invoked_at IS NULL) message by id or local_id.

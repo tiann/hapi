@@ -23,7 +23,7 @@ export { PushStore } from './pushStore'
 export { SessionStore } from './sessionStore'
 export { UserStore } from './userStore'
 
-const SCHEMA_VERSION: number = 8
+const SCHEMA_VERSION: number = 9
 const REQUIRED_TABLES = [
     'sessions',
     'machines',
@@ -98,6 +98,7 @@ export class Store {
             5: () => this.migrateFromV5ToV6(),
             6: () => this.migrateFromV6ToV7(),
             7: () => this.migrateFromV7ToV8(),
+            8: () => this.migrateFromV8ToV9(),
         })
 
         if (currentVersion === 0) {
@@ -193,12 +194,16 @@ export class Store {
                 seq INTEGER NOT NULL,
                 local_id TEXT,
                 invoked_at INTEGER,
+                scheduled_at INTEGER,
                 FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
             );
             CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, seq);
             CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_local_id ON messages(session_id, local_id) WHERE local_id IS NOT NULL;
             CREATE INDEX IF NOT EXISTS idx_messages_session_position
                 ON messages(session_id, COALESCE(invoked_at, created_at) DESC, seq DESC);
+            CREATE INDEX IF NOT EXISTS idx_messages_scheduled_pending
+                ON messages(scheduled_at)
+                WHERE scheduled_at IS NOT NULL AND invoked_at IS NULL;
 
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -375,6 +380,24 @@ export class Store {
         this.db.exec(`
             CREATE INDEX IF NOT EXISTS idx_messages_session_position
                 ON messages(session_id, COALESCE(invoked_at, created_at) DESC, seq DESC)
+        `)
+    }
+
+    private migrateFromV8ToV9(): void {
+        const columns = this.getMessageColumnNames()
+        if (columns.size === 0) {
+            // No messages table yet — createSchema will build the up-to-date one.
+            return
+        }
+        if (!columns.has('scheduled_at')) {
+            this.db.exec('ALTER TABLE messages ADD COLUMN scheduled_at INTEGER')
+        }
+        // Partial index for efficient mature scheduled message lookup.
+        // Idempotent via IF NOT EXISTS.
+        this.db.exec(`
+            CREATE INDEX IF NOT EXISTS idx_messages_scheduled_pending
+                ON messages(scheduled_at)
+                WHERE scheduled_at IS NOT NULL AND invoked_at IS NULL
         `)
     }
 

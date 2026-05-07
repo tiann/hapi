@@ -171,7 +171,8 @@ export const DecryptedMessageSchema = z.object({
     localId: z.string().nullable(),
     content: z.unknown(),
     createdAt: z.number(),
-    invokedAt: z.number().nullable().optional()
+    invokedAt: z.number().nullable().optional(),
+    scheduledAt: z.number().nullable().optional()
 })
 
 export type DecryptedMessage = z.infer<typeof DecryptedMessageSchema>

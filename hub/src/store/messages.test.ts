@@ -172,3 +172,118 @@ describe('cancelQueuedMessage', () => {
         expect(messages.some(m => m.id === msg.id)).toBe(true)
     })
 })
+
+describe('addMessage: scheduledAt invariants', () => {
+    it('rejects scheduledAt without a localId — would silently invoke immediately', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'sched-invariant')
+        const future = Date.now() + 60_000
+
+        expect(() =>
+            store.messages.addMessage(
+                session.id,
+                { role: 'user', content: { type: 'text', text: 'orphan scheduled' } },
+                undefined,
+                future
+            )
+        ).toThrow(/scheduledAt requires a localId/)
+    })
+
+    it('accepts scheduledAt when paired with a localId and keeps invoked_at NULL', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'sched-ok')
+        const future = Date.now() + 60_000
+
+        const msg = store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'queued for later' } },
+            'lid-sched',
+            future
+        )
+
+        expect(msg.scheduledAt).toBe(future)
+        expect(msg.invokedAt).toBeNull()
+    })
+})
+
+describe('getDeliverableMessagesAfter: CLI backfill excludes future-scheduled rows', () => {
+    it('omits rows whose scheduled_at > now (would otherwise be replayed early on reconnect)', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'backfill-future-sched')
+        const now = Date.now()
+        const future = now + 60_000
+        const past = now - 60_000
+
+        const immediate = store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'immediate' } },
+            'lid-immediate'
+        )
+        store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'future-scheduled' } },
+            'lid-future',
+            future
+        )
+        const matureSched = store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'mature-scheduled' } },
+            'lid-mature',
+            past
+        )
+
+        const delivered = store.messages.getDeliverableMessagesAfter(session.id, 0, now)
+        const ids = delivered.map((m) => m.id)
+        expect(ids).toContain(immediate.id)
+        expect(ids).toContain(matureSched.id)
+        expect(ids).not.toContain('lid-future')
+        const localIds = delivered.map((m) => m.localId)
+        expect(localIds).not.toContain('lid-future')
+    })
+
+    it('returns the row once now advances past scheduled_at (release boundary)', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'backfill-release-boundary')
+        const fireAt = Date.now() - 60_000
+
+        store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'boundary' } },
+            'lid-bnd',
+            fireAt
+        )
+
+        const before = store.messages.getDeliverableMessagesAfter(session.id, 0, fireAt - 1)
+        expect(before.find((m) => m.localId === 'lid-bnd')).toBeUndefined()
+
+        const exact = store.messages.getDeliverableMessagesAfter(session.id, 0, fireAt)
+        expect(exact.find((m) => m.localId === 'lid-bnd')).toBeDefined()
+    })
+
+    it('respects afterSeq alongside the scheduled_at filter (2-axis interaction)', () => {
+        // Verifies the seq cursor and the scheduled-at filter compose correctly:
+        // a row that satisfies one axis but fails the other must be excluded.
+        const store = makeStore()
+        const session = makeSession(store, 'backfill-2axis')
+        const now = Date.now()
+
+        const m1 = store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'first' } },
+            'lid-1'
+        )
+        const m2 = store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'second' } },
+            'lid-2'
+        )
+
+        // afterSeq = m1.seq → only m2 should be returned.
+        const onlyM2 = store.messages.getDeliverableMessagesAfter(session.id, m1.seq, now)
+        expect(onlyM2.map((m) => m.id)).toEqual([m2.id])
+
+        // afterSeq = m2.seq → nothing (cursor at the end).
+        const empty = store.messages.getDeliverableMessagesAfter(session.id, m2.seq, now)
+        expect(empty).toHaveLength(0)
+    })
+})
