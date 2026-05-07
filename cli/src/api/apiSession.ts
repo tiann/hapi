@@ -71,6 +71,64 @@ export function isExternalUserMessage(body: RawJSONLines): body is Extract<RawJS
     return true
 }
 
+/**
+ * Dedup filter for messages arriving on the realtime socket and via reconnect
+ * backfill.  Keyed by message id (with a bounded LRU) and falls back to the
+ * legacy seq cursor for messages that lack an id.
+ *
+ * Why id-first: scheduled messages keep the seq assigned at insertion time, so
+ * a row scheduled for T+1h (seq=10) can be released after a later immediate
+ * message (seq=11) has already advanced the cursor.  A pure seq <= cursor
+ * filter would silently drop the mature emit.  See HAPI Bot R3 finding #1.
+ */
+export class IncomingMessageFilter {
+    private readonly seenIds = new Set<string>()
+    private readonly capacity: number
+    private lastSeenSeq: number | null = null
+
+    constructor(capacity = 256) {
+        this.capacity = capacity
+    }
+
+    cursorSeq(): number | null {
+        return this.lastSeenSeq
+    }
+
+    /** Returns true if this message should be processed; false to drop as a duplicate. */
+    accept(message: { id?: string | null; seq?: number | null }): boolean {
+        const id = typeof message.id === 'string' && message.id.length > 0 ? message.id : null
+        if (id && this.seenIds.has(id)) {
+            // Refresh recency: the hub re-emits the same id every 5 s until the
+            // CLI acks (releaseMatureScheduledMessages contract).  Without a
+            // delete+re-add the entry stays at its first-insert position and can
+            // be evicted by a burst of unrelated ids before the ack lands —
+            // the next re-emit would then be treated as new and double-deliver.
+            this.seenIds.delete(id)
+            this.seenIds.add(id)
+            return false
+        }
+
+        const seq = typeof message.seq === 'number' ? message.seq : null
+        if (!id && seq !== null && this.lastSeenSeq !== null && seq <= this.lastSeenSeq) {
+            return false
+        }
+
+        if (id) {
+            this.seenIds.add(id)
+            if (this.seenIds.size > this.capacity) {
+                // Set iteration is insertion-ordered; with delete+re-add on dedup hit
+                // (above) this becomes a true LRU eviction.
+                const oldest = this.seenIds.values().next().value
+                if (oldest !== undefined) this.seenIds.delete(oldest)
+            }
+        }
+        if (seq !== null) {
+            this.lastSeenSeq = Math.max(this.lastSeenSeq ?? 0, seq)
+        }
+        return true
+    }
+}
+
 export class ApiSessionClient extends EventEmitter {
     private readonly token: string
     readonly sessionId: string
@@ -82,7 +140,7 @@ export class ApiSessionClient extends EventEmitter {
     private pendingMessages: { message: UserMessage; localId?: string }[] = []
     private pendingMessageCallback: ((message: UserMessage, localId?: string) => void) | null = null
     private cancelQueuedMessageCallback: ((localId: string) => boolean) | null = null
-    private lastSeenMessageSeq: number | null = null
+    private readonly incomingFilter = new IncomingMessageFilter()
     private backfillInFlight: Promise<void> | null = null
     private needsBackfill = false
     private hasConnectedOnce = false
@@ -274,13 +332,9 @@ export class ApiSessionClient extends EventEmitter {
         }
     }
 
-    private handleIncomingMessage(message: { seq?: number; localId?: string | null; content: unknown }): void {
-        const seq = typeof message.seq === 'number' ? message.seq : null
-        if (seq !== null) {
-            if (this.lastSeenMessageSeq !== null && seq <= this.lastSeenMessageSeq) {
-                return
-            }
-            this.lastSeenMessageSeq = seq
+    private handleIncomingMessage(message: { id?: string; seq?: number; localId?: string | null; content: unknown }): void {
+        if (!this.incomingFilter.accept({ id: message.id, seq: message.seq })) {
+            return
         }
 
         const userResult = UserMessageSchema.safeParse(message.content)
@@ -311,7 +365,7 @@ export class ApiSessionClient extends EventEmitter {
             return
         }
 
-        const startSeq = this.lastSeenMessageSeq
+        const startSeq = this.incomingFilter.cursorSeq()
         if (startSeq === null) {
             logger.debug('[API] Skipping backfill because no last-seen message sequence is available')
             return
@@ -353,7 +407,7 @@ export class ApiSessionClient extends EventEmitter {
                     this.handleIncomingMessage(message)
                 }
 
-                const observedSeq = this.lastSeenMessageSeq ?? maxSeq
+                const observedSeq = this.incomingFilter.cursorSeq() ?? maxSeq
                 const nextCursor = Math.max(maxSeq, observedSeq)
                 if (nextCursor <= cursor) {
                     logger.debug('[API] Backfill stopped due to non-advancing cursor', {
