@@ -490,6 +490,24 @@ describe('AppServerEventConverter', () => {
         expect(completed).toEqual([{ type: 'task_complete', turn_id: 'turn-1' }]);
     });
 
+    it('preserves nested scope on wrapped terminal lifecycle events', () => {
+        const converter = new AppServerEventConverter();
+
+        const completed = converter.handleNotification('codex/event/task_complete', {
+            msg: {
+                type: 'task_complete',
+                thread: { id: 'child-thread' },
+                turn: { id: 'child-turn' }
+            }
+        });
+
+        expect(completed).toEqual([{
+            type: 'task_complete',
+            thread_id: 'child-thread',
+            turn_id: 'child-turn'
+        }]);
+    });
+
     it('ignores wrapped terminal lifecycle events without turn_id', () => {
         const converter = new AppServerEventConverter();
 
@@ -519,6 +537,46 @@ describe('AppServerEventConverter', () => {
         });
 
         expect(completed).toEqual([{ type: 'agent_message', message: 'Hello world' }]);
+    });
+
+    it('preserves nested scope on wrapped item lifecycle events', () => {
+        const converter = new AppServerEventConverter();
+
+        const started = converter.handleNotification('codex/event/item_started', {
+            msg: {
+                type: 'item_started',
+                thread: { id: 'child-thread' },
+                turn: { id: 'child-turn' },
+                item: { id: 'cmd-1', type: 'commandExecution', command: 'pwd' }
+            }
+        });
+        expect(started).toEqual([{
+            type: 'exec_command_begin',
+            thread_id: 'child-thread',
+            turn_id: 'child-turn',
+            call_id: 'cmd-1',
+            command: 'pwd'
+        }]);
+
+        const completed = converter.handleNotification('codex/event/item_completed', {
+            msg: {
+                type: 'item_completed',
+                item_id: 'msg-1',
+                item: {
+                    id: 'msg-1',
+                    type: 'AgentMessage',
+                    message: 'child output',
+                    thread: { id: 'child-thread' },
+                    turn: { id: 'child-turn' }
+                }
+            }
+        });
+        expect(completed).toEqual([{
+            type: 'agent_message',
+            thread_id: 'child-thread',
+            turn_id: 'child-turn',
+            message: 'child output'
+        }]);
     });
 
     it('unwraps codex/event reasoning completion from summary text', () => {

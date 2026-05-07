@@ -378,11 +378,14 @@ export class AppServerEventConverter {
         if (msgType === 'item_started' || msgType === 'item_completed') {
             const itemMethod = msgType === 'item_started' ? 'item/started' : 'item/completed';
             const item = asRecord(msg.item) ?? {};
+            const threadId = asString(msg.thread_id ?? msg.threadId ?? msgScope.thread_id);
+            const turnId = asString(msg.turn_id ?? msg.turnId ?? msgScope.turn_id);
             const params: Record<string, unknown> = {
+                ...msgScope,
                 item,
                 itemId: asString(msg.item_id ?? msg.itemId ?? item.id),
-                threadId: asString(msg.thread_id ?? msg.threadId),
-                turnId: asString(msg.turn_id ?? msg.turnId)
+                ...(threadId ? { threadId } : {}),
+                ...(turnId ? { turnId } : {})
             };
             return this.handleNotification(itemMethod, params);
         }
@@ -393,17 +396,17 @@ export class AppServerEventConverter {
             msgType === 'turn_aborted' ||
             msgType === 'task_failed'
         ) {
-            const turnId = asString(msg.turn_id ?? msg.turnId);
+            const turnId = asString(msg.turn_id ?? msg.turnId ?? msgScope.turn_id);
             if ((msgType === 'task_complete' || msgType === 'turn_aborted' || msgType === 'task_failed') && !turnId) {
                 logger.debug('[AppServerEventConverter] Ignoring wrapped terminal event without turn_id', { msgType });
                 return [];
             }
 
-            const event: ConvertedEvent = { type: msgType };
+            const event: ConvertedEvent = { ...msgScope, type: msgType };
             if (turnId) {
                 event.turn_id = turnId;
             }
-            const threadId = asString(msg.thread_id ?? msg.threadId);
+            const threadId = asString(msg.thread_id ?? msg.threadId ?? msgScope.thread_id);
             if (threadId) {
                 event.thread_id = threadId;
             }
