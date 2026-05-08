@@ -37,9 +37,11 @@ export function shouldShowInlineToolCardBody(
     presentationMinimal: boolean,
     terminalToolDisplayMode: TerminalToolDisplayMode
 ): boolean {
+    if (isSubagentToolName(toolName)) return false
+    if (TERMINAL_RELATED_TOOL_NAMES.has(toolName)) {
+        return terminalToolDisplayMode === 'detailed'
+    }
     return !presentationMinimal
-        && !isSubagentToolName(toolName)
-        && !shouldUseCompactTerminalToolCard(toolName, terminalToolDisplayMode)
 }
 
 function ElapsedView(props: { from: number; active: boolean }) {

@@ -14,11 +14,13 @@ describe('ToolCard terminal display mode helpers', () => {
 
     it('keeps inline terminal previews in detailed mode', () => {
         expect(shouldShowInlineToolCardBody('CodexBash', false, 'detailed')).toBe(true)
+        expect(shouldShowInlineToolCardBody('Bash', true, 'detailed')).toBe(true)
+        expect(shouldShowInlineToolCardBody('shell_command', true, 'detailed')).toBe(true)
     })
 
     it('still hides inline bodies for minimal and Task/Agent subagent cards', () => {
-        expect(shouldShowInlineToolCardBody('CodexBash', true, 'detailed')).toBe(false)
         expect(shouldShowInlineToolCardBody('Task', false, 'detailed')).toBe(false)
         expect(shouldShowInlineToolCardBody('Agent', false, 'detailed')).toBe(false)
+        expect(shouldShowInlineToolCardBody('Read', true, 'detailed')).toBe(false)
     })
 })
