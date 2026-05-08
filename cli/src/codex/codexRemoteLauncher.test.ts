@@ -725,6 +725,7 @@ describe('codexRemoteLauncher', () => {
         harness.emitChildUsageEvents = false;
         harness.emitChildReasoningBurst = false;
         harness.emitChildDoneStatusWithoutMessage = false;
+        harness.emitChildWaitStructuredOutput = false;
         harness.emitChildTaskCompleteBeforeMessage = false;
         harness.suppressChildTaskCompleteEvent = false;
         harness.emitSecondChildMessage = false;
