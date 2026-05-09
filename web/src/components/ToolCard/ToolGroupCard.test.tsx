@@ -1,3 +1,4 @@
+import { useCallback, useState } from 'react'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ToolCallBlock } from '@/chat/types'
@@ -139,6 +140,61 @@ describe('ToolGroupCard', () => {
 
         await waitFor(() => {
             expect(loadOlder).toHaveBeenCalledTimes(1)
+        })
+        await waitFor(() => {
+            expect(screen.getByText('Earlier tool activity is unavailable.')).toBeInTheDocument()
+        })
+    })
+
+    it('continues hydrating incomplete history across multiple page loads', async () => {
+        let loadCount = 0
+
+        function Harness() {
+            const [isLoadingMore, setIsLoadingMore] = useState(false)
+            const loadOlderMessagesPreservingScroll = useCallback(() => {
+                const shouldContinue = loadCount === 0
+                loadCount += 1
+                setIsLoadingMore(true)
+                return new Promise<boolean>((resolve) => {
+                    setTimeout(() => {
+                        setIsLoadingMore(false)
+                        resolve(shouldContinue)
+                    }, 0)
+                })
+            }, [])
+
+            return (
+                <I18nProvider>
+                    <HappyChatProvider value={{
+                        api: {} as never,
+                        sessionId: 'session-1',
+                        metadata: { path: 'repo', host: 'local' },
+                        disabled: false,
+                        onRefresh: vi.fn(),
+                        hasMoreMessages: true,
+                        isLoadingMoreMessages: isLoadingMore,
+                        loadOlderMessagesPreservingScroll,
+                    }}>
+                        <ToolGroupCard
+                            block={makeGroup({
+                                id: 'tool-group:bash-1',
+                                historyState: 'needs-older-history',
+                                needsOlderHistory: true,
+                            })}
+                            metadata={{ path: 'repo', host: 'local' }}
+                        />
+                    </HappyChatProvider>
+                </I18nProvider>
+            )
+        }
+
+        const view = render(<Harness />)
+        const groupToggle = within(view.container).getByRole('button', { name: /src\/a.ts/i })
+
+        fireEvent.click(groupToggle)
+
+        await waitFor(() => {
+            expect(loadCount).toBe(2)
         })
         await waitFor(() => {
             expect(screen.getByText('Earlier tool activity is unavailable.')).toBeInTheDocument()

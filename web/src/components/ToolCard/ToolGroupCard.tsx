@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ToolGroupBlock } from '@/chat/toolGroups'
 import type { ToolCallBlock } from '@/chat/types'
 import type { SessionMetadataSummary } from '@/types/api'
@@ -152,8 +152,10 @@ export function ToolGroupCard(props: {
     const [selectedToolId, setSelectedToolId] = useState<string | null>(null)
     const [isHydratingHistory, setIsHydratingHistory] = useState(false)
     const [historyExhausted, setHistoryExhausted] = useState(false)
+    const hydrationRunRef = useRef(0)
 
     useEffect(() => {
+        hydrationRunRef.current += 1
         setOpen(props.block.defaultOpen)
         setSelectedToolId(null)
         setIsHydratingHistory(false)
@@ -162,53 +164,51 @@ export function ToolGroupCard(props: {
 
     useEffect(() => {
         if (!open) {
+            hydrationRunRef.current += 1
             setIsHydratingHistory(false)
             setHistoryExhausted(false)
             return
         }
         if (!props.block.needsOlderHistory) {
+            hydrationRunRef.current += 1
             setIsHydratingHistory(false)
             setHistoryExhausted(false)
             return
         }
-        if (isHydratingHistory || ctx.isLoadingMoreMessages) {
+        if (isHydratingHistory || historyExhausted) {
             return
         }
         if (!ctx.hasMoreMessages) {
+            hydrationRunRef.current += 1
+            setIsHydratingHistory(false)
             setHistoryExhausted(true)
             return
         }
-        if (historyExhausted) {
-            return
-        }
 
-        let cancelled = false
+        const runId = hydrationRunRef.current + 1
+        hydrationRunRef.current = runId
         setHistoryExhausted(false)
         setIsHydratingHistory(true)
         void ctx.loadOlderMessagesPreservingScroll()
             .then((loaded) => {
-                if (cancelled) return
+                if (hydrationRunRef.current !== runId) return
                 setIsHydratingHistory(false)
                 if (!loaded) {
                     setHistoryExhausted(true)
                 }
             })
             .catch(() => {
-                if (cancelled) return
+                if (hydrationRunRef.current !== runId) return
                 setIsHydratingHistory(false)
                 setHistoryExhausted(true)
             })
-
-        return () => {
-            cancelled = true
-        }
     }, [
         open,
         props.block.needsOlderHistory,
         ctx.hasMoreMessages,
-        ctx.isLoadingMoreMessages,
         ctx.loadOlderMessagesPreservingScroll,
         historyExhausted,
+        isHydratingHistory,
     ])
 
     const selectedTool = useMemo(
