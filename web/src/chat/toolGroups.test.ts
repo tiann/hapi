@@ -149,6 +149,21 @@ describe('buildVisibleChatBlocks', () => {
         expect(isToolGroupBlock(visible[2]) && visible[2].needsOlderHistory).toBe(false)
     })
 
+    it('marks the first visible group for older history even when earlier blocks are non-tools', () => {
+        const visible = buildVisibleChatBlocks([
+            makeTextBlock('text-1', 'prepended assistant note'),
+            makeToolBlock('read-1', 'Read', { file_path: 'src/a.ts' }),
+            makeToolBlock('bash-1', 'Bash', { command: 'bun test' }),
+            makeTextBlock('text-2', 'next section'),
+            makeToolBlock('edit-1', 'Edit', { file_path: 'src/a.ts' }),
+            makeToolBlock('write-1', 'Write', { file_path: 'src/b.ts' }),
+        ], { hasMoreMessages: true })
+
+        expect(visible[0].kind).toBe('agent-text')
+        expect(isToolGroupBlock(visible[1]) && visible[1].needsOlderHistory).toBe(true)
+        expect(isToolGroupBlock(visible[3]) && visible[3].needsOlderHistory).toBe(false)
+    })
+
     it('reuses a previous group id when the first tool changes after prepend', () => {
         const previous = buildVisibleChatBlocks([
             makeToolBlock('read-2', 'Read', { file_path: 'src/b.ts' }),

@@ -227,6 +227,7 @@ export function buildVisibleChatBlocks(
 ): VisibleChatBlock[] {
     const visibleBlocks: VisibleChatBlock[] = []
     const previousGroups = options.previousGroups ?? []
+    let sawVisibleGroup = false
 
     for (let index = 0; index < blocks.length; index += 1) {
         const block = blocks[index]
@@ -251,7 +252,7 @@ export function buildVisibleChatBlocks(
             continue
         }
 
-        const needsOlderHistory = options.hasMoreMessages && index === 0
+        const needsOlderHistory = options.hasMoreMessages && !sawVisibleGroup
         visibleBlocks.push({
             kind: 'tool-group',
             id: createToolGroupId(tools, needsOlderHistory, previousGroups),
@@ -265,6 +266,7 @@ export function buildVisibleChatBlocks(
             needsOlderHistory,
             summary: summarizeToolGroup(tools)
         })
+        sawVisibleGroup = true
         index = cursor - 1
     }
 
