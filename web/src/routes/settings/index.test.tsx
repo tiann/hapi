@@ -43,6 +43,14 @@ vi.mock('@/hooks/useComposerEnterBehavior', () => ({
     ],
 }))
 
+vi.mock('@/hooks/useTerminalToolDisplayMode', () => ({
+    useTerminalToolDisplayMode: () => ({ terminalToolDisplayMode: 'compact', setTerminalToolDisplayMode: vi.fn() }),
+    getTerminalToolDisplayModeOptions: () => [
+        { value: 'compact', labelKey: 'settings.chat.terminalToolDisplay.compact' },
+        { value: 'detailed', labelKey: 'settings.chat.terminalToolDisplay.detailed' },
+    ],
+}))
+
 // Mock useTheme hook
 vi.mock('@/hooks/useTheme', () => ({
     useAppearance: () => ({ appearance: 'system', setAppearance: vi.fn() }),
@@ -158,11 +166,19 @@ describe('SettingsPage', () => {
         expect(screen.getAllByText('Send message').length).toBeGreaterThanOrEqual(1)
     })
 
+    it('renders the Terminal Tool Display setting', () => {
+        renderWithProviders(<SettingsPage />)
+        expect(screen.getAllByText('Terminal Tool Cards').length).toBeGreaterThanOrEqual(1)
+        expect(screen.getAllByText('Compact (command only)').length).toBeGreaterThanOrEqual(1)
+    })
+
     it('uses correct i18n keys for the Enter Key setting', () => {
         const spyT = renderWithSpyT(<SettingsPage />)
         const calledKeys = spyT.mock.calls.map((call) => call[0])
         expect(calledKeys).toContain('settings.chat.title')
         expect(calledKeys).toContain('settings.chat.enterBehavior')
         expect(calledKeys).toContain('settings.chat.enterBehavior.send')
+        expect(calledKeys).toContain('settings.chat.terminalToolDisplay')
+        expect(calledKeys).toContain('settings.chat.terminalToolDisplay.compact')
     })
 })

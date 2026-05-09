@@ -36,6 +36,8 @@ type ChildAgentRuntime = {
     }>;
     pendingTitleByCallId: Map<string, string>;
     reasoningPreview: string;
+    finalMessage: string | null;
+    terminal: boolean;
     blockedNestedAgent: boolean;
 };
 
@@ -696,7 +698,8 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             if (
                 isTerminalAgentRunStatus(currentStatus)
                 && !isTerminalAgentRunStatus(nextStatus)
-                && (activityKind === 'wait_agent' || activityKind === 'close_agent')
+                && activityKind !== 'send_input'
+                && activityKind !== 'resume_agent'
             ) {
                 return;
             }
@@ -822,14 +825,64 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 activeToolsByCallId: new Map(),
                 pendingTitleByCallId: new Map(),
                 reasoningPreview: '',
+                finalMessage: null,
+                terminal: false,
                 blockedNestedAgent: false
             };
             childAgentRuntimeById.set(agentId, runtime);
             return runtime;
         };
 
+        const extractAgentStatusMessage = (record: Record<string, unknown>): unknown => {
+            const message = asString(record.message);
+            if (message) return message;
+
+            for (const key of ['output', 'result', 'finalMessage', 'final_message'] as const) {
+                const value = record[key];
+                if (value !== undefined && value !== null) {
+                    return asString(value) ?? value;
+                }
+            }
+
+            return undefined;
+        };
+
+        const normalizeAgentStateValue = (value: unknown): string | null => {
+            return asString(value)?.trim().toLowerCase().replace(/[\s_-]/g, '') ?? null;
+        };
+
+        const hasOwn = (record: Record<string, unknown>, key: string): boolean => {
+            return Object.prototype.hasOwnProperty.call(record, key);
+        };
+
+        const fillCompletedAgentUpdateFromRuntime = (
+            agentId: string,
+            update: Record<string, unknown>
+        ): Record<string, unknown> => {
+            if (asString(update.status) !== 'completed') return update;
+            if (hasOwn(update, 'result') || hasOwn(update, 'error')) return update;
+
+            const result = childAgentRuntimeById.get(agentId)?.finalMessage;
+            if (!result) return update;
+
+            return {
+                ...update,
+                activity: formatActivity('Completed', result),
+                result
+            };
+        };
+
         const normalizeAgentStatusUpdate = (value: unknown): Record<string, unknown> => {
             if (typeof value === 'string') {
+                const normalized = normalizeAgentStateValue(value);
+                if (normalized === 'completed' || normalized === 'complete' || normalized === 'done') {
+                    return {
+                        status: 'completed',
+                        statusText: 'Completed',
+                        activity: 'Completed',
+                        activityKind: 'completed'
+                    };
+                }
                 const activity = formatActivity('Completed', previewText(value));
                 return {
                     status: 'completed',
@@ -862,6 +915,16 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     result: completed
                 };
             }
+            const done = asString(record.done);
+            if (done) {
+                return {
+                    status: 'completed',
+                    statusText: 'Completed',
+                    activity: formatActivity('Completed', done),
+                    activityKind: 'completed',
+                    result: done
+                };
+            }
             const failed = asString(record.failed ?? record.error);
             if (failed) {
                 return {
@@ -884,7 +947,8 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             }
 
             const rawStatus = asString(record.status ?? record.state);
-            if (rawStatus === 'notFound' || rawStatus === 'not_found') {
+            const normalizedStatus = normalizeAgentStateValue(record.status ?? record.state);
+            if (normalizedStatus === 'notfound') {
                 const error = record.message ?? record.error ?? value;
                 return {
                     status: 'failed',
@@ -894,18 +958,24 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     error
                 };
             }
-            if (rawStatus === 'completed') {
-                const result = record.message ?? record.output ?? value;
+            if (
+                normalizedStatus === 'completed'
+                || normalizedStatus === 'complete'
+                || normalizedStatus === 'done'
+                || record.completed === true
+                || record.done === true
+            ) {
+                const result = extractAgentStatusMessage(record);
                 return {
                     status: 'completed',
                     statusText: 'Completed',
                     activity: formatActivity('Completed', previewText(result)),
                     activityKind: 'completed',
-                    result
+                    ...(result !== undefined && result !== null ? { result } : {})
                 };
             }
-            if (rawStatus === 'failed' || rawStatus === 'error') {
-                const error = record.message ?? record.error ?? value;
+            if (normalizedStatus === 'failed' || normalizedStatus === 'error') {
+                const error = extractAgentStatusMessage(record) ?? record.error ?? value;
                 return {
                     status: 'failed',
                     statusText: 'Failed',
@@ -914,8 +984,8 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     error
                 };
             }
-            if (rawStatus === 'canceled' || rawStatus === 'cancelled') {
-                const error = record.message ?? record.error ?? value;
+            if (normalizedStatus === 'canceled' || normalizedStatus === 'cancelled') {
+                const error = extractAgentStatusMessage(record) ?? record.error ?? value;
                 return {
                     status: 'canceled',
                     statusText: 'Canceled',
@@ -928,7 +998,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             return {
                 status: rawStatus ?? 'running',
                 statusText: rawStatus ?? 'Running',
-                activity: formatActivity(rawStatus ?? 'Running', previewText(record.message ?? record.output ?? value)),
+                activity: formatActivity(rawStatus ?? 'Running', previewText(extractAgentStatusMessage(record) ?? value)),
                 activityKind: rawStatus ?? 'running',
                 result: value
             };
@@ -981,9 +1051,18 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 const outputRecord = asRecord(output);
                 const statusMap = asRecord(outputRecord?.status) ?? {};
                 for (const [agentId, statusValue] of Object.entries(statusMap)) {
-                    const update = normalizeAgentStatusUpdate(statusValue);
+                    const update = fillCompletedAgentUpdateFromRuntime(
+                        agentId,
+                        normalizeAgentStatusUpdate(statusValue)
+                    );
                     if (!agentCardByAgentId.has(agentId) && isAgentNotFoundStatusUpdate(update)) {
                         continue;
+                    }
+                    if (asString(update.status) === 'completed') {
+                        const runtime = childAgentRuntimeById.get(agentId);
+                        if (runtime) {
+                            runtime.terminal = true;
+                        }
                     }
                     emitAgentRunUpdate(agentId, update);
                 }
@@ -1044,6 +1123,9 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 activityKind: string,
                 extra?: Record<string, unknown>
             ): void => {
+                if (runtime.terminal) {
+                    return;
+                }
                 emitAgentRunUpdate(agentId, {
                     status: 'running',
                     statusText: activity,
@@ -1068,6 +1150,9 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
 
             if (msgType === 'task_started') {
                 runtime.reasoningPreview = '';
+                runtime.finalMessage = null;
+                runtime.terminal = false;
+                agentStatusByAgentId.delete(agentId);
                 updateActivity('Starting task', 'starting');
                 return;
             }
@@ -1098,11 +1183,24 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             if (msgType === 'agent_message') {
                 const message = asString(msg.message);
                 if (message) {
+                    runtime.finalMessage = message;
                     emitAgentRunTraceMessage(agentId, {
                         type: 'message',
                         message,
                         id: randomUUID()
                     });
+                }
+                if (runtime.terminal) {
+                    if (message) {
+                        emitAgentRunUpdate(agentId, {
+                            status: 'completed',
+                            statusText: 'Completed',
+                            activity: formatActivity('Completed', message),
+                            activityKind: 'completed',
+                            result: message
+                        });
+                    }
+                    return;
                 }
                 updateActivity(formatActivity('Writing', message), 'writing');
                 return;
@@ -1122,18 +1220,20 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                         id: randomUUID()
                     });
                     const command = normalizeCommand(inputs.command) ?? 'command';
-                    runtime.activeToolsByCallId.set(callId, {
-                        name: 'CodexBash',
-                        label: command,
-                        activity: formatActivity('Running command', command),
-                        activityKind: 'running-command'
-                    });
-                    emitAgentRunUpdate(agentId, {
-                        status: 'running',
-                        statusText: formatActivity('Running command', command),
-                        activity: formatActivity('Running command', command),
-                        activityKind: 'running-command'
-                    });
+                    if (!runtime.terminal) {
+                        runtime.activeToolsByCallId.set(callId, {
+                            name: 'CodexBash',
+                            label: command,
+                            activity: formatActivity('Running command', command),
+                            activityKind: 'running-command'
+                        });
+                        emitAgentRunUpdate(agentId, {
+                            status: 'running',
+                            statusText: formatActivity('Running command', command),
+                            activity: formatActivity('Running command', command),
+                            activityKind: 'running-command'
+                        });
+                    }
                 }
                 return;
             }
@@ -1355,6 +1455,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 return;
             }
             if (isChildTerminalEvent) {
+                runtime.terminal = true;
                 runtime.reasoningProcessor.reset();
                 runtime.diffProcessor.reset();
                 runtime.activeToolsByCallId.clear();
@@ -1377,11 +1478,13 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                         activityKind: 'canceled'
                     });
                 } else {
+                    const result = runtime.finalMessage;
                     emitAgentRunUpdate(agentId, {
                         status: 'completed',
                         statusText: 'Completed',
-                        activity: 'Completed',
-                        activityKind: 'completed'
+                        activity: formatActivity('Completed', result),
+                        activityKind: 'completed',
+                        ...(result ? { result } : {})
                     });
                 }
             }

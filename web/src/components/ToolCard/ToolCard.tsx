@@ -17,6 +17,7 @@ import { getToolPresentation } from '@/components/ToolCard/knownTools'
 import { getToolFullViewComponent, getToolViewComponent } from '@/components/ToolCard/views/_all'
 import { getToolResultViewComponent } from '@/components/ToolCard/views/_results'
 import { formatTaskChildLabel, TaskStateIcon } from '@/components/ToolCard/helpers'
+import type { TerminalToolDisplayMode } from '@/hooks/useTerminalToolDisplayMode'
 import { usePointerFocusRing } from '@/hooks/usePointerFocusRing'
 import { getInputString, getInputStringAny, truncate } from '@/lib/toolInputUtils'
 import { cn } from '@/lib/utils'
@@ -25,6 +26,23 @@ import { TraceSection } from '@/components/ToolCard/trace'
 import { isSubagentToolName } from '@/chat/subagentTool'
 
 const ELAPSED_INTERVAL_MS = 1000
+const TERMINAL_RELATED_TOOL_NAMES = new Set(['Bash', 'CodexBash', 'shell_command', 'run_shell_command'])
+
+export function shouldUseCompactTerminalToolCard(toolName: string, terminalToolDisplayMode: TerminalToolDisplayMode): boolean {
+    return TERMINAL_RELATED_TOOL_NAMES.has(toolName) && terminalToolDisplayMode === 'compact'
+}
+
+export function shouldShowInlineToolCardBody(
+    toolName: string,
+    presentationMinimal: boolean,
+    terminalToolDisplayMode: TerminalToolDisplayMode
+): boolean {
+    if (isSubagentToolName(toolName)) return false
+    if (TERMINAL_RELATED_TOOL_NAMES.has(toolName)) {
+        return terminalToolDisplayMode === 'detailed'
+    }
+    return !presentationMinimal
+}
 
 function ElapsedView(props: { from: number; active: boolean }) {
     const [now, setNow] = useState(() => Date.now())
@@ -260,6 +278,7 @@ type ToolCardProps = {
     api: ApiClient
     sessionId: string
     metadata: SessionMetadataSummary | null
+    terminalToolDisplayMode: TerminalToolDisplayMode
     disabled: boolean
     onDone: () => void
     block: ToolCallBlock
@@ -328,13 +347,15 @@ function ToolCardInner(props: ToolCardProps) {
     const subtitle = presentation.subtitle ?? props.block.tool.description
     const taskSummary = renderTaskSummary(props.block, props.metadata, t)
     const runningFrom = props.block.tool.startedAt ?? props.block.tool.createdAt
-    const showInline = !presentation.minimal && !isSubagentToolName(toolName)
+    const isCodexAgentCard = toolName === 'CodexAgent'
+    const useCompactTerminalCard = shouldUseCompactTerminalToolCard(toolName, props.terminalToolDisplayMode)
+    const showInline = shouldShowInlineToolCardBody(toolName, presentation.minimal, props.terminalToolDisplayMode)
     const CompactToolView = showInline ? getToolViewComponent(toolName) : null
     const ResultToolView = getToolResultViewComponent(toolName)
     const permission = props.block.tool.permission
     const isAskUserQuestion = isAskUserQuestionToolName(toolName)
     const isRequestUserInput = isRequestUserInputToolName(toolName)
-    const isCodexAgentCard = toolName === 'CodexAgent'
+    const isQuestionTool = isAskUserQuestion || isRequestUserInput
     const showsPermissionFooter = Boolean(permission && (
         permission.status === 'pending'
         || ((permission.status === 'denied' || permission.status === 'canceled') && Boolean(permission.reason))
@@ -361,7 +382,7 @@ function ToolCardInner(props: ToolCardProps) {
                 {subtitle ? (
                     <CardDescription className={cn(
                         'font-mono text-xs text-[var(--app-tool-card-subtitle)]',
-                        isCodexAgentCard ? 'truncate whitespace-nowrap' : 'break-all'
+                        isCodexAgentCard || useCompactTerminalCard ? 'truncate whitespace-nowrap' : 'break-all'
                     )}>
                         {truncate(subtitle, 160)}
                     </CardDescription>

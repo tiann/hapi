@@ -21,6 +21,12 @@ const harness = vi.hoisted(() => ({
     emitChildThreadEvents: false,
     emitChildUsageEvents: false,
     emitChildReasoningBurst: false,
+    emitChildDoneStatusWithoutMessage: false,
+    emitChildWaitStructuredOutput: false,
+    emitChildTaskCompleteBeforeMessage: false,
+    suppressChildTaskCompleteEvent: false,
+    emitSecondChildMessage: false,
+    emitLateChildCommandAfterParentTool: false,
     emitParentUsageEvents: false,
     emitChildNestedAgentTool: false,
     emitParentTitleChange: false,
@@ -228,6 +234,19 @@ vi.mock('./codexAppServerClient', () => {
                 const childThreadId = 'child-thread';
                 const childTurnId = 'child-turn';
                 const childMessage = 'child output should stay hidden';
+                const secondChildMessage = 'final child output should win';
+
+                const emitChildDone = () => {
+                    const childDone = {
+                        msg: {
+                            type: 'task_complete',
+                            thread_id: childThreadId,
+                            turn_id: childTurnId
+                        }
+                    };
+                    harness.notifications.push({ method: 'codex/event/task_complete', params: childDone });
+                    this.notificationHandler?.('codex/event/task_complete', childDone);
+                };
 
                 if (harness.emitChildReasoningBurst) {
                     for (let i = 0; i < 20; i += 1) {
@@ -245,6 +264,10 @@ vi.mock('./codexAppServerClient', () => {
                     }
                 }
 
+                if (harness.emitChildDoneStatusWithoutMessage && harness.emitChildTaskCompleteBeforeMessage) {
+                    emitChildDone();
+                }
+
                 const childMessageCompleted = {
                     item: {
                         id: 'child-msg-1',
@@ -256,6 +279,28 @@ vi.mock('./codexAppServerClient', () => {
                 };
                 harness.notifications.push({ method: 'item/completed', params: childMessageCompleted });
                 this.notificationHandler?.('item/completed', childMessageCompleted);
+
+                if (harness.emitSecondChildMessage) {
+                    const secondChildMessageCompleted = {
+                        item: {
+                            id: 'child-msg-2',
+                            type: 'agentMessage',
+                            content: [{ type: 'text', text: secondChildMessage }]
+                        },
+                        threadId: childThreadId,
+                        turnId: childTurnId
+                    };
+                    harness.notifications.push({ method: 'item/completed', params: secondChildMessageCompleted });
+                    this.notificationHandler?.('item/completed', secondChildMessageCompleted);
+                }
+
+                if (
+                    harness.emitChildDoneStatusWithoutMessage
+                    && !harness.emitChildTaskCompleteBeforeMessage
+                    && !harness.suppressChildTaskCompleteEvent
+                ) {
+                    emitChildDone();
+                }
 
                 if (harness.emitChildUsageEvents) {
                     const childUsage = {
@@ -413,8 +458,15 @@ vi.mock('./codexAppServerClient', () => {
                         receiverThreadIds: [childThreadId],
                         agentsStates: {
                             [childThreadId]: {
-                                status: 'completed',
-                                message: childMessage
+                                status: harness.emitChildDoneStatusWithoutMessage ? 'done' : 'completed',
+                                message: harness.emitChildWaitStructuredOutput
+                                    ? ''
+                                    : harness.emitChildDoneStatusWithoutMessage
+                                        ? null
+                                        : harness.emitSecondChildMessage
+                                            ? secondChildMessage
+                                            : childMessage,
+                                ...(harness.emitChildWaitStructuredOutput ? { output: { value: 42 } } : {})
                             }
                         }
                     },
@@ -488,6 +540,20 @@ vi.mock('./codexAppServerClient', () => {
                     };
                     harness.notifications.push({ method: 'item/completed', params: resumeCompleted });
                     this.notificationHandler?.('item/completed', resumeCompleted);
+                }
+
+                if (harness.emitLateChildCommandAfterParentTool) {
+                    const lateChildCommandStart = {
+                        item: {
+                            id: 'late-child-cmd',
+                            type: 'commandExecution',
+                            command: 'echo late'
+                        },
+                        threadId: childThreadId,
+                        turnId: childTurnId
+                    };
+                    harness.notifications.push({ method: 'item/started', params: lateChildCommandStart });
+                    this.notificationHandler?.('item/started', lateChildCommandStart);
                 }
             }
 
@@ -658,6 +724,12 @@ describe('codexRemoteLauncher', () => {
         harness.emitChildThreadEvents = false;
         harness.emitChildUsageEvents = false;
         harness.emitChildReasoningBurst = false;
+        harness.emitChildDoneStatusWithoutMessage = false;
+        harness.emitChildWaitStructuredOutput = false;
+        harness.emitChildTaskCompleteBeforeMessage = false;
+        harness.suppressChildTaskCompleteEvent = false;
+        harness.emitSecondChildMessage = false;
+        harness.emitLateChildCommandAfterParentTool = false;
         harness.emitParentUsageEvents = false;
         harness.emitChildNestedAgentTool = false;
         harness.emitParentTitleChange = false;
@@ -954,6 +1026,108 @@ describe('codexRemoteLauncher', () => {
         }));
     });
 
+    it('keeps the child final message as result when wait_agent only reports done', async () => {
+        harness.emitChildThreadEvents = true;
+        harness.emitChildDoneStatusWithoutMessage = true;
+        const { session, codexMessages } = createSessionStub();
+
+        await codexRemoteLauncher(session as never);
+
+        const completedUpdates = codexMessages.filter((message) => {
+            const record = message as Record<string, unknown>;
+            return record.type === 'agent-run-update'
+                && record.agentId === 'child-thread'
+                && record.status === 'completed';
+        }) as Array<Record<string, unknown>>;
+
+        expect(completedUpdates).toContainEqual(expect.objectContaining({
+            result: 'child output should stay hidden',
+            activity: 'Completed: child output should stay hidden'
+        }));
+        expect(completedUpdates).not.toContainEqual(expect.objectContaining({
+            result: expect.objectContaining({
+                status: 'done'
+            })
+        }));
+    });
+
+    it('fills wait_agent done without message from the latest child message', async () => {
+        harness.emitChildThreadEvents = true;
+        harness.emitChildDoneStatusWithoutMessage = true;
+        harness.suppressChildTaskCompleteEvent = true;
+        harness.emitSecondChildMessage = true;
+        const { session, codexMessages } = createSessionStub();
+
+        await codexRemoteLauncher(session as never);
+
+        const completedUpdates = codexMessages.filter((message) => {
+            const record = message as Record<string, unknown>;
+            return record.type === 'agent-run-update'
+                && record.agentId === 'child-thread'
+                && record.status === 'completed';
+        }) as Array<Record<string, unknown>>;
+        const lastCompleted = completedUpdates.at(-1);
+
+        expect(lastCompleted).toEqual(expect.objectContaining({
+            result: 'final child output should win',
+            activity: 'Completed: final child output should win'
+        }));
+    });
+
+    it('preserves wait_agent structured output when status message is empty', async () => {
+        harness.emitChildThreadEvents = true;
+        harness.emitChildWaitStructuredOutput = true;
+        harness.suppressChildTaskCompleteEvent = true;
+        const { session, codexMessages } = createSessionStub();
+
+        await codexRemoteLauncher(session as never);
+
+        const completedUpdates = codexMessages.filter((message) => {
+            const record = message as Record<string, unknown>;
+            return record.type === 'agent-run-update'
+                && record.agentId === 'child-thread'
+                && record.status === 'completed';
+        }) as Array<Record<string, unknown>>;
+        const lastCompleted = completedUpdates.at(-1);
+
+        expect(lastCompleted).toEqual(expect.objectContaining({
+            result: { value: 42 },
+            activity: 'Completed: {"value":42}'
+        }));
+    });
+
+    it('does not regress a completed child agent to running when message arrives late', async () => {
+        harness.emitChildThreadEvents = true;
+        harness.emitChildDoneStatusWithoutMessage = true;
+        harness.emitChildTaskCompleteBeforeMessage = true;
+        const { session, codexMessages } = createSessionStub();
+
+        await codexRemoteLauncher(session as never);
+
+        const terminalIndex = codexMessages.findIndex((message) => {
+            const record = message as Record<string, unknown>;
+            return record.type === 'agent-run-update'
+                && record.agentId === 'child-thread'
+                && record.status === 'completed';
+        });
+        expect(terminalIndex).toBeGreaterThanOrEqual(0);
+
+        const laterUpdates = codexMessages.slice(terminalIndex + 1).filter((message) => {
+            const record = message as Record<string, unknown>;
+            return record.type === 'agent-run-update'
+                && record.agentId === 'child-thread';
+        }) as Array<Record<string, unknown>>;
+
+        expect(laterUpdates).not.toContainEqual(expect.objectContaining({
+            status: 'running'
+        }));
+        expect(laterUpdates).toContainEqual(expect.objectContaining({
+            status: 'completed',
+            result: 'child output should stay hidden',
+            activity: 'Completed: child output should stay hidden'
+        }));
+    });
+
     it('surfaces send_input failures on the target child agent card', async () => {
         harness.emitChildThreadEvents = true;
         harness.emitParentSendInputFailure = true;
@@ -1008,6 +1182,31 @@ describe('codexRemoteLauncher', () => {
                 status: 'completed',
                 targets: ['child-thread']
             })
+        }));
+    });
+
+    it('does not regress a terminal child after resume_agent when a late command starts', async () => {
+        harness.emitChildThreadEvents = true;
+        harness.emitParentResumeSuccess = true;
+        harness.emitLateChildCommandAfterParentTool = true;
+        const { session, codexMessages } = createSessionStub();
+
+        await codexRemoteLauncher(session as never);
+
+        expect(codexMessages).toContainEqual(expect.objectContaining({
+            type: 'agent-run-trace',
+            agentId: 'child-thread',
+            message: expect.objectContaining({
+                type: 'tool-call',
+                callId: 'late-child-cmd'
+            })
+        }));
+        expect(codexMessages).not.toContainEqual(expect.objectContaining({
+            type: 'agent-run-update',
+            agentId: 'child-thread',
+            activity: 'Running command: echo late',
+            activityKind: 'running-command',
+            status: 'running'
         }));
     });
 
