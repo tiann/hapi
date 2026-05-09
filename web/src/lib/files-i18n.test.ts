@@ -44,6 +44,12 @@ describe('files i18n helpers', () => {
         expect(formatGitStatusError('Git status unavailable', t)).toBe('Git 状态不可用')
         expect(formatGitStatusError('Unstaged diff unavailable: fatal', t)).toBe('未暂存 Diff 不可用：fatal')
         expect(formatGitStatusError('Staged diff unavailable: timeout', t)).toBe('已暂存 Diff 不可用：timeout')
+        expect(
+            formatGitStatusError(
+                'Unstaged diff unavailable: fatal Staged diff unavailable: timeout',
+                t
+            )
+        ).toBe('未暂存 Diff 不可用：fatal 已暂存 Diff 不可用：timeout')
         expect(formatGitStatusError('fatal: not a git repository', t)).toBe('Git 状态不可用：fatal: not a git repository')
     })
 

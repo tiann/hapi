@@ -11,6 +11,20 @@ function stripPrefix(value: string, prefix: string): string | null {
     return normalizeDetail(value.slice(prefix.length))
 }
 
+function formatGitStatusErrorSegment(segment: string, t: Translate): string {
+    const unstagedDetail = stripPrefix(segment, 'Unstaged diff unavailable: ')
+    if (unstagedDetail) {
+        return t('files.changes.error.unstagedDiffUnavailableWithDetail', { error: unstagedDetail })
+    }
+
+    const stagedDetail = stripPrefix(segment, 'Staged diff unavailable: ')
+    if (stagedDetail) {
+        return t('files.changes.error.stagedDiffUnavailableWithDetail', { error: stagedDetail })
+    }
+
+    return t('files.changes.error.gitStatusUnavailableWithDetail', { error: segment })
+}
+
 export function getProjectRootLabel(path: string | null | undefined, t: Translate): string {
     return normalizeDetail(path) ?? t('files.projectRoot')
 }
@@ -45,17 +59,18 @@ export function formatGitStatusError(error: string | null | undefined, t: Transl
         return t('files.changes.error.gitStatusUnavailable')
     }
 
-    const unstagedDetail = stripPrefix(detail, 'Unstaged diff unavailable: ')
-    if (unstagedDetail) {
-        return t('files.changes.error.unstagedDiffUnavailableWithDetail', { error: unstagedDetail })
+    const segments = detail
+        .split(/(?=Unstaged diff unavailable: |Staged diff unavailable: )/)
+        .map((segment) => normalizeDetail(segment))
+        .filter((segment): segment is string => Boolean(segment))
+
+    if (segments.length > 1) {
+        return segments
+            .map((segment) => formatGitStatusErrorSegment(segment, t))
+            .join(' ')
     }
 
-    const stagedDetail = stripPrefix(detail, 'Staged diff unavailable: ')
-    if (stagedDetail) {
-        return t('files.changes.error.stagedDiffUnavailableWithDetail', { error: stagedDetail })
-    }
-
-    return t('files.changes.error.gitStatusUnavailableWithDetail', { error: detail })
+    return formatGitStatusErrorSegment(detail, t)
 }
 
 export function formatReadFileError(error: string | null | undefined, t: Translate): string {
