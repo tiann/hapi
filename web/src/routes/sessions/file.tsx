@@ -7,8 +7,10 @@ import { CopyIcon, CheckIcon } from '@/components/icons'
 import { useAppContext } from '@/lib/app-context'
 import { useAppGoBack } from '@/hooks/useAppGoBack'
 import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
+import { formatDiffError, formatReadFileError } from '@/lib/files-i18n'
 import { queryKeys } from '@/lib/query-keys'
 import { langAlias, useShikiHighlighter } from '@/lib/shiki'
+import { useTranslation } from '@/lib/use-translation'
 import { decodeBase64 } from '@/lib/utils'
 
 const MAX_COPYABLE_FILE_BYTES = 1_000_000
@@ -73,12 +75,12 @@ function DiffDisplay(props: { diffContent: string }) {
     )
 }
 
-function FileContentSkeleton() {
+function FileContentSkeleton(props: { label: string }) {
     const widths = ['w-full', 'w-11/12', 'w-5/6', 'w-3/4', 'w-2/3', 'w-4/5']
 
     return (
         <div role="status" aria-live="polite">
-            <span className="sr-only">Loading file…</span>
+            <span className="sr-only">{props.label}</span>
             <div className="animate-pulse space-y-2 rounded-md border border-[var(--app-border)] bg-[var(--app-code-bg)] p-3">
                 {Array.from({ length: 12 }).map((_, index) => (
                     <div key={`file-skeleton-${index}`} className={`h-3 ${widths[index % widths.length]} rounded bg-[var(--app-subtle-bg)]`} />
@@ -118,6 +120,7 @@ function extractCommandError(result: GitCommandResponse | undefined): string | n
 
 export default function FilePage() {
     const { api } = useAppContext()
+    const { t } = useTranslation()
     const { copied: pathCopied, copy: copyPath } = useCopyToClipboard()
     const { copied: contentCopied, copy: copyContent } = useCopyToClipboard()
     const goBack = useAppGoBack()
@@ -127,7 +130,7 @@ export default function FilePage() {
     const staged = search.staged
 
     const filePath = useMemo(() => decodePath(encodedPath), [encodedPath])
-    const fileName = filePath.split('/').pop() || filePath || 'File'
+    const fileName = filePath.split('/').pop() || filePath || t('file.page.fallbackName')
 
     const diffQuery = useQuery({
         queryKey: queryKeys.gitFileDiff(sessionId, filePath, staged),
@@ -193,7 +196,8 @@ export default function FilePage() {
         ? (fileContentResult.error ?? 'Failed to read file')
         : null
     const missingPath = !filePath
-    const diffErrorMessage = diffError ? `Diff unavailable: ${diffError}` : null
+    const diffErrorMessage = diffError ? formatDiffError(diffError, t) : null
+    const fileErrorMessage = fileError ? formatReadFileError(fileError, t) : null
 
     return (
         <div className="flex h-full min-h-0 flex-col">
@@ -208,7 +212,7 @@ export default function FilePage() {
                     </button>
                     <div className="min-w-0 flex-1">
                         <div className="truncate font-semibold">{fileName}</div>
-                        <div className="truncate text-xs text-[var(--app-hint)]">{filePath || 'Unknown path'}</div>
+                        <div className="truncate text-xs text-[var(--app-hint)]">{filePath || t('file.page.unknownPath')}</div>
                     </div>
                 </div>
             </div>
@@ -216,12 +220,12 @@ export default function FilePage() {
             <div className="bg-[var(--app-bg)]">
                 <div className="mx-auto w-full max-w-content px-3 py-2 flex items-center gap-2 border-b border-[var(--app-divider)]">
                     <FileIcon fileName={fileName} size={20} />
-                    <span className="min-w-0 flex-1 truncate text-xs text-[var(--app-hint)]">{filePath}</span>
+                    <span className="min-w-0 flex-1 truncate text-xs text-[var(--app-hint)]">{filePath || t('file.page.unknownPath')}</span>
                     <button
                         type="button"
                         onClick={() => copyPath(filePath)}
                         className="shrink-0 rounded p-1 text-[var(--app-hint)] hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] transition-colors"
-                        title="Copy path"
+                        title={t('file.page.copyPath')}
                     >
                         {pathCopied ? <CheckIcon className="h-3.5 w-3.5" /> : <CopyIcon className="h-3.5 w-3.5" />}
                     </button>
@@ -236,14 +240,14 @@ export default function FilePage() {
                             onClick={() => setDisplayMode('diff')}
                             className={`rounded px-3 py-1 text-xs font-semibold ${displayMode === 'diff' ? 'bg-[var(--app-button)] text-[var(--app-button-text)] opacity-80' : 'bg-[var(--app-subtle-bg)] text-[var(--app-hint)]'}`}
                         >
-                            Diff
+                            {t('file.page.tab.diff')}
                         </button>
                         <button
                             type="button"
                             onClick={() => setDisplayMode('file')}
                             className={`rounded px-3 py-1 text-xs font-semibold ${displayMode === 'file' ? 'bg-[var(--app-button)] text-[var(--app-button-text)] opacity-80' : 'bg-[var(--app-subtle-bg)] text-[var(--app-hint)]'}`}
                         >
-                            File
+                            {t('file.page.tab.file')}
                         </button>
                     </div>
                 </div>
@@ -257,19 +261,19 @@ export default function FilePage() {
                         </div>
                     ) : null}
                     {missingPath ? (
-                        <div className="text-sm text-[var(--app-hint)]">No file path provided.</div>
+                        <div className="text-sm text-[var(--app-hint)]">{t('file.page.missingPath')}</div>
                     ) : loading ? (
-                        <FileContentSkeleton />
-                    ) : fileError ? (
-                        <div className="text-sm text-[var(--app-hint)]">{fileError}</div>
+                        <FileContentSkeleton label={t('loading.file')} />
+                    ) : fileErrorMessage ? (
+                        <div className="text-sm text-[var(--app-hint)]">{fileErrorMessage}</div>
                     ) : binaryFile ? (
                         <div className="text-sm text-[var(--app-hint)]">
-                            This looks like a binary file. It cannot be displayed.
+                            {t('file.page.binary')}
                         </div>
                     ) : displayMode === 'diff' && diffContent ? (
                         <DiffDisplay diffContent={diffContent} />
                     ) : displayMode === 'diff' && diffError ? (
-                        <div className="text-sm text-[var(--app-hint)]">{diffError}</div>
+                        <div className="text-sm text-[var(--app-hint)]">{diffErrorMessage}</div>
                     ) : displayMode === 'file' ? (
                         decodedContent ? (
                             <div className="relative">
@@ -278,7 +282,7 @@ export default function FilePage() {
                                         type="button"
                                         onClick={() => copyContent(decodedContent)}
                                         className="absolute right-2 top-2 z-10 rounded p-1 text-[var(--app-hint)] hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] transition-colors"
-                                        title="Copy file content"
+                                        title={t('file.page.copyContent')}
                                     >
                                         {contentCopied ? <CheckIcon className="h-3.5 w-3.5" /> : <CopyIcon className="h-3.5 w-3.5" />}
                                     </button>
@@ -288,10 +292,10 @@ export default function FilePage() {
                                 </pre>
                             </div>
                         ) : (
-                            <div className="text-sm text-[var(--app-hint)]">File is empty.</div>
+                            <div className="text-sm text-[var(--app-hint)]">{t('file.page.empty')}</div>
                         )
                     ) : (
-                        <div className="text-sm text-[var(--app-hint)]">No changes to display.</div>
+                        <div className="text-sm text-[var(--app-hint)]">{t('file.page.noChanges')}</div>
                     )}
                 </div>
             </div>

@@ -8,9 +8,16 @@ import { useAppGoBack } from '@/hooks/useAppGoBack'
 import { useGitStatusFiles } from '@/hooks/queries/useGitStatusFiles'
 import { useSession } from '@/hooks/queries/useSession'
 import { useSessionFileSearch } from '@/hooks/queries/useSessionFileSearch'
+import {
+    formatFileSearchError,
+    formatGitStatusError,
+    getDetachedBranchLabel,
+    getProjectRootLabel,
+} from '@/lib/files-i18n'
 import { encodeBase64 } from '@/lib/utils'
 import { queryKeys } from '@/lib/query-keys'
 import { useQueryClient } from '@tanstack/react-query'
+import { useTranslation } from '@/lib/use-translation'
 
 function BackIcon(props: { className?: string }) {
     return (
@@ -160,7 +167,8 @@ function GitFileRow(props: {
     onOpen: () => void
     showDivider: boolean
 }) {
-    const subtitle = props.file.filePath || 'project root'
+    const { t } = useTranslation()
+    const subtitle = getProjectRootLabel(props.file.filePath, t)
 
     return (
         <button
@@ -186,7 +194,8 @@ function SearchResultRow(props: {
     onOpen: () => void
     showDivider: boolean
 }) {
-    const subtitle = props.file.filePath || 'project root'
+    const { t } = useTranslation()
+    const subtitle = getProjectRootLabel(props.file.filePath, t)
     const icon = props.file.fileType === 'file'
         ? <FileIcon fileName={props.file.fileName} size={22} />
         : <FolderIcon className="text-[var(--app-link)]" />
@@ -229,6 +238,7 @@ function FileListSkeleton(props: { label: string; rows?: number }) {
 
 export default function FilesPage() {
     const { api } = useAppContext()
+    const { t } = useTranslation()
     const navigate = useNavigate()
     const queryClient = useQueryClient()
     const goBack = useAppGoBack()
@@ -268,9 +278,17 @@ export default function FilesPage() {
         })
     }, [activeTab, navigate, sessionId])
 
-    const branchLabel = gitStatus?.branch ?? 'detached'
+    const branchLabel = getDetachedBranchLabel(gitStatus?.branch, t)
     const subtitle = session?.metadata?.path ?? sessionId
     const showGitErrorBanner = Boolean(gitError)
+    const gitErrorMessage = useMemo(
+        () => (gitError ? formatGitStatusError(gitError, t) : null),
+        [gitError, t]
+    )
+    const searchErrorMessage = useMemo(
+        () => (searchResults.error ? formatFileSearchError(searchResults.error, t) : null),
+        [searchResults.error, t]
+    )
     const rootLabel = useMemo(() => {
         const base = session?.metadata?.path ?? sessionId
         const parts = base.split(/[/\\]/).filter(Boolean)
@@ -317,14 +335,14 @@ export default function FilesPage() {
                         <BackIcon />
                     </button>
                     <div className="min-w-0 flex-1">
-                        <div className="truncate font-semibold">Files</div>
+                        <div className="truncate font-semibold">{t('files.page.title')}</div>
                         <div className="truncate text-xs text-[var(--app-hint)]">{subtitle}</div>
                     </div>
                     <button
                         type="button"
                         onClick={handleRefresh}
                         className="flex h-8 w-8 items-center justify-center rounded-full text-[var(--app-hint)] transition-colors hover:bg-[var(--app-secondary-bg)] hover:text-[var(--app-fg)]"
-                        title="Refresh"
+                        title={t('files.page.refresh')}
                     >
                         <RefreshIcon />
                     </button>
@@ -338,7 +356,7 @@ export default function FilesPage() {
                         <input
                             value={searchQuery}
                             onChange={(event) => setSearchQuery(event.target.value)}
-                            placeholder="Search files"
+                            placeholder={t('files.page.searchPlaceholder')}
                             className="w-full bg-transparent text-sm text-[var(--app-fg)] placeholder:text-[var(--app-hint)] focus:outline-none"
                             autoCapitalize="none"
                             autoCorrect="off"
@@ -356,7 +374,7 @@ export default function FilesPage() {
                         onClick={() => handleTabChange('changes')}
                         className={`relative py-3 text-center text-sm font-semibold transition-colors hover:bg-[var(--app-subtle-bg)] ${activeTab === 'changes' ? 'text-[var(--app-fg)]' : 'text-[var(--app-hint)]'}`}
                     >
-                        Changes
+                        {t('files.tab.changes')}
                         <span
                             className={`absolute bottom-0 left-1/2 h-0.5 w-10 -translate-x-1/2 rounded-full ${activeTab === 'changes' ? 'bg-[var(--app-link)]' : 'bg-transparent'}`}
                         />
@@ -368,7 +386,7 @@ export default function FilesPage() {
                         onClick={() => handleTabChange('directories')}
                         className={`relative py-3 text-center text-sm font-semibold transition-colors hover:bg-[var(--app-subtle-bg)] ${activeTab === 'directories' ? 'text-[var(--app-fg)]' : 'text-[var(--app-hint)]'}`}
                     >
-                        Directories
+                        {t('files.tab.directories')}
                         <span
                             className={`absolute bottom-0 left-1/2 h-0.5 w-10 -translate-x-1/2 rounded-full ${activeTab === 'directories' ? 'bg-[var(--app-link)]' : 'bg-transparent'}`}
                         />
@@ -384,7 +402,10 @@ export default function FilesPage() {
                             <span className="font-semibold">{branchLabel}</span>
                         </div>
                         <div className="text-xs text-[var(--app-hint)]">
-                            {gitStatus.totalStaged} staged, {gitStatus.totalUnstaged} unstaged
+                            {t('files.branch.summary', {
+                                staged: gitStatus.totalStaged,
+                                unstaged: gitStatus.totalUnstaged,
+                            })}
                         </div>
                     </div>
                 </div>
@@ -394,17 +415,17 @@ export default function FilesPage() {
                 <div className="mx-auto w-full max-w-content">
                     {showGitErrorBanner && activeTab === 'changes' ? (
                         <div className="border-b border-[var(--app-divider)] bg-amber-500/10 px-3 py-2 text-xs text-[var(--app-hint)]">
-                            {gitError}
+                            {gitErrorMessage}
                         </div>
                     ) : null}
                     {shouldSearch ? (
                         searchResults.isLoading ? (
-                            <FileListSkeleton label="Loading files…" />
+                            <FileListSkeleton label={t('loading.files')} />
                         ) : searchResults.error ? (
-                            <div className="p-6 text-sm text-[var(--app-hint)]">{searchResults.error}</div>
+                            <div className="p-6 text-sm text-[var(--app-hint)]">{searchErrorMessage}</div>
                         ) : searchResults.files.length === 0 ? (
                             <div className="p-6 text-sm text-[var(--app-hint)]">
-                                {searchQuery ? 'No files match your search.' : 'No files found in this project.'}
+                                {t('files.search.empty')}
                             </div>
                         ) : (
                             <div className="border-t border-[var(--app-divider)]">
@@ -426,13 +447,13 @@ export default function FilesPage() {
                             onOpenFile={(path) => handleOpenFile(path)}
                         />
                     ) : gitLoading ? (
-                        <FileListSkeleton label="Loading Git status…" />
+                        <FileListSkeleton label={t('loading.git')} />
                     ) : (
                         <div>
                             {gitStatus?.stagedFiles.length ? (
                                 <div>
                                     <div className="border-b border-[var(--app-divider)] bg-[var(--app-bg)] px-3 py-2 text-xs font-semibold text-[var(--app-git-staged-color)]">
-                                        Staged Changes ({gitStatus.stagedFiles.length})
+                                        {t('files.changes.section.staged', { n: gitStatus.stagedFiles.length })}
                                     </div>
                                     {gitStatus.stagedFiles.map((file, index) => (
                                         <GitFileRow
@@ -448,7 +469,7 @@ export default function FilesPage() {
                             {gitStatus?.unstagedFiles.length ? (
                                 <div>
                                     <div className="border-b border-[var(--app-divider)] bg-[var(--app-bg)] px-3 py-2 text-xs font-semibold text-[var(--app-git-unstaged-color)]">
-                                        Unstaged Changes ({gitStatus.unstagedFiles.length})
+                                        {t('files.changes.section.unstaged', { n: gitStatus.unstagedFiles.length })}
                                     </div>
                                     {gitStatus.unstagedFiles.map((file, index) => (
                                         <GitFileRow
@@ -463,13 +484,13 @@ export default function FilesPage() {
 
                             {!gitStatus ? (
                                 <div className="p-6 text-sm text-[var(--app-hint)]">
-                                    Git status unavailable. Use Directories to browse all files, or search.
+                                    {t('files.changes.empty.unavailable')}
                                 </div>
                             ) : null}
 
                             {gitStatus && gitStatus.stagedFiles.length === 0 && gitStatus.unstagedFiles.length === 0 ? (
                                 <div className="p-6 text-sm text-[var(--app-hint)]">
-                                    No changes detected. Use Directories to browse all files, or search.
+                                    {t('files.changes.empty.none')}
                                 </div>
                             ) : null}
                         </div>
