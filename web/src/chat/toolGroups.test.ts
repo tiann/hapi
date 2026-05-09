@@ -1,0 +1,187 @@
+import { describe, expect, it } from 'vitest'
+import type { ChatBlock, ToolCallBlock } from '@/chat/types'
+import { buildVisibleChatBlocks, getToolGroupActionKind, isEligibleForToolGrouping, isToolGroupBlock } from '@/chat/toolGroups'
+
+function makeToolBlock(
+    id: string,
+    name: string,
+    input: unknown = {},
+    overrides: Partial<ToolCallBlock> = {}
+): ToolCallBlock {
+    return {
+        kind: 'tool-call',
+        id,
+        localId: null,
+        createdAt: 1,
+        invokedAt: null,
+        tool: {
+            id,
+            name,
+            state: 'completed',
+            input,
+            createdAt: 1,
+            startedAt: 1,
+            completedAt: 2,
+            description: null,
+            result: null,
+            permission: undefined,
+        },
+        children: [],
+        ...overrides,
+    }
+}
+
+function makeTextBlock(id: string, text = 'note'): ChatBlock {
+    return {
+        kind: 'agent-text',
+        id,
+        localId: null,
+        createdAt: 1,
+        text,
+    }
+}
+
+describe('getToolGroupActionKind', () => {
+    it('classifies common execution tools', () => {
+        expect(getToolGroupActionKind(makeToolBlock('read-1', 'Read'))).toBe('read')
+        expect(getToolGroupActionKind(makeToolBlock('grep-1', 'Grep'))).toBe('search')
+        expect(getToolGroupActionKind(makeToolBlock('bash-1', 'Bash'))).toBe('command')
+        expect(getToolGroupActionKind(makeToolBlock('edit-1', 'Edit'))).toBe('mutation')
+    })
+})
+
+describe('isEligibleForToolGrouping', () => {
+    it('excludes interactive, subagent, and plan cards', () => {
+        expect(isEligibleForToolGrouping(makeToolBlock('read-1', 'Read'))).toBe(true)
+        expect(isEligibleForToolGrouping(makeToolBlock('task-1', 'Task'))).toBe(false)
+        expect(isEligibleForToolGrouping(makeToolBlock('plan-1', 'update_plan'))).toBe(false)
+        expect(isEligibleForToolGrouping(makeToolBlock('ask-1', 'AskUserQuestion'))).toBe(false)
+        expect(isEligibleForToolGrouping(makeToolBlock('perm-1', 'Bash', {}, {
+            tool: {
+                id: 'perm-1',
+                name: 'Bash',
+                state: 'pending',
+                input: {},
+                createdAt: 1,
+                startedAt: null,
+                completedAt: null,
+                description: null,
+                permission: {
+                    id: 'perm-1',
+                    status: 'pending'
+                }
+            }
+        }))).toBe(false)
+    })
+})
+
+describe('buildVisibleChatBlocks', () => {
+    it('groups contiguous eligible root tool cards', () => {
+        const visible = buildVisibleChatBlocks([
+            makeToolBlock('read-1', 'Read', { file_path: 'src/a.ts' }),
+            makeToolBlock('bash-1', 'Bash', { command: 'bun test' }),
+            makeToolBlock('edit-1', 'Edit', { file_path: 'src/a.ts' }),
+        ], { hasMoreMessages: false })
+
+        expect(visible).toHaveLength(1)
+        expect(isToolGroupBlock(visible[0])).toBe(true)
+        if (!isToolGroupBlock(visible[0])) {
+            throw new Error('expected tool group')
+        }
+        expect(visible[0].tools.map((tool) => tool.id)).toEqual(['read-1', 'bash-1', 'edit-1'])
+        expect(visible[0].defaultOpen).toBe(false)
+        expect(visible[0].summary.fileTargets).toEqual(['src/a.ts'])
+        expect(visible[0].summary.commandTargets).toEqual(['bun test'])
+    })
+
+    it('splits groups on assistant text boundaries', () => {
+        const visible = buildVisibleChatBlocks([
+            makeToolBlock('read-1', 'Read', { file_path: 'src/a.ts' }),
+            makeToolBlock('bash-1', 'Bash', { command: 'bun test' }),
+            makeTextBlock('text-1', 'located the issue'),
+            makeToolBlock('edit-1', 'Edit', { file_path: 'src/a.ts' }),
+            makeToolBlock('write-1', 'Write', { file_path: 'src/b.ts' }),
+        ], { hasMoreMessages: false })
+
+        expect(visible).toHaveLength(3)
+        expect(isToolGroupBlock(visible[0])).toBe(true)
+        expect(visible[1].kind).toBe('agent-text')
+        expect(isToolGroupBlock(visible[2])).toBe(true)
+    })
+
+    it('keeps single eligible tool cards standalone', () => {
+        const visible = buildVisibleChatBlocks([
+            makeToolBlock('read-1', 'Read', { file_path: 'src/a.ts' }),
+            makeTextBlock('text-1'),
+            makeToolBlock('edit-1', 'Edit', { file_path: 'src/b.ts' }),
+        ], { hasMoreMessages: false })
+
+        expect(visible).toHaveLength(3)
+        expect(visible.every((block) => !isToolGroupBlock(block))).toBe(true)
+    })
+
+    it('keeps interactive cards standalone and uses them as hard boundaries', () => {
+        const interactive = makeToolBlock('ask-1', 'request_user_input')
+        const visible = buildVisibleChatBlocks([
+            makeToolBlock('read-1', 'Read', { file_path: 'src/a.ts' }),
+            makeToolBlock('bash-1', 'Bash', { command: 'bun test' }),
+            interactive,
+            makeToolBlock('edit-1', 'Edit', { file_path: 'src/a.ts' }),
+            makeToolBlock('write-1', 'Write', { file_path: 'src/b.ts' }),
+        ], { hasMoreMessages: false })
+
+        expect(visible).toHaveLength(3)
+        expect(isToolGroupBlock(visible[0])).toBe(true)
+        expect(visible[1]).toBe(interactive)
+        expect(isToolGroupBlock(visible[2])).toBe(true)
+    })
+
+    it('marks only the oldest visible grouped run as needing older history', () => {
+        const visible = buildVisibleChatBlocks([
+            makeToolBlock('read-1', 'Read', { file_path: 'src/a.ts' }),
+            makeToolBlock('bash-1', 'Bash', { command: 'bun test' }),
+            makeTextBlock('text-1'),
+            makeToolBlock('edit-1', 'Edit', { file_path: 'src/a.ts' }),
+            makeToolBlock('write-1', 'Write', { file_path: 'src/b.ts' }),
+        ], { hasMoreMessages: true })
+
+        expect(isToolGroupBlock(visible[0]) && visible[0].needsOlderHistory).toBe(true)
+        expect(isToolGroupBlock(visible[2]) && visible[2].needsOlderHistory).toBe(false)
+    })
+
+    it('reuses a previous group id when the first tool changes after prepend', () => {
+        const previous = buildVisibleChatBlocks([
+            makeToolBlock('read-2', 'Read', { file_path: 'src/b.ts' }),
+            makeToolBlock('bash-2', 'Bash', { command: 'bun test' }),
+        ], { hasMoreMessages: true })
+
+        const next = buildVisibleChatBlocks([
+            makeToolBlock('read-1', 'Read', { file_path: 'src/a.ts' }),
+            makeToolBlock('read-2', 'Read', { file_path: 'src/b.ts' }),
+            makeToolBlock('bash-2', 'Bash', { command: 'bun test' }),
+        ], {
+            hasMoreMessages: false,
+            previousGroups: previous.filter(isToolGroupBlock)
+        })
+
+        expect(isToolGroupBlock(previous[0]) && isToolGroupBlock(next[0]) && previous[0].id === next[0].id).toBe(true)
+    })
+
+    it('reuses a previous group id when the last tool changes after append', () => {
+        const previous = buildVisibleChatBlocks([
+            makeToolBlock('read-1', 'Read', { file_path: 'src/a.ts' }),
+            makeToolBlock('bash-1', 'Bash', { command: 'bun test' }),
+        ], { hasMoreMessages: false })
+
+        const next = buildVisibleChatBlocks([
+            makeToolBlock('read-1', 'Read', { file_path: 'src/a.ts' }),
+            makeToolBlock('bash-1', 'Bash', { command: 'bun test' }),
+            makeToolBlock('edit-1', 'Edit', { file_path: 'src/a.ts' }),
+        ], {
+            hasMoreMessages: false,
+            previousGroups: previous.filter(isToolGroupBlock)
+        })
+
+        expect(isToolGroupBlock(previous[0]) && isToolGroupBlock(next[0]) && previous[0].id === next[0].id).toBe(true)
+    })
+})

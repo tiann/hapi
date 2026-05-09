@@ -10,6 +10,9 @@ export type HappyChatContextValue = {
     disabled: boolean
     onRefresh: () => void
     onRetryMessage?: (localId: string) => void
+    hasMoreMessages: boolean
+    isLoadingMoreMessages: boolean
+    loadOlderMessagesPreservingScroll: () => Promise<boolean>
 }
 
 const HappyChatContext = createContext<HappyChatContextValue | null>(null)

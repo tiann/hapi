@@ -1,8 +1,10 @@
 import type { ToolCallMessagePartProps } from '@assistant-ui/react'
 import type { ChatBlock } from '@/chat/types'
 import type { ToolCallBlock } from '@/chat/types'
+import type { ToolGroupBlock } from '@/chat/toolGroups'
 import { isObject, safeStringify } from '@hapi/protocol'
 import { isSubagentToolName } from '@/chat/subagentTool'
+import { ToolGroupCard } from '@/components/ToolCard/ToolGroupCard'
 import { getEventPresentation } from '@/chat/presentation'
 import { CodeBlock } from '@/components/CodeBlock'
 import { MarkdownRenderer } from '@/components/MarkdownRenderer'
@@ -24,6 +26,14 @@ function isToolCallBlock(value: unknown): value is ToolCallBlock {
     if (!('input' in value.tool)) return false
     if (value.tool.description !== null && typeof value.tool.description !== 'string') return false
     if (value.tool.state !== 'pending' && value.tool.state !== 'running' && value.tool.state !== 'completed' && value.tool.state !== 'error') return false
+    return true
+}
+
+function isToolGroupBlock(value: unknown): value is ToolGroupBlock {
+    if (!isObject(value)) return false
+    if (value.kind !== 'tool-group') return false
+    if (typeof value.id !== 'string') return false
+    if (!Array.isArray(value.tools)) return false
     return true
 }
 
@@ -162,6 +172,17 @@ function HappyNestedBlockList(props: {
 export function HappyToolMessage(props: ToolCallMessagePartProps) {
     const ctx = useHappyChatContext()
     const artifact = props.artifact
+
+    if (isToolGroupBlock(artifact)) {
+        return (
+            <div className="py-1 min-w-0 max-w-full overflow-x-hidden">
+                <ToolGroupCard
+                    block={artifact}
+                    metadata={ctx.metadata}
+                />
+            </div>
+        )
+    }
 
     if (!isToolCallBlock(artifact)) {
         const argsText = typeof props.argsText === 'string' ? props.argsText.trim() : ''

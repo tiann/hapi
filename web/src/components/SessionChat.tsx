@@ -16,6 +16,7 @@ import { normalizeDecryptedMessage } from '@/chat/normalize'
 import { reduceChatBlocks } from '@/chat/reducer'
 import { reconcileChatBlocks } from '@/chat/reconcile'
 import { buildConversationOutline } from '@/chat/outline'
+import { buildVisibleChatBlocks, isToolGroupBlock, type ToolGroupBlock } from '@/chat/toolGroups'
 import { isQueuedForInvocation } from '@/lib/messages'
 import { HappyComposer } from '@/components/AssistantChat/HappyComposer'
 import { HappyThread } from '@/components/AssistantChat/HappyThread'
@@ -74,6 +75,7 @@ export function SessionChat(props: {
     const terminalSupported = isRemoteTerminalSupported(props.session.metadata)
     const normalizedCacheRef = useRef<Map<string, { source: DecryptedMessage; normalized: NormalizedMessage | null }>>(new Map())
     const blocksByIdRef = useRef<Map<string, ChatBlock>>(new Map())
+    const visibleGroupsRef = useRef<ToolGroupBlock[]>([])
     const [forceScrollToken, setForceScrollToken] = useState(0)
     const [outlineOpen, setOutlineOpen] = useState(false)
     const agentFlavor = props.session.metadata?.flavor ?? null
@@ -224,6 +226,7 @@ export function SessionChat(props: {
     useEffect(() => {
         normalizedCacheRef.current.clear()
         blocksByIdRef.current.clear()
+        visibleGroupsRef.current = []
         setOutlineOpen(false)
     }, [props.session.id])
 
@@ -241,6 +244,7 @@ export function SessionChat(props: {
         if (prevSessionIdRef.current !== null && prevSessionIdRef.current !== props.session.id) {
             normalizedCacheRef.current.clear()
             blocksByIdRef.current.clear()
+            visibleGroupsRef.current = []
         }
         prevSessionIdRef.current = props.session.id
 
@@ -278,6 +282,18 @@ export function SessionChat(props: {
     useEffect(() => {
         blocksByIdRef.current = reconciled.byId
     }, [reconciled.byId])
+
+    const visibleBlocks = useMemo(
+        () => buildVisibleChatBlocks(reconciled.blocks, {
+            hasMoreMessages: props.hasMoreMessages,
+            previousGroups: visibleGroupsRef.current
+        }),
+        [reconciled.blocks, props.hasMoreMessages]
+    )
+
+    useEffect(() => {
+        visibleGroupsRef.current = visibleBlocks.filter(isToolGroupBlock)
+    }, [visibleBlocks])
 
     const outlineItems = useMemo(
         () => buildConversationOutline(reconciled.blocks),
@@ -386,7 +402,7 @@ export function SessionChat(props: {
 
     const runtime = useHappyRuntime({
         session: props.session,
-        blocks: reconciled.blocks,
+        blocks: visibleBlocks,
         isSending: props.isSending,
         onSendMessage: handleSend,
         onAbort: handleAbort,
