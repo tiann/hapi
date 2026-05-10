@@ -73,6 +73,43 @@ describe('isEligibleForToolGrouping', () => {
             }
         }))).toBe(false)
     })
+
+    it('keeps completed permissioned execution cards eligible for grouping', () => {
+        expect(isEligibleForToolGrouping(makeToolBlock('approved-1', 'Bash', {}, {
+            tool: {
+                id: 'approved-1',
+                name: 'Bash',
+                state: 'completed',
+                input: {},
+                createdAt: 1,
+                startedAt: 1,
+                completedAt: 2,
+                description: null,
+                permission: {
+                    id: 'approved-1',
+                    status: 'approved'
+                }
+            }
+        }))).toBe(true)
+
+        expect(isEligibleForToolGrouping(makeToolBlock('denied-1', 'Edit', {}, {
+            tool: {
+                id: 'denied-1',
+                name: 'Edit',
+                state: 'error',
+                input: {},
+                createdAt: 1,
+                startedAt: 1,
+                completedAt: 2,
+                description: null,
+                permission: {
+                    id: 'denied-1',
+                    status: 'denied',
+                    reason: 'blocked'
+                }
+            }
+        }))).toBe(true)
+    })
 })
 
 describe('buildVisibleChatBlocks', () => {

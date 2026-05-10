@@ -186,7 +186,7 @@ function summarizeToolGroup(tools: ToolCallBlock[]): ToolGroupSummary {
 }
 
 function isInteractiveToolBlock(block: ToolCallBlock): boolean {
-    return Boolean(block.tool.permission)
+    return block.tool.permission?.status === 'pending'
         || isAskUserQuestionToolName(block.tool.name)
         || isRequestUserInputToolName(block.tool.name)
 }
