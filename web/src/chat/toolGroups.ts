@@ -63,6 +63,10 @@ const MILESTONE_TOOL_NAMES = new Set([
     'close_agent'
 ])
 
+const INTERACTIVE_TOOL_NAMES = new Set([
+    'CodexPermission'
+])
+
 function pushUnique(target: string[], value: string | null): void {
     if (!value) return
     if (target.includes(value)) return
@@ -186,7 +190,8 @@ function summarizeToolGroup(tools: ToolCallBlock[]): ToolGroupSummary {
 }
 
 function isInteractiveToolBlock(block: ToolCallBlock): boolean {
-    return block.tool.permission?.status === 'pending'
+    return INTERACTIVE_TOOL_NAMES.has(block.tool.name)
+        || block.tool.permission?.status === 'pending'
         || isAskUserQuestionToolName(block.tool.name)
         || isRequestUserInputToolName(block.tool.name)
 }

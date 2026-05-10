@@ -110,6 +110,25 @@ describe('isEligibleForToolGrouping', () => {
             }
         }))).toBe(true)
     })
+
+    it('keeps Codex permission milestones standalone after completion', () => {
+        expect(isEligibleForToolGrouping(makeToolBlock('codex-perm-1', 'CodexPermission', {}, {
+            tool: {
+                id: 'codex-perm-1',
+                name: 'CodexPermission',
+                state: 'completed',
+                input: { tool: 'shell_command' },
+                createdAt: 1,
+                startedAt: 1,
+                completedAt: 2,
+                description: null,
+                permission: {
+                    id: 'codex-perm-1',
+                    status: 'approved'
+                }
+            }
+        }))).toBe(false)
+    })
 })
 
 describe('buildVisibleChatBlocks', () => {
@@ -170,6 +189,39 @@ describe('buildVisibleChatBlocks', () => {
         expect(visible).toHaveLength(3)
         expect(isToolGroupBlock(visible[0])).toBe(true)
         expect(visible[1]).toBe(interactive)
+        expect(isToolGroupBlock(visible[2])).toBe(true)
+    })
+
+    it('keeps completed Codex permission cards as standalone grouping boundaries', () => {
+        const permission = makeToolBlock('perm-1', 'CodexPermission', { tool: 'shell_command' }, {
+            tool: {
+                id: 'perm-1',
+                name: 'CodexPermission',
+                state: 'completed',
+                input: { tool: 'shell_command' },
+                createdAt: 1,
+                startedAt: 1,
+                completedAt: 2,
+                description: null,
+                result: 'Approved',
+                permission: {
+                    id: 'perm-1',
+                    status: 'approved',
+                    decision: 'approved'
+                }
+            }
+        })
+        const visible = buildVisibleChatBlocks([
+            makeToolBlock('read-1', 'Read', { file_path: 'src/a.ts' }),
+            makeToolBlock('bash-1', 'Bash', { command: 'bun test' }),
+            permission,
+            makeToolBlock('edit-1', 'Edit', { file_path: 'src/a.ts' }),
+            makeToolBlock('write-1', 'Write', { file_path: 'src/b.ts' }),
+        ], { hasMoreMessages: false })
+
+        expect(visible).toHaveLength(3)
+        expect(isToolGroupBlock(visible[0])).toBe(true)
+        expect(visible[1]).toBe(permission)
         expect(isToolGroupBlock(visible[2])).toBe(true)
     })
 
