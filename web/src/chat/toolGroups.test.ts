@@ -238,7 +238,7 @@ describe('buildVisibleChatBlocks', () => {
         expect(isToolGroupBlock(visible[2]) && visible[2].needsOlderHistory).toBe(false)
     })
 
-    it('marks the first visible group for older history even when earlier blocks are non-tools', () => {
+    it('does not mark groups after leading non-tool blocks as needing older history', () => {
         const visible = buildVisibleChatBlocks([
             makeTextBlock('text-1', 'prepended assistant note'),
             makeToolBlock('read-1', 'Read', { file_path: 'src/a.ts' }),
@@ -249,8 +249,49 @@ describe('buildVisibleChatBlocks', () => {
         ], { hasMoreMessages: true })
 
         expect(visible[0].kind).toBe('agent-text')
-        expect(isToolGroupBlock(visible[1]) && visible[1].needsOlderHistory).toBe(true)
+        expect(isToolGroupBlock(visible[1]) && visible[1].needsOlderHistory).toBe(false)
         expect(isToolGroupBlock(visible[3]) && visible[3].needsOlderHistory).toBe(false)
+    })
+
+    it('does not mark groups after a leading standalone tool as needing older history', () => {
+        const visible = buildVisibleChatBlocks([
+            makeToolBlock('single-1', 'Read', { file_path: 'src/solo.ts' }),
+            makeTextBlock('text-1', 'boundary'),
+            makeToolBlock('read-1', 'Read', { file_path: 'src/a.ts' }),
+            makeToolBlock('bash-1', 'Bash', { command: 'bun test' }),
+        ], { hasMoreMessages: true })
+
+        expect(visible[0].kind).toBe('tool-call')
+        expect(visible[1].kind).toBe('agent-text')
+        expect(isToolGroupBlock(visible[2]) && visible[2].needsOlderHistory).toBe(false)
+    })
+
+    it('does not mark groups after a standalone permission boundary as needing older history', () => {
+        const permission = makeToolBlock('perm-1', 'CodexPermission', { tool: 'shell_command' }, {
+            tool: {
+                id: 'perm-1',
+                name: 'CodexPermission',
+                state: 'completed',
+                input: { tool: 'shell_command' },
+                createdAt: 1,
+                startedAt: 1,
+                completedAt: 2,
+                description: null,
+                result: 'Approved',
+                permission: {
+                    id: 'perm-1',
+                    status: 'approved'
+                }
+            }
+        })
+        const visible = buildVisibleChatBlocks([
+            permission,
+            makeToolBlock('read-1', 'Read', { file_path: 'src/a.ts' }),
+            makeToolBlock('bash-1', 'Bash', { command: 'bun test' }),
+        ], { hasMoreMessages: true })
+
+        expect(visible[0]).toBe(permission)
+        expect(isToolGroupBlock(visible[1]) && visible[1].needsOlderHistory).toBe(false)
     })
 
     it('reuses a previous group id when the first tool changes after prepend', () => {
