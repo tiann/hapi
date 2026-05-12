@@ -1,4 +1,4 @@
-import { useCallback, useState, type KeyboardEvent, type MouseEvent } from 'react'
+import { useCallback, useState, type KeyboardEvent, type MouseEvent, type PropsWithChildren } from 'react'
 import { MessagePrimitive, useAssistantState } from '@assistant-ui/react'
 import { MarkdownText } from '@/components/assistant-ui/markdown-text'
 import { Reasoning, ReasoningGroup } from '@/components/assistant-ui/reasoning'
@@ -16,10 +16,18 @@ const TOOL_COMPONENTS = {
     Fallback: HappyToolMessage
 } as const
 
+function PassthroughToolGroup({ children }: PropsWithChildren<{ startIndex: number; endIndex: number }>) {
+    return <>{children}</>
+}
+
 const MESSAGE_PART_COMPONENTS = {
     Text: MarkdownText,
     Reasoning: Reasoning,
     ReasoningGroup: ReasoningGroup,
+    // assistant-ui groups consecutive tool-call parts structurally, but HAPI
+    // intentionally renders each grouped part through HappyToolMessage instead
+    // of introducing a synthetic group artifact/card component.
+    ToolGroup: PassthroughToolGroup,
     tools: TOOL_COMPONENTS
 } as const
 

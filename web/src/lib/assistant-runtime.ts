@@ -23,7 +23,7 @@ export type HappyChatMessageMetadata = {
     model?: string | null
 }
 
-function toThreadMessageLike(block: VisibleChatBlock): ThreadMessageLike {
+export function toThreadMessageLike(block: VisibleChatBlock): ThreadMessageLike {
     if (block.kind === 'user-text') {
         const messageId = `user:${block.id}`
         return {
@@ -158,6 +158,10 @@ function toThreadMessageLike(block: VisibleChatBlock): ThreadMessageLike {
             argsText: inputText,
             result: toolBlock.tool.result,
             isError: toolBlock.tool.state === 'error',
+            // Preserve the original ToolCallBlock on each part. assistant-ui may
+            // group consecutive tool-call parts into one assistant message, but it
+            // keeps per-part artifacts instead of synthesizing a "tool-group"
+            // artifact for the grouped wrapper.
             artifact: toolBlock
         }],
         metadata: {

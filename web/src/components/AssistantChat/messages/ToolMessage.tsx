@@ -191,6 +191,10 @@ export function HappyToolMessage(props: ToolCallMessagePartProps) {
     }
 
     if (!isToolCallBlock(artifact)) {
+        // Raw fallback for non-HAPI artifacts or missing artifacts. Grouped
+        // consecutive tool uses still render one HappyToolMessage per tool-call
+        // part; assistant-ui does not replace them with a synthetic group
+        // artifact before this component runs.
         const argsText = typeof props.argsText === 'string' ? props.argsText.trim() : ''
         const hasArgsText = argsText.length > 0
         const hasResult = props.result !== undefined
