@@ -2,9 +2,20 @@ import { describe, expect, it } from 'vitest'
 import type { ToolCallMessagePart } from '@assistant-ui/react'
 import type { ChatBlock, ToolCallBlock } from '@/chat/types'
 import { toThreadMessageLike } from '@/lib/assistant-runtime'
-// Use the published dist helper so this test exercises the same assistant-ui
-// message joining logic that HAPI consumes at runtime.
-import { convertExternalMessages } from '../../node_modules/@assistant-ui/react/dist/legacy-runtime/runtime-cores/external-store/external-message-converter.js'
+
+// Resolve from the published package entry instead of assuming a specific
+// workspace node_modules layout.
+const assistantEntryUrl = import.meta.resolve('@assistant-ui/react')
+const { convertExternalMessages } = await import(
+    new URL('./legacy-runtime/runtime-cores/external-store/external-message-converter.js', assistantEntryUrl).href
+) as {
+    convertExternalMessages: <T extends object>(
+        messages: T[],
+        callback: (message: T, metadata: unknown) => unknown,
+        isRunning: boolean,
+        metadata: Record<string, unknown>
+    ) => Array<{ content: unknown[] }>
+}
 
 function makeToolBlock(id: string, toolName: string): ToolCallBlock {
     return {
@@ -27,8 +38,13 @@ function makeToolBlock(id: string, toolName: string): ToolCallBlock {
     }
 }
 
-function getToolParts(message: ReturnType<typeof convertExternalMessages<ChatBlock>>[number]): ToolCallMessagePart[] {
-    return message.content.filter((part): part is ToolCallMessagePart => part.type === 'tool-call')
+function getToolParts(message: { content: unknown[] }): ToolCallMessagePart[] {
+    return message.content.filter((part: unknown): part is ToolCallMessagePart => (
+        typeof part === 'object'
+        && part !== null
+        && 'type' in part
+        && (part as { type?: unknown }).type === 'tool-call'
+    ))
 }
 
 describe('assistant runtime tool-call conversion', () => {
