@@ -276,10 +276,11 @@ class OpencodeStorageScanner {
         }
 
         try {
+            const isWindows = process.platform === 'win32';
             const query = this.db.prepare(`
                 SELECT id, directory, time_created
                 FROM session
-                WHERE directory = ?
+                WHERE ${isWindows ? 'LOWER(directory)' : 'directory'} = ?
                 ORDER BY time_created DESC
                 LIMIT 10
             `);
