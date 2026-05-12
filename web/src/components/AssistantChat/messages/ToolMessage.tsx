@@ -13,6 +13,7 @@ import { ToolCard } from '@/components/ToolCard/ToolCard'
 import { useHappyChatContext } from '@/components/AssistantChat/context'
 import { CliOutputBlock } from '@/components/CliOutputBlock'
 import { UserBubbleContent, getUserBubbleClassName, shouldShowMessageStatus } from '@/components/AssistantChat/messages/user-bubble'
+import { cn } from '@/lib/utils'
 
 function isToolCallBlock(value: unknown): value is ToolCallBlock {
     if (!isObject(value)) return false
@@ -54,6 +55,10 @@ function splitTaskChildren(block: ToolCallBlock): { pending: ChatBlock[]; rest: 
     }
 
     return { pending, rest }
+}
+
+function hasAggregateToolTitleSuffix(toolName: string): boolean {
+    return /(?:\s+(?:等\s*\+\d+|\+\d+\s+more|\+\d+|\(\+\d+\)))$/i.test(toolName.trim())
 }
 
 function HappyNestedBlockList(props: {
@@ -190,10 +195,14 @@ export function HappyToolMessage(props: ToolCallMessagePartProps) {
         const hasArgsText = argsText.length > 0
         const hasResult = props.result !== undefined
         const resultText = hasResult ? safeStringify(props.result) : ''
+        const usesAggregateSurface = hasAggregateToolTitleSuffix(props.toolName)
 
         return (
             <div className="py-1 min-w-0 max-w-full overflow-x-hidden">
-                <div className="overflow-hidden rounded-[20px] bg-[var(--app-tool-card-bg)] p-3 shadow-none">
+                <div className={cn(
+                    'overflow-hidden rounded-[20px] p-3 shadow-none',
+                    usesAggregateSurface ? 'bg-[var(--app-tool-card-aggregate-bg)]' : 'bg-[var(--app-tool-card-bg)]'
+                )}>
                     <div className="flex items-center gap-2 text-xs">
                         <div className="font-mono text-[var(--app-tool-card-accent)]">
                             Tool: {props.toolName}
