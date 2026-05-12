@@ -102,6 +102,26 @@ export function HappyAssistantMessage() {
         )
     }
 
+    if (toolOnly) {
+        return (
+            <MessagePrimitive.Root
+                id={getConversationMessageAnchorId(messageId)}
+                className={`${rootClass} ${copyText ? 'group/msg' : ''} scroll-mt-4`}
+            >
+                <MessagePrimitive.Content components={MESSAGE_PART_COMPONENTS} />
+                {showMetadata && (
+                    <MessageMetadata
+                        invokedAt={invokedAt}
+                        durationMs={durationMs}
+                        usage={usage}
+                        model={messageModel ?? null}
+                        className="mt-1"
+                    />
+                )}
+            </MessagePrimitive.Root>
+        )
+    }
+
     return (
         <MessagePrimitive.Root
             id={getConversationMessageAnchorId(messageId)}

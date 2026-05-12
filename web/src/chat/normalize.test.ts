@@ -485,4 +485,89 @@ describe('normalizeDecryptedMessage', () => {
         })
     })
 
+    it('normalizes Codex scoped snake_case usage fields', () => {
+        const message = makeMessage({
+            role: 'agent',
+            content: {
+                type: 'codex',
+                data: {
+                    type: 'token_count',
+                    thread_id: 'child-thread',
+                    scope: { role: 'child' },
+                    info: {
+                        last_token_usage: {
+                            input_tokens: 321,
+                            output_tokens: 12,
+                            cached_input_tokens: 100
+                        },
+                        model_context_window: 258_400
+                    }
+                }
+            }
+        })
+
+        const normalized = normalizeDecryptedMessage(message)
+
+        expect(normalized).toMatchObject({
+            role: 'event',
+            usage: {
+                input_tokens: 321,
+                output_tokens: 12,
+                cache_read_input_tokens: 100,
+                context_tokens: 321,
+                context_window: 258400,
+                thread_id: 'child-thread',
+                scope_role: 'child'
+            }
+        })
+    })
+
+    it('normalizes Codex context_compacted as a compact event', () => {
+        const message = makeMessage({
+            role: 'agent',
+            content: {
+                type: 'codex',
+                data: {
+                    type: 'context_compacted',
+                    trigger: 'auto',
+                    pre_tokens: 1234
+                }
+            }
+        })
+
+        expect(normalizeDecryptedMessage(message)).toMatchObject({
+            role: 'event',
+            content: {
+                type: 'compact',
+                trigger: 'auto',
+                preTokens: 1234
+            }
+        })
+    })
+
+    it('normalizes Codex agent-run events for timeline aggregation', () => {
+        const message = makeMessage({
+            role: 'agent',
+            content: {
+                type: 'codex',
+                data: {
+                    type: 'agent-run-start',
+                    cardId: 'spawn-1',
+                    input: { message: 'inspect files' },
+                    status: 'starting'
+                }
+            }
+        })
+
+        expect(normalizeDecryptedMessage(message)).toMatchObject({
+            role: 'event',
+            content: {
+                type: 'agent-run-start',
+                cardId: 'spawn-1',
+                input: { message: 'inspect files' },
+                status: 'starting'
+            }
+        })
+    })
+
 })

@@ -1,9 +1,18 @@
 import { describe, expect, it } from 'vitest';
-import { buildThreadStartParams, buildTurnStartParams } from './appServerConfig';
+import type { EnhancedMode } from '../loop';
+import {
+    buildThreadStartParams,
+    buildTurnStartParams,
+    codexCollaborationSpawnAgentInstructions,
+    supportsReasoningSummary
+} from './appServerConfig';
 import { codexSystemPrompt } from './systemPrompt';
 
 describe('appServerConfig', () => {
     const mcpServers = { hapi: { command: 'node', args: ['mcp'] } };
+    const withCollaborationInstructions = (developerInstructions: string): string => {
+        return `${developerInstructions}\n\n${codexCollaborationSpawnAgentInstructions}`;
+    };
 
     it('applies CLI overrides when permission mode is default', () => {
         const params = buildThreadStartParams({
@@ -116,16 +125,98 @@ describe('appServerConfig', () => {
         expect(params.approvalPolicy).toBe('never');
         expect(params.sandboxPolicy).toEqual({ type: 'readOnly' });
         expect(params.effort).toBe('high');
-        expect(params.summary).toBe('detailed');
+        expect(params.summary).toBeUndefined();
         expect(params.collaborationMode).toEqual({
             mode: 'default',
             settings: {
                 model: 'o3',
-                reasoning_effort: 'high',
-                developer_instructions: codexSystemPrompt
+                developer_instructions: withCollaborationInstructions(codexSystemPrompt)
             }
         });
         expect(params.model).toBeUndefined();
+    });
+
+    it('omits reasoning summary for models that do not support it', () => {
+        const params = buildTurnStartParams({
+            threadId: 'thread-1',
+            message: 'hello',
+            cwd: '/workspace/project',
+            mode: {
+                permissionMode: 'default',
+                model: 'gpt-5.3-codex-spark',
+                modelReasoningEffort: 'high',
+                collaborationMode: 'default'
+            }
+        });
+
+        expect(params.effort).toBe('high');
+        expect(params.summary).toBeUndefined();
+        expect(params.collaborationMode).toEqual({
+            mode: 'default',
+            settings: {
+                model: 'gpt-5.3-codex-spark',
+                developer_instructions: withCollaborationInstructions(codexSystemPrompt)
+            }
+        });
+    });
+
+    it('detects namespaced models that do not support reasoning summary', () => {
+        const params = buildTurnStartParams({
+            threadId: 'thread-1',
+            message: 'hello',
+            cwd: '/workspace/project',
+            mode: {
+                permissionMode: 'default',
+                model: 'codex/gpt-5.3-codex-spark',
+                modelReasoningEffort: 'high',
+                collaborationMode: 'default'
+            }
+        });
+
+        expect(params.effort).toBe('high');
+        expect(params.summary).toBeUndefined();
+    });
+
+    it('normalizes reasoning summary model support checks', () => {
+        expect(supportsReasoningSummary(' Codex/GPT-5.3-CODEX-SPARK ')).toBe(false);
+        expect(supportsReasoningSummary('gpt-5.5')).toBe(true);
+        expect(supportsReasoningSummary(undefined)).toBe(true);
+    });
+
+    it('omits reasoning summary for non-collaboration turns on unsupported models', () => {
+        const params = buildTurnStartParams({
+            threadId: 'thread-1',
+            message: 'hello',
+            cwd: '/workspace/project',
+            mode: {
+                permissionMode: 'default',
+                model: 'gpt-5.3-codex-spark',
+                modelReasoningEffort: 'high'
+            } as EnhancedMode
+        });
+
+        expect(params.effort).toBe('high');
+        expect(params.summary).toBeUndefined();
+        expect(params.model).toBe('gpt-5.3-codex-spark');
+        expect(params.collaborationMode).toBeUndefined();
+    });
+
+    it('keeps reasoning summary for non-collaboration turns on supported models', () => {
+        const params = buildTurnStartParams({
+            threadId: 'thread-1',
+            message: 'hello',
+            cwd: '/workspace/project',
+            mode: {
+                permissionMode: 'default',
+                model: 'o3',
+                modelReasoningEffort: 'high'
+            } as EnhancedMode
+        });
+
+        expect(params.effort).toBe('high');
+        expect(params.summary).toBe('detailed');
+        expect(params.model).toBe('o3');
+        expect(params.collaborationMode).toBeUndefined();
     });
 
     it('puts collaboration mode in turn params with model settings', () => {
@@ -145,8 +236,7 @@ describe('appServerConfig', () => {
             mode: 'plan',
             settings: {
                 model: 'o3',
-                reasoning_effort: 'high',
-                developer_instructions: codexSystemPrompt
+                developer_instructions: withCollaborationInstructions(codexSystemPrompt)
             }
         });
         expect(params.model).toBeUndefined();
@@ -165,9 +255,24 @@ describe('appServerConfig', () => {
             mode: 'plan',
             settings: {
                 model: 'o3',
-                developer_instructions: `${codexSystemPrompt}\n\nOnly respond in Chinese.`
+                developer_instructions: withCollaborationInstructions(`${codexSystemPrompt}\n\nOnly respond in Chinese.`)
             }
         });
+    });
+
+    it('injects spawn_agent argument rules into collaboration mode instructions', () => {
+        const params = buildTurnStartParams({
+            threadId: 'thread-1',
+            message: 'hello',
+            cwd: '/workspace/project',
+            mode: { permissionMode: 'default', model: 'o3', collaborationMode: 'default' }
+        });
+
+        const instructions = params.collaborationMode?.settings.developer_instructions;
+        expect(instructions).toContain('If you call spawn_agent with fork_context: true');
+        expect(instructions).toContain('do not set agent_type, model, or reasoning_effort');
+        expect(instructions).toContain('omit fork_context or set fork_context: false');
+        expect(instructions).toContain('Do not rely on parent turn reasoning settings for spawned agents');
     });
 
     it('rejects collaboration mode payloads without a resolved model', () => {
@@ -194,7 +299,7 @@ describe('appServerConfig', () => {
             mode: 'default',
             settings: {
                 model: 'o3',
-                developer_instructions: codexSystemPrompt
+                developer_instructions: withCollaborationInstructions(codexSystemPrompt)
             }
         });
     });
@@ -214,7 +319,7 @@ describe('appServerConfig', () => {
             mode: 'default',
             settings: {
                 model: 'o3',
-                developer_instructions: codexSystemPrompt
+                developer_instructions: withCollaborationInstructions(codexSystemPrompt)
             }
         });
     });
@@ -233,7 +338,7 @@ describe('appServerConfig', () => {
             mode: 'default',
             settings: {
                 model: 'gpt-5',
-                developer_instructions: codexSystemPrompt
+                developer_instructions: withCollaborationInstructions(codexSystemPrompt)
             }
         });
         expect(params.model).toBeUndefined();

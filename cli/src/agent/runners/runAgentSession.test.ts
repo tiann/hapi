@@ -17,6 +17,7 @@ vi.mock('@/agent/sessionFactory', () => ({
             onUserMessage: vi.fn((handler) => {
                 harness.userMessageHandler = handler
             }),
+            onCancelQueuedMessage: vi.fn(),
             keepAlive: vi.fn(),
             sendSessionEvent: vi.fn(),
             sendAgentMessage: vi.fn(),

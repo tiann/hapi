@@ -38,7 +38,7 @@ export type SessionBootstrapResult = {
     workingDirectory: string
 }
 
-export function buildMachineMetadata(options?: { workspaceRoot?: string }): MachineMetadata {
+export function buildMachineMetadata(options?: { workspaceRoots?: string[] }): MachineMetadata {
     return {
         host: process.env.HAPI_HOSTNAME || os.hostname(),
         platform: os.platform(),
@@ -46,7 +46,7 @@ export function buildMachineMetadata(options?: { workspaceRoot?: string }): Mach
         homeDir: os.homedir(),
         happyHomeDir: configuration.happyHomeDir,
         happyLibDir: runtimePath(),
-        workspaceRoot: options?.workspaceRoot
+        workspaceRoots: options?.workspaceRoots
     }
 }
 

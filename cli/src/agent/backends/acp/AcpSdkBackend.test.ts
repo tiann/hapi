@@ -214,7 +214,7 @@ describe('AcpSdkBackend', () => {
     });
 
     it('emits turn_complete after trailing tool updates from the same turn', async () => {
-        backendStatics.UPDATE_QUIET_PERIOD_MS = 8;
+        backendStatics.UPDATE_QUIET_PERIOD_MS = 25;
         backendStatics.UPDATE_DRAIN_TIMEOUT_MS = 200;
         backendStatics.PRE_PROMPT_UPDATE_QUIET_PERIOD_MS = 1;
         backendStatics.PRE_PROMPT_UPDATE_DRAIN_TIMEOUT_MS = 50;
@@ -254,7 +254,7 @@ describe('AcpSdkBackend', () => {
                             status: 'in_progress'
                         }
                     });
-                }, 3);
+                }, 1);
 
                 setTimeout(() => {
                     backendInternal.handleSessionUpdate({
@@ -266,7 +266,7 @@ describe('AcpSdkBackend', () => {
                             rawOutput: { ok: true }
                         }
                     });
-                }, 6);
+                }, 2);
 
                 return { stopReason: 'end_turn' };
             },

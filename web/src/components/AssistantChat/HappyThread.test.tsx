@@ -6,6 +6,7 @@ import {
     ConversationOutlinePanel,
     captureScrollAnchor,
     getScrollIntent,
+    locateOutlineTargetMessage,
     restoreScrollAnchor,
     shouldCancelInitialScrollSettling,
 } from '@/components/AssistantChat/HappyThread'
@@ -181,5 +182,48 @@ describe('scroll anchor helpers', () => {
         expect(viewport.scrollTop).toBe(250)
 
         viewport.remove()
+    })
+})
+
+describe('outline target loading', () => {
+    it('loads older messages through the scroll-preserving wrapper until the target appears', async () => {
+        const loadOlderPreservingScroll = vi.fn<() => Promise<boolean>>()
+        let loadCount = 0
+        loadOlderPreservingScroll.mockImplementation(async () => {
+            loadCount += 1
+            return true
+        })
+
+        const findTarget = vi.fn((anchorId: string) => {
+            if (anchorId !== 'hapi-message-user:target') {
+                return null
+            }
+            return loadCount >= 2 ? document.createElement('div') : null
+        })
+
+        const target = await locateOutlineTargetMessage({
+            targetMessageId: 'user:target',
+            findTarget,
+            hasMoreMessages: () => loadCount < 2,
+            loadOlderPreservingScroll
+        })
+
+        expect(target).toBeInstanceOf(HTMLElement)
+        expect(loadOlderPreservingScroll).toHaveBeenCalledTimes(2)
+        expect(findTarget).toHaveBeenCalledWith('hapi-message-user:target')
+    })
+
+    it('stops when history is exhausted before the target is loaded', async () => {
+        const loadOlderPreservingScroll = vi.fn(async () => false)
+
+        const target = await locateOutlineTargetMessage({
+            targetMessageId: 'user:missing',
+            findTarget: () => null,
+            hasMoreMessages: () => true,
+            loadOlderPreservingScroll
+        })
+
+        expect(target).toBeNull()
+        expect(loadOlderPreservingScroll).toHaveBeenCalledTimes(1)
     })
 })

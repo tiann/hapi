@@ -1400,4 +1400,316 @@ describe('AcpMessageHandler', () => {
             });
         }
     });
+
+    describe('kind=edit input hoist — Gemini write_file / replace → Claude-shaped input', () => {
+        // Gemini ACP kind=edit tools carry the diff in the completed tool_call_update
+        // content block rather than in rawInput. Map to canonical Claude shapes:
+        //   - _meta.kind='add'    → toolName 'Write' + input {file_path, content: newText}
+        //   - _meta.kind='modify' → toolName 'Edit'  + input {file_path, old_string, new_string}
+        //   - _meta absent (race/inflight) → fallback: toolName unchanged, input {file_path: locations[0].path}
+
+        function getToolCall(
+            messages: AgentMessage[],
+            id: string
+        ): Extract<AgentMessage, { type: 'tool_call' }> {
+            const tc = messages.find(
+                (m): m is Extract<AgentMessage, { type: 'tool_call' }> =>
+                    m.type === 'tool_call' && m.id === id
+            );
+            if (!tc) throw new Error(`Missing tool_call for ${id}`);
+            return tc;
+        }
+
+        it('hoists add diff into Write-shaped input and sets toolName to Write', () => {
+            // write_file: kind=edit, _meta.kind=add, oldText='', newText='...'
+            // Expected: toolName=Write, input={file_path, content: newText}
+            const messages: AgentMessage[] = [];
+            const handler = new AcpMessageHandler((m) => messages.push(m));
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+                toolCallId: 'edit-add-1',
+                title: 'Writing to foo.txt',
+                kind: 'edit',
+                locations: [{ path: '/abs/foo.txt' }],
+                status: 'in_progress'
+            });
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCallUpdate,
+                toolCallId: 'edit-add-1',
+                title: 'Writing to foo.txt',
+                kind: 'edit',
+                locations: [{ path: '/abs/foo.txt' }],
+                status: 'completed',
+                content: [{
+                    type: 'diff',
+                    path: '/abs/foo.txt',
+                    oldText: '',
+                    newText: 'line one\nline two\n',
+                    _meta: { kind: 'add' }
+                }]
+            });
+
+            // Last tool_call with this id should have Write name and content input
+            const toolCalls = messages.filter(
+                (m): m is Extract<AgentMessage, { type: 'tool_call' }> =>
+                    m.type === 'tool_call' && m.id === 'edit-add-1'
+            );
+            const last = toolCalls[toolCalls.length - 1]!;
+            expect(last.name).toBe('Write');
+            expect(last.input).toEqual({
+                file_path: '/abs/foo.txt',
+                content: 'line one\nline two\n'
+            });
+        });
+
+        it('hoists modify diff into Edit-shaped input and sets toolName to Edit', () => {
+            // replace: kind=edit, _meta.kind=modify
+            // Expected: toolName=Edit, input={file_path, old_string, new_string}
+            const messages: AgentMessage[] = [];
+            const handler = new AcpMessageHandler((m) => messages.push(m));
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+                toolCallId: 'edit-mod-1',
+                title: 'foo.txt: old => new',
+                kind: 'edit',
+                locations: [{ path: '/abs/foo.txt' }],
+                status: 'in_progress'
+            });
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCallUpdate,
+                toolCallId: 'edit-mod-1',
+                title: 'foo.txt: old => new',
+                kind: 'edit',
+                locations: [{ path: '/abs/foo.txt' }],
+                status: 'completed',
+                content: [{
+                    type: 'diff',
+                    path: '/abs/foo.txt',
+                    oldText: 'old content\n',
+                    newText: 'new content\n',
+                    _meta: { kind: 'modify' }
+                }]
+            });
+
+            const toolCalls = messages.filter(
+                (m): m is Extract<AgentMessage, { type: 'tool_call' }> =>
+                    m.type === 'tool_call' && m.id === 'edit-mod-1'
+            );
+            const last = toolCalls[toolCalls.length - 1]!;
+            expect(last.name).toBe('Edit');
+            expect(last.input).toEqual({
+                file_path: '/abs/foo.txt',
+                old_string: 'old content\n',
+                new_string: 'new content\n'
+            });
+        });
+
+        it('sets {file_path} input from locations on initial in_progress event', () => {
+            // Initial tool_call without content → fallback {file_path} only.
+            // This covers the "race / inflight" case where no diff block has
+            // arrived yet; hoist only fires on the completed update.
+            const messages: AgentMessage[] = [];
+            const handler = new AcpMessageHandler((m) => messages.push(m));
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+                toolCallId: 'edit-race-1',
+                title: 'Writing to foo.txt',
+                kind: 'edit',
+                locations: [{ path: '/abs/foo.txt' }],
+                status: 'in_progress'
+            });
+
+            const tc = getToolCall(messages, 'edit-race-1');
+            // Must still have a file_path (from locations) but no content/old_string
+            expect(tc.input).toEqual({ file_path: '/abs/foo.txt' });
+        });
+
+        it('emits hoisted tool_call { status: completed } before tool_result', () => {
+            // Finding 3: verify emit order — reducerTools.ts merges tool_call updates
+            // by id, so the hoisted Write/Edit name+input must arrive before the
+            // tool_result that signals completion to the UI.
+            const messages: AgentMessage[] = [];
+            const handler = new AcpMessageHandler((m) => messages.push(m));
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+                toolCallId: 'edit-order-1',
+                title: 'Writing to foo.txt',
+                kind: 'edit',
+                locations: [{ path: '/abs/foo.txt' }],
+                status: 'in_progress'
+            });
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCallUpdate,
+                toolCallId: 'edit-order-1',
+                title: 'Writing to foo.txt',
+                kind: 'edit',
+                locations: [{ path: '/abs/foo.txt' }],
+                status: 'completed',
+                content: [{
+                    type: 'diff',
+                    path: '/abs/foo.txt',
+                    oldText: '',
+                    newText: 'new content\n',
+                    _meta: { kind: 'add' }
+                }]
+            });
+
+            type ToolMsg = Extract<AgentMessage, { type: 'tool_call' | 'tool_result' }>;
+            const relevant = messages.filter(
+                (m): m is ToolMsg =>
+                    (m.type === 'tool_call' || m.type === 'tool_result') &&
+                    (m as ToolMsg).id === 'edit-order-1'
+            );
+            // in_progress tool_call → completed tool_call (hoisted) → tool_result
+            expect(relevant).toHaveLength(3);
+            expect(relevant[0]!.type).toBe('tool_call');
+            expect((relevant[0] as Extract<AgentMessage, { type: 'tool_call' }>).status).toBe('in_progress');
+            expect(relevant[1]!.type).toBe('tool_call');
+            expect((relevant[1] as Extract<AgentMessage, { type: 'tool_call' }>).status).toBe('completed');
+            expect(relevant[2]!.type).toBe('tool_result');
+        });
+
+        it('falls back gracefully when content array is present but _meta.kind is absent', () => {
+            // Unknown _meta.kind → keep existing fallback, no crash
+            const messages: AgentMessage[] = [];
+            const handler = new AcpMessageHandler((m) => messages.push(m));
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+                toolCallId: 'edit-nometa-1',
+                title: 'Writing to foo.txt',
+                kind: 'edit',
+                locations: [{ path: '/abs/foo.txt' }],
+                status: 'in_progress'
+            });
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCallUpdate,
+                toolCallId: 'edit-nometa-1',
+                title: 'Writing to foo.txt',
+                kind: 'edit',
+                locations: [{ path: '/abs/foo.txt' }],
+                status: 'completed',
+                content: [{
+                    type: 'diff',
+                    path: '/abs/foo.txt',
+                    oldText: '',
+                    newText: 'new content\n'
+                    // _meta absent
+                }]
+            });
+
+            const toolCalls = messages.filter(
+                (m): m is Extract<AgentMessage, { type: 'tool_call' }> =>
+                    m.type === 'tool_call' && m.id === 'edit-nometa-1'
+            );
+            const last = toolCalls[toolCalls.length - 1]!;
+            // hoistDiffContentIntoInput returns null when _meta.kind is absent,
+            // so no re-emit occurs. The last tool_call still carries the initial
+            // {file_path} fallback derived from locations at the in_progress event.
+            expect(last.input).toEqual({ file_path: '/abs/foo.txt' });
+        });
+
+        it('does not hoist or re-emit tool_call when status is failed', () => {
+            // Finding 2: hoist must only run on completed, never on failed.
+            // A failed write_file must not promote the name to Write or overwrite input.
+            const messages: AgentMessage[] = [];
+            const handler = new AcpMessageHandler((m) => messages.push(m));
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+                toolCallId: 'edit-fail-1',
+                title: 'Writing to foo.txt',
+                kind: 'edit',
+                locations: [{ path: '/abs/foo.txt' }],
+                status: 'in_progress'
+            });
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCallUpdate,
+                toolCallId: 'edit-fail-1',
+                title: 'Writing to foo.txt',
+                kind: 'edit',
+                locations: [{ path: '/abs/foo.txt' }],
+                status: 'failed',
+                content: [{
+                    type: 'diff',
+                    path: '/abs/foo.txt',
+                    oldText: '',
+                    newText: 'line one\n',
+                    _meta: { kind: 'add' }
+                }]
+            });
+
+            const toolCalls = messages.filter(
+                (m): m is Extract<AgentMessage, { type: 'tool_call' }> =>
+                    m.type === 'tool_call' && m.id === 'edit-fail-1'
+            );
+            // Only the initial in_progress tool_call; hoist must not re-emit on failure
+            expect(toolCalls).toHaveLength(1);
+            expect(toolCalls[0]!.name).not.toBe('Write');
+            expect(toolCalls[0]!.input).toEqual({ file_path: '/abs/foo.txt' });
+        });
+
+        it('replays write_file fixture and produces Write-shaped tool_call input', () => {
+            // Integration: full fixture replay must produce Write with {file_path, content}
+            const fixtureDir = new URL('./__fixtures__', import.meta.url).pathname;
+            // eslint-disable-next-line @typescript-eslint/no-require-imports
+            const data = require(`${fixtureDir}/gemini-3-flash-preview-write-file.json`) as {
+                updates: unknown[];
+            };
+
+            const messages: AgentMessage[] = [];
+            const handler = new AcpMessageHandler((m) => messages.push(m));
+            for (const u of data.updates) handler.handleUpdate(u);
+            handler.flushText();
+
+            const editToolCalls = messages.filter(
+                (m): m is Extract<AgentMessage, { type: 'tool_call' }> =>
+                    m.type === 'tool_call' && m.name === 'Write'
+            );
+            expect(editToolCalls.length).toBeGreaterThanOrEqual(1);
+            const tc = editToolCalls[editToolCalls.length - 1]!;
+            expect(tc.input).toMatchObject({
+                file_path: expect.any(String),
+                content: expect.any(String)
+            });
+            // Must NOT contain old_string / new_string (those are Edit fields)
+            expect((tc.input as Record<string, unknown>)['old_string']).toBeUndefined();
+            expect((tc.input as Record<string, unknown>)['new_string']).toBeUndefined();
+        });
+
+        it('replays edit_file fixture and produces Edit-shaped tool_call input', () => {
+            // Integration: full fixture replay must produce Edit with {file_path, old_string, new_string}
+            const fixtureDir = new URL('./__fixtures__', import.meta.url).pathname;
+            // eslint-disable-next-line @typescript-eslint/no-require-imports
+            const data = require(`${fixtureDir}/gemini-3-flash-preview-edit-file.json`) as {
+                updates: unknown[];
+            };
+
+            const messages: AgentMessage[] = [];
+            const handler = new AcpMessageHandler((m) => messages.push(m));
+            for (const u of data.updates) handler.handleUpdate(u);
+            handler.flushText();
+
+            const editToolCalls = messages.filter(
+                (m): m is Extract<AgentMessage, { type: 'tool_call' }> =>
+                    m.type === 'tool_call' && m.name === 'Edit'
+            );
+            expect(editToolCalls.length).toBeGreaterThanOrEqual(1);
+            const tc = editToolCalls[editToolCalls.length - 1]!;
+            expect(tc.input).toMatchObject({
+                file_path: expect.any(String),
+                old_string: expect.any(String),
+                new_string: expect.any(String)
+            });
+        });
+    });
 });

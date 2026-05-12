@@ -90,31 +90,52 @@ interface ListMachineDirectoryResponse {
     error?: string
 }
 
+function normalizeWorkspaceRoots(paths?: string[]): string[] | undefined {
+    if (!paths?.length) {
+        return undefined
+    }
+
+    const normalized = Array.from(new Set(paths.map((path) => {
+        try {
+            return realpathSync(path)
+        } catch {
+            return resolvePath(path)
+        }
+    })))
+
+    return normalized.length > 0 ? normalized : undefined
+}
+
+function workspaceRootsEqual(left?: string[], right?: string[]): boolean {
+    const normalizedLeft = left ?? []
+    const normalizedRight = right ?? []
+    if (normalizedLeft.length !== normalizedRight.length) {
+        return false
+    }
+
+    return normalizedLeft.every((value, index) => value === normalizedRight[index])
+}
+
+function formatWorkspaceRoots(paths?: string[]): string {
+    return paths?.length ? paths.join(', ') : '(none)'
+}
+
 export class ApiMachineClient {
     private socket!: Socket<ServerToRunnerEvents, RunnerToServerEvents>
     private keepAliveInterval: NodeJS.Timeout | null = null
     private rpcHandlerManager: RpcHandlerManager
 
-    private readonly normalizedWorkspaceRoot: string | undefined
+    private readonly normalizedWorkspaceRoots: string[] | undefined
 
     constructor(
         private readonly token: string,
         private readonly machine: Machine,
-        private readonly workspaceRoot?: string
+        private readonly workspaceRoots?: string[]
     ) {
-        // realpath the root once so all subsequent comparisons are against
-        // the canonical, symlink-resolved path. Falls back to a lexical
-        // resolve if realpath fails (e.g. unusual permission setup) so we
-        // still get *some* protection rather than skipping the check.
-        if (workspaceRoot) {
-            try {
-                this.normalizedWorkspaceRoot = realpathSync(workspaceRoot)
-            } catch {
-                this.normalizedWorkspaceRoot = resolvePath(workspaceRoot)
-            }
-        } else {
-            this.normalizedWorkspaceRoot = undefined
-        }
+        // Realpath roots once so all subsequent comparisons are against
+        // canonical, symlink-resolved locations. Falls back to lexical
+        // resolution if realpath fails so we still get protection.
+        this.normalizedWorkspaceRoots = normalizeWorkspaceRoots(workspaceRoots)
 
         this.rpcHandlerManager = new RpcHandlerManager({
             scopePrefix: this.machine.id,
@@ -143,7 +164,7 @@ export class ApiMachineClient {
         })
 
         this.rpcHandlerManager.registerHandler<ListMachineDirectoryRequest, ListMachineDirectoryResponse>('list-directory', async (params) => {
-            if (!this.normalizedWorkspaceRoot) {
+            if (!this.normalizedWorkspaceRoots?.length) {
                 return { success: false, error: 'Workspace browsing is not enabled for this machine' }
             }
 
@@ -153,8 +174,8 @@ export class ApiMachineClient {
             }
 
             const targetPath = await this.resolveForWorkspaceCheck(rawPath)
-            if (!this.isWithinWorkspaceRoot(targetPath)) {
-                return { success: false, error: 'Path is outside workspace root' }
+            if (!this.isWithinWorkspaceRoots(targetPath)) {
+                return { success: false, error: 'Path is outside workspace roots' }
             }
 
             try {
@@ -228,8 +249,8 @@ export class ApiMachineClient {
                 }
 
                 const resolvedCwd = await this.resolveForWorkspaceCheck(rawCwd)
-                if (!this.isWithinWorkspaceRoot(resolvedCwd)) {
-                    return { success: false, error: 'Path is outside workspace root' }
+                if (!this.isWithinWorkspaceRoots(resolvedCwd)) {
+                    return { success: false, error: 'Path is outside workspace roots' }
                 }
 
                 return await listOpencodeModelsForCwd(resolvedCwd)
@@ -237,10 +258,12 @@ export class ApiMachineClient {
         )
     }
 
-    private isWithinWorkspaceRoot(absolutePath: string): boolean {
-        if (!this.normalizedWorkspaceRoot) return true
-        const rel = relative(this.normalizedWorkspaceRoot, absolutePath)
-        return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+    private isWithinWorkspaceRoots(absolutePath: string): boolean {
+        if (!this.normalizedWorkspaceRoots?.length) return true
+        return this.normalizedWorkspaceRoots.some((workspaceRoot) => {
+            const rel = relative(workspaceRoot, absolutePath)
+            return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+        })
     }
 
     /**
@@ -283,8 +306,8 @@ export class ApiMachineClient {
             }
 
             const resolvedDirectory = await this.resolveForWorkspaceCheck(directory)
-            if (!this.isWithinWorkspaceRoot(resolvedDirectory)) {
-                return { type: 'error', errorMessage: 'Directory is outside this machine\'s workspace root' }
+            if (!this.isWithinWorkspaceRoots(resolvedDirectory)) {
+                return { type: 'error', errorMessage: 'Directory is outside this machine\'s workspace roots' }
             }
 
             const result = await spawnSession({
@@ -428,31 +451,33 @@ export class ApiMachineClient {
                 logger.debug('[API MACHINE] Failed to update runner state on connect', error)
             })
 
-            const hubWorkspaceRoot = this.machine.metadata?.workspaceRoot
-            const desiredWorkspaceRoot = this.workspaceRoot
-            if (desiredWorkspaceRoot !== hubWorkspaceRoot) {
-                if (desiredWorkspaceRoot) {
-                    console.log(`[HAPI] Syncing workspace root to hub: ${desiredWorkspaceRoot} (current hub value: ${hubWorkspaceRoot ?? 'none'})`)
+            const hubWorkspaceRoots = this.machine.metadata?.workspaceRoots
+            const desiredWorkspaceRoots = this.workspaceRoots
+            if (!workspaceRootsEqual(desiredWorkspaceRoots, hubWorkspaceRoots)) {
+                if (desiredWorkspaceRoots?.length) {
+                    console.log(`[HAPI] Syncing workspace roots to hub: ${formatWorkspaceRoots(desiredWorkspaceRoots)} (current hub value: ${formatWorkspaceRoots(hubWorkspaceRoots)})`)
                 } else {
-                    console.log(`[HAPI] Clearing workspace root on hub (was: ${hubWorkspaceRoot})`)
+                    console.log(`[HAPI] Clearing workspace roots on hub (was: ${formatWorkspaceRoots(hubWorkspaceRoots)})`)
                 }
                 this.updateMachineMetadata((current) => {
                     const base = current ?? this.machine.metadata
                     if (!base) {
-                        return { workspaceRoot: desiredWorkspaceRoot } as MachineMetadata
+                        return { workspaceRoots: desiredWorkspaceRoots } as MachineMetadata
                     }
-                    if (desiredWorkspaceRoot) {
-                        return { ...base, workspaceRoot: desiredWorkspaceRoot }
+                    if (desiredWorkspaceRoots?.length) {
+                        return { ...base, workspaceRoots: desiredWorkspaceRoots }
                     }
-                    const { workspaceRoot: _omit, ...rest } = base
+                    const { workspaceRoot: _legacyWorkspaceRoot, workspaceRoots: _workspaceRoots, ...rest } = base as MachineMetadata & {
+                        workspaceRoot?: string
+                    }
                     return rest as MachineMetadata
                 }).then(() => {
-                    console.log(`[HAPI] Workspace root synced: ${this.machine.metadata?.workspaceRoot ?? '(none)'}`)
+                    console.log(`[HAPI] Workspace roots synced: ${formatWorkspaceRoots(this.machine.metadata?.workspaceRoots)}`)
                 }).catch((error) => {
-                    console.error('[HAPI] Failed to sync workspace root:', error instanceof Error ? error.message : error)
+                    console.error('[HAPI] Failed to sync workspace roots:', error instanceof Error ? error.message : error)
                 })
-            } else if (desiredWorkspaceRoot) {
-                console.log(`[HAPI] Workspace root already up to date on hub: ${desiredWorkspaceRoot}`)
+            } else if (desiredWorkspaceRoots?.length) {
+                console.log(`[HAPI] Workspace roots already up to date on hub: ${formatWorkspaceRoots(desiredWorkspaceRoots)}`)
             }
 
             this.startKeepAlive()

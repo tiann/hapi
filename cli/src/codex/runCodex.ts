@@ -205,6 +205,12 @@ export async function runCodex(opts: {
         });
     });
 
+    session.onCancelQueuedMessage((localId) => {
+        const removed = messageQueue.cancelByLocalId(localId);
+        logger.debug(`[codex] cancelByLocalId(${localId}): ${removed ? 'removed' : 'not found (best-effort)'}`);
+        return removed;
+    });
+
     const formatFailureReason = (message: string): string => {
         const maxLength = 200;
         if (message.length <= maxLength) {

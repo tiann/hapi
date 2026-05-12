@@ -81,6 +81,7 @@ export class ApiSessionClient extends EventEmitter {
     private readonly socket: Socket<ServerToClientEvents, ClientToServerEvents>
     private pendingMessages: { message: UserMessage; localId?: string }[] = []
     private pendingMessageCallback: ((message: UserMessage, localId?: string) => void) | null = null
+    private cancelQueuedMessageCallback: ((localId: string) => boolean) | null = null
     private lastSeenMessageSeq: number | null = null
     private backfillInFlight: Promise<void> | null = null
     private needsBackfill = false
@@ -200,12 +201,20 @@ export class ApiSessionClient extends EventEmitter {
             this.terminalManager.close(payload.terminalId)
         }))
 
-        this.socket.on('update', (data: Update) => {
+        this.socket.on('update', (data: Update, ack?: (response: { removed: boolean }) => void) => {
             try {
                 if (!data.body) return
 
                 if (data.body.t === 'new-message') {
                     this.handleIncomingMessage(data.body.message)
+                    return
+                }
+
+                if (data.body.t === 'cancel-queued-message') {
+                    const removed = (data.body.localId && this.cancelQueuedMessageCallback)
+                        ? this.cancelQueuedMessageCallback(data.body.localId)
+                        : false
+                    ack?.({ removed })
                     return
                 }
 
@@ -251,6 +260,10 @@ export class ApiSessionClient extends EventEmitter {
             const pending = this.pendingMessages.shift()!
             callback(pending.message, pending.localId)
         }
+    }
+
+    onCancelQueuedMessage(callback: (localId: string) => boolean): void {
+        this.cancelQueuedMessageCallback = callback
     }
 
     private enqueueUserMessage(message: UserMessage, localId?: string): void {

@@ -86,6 +86,12 @@ export async function runCursor(opts: {
         messageQueue.push(formattedText, enhancedMode, localId);
     });
 
+    session.onCancelQueuedMessage((localId) => {
+        const removed = messageQueue.cancelByLocalId(localId);
+        logger.debug(`[cursor] cancelByLocalId(${localId}): ${removed ? 'removed' : 'not found (best-effort)'}`);
+        return removed;
+    });
+
     const resolvePermissionMode = (value: unknown): PermissionMode => {
         const parsed = PermissionModeSchema.safeParse(value);
         if (!parsed.success || !isPermissionModeAllowedForFlavor(parsed.data, 'cursor')) {

@@ -59,6 +59,29 @@ describe('AppServerEventConverter', () => {
         expect(completed).toEqual([{ type: 'agent_message', message: 'Hello world' }]);
     });
 
+    it('preserves thread and turn scope on item events', () => {
+        const converter = new AppServerEventConverter();
+
+        converter.handleNotification('item/agentMessage/delta', {
+            itemId: 'msg-1',
+            delta: 'child output',
+            thread_id: 'child-thread',
+            turn_id: 'child-turn'
+        });
+        const completed = converter.handleNotification('item/completed', {
+            item: { id: 'msg-1', type: 'agentMessage' },
+            threadId: 'child-thread',
+            turnId: 'child-turn'
+        });
+
+        expect(completed).toEqual([{
+            type: 'agent_message',
+            thread_id: 'child-thread',
+            turn_id: 'child-turn',
+            message: 'child output'
+        }]);
+    });
+
     it('deduplicates repeated agent message completions for the same item', () => {
         const converter = new AppServerEventConverter();
 
@@ -169,6 +192,140 @@ describe('AppServerEventConverter', () => {
         }]);
     });
 
+    it('maps Codex collab spawn agent calls', () => {
+        const converter = new AppServerEventConverter();
+
+        const started = converter.handleNotification('item/started', {
+            item: {
+                id: 'call-spawn',
+                type: 'collabAgentToolCall',
+                tool: 'spawnAgent',
+                prompt: 'Do side work',
+                agentType: 'explorer',
+                forkContext: true,
+                model: 'gpt-5.5',
+                reasoningEffort: 'low',
+                senderThreadId: 'parent-thread',
+                receiverThreadIds: []
+            }
+        });
+        expect(started).toEqual([{
+            type: 'codex_tool_call_begin',
+            call_id: 'call-spawn',
+            name: 'spawn_agent',
+            input: {
+                message: 'Do side work',
+                agent_type: 'explorer',
+                fork_context: true,
+                model: 'gpt-5.5',
+                reasoning_effort: 'low',
+                sender_thread_id: 'parent-thread'
+            }
+        }]);
+
+        const completed = converter.handleNotification('item/completed', {
+            item: {
+                id: 'call-spawn',
+                type: 'collabAgentToolCall',
+                tool: 'spawnAgent',
+                status: 'completed',
+                receiverThreadIds: ['agent-1'],
+                agentsStates: {
+                    'agent-1': { status: 'pendingInit', message: null }
+                }
+            }
+        });
+        expect(completed).toEqual([{
+            type: 'codex_tool_call_end',
+            call_id: 'call-spawn',
+            name: 'spawn_agent',
+            output: {
+                agent_id: 'agent-1',
+                agentId: 'agent-1',
+                status: 'completed',
+                agentsStates: {
+                    'agent-1': { status: 'pendingInit', message: null }
+                }
+            },
+            is_error: false
+        }]);
+    });
+
+    it('maps Codex collab wait and close outputs for web agent views', () => {
+        const converter = new AppServerEventConverter();
+
+        const waitStarted = converter.handleNotification('item/started', {
+            item: {
+                id: 'call-wait',
+                type: 'collabAgentToolCall',
+                tool: 'wait',
+                receiverThreadIds: ['agent-1', 'agent-2']
+            }
+        });
+        expect(waitStarted).toEqual([{
+            type: 'codex_tool_call_begin',
+            call_id: 'call-wait',
+            name: 'wait_agent',
+            input: {
+                targets: ['agent-1', 'agent-2']
+            }
+        }]);
+
+        const waitCompleted = converter.handleNotification('item/completed', {
+            item: {
+                id: 'call-wait',
+                type: 'collabAgentToolCall',
+                tool: 'wait',
+                status: 'completed',
+                receiverThreadIds: ['agent-1'],
+                agentsStates: {
+                    'agent-1': { status: 'completed', message: '42' },
+                    'agent-2': { status: 'done', message: null },
+                    'agent-3': { status: 'done', result: { text: 'structured result' } },
+                    'agent-4': { status: 'completed', message: '', output: { value: 42 } }
+                }
+            }
+        });
+        expect(waitCompleted).toEqual([{
+            type: 'codex_tool_call_end',
+            call_id: 'call-wait',
+            name: 'wait_agent',
+            output: {
+                status: {
+                    'agent-1': { completed: '42' },
+                    'agent-2': { status: 'completed', message: null },
+                    'agent-3': { status: 'completed', result: { text: 'structured result' } },
+                    'agent-4': { status: 'completed', message: '', output: { value: 42 } }
+                },
+                timed_out: false
+            },
+            is_error: false
+        }]);
+
+        const closeCompleted = converter.handleNotification('item/completed', {
+            item: {
+                id: 'call-close',
+                type: 'collabAgentToolCall',
+                tool: 'closeAgent',
+                status: 'completed',
+                receiverThreadIds: ['agent-1'],
+                agentsStates: {
+                    'agent-1': { status: 'completed', message: 'done' }
+                }
+            }
+        });
+        expect(closeCompleted).toEqual([{
+            type: 'codex_tool_call_end',
+            call_id: 'call-close',
+            name: 'close_agent',
+            output: {
+                previous_status: { completed: 'done' },
+                agent_id: 'agent-1'
+            },
+            is_error: false
+        }]);
+    });
+
     it('maps reasoning deltas', () => {
         const converter = new AppServerEventConverter();
 
@@ -265,6 +422,66 @@ describe('AppServerEventConverter', () => {
         expect(events).toEqual([{ type: 'turn_diff', unified_diff: 'diff --git a b' }]);
     });
 
+    it('preserves scope on diff and token usage updates', () => {
+        const converter = new AppServerEventConverter();
+
+        const diffEvents = converter.handleNotification('turn/diff/updated', {
+            threadId: 'child-thread',
+            turnId: 'child-turn',
+            diff: 'diff --git a b'
+        });
+        expect(diffEvents).toEqual([{
+            type: 'turn_diff',
+            thread_id: 'child-thread',
+            turn_id: 'child-turn',
+            unified_diff: 'diff --git a b'
+        }]);
+
+        const tokenEvents = converter.handleNotification('thread/tokenUsage/updated', {
+            tokenUsage: {
+                thread_id: 'child-thread',
+                turn_id: 'child-turn',
+                last_token_usage: {
+                    input_tokens: 10,
+                    output_tokens: 2
+                }
+            }
+        });
+        expect(tokenEvents).toEqual([{
+            type: 'token_count',
+            thread_id: 'child-thread',
+            turn_id: 'child-turn',
+            info: {
+                thread_id: 'child-thread',
+                turn_id: 'child-turn',
+                last_token_usage: {
+                    input_tokens: 10,
+                    output_tokens: 2
+                }
+            }
+        }]);
+    });
+
+    it('maps compact notifications with scope', () => {
+        const converter = new AppServerEventConverter();
+
+        const direct = converter.handleNotification('thread/compacted', {
+            thread: { id: 'thread-1' }
+        });
+        expect(direct).toEqual([
+            { type: 'thread_compacted', thread_id: 'thread-1' },
+            { type: 'context_compacted', thread_id: 'thread-1' }
+        ]);
+
+        const wrapped = converter.handleNotification('codex/event/context_compacted', {
+            msg: { type: 'context_compacted', thread_id: 'thread-2', turn_id: 'turn-2' }
+        });
+        expect(wrapped).toEqual([
+            { type: 'thread_compacted', thread_id: 'thread-2', turn_id: 'turn-2' },
+            { type: 'context_compacted', thread_id: 'thread-2', turn_id: 'turn-2' }
+        ]);
+    });
+
     it('unwraps codex/event task lifecycle', () => {
         const converter = new AppServerEventConverter();
 
@@ -277,6 +494,24 @@ describe('AppServerEventConverter', () => {
             msg: { type: 'task_complete', turn_id: 'turn-1' }
         });
         expect(completed).toEqual([{ type: 'task_complete', turn_id: 'turn-1' }]);
+    });
+
+    it('preserves nested scope on wrapped terminal lifecycle events', () => {
+        const converter = new AppServerEventConverter();
+
+        const completed = converter.handleNotification('codex/event/task_complete', {
+            msg: {
+                type: 'task_complete',
+                thread: { id: 'child-thread' },
+                turn: { id: 'child-turn' }
+            }
+        });
+
+        expect(completed).toEqual([{
+            type: 'task_complete',
+            thread_id: 'child-thread',
+            turn_id: 'child-turn'
+        }]);
     });
 
     it('ignores wrapped terminal lifecycle events without turn_id', () => {
@@ -308,6 +543,46 @@ describe('AppServerEventConverter', () => {
         });
 
         expect(completed).toEqual([{ type: 'agent_message', message: 'Hello world' }]);
+    });
+
+    it('preserves nested scope on wrapped item lifecycle events', () => {
+        const converter = new AppServerEventConverter();
+
+        const started = converter.handleNotification('codex/event/item_started', {
+            msg: {
+                type: 'item_started',
+                thread: { id: 'child-thread' },
+                turn: { id: 'child-turn' },
+                item: { id: 'cmd-1', type: 'commandExecution', command: 'pwd' }
+            }
+        });
+        expect(started).toEqual([{
+            type: 'exec_command_begin',
+            thread_id: 'child-thread',
+            turn_id: 'child-turn',
+            call_id: 'cmd-1',
+            command: 'pwd'
+        }]);
+
+        const completed = converter.handleNotification('codex/event/item_completed', {
+            msg: {
+                type: 'item_completed',
+                item_id: 'msg-1',
+                item: {
+                    id: 'msg-1',
+                    type: 'AgentMessage',
+                    message: 'child output',
+                    thread: { id: 'child-thread' },
+                    turn: { id: 'child-turn' }
+                }
+            }
+        });
+        expect(completed).toEqual([{
+            type: 'agent_message',
+            thread_id: 'child-thread',
+            turn_id: 'child-turn',
+            message: 'child output'
+        }]);
     });
 
     it('unwraps codex/event reasoning completion from summary text', () => {
@@ -389,4 +664,55 @@ describe('AppServerEventConverter', () => {
 
         expect(events).toEqual([{ type: 'task_failed', error: 'fatal' }]);
     });
+
+    it('maps thread/compacted notifications', () => {
+        const converter = new AppServerEventConverter();
+        const events = converter.handleNotification('thread/compacted', {
+            threadId: 'thread-1',
+            turnId: 'turn-compact'
+        });
+
+        expect(events).toEqual([
+            {
+                type: 'thread_compacted',
+                thread_id: 'thread-1',
+                turn_id: 'turn-compact'
+            },
+            {
+                type: 'context_compacted',
+                thread_id: 'thread-1',
+                turn_id: 'turn-compact'
+            }
+        ]);
+    });
+
+    it('ignores compacted notifications without thread ids', () => {
+        const converter = new AppServerEventConverter();
+
+        expect(converter.handleNotification('thread/compacted', { turnId: 'turn-compact' })).toEqual([]);
+        expect(converter.handleNotification('codex/event/context_compacted', {
+            msg: { type: 'context_compacted', turn_id: 'turn-compact' }
+        })).toEqual([]);
+    });
+
+    it('unwraps context_compacted events', () => {
+        const converter = new AppServerEventConverter();
+        const events = converter.handleNotification('codex/event/context_compacted', {
+            msg: { type: 'context_compacted', thread_id: 'thread-1', turn_id: 'turn-compact' }
+        });
+
+        expect(events).toEqual([
+            {
+                type: 'thread_compacted',
+                thread_id: 'thread-1',
+                turn_id: 'turn-compact'
+            },
+            {
+                type: 'context_compacted',
+                thread_id: 'thread-1',
+                turn_id: 'turn-compact'
+            }
+        ]);
+    });
+
 });

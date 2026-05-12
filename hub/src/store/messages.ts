@@ -164,6 +164,112 @@ export function getMaxSeq(db: Database, sessionId: string): number {
     return row?.maxSeq ?? 0
 }
 
+export type CancelQueuedMessageResult =
+    | { status: 'cancelled'; localId: string | null }
+    | { status: 'invoked'; message: StoredMessage }
+
+/** Delete a queued (invoked_at IS NULL) message by session + message id.
+ *
+ * Runs inside a transaction to eliminate the SELECT-then-DELETE race window.
+ * Returns a discriminated union so callers can distinguish two zero-delete cases:
+ *   - 'cancelled': row was absent (already cancelled, or wrong id/session) — treat as success.
+ *   - 'invoked':   row exists but invoked_at IS NOT NULL (CLI consumed it first) —
+ *                  caller must revert any optimistic removal using the returned row,
+ *                  not a stale client-side snapshot, so invokedAt is authoritative.
+ *
+ * The invoked_at IS NULL guard ensures cancel and invoke are mutually exclusive at
+ * the DB level (first-write-wins, mirrors markMessagesInvoked). */
+export function cancelQueuedMessage(
+    db: Database,
+    sessionId: string,
+    messageId: string
+): CancelQueuedMessageResult {
+    return db.transaction(() => {
+        // Accept either the server-assigned uuid (id) or the client localId.
+        // This handles the pre-echo window where the web client still holds
+        // msg.id === localId and passes that as the messageId parameter.
+        // Note: local_id = ? evaluates to NULL (no match) when local_id IS NULL,
+        // which is safe — messages without a localId are inserted with invoked_at set
+        // and are never queued, so they cannot reach this code path anyway.
+        const row = db.prepare(`
+            SELECT * FROM messages
+            WHERE session_id = ? AND (id = ? OR local_id = ?)
+            LIMIT 1
+        `).get(sessionId, messageId, messageId) as DbMessageRow | undefined
+
+        if (!row) {
+            // Row absent: already cancelled or wrong id — fold into 'cancelled'
+            return { status: 'cancelled' as const, localId: null }
+        }
+
+        if (row.invoked_at !== null) {
+            // CLI already consumed this message before the cancel arrived.
+            // Return the full row so the web client can restore authoritative invoked state
+            // rather than reverting to a stale queued snapshot (invokedAt: null).
+            return { status: 'invoked' as const, message: toStoredMessage(row) }
+        }
+
+        db.prepare(`
+            DELETE FROM messages
+            WHERE session_id = ? AND (id = ? OR local_id = ?) AND invoked_at IS NULL
+        `).run(sessionId, messageId, messageId)
+
+        return { status: 'cancelled' as const, localId: row.local_id }
+    })()
+}
+
+export type LookupQueuedMessageResult =
+    | { status: 'absent' }
+    | { status: 'invoked'; message: StoredMessage }
+    | { status: 'queued'; localId: string | null; resolvedId: string }
+
+/** Look up a queued message without deleting it.
+ *
+ * Returns one of three discriminated states:
+ *   - 'absent':  row not found (already cancelled or wrong id).
+ *   - 'invoked': row exists but invoked_at IS NOT NULL (CLI consumed it first).
+ *   - 'queued':  row exists and is cancellable; resolvedId is the server-assigned uuid.
+ *
+ * Used by the service layer to inspect state before issuing a CLI ack round-trip.
+ * The actual DELETE (after CLI ack) is performed by deleteQueuedMessageById. */
+export function lookupQueuedMessage(
+    db: Database,
+    sessionId: string,
+    messageId: string
+): LookupQueuedMessageResult {
+    const row = db.prepare(`
+        SELECT * FROM messages
+        WHERE session_id = ? AND (id = ? OR local_id = ?)
+        LIMIT 1
+    `).get(sessionId, messageId, messageId) as DbMessageRow | undefined
+
+    if (!row) {
+        return { status: 'absent' as const }
+    }
+
+    if (row.invoked_at !== null) {
+        return { status: 'invoked' as const, message: toStoredMessage(row) }
+    }
+
+    return { status: 'queued' as const, localId: row.local_id, resolvedId: row.id }
+}
+
+/** Delete a queued (invoked_at IS NULL) message by id or local_id.
+ *
+ * This is the "confirmed DELETE" step after the service layer has received a
+ * CLI ack with removed:true.  Uses the same first-write-wins guard as the
+ * original cancelQueuedMessage. */
+export function deleteQueuedMessageById(
+    db: Database,
+    sessionId: string,
+    messageId: string
+): void {
+    db.prepare(`
+        DELETE FROM messages
+        WHERE session_id = ? AND (id = ? OR local_id = ?) AND invoked_at IS NULL
+    `).run(sessionId, messageId, messageId)
+}
+
 /** Mark messages as invoked at the given server timestamp.
  *  Only updates rows whose local_id is in localIds.
  *  First-write-wins: rows with a non-NULL invoked_at are not updated.  A duplicate

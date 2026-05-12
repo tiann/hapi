@@ -14,11 +14,25 @@ function normalizeStatus(status: unknown): 'pending' | 'in_progress' | 'complete
 
 type DerivedToolName = ReturnType<typeof deriveToolNameWithSource>;
 
+/**
+ * Extracts _meta.kind from the first diff block in a content array.
+ * Returns null when content is not an array, is empty, or the first block
+ * is not a diff with a string _meta.kind.
+ */
+function extractMetaKindFromContent(content: unknown): string | null {
+    if (!Array.isArray(content) || content.length === 0) return null;
+    const first = content[0];
+    if (!isObject(first) || first.type !== 'diff') return null;
+    if (!isObject(first._meta)) return null;
+    return typeof first._meta.kind === 'string' ? first._meta.kind : null;
+}
+
 function deriveToolNameFromUpdate(update: Record<string, unknown>): DerivedToolName {
     return deriveToolNameWithSource({
         title: asString(update.title),
         kind: asString(update.kind),
-        rawInput: update.rawInput
+        rawInput: update.rawInput,
+        metaKind: extractMetaKindFromContent(update.content)
     });
 }
 
@@ -62,6 +76,49 @@ function deriveInputFromKindAndTitle(
         default:
             return null;
     }
+}
+
+type HoistedDiff =
+    | { name: 'Write'; input: { file_path: string; content: string } }
+    | { name: 'Edit'; input: { file_path: string; old_string: string; new_string: string } };
+
+/**
+ * Hoists the first diff block from a Gemini ACP content array into a
+ * Claude-shaped tool input so the existing Write/Edit web views can render it.
+ *
+ * Mapping (mirrors the Gemini ACP quirks spec, see
+ * __fixtures__/gemini-3-flash-preview-{write,edit}-file.json):
+ *   _meta.kind='add'    → { name: 'Write', input: {file_path, content: newText} }
+ *   _meta.kind='modify' → { name: 'Edit',  input: {file_path, old_string, new_string} }
+ *
+ * Returns null when:
+ *   - content is not an array or is empty
+ *   - the first block is not a diff type
+ *   - _meta.kind is absent or unrecognised (let callers keep the existing fallback)
+ */
+function hoistDiffContentIntoInput(content: unknown): HoistedDiff | null {
+    if (!Array.isArray(content) || content.length === 0) return null;
+    const first = content[0];
+    if (!isObject(first) || first.type !== 'diff') return null;
+
+    const path = typeof first.path === 'string' ? first.path : null;
+    if (!path) return null;
+
+    const metaKind = isObject(first._meta) && typeof first._meta.kind === 'string'
+        ? first._meta.kind
+        : null;
+
+    if (metaKind === 'add') {
+        const newText = typeof first.newText === 'string' ? first.newText : '';
+        return { name: 'Write', input: { file_path: path, content: newText } };
+    }
+    if (metaKind === 'modify') {
+        const oldText = typeof first.oldText === 'string' ? first.oldText : '';
+        const newText = typeof first.newText === 'string' ? first.newText : '';
+        return { name: 'Edit', input: { file_path: path, old_string: oldText, new_string: newText } };
+    }
+
+    return null;
 }
 
 function extractTextContent(block: unknown): string | null {
@@ -364,7 +421,15 @@ export class AcpMessageHandler {
         const toolCallId = asString(update.toolCallId);
         if (!toolCallId) return;
 
-        const derivedName = deriveToolNameFromUpdate(update);
+        // Initial tool_call events (in_progress) never carry a completed diff block,
+        // so metaKind is always null here. Pass it explicitly to prevent a silent
+        // Write/Edit promotion if content ever appears unexpectedly on this path.
+        const derivedName = deriveToolNameWithSource({
+            title: asString(update.title),
+            kind: asString(update.kind),
+            rawInput: update.rawInput,
+            metaKind: null
+        });
         const name = derivedName.name;
         // Priority: rawInput > kind+title fallback.
         // Use `in` to distinguish "rawInput key absent" from "rawInput is {}".
@@ -431,6 +496,32 @@ export class AcpMessageHandler {
         }
 
         if (status === 'completed' || status === 'failed') {
+            // For Gemini ACP kind=edit tools: when the completed update carries a
+            // diff content block, hoist it into a Claude-shaped input so the
+            // existing Write/Edit web views receive the right shape. The name is
+            // also upgraded from the prose title to 'Write' or 'Edit' based on
+            // _meta.kind — this intentionally bypasses the title-wins rule because
+            // the title for edit tools is always prose ("Writing to foo.txt") and
+            // _meta.kind is the authoritative semantic signal.
+            //
+            // Only runs on status=completed (not failed): a failed write_file must never
+            // promote the tool name to Write/Edit, as no diff was actually applied.
+            // Uses == null to catch both undefined and null rawInput (Gemini path).
+            // When rawInput is present the input was already set above and no re-emit needed.
+            if (status === 'completed' && update.rawInput == null && existing) {
+                const hoisted = hoistDiffContentIntoInput(update.content);
+                if (hoisted) {
+                    this.toolCalls.set(toolCallId, { name: hoisted.name, input: hoisted.input });
+                    this.onMessage({
+                        type: 'tool_call',
+                        id: toolCallId,
+                        name: hoisted.name,
+                        input: hoisted.input,
+                        status
+                    });
+                }
+            }
+
             // Prefer rawOutput (Claude/Codex path). When absent, normalize the
             // ACP content array sent by agents such as Gemini and OpenCode.
             // If content is not an array (normalizeAcpToolContent returns null),

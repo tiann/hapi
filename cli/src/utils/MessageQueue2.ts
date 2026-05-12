@@ -183,6 +183,20 @@ export class MessageQueue2<T> {
     }
 
     /**
+     * Remove the first queued message that matches the given localId.
+     * Returns true if a message was removed, false if not found.
+     * Best-effort: if the CLI is offline when cancel is issued, the message
+     * may already have been collected for invocation and won't be found here.
+     */
+    cancelByLocalId(localId: string): boolean {
+        if (!localId) return false;
+        const idx = this.queue.findIndex(item => item.localId === localId);
+        if (idx === -1) return false;
+        this.queue.splice(idx, 1);
+        return true;
+    }
+
+    /**
      * Reset the queue - clears all messages and resets to empty state
      */
     reset(): void {

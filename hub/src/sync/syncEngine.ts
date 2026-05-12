@@ -9,7 +9,7 @@
 
 import type { CodexCollaborationMode, DecryptedMessage, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
 import type { Server } from 'socket.io'
-import type { Store } from '../store'
+import type { Store, CancelQueuedMessageResult } from '../store'
 import type { RpcRegistry } from '../socket/rpcRegistry'
 import type { SSEManager } from '../sse/sseManager'
 import { EventPublisher, type SyncEventListener } from './eventPublisher'
@@ -59,7 +59,7 @@ export class SyncEngine {
     private inactivityTimer: NodeJS.Timeout | null = null
 
     constructor(
-        store: Store,
+        private readonly store: Store,
         io: Server,
         rpcRegistry: RpcRegistry,
         sseManager: SSEManager
@@ -312,6 +312,13 @@ export class SyncEngine {
         this.sessionCache.markMessageQueued(sessionId)
     }
 
+    async cancelQueuedMessage(
+        sessionId: string,
+        messageId: string
+    ): Promise<CancelQueuedMessageResult> {
+        return this.messageService.cancelQueuedMessage(sessionId, messageId)
+    }
+
     async approvePermission(
         sessionId: string,
         requestId: string,
@@ -451,7 +458,7 @@ export class SyncEngine {
                     ? metadata.opencodeSessionId
                     : flavor === 'cursor'
                         ? metadata.cursorSessionId
-                        : metadata.claudeSessionId
+                        : (metadata.claudeSessionId ?? this.recoverClaudeSessionIdFromMessages(access.sessionId, namespace))
 
         if (!resumeToken) {
             return { type: 'error', message: 'Resume session ID unavailable', code: 'resume_unavailable' }
@@ -518,6 +525,78 @@ export class SyncEngine {
         }
 
         return { type: 'success', sessionId: spawnResult.sessionId }
+    }
+
+    private recoverClaudeSessionIdFromMessages(sessionId: string, namespace: string): string | null {
+        const messages = this.messageService.getMessages(sessionId, 200)
+        for (let i = messages.length - 1; i >= 0; i -= 1) {
+            const found = this.extractClaudeSessionId(messages[i].content)
+            if (!found) continue
+
+            this.persistRecoveredClaudeSessionId(sessionId, namespace, found)
+            return found
+        }
+        return null
+    }
+
+    private extractClaudeSessionId(value: unknown): string | null {
+        if (!value || typeof value !== 'object') {
+            return null
+        }
+
+        const obj = value as Record<string, unknown>
+        const direct = this.normalizeClaudeSessionId(obj.session_id) ?? this.normalizeClaudeSessionId(obj.sessionId)
+        if (direct) {
+            return direct
+        }
+
+        const content = obj.content
+        if (content && typeof content === 'object') {
+            const found = this.extractClaudeSessionId(content)
+            if (found) return found
+        }
+
+        const data = obj.data
+        if (data && typeof data === 'object') {
+            const found = this.extractClaudeSessionId(data)
+            if (found) return found
+        }
+
+        return null
+    }
+
+    private normalizeClaudeSessionId(value: unknown): string | null {
+        if (typeof value !== 'string') {
+            return null
+        }
+        const trimmed = value.trim()
+        return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(trimmed)
+            ? trimmed
+            : null
+    }
+
+    private persistRecoveredClaudeSessionId(sessionId: string, namespace: string, claudeSessionId: string): void {
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+            const latest = this.sessionCache.getSessionByNamespace(sessionId, namespace)
+                ?? this.sessionCache.refreshSession(sessionId)
+            if (!latest?.metadata) return
+            if (latest.metadata.claudeSessionId === claudeSessionId) return
+
+            const result = this.store.sessions.updateSessionMetadata(
+                sessionId,
+                { ...latest.metadata, claudeSessionId },
+                latest.metadataVersion,
+                namespace,
+                { touchUpdatedAt: false }
+            )
+            if (result.result === 'success') {
+                this.sessionCache.refreshSession(sessionId)
+                return
+            }
+            if (result.result !== 'version-mismatch') {
+                return
+            }
+        }
     }
 
     private hasSameAgentSessionIds(

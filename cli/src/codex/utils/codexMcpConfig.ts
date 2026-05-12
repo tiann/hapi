@@ -7,6 +7,7 @@
  * configuration and developer instructions at runtime.
  */
 
+import { createHash } from 'node:crypto';
 import { getHappyCliCommand } from '@/utils/spawnHappyCLI';
 
 /**
@@ -51,6 +52,47 @@ function shellJoin(parts: string[]): string {
     return parts.map(shellQuote).join(' ');
 }
 
+function canonicalJson(value: unknown): unknown {
+    if (Array.isArray(value)) {
+        return value.map(canonicalJson);
+    }
+
+    if (value && typeof value === 'object') {
+        const entries = Object.entries(value as Record<string, unknown>)
+            .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+            .map(([key, entryValue]) => [key, canonicalJson(entryValue)]);
+        return Object.fromEntries(entries);
+    }
+
+    return value;
+}
+
+function versionForTomlLikeValue(value: unknown): string {
+    const serialized = JSON.stringify(canonicalJson(value));
+    return `sha256:${createHash('sha256').update(serialized).digest('hex')}`;
+}
+
+function buildSessionStartHookTrustedHash(command: string): string {
+    return versionForTomlLikeValue({
+        event_name: 'session_start',
+        hooks: [
+            {
+                async: false,
+                command,
+                timeout: 600,
+                type: 'command'
+            }
+        ]
+    });
+}
+
+function sessionFlagsHookStateKey(): string {
+    const sourcePath = process.platform === 'win32'
+        ? 'C:\\<session-flags>\\config.toml'
+        : '/<session-flags>/config.toml';
+    return `${sourcePath}:session_start:0:0`;
+}
+
 export function buildSessionStartHookConfigArgs(port: number, token: string): string[] {
     const { command, args } = getHappyCliCommand([
         'hook-forwarder',
@@ -62,7 +104,10 @@ export function buildSessionStartHookConfigArgs(port: number, token: string): st
     const hookCommand = shellJoin([command, ...args]);
     const escapedHookCommand = escapeTomlString(hookCommand);
     const hookConfig = `hooks.SessionStart=[{ hooks = [{ type = "command", command = "${escapedHookCommand}" }] }]`;
-    return ['-c', hookConfig];
+    const trustedHash = buildSessionStartHookTrustedHash(hookCommand);
+    const escapedStateKey = escapeTomlString(sessionFlagsHookStateKey());
+    const hookState = `hooks.state={"${escapedStateKey}"={trusted_hash="${trustedHash}"}}`;
+    return ['-c', hookConfig, '-c', hookState];
 }
 
 /**

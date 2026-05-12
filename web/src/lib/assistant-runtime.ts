@@ -5,6 +5,7 @@ import { safeStringify } from '@hapi/protocol'
 import { renderEventLabel } from '@/chat/presentation'
 import type { ChatBlock, CliOutputBlock, UsageData } from '@/chat/types'
 import type { AgentEvent, ToolCallBlock } from '@/chat/types'
+import type { ToolGroupBlock, VisibleChatBlock } from '@/chat/toolGroups'
 import type { AttachmentMetadata, MessageStatus as HappyMessageStatus, Session } from '@/types/api'
 
 export type HappyChatMessageMetadata = {
@@ -22,7 +23,7 @@ export type HappyChatMessageMetadata = {
     model?: string | null
 }
 
-function toThreadMessageLike(block: ChatBlock): ThreadMessageLike {
+function toThreadMessageLike(block: VisibleChatBlock): ThreadMessageLike {
     if (block.kind === 'user-text') {
         const messageId = `user:${block.id}`
         return {
@@ -119,6 +120,29 @@ function toThreadMessageLike(block: ChatBlock): ThreadMessageLike {
         }
     }
 
+    if (block.kind === 'tool-group') {
+        const groupBlock: ToolGroupBlock = block
+        return {
+            role: 'assistant',
+            id: `tool:${groupBlock.id}`,
+            createdAt: new Date(groupBlock.createdAt),
+            content: [{
+                type: 'tool-call',
+                toolCallId: groupBlock.id,
+                toolName: 'ToolGroup',
+                argsText: '',
+                artifact: groupBlock
+            }],
+            metadata: {
+                custom: {
+                    kind: 'tool',
+                    toolCallId: groupBlock.id,
+                    invokedAt: groupBlock.invokedAt ?? null
+                } satisfies HappyChatMessageMetadata
+            }
+        }
+    }
+
     const toolBlock: ToolCallBlock = block
     const messageId = `tool:${toolBlock.id}`
     const inputText = safeStringify(toolBlock.tool.input)
@@ -206,7 +230,7 @@ function extractMessageContent(message: AppendMessage): { text: string; attachme
 
 export function useHappyRuntime(props: {
     session: Session
-    blocks: readonly ChatBlock[]
+    blocks: readonly VisibleChatBlock[]
     isSending: boolean
     onSendMessage: (text: string, attachments?: AttachmentMetadata[]) => void
     onAbort: () => Promise<void>
@@ -215,9 +239,9 @@ export function useHappyRuntime(props: {
 }) {
     // Use cached message converter for performance optimization
     // This prevents re-converting all messages on every render
-    const convertedMessages = useExternalMessageConverter<ChatBlock>({
+    const convertedMessages = useExternalMessageConverter<VisibleChatBlock>({
         callback: toThreadMessageLike,
-        messages: props.blocks as ChatBlock[],
+        messages: props.blocks as VisibleChatBlock[],
         isRunning: props.session.thinking,
     })
 

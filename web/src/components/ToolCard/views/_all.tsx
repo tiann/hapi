@@ -11,8 +11,12 @@ import { MultiEditFullView, MultiEditView } from '@/components/ToolCard/views/Mu
 import { TodoWriteView } from '@/components/ToolCard/views/TodoWriteView'
 import { UpdatePlanView } from '@/components/ToolCard/views/UpdatePlanView'
 import { WriteView } from '@/components/ToolCard/views/WriteView'
-import { isObject } from '@hapi/protocol'
 import { getInputStringAny } from '@/lib/toolInputUtils'
+import {
+    getCodexAgentFieldRows,
+    getCodexAgentPrompt,
+    summarizeCodexAgentResult
+} from '@/components/ToolCard/codexAgents'
 
 export type ToolViewProps = {
     block: ToolCallBlock
@@ -31,21 +35,40 @@ const SkillFullView: ToolViewComponent = ({ block }: ToolViewProps) => {
     )
 }
 
-const AgentFullView: ToolViewComponent = ({ block }: ToolViewProps) => {
+const CodexAgentView: ToolViewComponent = ({ block, surface }: ToolViewProps) => {
     const input = block.tool.input
-    const description = getInputStringAny(input, ['description'])
-    const subagentType = getInputStringAny(input, ['subagent_type'])
-    const runInBackground = isObject(input) && input.run_in_background === true
+    const rows = getCodexAgentFieldRows(block.tool.name, input)
+    const prompt = getCodexAgentPrompt(input)
+    const resultSummary = surface === 'inline'
+        ? summarizeCodexAgentResult(block.tool.name, block.tool.result)
+        : null
 
     return (
-        <div className="flex flex-col gap-1 text-sm">
-            {description && (
-                <div className="text-[var(--app-fg)]">{description}</div>
-            )}
-            <div className="flex gap-3 text-[var(--app-hint)]">
-                {subagentType && <span>Type: {subagentType}</span>}
-                {runInBackground && <span>Background</span>}
-            </div>
+        <div className="flex flex-col gap-2 text-sm">
+            {surface === 'dialog' && prompt ? (
+                <div className="rounded-xl bg-[var(--app-subtle-bg)] px-3 py-2 text-[var(--app-fg)]">
+                    <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-[var(--app-hint)]">
+                        Prompt
+                    </div>
+                    <div className="whitespace-pre-wrap break-words">{prompt}</div>
+                </div>
+            ) : null}
+            {rows.length > 0 ? (
+                <div className="flex flex-wrap gap-2">
+                    {rows.map((row) => (
+                        <span
+                            key={`${row.label}:${row.value}`}
+                            className="inline-flex max-w-full items-center gap-1 rounded-full border border-[var(--app-border)] bg-[var(--app-subtle-bg)] px-2 py-0.5 text-xs text-[var(--app-hint)]"
+                        >
+                            <span className="font-medium text-[var(--app-fg)]">{row.label}:</span>
+                            <span className="truncate font-mono">{row.value}</span>
+                        </span>
+                    ))}
+                </div>
+            ) : null}
+            {resultSummary ? (
+                <div className="text-xs text-[var(--app-hint)]">{resultSummary}</div>
+            ) : null}
         </div>
     )
 }
@@ -57,6 +80,12 @@ export const toolViewRegistry: Record<string, ToolViewComponent> = {
     TodoWrite: TodoWriteView,
     update_plan: UpdatePlanView,
     CodexDiff: CodexDiffCompactView,
+    CodexAgent: CodexAgentView,
+    spawn_agent: CodexAgentView,
+    send_input: CodexAgentView,
+    resume_agent: CodexAgentView,
+    wait_agent: CodexAgentView,
+    close_agent: CodexAgentView,
     AskUserQuestion: AskUserQuestionView,
     ExitPlanMode: ExitPlanModeView,
     ask_user_question: AskUserQuestionView,
@@ -70,8 +99,13 @@ export const toolFullViewRegistry: Record<string, ToolViewComponent> = {
     Write: WriteView,
     CodexDiff: CodexDiffFullView,
     CodexPatch: CodexPatchView,
+    CodexAgent: CodexAgentView,
     Skill: SkillFullView,
-    Agent: AgentFullView,
+    spawn_agent: CodexAgentView,
+    send_input: CodexAgentView,
+    resume_agent: CodexAgentView,
+    wait_agent: CodexAgentView,
+    close_agent: CodexAgentView,
     AskUserQuestion: AskUserQuestionView,
     ExitPlanMode: ExitPlanModeView,
     ask_user_question: AskUserQuestionView,

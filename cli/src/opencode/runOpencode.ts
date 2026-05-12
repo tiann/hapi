@@ -108,6 +108,12 @@ export async function runOpencode(opts: {
         messageQueue.push(formattedText, mode, localId);
     });
 
+    session.onCancelQueuedMessage((localId) => {
+        const removed = messageQueue.cancelByLocalId(localId);
+        logger.debug(`[opencode] cancelByLocalId(${localId}): ${removed ? 'removed' : 'not found (best-effort)'}`);
+        return removed;
+    });
+
     const resolvePermissionMode = (value: unknown): PermissionMode => {
         const parsed = PermissionModeSchema.safeParse(value);
         if (!parsed.success || !isPermissionModeAllowedForFlavor(parsed.data, 'opencode')) {

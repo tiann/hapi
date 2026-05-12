@@ -167,6 +167,199 @@ function extractPlanUpdate(params: Record<string, unknown>): ConvertedEvent[] {
     return plan.length > 0 ? [{ type: 'plan_update', plan }] : [];
 }
 
+function extractEventScope(params: Record<string, unknown>): Record<string, unknown> {
+    const thread = asRecord(params.thread);
+    const turn = asRecord(params.turn);
+    const tokenUsage = asRecord(params.tokenUsage ?? params.token_usage ?? params.info);
+    const tokenUsageThread = asRecord(tokenUsage?.thread);
+    const tokenUsageTurn = asRecord(tokenUsage?.turn);
+    const item = asRecord(params.item);
+    const itemThread = asRecord(item?.thread);
+    const itemTurn = asRecord(item?.turn);
+    const threadId = asString(
+        params.threadId
+        ?? params.thread_id
+        ?? thread?.threadId
+        ?? thread?.thread_id
+        ?? thread?.id
+        ?? tokenUsage?.threadId
+        ?? tokenUsage?.thread_id
+        ?? tokenUsageThread?.threadId
+        ?? tokenUsageThread?.thread_id
+        ?? tokenUsageThread?.id
+        ?? item?.threadId
+        ?? item?.thread_id
+        ?? itemThread?.threadId
+        ?? itemThread?.thread_id
+        ?? itemThread?.id
+    );
+    const turnId = asString(
+        params.turnId
+        ?? params.turn_id
+        ?? turn?.turnId
+        ?? turn?.turn_id
+        ?? turn?.id
+        ?? tokenUsage?.turnId
+        ?? tokenUsage?.turn_id
+        ?? tokenUsageTurn?.turnId
+        ?? tokenUsageTurn?.turn_id
+        ?? tokenUsageTurn?.id
+        ?? item?.turnId
+        ?? item?.turn_id
+        ?? itemTurn?.turnId
+        ?? itemTurn?.turn_id
+        ?? itemTurn?.id
+    );
+
+    return {
+        ...(threadId ? { thread_id: threadId } : {}),
+        ...(turnId ? { turn_id: turnId } : {})
+    };
+}
+
+function addEventScope(events: ConvertedEvent[], scope: Record<string, unknown>): ConvertedEvent[] {
+    if (Object.keys(scope).length === 0) {
+        return events;
+    }
+
+    return events.map((event) => ({
+        ...scope,
+        ...event
+    }));
+}
+
+function normalizeCollabAgentToolName(value: unknown): string | null {
+    const raw = asString(value);
+    if (!raw) return null;
+
+    const normalized = raw.trim().toLowerCase().replace(/[\s_-]/g, '');
+    if (normalized === 'spawnagent' || normalized === 'spawn') return 'spawn_agent';
+    if (normalized === 'sendinput' || normalized === 'sendmessage') return 'send_input';
+    if (normalized === 'resumeagent' || normalized === 'resume') return 'resume_agent';
+    if (normalized === 'waitagent' || normalized === 'wait') return 'wait_agent';
+    if (normalized === 'closeagent' || normalized === 'close') return 'close_agent';
+    return null;
+}
+
+function extractStringArray(value: unknown): string[] {
+    return Array.isArray(value)
+        ? value.filter((entry): entry is string => typeof entry === 'string' && entry.length > 0)
+        : [];
+}
+
+function buildCollabAgentInput(item: Record<string, unknown>, toolName: string): Record<string, unknown> {
+    const targets = extractStringArray(item.receiverThreadIds ?? item.receiver_thread_ids ?? item.targets);
+    const input: Record<string, unknown> = {};
+
+    const prompt = asString(item.prompt ?? item.message);
+    if (prompt) {
+        input.message = prompt;
+    }
+
+    const agentType = asString(item.agentType ?? item.agent_type);
+    if (agentType) {
+        input.agent_type = agentType;
+    }
+
+    const forkContext = asBoolean(item.forkContext ?? item.fork_context);
+    if (forkContext !== null) {
+        input.fork_context = forkContext;
+    }
+
+    const model = asString(item.model);
+    if (model) {
+        input.model = model;
+    }
+
+    const reasoningEffort = asString(item.reasoningEffort ?? item.reasoning_effort);
+    if (reasoningEffort) {
+        input.reasoning_effort = reasoningEffort;
+    }
+
+    const senderThreadId = asString(item.senderThreadId ?? item.sender_thread_id);
+    if (senderThreadId) {
+        input.sender_thread_id = senderThreadId;
+    }
+
+    if (targets.length > 0) {
+        input.targets = targets;
+        if (toolName === 'close_agent' || toolName === 'send_input' || toolName === 'resume_agent') {
+            input.target = targets[0];
+        }
+    }
+
+    return input;
+}
+
+function statusObjectFromAgentState(value: unknown): unknown {
+    const record = asRecord(value);
+    if (!record) return value;
+
+    const message = asString(record.message)
+        ?? asString(record.output)
+        ?? asString(record.result)
+        ?? asString(record.finalMessage)
+        ?? asString(record.final_message);
+    const status = asString(record.status ?? record.state);
+    const normalizedStatus = status?.trim().toLowerCase().replace(/[\s_-]/g, '');
+    const completed = normalizedStatus === 'completed'
+        || normalizedStatus === 'complete'
+        || normalizedStatus === 'done'
+        || record.completed === true
+        || record.done === true;
+    if (completed && message) return { completed: message };
+    if (completed) return { ...record, status: 'completed' };
+    if ((normalizedStatus === 'failed' || normalizedStatus === 'error') && message) return { failed: message };
+    if ((normalizedStatus === 'canceled' || normalizedStatus === 'cancelled') && message) return { canceled: message };
+    return value;
+}
+
+function buildCollabAgentOutput(item: Record<string, unknown>, toolName: string): Record<string, unknown> {
+    const targets = extractStringArray(item.receiverThreadIds ?? item.receiver_thread_ids ?? item.targets);
+    const agentsStates = asRecord(item.agentsStates ?? item.agents_states) ?? {};
+    const status = asString(item.status);
+    const error = asString(item.error ?? item.message);
+    const errorFields = error ? { error, message: error } : {};
+
+    if (toolName === 'spawn_agent') {
+        const agentId = targets[0] ?? null;
+        return {
+            ...(agentId ? { agent_id: agentId, agentId } : {}),
+            ...(status ? { status } : {}),
+            ...errorFields,
+            agentsStates
+        };
+    }
+
+    if (toolName === 'wait_agent') {
+        const normalizedStatus: Record<string, unknown> = {};
+        for (const [agentId, agentStatus] of Object.entries(agentsStates)) {
+            normalizedStatus[agentId] = statusObjectFromAgentState(agentStatus);
+        }
+        return {
+            status: normalizedStatus,
+            ...errorFields,
+            timed_out: status === 'timedOut' || status === 'timed_out'
+        };
+    }
+
+    if (toolName === 'close_agent') {
+        const firstStatus = targets[0] ? agentsStates[targets[0]] : Object.values(agentsStates)[0];
+        return {
+            previous_status: statusObjectFromAgentState(firstStatus),
+            ...errorFields,
+            ...(targets[0] ? { agent_id: targets[0] } : {})
+        };
+    }
+
+    return {
+        ...(targets.length > 0 ? { targets } : {}),
+        ...(status ? { status } : {}),
+        ...errorFields,
+        agentsStates
+    };
+}
+
 export class AppServerEventConverter {
     private readonly agentMessageBuffers = new Map<string, string>();
     private readonly reasoningBuffers = new Map<string, string>();
@@ -191,14 +384,19 @@ export class AppServerEventConverter {
             return [];
         }
 
+        const msgScope = extractEventScope(msg);
+
         if (msgType === 'item_started' || msgType === 'item_completed') {
             const itemMethod = msgType === 'item_started' ? 'item/started' : 'item/completed';
             const item = asRecord(msg.item) ?? {};
+            const threadId = asString(msg.thread_id ?? msg.threadId ?? msgScope.thread_id);
+            const turnId = asString(msg.turn_id ?? msg.turnId ?? msgScope.turn_id);
             const params: Record<string, unknown> = {
+                ...msgScope,
                 item,
                 itemId: asString(msg.item_id ?? msg.itemId ?? item.id),
-                threadId: asString(msg.thread_id ?? msg.threadId),
-                turnId: asString(msg.turn_id ?? msg.turnId)
+                ...(threadId ? { threadId } : {}),
+                ...(turnId ? { turnId } : {})
             };
             return this.handleNotification(itemMethod, params);
         }
@@ -209,15 +407,19 @@ export class AppServerEventConverter {
             msgType === 'turn_aborted' ||
             msgType === 'task_failed'
         ) {
-            const turnId = asString(msg.turn_id ?? msg.turnId);
+            const turnId = asString(msg.turn_id ?? msg.turnId ?? msgScope.turn_id);
             if ((msgType === 'task_complete' || msgType === 'turn_aborted' || msgType === 'task_failed') && !turnId) {
                 logger.debug('[AppServerEventConverter] Ignoring wrapped terminal event without turn_id', { msgType });
                 return [];
             }
 
-            const event: ConvertedEvent = { type: msgType };
+            const event: ConvertedEvent = { ...msgScope, type: msgType };
             if (turnId) {
                 event.turn_id = turnId;
+            }
+            const threadId = asString(msg.thread_id ?? msg.threadId ?? msgScope.thread_id);
+            if (threadId) {
+                event.thread_id = threadId;
             }
             if (msgType === 'task_failed') {
                 const error = asString(msg.error ?? msg.message ?? asRecord(msg.error)?.message);
@@ -232,14 +434,14 @@ export class AppServerEventConverter {
             const itemId = asString(msg.item_id ?? msg.itemId ?? msg.id) ?? 'agent-message';
             const delta = asString(msg.delta ?? msg.text ?? msg.message);
             if (!delta) return [];
-            return this.handleNotification('item/agentMessage/delta', { itemId, delta });
+            return this.handleNotification('item/agentMessage/delta', { itemId, delta, ...msgScope });
         }
 
         if (msgType === 'reasoning_content_delta') {
             const itemId = asString(msg.item_id ?? msg.itemId ?? msg.id) ?? 'reasoning';
             const delta = asString(msg.delta ?? msg.text ?? msg.message);
             if (!delta) return [];
-            return this.handleNotification('item/reasoning/summaryTextDelta', { itemId, delta });
+            return this.handleNotification('item/reasoning/summaryTextDelta', { itemId, delta, ...msgScope });
         }
 
         if (msgType === 'agent_reasoning_section_break') {
@@ -247,6 +449,7 @@ export class AppServerEventConverter {
             const summaryIndex = asNumber(msg.summary_index ?? msg.summaryIndex);
             return this.handleNotification('item/reasoning/summaryPartAdded', {
                 itemId,
+                ...msgScope,
                 ...(summaryIndex !== null ? { summaryIndex } : {})
             });
         }
@@ -259,7 +462,7 @@ export class AppServerEventConverter {
             const itemId = asString(msg.call_id ?? msg.callId ?? msg.item_id ?? msg.itemId ?? msg.id);
             const delta = asString(msg.delta ?? msg.output ?? msg.stdout ?? msg.text);
             if (!itemId || !delta) return [];
-            return this.handleNotification('item/commandExecution/outputDelta', { itemId, delta });
+            return this.handleNotification('item/commandExecution/outputDelta', { itemId, delta, ...msgScope });
         }
 
         if (msgType === 'error') {
@@ -269,11 +472,27 @@ export class AppServerEventConverter {
                 return [];
             }
             const error = asString(msg.message ?? msg.reason ?? errorRecord?.message);
-            return error ? [{ type: 'task_failed', error }] : [];
+            return error ? addEventScope([{ type: 'task_failed', error }], msgScope) : [];
         }
 
         if (msgType === 'plan_update') {
-            return extractPlanUpdate(msg);
+            return addEventScope(extractPlanUpdate(msg), msgScope);
+        }
+
+        if (msgType === 'context_compacted') {
+            const threadId = asString(msg.thread_id ?? msg.threadId ?? msgScope.thread_id);
+            if (!threadId) {
+                return [];
+            }
+            const turnId = asString(msg.turn_id ?? msg.turnId ?? msgScope.turn_id);
+            return [
+                {
+                    type: 'thread_compacted',
+                    thread_id: threadId,
+                    ...(turnId ? { turn_id: turnId } : {})
+                },
+                ...addEventScope([{ type: 'context_compacted' }], msgScope)
+            ];
         }
 
         if (
@@ -282,29 +501,48 @@ export class AppServerEventConverter {
             msgType === 'skills_update_available' ||
             msgType === 'stream_error' ||
             msgType === 'warning' ||
-            msgType === 'context_compacted' ||
             msgType === 'terminal_interaction' ||
             msgType === 'user_message'
         ) {
             return [];
         }
 
-        return [msg as ConvertedEvent];
+        return addEventScope([msg as ConvertedEvent], msgScope);
     }
 
     handleNotification(method: string, params: unknown): ConvertedEvent[] {
         const events: ConvertedEvent[] = [];
         const paramsRecord = asRecord(params) ?? {};
+        const eventScope = extractEventScope(paramsRecord);
+        const scoped = (event: ConvertedEvent): ConvertedEvent => ({
+            ...eventScope,
+            ...event
+        });
 
         if (method.startsWith('codex/event/')) {
             return this.handleWrappedCodexEvent(paramsRecord) ?? events;
         }
 
         if (method === 'turn/plan/updated') {
-            return extractPlanUpdate(paramsRecord);
+            return addEventScope(extractPlanUpdate(paramsRecord), eventScope);
         }
 
-        if (method === 'account/rateLimits/updated' || method === 'thread/compacted') {
+        if (method === 'account/rateLimits/updated') {
+            return events;
+        }
+
+        if (method === 'thread/compacted') {
+            const threadId = asString(paramsRecord.threadId ?? paramsRecord.thread_id ?? eventScope.thread_id);
+            if (!threadId) {
+                return events;
+            }
+            const turnId = asString(paramsRecord.turnId ?? paramsRecord.turn_id ?? eventScope.turn_id);
+            events.push({
+                type: 'thread_compacted',
+                thread_id: threadId,
+                ...(turnId ? { turn_id: turnId } : {})
+            });
+            events.push(scoped({ type: 'context_compacted' }));
             return events;
         }
 
@@ -325,12 +563,12 @@ export class AppServerEventConverter {
             if (statusType === 'systemError') {
                 const error = asString(status?.message ?? status?.error ?? paramsRecord.message ?? paramsRecord.error)
                     ?? 'Codex thread entered systemError';
-                events.push({
+                events.push(scoped({
                     type: 'task_failed',
                     ...(threadId ? { thread_id: threadId } : {}),
                     terminal_source: 'thread_status',
                     error
-                });
+                }));
             }
             return events;
         }
@@ -338,7 +576,7 @@ export class AppServerEventConverter {
         if (method === 'turn/started') {
             const turn = asRecord(paramsRecord.turn) ?? paramsRecord;
             const turnId = asString(turn.turnId ?? turn.turn_id ?? turn.id);
-            events.push({ type: 'task_started', ...(turnId ? { turn_id: turnId } : {}) });
+            events.push(scoped({ type: 'task_started', ...(turnId ? { turn_id: turnId } : {}) }));
             return events;
         }
 
@@ -350,30 +588,30 @@ export class AppServerEventConverter {
             const errorMessage = asString(paramsRecord.error ?? paramsRecord.message ?? paramsRecord.reason);
 
             if (status === 'interrupted' || status === 'cancelled' || status === 'canceled') {
-                events.push({ type: 'turn_aborted', ...(turnId ? { turn_id: turnId } : {}) });
+                events.push(scoped({ type: 'turn_aborted', ...(turnId ? { turn_id: turnId } : {}) }));
                 return events;
             }
 
             if (status === 'failed' || status === 'error') {
-                events.push({ type: 'task_failed', ...(turnId ? { turn_id: turnId } : {}), ...(errorMessage ? { error: errorMessage } : {}) });
+                events.push(scoped({ type: 'task_failed', ...(turnId ? { turn_id: turnId } : {}), ...(errorMessage ? { error: errorMessage } : {}) }));
                 return events;
             }
 
-            events.push({ type: 'task_complete', ...(turnId ? { turn_id: turnId } : {}) });
+            events.push(scoped({ type: 'task_complete', ...(turnId ? { turn_id: turnId } : {}) }));
             return events;
         }
 
         if (method === 'turn/diff/updated') {
             const diff = asString(paramsRecord.diff ?? paramsRecord.unified_diff ?? paramsRecord.unifiedDiff);
             if (diff) {
-                events.push({ type: 'turn_diff', unified_diff: diff });
+                events.push(scoped({ type: 'turn_diff', unified_diff: diff }));
             }
             return events;
         }
 
         if (method === 'thread/tokenUsage/updated') {
             const info = asRecord(paramsRecord.tokenUsage ?? paramsRecord.token_usage ?? paramsRecord) ?? {};
-            events.push({ type: 'token_count', info });
+            events.push(scoped({ type: 'token_count', info }));
             return events;
         }
 
@@ -382,7 +620,7 @@ export class AppServerEventConverter {
             if (willRetry) return events;
             const message = asString(paramsRecord.message) ?? asString(asRecord(paramsRecord.error)?.message);
             if (message) {
-                events.push({ type: 'task_failed', error: message });
+                events.push(scoped({ type: 'task_failed', error: message }));
             }
             return events;
         }
@@ -413,7 +651,7 @@ export class AppServerEventConverter {
                 this.lastReasoningDeltaByItemId.set(itemId, delta);
                 const prev = this.reasoningBuffers.get(itemId) ?? '';
                 this.reasoningBuffers.set(itemId, prev + delta);
-                events.push({ type: 'agent_reasoning_delta', delta });
+                events.push(scoped({ type: 'agent_reasoning_delta', delta }));
             }
             return events;
         }
@@ -428,7 +666,7 @@ export class AppServerEventConverter {
                 }
                 this.reasoningSectionBreakKeys.add(key);
             }
-            events.push({ type: 'agent_reasoning_section_break' });
+            events.push(scoped({ type: 'agent_reasoning_section_break' }));
             return events;
         }
 
@@ -465,7 +703,7 @@ export class AppServerEventConverter {
                     }
                     const text = extractItemText(item) ?? this.agentMessageBuffers.get(itemId);
                     if (text) {
-                        events.push({ type: 'agent_message', message: text });
+                        events.push(scoped({ type: 'agent_message', message: text }));
                         this.completedAgentMessageItems.add(itemId);
                         this.agentMessageBuffers.delete(itemId);
                     }
@@ -481,7 +719,7 @@ export class AppServerEventConverter {
                     }
                     const text = extractReasoningText(item) ?? this.reasoningBuffers.get(itemId);
                     if (text) {
-                        events.push({ type: 'agent_reasoning', text });
+                        events.push(scoped({ type: 'agent_reasoning', text }));
                         this.completedReasoningItems.add(itemId);
                         this.reasoningBuffers.delete(itemId);
                     }
@@ -501,11 +739,11 @@ export class AppServerEventConverter {
                     if (autoApproved !== null) meta.auto_approved = autoApproved;
                     this.commandMeta.set(itemId, meta);
 
-                    events.push({
+                    events.push(scoped({
                         type: 'exec_command_begin',
                         call_id: itemId,
                         ...meta
-                    });
+                    }));
                 }
 
                 if (method === 'item/completed') {
@@ -516,7 +754,7 @@ export class AppServerEventConverter {
                     const exitCode = asNumber(item.exitCode ?? item.exit_code ?? item.exitcode);
                     const status = asString(item.status);
 
-                    events.push({
+                    events.push(scoped({
                         type: 'exec_command_end',
                         call_id: itemId,
                         ...meta,
@@ -525,7 +763,7 @@ export class AppServerEventConverter {
                         ...(error ? { error } : {}),
                         ...(exitCode !== null ? { exit_code: exitCode } : {}),
                         ...(status ? { status } : {})
-                    });
+                    }));
 
                     this.commandMeta.delete(itemId);
                     this.commandOutputBuffers.delete(itemId);
@@ -541,7 +779,7 @@ export class AppServerEventConverter {
                 const input = item.arguments ?? item.input ?? {};
 
                 if (method === 'item/started') {
-                    events.push({
+                    events.push(scoped({
                         type: 'mcp_tool_call_begin',
                         call_id: itemId,
                         server,
@@ -551,18 +789,45 @@ export class AppServerEventConverter {
                             tool,
                             arguments: input
                         }
-                    });
+                    }));
                 }
 
                 if (method === 'item/completed') {
                     const error = item.error;
-                    events.push({
+                    events.push(scoped({
                         type: 'mcp_tool_call_end',
                         call_id: itemId,
                         server,
                         tool,
                         result: error ? { Err: error } : item.result
-                    });
+                    }));
+                }
+
+                return events;
+            }
+
+            if (itemType === 'collabagenttoolcall') {
+                const toolName = normalizeCollabAgentToolName(item.tool ?? item.name);
+                if (!toolName) return events;
+
+                if (method === 'item/started') {
+                    events.push(scoped({
+                        type: 'codex_tool_call_begin',
+                        call_id: itemId,
+                        name: toolName,
+                        input: buildCollabAgentInput(item, toolName)
+                    }));
+                }
+
+                if (method === 'item/completed') {
+                    const status = asString(item.status);
+                    events.push(scoped({
+                        type: 'codex_tool_call_end',
+                        call_id: itemId,
+                        name: toolName,
+                        output: buildCollabAgentOutput(item, toolName),
+                        is_error: status === 'failed' || status === 'error'
+                    }));
                 }
 
                 return events;
@@ -577,11 +842,11 @@ export class AppServerEventConverter {
                     if (autoApproved !== null) meta.auto_approved = autoApproved;
                     this.fileChangeMeta.set(itemId, meta);
 
-                    events.push({
+                    events.push(scoped({
                         type: 'patch_apply_begin',
                         call_id: itemId,
                         ...meta
-                    });
+                    }));
                 }
 
                 if (method === 'item/completed') {
@@ -590,14 +855,14 @@ export class AppServerEventConverter {
                     const stderr = asString(item.stderr);
                     const success = asBoolean(item.success ?? item.ok ?? item.applied ?? item.status === 'completed');
 
-                    events.push({
+                    events.push(scoped({
                         type: 'patch_apply_end',
                         call_id: itemId,
                         ...meta,
                         ...(stdout ? { stdout } : {}),
                         ...(stderr ? { stderr } : {}),
                         success: success ?? false
-                    });
+                    }));
 
                     this.fileChangeMeta.delete(itemId);
                 }

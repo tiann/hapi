@@ -13,6 +13,10 @@ function calculateContextSize(usage: UsageData): number {
     return (usage.cache_creation_input_tokens || 0) + (usage.cache_read_input_tokens || 0) + usage.input_tokens
 }
 
+function isUsageVisibleInParentContext(usage: UsageData): boolean {
+    return usage.scope_role !== 'child'
+}
+
 export type LatestUsage = {
     inputTokens: number
     outputTokens: number
@@ -98,7 +102,7 @@ export function reduceChatBlocks(
     let latestUsage: LatestUsage | null = null
     for (let i = normalized.length - 1; i >= 0; i--) {
         const msg = normalized[i]
-        if (msg.usage) {
+        if (msg.usage && isUsageVisibleInParentContext(msg.usage)) {
             latestUsage = {
                 inputTokens: msg.usage.input_tokens,
                 outputTokens: msg.usage.output_tokens,

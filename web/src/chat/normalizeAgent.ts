@@ -32,18 +32,27 @@ function normalizeAgentEvent(value: unknown): AgentEvent | null {
     return value as AgentEvent
 }
 
-function normalizeCodexTokenUsage(value: unknown) {
+function normalizeCodexTokenUsage(value: unknown, data?: Record<string, unknown>) {
     const info = isObject(value) ? value : null
     if (!info) return null
+    const scope = data && isObject(data.scope) ? data.scope : null
     // Codex reports both:
     // - `total`: cumulative usage for the whole session (can be millions).
     // - `last`: current turn/request usage, which matches the live context bar.
     // Prefer `last`; falling back to `total` keeps older payloads working.
     const usageSource = isObject(info.last)
         ? info.last
-        : isObject(info.total)
-            ? info.total
-            : info
+        : isObject(info.lastTokenUsage)
+            ? info.lastTokenUsage
+            : isObject(info.last_token_usage)
+                ? info.last_token_usage
+                : isObject(info.total)
+                    ? info.total
+                    : isObject(info.totalTokenUsage)
+                        ? info.totalTokenUsage
+                        : isObject(info.total_token_usage)
+                            ? info.total_token_usage
+                            : info
     const inputTokens = asNumber(usageSource.inputTokens ?? usageSource.input_tokens)
     const outputTokens = asNumber(usageSource.outputTokens ?? usageSource.output_tokens)
     if (inputTokens === null || outputTokens === null) return null
@@ -54,9 +63,23 @@ function normalizeCodexTokenUsage(value: unknown) {
         // Codex `inputTokens` already includes cached input tokens; expose cache
         // hits for display, but use `context_tokens` to avoid double-counting.
         cache_creation_input_tokens: undefined,
-        cache_read_input_tokens: asNumber(usageSource.cachedInputTokens ?? usageSource.cacheReadInputTokens ?? usageSource.cache_read_input_tokens) ?? undefined,
+        cache_read_input_tokens: asNumber(
+            usageSource.cachedInputTokens
+            ?? usageSource.cached_input_tokens
+            ?? usageSource.cacheReadInputTokens
+            ?? usageSource.cache_read_input_tokens
+        ) ?? undefined,
         context_tokens: inputTokens,
-        context_window: asNumber(info.modelContextWindow ?? info.model_context_window) ?? undefined
+        context_window: asNumber(info.modelContextWindow ?? info.model_context_window) ?? undefined,
+        thread_id: asString(
+            data?.thread_id
+            ?? data?.threadId
+            ?? scope?.thread_id
+            ?? scope?.threadId
+            ?? info.thread_id
+            ?? info.threadId
+        ) ?? undefined,
+        scope_role: asString(data?.scope_role ?? data?.scopeRole ?? scope?.role) ?? undefined
     }
 }
 
@@ -422,6 +445,22 @@ export function normalizeAgentRecord(
         const data = isObject(content.data) ? content.data : null
         if (!data || typeof data.type !== 'string') return null
 
+        if (
+            data.type === 'agent-run-start'
+            || data.type === 'agent-run-update'
+            || data.type === 'agent-run-trace'
+        ) {
+            return {
+                id: messageId,
+                localId,
+                createdAt,
+                role: 'event',
+                content: data as AgentEvent,
+                isSidechain: false,
+                meta
+            }
+        }
+
         if (data.type === 'message' && typeof data.message === 'string') {
             return {
                 id: messageId,
@@ -446,8 +485,24 @@ export function normalizeAgentRecord(
             }
         }
 
+        if (data.type === 'context_compacted') {
+            return {
+                id: messageId,
+                localId,
+                createdAt,
+                role: 'event',
+                content: {
+                    type: 'compact',
+                    trigger: asString(data.trigger) ?? 'auto',
+                    preTokens: asNumber(data.preTokens ?? data.pre_tokens) ?? 0
+                },
+                isSidechain: false,
+                meta
+            }
+        }
+
         if (data.type === 'token_count') {
-            const usage = normalizeCodexTokenUsage(data.info)
+            const usage = normalizeCodexTokenUsage(data.info, data)
             return usage ? {
                 id: messageId,
                 localId,
