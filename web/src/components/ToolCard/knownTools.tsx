@@ -6,6 +6,7 @@ import type { ChecklistItem } from '@/components/ToolCard/checklist'
 import { extractTodoChecklist, extractUpdatePlanChecklist } from '@/components/ToolCard/checklist'
 import { basename, resolveDisplayPath } from '@/utils/path'
 import { getInputStringAny, truncate } from '@/lib/toolInputUtils'
+import { isSubagentToolName } from '@/chat/subagentTool'
 import {
     getCodexAgentActivity,
     getCodexAgentPrompt,
@@ -24,6 +25,8 @@ export type ToolPresentation = {
     title: string
     subtitle: string | null
     minimal: boolean
+    singleLine?: boolean
+    variant?: 'default' | 'aggregate'
 }
 
 function countLines(text: string): number {
@@ -52,6 +55,96 @@ function formatMCPTitle(toolName: string): string {
         return `MCP: ${serverName} ${toolPart}`
     }
     return `MCP: ${snakeToTitleWithSpaces(withoutPrefix)}`
+}
+
+function hasAggregateSummary(description: string | null): boolean {
+    if (!description) return false
+    const normalized = description.trim()
+    if (!normalized || !/\d/.test(normalized)) return false
+    return /(执行|编辑|读取|写入|搜索|等待|代理|run|edit|read|write|search|wait|agent)/i.test(normalized)
+}
+
+function extractAggregateSuffix(rawTitle: string): string {
+    const match = rawTitle.trim().match(/(\s+(?:等\s*\+\d+|\+\d+\s+more|\+\d+|\(\+\d+\)))$/i)
+    if (!match) return ''
+    const normalized = match[1].trim()
+    return normalized.startsWith('等') ? normalized : ` ${normalized}`
+}
+
+function readCommandString(input: unknown): string | null {
+    const direct = getInputStringAny(input, ['command', 'cmd'])
+    if (direct) return direct
+
+    if (!isObject(input)) return null
+    if (Array.isArray(input.command)) {
+        const parts = input.command.filter((part): part is string => typeof part === 'string' && part.length > 0)
+        return parts.length > 0 ? parts.join(' ') : null
+    }
+    return null
+}
+
+function classifyAggregateTitle(
+    opts: Omit<ToolOpts, 'metadata'> & { metadata: SessionMetadataSummary | null },
+): 'inspectFiles' | 'readFiles' | 'searchCode' | 'changeCode' | 'inspectChanges' | 'coordinateAgents' | 'runCommands' {
+    const description = opts.description ?? ''
+    const rawTitle = opts.toolName
+    const command = readCommandString(opts.input) ?? ''
+    const combined = `${rawTitle} ${command}`.toLowerCase()
+    const directPath = getInputStringAny(opts.input, ['file_path', 'path', 'file'])
+
+    if (opts.toolName === 'Edit' || opts.toolName === 'Write' || opts.toolName === 'MultiEdit' || opts.toolName === 'CodexPatch' || opts.toolName === 'CodexDiff') {
+        return 'changeCode'
+    }
+
+    if (opts.toolName === 'Read' || opts.toolName === 'NotebookRead') {
+        return 'readFiles'
+    }
+
+    if (opts.toolName === 'Grep') {
+        return 'searchCode'
+    }
+
+    if (opts.toolName === 'LS' || opts.toolName === 'Glob') {
+        return 'inspectFiles'
+    }
+
+    if (/(编辑|写入|patch|diff|edit|write|apply_patch|codexpatch|multiedit)/i.test(description) || /\b(apply_patch|edit|write)\b/i.test(combined)) {
+        return 'changeCode'
+    }
+
+    if (/(代理|agent)/i.test(description) || /(spawn_agent|wait_agent|resume_agent|send_input|close_agent)/i.test(rawTitle)) {
+        return 'coordinateAgents'
+    }
+
+    if (/\bgit\b/.test(combined) || /(变更|diff|status)/i.test(description)) {
+        return 'inspectChanges'
+    }
+
+    if (/\b(rg|grep|select-string|findstr|ag)\b/.test(combined) || /(搜索|search)/i.test(description)) {
+        return 'searchCode'
+    }
+
+    if (/\b(get-content|cat|type|head|tail|more)\b/.test(combined) || /(read file|读取文件)/i.test(rawTitle)) {
+        return 'readFiles'
+    }
+
+    if (directPath) {
+        return 'inspectFiles'
+    }
+
+    if (/\b(get-childitem|ls|dir|tree|glob|find)\b/.test(combined) || /(list files|search files|检查项目文件)/i.test(rawTitle)) {
+        return 'inspectFiles'
+    }
+
+    if (isObject(opts.input) && Array.isArray(opts.input.parsed_cmd)) {
+        const parsedTypes = opts.input.parsed_cmd
+            .filter(isObject)
+            .map((cmd) => typeof cmd.type === 'string' ? cmd.type.toLowerCase() : '')
+        if (parsedTypes.includes('write')) return 'changeCode'
+        if (parsedTypes.includes('read')) return 'inspectFiles'
+    }
+
+    return 'runCommands'
 }
 
 type ToolOpts = {
@@ -539,12 +632,50 @@ export function getToolPresentation(
     opts: Omit<ToolOpts, 'metadata'> & { metadata: SessionMetadataSummary | null },
     t?: Translator
 ): ToolPresentation {
+    const aggregateTitle = (() => {
+        if (isSubagentToolName(opts.toolName) || opts.toolName === 'CodexAgent') return null
+        if (!hasAggregateSummary(opts.description)) return null
+
+        const titleKey = classifyAggregateTitle(opts)
+        const title = t ? t(`tool.aggregate.${titleKey}`) : ({
+            inspectFiles: 'Inspect project files',
+            readFiles: 'Read project files',
+            searchCode: 'Search code',
+            changeCode: 'Process code changes',
+            inspectChanges: 'Inspect code changes',
+            coordinateAgents: 'Coordinate agent tasks',
+            runCommands: 'Handle project actions',
+        } satisfies Record<string, string>)[titleKey]
+
+        return { title: `${title}${extractAggregateSuffix(opts.toolName)}`, titleKey }
+    })()
+
+    if (aggregateTitle) {
+        return {
+            icon: aggregateTitle.titleKey === 'changeCode' || aggregateTitle.titleKey === 'inspectChanges'
+                ? <FileDiffIcon className={DEFAULT_ICON_CLASS} />
+                : aggregateTitle.titleKey === 'readFiles'
+                    ? <EyeIcon className={DEFAULT_ICON_CLASS} />
+                    : aggregateTitle.titleKey === 'searchCode' || aggregateTitle.titleKey === 'inspectFiles'
+                        ? <SearchIcon className={DEFAULT_ICON_CLASS} />
+                        : aggregateTitle.titleKey === 'coordinateAgents'
+                            ? <RocketIcon className={DEFAULT_ICON_CLASS} />
+                            : <TerminalIcon className={DEFAULT_ICON_CLASS} />,
+            title: aggregateTitle.title,
+            subtitle: null,
+            minimal: true,
+            singleLine: true,
+            variant: 'aggregate',
+        }
+    }
+
     if (opts.toolName.startsWith('mcp__')) {
         return {
             icon: <PuzzleIcon className={DEFAULT_ICON_CLASS} />,
             title: formatMCPTitle(opts.toolName),
             subtitle: null,
-            minimal: true
+            minimal: true,
+            variant: 'default',
         }
     }
 
@@ -555,7 +686,8 @@ export function getToolPresentation(
             icon: known.icon(opts),
             title: known.title(opts),
             subtitle: known.subtitle ? known.subtitle(opts) : null,
-            minimal
+            minimal,
+            variant: 'default',
         }
     }
 
@@ -586,6 +718,7 @@ export function getToolPresentation(
         icon: <WrenchIcon className={DEFAULT_ICON_CLASS} />,
         title,
         subtitle: subtitle && subtitle !== title ? truncate(subtitle, 80) : null,
-        minimal: true
+        minimal: true,
+        variant: 'default',
     }
 }

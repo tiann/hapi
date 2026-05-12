@@ -61,6 +61,18 @@ vi.mock('@/hooks/useTheme', () => ({
     ],
 }))
 
+vi.mock('@/hooks/useChatSurfaceColors', () => ({
+    useChatSurfaceColors: () => ({
+        aggregateToolCardTint: '#4F7CFF',
+        userMessageTint: null,
+        setAggregateToolCardTint: vi.fn(),
+        setUserMessageTint: vi.fn(),
+    }),
+    getChatSurfaceColorPresets: () => ['#4F7CFF', '#14B8A6'],
+    getColorPickerFallback: () => '#4F7CFF',
+    buildChatSurfaceBackgroundValue: (_target: string, tint: string | null) => tint ?? 'var(--default-bg)',
+}))
+
 // Mock languages
 vi.mock('@/lib/languages', () => ({
     getElevenLabsSupportedLanguages: () => [
@@ -172,6 +184,14 @@ describe('SettingsPage', () => {
         expect(screen.getAllByText('Compact (command only)').length).toBeGreaterThanOrEqual(1)
     })
 
+    it('renders the chat color settings', () => {
+        renderWithProviders(<SettingsPage />)
+        expect(screen.getAllByText('Aggregate Tool Card Background').length).toBeGreaterThanOrEqual(1)
+        expect(screen.getAllByText('User Message Background').length).toBeGreaterThanOrEqual(1)
+        expect(screen.getAllByText('Custom color').length).toBeGreaterThanOrEqual(2)
+        expect(screen.getAllByText('Reset').length).toBeGreaterThanOrEqual(2)
+    })
+
     it('uses correct i18n keys for the Enter Key setting', () => {
         const spyT = renderWithSpyT(<SettingsPage />)
         const calledKeys = spyT.mock.calls.map((call) => call[0])
@@ -180,5 +200,9 @@ describe('SettingsPage', () => {
         expect(calledKeys).toContain('settings.chat.enterBehavior.send')
         expect(calledKeys).toContain('settings.chat.terminalToolDisplay')
         expect(calledKeys).toContain('settings.chat.terminalToolDisplay.compact')
+        expect(calledKeys).toContain('settings.chat.aggregateToolCardBackground')
+        expect(calledKeys).toContain('settings.chat.userMessageBackground')
+        expect(calledKeys).toContain('settings.color.custom')
+        expect(calledKeys).toContain('settings.color.reset')
     })
 })

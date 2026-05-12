@@ -7,6 +7,7 @@ import { getTerminalFontSizeOptions, useTerminalFontSize, type TerminalFontSize 
 import { getComposerEnterBehaviorOptions, useComposerEnterBehavior, type ComposerEnterBehavior } from '@/hooks/useComposerEnterBehavior'
 import { getTerminalToolDisplayModeOptions, useTerminalToolDisplayMode, type TerminalToolDisplayMode } from '@/hooks/useTerminalToolDisplayMode'
 import { useAppearance, getAppearanceOptions, type AppearancePreference } from '@/hooks/useTheme'
+import { buildChatSurfaceBackgroundValue, getChatSurfaceColorPresets, getColorPickerFallback, useChatSurfaceColors } from '@/hooks/useChatSurfaceColors'
 import { PROTOCOL_VERSION } from '@hapi/protocol'
 
 const locales: { value: Locale; nativeLabel: string }[] = [
@@ -73,6 +74,87 @@ function ChevronDownIcon(props: { className?: string }) {
     )
 }
 
+function ColorPreview(props: { background: string; label: string }) {
+    return (
+        <span
+            className="inline-flex h-6 w-6 shrink-0 rounded-full border border-[var(--app-border)] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)]"
+            style={{ background: props.background }}
+            aria-label={props.label}
+            title={props.label}
+        />
+    )
+}
+
+function formatTintLabel(value: string | null, t: (key: string, params?: Record<string, string | number>) => string): string {
+    return value ? value.toUpperCase() : t('settings.color.default')
+}
+
+function ColorSettingControl(props: {
+    target: 'aggregateToolCard' | 'userMessage'
+    label: string
+    tint: string | null
+    previewBackground: string
+    pickerFallback: string
+    presets: readonly string[]
+    t: (key: string, params?: Record<string, string | number>) => string
+    onChange: (color: string) => void
+    onReset: () => void
+}) {
+    const currentLabel = formatTintLabel(props.tint, props.t)
+
+    return (
+        <div className="border-t border-[var(--app-divider)] px-3 py-3">
+            <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                    <div className="text-[var(--app-fg)]">{props.label}</div>
+                    <div className="text-xs text-[var(--app-hint)]">{currentLabel}</div>
+                </div>
+                <ColorPreview background={props.previewBackground} label={`${props.t('settings.color.preview')}: ${props.label}`} />
+            </div>
+
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+                {props.presets.map((color) => {
+                    const isSelected = props.tint === color
+                    return (
+                        <button
+                            key={color}
+                            type="button"
+                            aria-label={`${props.label}: ${color}`}
+                            title={color}
+                            onClick={() => props.onChange(color)}
+                            className={`flex h-8 w-8 items-center justify-center rounded-full border transition-transform hover:scale-[1.04] ${
+                                isSelected
+                                    ? 'border-[var(--app-link)] ring-2 ring-[var(--app-link)]/20'
+                                    : 'border-[var(--app-border)]'
+                            }`}
+                            style={{ background: buildChatSurfaceBackgroundValue(props.target, color) }}
+                        />
+                    )
+                })}
+
+                <label className="flex items-center gap-2 rounded-full border border-[var(--app-border)] bg-[var(--app-subtle-bg)] px-3 py-1.5 text-sm text-[var(--app-fg)]">
+                    <input
+                        type="color"
+                        value={props.tint ?? props.pickerFallback}
+                        aria-label={`${props.label} ${props.t('settings.color.custom')}`}
+                        onChange={(event) => props.onChange(event.target.value)}
+                        className="h-6 w-6 cursor-pointer rounded border-0 bg-transparent p-0"
+                    />
+                    <span>{props.t('settings.color.custom')}</span>
+                </label>
+
+                <button
+                    type="button"
+                    onClick={props.onReset}
+                    className="rounded-full border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-1.5 text-sm text-[var(--app-fg)] transition-colors hover:bg-[var(--app-subtle-bg)]"
+                >
+                    {props.t('settings.color.reset')}
+                </button>
+            </div>
+        </div>
+    )
+}
+
 export default function SettingsPage() {
     const { t, locale, setLocale } = useTranslation()
     const goBack = useAppGoBack()
@@ -95,6 +177,12 @@ export default function SettingsPage() {
     const { composerEnterBehavior, setComposerEnterBehavior } = useComposerEnterBehavior()
     const { terminalToolDisplayMode, setTerminalToolDisplayMode } = useTerminalToolDisplayMode()
     const { appearance, setAppearance } = useAppearance()
+    const {
+        aggregateToolCardTint,
+        userMessageTint,
+        setAggregateToolCardTint,
+        setUserMessageTint,
+    } = useChatSurfaceColors()
 
     // Voice language state - read from localStorage
     const [voiceLanguage, setVoiceLanguage] = useState<string | null>(() => {
@@ -106,6 +194,8 @@ export default function SettingsPage() {
     const composerEnterBehaviorOptions = getComposerEnterBehaviorOptions()
     const terminalToolDisplayModeOptions = getTerminalToolDisplayModeOptions()
     const appearanceOptions = getAppearanceOptions()
+    const colorPresets = getChatSurfaceColorPresets()
+    const colorPickerFallback = getColorPickerFallback()
     const currentLocale = locales.find((loc) => loc.value === locale)
     const currentAppearanceLabel = appearanceOptions.find((opt) => opt.value === appearance)?.labelKey ?? 'settings.display.appearance.system'
     const currentFontScaleLabel = fontScaleOptions.find((opt) => opt.value === fontScale)?.label ?? '100%'
@@ -530,6 +620,28 @@ export default function SettingsPage() {
                                 </div>
                             )}
                         </div>
+                        <ColorSettingControl
+                            target="aggregateToolCard"
+                            label={t('settings.chat.aggregateToolCardBackground')}
+                            tint={aggregateToolCardTint}
+                            previewBackground={buildChatSurfaceBackgroundValue('aggregateToolCard', aggregateToolCardTint)}
+                            pickerFallback={colorPickerFallback}
+                            presets={colorPresets}
+                            t={t}
+                            onChange={setAggregateToolCardTint}
+                            onReset={() => setAggregateToolCardTint(null)}
+                        />
+                        <ColorSettingControl
+                            target="userMessage"
+                            label={t('settings.chat.userMessageBackground')}
+                            tint={userMessageTint}
+                            previewBackground={buildChatSurfaceBackgroundValue('userMessage', userMessageTint)}
+                            pickerFallback={colorPickerFallback}
+                            presets={colorPresets}
+                            t={t}
+                            onChange={setUserMessageTint}
+                            onReset={() => setUserMessageTint(null)}
+                        />
                     </div>
 
                     {/* Voice Assistant section */}

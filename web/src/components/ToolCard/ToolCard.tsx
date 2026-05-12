@@ -348,6 +348,7 @@ function ToolCardInner(props: ToolCardProps) {
     const taskSummary = renderTaskSummary(props.block, props.metadata, t)
     const runningFrom = props.block.tool.startedAt ?? props.block.tool.createdAt
     const isCodexAgentCard = toolName === 'CodexAgent'
+    const isAggregateCard = presentation.variant === 'aggregate'
     const useCompactTerminalCard = shouldUseCompactTerminalToolCard(toolName, props.terminalToolDisplayMode)
     const showInline = shouldShowInlineToolCardBody(toolName, presentation.minimal, props.terminalToolDisplayMode)
     const CompactToolView = showInline ? getToolViewComponent(toolName) : null
@@ -373,7 +374,7 @@ function ToolCardInner(props: ToolCardProps) {
                     </div>
                     <CardTitle className={cn(
                         'min-w-0 text-sm font-medium leading-tight text-[var(--app-fg)]',
-                        isCodexAgentCard ? 'truncate whitespace-nowrap' : 'break-words'
+                        isCodexAgentCard || presentation.singleLine ? 'truncate whitespace-nowrap' : 'break-words'
                     )}>
                         {toolTitle}
                     </CardTitle>
@@ -382,7 +383,7 @@ function ToolCardInner(props: ToolCardProps) {
                 {subtitle ? (
                     <CardDescription className={cn(
                         'font-mono text-xs text-[var(--app-tool-card-subtitle)]',
-                        isCodexAgentCard || useCompactTerminalCard ? 'truncate whitespace-nowrap' : 'break-all'
+                        isCodexAgentCard || useCompactTerminalCard || isAggregateCard ? 'truncate whitespace-nowrap' : 'break-all'
                     )}>
                         {truncate(subtitle, 160)}
                     </CardDescription>
@@ -405,7 +406,10 @@ function ToolCardInner(props: ToolCardProps) {
     )
 
     return (
-        <Card className="overflow-hidden rounded-[20px] bg-[var(--app-tool-card-bg)] shadow-none">
+        <Card className={cn(
+            'overflow-hidden rounded-[20px] shadow-none',
+            isAggregateCard ? 'bg-[var(--app-tool-card-aggregate-bg)]' : 'bg-[var(--app-tool-card-bg)]'
+        )}>
             <CardHeader className={cn('space-y-0 p-3', subtitle ? 'pb-2' : null)}>
                 <Dialog>
                     <DialogTrigger asChild>

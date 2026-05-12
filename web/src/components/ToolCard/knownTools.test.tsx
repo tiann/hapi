@@ -71,6 +71,41 @@ describe('getToolPresentation — unknown tool semantic title + subtitle dedup',
         expect(presentation.title).toBe('mystery_tool')
         expect(presentation.subtitle).toBeNull()
     })
+
+    it('replaces aggregate raw shell titles with a friendly localized summary and preserves count subtitle fallback', () => {
+        const presentation = getToolPresentation({
+            toolName: `"C:\\Program Files\\PowerShell\\7\\pwsh.exe" -Command 'Get-ChildItem ...' 等 +4`,
+            input: { command: 'Get-ChildItem -Force' },
+            result: null,
+            childrenCount: 0,
+            description: '执行 5',
+            metadata: null,
+        }, (key) => ({
+            'tool.aggregate.inspectFiles': '检查项目文件',
+        }[key] ?? key))
+
+        expect(presentation.title).toBe('检查项目文件等 +4')
+        expect(presentation.subtitle).toBeNull()
+        expect(presentation.singleLine).toBe(true)
+        expect(presentation.variant).toBe('aggregate')
+    })
+
+    it('prefers code-change wording for mixed aggregate edit activity', () => {
+        const presentation = getToolPresentation({
+            toolName: `"C:\\Program Files\\PowerShell\\7\\pwsh.exe" -Command 'rg -n \"export ...\"' 等 +2`,
+            input: { command: 'rg -n "export" web/src' },
+            result: null,
+            childrenCount: 0,
+            description: '编辑 2 · 执行 4',
+            metadata: null,
+        }, (key) => ({
+            'tool.aggregate.changeCode': '处理代码变更',
+        }[key] ?? key))
+
+        expect(presentation.title).toBe('处理代码变更等 +2')
+        expect(presentation.subtitle).toBeNull()
+        expect(presentation.variant).toBe('aggregate')
+    })
 })
 
 describe('getToolPresentation — Codex agent tools', () => {
