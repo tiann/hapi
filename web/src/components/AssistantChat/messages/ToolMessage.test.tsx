@@ -29,6 +29,9 @@ const baseContext: HappyChatContextValue = {
     terminalToolDisplayMode: 'compact',
     disabled: false,
     onRefresh: () => {},
+    hasMoreMessages: false,
+    isLoadingMoreMessages: false,
+    loadOlderMessagesPreservingScroll: vi.fn(async () => false),
 }
 
 function renderToolMessage(props: Parameters<typeof HappyToolMessage>[0]) {

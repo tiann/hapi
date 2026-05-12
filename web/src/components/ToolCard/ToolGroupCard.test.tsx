@@ -95,6 +95,12 @@ describe('ToolGroupCard', () => {
         cleanup()
     })
 
+    it('uses the aggregate tool-card background surface', () => {
+        const view = renderCard(makeGroup())
+
+        expect(view.container.firstElementChild).toHaveClass('bg-[var(--app-tool-card-aggregate-bg)]')
+    })
+
     it('renders a collapsed target-first header', () => {
         renderCard(makeGroup())
 
