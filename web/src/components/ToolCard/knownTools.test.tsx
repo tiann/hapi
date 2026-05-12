@@ -106,6 +106,21 @@ describe('getToolPresentation — unknown tool semantic title + subtitle dedup',
         expect(presentation.subtitle).toBeNull()
         expect(presentation.variant).toBe('aggregate')
     })
+
+    it('does not treat single tools as aggregate without an aggregate suffix in the title', () => {
+        const presentation = getToolPresentation({
+            toolName: 'README.md',
+            input: { file_path: 'README.md' },
+            result: null,
+            childrenCount: 0,
+            description: 'Read 2 files',
+            metadata: null,
+        })
+
+        expect(presentation.title).toBe('Read file')
+        expect(presentation.subtitle).toBe('README.md')
+        expect(presentation.variant).toBe('default')
+    })
 })
 
 describe('getToolPresentation — Codex agent tools', () => {

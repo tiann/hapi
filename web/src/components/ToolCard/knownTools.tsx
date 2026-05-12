@@ -634,6 +634,8 @@ export function getToolPresentation(
 ): ToolPresentation {
     const aggregateTitle = (() => {
         if (isSubagentToolName(opts.toolName) || opts.toolName === 'CodexAgent') return null
+        const aggregateSuffix = extractAggregateSuffix(opts.toolName)
+        if (!aggregateSuffix) return null
         if (!hasAggregateSummary(opts.description)) return null
 
         const titleKey = classifyAggregateTitle(opts)
@@ -647,7 +649,7 @@ export function getToolPresentation(
             runCommands: 'Handle project actions',
         } satisfies Record<string, string>)[titleKey]
 
-        return { title: `${title}${extractAggregateSuffix(opts.toolName)}`, titleKey }
+        return { title: `${title}${aggregateSuffix}`, titleKey }
     })()
 
     if (aggregateTitle) {
