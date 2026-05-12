@@ -53,7 +53,7 @@ type DbPartRow = {
     data: string;
 };
 
-const DEFAULT_SESSION_START_WINDOW_MS = 2 * 60 * 1000;
+const DEFAULT_SESSION_START_WINDOW_MS = 5 * 60 * 1000;
 const DEFAULT_SCAN_INTERVAL_MS = 2000;
 const REPLAY_CLOCK_SKEW_MS = 2000;
 
