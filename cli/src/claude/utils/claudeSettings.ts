@@ -9,6 +9,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { logger } from '@/ui/logger';
+import { readSettingsSync } from '@/persistence';
 
 export interface ClaudeSettings {
   includeCoAuthoredBy?: boolean;
@@ -58,12 +59,20 @@ export function readClaudeSettings(): ClaudeSettings | null {
  */
 export function shouldIncludeCoAuthoredBy(): boolean {
   const settings = readClaudeSettings();
-  
+
   // If no settings file or includeCoAuthoredBy is not explicitly set,
   // default to true to maintain backward compatibility
   if (!settings || settings.includeCoAuthoredBy === undefined) {
     return true;
   }
-  
+
   return settings.includeCoAuthoredBy;
+}
+
+export function shouldEnableAutoTitle(): boolean {
+  const settings = readSettingsSync();
+  if (settings.enableAutoTitle === undefined) {
+    return true;
+  }
+  return settings.enableAutoTitle;
 }

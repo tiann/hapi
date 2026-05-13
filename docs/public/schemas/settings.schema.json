@@ -72,6 +72,11 @@
     "runnerAutoStartWhenRunningHappy": {
       "type": "boolean",
       "description": "Auto-start runner when running hapi command."
+    },
+    "enableAutoTitle": {
+      "type": "boolean",
+      "default": true,
+      "description": "Enable automatic session title changes by the agent. When false, the change_title tool is not registered and the title instruction is omitted from system prompts."
     }
   },
   "additionalProperties": false

@@ -11,6 +11,7 @@ import { z } from "zod";
 import { logger } from "@/ui/logger";
 import { ApiSessionClient } from "@/api/apiSession";
 import { randomUUID } from "node:crypto";
+import { shouldEnableAutoTitle } from "./claudeSettings";
 
 type StartHappyServerOptions = {
     emitTitleSummary?: boolean;
@@ -47,41 +48,46 @@ export async function startHappyServer(client: ApiSessionClient, options: StartH
         version: "1.0.0",
     });
 
-    // Avoid TS instantiation depth issues by widening the schema type.
-    const changeTitleInputSchema: z.ZodTypeAny = z.object({
-        title: z.string().describe('The new title for the chat session'),
-    });
+    const toolNames: string[] = [];
 
-    mcp.registerTool<any, any>('change_title', {
-        description: 'Change the title of the current chat session',
-        title: 'Change Chat Title',
-        inputSchema: changeTitleInputSchema,
-    }, async (args: { title: string }) => {
-        const response = await handler(args.title);
-        logger.debug('[hapiMCP] Response:', response);
-        
-        if (response.success) {
-            return {
-                content: [
-                    {
-                        type: 'text' as const,
-                        text: `Successfully changed chat title to: "${args.title}"`,
-                    },
-                ],
-                isError: false,
-            };
-        } else {
-            return {
-                content: [
-                    {
-                        type: 'text' as const,
-                        text: `Failed to change chat title: ${response.error || 'Unknown error'}`,
-                    },
-                ],
-                isError: true,
-            };
-        }
-    });
+    if (shouldEnableAutoTitle()) {
+        const changeTitleInputSchema: z.ZodTypeAny = z.object({
+            title: z.string().describe('The new title for the chat session'),
+        });
+
+        mcp.registerTool<any, any>('change_title', {
+            description: 'Change the title of the current chat session',
+            title: 'Change Chat Title',
+            inputSchema: changeTitleInputSchema,
+        }, async (args: { title: string }) => {
+            const response = await handler(args.title);
+            logger.debug('[hapiMCP] Response:', response);
+
+            if (response.success) {
+                return {
+                    content: [
+                        {
+                            type: 'text' as const,
+                            text: `Successfully changed chat title to: "${args.title}"`,
+                        },
+                    ],
+                    isError: false,
+                };
+            } else {
+                return {
+                    content: [
+                        {
+                            type: 'text' as const,
+                            text: `Failed to change chat title: ${response.error || 'Unknown error'}`,
+                        },
+                    ],
+                    isError: true,
+                };
+            }
+        });
+
+        toolNames.push('change_title');
+    }
 
     const transport = new StreamableHTTPServerTransport({
         // NOTE: Returning session id here will result in claude
@@ -114,7 +120,7 @@ export async function startHappyServer(client: ApiSessionClient, options: StartH
 
     return {
         url: baseUrl.toString(),
-        toolNames: ['change_title'],
+        toolNames,
         stop: () => {
             logger.debug('[hapiMCP] Stopping server');
             mcp.close();
