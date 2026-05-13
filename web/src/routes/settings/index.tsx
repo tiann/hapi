@@ -6,6 +6,15 @@ import { getFontScaleOptions, useFontScale, type FontScale } from '@/hooks/useFo
 import { getTerminalFontSizeOptions, useTerminalFontSize, type TerminalFontSize } from '@/hooks/useTerminalFontSize'
 import { getComposerEnterBehaviorOptions, useComposerEnterBehavior, type ComposerEnterBehavior } from '@/hooks/useComposerEnterBehavior'
 import { getTerminalToolDisplayModeOptions, useTerminalToolDisplayMode, type TerminalToolDisplayMode } from '@/hooks/useTerminalToolDisplayMode'
+import {
+    getChatSurfaceColorPickerValue,
+    getChatSurfaceColorPresetOptions,
+    toCustomChatSurfaceColorPreference,
+    toPresetChatSurfaceColorPreference,
+    useChatSurfaceColors,
+    type ChatSurfaceColorPreference,
+    type ChatSurfaceColorPreset,
+} from '@/hooks/useChatSurfaceColors'
 import { useAppearance, getAppearanceOptions, type AppearancePreference } from '@/hooks/useTheme'
 import { PROTOCOL_VERSION } from '@hapi/protocol'
 
@@ -73,6 +82,63 @@ function ChevronDownIcon(props: { className?: string }) {
     )
 }
 
+function ChatSurfaceColorControl(props: {
+    label: string
+    preference: ChatSurfaceColorPreference
+    onPresetChange: (preset: ChatSurfaceColorPreset) => void
+    onCustomChange: (value: string) => void
+    t: (key: string) => string
+}) {
+    const presetOptions = getChatSurfaceColorPresetOptions()
+    const pickerValue = getChatSurfaceColorPickerValue(props.preference)
+    const isCustomSelected = props.preference.startsWith('custom:')
+
+    return (
+        <div className="border-t border-[var(--app-divider)] px-3 py-3">
+            <div className="mb-2 text-[var(--app-fg)]">{props.label}</div>
+            <div className="flex flex-wrap gap-2">
+                {presetOptions.map((option) => {
+                    const selected = props.preference === toPresetChatSurfaceColorPreference(option.value)
+                    const swatchColor = getChatSurfaceColorPickerValue(toPresetChatSurfaceColorPreference(option.value))
+                    return (
+                        <button
+                            key={option.value}
+                            type="button"
+                            onClick={() => props.onPresetChange(option.value)}
+                            className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-sm transition-colors ${
+                                selected
+                                    ? 'border-[var(--app-link)] bg-[var(--app-subtle-bg)] text-[var(--app-link)]'
+                                    : 'border-[var(--app-border)] bg-[var(--app-bg)] text-[var(--app-fg)] hover:bg-[var(--app-subtle-bg)]'
+                            }`}
+                        >
+                            <span className="h-2.5 w-2.5 rounded-full opacity-80" style={{ backgroundColor: swatchColor }} />
+                            <span>{props.t(option.labelKey)}</span>
+                        </button>
+                    )
+                })}
+            </div>
+            <div className="mt-3 flex items-center justify-between gap-3">
+                <span className="text-sm text-[var(--app-hint)]">{props.t('settings.chat.surfaceColor.custom')}</span>
+                <label
+                    className={`inline-flex items-center rounded-xl border px-2 py-1 transition-colors ${
+                        isCustomSelected
+                            ? 'border-[var(--app-link)] bg-[var(--app-subtle-bg)]'
+                            : 'border-[var(--app-border)] bg-[var(--app-bg)]'
+                    }`}
+                >
+                    <input
+                        aria-label={props.t('settings.chat.surfaceColor.custom')}
+                        type="color"
+                        value={pickerValue}
+                        onChange={(event) => props.onCustomChange(event.target.value)}
+                        className="h-8 w-11 cursor-pointer appearance-none border-0 bg-transparent p-0"
+                    />
+                </label>
+            </div>
+        </div>
+    )
+}
+
 export default function SettingsPage() {
     const { t, locale, setLocale } = useTranslation()
     const goBack = useAppGoBack()
@@ -94,6 +160,12 @@ export default function SettingsPage() {
     const { terminalFontSize, setTerminalFontSize } = useTerminalFontSize()
     const { composerEnterBehavior, setComposerEnterBehavior } = useComposerEnterBehavior()
     const { terminalToolDisplayMode, setTerminalToolDisplayMode } = useTerminalToolDisplayMode()
+    const {
+        toolGroupBackground,
+        userMessageBackground,
+        setToolGroupBackground,
+        setUserMessageBackground,
+    } = useChatSurfaceColors()
     const { appearance, setAppearance } = useAppearance()
 
     // Voice language state - read from localStorage
@@ -530,6 +602,20 @@ export default function SettingsPage() {
                                 </div>
                             )}
                         </div>
+                        <ChatSurfaceColorControl
+                            label={t('settings.chat.groupedToolBackground')}
+                            preference={toolGroupBackground}
+                            onPresetChange={(preset) => setToolGroupBackground(toPresetChatSurfaceColorPreference(preset))}
+                            onCustomChange={(value) => setToolGroupBackground(toCustomChatSurfaceColorPreference(value))}
+                            t={t}
+                        />
+                        <ChatSurfaceColorControl
+                            label={t('settings.chat.userMessageBackground')}
+                            preference={userMessageBackground}
+                            onPresetChange={(preset) => setUserMessageBackground(toPresetChatSurfaceColorPreference(preset))}
+                            onCustomChange={(value) => setUserMessageBackground(toCustomChatSurfaceColorPreference(value))}
+                            t={t}
+                        />
                     </div>
 
                     {/* Voice Assistant section */}

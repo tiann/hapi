@@ -96,19 +96,27 @@ describe('ToolGroupCard', () => {
     })
 
     it('renders a collapsed target-first header', () => {
-        renderCard(makeGroup())
+        const view = renderCard(makeGroup())
 
-        expect(screen.getByRole('button', { name: /src\/a.ts/i })).toBeInTheDocument()
-        expect(screen.getByText('Read 1 · Run 1')).toBeInTheDocument()
-        expect(screen.queryByText('2 tool calls')).not.toBeInTheDocument()
+        expect(screen.getByRole('button', { name: /inspect project files \+1/i })).toBeInTheDocument()
+        expect(screen.getByText('Run 1 · Read 1')).toBeInTheDocument()
+        expect(screen.queryByText('src/a.ts')).not.toBeInTheDocument()
+        expect(screen.queryByText('bun test')).not.toBeInTheDocument()
+        expect(screen.queryByText('2 actions')).not.toBeInTheDocument()
+
+        expect(view.container.innerHTML).toContain('bg-[var(--app-tool-group-bg)]')
     })
 
     it('expands to show compact rows and opens a detail dialog per row', async () => {
         const view = renderCard(makeGroup())
-        const groupToggle = within(view.container).getByRole('button', { name: /src\/a.ts/i })
+        const groupToggle = within(view.container).getByRole('button', { name: /inspect project files \+1/i })
 
         fireEvent.click(groupToggle)
-        expect(screen.getByText('2 tool calls')).toBeInTheDocument()
+        expect(screen.getByText('2 actions')).toBeInTheDocument()
+        expect(screen.getByText('Inspect project files')).toBeInTheDocument()
+        expect(screen.getByText('Run project commands')).toBeInTheDocument()
+        expect(screen.queryByText('src/a.ts')).not.toBeInTheDocument()
+        expect(screen.queryByText('bun test')).not.toBeInTheDocument()
 
         const firstRowButton = within(view.container)
             .getAllByRole('button')
@@ -164,7 +172,7 @@ describe('ToolGroupCard', () => {
         }
 
         const view = render(<Harness />)
-        const groupToggle = within(view.container).getByRole('button', { name: /src\/a.ts/i })
+        const groupToggle = within(view.container).getByRole('button', { name: /inspect project files \+1/i })
 
         fireEvent.click(groupToggle)
 
@@ -224,7 +232,7 @@ describe('ToolGroupCard', () => {
         }
 
         const view = render(<Harness />)
-        const groupToggle = within(view.container).getByRole('button', { name: /src\/a.ts/i })
+        const groupToggle = within(view.container).getByRole('button', { name: /inspect project files \+1/i })
 
         fireEvent.click(groupToggle)
 
@@ -279,7 +287,7 @@ describe('ToolGroupCard', () => {
         }
 
         const view = render(<Harness />)
-        const groupToggle = within(view.container).getByRole('button', { name: /src\/a.ts/i })
+        const groupToggle = within(view.container).getByRole('button', { name: /inspect project files \+1/i })
 
         fireEvent.click(groupToggle)
 

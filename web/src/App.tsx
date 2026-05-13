@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Outlet, useLocation, useMatchRoute, useRouter } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
 import { getTelegramWebApp, isTelegramApp } from '@/hooks/useTelegram'
+import { initializeChatSurfaceColors } from '@/hooks/useChatSurfaceColors'
 import { initializeTheme } from '@/hooks/useTheme'
 import { useAuth } from '@/hooks/useAuth'
 import { useAuthSource } from '@/hooks/useAuthSource'
@@ -57,6 +58,7 @@ function AppInner() {
         tg?.ready()
         tg?.expand()
         initializeTheme()
+        initializeChatSurfaceColors()
     }, [])
 
     // Track visual viewport height for mobile keyboard avoidance (see useViewportHeight.ts)

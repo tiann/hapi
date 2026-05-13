@@ -5,10 +5,9 @@ import type { SessionMetadataSummary } from '@/types/api'
 import { useHappyChatContext } from '@/components/AssistantChat/context'
 import { ToolDetailDialogContent, ToolStatusIcon, toolStatusColorClass } from '@/components/ToolCard/ToolCard'
 import { getToolPresentation } from '@/components/ToolCard/knownTools'
+import { formatGroupedHeaderSubtitle, formatGroupedHeaderTitle, formatGroupedRowLabel } from '@/components/ToolCard/groupedPresentation'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { basename, resolveDisplayPath } from '@/utils/path'
-import { getInputStringAny, truncate } from '@/lib/toolInputUtils'
 import { cn } from '@/lib/utils'
 import { useTranslation } from '@/lib/use-translation'
 
@@ -40,50 +39,6 @@ function RowStatusBadge(props: { block: ToolCallBlock }) {
         return <SummaryBadge className="bg-amber-500/10 text-amber-700" text={t('toolGroup.rowStatus.pending')} />
     }
     return null
-}
-
-function formatPrimaryTitle(block: ToolGroupBlock, metadata: SessionMetadataSummary | null, t: (key: string, params?: Record<string, string | number>) => string): string {
-    const fileTargets = block.summary.fileTargets
-    if (fileTargets.length > 0) {
-        const display = resolveDisplayPath(fileTargets[0], metadata)
-        return fileTargets.length === 1
-            ? display
-            : t('toolGroup.primary.fileTargets', { target: display, n: fileTargets.length - 1 })
-    }
-
-    const commandTargets = block.summary.commandTargets
-    if (commandTargets.length > 0) {
-        const command = truncate(commandTargets[0], 72)
-        return commandTargets.length === 1
-            ? command
-            : t('toolGroup.primary.commandTargets', { target: command, n: commandTargets.length - 1 })
-    }
-
-    const searchTargets = block.summary.searchTargets
-    if (searchTargets.length > 0) {
-        const target = truncate(searchTargets[0], 72)
-        return searchTargets.length === 1
-            ? target
-            : t('toolGroup.primary.searchTargets', { target, n: searchTargets.length - 1 })
-    }
-
-    const urlTargets = block.summary.urlTargets
-    if (urlTargets.length > 0) {
-        const target = truncate(urlTargets[0], 72)
-        return urlTargets.length === 1
-            ? target
-            : t('toolGroup.primary.urlTargets', { target, n: urlTargets.length - 1 })
-    }
-
-    const otherTargets = block.summary.otherTargets
-    if (otherTargets.length > 0) {
-        const target = truncate(otherTargets[0], 72)
-        return otherTargets.length === 1
-            ? target
-            : t('toolGroup.primary.otherTargets', { target, n: otherTargets.length - 1 })
-    }
-
-    return t('toolGroup.title')
 }
 
 function formatActionSummary(block: ToolGroupBlock, t: (key: string, params?: Record<string, string | number>) => string): string | null {
@@ -129,15 +84,10 @@ function RowLabel(props: { block: ToolCallBlock; metadata: SessionMetadataSummar
                 <div className="flex h-3.5 w-3.5 shrink-0 items-center justify-center text-[var(--app-tool-card-accent)] leading-none">
                     {presentation.icon}
                 </div>
-                <div className="min-w-0 truncate text-sm font-medium text-[var(--app-fg)]">
-                    {presentation.title}
+                <div className="min-w-0 truncate whitespace-nowrap text-sm font-medium text-[var(--app-fg)]">
+                    {formatGroupedRowLabel(props.block, t)}
                 </div>
             </div>
-            {presentation.subtitle ? (
-                <div className="mt-1 truncate font-mono text-xs text-[var(--app-tool-card-subtitle)]">
-                    {truncate(presentation.subtitle, 120)}
-                </div>
-            ) : null}
         </div>
     )
 }
@@ -261,12 +211,12 @@ export function ToolGroupCard(props: {
         }, t)
     }, [selectedTool, props.metadata, t])
 
-    const primaryTitle = formatPrimaryTitle(props.block, props.metadata, t)
-    const subtitle = formatActionSummary(props.block, t)
+    const primaryTitle = formatGroupedHeaderTitle(props.block, t)
+    const subtitle = formatGroupedHeaderSubtitle(props.block, t) ?? formatActionSummary(props.block, t)
     const fileCount = props.block.summary.fileTargets.length
 
     return (
-        <Card className="overflow-hidden rounded-[20px] bg-[var(--app-tool-card-bg)] shadow-none">
+        <Card className="overflow-hidden rounded-[20px] bg-[var(--app-tool-group-bg)] shadow-none">
             <CardHeader className={cn('space-y-0 p-3', subtitle ? 'pb-2' : null)}>
                 <button
                     type="button"
@@ -280,12 +230,12 @@ export function ToolGroupCard(props: {
                                 <div className="shrink-0 flex h-3.5 w-3.5 items-center justify-center text-[var(--app-tool-card-accent)] leading-none">
                                     <DetailsIcon />
                                 </div>
-                                <CardTitle className="min-w-0 break-words text-sm font-medium leading-tight text-[var(--app-fg)]">
+                                <CardTitle className="min-w-0 truncate whitespace-nowrap text-sm font-medium leading-tight text-[var(--app-fg)]">
                                     {primaryTitle}
                                 </CardTitle>
                             </div>
                             {subtitle ? (
-                                <CardDescription className="break-all font-mono text-xs text-[var(--app-tool-card-subtitle)]">
+                                <CardDescription className="truncate whitespace-nowrap font-mono text-xs text-[var(--app-tool-card-subtitle)]">
                                     {subtitle}
                                 </CardDescription>
                             ) : null}
@@ -329,8 +279,6 @@ export function ToolGroupCard(props: {
 
                     <div className="flex flex-col gap-2">
                         {props.block.tools.map((tool) => {
-                            const filePath = getInputStringAny(tool.tool.input, ['file_path', 'path', 'file', 'filePath', 'notebook_path'])
-                            const resolvedPath = filePath ? resolveDisplayPath(filePath, props.metadata) : null
                             return (
                                 <button
                                     key={tool.id}
@@ -344,11 +292,6 @@ export function ToolGroupCard(props: {
                                     <RowLabel block={tool} metadata={props.metadata} />
                                     <div className="flex shrink-0 items-center gap-2">
                                         <RowStatusBadge block={tool} />
-                                        {resolvedPath && resolvedPath !== '<root>' ? (
-                                            <span className="hidden rounded-full bg-[var(--app-subtle-bg)] px-2 py-0.5 text-[11px] text-[var(--app-hint)] sm:inline-flex">
-                                                {basename(resolvedPath)}
-                                            </span>
-                                        ) : null}
                                     </div>
                                 </button>
                             )

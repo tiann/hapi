@@ -15,10 +15,12 @@
 
     --app-dialog-bg: #ffffff;
     --app-chat-user-bg: #f2f4f6;
+    --app-chat-user-surface-bg: var(--app-chat-user-bg);
     --app-chat-user-fg: #24292f;
     --app-chat-user-chip-bg: #DBEAFE;
     --app-chat-user-chip-fg: #1447E6;
     --app-tool-card-bg: #f2f4f6;
+    --app-tool-group-bg: var(--app-tool-card-bg);
     --app-tool-card-hover-bg: #e9edf2;
     --app-tool-card-accent: #7b8491;
     --app-tool-card-muted-action-fg: #aeb4bd;
@@ -93,10 +95,12 @@
 
     --app-dialog-bg: #202226;
     --app-chat-user-bg: #2b2f34;
+    --app-chat-user-surface-bg: var(--app-chat-user-bg);
     --app-chat-user-fg: #f5f7fa;
     --app-chat-user-chip-bg: rgba(37, 99, 235, 0.22);
     --app-chat-user-chip-fg: #93c5fd;
     --app-tool-card-bg: #2b2f34;
+    --app-tool-group-bg: var(--app-tool-card-bg);
     --app-tool-card-hover-bg: #343a41;
     --app-tool-card-accent: #b8c0cb;
     --app-tool-card-muted-action-fg: #7f8792;
