@@ -20,14 +20,15 @@ const jwtPayloadSchema = z.object({
 
 const DEFAULT_IDLE_TIMEOUT_MS = 15 * 60_000
 const DEFAULT_MAX_TERMINALS = 4
+const DEFAULT_MAX_HTTP_BUFFER_SIZE = Math.ceil((50 * 1024 * 1024 * 4) / 3)
 
-function resolveEnvNumber(name: string, fallback: number): number {
+function resolveEnvNumber(name: string, fallback: number, max = fallback): number {
     const raw = process.env[name]
     if (!raw) {
         return fallback
     }
     const parsed = Number.parseInt(raw, 10)
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
+    return Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, max) : fallback
 }
 
 export type SocketServerDeps = {
@@ -64,6 +65,7 @@ export function createSocketServer(deps: SocketServerDeps): {
     const engine = new Engine({
         path: '/socket.io/',
         cors: corsOptions,
+        maxHttpBufferSize: resolveEnvNumber('HAPI_SOCKET_MAX_BUFFER_SIZE', DEFAULT_MAX_HTTP_BUFFER_SIZE),
         allowRequest: async (req) => {
             const origin = req.headers.get('origin')
             if (!origin || allowAllOrigins || corsOrigins.includes(origin)) {
