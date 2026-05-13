@@ -202,14 +202,14 @@ export type SlashCommandsResponse = {
 
 export type SkillSummary = {
     name: string
-    description?: string
+    description: string
+    path: string
+    scope: 'repo' | 'user' | 'plugin' | 'admin'
+    pluginName?: string
+    pluginPath?: string
 }
 
-export type SkillsResponse = {
-    success: boolean
-    skills?: SkillSummary[]
-    error?: string
-}
+export type SkillsResponse = SkillSummary[]
 
 export type CodexModelSummary = {
     id: string

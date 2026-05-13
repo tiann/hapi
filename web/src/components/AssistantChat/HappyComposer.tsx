@@ -12,8 +12,9 @@ import {
     useRef,
     useState
 } from 'react'
-import type { AgentState, CodexCollaborationMode, PermissionMode } from '@/types/api'
+import type { AgentState, CodexCollaborationMode, PermissionMode, SkillSummary } from '@/types/api'
 import type { Suggestion } from '@/hooks/useActiveSuggestions'
+import type { SkillSearchResult } from '@/lib/skill-search'
 import type { ConversationStatus } from '@/realtime/types'
 import { useActiveWord } from '@/hooks/useActiveWord'
 import { useActiveSuggestions } from '@/hooks/useActiveSuggestions'
@@ -26,8 +27,10 @@ import { useComposerDraft } from '@/hooks/useComposerDraft'
 import { useComposerEnterBehavior } from '@/hooks/useComposerEnterBehavior'
 import { FloatingOverlay } from '@/components/ChatInput/FloatingOverlay'
 import { Autocomplete } from '@/components/ChatInput/Autocomplete'
+import { SkillPickerDialog } from '@/components/AssistantChat/SkillPickerDialog'
 import { StatusBar } from '@/components/AssistantChat/StatusBar'
 import { ComposerButtons } from '@/components/AssistantChat/ComposerButtons'
+import { CONTINUE_PROMPT, ContinuePromptDialog } from '@/components/AssistantChat/ContinuePromptDialog'
 import { AttachmentItem } from '@/components/AssistantChat/AttachmentItem'
 import { useTranslation } from '@/lib/use-translation'
 import { getModelOptionsForFlavor, getNextModelForFlavor } from './modelOptions'
@@ -37,6 +40,12 @@ import { getCodexComposerReasoningEffortOptions } from './codexReasoningEffortOp
 export interface TextInputState {
     text: string
     selection: { start: number; end: number }
+}
+
+type SkillPickerAnchor = {
+    text: string
+    selection: { start: number; end: number }
+    query: string
 }
 
 const defaultSuggestionHandler = async (): Promise<Suggestion[]> => []
@@ -70,6 +79,9 @@ export function HappyComposer(props: {
     terminalUnsupported?: boolean
     autocompletePrefixes?: string[]
     autocompleteSuggestions?: (query: string) => Promise<Suggestion[]>
+    availableSkills?: readonly SkillSummary[]
+    refreshSkills?: () => Promise<SkillSummary[]>
+    onQuickSendPrompt?: (text: string) => void
     // Voice assistant props
     voiceStatus?: ConversationStatus
     voiceMicMuted?: boolean
@@ -106,6 +118,9 @@ export function HappyComposer(props: {
         terminalUnsupported = false,
         autocompletePrefixes = ['@', '/', '$'],
         autocompleteSuggestions = defaultSuggestionHandler,
+        availableSkills = [],
+        refreshSkills,
+        onQuickSendPrompt,
         voiceStatus = 'disconnected',
         voiceMicMuted = false,
         onVoiceToggle,
@@ -150,6 +165,8 @@ export function HappyComposer(props: {
     const [isAborting, setIsAborting] = useState(false)
     const [isSwitching, setIsSwitching] = useState(false)
     const [showContinueHint, setShowContinueHint] = useState(false)
+    const [skillPickerAnchor, setSkillPickerAnchor] = useState<SkillPickerAnchor | null>(null)
+    const [continuePromptDialogOpen, setContinuePromptDialogOpen] = useState(false)
 
     const textareaRef = useRef<HTMLTextAreaElement>(null)
     const prevControlledByUser = useRef(controlledByUser)
@@ -181,7 +198,11 @@ export function HappyComposer(props: {
     const { isStandalone, isIOS } = usePWAInstall()
     const isIOSPWA = isIOS && isStandalone
     const bottomPaddingClass = isIOSPWA ? 'pb-0' : 'pb-3'
-    const activeWord = useActiveWord(inputState.text, inputState.selection, autocompletePrefixes)
+    const compactAutocompletePrefixes = useMemo(
+        () => autocompletePrefixes.filter((prefix) => prefix !== '$'),
+        [autocompletePrefixes]
+    )
+    const activeWord = useActiveWord(inputState.text, inputState.selection, compactAutocompletePrefixes)
     const [suggestions, selectedIndex, moveUp, moveDown, clearSuggestions] = useActiveSuggestions(
         activeWord,
         autocompleteSuggestions,
@@ -201,15 +222,12 @@ export function HappyComposer(props: {
     const handleSuggestionSelect = useCallback((index: number) => {
         const suggestion = suggestions[index]
         if (!suggestion || !textareaRef.current) return
-        if (suggestion.text.startsWith('$')) {
-            markSkillUsed(suggestion.text.slice(1))
-        }
 
         const result = applySuggestion(
             inputState.text,
             inputState.selection,
             suggestion.text,
-            autocompletePrefixes,
+            compactAutocompletePrefixes,
             true
         )
 
@@ -231,7 +249,76 @@ export function HappyComposer(props: {
         }, 0)
 
         haptic('light')
-    }, [api, suggestions, inputState, autocompletePrefixes, haptic])
+    }, [api, suggestions, inputState, compactAutocompletePrefixes, haptic])
+
+    const restoreTextareaFocus = useCallback((cursorPosition?: number) => {
+        setTimeout(() => {
+            const el = textareaRef.current
+            if (!el) return
+            if (cursorPosition !== undefined) {
+                el.setSelectionRange(cursorPosition, cursorPosition)
+            }
+            try {
+                el.focus({ preventScroll: true })
+            } catch {
+                el.focus()
+            }
+        }, 0)
+    }, [])
+
+    const handleSkillPickerClose = useCallback(() => {
+        setSkillPickerAnchor(null)
+        restoreTextareaFocus()
+    }, [restoreTextareaFocus])
+
+    const handleSkillSelect = useCallback((suggestion: SkillSearchResult) => {
+        if (!skillPickerAnchor) return
+        markSkillUsed(suggestion)
+
+        const result = applySuggestion(
+            skillPickerAnchor.text,
+            skillPickerAnchor.selection,
+            suggestion.text,
+            ['$'],
+            true
+        )
+
+        api.composer().setText(result.text)
+        setInputState({
+            text: result.text,
+            selection: { start: result.cursorPosition, end: result.cursorPosition }
+        })
+        setSkillPickerAnchor(null)
+        restoreTextareaFocus(result.cursorPosition)
+        haptic('light')
+    }, [api, haptic, restoreTextareaFocus, skillPickerAnchor])
+
+    const handleSkillPickerShortcut = useCallback(() => {
+        if (controlsDisabled || agentFlavor !== 'codex') return
+        clearSuggestions()
+        const el = textareaRef.current
+        const selection = el
+            ? { start: el.selectionStart, end: el.selectionEnd }
+            : inputState.selection
+        setSkillPickerAnchor({
+            text: inputState.text,
+            selection,
+            query: '',
+        })
+        haptic('light')
+    }, [agentFlavor, clearSuggestions, controlsDisabled, haptic, inputState.selection, inputState.text])
+
+    const handleContinuePromptShortcut = useCallback(() => {
+        if (controlsDisabled || !onQuickSendPrompt) return
+        setContinuePromptDialogOpen(true)
+        haptic('light')
+    }, [controlsDisabled, haptic, onQuickSendPrompt])
+
+    const handleContinuePromptConfirm = useCallback(() => {
+        if (controlsDisabled || !onQuickSendPrompt) return
+        onQuickSendPrompt(CONTINUE_PROMPT)
+        haptic('success')
+    }, [controlsDisabled, haptic, onQuickSendPrompt])
 
     const abortDisabled = controlsDisabled || isAborting || !threadIsRunning
     const switchDisabled = controlsDisabled || isSwitching || !controlledByUser
@@ -825,10 +912,29 @@ export function HappyComposer(props: {
                             voiceMicMuted={voiceMicMuted}
                             onVoiceToggle={onVoiceToggle ?? (() => {})}
                             onVoiceMicToggle={onVoiceMicToggle}
+                            showSkillPickerButton={agentFlavor === 'codex'}
+                            skillPickerDisabled={controlsDisabled}
+                            onSkillPickerOpen={handleSkillPickerShortcut}
+                            showContinuePromptButton={Boolean(onQuickSendPrompt)}
+                            continuePromptDisabled={controlsDisabled}
+                            onContinuePromptOpen={handleContinuePromptShortcut}
                             onSend={handleSend}
                         />
                     </div>
                 </ComposerPrimitive.Root>
+                <ContinuePromptDialog
+                    open={continuePromptDialogOpen}
+                    onOpenChange={setContinuePromptDialogOpen}
+                    onConfirm={handleContinuePromptConfirm}
+                />
+                <SkillPickerDialog
+                    open={skillPickerAnchor !== null}
+                    initialQuery={skillPickerAnchor?.query ?? ''}
+                    skills={availableSkills}
+                    refreshSkills={refreshSkills}
+                    onSelect={handleSkillSelect}
+                    onClose={handleSkillPickerClose}
+                />
             </div>
         </div>
     )

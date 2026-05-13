@@ -1,8 +1,32 @@
 import { describe, expect, it } from 'bun:test'
 import { Hono } from 'hono'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { Session, SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 import { createSessionsRoutes } from './sessions'
+
+async function writeSkill(skillDir: string, name: string, description: string): Promise<void> {
+    await mkdir(skillDir, { recursive: true })
+    await writeFile(join(skillDir, 'SKILL.md'), [
+        '---',
+        `name: ${name}`,
+        `description: ${description}`,
+        '---',
+        '',
+        `# ${name}`,
+        '',
+    ].join('\n'))
+}
+
+async function writePluginManifest(pluginRoot: string, name: string): Promise<void> {
+    await mkdir(join(pluginRoot, '.codex-plugin'), { recursive: true })
+    await writeFile(join(pluginRoot, '.codex-plugin', 'plugin.json'), JSON.stringify({
+        name,
+        skills: './skills/',
+    }))
+}
 
 function createSession(overrides?: Partial<Session>): Session {
     const baseMetadata = {
@@ -96,6 +120,81 @@ function createApp(session: Session, opts?: {
 }
 
 describe('sessions routes', () => {
+    it('returns plugin skills for Codex sessions', async () => {
+        const originalHome = process.env.HOME
+        const originalCodexHome = process.env.CODEX_HOME
+        const sandboxDir = await mkdtemp(join(tmpdir(), 'hapi-session-skills-'))
+        try {
+            const homeDir = join(sandboxDir, 'home')
+            const codexHome = join(sandboxDir, 'codex-home')
+            const projectDir = join(sandboxDir, 'project')
+            const pluginRoot = join(codexHome, 'plugins', 'cache', 'compound-engineering-plugin', 'compound-engineering', '3.6.1')
+            process.env.HOME = homeDir
+            process.env.CODEX_HOME = codexHome
+            await mkdir(join(projectDir, '.git'), { recursive: true })
+            await writeSkill(join(projectDir, '.agents', 'skills', 'review'), 'review', 'Review code.')
+            await writePluginManifest(pluginRoot, 'compound-engineering')
+            await writeSkill(join(pluginRoot, 'skills', 'ce-plan'), 'ce-plan', 'Plan work.')
+
+            const { app } = createApp(createSession({
+                metadata: {
+                    path: projectDir,
+                    host: 'localhost',
+                    flavor: 'codex'
+                }
+            }))
+
+            const response = await app.request('/api/sessions/session-1/skills')
+
+            expect(response.status).toBe(200)
+            expect(await response.json()).toEqual([
+                {
+                    name: 'review',
+                    description: 'Review code.',
+                    path: join(projectDir, '.agents', 'skills', 'review', 'SKILL.md'),
+                    scope: 'repo',
+                },
+                {
+                    name: 'compound-engineering:ce-plan',
+                    description: 'Plan work.',
+                    path: join(pluginRoot, 'skills', 'ce-plan', 'SKILL.md'),
+                    scope: 'plugin',
+                    pluginName: 'compound-engineering',
+                    pluginPath: pluginRoot,
+                },
+            ])
+        } finally {
+            if (originalHome === undefined) {
+                delete process.env.HOME
+            } else {
+                process.env.HOME = originalHome
+            }
+
+            if (originalCodexHome === undefined) {
+                delete process.env.CODEX_HOME
+            } else {
+                process.env.CODEX_HOME = originalCodexHome
+            }
+
+            await rm(sandboxDir, { recursive: true, force: true })
+        }
+    })
+
+    it('returns no skills for non-Codex sessions', async () => {
+        const { app } = createApp(createSession({
+            metadata: {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'claude'
+            }
+        }))
+
+        const response = await app.request('/api/sessions/session-1/skills')
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual([])
+    })
+
     it('rejects collaboration mode changes for local Codex sessions', async () => {
         const session = createSession({
             agentState: {
