@@ -875,6 +875,23 @@ describe('codexRemoteLauncher', () => {
         expect(harness.startTurnParams[0]?.model).toBeUndefined();
     });
 
+    it('recognizes name-only plan collaboration mode entries', async () => {
+        harness.collaborationModeResponse = { data: [{ name: 'plan' }] };
+        const { session } = createSessionStub(['plan this'], {
+            permissionMode: 'default',
+            collaborationMode: 'plan',
+            model: 'gpt-5.4'
+        });
+
+        const exitReason = await codexRemoteLauncher(session as never);
+
+        expect(exitReason).toBe('exit');
+        expect(harness.startTurnParams).toHaveLength(1);
+        expect(harness.startTurnParams[0]?.collaborationMode).toMatchObject({
+            mode: 'plan'
+        });
+    });
+
     it('retries plan turns without collaborationMode when the runtime rejects the field', async () => {
         harness.startTurnErrors.push(new Error('unknown field collaborationMode'));
         const { session, sessionEvents } = createSessionStub(['plan this'], {
@@ -892,6 +909,28 @@ describe('codexRemoteLauncher', () => {
         });
         expect(harness.startTurnParams[1]?.collaborationMode).toBeUndefined();
         expect(harness.startTurnParams[1]?.model).toBe('gpt-5.4');
+        expect(sessionEvents).toContainEqual({
+            type: 'message',
+            message: 'Plan mode is not supported by this Codex runtime. Sent as a normal turn instead.'
+        });
+    });
+
+    it('retries plan turns when unsupported errors use spaced collaboration mode wording', async () => {
+        harness.startTurnErrors.push(new Error('unsupported collaboration mode'));
+        const { session, sessionEvents } = createSessionStub(['plan this'], {
+            permissionMode: 'default',
+            collaborationMode: 'plan',
+            model: 'gpt-5.4'
+        });
+
+        const exitReason = await codexRemoteLauncher(session as never);
+
+        expect(exitReason).toBe('exit');
+        expect(harness.startTurnParams).toHaveLength(2);
+        expect(harness.startTurnParams[0]?.collaborationMode).toMatchObject({
+            mode: 'plan'
+        });
+        expect(harness.startTurnParams[1]?.collaborationMode).toBeUndefined();
         expect(sessionEvents).toContainEqual({
             type: 'message',
             message: 'Plan mode is not supported by this Codex runtime. Sent as a normal turn instead.'

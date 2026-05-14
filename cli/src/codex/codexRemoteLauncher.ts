@@ -232,7 +232,8 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         const shouldRetryWithoutCollaborationMode = (error: unknown): boolean => {
             const message = errorMessage(error).toLowerCase();
             const mentionsCollaborationMode = message.includes('collaborationmode')
-                || message.includes('collaboration_mode');
+                || message.includes('collaboration_mode')
+                || message.includes('collaboration mode');
             if (!mentionsCollaborationMode) {
                 return false;
             }
@@ -259,7 +260,8 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                         return true;
                     }
                     const entryRecord = asRecord(entry);
-                    if (asString(entryRecord?.mode) === 'plan') {
+                    const mode = asString(entryRecord?.mode) ?? asString(entryRecord?.name);
+                    if (mode === 'plan') {
                         return true;
                     }
                 }
