@@ -78,6 +78,72 @@ describe('registerAppServerPermissionHandlers', () => {
         });
     });
 
+    it('forwards generic tool approval requests with the app-server tool name', async () => {
+        const { client, handlers } = createClient();
+        const permissionHandler = {
+            handleToolCall: vi.fn(async () => ({ decision: 'approved' }))
+        };
+
+        registerAppServerPermissionHandlers({
+            client: client as never,
+            permissionHandler: permissionHandler as never
+        });
+
+        const handler = handlers.get('item/tool/requestApproval');
+        expect(handler).toBeTypeOf('function');
+
+        await expect(handler?.({
+            itemId: 'tool-123',
+            toolName: 'exit_plan_mode',
+            input: { plan: '1. Edit files' }
+        })).resolves.toEqual({ decision: 'accept' });
+
+        expect(permissionHandler.handleToolCall).toHaveBeenCalledWith(
+            'tool-123',
+            'exit_plan_mode',
+            { plan: '1. Edit files' }
+        );
+    });
+
+    it('maps latest permissions approval requests to granted permission profiles', async () => {
+        const { client, handlers } = createClient();
+        const permissions = {
+            network: { enabled: true },
+            fileSystem: null
+        };
+        const permissionHandler = {
+            handleToolCall: vi.fn(async () => ({ decision: 'approved_for_session' }))
+        };
+
+        registerAppServerPermissionHandlers({
+            client: client as never,
+            permissionHandler: permissionHandler as never
+        });
+
+        const handler = handlers.get('item/permissions/requestApproval');
+        expect(handler).toBeTypeOf('function');
+
+        await expect(handler?.({
+            itemId: 'perm-123',
+            reason: 'Need network',
+            cwd: '/workspace/project',
+            permissions
+        })).resolves.toEqual({
+            permissions,
+            scope: 'session'
+        });
+
+        expect(permissionHandler.handleToolCall).toHaveBeenCalledWith(
+            'perm-123',
+            'CodexPermission',
+            {
+                message: 'Need network',
+                cwd: '/workspace/project',
+                permissions
+            }
+        );
+    });
+
     it('accepts MCP elicitation requests with schema defaults', async () => {
         const { client, handlers } = createClient();
         const permissionHandler = {

@@ -221,6 +221,53 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             return typeof value === 'string' && value.length > 0 ? value : null;
         };
 
+        const errorMessage = (error: unknown): string => {
+            return error instanceof Error ? error.message : String(error);
+        };
+
+        const isExitPlanModeTool = (toolName: string): boolean => {
+            return toolName === 'exit_plan_mode' || toolName === 'ExitPlanMode';
+        };
+
+        const shouldRetryWithoutCollaborationMode = (error: unknown): boolean => {
+            const message = errorMessage(error).toLowerCase();
+            const mentionsCollaborationMode = message.includes('collaborationmode')
+                || message.includes('collaboration_mode');
+            if (!mentionsCollaborationMode) {
+                return false;
+            }
+
+            return message.includes('requires experimentalapi')
+                || message.includes('unknown field')
+                || message.includes('unsupported')
+                || message.includes('unrecognized')
+                || message.includes('unexpected')
+                || message.includes('invalid field');
+        };
+
+        const responseContainsPlanCollaborationMode = (response: unknown): boolean => {
+            const record = asRecord(response);
+            const candidates = [
+                Array.isArray(response) ? response : undefined,
+                Array.isArray(record?.data) ? record.data : undefined
+            ];
+
+            for (const candidate of candidates) {
+                if (!candidate) continue;
+                for (const entry of candidate) {
+                    if (entry === 'plan') {
+                        return true;
+                    }
+                    const entryRecord = asRecord(entry);
+                    if (asString(entryRecord?.mode) === 'plan') {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        };
+
         const applyResolvedModel = (value: unknown): string | undefined => {
             const resolvedModel = asString(value) ?? undefined;
             if (!resolvedModel) {
@@ -429,6 +476,10 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     is_error: !approved,
                     id: randomUUID()
                 });
+                if (approved && isExitPlanModeTool(toolName)) {
+                    session.setCollaborationMode('default');
+                    logger.debug('[Codex] exit_plan_mode approved; collaborationMode reset to default');
+                }
             }
         });
         const reasoningProcessor = new ReasoningProcessor((message) => {
@@ -2174,6 +2225,18 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 experimentalApi: true
             }
         });
+        let supportsTurnCollaborationMode = true;
+        let supportsPlanCollaborationMode = true;
+        try {
+            const response = await appServerClient.listCollaborationModes();
+            const hasPlanMode = responseContainsPlanCollaborationMode(response);
+            logger.debug(`[Codex] collaborationMode/list plan=${hasPlanMode}`);
+            if (!hasPlanMode) {
+                supportsPlanCollaborationMode = false;
+            }
+        } catch (error) {
+            logger.debug(`[Codex] collaborationMode/list failed: ${errorMessage(error)}`);
+        }
 
         let hasThread = false;
         let pending: QueuedMessage | null = null;
@@ -2415,21 +2478,55 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     }
                 }
 
-                const turnParams = buildTurnStartParams({
-                    threadId: this.currentThreadId,
-                    message: message.message,
-                    cwd: session.path,
-                    mode: {
-                        ...message.mode,
-                        model: session.getModel() ?? message.mode.model
-                    },
-                    cliOverrides: session.codexCliOverrides
-                });
                 turnInFlight = true;
                 allowAnonymousTerminalEvent = false;
-                const turnResponse = await appServerClient.startTurn(turnParams, {
-                    signal: this.abortController.signal
+                const mode = {
+                    ...message.mode,
+                    model: session.getModel() ?? message.mode.model
+                };
+                const shouldSendCollaborationMode = supportsTurnCollaborationMode
+                    && Boolean(mode.collaborationMode)
+                    && (mode.collaborationMode !== 'plan' || supportsPlanCollaborationMode);
+                const buildParams = (suppressCollaborationMode: boolean) => buildTurnStartParams({
+                    threadId: this.currentThreadId!,
+                    message: message.message,
+                    cwd: session.path,
+                    mode,
+                    cliOverrides: session.codexCliOverrides,
+                    overrides: suppressCollaborationMode
+                        ? { suppressCollaborationMode: true }
+                        : undefined
                 });
+                if (
+                    mode.collaborationMode === 'plan'
+                    && (!supportsTurnCollaborationMode || !supportsPlanCollaborationMode)
+                ) {
+                    session.sendSessionEvent({
+                        type: 'message',
+                        message: 'Plan mode is not supported by this Codex runtime. Sent as a normal turn instead.'
+                    });
+                }
+                let turnResponse: unknown;
+                try {
+                    turnResponse = await appServerClient.startTurn(buildParams(!shouldSendCollaborationMode), {
+                        signal: this.abortController.signal
+                    });
+                } catch (error) {
+                    if (shouldSendCollaborationMode && shouldRetryWithoutCollaborationMode(error)) {
+                        supportsTurnCollaborationMode = false;
+                        if (mode.collaborationMode === 'plan') {
+                            session.sendSessionEvent({
+                                type: 'message',
+                                message: 'Plan mode is not supported by this Codex runtime. Sent as a normal turn instead.'
+                            });
+                        }
+                        turnResponse = await appServerClient.startTurn(buildParams(true), {
+                            signal: this.abortController.signal
+                        });
+                    } else {
+                        throw error;
+                    }
+                }
                 const turnRecord = asRecord(turnResponse);
                 const turn = turnRecord ? asRecord(turnRecord.turn) : null;
                 const turnId = asString(turn?.id);

@@ -44,6 +44,19 @@ export interface ModelListResponse {
     [key: string]: unknown;
 }
 
+export interface CollaborationModeListItem {
+    name?: string;
+    mode?: 'plan' | 'default' | string | null;
+    model?: string | null;
+    reasoning_effort?: ReasoningEffort | null;
+    [key: string]: unknown;
+}
+
+export interface CollaborationModeListResponse {
+    data?: CollaborationModeListItem[];
+    [key: string]: unknown;
+}
+
 export interface ThreadStartParams {
     model?: string;
     modelProvider?: string;

@@ -5,10 +5,16 @@ import type { EnhancedMode } from './loop';
 const harness = vi.hoisted(() => ({
     notifications: [] as Array<{ method: string; params: unknown }>,
     registerRequestCalls: [] as string[],
+    requestHandlers: new Map<string, (params: unknown) => Promise<unknown> | unknown>(),
     initializeCalls: [] as unknown[],
+    listCollaborationModeCalls: 0,
+    collaborationModeResponse: { data: [{ mode: 'default' }, { mode: 'plan' }] } as unknown,
+    failListCollaborationModes: false,
     startThreadIds: [] as string[],
     resumeThreadIds: [] as string[],
     startTurnThreadIds: [] as string[],
+    startTurnParams: [] as Array<Record<string, unknown>>,
+    startTurnErrors: [] as Error[],
     interruptedTurns: [] as Array<{ threadId: string; turnId: string }>,
     compactThreadIds: [] as string[],
     suppressTurnCompletion: false,
@@ -55,8 +61,17 @@ vi.mock('./codexAppServerClient', () => {
             this.notificationHandler = handler;
         }
 
-        registerRequestHandler(method: string): void {
+        async listCollaborationModes(): Promise<unknown> {
+            harness.listCollaborationModeCalls += 1;
+            if (harness.failListCollaborationModes) {
+                throw new Error('collaborationMode/list failed');
+            }
+            return harness.collaborationModeResponse;
+        }
+
+        registerRequestHandler(method: string, handler: (params: unknown) => Promise<unknown> | unknown): void {
             harness.registerRequestCalls.push(method);
+            harness.requestHandlers.set(method, handler);
         }
 
         async startThread(): Promise<{ thread: { id: string }; model: string }> {
@@ -88,6 +103,11 @@ vi.mock('./codexAppServerClient', () => {
         }
 
         async startTurn(params?: { threadId?: string; input?: Array<{ text?: string }>; message?: string; userMessage?: string }): Promise<{ turn: { id?: string } }> {
+            harness.startTurnParams.push((params ?? {}) as Record<string, unknown>);
+            const nextError = harness.startTurnErrors.shift();
+            if (nextError) {
+                throw nextError;
+            }
             const threadId = params?.threadId ?? 'thread-unknown';
             harness.startTurnThreadIds.push(threadId);
             harness.startTurnMessages.push(params?.input?.[0]?.text ?? params?.message ?? params?.userMessage ?? '');
@@ -639,17 +659,18 @@ type FakeAgentState = {
 function createMode(): EnhancedMode {
     return {
         permissionMode: 'default',
-        collaborationMode: 'default'
+        collaborationMode: 'default',
+        model: 'gpt-5.4'
     };
 }
 
-function createSessionStub(messages = ['hello from launcher test']) {
+function createSessionStub(messages = ['hello from launcher test'], mode = createMode()) {
     const queue = new MessageQueue2<EnhancedMode>((mode) => JSON.stringify(mode));
     messages.forEach((message, index) => {
         if (index === 0 && messages.length > 1) {
-            queue.pushIsolateAndClear(message, createMode());
+            queue.pushIsolateAndClear(message, mode);
         } else {
-            queue.push(message, createMode());
+            queue.push(message, mode);
         }
     });
     queue.close();
@@ -660,7 +681,9 @@ function createSessionStub(messages = ['hello from launcher test']) {
     const thinkingChanges: boolean[] = [];
     const foundSessionIds: string[] = [];
     const resetThreadCalls: string[] = [];
-    let currentModel: string | null | undefined;
+    const collaborationModes: Array<EnhancedMode['collaborationMode'] | undefined> = [];
+    let currentModel: string | null | undefined = mode.model;
+    let currentCollaborationMode: EnhancedMode['collaborationMode'] | undefined = mode.collaborationMode;
     let agentState: FakeAgentState = {
         requests: {},
         completedRequests: {}
@@ -706,6 +729,13 @@ function createSessionStub(messages = ['hello from launcher test']) {
         getModel() {
             return currentModel;
         },
+        getCollaborationMode() {
+            return currentCollaborationMode;
+        },
+        setCollaborationMode(nextMode: EnhancedMode['collaborationMode']) {
+            currentCollaborationMode = nextMode;
+            collaborationModes.push(nextMode);
+        },
         onThinkingChange(nextThinking: boolean) {
             session.thinking = nextThinking;
             thinkingChanges.push(nextThinking);
@@ -739,6 +769,8 @@ function createSessionStub(messages = ['hello from launcher test']) {
         resetThreadCalls,
         rpcHandlers,
         getModel: () => currentModel,
+        getCollaborationMode: () => currentCollaborationMode,
+        collaborationModes,
         getAgentState: () => agentState
     };
 }
@@ -747,10 +779,16 @@ describe('codexRemoteLauncher', () => {
     afterEach(() => {
         harness.notifications = [];
         harness.registerRequestCalls = [];
+        harness.requestHandlers = new Map();
         harness.initializeCalls = [];
+        harness.listCollaborationModeCalls = 0;
+        harness.collaborationModeResponse = { data: [{ mode: 'default' }, { mode: 'plan' }] };
+        harness.failListCollaborationModes = false;
         harness.startThreadIds = [];
         harness.resumeThreadIds = [];
         harness.startTurnThreadIds = [];
+        harness.startTurnParams = [];
+        harness.startTurnErrors = [];
         harness.interruptedTurns = [];
         harness.compactThreadIds = [];
         harness.suppressTurnCompletion = false;
@@ -814,6 +852,123 @@ describe('codexRemoteLauncher', () => {
         expect(sessionEvents.filter((event) => event.type === 'ready').length).toBeGreaterThanOrEqual(1);
         expect(thinkingChanges).toContain(true);
         expect(session.thinking).toBe(false);
+    });
+
+    it('sends Codex plan collaboration mode when the app-server advertises it', async () => {
+        const { session } = createSessionStub(['plan this'], {
+            permissionMode: 'default',
+            collaborationMode: 'plan',
+            model: 'gpt-5.4'
+        });
+
+        const exitReason = await codexRemoteLauncher(session as never);
+
+        expect(exitReason).toBe('exit');
+        expect(harness.listCollaborationModeCalls).toBe(1);
+        expect(harness.startTurnParams).toHaveLength(1);
+        expect(harness.startTurnParams[0]?.collaborationMode).toMatchObject({
+            mode: 'plan',
+            settings: {
+                model: 'gpt-5.4'
+            }
+        });
+        expect(harness.startTurnParams[0]?.model).toBeUndefined();
+    });
+
+    it('retries plan turns without collaborationMode when the runtime rejects the field', async () => {
+        harness.startTurnErrors.push(new Error('unknown field collaborationMode'));
+        const { session, sessionEvents } = createSessionStub(['plan this'], {
+            permissionMode: 'default',
+            collaborationMode: 'plan',
+            model: 'gpt-5.4'
+        });
+
+        const exitReason = await codexRemoteLauncher(session as never);
+
+        expect(exitReason).toBe('exit');
+        expect(harness.startTurnParams).toHaveLength(2);
+        expect(harness.startTurnParams[0]?.collaborationMode).toMatchObject({
+            mode: 'plan'
+        });
+        expect(harness.startTurnParams[1]?.collaborationMode).toBeUndefined();
+        expect(harness.startTurnParams[1]?.model).toBe('gpt-5.4');
+        expect(sessionEvents).toContainEqual({
+            type: 'message',
+            message: 'Plan mode is not supported by this Codex runtime. Sent as a normal turn instead.'
+        });
+    });
+
+    it('does not retry unrelated collaborationMode errors as normal turns', async () => {
+        harness.startTurnErrors.push(new Error('collaborationMode value failed policy validation'));
+        const { session, sessionEvents } = createSessionStub(['plan this'], {
+            permissionMode: 'default',
+            collaborationMode: 'plan',
+            model: 'gpt-5.4'
+        });
+
+        const exitReason = await codexRemoteLauncher(session as never);
+
+        expect(exitReason).toBe('exit');
+        expect(harness.startTurnParams).toHaveLength(1);
+        expect(sessionEvents).not.toContainEqual({
+            type: 'message',
+            message: 'Plan mode is not supported by this Codex runtime. Sent as a normal turn instead.'
+        });
+        expect(sessionEvents).toContainEqual({
+            type: 'message',
+            message: 'Process exited unexpectedly'
+        });
+    });
+
+    it('falls back to a normal turn when collaborationMode/list omits plan', async () => {
+        harness.collaborationModeResponse = { data: [{ mode: 'default' }] };
+        const { session, sessionEvents } = createSessionStub(['plan this'], {
+            permissionMode: 'default',
+            collaborationMode: 'plan',
+            model: 'gpt-5.4'
+        });
+
+        const exitReason = await codexRemoteLauncher(session as never);
+
+        expect(exitReason).toBe('exit');
+        expect(harness.startTurnParams).toHaveLength(1);
+        expect(harness.startTurnParams[0]?.collaborationMode).toBeUndefined();
+        expect(harness.startTurnParams[0]?.model).toBe('gpt-5.4');
+        expect(sessionEvents).toContainEqual({
+            type: 'message',
+            message: 'Plan mode is not supported by this Codex runtime. Sent as a normal turn instead.'
+        });
+    });
+
+    it('switches collaboration mode to default after approving exit_plan_mode', async () => {
+        const { session, rpcHandlers, collaborationModes, getCollaborationMode } = createSessionStub(['plan this'], {
+            permissionMode: 'default',
+            collaborationMode: 'plan',
+            model: 'gpt-5.4'
+        });
+
+        const running = codexRemoteLauncher(session as never);
+        await vi.waitFor(() => {
+            expect(harness.requestHandlers.has('item/tool/requestApproval')).toBe(true);
+            expect(rpcHandlers.has('permission')).toBe(true);
+        });
+
+        const approvalHandler = harness.requestHandlers.get('item/tool/requestApproval');
+        const approvalPromise = approvalHandler?.({
+            itemId: 'exit-1',
+            toolName: 'exit_plan_mode',
+            input: { plan: '1. Edit files' }
+        });
+        await vi.waitFor(() => {
+            expect(rpcHandlers.has('permission')).toBe(true);
+        });
+        await rpcHandlers.get('permission')?.({ id: 'exit-1', approved: true, decision: 'approved' });
+
+        await expect(approvalPromise).resolves.toEqual({ decision: 'accept' });
+        await running;
+
+        expect(collaborationModes).toContain('default');
+        expect(getCollaborationMode()).toBe('default');
     });
 
     it('surfaces thread-level systemError only after same-thread retries are exhausted', async () => {
