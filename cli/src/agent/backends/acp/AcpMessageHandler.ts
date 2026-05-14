@@ -273,6 +273,11 @@ function getSuffixPrefixOverlap(base: string, next: string): number {
 export class AcpMessageHandler {
     private readonly toolCalls = new Map<string, { name: string; input: unknown }>();
     private bufferedText = '';
+    // Array buffer avoids the O(N²) string concatenation that per-token
+    // ACP streams (OpenCode/Zen emits one chunk per generated token) would
+    // otherwise incur — a 10k-token reasoning trace allocates 10k full-buffer
+    // copies if we use `+=`.
+    private bufferedReasoning: string[] = [];
 
     constructor(private readonly onMessage: (message: AgentMessage) => void) {}
 
@@ -289,6 +294,50 @@ export class AcpMessageHandler {
         const text = this.bufferedText;
         this.bufferedText = '';
         this.onMessage({ type: 'text', text });
+    }
+
+    /**
+     * Emits buffered thought chunks as a single reasoning message and clears
+     * the buffer. ACP agents (notably OpenCode/Zen) stream thoughts at the
+     * granularity of one chunk per token; emitting each chunk inline would
+     * make the web reducer render one row per token. Coalescing here keeps
+     * the reasoning block intact while preserving its position relative to
+     * adjacent text segments and tool events.
+     *
+     * Called automatically before every non-thought update inside
+     * `handleUpdate`, and externally at turn boundaries by `drainBuffers`
+     * from AcpSdkBackend.
+     *
+     * Whitespace-only buffers are dropped: a turn that happens to emit a
+     * single whitespace token would otherwise render an empty Reasoning row
+     * in the web UI.
+     */
+    flushReasoning(): void {
+        if (this.bufferedReasoning.length === 0) {
+            return;
+        }
+        const text = this.bufferedReasoning.join('');
+        this.bufferedReasoning = [];
+        if (text.trim().length === 0) {
+            return;
+        }
+        this.onMessage({ type: 'reasoning', text });
+    }
+
+    /**
+     * Single entry point for turn-boundary draining. Reasoning is always
+     * flushed before text so that, even when the agent streamed thoughts
+     * after a text segment had already opened, the final rendered turn
+     * shows the Reasoning block above the answer (matching the web UI
+     * component layout). This is a deliberate UX-driven ordering — not
+     * a preservation of the agent's arrival order, which could place
+     * text before reasoning within a single turn. Callers in
+     * `AcpSdkBackend` must use this rather than the individual flush
+     * methods to keep the order invariant enforced in one place.
+     */
+    drainBuffers(): void {
+        this.flushReasoning();
+        this.flushText();
     }
 
     private appendTextChunk(text: string): void {
@@ -331,6 +380,31 @@ export class AcpMessageHandler {
         const updateType = asString(update.sessionUpdate);
         if (!updateType) return;
 
+        if (updateType === ACP_SESSION_UPDATE_TYPES.agentThoughtChunk) {
+            // Thought chunks do not participate in intra-turn ordering and
+            // must not flush the text buffer (that would split a live text
+            // segment). Coalesce them into a single reasoning buffer so the
+            // web UI renders one Reasoning block per turn segment instead
+            // of one row per streaming token.
+            //
+            // We deliberately do not reuse `extractTextContent` here: that
+            // helper applies an assistant-audience filter which only makes
+            // sense for regular message chunks. Thought content has no
+            // meaningful audience — a non-assistant audience annotation
+            // should not cause the reasoning to be silently dropped.
+            const content = update.content;
+            if (isObject(content) && content.type === 'text' && typeof content.text === 'string' && content.text.length > 0) {
+                this.bufferedReasoning.push(content.text);
+            }
+            return;
+        }
+
+        // Any non-thought update is a reasoning-segment boundary: emit the
+        // accumulated thought now so it arrives before the next event in
+        // the same arrival order that streamed in. Tool calls / plans
+        // additionally flush the text buffer below.
+        this.flushReasoning();
+
         if (updateType === ACP_SESSION_UPDATE_TYPES.agentMessageChunk) {
             const content = update.content;
             const text = extractTextContent(content);
@@ -362,28 +436,6 @@ export class AcpMessageHandler {
                     return;
                 }
                 this.appendTextChunk(text);
-            }
-            return;
-        }
-
-        if (updateType === ACP_SESSION_UPDATE_TYPES.agentThoughtChunk) {
-            // Thought chunks do not participate in intra-turn ordering and
-            // must not flush the text buffer (that would split a live text
-            // segment). Forward as a reasoning message so the web UI can
-            // render the model's thinking in a collapsible block.
-            //
-            // Reasoning messages are emitted inline (never buffered), so they
-            // arrive before any still-pending text segment is flushed. Tests
-            // in this file rely on that contract.
-            //
-            // We deliberately do not reuse `extractTextContent` here: that
-            // helper applies an assistant-audience filter which only makes
-            // sense for regular message chunks. Thought content has no
-            // meaningful audience — a non-assistant audience annotation
-            // should not cause the reasoning to be silently dropped.
-            const content = update.content;
-            if (isObject(content) && content.type === 'text' && typeof content.text === 'string' && content.text.length > 0) {
-                this.onMessage({ type: 'reasoning', text: content.text });
             }
             return;
         }
