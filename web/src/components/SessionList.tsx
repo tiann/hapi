@@ -906,6 +906,7 @@ export function SessionList(props: {
                                         const visibleGroupSessions = getVisibleGroupSessions(group)
                                         const hiddenSessionCount = group.sessions.length - visibleGroupSessions.length
                                         const sessionGroupExpanded = isSessionGroupExpanded(group)
+                                        const canStartInGroupDirectory = group.directory !== 'Other'
                                         return (
                                             <div key={group.key}>
                                                 <div
@@ -918,7 +919,7 @@ export function SessionList(props: {
                                                         {group.displayName}
                                                     </span>
                                                     <CopyPathButton path={group.directory} className="opacity-0 group-hover/project:opacity-100 transition-opacity duration-150" />
-                                                    {onNewSessionInDirectory ? (
+                                                    {onNewSessionInDirectory && canStartInGroupDirectory ? (
                                                         <button
                                                             type="button"
                                                             onClick={(event) => {

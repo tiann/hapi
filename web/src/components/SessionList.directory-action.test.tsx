@@ -1,10 +1,12 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ReactNode } from 'react'
 import type { SessionSummary } from '@/types/api'
 import { I18nProvider } from '@/lib/i18n-context'
 import { SessionList } from './SessionList'
+
+afterEach(() => cleanup())
 
 function makeSession(overrides: Partial<SessionSummary> & { id: string }): SessionSummary {
     return {
@@ -73,5 +75,23 @@ describe('SessionList directory action', () => {
             machineId: 'machine-1',
             directory: '/home/ubuntu',
         })
+    })
+
+    it('hides the directory action for sessions without path metadata', () => {
+        renderWithProviders(
+            <SessionList
+                sessions={[makeSession({ id: 'session-without-path' })]}
+                selectedSessionId={null}
+                onSelect={vi.fn()}
+                onNewSession={vi.fn()}
+                onNewSessionInDirectory={vi.fn()}
+                onRefresh={vi.fn()}
+                isLoading={false}
+                renderHeader={false}
+                api={null}
+            />
+        )
+
+        expect(screen.queryByRole('button', { name: 'New session in this directory' })).toBeNull()
     })
 })
