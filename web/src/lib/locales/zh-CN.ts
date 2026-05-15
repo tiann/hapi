@@ -132,9 +132,7 @@ export default {
   'newSession.opencodeModel.empty': '未在此目录发现 OpenCode 模型',
   'newSession.opencodeModel.default': '默认',
   'newSession.reasoningEffort': '推理强度',
-  'newSession.yolo': 'YOLO 模式',
-  'newSession.yolo.title': '跳过审批和沙箱',
-  'newSession.yolo.desc': '启动时使用危险的代理标志。',
+  'newSession.permissionMode': '权限模式',
   'newSession.create': '创建',
   'newSession.creating': '创建中…',
 
