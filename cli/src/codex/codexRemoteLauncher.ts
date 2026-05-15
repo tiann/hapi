@@ -271,8 +271,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 || message.includes('unknown')
                 || message.includes('unrecognized')
                 || message.includes('unexpected')
-                || message.includes('invalid')
-                || message.includes('field');
+                || message.includes('invalid field');
         };
 
         const responseContainsPlanCollaborationMode = (response: unknown): boolean => {
