@@ -92,4 +92,25 @@ describe('codexLocal', () => {
         expect(hookArg).toContain('{ hooks = [{ type = "command", command = "');
         expect(args).toContain("mcp_servers.hapi.args=['mcp','--url','http://127.0.0.1:63995/']");
     });
+
+    it('passes reasoning effort through Codex config instead of an unsupported CLI flag', async () => {
+        const controller = new AbortController();
+
+        await codexLocal({
+            abort: controller.signal,
+            sessionId: 'codex-session-1',
+            path: '/workspace/project',
+            modelReasoningEffort: 'high',
+            onSessionFound: vi.fn()
+        });
+
+        expect(spawnWithTerminalGuardMock).toHaveBeenCalledOnce();
+        const spawnOptions = spawnWithTerminalGuardMock.mock.calls[0][0] as {
+            args: string[];
+        };
+
+        expect(spawnOptions.args).toContain('-c');
+        expect(spawnOptions.args).toContain('model_reasoning_effort="high"');
+        expect(spawnOptions.args).not.toContain('--model-reasoning-effort');
+    });
 });

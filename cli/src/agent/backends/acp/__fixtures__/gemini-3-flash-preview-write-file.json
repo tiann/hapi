@@ -1,0 +1,84 @@
+{
+  "model": "gemini-3-flash-preview",
+  "scenario": "write_file",
+  "prompt": "Please create a file at /tmp/demo-write.txt with exactly this content: 'hello write demo line one\\nhello line two'.",
+  "captured_at": "2026-04-30T09:14:15.000Z",
+  "updates": [
+    {
+      "sessionUpdate": "tool_call",
+      "toolCallId": "update_topic-1777540455288-3",
+      "status": "in_progress",
+      "title": "Update topic to: \"Creating file in workspace\"",
+      "content": [],
+      "locations": [],
+      "kind": "think"
+    },
+    {
+      "sessionUpdate": "tool_call_update",
+      "toolCallId": "update_topic-1777540455288-3",
+      "status": "completed",
+      "title": "Update topic to: \"Creating file in workspace\"",
+      "content": [
+        {
+          "type": "content",
+          "content": {
+            "type": "text",
+            "text": "## 📂 Topic: **Creating file in workspace**\n\n**Summary:**\nThe user requested creating demo-write.txt. I am now creating the file /tmp/demo-write.txt with the specified two lines of content.\n\n> [!STRATEGY]\n> **Intent:** Create demo-write.txt in /tmp."
+          }
+        }
+      ],
+      "locations": [],
+      "kind": "think"
+    },
+    {
+      "sessionUpdate": "tool_call",
+      "toolCallId": "write_file-1777540455292-4",
+      "status": "in_progress",
+      "title": "Writing to demo-write.txt",
+      "content": [],
+      "locations": [
+        {
+          "path": "/tmp/demo-write.txt"
+        }
+      ],
+      "kind": "edit"
+    },
+    {
+      "sessionUpdate": "tool_call_update",
+      "toolCallId": "write_file-1777540455292-4",
+      "status": "completed",
+      "title": "Writing to demo-write.txt",
+      "content": [
+        {
+          "type": "diff",
+          "path": "/tmp/demo-write.txt",
+          "oldText": "",
+          "newText": "hello write demo line one\nhello line two",
+          "_meta": {
+            "kind": "add"
+          }
+        }
+      ],
+      "locations": [
+        {
+          "path": "/tmp/demo-write.txt"
+        }
+      ],
+      "kind": "edit"
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "`/tmp/demo-write.txt`"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": " 파일을 요청하신 내용으로 생성했습니다."
+      }
+    }
+  ]
+}

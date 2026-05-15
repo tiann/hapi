@@ -10,6 +10,14 @@ type PermissionResult = {
     reason?: string;
 };
 
+type ElicitationSchemaProperty = {
+    type?: unknown;
+    default?: unknown;
+    enum?: unknown;
+    oneOf?: unknown;
+    items?: unknown;
+};
+
 function asRecord(value: unknown): Record<string, unknown> | null {
     if (!value || typeof value !== 'object') {
         return null;
@@ -41,6 +49,109 @@ function mapDecision(decision: PermissionDecision): { decision: string } {
         case 'abort':
             return { decision: 'cancel' };
     }
+}
+
+function mapPermissionGrant(
+    requested: unknown,
+    decision: PermissionDecision
+): {
+    permissions: unknown;
+    scope: 'turn' | 'session';
+} {
+    if (decision === 'approved' || decision === 'approved_for_session') {
+        return {
+            permissions: requested,
+            scope: decision === 'approved_for_session' ? 'session' : 'turn'
+        };
+    }
+
+    return {
+        permissions: {
+            network: null,
+            fileSystem: null
+        },
+        scope: 'turn'
+    };
+}
+
+function firstString(values: unknown): string | undefined {
+    if (!Array.isArray(values)) {
+        return undefined;
+    }
+
+    return values.find((value): value is string => typeof value === 'string');
+}
+
+function firstConst(values: unknown): string | undefined {
+    if (!Array.isArray(values)) {
+        return undefined;
+    }
+
+    for (const value of values) {
+        const record = asRecord(value);
+        if (typeof record?.const === 'string') {
+            return record.const;
+        }
+    }
+
+    return undefined;
+}
+
+function defaultValueForElicitationProperty(property: ElicitationSchemaProperty): unknown {
+    if ('default' in property) {
+        return property.default;
+    }
+
+    switch (property.type) {
+        case 'string':
+            return firstString(property.enum)
+                ?? firstConst(property.oneOf)
+                ?? '';
+        case 'boolean':
+            return true;
+        case 'number':
+        case 'integer':
+            return 0;
+        case 'array': {
+            const items = asRecord(property.items);
+            const value = firstString(items?.enum)
+                ?? firstConst(items?.anyOf);
+            return value ? [value] : [];
+        }
+        default:
+            return null;
+    }
+}
+
+function buildAcceptedElicitationContent(params: unknown): Record<string, unknown> {
+    const record = asRecord(params);
+    const schema = asRecord(record?.requestedSchema);
+    const properties = asRecord(schema?.properties);
+
+    if (!properties) {
+        return {};
+    }
+
+    const required = Array.isArray(schema?.required)
+        ? schema.required.filter((value): value is string => typeof value === 'string')
+        : Object.keys(properties);
+    const content: Record<string, unknown> = {};
+
+    for (const key of required) {
+        const property = asRecord(properties[key]);
+        if (!property) {
+            continue;
+        }
+
+        content[key] = defaultValueForElicitationProperty(property);
+    }
+
+    return content;
+}
+
+function isHapiBridgeElicitation(params: unknown): boolean {
+    const record = asRecord(params);
+    return record?.serverName === 'hapi';
 }
 
 export function registerAppServerPermissionHandlers(args: {
@@ -91,6 +202,24 @@ export function registerAppServerPermissionHandlers(args: {
         return mapDecision(result.decision);
     });
 
+    client.registerRequestHandler('item/permissions/requestApproval', async (params) => {
+        const record = asRecord(params) ?? {};
+        const toolCallId = asString(record.itemId) ?? randomUUID();
+        const permissions = record.permissions ?? {};
+
+        const result = await permissionHandler.handleToolCall(
+            toolCallId,
+            'CodexPermission',
+            {
+                message: asString(record.reason),
+                cwd: asString(record.cwd),
+                permissions
+            }
+        ) as PermissionResult;
+
+        return mapPermissionGrant(permissions, result.decision);
+    });
+
     client.registerRequestHandler('item/tool/requestApproval', async (params) => {
         const record = asRecord(params) ?? {};
         const toolCallId = asString(record.itemId) ?? asString(record.item_id) ?? randomUUID();
@@ -124,5 +253,35 @@ export function registerAppServerPermissionHandlers(args: {
         }
 
         return result;
+    });
+
+    client.registerRequestHandler('mcpServer/elicitation/request', async (params) => {
+        const record = asRecord(params) ?? {};
+
+        if (!isHapiBridgeElicitation(params)) {
+            logger.debug('[CodexAppServer] Cancelling unsupported MCP elicitation request', {
+                serverName: record.serverName,
+                mode: record.mode,
+                message: record.message
+            });
+
+            return {
+                action: 'cancel',
+                content: null,
+                _meta: null
+            };
+        }
+
+        logger.debug('[CodexAppServer] Accepting MCP elicitation request', {
+            serverName: record.serverName,
+            mode: record.mode,
+            message: record.message
+        });
+
+        return {
+            action: 'accept',
+            content: buildAcceptedElicitationContent(params),
+            _meta: null
+        };
     });
 }

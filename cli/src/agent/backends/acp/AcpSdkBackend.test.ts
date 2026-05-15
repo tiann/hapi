@@ -70,8 +70,151 @@ describe('AcpSdkBackend', () => {
         expect(capturedRequestId).toBe('tool-approve');
     });
 
+    it('uses session/set_model by default (gemini flavor)', async () => {
+        const backend = new AcpSdkBackend({ command: 'gemini' });
+        const calls: Array<{ method: string; params: unknown }> = [];
+        const backendInternal = backend as unknown as {
+            transport: { sendRequest: (method: string, params: unknown) => Promise<unknown>; close: () => Promise<void> } | null;
+        };
+        backendInternal.transport = {
+            sendRequest: async (method, params) => {
+                calls.push({ method, params });
+                return null;
+            },
+            close: async () => {}
+        };
+
+        await backend.setModel('session-1', 'gemini-2.5-pro');
+
+        expect(calls).toEqual([
+            { method: 'session/set_model', params: { sessionId: 'session-1', modelId: 'gemini-2.5-pro' } }
+        ]);
+    });
+
+    it('uses session/set_model when flavor is opencode', async () => {
+        const backend = new AcpSdkBackend({ command: 'opencode' });
+        const calls: Array<{ method: string; params: unknown }> = [];
+        const backendInternal = backend as unknown as {
+            transport: { sendRequest: (method: string, params: unknown) => Promise<unknown>; close: () => Promise<void> } | null;
+        };
+        backendInternal.transport = {
+            sendRequest: async (method, params) => {
+                calls.push({ method, params });
+                // OpenCode 1.14.30's set_model response: only an opaque _meta block.
+                return {
+                    _meta: { opencode: { modelId: 'ollama/exaone:4.5-33b-q8', variant: null, availableVariants: [] } }
+                };
+            },
+            close: async () => {}
+        };
+
+        await backend.setModel('session-1', 'ollama/exaone:4.5-33b-q8', { flavor: 'opencode' });
+
+        expect(calls).toEqual([
+            {
+                method: 'session/set_model',
+                params: {
+                    sessionId: 'session-1',
+                    modelId: 'ollama/exaone:4.5-33b-q8'
+                }
+            }
+        ]);
+    });
+
+    it('captures availableModels and currentModelId from session/new response', async () => {
+        const backend = new AcpSdkBackend({ command: 'opencode' });
+        const backendInternal = backend as unknown as {
+            transport: { sendRequest: (method: string, params: unknown) => Promise<unknown>; close: () => Promise<void> } | null;
+        };
+        const fixtureModels = [
+            { modelId: 'ollama/exaone:4.5-33b-q8', name: 'Ollama (SER8)/EXAONE 4.5 33B Q8' },
+            { modelId: 'mlx/qwen3:0.6b', name: 'MLX/Qwen3 0.6B' }
+        ];
+        backendInternal.transport = {
+            sendRequest: async (method) => {
+                if (method === 'session/new') {
+                    return {
+                        sessionId: 'opencode-session-7',
+                        models: {
+                            availableModels: fixtureModels,
+                            currentModelId: 'ollama/exaone:4.5-33b-q8'
+                        }
+                    };
+                }
+                return null;
+            },
+            close: async () => {}
+        };
+
+        const sessionId = await backend.newSession({ cwd: '/tmp/x', mcpServers: [] });
+
+        expect(sessionId).toBe('opencode-session-7');
+        expect(backend.getSessionModelsMetadata(sessionId)).toEqual({
+            availableModels: fixtureModels,
+            currentModelId: 'ollama/exaone:4.5-33b-q8'
+        });
+    });
+
+    it('returns undefined session metadata when session/new omits models', async () => {
+        const backend = new AcpSdkBackend({ command: 'gemini' });
+        const backendInternal = backend as unknown as {
+            transport: { sendRequest: (method: string, params: unknown) => Promise<unknown>; close: () => Promise<void> } | null;
+        };
+        backendInternal.transport = {
+            sendRequest: async (method) => {
+                if (method === 'session/new') {
+                    return { sessionId: 'gemini-session-3' };
+                }
+                return null;
+            },
+            close: async () => {}
+        };
+
+        const sessionId = await backend.newSession({ cwd: '/tmp/x', mcpServers: [] });
+
+        expect(sessionId).toBe('gemini-session-3');
+        expect(backend.getSessionModelsMetadata(sessionId)).toBeUndefined();
+    });
+
+    it('optimistically updates currentModelId after a successful opencode setModel call', async () => {
+        const backend = new AcpSdkBackend({ command: 'opencode' });
+        const backendInternal = backend as unknown as {
+            transport: { sendRequest: (method: string, params: unknown) => Promise<unknown>; close: () => Promise<void> } | null;
+        };
+        const fixtureModels = [
+            { modelId: 'ollama/a', name: 'a' },
+            { modelId: 'ollama/b', name: 'b' }
+        ];
+        backendInternal.transport = {
+            sendRequest: async (method) => {
+                if (method === 'session/new') {
+                    return {
+                        sessionId: 's1',
+                        models: { availableModels: fixtureModels, currentModelId: 'ollama/a' }
+                    };
+                }
+                if (method === 'session/set_model') {
+                    // OpenCode 1.14.30: response carries only an opaque _meta block.
+                    return { _meta: { opencode: { modelId: 'ollama/b' } } };
+                }
+                return null;
+            },
+            close: async () => {}
+        };
+
+        await backend.newSession({ cwd: '/tmp/x', mcpServers: [] });
+        await backend.setModel('s1', 'ollama/b', { flavor: 'opencode' });
+
+        // availableModels list is preserved from session/new; currentModelId is
+        // optimistically updated from the requested modelId.
+        expect(backend.getSessionModelsMetadata('s1')).toEqual({
+            availableModels: fixtureModels,
+            currentModelId: 'ollama/b'
+        });
+    });
+
     it('emits turn_complete after trailing tool updates from the same turn', async () => {
-        backendStatics.UPDATE_QUIET_PERIOD_MS = 8;
+        backendStatics.UPDATE_QUIET_PERIOD_MS = 25;
         backendStatics.UPDATE_DRAIN_TIMEOUT_MS = 200;
         backendStatics.PRE_PROMPT_UPDATE_QUIET_PERIOD_MS = 1;
         backendStatics.PRE_PROMPT_UPDATE_DRAIN_TIMEOUT_MS = 50;
@@ -111,7 +254,7 @@ describe('AcpSdkBackend', () => {
                             status: 'in_progress'
                         }
                     });
-                }, 3);
+                }, 1);
 
                 setTimeout(() => {
                     backendInternal.handleSessionUpdate({
@@ -123,7 +266,7 @@ describe('AcpSdkBackend', () => {
                             rawOutput: { ok: true }
                         }
                     });
-                }, 6);
+                }, 2);
 
                 return { stopReason: 'end_turn' };
             },

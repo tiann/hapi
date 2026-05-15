@@ -1,0 +1,58 @@
+{
+  "model": "gemini-3.1-pro-preview",
+  "scenario": "write_file",
+  "prompt": "Please create a new file at cli/pr-fixture-write.txt with the content 'pro fixture line'",
+  "captured_at": "2026-05-04T03:08:46.000Z",
+  "updates": [
+    {
+      "sessionUpdate": "tool_call",
+      "toolCallId": "write_file-1777864040205-1",
+      "status": "in_progress",
+      "title": "Writing to cli/pr-fixture-write.txt",
+      "content": [],
+      "locations": [
+        {
+          "path": "/home/lupin/workspace/hapi-fix-gemini-display/cli/pr-fixture-write.txt"
+        }
+      ],
+      "kind": "edit"
+    },
+    {
+      "sessionUpdate": "tool_call_update",
+      "toolCallId": "write_file-1777864040205-1",
+      "status": "completed",
+      "title": "Writing to cli/pr-fixture-write.txt",
+      "content": [
+        {
+          "type": "diff",
+          "path": "/home/lupin/workspace/hapi-fix-gemini-display/cli/pr-fixture-write.txt",
+          "oldText": "",
+          "newText": "pro fixture line",
+          "_meta": {
+            "kind": "add"
+          }
+        }
+      ],
+      "locations": [
+        {
+          "path": "/home/lupin/workspace/hapi-fix-gemini-display/cli/pr-fixture-write.txt"
+        }
+      ],
+      "kind": "edit"
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "`cli/pr-fixture-write"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": ".txt` 파일 생성을 완료했습니다. 요청하신 내용이 성공적으로 작성되었습니다."
+      }
+    }
+  ]
+}

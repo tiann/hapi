@@ -16,15 +16,18 @@ import { initializeToken } from '@/ui/tokenInit'
 import type { CommandDefinition } from './types'
 
 /**
- * Parses `--workspace-root <path>` / `--workspace-root=<path>` from the
- * runner's positional args. Returns the resolved absolute path or exits
+ * Parses repeated `--workspace-root <path>` / `--workspace-root=<path>` from
+ * the runner's positional args. Returns resolved absolute paths or exits
  * the process with a clear error. Mutates `args` to remove the consumed
  * entries so subcommand dispatch still works.
  */
-function extractWorkspaceRootArg(args: string[]): string | undefined {
-    for (let i = 0; i < args.length; i++) {
+function extractWorkspaceRootArgs(args: string[]): string[] | undefined {
+    const workspaceRoots: string[] = []
+
+    for (let i = 0; i < args.length;) {
         const arg = args[i]
         let value: string | undefined
+        let consumed = 0
         if (arg === '--workspace-root') {
             const next = args[i + 1]
             if (next === undefined || next.startsWith('--')) {
@@ -32,12 +35,15 @@ function extractWorkspaceRootArg(args: string[]): string | undefined {
                 process.exit(1)
             }
             value = next
-            args.splice(i, 2)
+            consumed = 2
         } else if (arg?.startsWith('--workspace-root=')) {
             value = arg.slice('--workspace-root='.length)
-            args.splice(i, 1)
+            consumed = 1
         }
-        if (value === undefined) continue
+        if (value === undefined) {
+            i += 1
+            continue
+        }
 
         const trimmed = value.trim()
         if (!trimmed) {
@@ -56,9 +62,12 @@ function extractWorkspaceRootArg(args: string[]): string | undefined {
             console.error(`--workspace-root path does not exist or is not a directory: ${absolute}`)
             process.exit(1)
         }
-        return absolute
+        workspaceRoots.push(absolute)
+        args.splice(i, consumed)
     }
-    return undefined
+
+    const uniqueWorkspaceRoots = Array.from(new Set(workspaceRoots))
+    return uniqueWorkspaceRoots.length > 0 ? uniqueWorkspaceRoots : undefined
 }
 
 export const runnerCommand: CommandDefinition = {
@@ -66,7 +75,7 @@ export const runnerCommand: CommandDefinition = {
     requiresRuntimeAssets: true,
     run: async ({ commandArgs }) => {
         const mutableArgs = [...commandArgs]
-        const workspaceRoot = extractWorkspaceRootArg(mutableArgs)
+        const workspaceRoots = extractWorkspaceRootArgs(mutableArgs)
         const runnerSubcommand = mutableArgs[0]
 
         if (runnerSubcommand === 'list') {
@@ -103,8 +112,10 @@ export const runnerCommand: CommandDefinition = {
 
         if (runnerSubcommand === 'start') {
             const childArgs = ['runner', 'start-sync']
-            if (workspaceRoot) {
-                childArgs.push('--workspace-root', workspaceRoot)
+            if (workspaceRoots?.length) {
+                for (const workspaceRoot of workspaceRoots) {
+                    childArgs.push('--workspace-root', workspaceRoot)
+                }
             }
             const child = spawnHappyCLI(childArgs, {
                 detached: true,
@@ -133,7 +144,7 @@ export const runnerCommand: CommandDefinition = {
 
         if (runnerSubcommand === 'start-sync') {
             await initializeToken()
-            await startRunner({ workspaceRoot })
+            await startRunner({ workspaceRoots })
             process.exit(0)
         }
 
@@ -168,7 +179,8 @@ ${chalk.bold('Usage:')}
 
 ${chalk.bold('Options:')}
   --workspace-root <path>        Restrict the runner to this directory.
-                                 Browse & spawn will reject paths outside it.
+                                 Repeat to allow multiple directories/drives.
+                                 Browse & spawn reject paths outside them.
                                  Supports \`~\` / \`~/foo\` expansion.
                                  Omit to leave browsing off (legacy mode).
 

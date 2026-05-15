@@ -1,0 +1,84 @@
+{
+  "model": "gemini-3-flash-preview",
+  "scenario": "edit_file",
+  "prompt": "Please edit the file /tmp/demo-write.txt and replace the first line 'hello write demo line one' with 'UPDATED first line'.",
+  "captured_at": "2026-04-30T09:14:45.000Z",
+  "updates": [
+    {
+      "sessionUpdate": "tool_call",
+      "toolCallId": "update_topic-1777540485086-5",
+      "status": "in_progress",
+      "title": "Update topic to: \"Updating demo-write.txt\"",
+      "content": [],
+      "locations": [],
+      "kind": "think"
+    },
+    {
+      "sessionUpdate": "tool_call_update",
+      "toolCallId": "update_topic-1777540485086-5",
+      "status": "completed",
+      "title": "Update topic to: \"Updating demo-write.txt\"",
+      "content": [
+        {
+          "type": "content",
+          "content": {
+            "type": "text",
+            "text": "## 📂 Topic: **Updating demo-write.txt**\n\n**Summary:**\nThe user requested to replace the first line of the previously created file. I am using the replace tool to change 'hello write demo line one' to 'UPDATED first line' in /tmp/demo-write.txt.\n\n> [!STRATEGY]\n> **Intent:** Update the first line of demo-write.txt as requested."
+          }
+        }
+      ],
+      "locations": [],
+      "kind": "think"
+    },
+    {
+      "sessionUpdate": "tool_call",
+      "toolCallId": "replace-1777540485090-6",
+      "status": "in_progress",
+      "title": "demo-write.txt: hello write demo line one => UPDATED first line",
+      "content": [],
+      "locations": [
+        {
+          "path": "/tmp/demo-write.txt"
+        }
+      ],
+      "kind": "edit"
+    },
+    {
+      "sessionUpdate": "tool_call_update",
+      "toolCallId": "replace-1777540485090-6",
+      "status": "completed",
+      "title": "demo-write.txt: hello write demo line one => UPDATED first line",
+      "content": [
+        {
+          "type": "diff",
+          "path": "/tmp/demo-write.txt",
+          "oldText": "hello write demo line one\nhello line two",
+          "newText": "UPDATED first line\nhello line two",
+          "_meta": {
+            "kind": "modify"
+          }
+        }
+      ],
+      "locations": [
+        {
+          "path": "/tmp/demo-write.txt"
+        }
+      ],
+      "kind": "edit"
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "`demo-write.txt` 파일의 첫 번째 줄을 `UPDATED first line"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "`으로 수정했습니다."
+      }
+    }
+  ]
+}

@@ -1,0 +1,249 @@
+{
+  "model": "gemini-3.1-pro-preview",
+  "scenario": "read_file",
+  "prompt": "Please read README.md and tell me its contents.",
+  "captured_at": "2026-05-04T03:08:46.000Z",
+  "updates": [
+    {
+      "sessionUpdate": "tool_call",
+      "toolCallId": "update_topic-1777863876330-1",
+      "status": "in_progress",
+      "title": "Update tactical intent: \"Read the contents of the README.md file and present it to the user.\"",
+      "content": [],
+      "locations": [],
+      "kind": "think"
+    },
+    {
+      "sessionUpdate": "tool_call_update",
+      "toolCallId": "update_topic-1777863876330-1",
+      "status": "completed",
+      "title": "Update tactical intent: \"Read the contents of the README.md file and present it to the user.\"",
+      "content": [
+        {
+          "type": "content",
+          "content": {
+            "type": "text",
+            "text": "> [!STRATEGY]\n> **Intent:** Read the contents of the README.md file and present it to the user."
+          }
+        }
+      ],
+      "locations": [],
+      "kind": "think"
+    },
+    {
+      "sessionUpdate": "tool_call",
+      "toolCallId": "read_file-1777863879509-2",
+      "status": "in_progress",
+      "title": "README.md",
+      "content": [],
+      "locations": [
+        {
+          "path": "/home/lupin/workspace/hapi-fix-gemini-display/README.md"
+        }
+      ],
+      "kind": "read"
+    },
+    {
+      "sessionUpdate": "tool_call_update",
+      "toolCallId": "read_file-1777863879509-2",
+      "status": "completed",
+      "title": "README.md",
+      "content": [],
+      "locations": [
+        {
+          "path": "/home/lupin/workspace/hapi-fix-gemini-display/README.md"
+        }
+      ],
+      "kind": "read"
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "Here are the contents of the `README.md` file"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": ":\n\n```markdown\n# HAPI\n\nRun official Claude Code / Codex / Gemini / OpenCode sessions locally and control"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": " them remotely through a Web / PWA / Telegram Mini App.\n\n> **Why HAPI?** HAPI is"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": " a local-first alternative to Happy. See [Why Not Happy?](docs/guide/why-hapi.md"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": ") for the key differences.\n\n## Features\n\n- **Seamless Handoff** - Work locally, switch to remote"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": " when needed, switch back anytime. No context loss, no session restart.\n- **Native First** - HAPI"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": " wraps your AI agent instead of replacing it. Same terminal, same experience, same muscle memory.\n- **AFK"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": " Without Stopping** - Step away from your desk? Approve AI requests from your phone with one tap.\n- **Your"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": " AI, Your Choice** - Claude Code, Codex, Cursor Agent, Gemini, OpenCode—different models, one unified"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": " workflow.\n- **Terminal Anywhere** - Run commands from your phone or browser, directly connected to the working machine."
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "\n- **Voice Control** - Talk to your AI agent hands-free using the built-in voice assistant.\n"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "- **Workspace Browser** - Opt-in via `hapi runner start --workspace-root <path>`: browse a"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": " scoped file tree from the web and start sessions in any subdirectory.\n\n## Demo\n\nhttps://github.com/user"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "-attachments/assets/38230353-94c6-4dbe-9"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "c29-b2a2cc457546\n\n## Getting Started\n\n```bash\nn"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "px @twsxtd/hapi hub --relay     # start hub with E2E encrypted relay\nnpx"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": " @twsxtd/hapi                 # run claude code\n```\n\n`hapi server` remains supported as an"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": " alias.\n\nThe terminal will display a URL and QR code. Scan the QR code with your phone or open the URL"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": " to access.\n\n> The relay uses WireGuard + TLS for end-to-end encryption. Your data is encrypted"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": " from your device to your machine.\n\nFor self-hosted options (Cloudflare Tunnel, Tailscale), see [Installation"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "](docs/guide/installation.md)\n\n## Docs\n\n- [App](docs/guide/pwa."
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "md)\n- [How it Works](docs/guide/how-it-works.md)\n- ["
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "Cursor Agent](docs/guide/cursor.md)\n- [Voice Assistant](docs/guide/voice-assistant"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": ".md)\n- [Why HAPI](docs/guide/why-hapi.md)\n- [FAQ]("
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "docs/guide/faq.md)\n\n## Build from source\n\n```bash\nbun install\nbun run build:"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "single-exe\n```\n\n## Credits\n\nHAPI means \"哈皮\" a Chinese transliteration of [Happy]("
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "https://github.com/slopus/happy). Great credit to the original project.\n```"
+      }
+    }
+  ]
+}

@@ -1,0 +1,172 @@
+{
+  "model": "gemini-3-flash-preview",
+  "scenario": "read_file",
+  "prompt": "Please read README.md in the current directory and tell me what it contains.",
+  "captured_at": "2026-04-30T03:18:23.000Z",
+  "updates": [
+    {
+      "sessionUpdate": "tool_call",
+      "toolCallId": "update_topic-1777518787583-1",
+      "status": "in_progress",
+      "title": "Update topic to: \"Initial Project Overview\"",
+      "content": [],
+      "locations": [],
+      "kind": "think"
+    },
+    {
+      "sessionUpdate": "tool_call_update",
+      "toolCallId": "update_topic-1777518787583-1",
+      "status": "completed",
+      "title": "Update topic to: \"Initial Project Overview\"",
+      "content": [
+        {
+          "type": "content",
+          "content": {
+            "type": "text",
+            "text": "## 📂 Topic: **Initial Project Overview**\n\n**Summary:**\nI will start by reading the README.md file in the project root to understand the project's purpose and contents as requested by the user.\n\n> [!STRATEGY]\n> **Intent:** Reading README.md to provide a summary of its contents."
+          }
+        }
+      ],
+      "locations": [],
+      "kind": "think"
+    },
+    {
+      "sessionUpdate": "tool_call",
+      "toolCallId": "read_file-1777518787614-2",
+      "status": "in_progress",
+      "title": "README.md",
+      "content": [],
+      "locations": [
+        {
+          "path": "/home/lupin/workspace/hapi-fix-gemini-display/cli/README.md"
+        }
+      ],
+      "kind": "read"
+    },
+    {
+      "sessionUpdate": "tool_call_update",
+      "toolCallId": "read_file-1777518787614-2",
+      "status": "completed",
+      "title": "README.md",
+      "content": [],
+      "locations": [
+        {
+          "path": "/home/lupin/workspace/hapi-fix-gemini-display/cli/README.md"
+        }
+      ],
+      "kind": "read"
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "The `README.md` file for the **hapi CLI** project describes it as a"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": " tool to run and remotely control various AI agent sessions (Claude Code, Codex, Cursor Agent, Gemini, and OpenCode)"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": " from the terminal via a \"hapi hub.\"\n\n### Key Features\n*   **Multi-Agent Support:** Integrates with Claude CLI"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": ", Cursor Agent, Codex, Gemini (via ACP), and OpenCode.\n*   **Remote Control:** Sessions can be monitored"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": " and controlled through a web app or Telegram Mini App.\n*   **Runner Service:** Manages long-running background sessions"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": " and provides diagnostics.\n*   **MCP Bridge:** Includes an MCP stdio bridge for external tools.\n\n### Core Commands\n"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "*   **Session Management:** `hapi` (Claude), `hapi codex`, `hapi cursor`, `hapi gemini`, "
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "`hapi opencode`.\n*   **Runner Control:** `hapi runner start/stop/status/list/logs`."
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "\n*   **Authentication:** `hapi auth login/logout/status`.\n*   **Diagnostics:** `hapi doctor` and"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": " `hapi doctor clean`.\n\n### Configuration & Requirements\n*   **Environment Variables:** Requires `CLI_API_TOKEN` and"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": " `HAPI_API_URL`.\n*   **Dependencies:** Needs the respective agent CLIs (Claude, Cursor,"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": " OpenCode) installed and Bun for building from source.\n*   **Storage:** Defaults to `~/.hapi/` for"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": " settings and logs.\n\n### Project Structure\n*   `src/api/`: Communication logic (Socket.IO + REST).\n"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "*   `src/agent/`, `src/claude/`, `src/codex/`, etc.: Specific agent integrations"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": ".\n*   `src/runner/`: Background service implementation.\n*   `src/modules/`: Tool"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "ing like ripgrep and difftastic."
+      }
+    }
+  ]
+}

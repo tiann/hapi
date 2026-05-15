@@ -2,9 +2,9 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { logger } from '@/ui/logger';
 import { killProcessByChildProcess } from '@/utils/process';
 import type {
+    CollaborationModeListResponse,
     InitializeParams,
     InitializeResponse,
-    CollaborationModeListResponse,
     ModelListParams,
     ModelListResponse,
     ThreadStartParams,
@@ -14,7 +14,17 @@ import type {
     TurnStartParams,
     TurnStartResponse,
     TurnInterruptParams,
-    TurnInterruptResponse
+    TurnInterruptResponse,
+    ThreadCompactStartParams,
+    ThreadCompactStartResponse,
+    ThreadGoalSetParams,
+    ThreadGoalSetResponse,
+    ThreadGoalGetParams,
+    ThreadGoalGetResponse,
+    ThreadGoalClearParams,
+    ThreadGoalClearResponse,
+    ExperimentalFeatureEnablementSetParams,
+    ExperimentalFeatureEnablementSetResponse
 } from './appServerTypes';
 
 type JsonRpcLiteRequest = {
@@ -83,7 +93,8 @@ export class CodexAppServerClient {
                 return acc;
             }, {} as Record<string, string>),
             stdio: ['pipe', 'pipe', 'pipe'],
-            shell: process.platform === 'win32'
+            shell: process.platform === 'win32',
+            windowsHide: process.platform === 'win32'
         });
 
         this.process.stdout.setEncoding('utf8');
@@ -150,6 +161,15 @@ export class CodexAppServerClient {
         return response as CollaborationModeListResponse;
     }
 
+    async setExperimentalFeatureEnablement(
+        params: ExperimentalFeatureEnablementSetParams
+    ): Promise<ExperimentalFeatureEnablementSetResponse> {
+        const response = await this.sendRequest('experimentalFeature/enablement/set', params, {
+            timeoutMs: 30_000
+        });
+        return response as ExperimentalFeatureEnablementSetResponse;
+    }
+
     async startThread(params: ThreadStartParams, options?: { signal?: AbortSignal }): Promise<ThreadStartResponse> {
         const response = await this.sendRequest('thread/start', params, {
             signal: options?.signal,
@@ -179,6 +199,50 @@ export class CodexAppServerClient {
             timeoutMs: 30_000
         });
         return response as TurnInterruptResponse;
+    }
+
+    async compactThread(
+        params: ThreadCompactStartParams,
+        options?: { signal?: AbortSignal }
+    ): Promise<ThreadCompactStartResponse> {
+        const response = await this.sendRequest('thread/compact/start', params, {
+            signal: options?.signal,
+            timeoutMs: CodexAppServerClient.DEFAULT_TIMEOUT_MS
+        });
+        return response as ThreadCompactStartResponse;
+    }
+
+    async setThreadGoal(
+        params: ThreadGoalSetParams,
+        options?: { signal?: AbortSignal }
+    ): Promise<ThreadGoalSetResponse> {
+        const response = await this.sendRequest('thread/goal/set', params, {
+            signal: options?.signal,
+            timeoutMs: 30_000
+        });
+        return response as ThreadGoalSetResponse;
+    }
+
+    async getThreadGoal(
+        params: ThreadGoalGetParams,
+        options?: { signal?: AbortSignal }
+    ): Promise<ThreadGoalGetResponse> {
+        const response = await this.sendRequest('thread/goal/get', params, {
+            signal: options?.signal,
+            timeoutMs: 30_000
+        });
+        return response as ThreadGoalGetResponse;
+    }
+
+    async clearThreadGoal(
+        params: ThreadGoalClearParams,
+        options?: { signal?: AbortSignal }
+    ): Promise<ThreadGoalClearResponse> {
+        const response = await this.sendRequest('thread/goal/clear', params, {
+            signal: options?.signal,
+            timeoutMs: 30_000
+        });
+        return response as ThreadGoalClearResponse;
     }
 
     async disconnect(): Promise<void> {

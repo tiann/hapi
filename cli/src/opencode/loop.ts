@@ -17,6 +17,7 @@ interface OpencodeLoopOptions {
     session: ApiSessionClient;
     api: ApiClient;
     permissionMode?: PermissionMode;
+    model?: string;
     resumeSessionId?: string;
     hookServer: OpencodeHookServer;
     hookUrl: string;

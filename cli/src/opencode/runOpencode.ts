@@ -18,6 +18,7 @@ export async function runOpencode(opts: {
     startedBy?: 'runner' | 'terminal';
     startingMode?: 'local' | 'remote';
     permissionMode?: PermissionMode;
+    model?: string;
     resumeSessionId?: string;
 } = {}): Promise<void> {
     const workingDirectory = getInvokedCwd();
@@ -34,11 +35,17 @@ export async function runOpencode(opts: {
         controlledByUser: false
     };
 
+    // Persist only when the user (or runner) explicitly chose a model on launch.
+    // Mid-session selections are persisted by the hub via the set-session-config RPC,
+    // not by this initial bootstrap.
+    const initialModel = opts.model ?? null;
+
     const { api, session } = await bootstrapSession({
         flavor: 'opencode',
         startedBy,
         workingDirectory,
-        agentState: initialState
+        agentState: initialState,
+        model: initialModel ?? undefined
     });
 
     const startingMode: 'local' | 'remote' = opts.startingMode
@@ -47,11 +54,13 @@ export async function runOpencode(opts: {
     setControlledByUser(session, startingMode);
 
     const messageQueue = new MessageQueue2<OpencodeMode>((mode) => hashObject({
-        permissionMode: mode.permissionMode
+        permissionMode: mode.permissionMode,
+        model: mode.model ?? null
     }));
 
     const sessionWrapperRef: { current: OpencodeSession | null } = { current: null };
     let currentPermissionMode: PermissionMode = opts.permissionMode ?? 'default';
+    let sessionModel: string | null = initialModel;
     const hookServer = await startOpencodeHookServer({
         onEvent: (event) => {
             const currentSession = sessionWrapperRef.current;
@@ -81,15 +90,28 @@ export async function runOpencode(opts: {
             return;
         }
         sessionInstance.setPermissionMode(currentPermissionMode);
-        logger.debug(`[opencode] Synced session permission mode for keepalive: ${currentPermissionMode}`);
+        sessionInstance.setModel(sessionModel);
+
+        // Notify hub immediately so the UI reflects the change without
+        // waiting for the next 2s keepalive tick.
+        sessionInstance.pushKeepAlive();
+
+        logger.debug(`[opencode] Synced session config for keepalive: permissionMode=${currentPermissionMode}, model=${sessionModel ?? '(default)'}`);
     };
 
     session.onUserMessage((message, localId) => {
         const formattedText = formatMessageWithAttachments(message.content.text, message.content.attachments);
         const mode: OpencodeMode = {
-            permissionMode: currentPermissionMode
+            permissionMode: currentPermissionMode,
+            model: sessionModel ?? undefined
         };
         messageQueue.push(formattedText, mode, localId);
+    });
+
+    session.onCancelQueuedMessage((localId) => {
+        const removed = messageQueue.cancelByLocalId(localId);
+        logger.debug(`[opencode] cancelByLocalId(${localId}): ${removed ? 'removed' : 'not found (best-effort)'}`);
+        return removed;
     });
 
     const resolvePermissionMode = (value: unknown): PermissionMode => {
@@ -100,18 +122,35 @@ export async function runOpencode(opts: {
         return parsed.data as PermissionMode;
     };
 
+    const resolveModel = (value: unknown): string | null => {
+        if (value === null) {
+            return null;
+        }
+        if (typeof value !== 'string' || value.trim().length === 0) {
+            throw new Error('Invalid model');
+        }
+        return value.trim();
+    };
+
     session.rpcHandlerManager.registerHandler('set-session-config', async (payload: unknown) => {
         if (!payload || typeof payload !== 'object') {
             throw new Error('Invalid session config payload');
         }
-        const config = payload as { permissionMode?: unknown };
+        const config = payload as { permissionMode?: unknown; model?: unknown };
+        const applied: Record<string, unknown> = {};
 
         if (config.permissionMode !== undefined) {
             currentPermissionMode = resolvePermissionMode(config.permissionMode);
+            applied.permissionMode = currentPermissionMode;
+        }
+
+        if (config.model !== undefined) {
+            sessionModel = resolveModel(config.model);
+            applied.model = sessionModel;
         }
 
         syncSessionMode();
-        return { applied: { permissionMode: currentPermissionMode } };
+        return { applied };
     });
 
     let crashed = false;
@@ -125,6 +164,7 @@ export async function runOpencode(opts: {
             session,
             api,
             permissionMode: currentPermissionMode,
+            model: sessionModel ?? undefined,
             resumeSessionId: opts.resumeSessionId,
             hookServer,
             hookUrl,

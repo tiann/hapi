@@ -1,8 +1,12 @@
 import type { ReactNode } from 'react'
 import type { ToolViewProps } from '@/components/ToolCard/views/_all'
 import { parseAskUserQuestionInput } from '@/components/ToolCard/askUserQuestion'
+import {
+    AskUserQuestionOptionBody,
+    askUserQuestionQuoteClassName,
+    getAskUserQuestionOptionFrameClassName
+} from '@/components/ToolCard/askUserQuestionOptionCard'
 import { MarkdownRenderer } from '@/components/MarkdownRenderer'
-import { cn } from '@/lib/utils'
 
 type AnswersFormat = Record<string, string[]> | Record<string, { answers: string[] }>
 
@@ -33,11 +37,28 @@ function isAnswerSelected(
     return questionAnswers.some(a => a.trim() === optionLabel.trim())
 }
 
-function getSelectionMark(isMulti: boolean, isSelected: boolean): string {
-    if (isMulti) {
-        return isSelected ? '☑' : '☐'
-    }
-    return isSelected ? '●' : '○'
+function AnswerOptionCard(props: {
+    isMulti: boolean
+    isSelected: boolean
+    title: string
+    description?: string
+    customLabel?: string
+    showControl?: boolean
+}) {
+    const { isMulti, isSelected, title, description, customLabel, showControl } = props
+
+    return (
+        <div className={getAskUserQuestionOptionFrameClassName(isSelected)}>
+            <AskUserQuestionOptionBody
+                checked={isSelected}
+                mode={isMulti ? 'multi' : 'single'}
+                title={title}
+                description={description}
+                customLabel={customLabel}
+                showControl={showControl}
+            />
+        </div>
+    )
 }
 
 function renderOtherAnswers(
@@ -57,24 +78,13 @@ function renderOtherAnswers(
     return (
         <>
             {otherAnswers.map((answer, i) => (
-                <div
+                <AnswerOptionCard
                     key={`other-${i}`}
-                    className="rounded-md border border-emerald-500 bg-emerald-50 dark:bg-emerald-950/30 px-2 py-2"
-                >
-                    <div className="flex items-start gap-2">
-                        <span className="shrink-0 text-sm text-emerald-600">
-                            {isMulti ? '☑' : '●'}
-                        </span>
-                        <div className="min-w-0 flex-1">
-                            <div className="text-sm text-emerald-700 dark:text-emerald-300 font-medium break-words">
-                                {answer}
-                            </div>
-                            <div className="mt-0.5 text-xs text-[var(--app-hint)]">
-                                (custom answer)
-                            </div>
-                        </div>
-                    </div>
-                </div>
+                    isMulti={isMulti}
+                    isSelected={true}
+                    title={answer}
+                    customLabel="(custom answer)"
+                />
             ))}
         </>
     )
@@ -91,21 +101,14 @@ function renderFreeformAnswers(
     if (cleaned.length === 0) return null
 
     return (
-        <div className="mt-3 flex flex-col gap-1">
+        <div className="mt-3 flex flex-col gap-1.5">
             {cleaned.map((answer, i) => (
-                <div
+                <AnswerOptionCard
                     key={i}
-                    className="rounded-md border border-emerald-500 bg-emerald-50 dark:bg-emerald-950/30 px-2 py-2"
-                >
-                    <div className="flex items-start gap-2">
-                        <span className="shrink-0 text-sm text-emerald-600">●</span>
-                        <div className="min-w-0 flex-1">
-                            <div className="text-sm text-emerald-700 dark:text-emerald-300 font-medium break-words">
-                                {answer}
-                            </div>
-                        </div>
-                    </div>
-                </div>
+                    isMulti={false}
+                    isSelected={true}
+                    title={answer}
+                />
             ))}
         </div>
     )
@@ -128,60 +131,31 @@ export function AskUserQuestionView(props: ToolViewProps) {
     }
 
     return (
-        <div className="flex flex-col gap-3">
+        <div className="flex flex-col gap-4">
             {questions.map((q, idx) => {
                 const isMulti = q.multiSelect
 
                 return (
-                    <div key={idx} className="rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] p-3">
+                    <div key={idx} className="flex flex-col gap-3">
                         {q.question ? (
-                            <div>
+                            <div className={askUserQuestionQuoteClassName}>
                                 <MarkdownRenderer content={q.question} />
                             </div>
                         ) : null}
 
                         {q.options.length > 0 ? (
-                            <div className="mt-3 flex flex-col gap-1">
+                            <div className="flex flex-col gap-1.5">
                                 {q.options.map((opt, optIdx) => {
                                     const isSelected = isAnswerSelected(answers, idx, opt.label)
                                     return (
-                                        <div
+                                        <AnswerOptionCard
                                             key={optIdx}
-                                            className={cn(
-                                                "rounded-md border px-2 py-2",
-                                                isSelected
-                                                    ? "border-emerald-500 bg-emerald-50 dark:bg-emerald-950/30"
-                                                    : "border-[var(--app-border)]"
-                                            )}
-                                        >
-                                            <div className="flex items-start gap-2">
-                                                {hasAnswers && (
-                                                    <span className={cn(
-                                                        "shrink-0 text-sm",
-                                                        isSelected
-                                                            ? "text-emerald-600"
-                                                            : "text-[var(--app-hint)]"
-                                                    )}>
-                                                        {getSelectionMark(isMulti, isSelected)}
-                                                    </span>
-                                                )}
-                                                <div className="min-w-0 flex-1">
-                                                    <div className={cn(
-                                                        "[&_.aui-md]:text-sm",
-                                                        isSelected
-                                                            ? "[&_.aui-md]:text-emerald-700 dark:[&_.aui-md]:text-emerald-300 [&_.aui-md]:font-medium"
-                                                            : "[&_.aui-md]:text-[var(--app-fg)]"
-                                                    )}>
-                                                        <MarkdownRenderer content={opt.label} />
-                                                    </div>
-                                                    {opt.description ? (
-                                                        <div className="mt-0.5 [&_.aui-md]:text-xs [&_.aui-md]:text-[var(--app-hint)]">
-                                                            <MarkdownRenderer content={opt.description} />
-                                                        </div>
-                                                    ) : null}
-                                                </div>
-                                            </div>
-                                        </div>
+                                            isMulti={isMulti}
+                                            isSelected={isSelected}
+                                            title={opt.label}
+                                            description={opt.description ?? undefined}
+                                            showControl={Boolean(hasAnswers)}
+                                        />
                                     )
                                 })}
 

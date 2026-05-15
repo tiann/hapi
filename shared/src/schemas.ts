@@ -138,6 +138,22 @@ export const TeamStateSchema = z.object({
 
 export type TeamState = z.infer<typeof TeamStateSchema>
 
+export const ThreadGoalStatusSchema = z.enum(['active', 'paused', 'budgetLimited', 'complete'])
+export type ThreadGoalStatus = z.infer<typeof ThreadGoalStatusSchema>
+
+export const ThreadGoalSchema = z.object({
+    threadId: z.string(),
+    objective: z.string(),
+    status: ThreadGoalStatusSchema,
+    tokenBudget: z.number().nullable().optional(),
+    tokensUsed: z.number().optional().default(0),
+    timeUsedSeconds: z.number().optional().default(0),
+    createdAt: z.number().optional().default(0),
+    updatedAt: z.number().optional().default(0)
+})
+
+export type ThreadGoal = z.infer<typeof ThreadGoalSchema>
+
 export const AttachmentMetadataSchema = z.object({
     id: z.string(),
     filename: z.string(),
@@ -154,7 +170,8 @@ export const DecryptedMessageSchema = z.object({
     seq: z.number().nullable(),
     localId: z.string().nullable(),
     content: z.unknown(),
-    createdAt: z.number()
+    createdAt: z.number(),
+    invokedAt: z.number().nullable().optional()
 })
 
 export type DecryptedMessage = z.infer<typeof DecryptedMessageSchema>
@@ -236,7 +253,13 @@ export const SyncEventSchema = z.discriminatedUnion('type', [
     }),
     SessionChangedSchema.extend({
         type: z.literal('messages-consumed'),
-        localIds: z.array(z.string())
+        localIds: z.array(z.string()),
+        invokedAt: z.number().optional()
+    }),
+    SessionChangedSchema.extend({
+        type: z.literal('message-cancelled'),
+        messageId: z.string(),
+        localId: z.string().optional()
     }),
     SessionEventBaseSchema.extend({
         type: z.literal('heartbeat'),
@@ -254,3 +277,10 @@ export const SyncEventSchema = z.discriminatedUnion('type', [
 ])
 
 export type SyncEvent = z.infer<typeof SyncEventSchema>
+
+export const CancelMessageResponseSchema = z.discriminatedUnion('status', [
+    z.object({ status: z.literal('cancelled'), localId: z.string().nullable() }),
+    z.object({ status: z.literal('invoked'), message: DecryptedMessageSchema }),
+])
+
+export type CancelMessageResponse = z.infer<typeof CancelMessageResponseSchema>

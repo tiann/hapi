@@ -1,10 +1,18 @@
 import type { ToolViewComponent, ToolViewProps } from '@/components/ToolCard/views/_all'
+import type { ReactNode } from 'react'
 import { isObject, safeStringify } from '@hapi/protocol'
 import { CodeBlock } from '@/components/CodeBlock'
 import { MarkdownRenderer } from '@/components/MarkdownRenderer'
 import { ChecklistList, extractTodoChecklist } from '@/components/ToolCard/checklist'
 import { basename, resolveDisplayPath } from '@/utils/path'
 import { getInputStringAny } from '@/lib/toolInputUtils'
+import {
+    getCodexAgentActivity,
+    getCodexAgentTargets,
+    parseCodexCloseAgentResult,
+    parseCodexSpawnAgentResult,
+    parseCodexWaitAgentResult
+} from '@/components/ToolCard/codexAgents'
 
 function parseToolUseError(message: string): { isToolUseError: boolean; errorMessage: string | null } {
     const regex = /<tool_use_error>(.*?)<\/tool_use_error>/s
@@ -92,6 +100,24 @@ interface CodexBashOutput {
     output: string
 }
 
+export function extractCodexBashDisplay(result: unknown): { stdout: string | null; stderr: string | null; exitCode: number | null; status: string | null } | null {
+    if (!isObject(result)) return null
+    const stdout = typeof result.stdout === 'string'
+        ? result.stdout
+        : typeof result.output === 'string'
+            ? result.output
+            : null
+    const stderr = typeof result.stderr === 'string' ? result.stderr : null
+    const exitCode = typeof result.exit_code === 'number'
+        ? result.exit_code
+        : typeof result.exitCode === 'number'
+            ? result.exitCode
+            : null
+    const status = typeof result.status === 'string' ? result.status : null
+    if (stdout === null && stderr === null && exitCode === null && status === null) return null
+    return { stdout, stderr, exitCode, status }
+}
+
 function parseCodexBashOutput(text: string): CodexBashOutput | null {
     const exitMatch = text.match(/^Exit code:\s*(\d+)/m)
     const wallMatch = text.match(/^Wall time:\s*(.+)$/m)
@@ -122,20 +148,160 @@ function looksLikeJson(text: string): boolean {
     return (trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))
 }
 
-function renderText(text: string, opts: { mode: 'markdown' | 'code' | 'auto'; language?: string } = { mode: 'auto' }) {
+function parseStandaloneMarkdownCodeBlock(text: string): { language: string; code: string } | null {
+    const trimmed = text.trim()
+    const fence = trimmed.startsWith('```') ? '```' : trimmed.startsWith('~~~') ? '~~~' : null
+    if (!fence) return null
+
+    const lines = trimmed.split('\n')
+    if (lines.length < 2) return null
+
+    const lastLine = lines[lines.length - 1]?.trim()
+    if (lastLine !== fence) return null
+
+    const firstLine = lines[0] ?? ''
+    const language = firstLine.slice(fence.length).trim().split(/\s+/, 1)[0] || 'text'
+    return {
+        language,
+        code: lines.slice(1, -1).join('\n')
+    }
+}
+
+const codeLanguageByExtension: Record<string, string> = {
+    c: 'c',
+    cc: 'c',
+    conf: 'ini',
+    cpp: 'c',
+    cs: 'csharp',
+    css: 'css',
+    cjs: 'javascript',
+    cts: 'typescript',
+    diff: 'diff',
+    dockerfile: 'dockerfile',
+    go: 'go',
+    graphql: 'graphql',
+    h: 'c',
+    htm: 'html',
+    html: 'html',
+    ini: 'ini',
+    java: 'java',
+    js: 'javascript',
+    json: 'json',
+    jsx: 'jsx',
+    kt: 'kotlin',
+    kts: 'kotlin',
+    m: 'c',
+    makefile: 'make',
+    md: 'markdown',
+    mjs: 'javascript',
+    mts: 'typescript',
+    patch: 'diff',
+    php: 'php',
+    ps1: 'powershell',
+    py: 'python',
+    rb: 'ruby',
+    rs: 'rust',
+    scss: 'scss',
+    sh: 'shellscript',
+    sql: 'sql',
+    swift: 'swift',
+    toml: 'toml',
+    ts: 'typescript',
+    tsx: 'tsx',
+    xml: 'xml',
+    yaml: 'yaml',
+    yml: 'yaml',
+    zsh: 'shellscript'
+}
+
+function inferCodeLanguageFromPath(path: string | null): string | null {
+    if (!path) return null
+    const name = basename(path).toLowerCase()
+    if (name === 'dockerfile') return 'dockerfile'
+    if (name === 'makefile') return 'make'
+
+    const ext = name.includes('.') ? name.split('.').pop() : null
+    if (!ext) return null
+    return codeLanguageByExtension[ext] ?? null
+}
+
+function looksLikeCodeContent(text: string): string | null {
+    if (looksLikeJson(text)) return 'json'
+    if (looksLikeHtml(text)) return 'html'
+    if (text.trimStart().startsWith('diff --git') || text.trimStart().startsWith('@@ ')) return 'diff'
+    if (text.startsWith('#!/bin/bash') || text.startsWith('#!/usr/bin/env bash') || text.startsWith('#!/bin/sh')) return 'shellscript'
+    if (/^\s*(import|export)\s.+from\s+['"][^'"]+['"]/m.test(text)) return 'typescript'
+    if (/^\s*(const|let|var|function|class|interface|type)\s+\w+/m.test(text)) return 'typescript'
+    if (/^\s*def\s+\w+\(|^\s*class\s+\w+\(|^\s*from\s+\w+\s+import\s+/m.test(text)) return 'python'
+    return null
+}
+
+function inferCodeLanguage(path: string | null, text: string): string | null {
+    return inferCodeLanguageFromPath(path) ?? looksLikeCodeContent(text)
+}
+
+function resultCodeBlockProps(surface: ToolViewProps['surface'], collapseLongContent?: boolean) {
+    return surface === 'dialog'
+        ? { collapseLongContent: false, size: 'comfortable' as const, scrollY: true }
+        : { collapseLongContent }
+}
+
+function renderResultBody(
+    content: ReactNode,
+    surface: ToolViewProps['surface'],
+    opts: { forceQuote?: boolean } = {}
+) {
+    if (surface !== 'dialog' && !opts.forceQuote) return content
+
+    return (
+        <div className="tool-result-quote rounded-r-2xl border-l-[3px] border-[var(--app-md-quote-border)] bg-[var(--app-md-quote-bg)] px-4 py-3 text-sm leading-6 text-[var(--app-md-quote-fg)]">
+            {content}
+        </div>
+    )
+}
+
+function renderPlainTextQuote(text: string, surface: ToolViewProps['surface']) {
+    return renderResultBody(
+        <div className="whitespace-pre-wrap break-words">
+            {text}
+        </div>,
+        surface,
+        { forceQuote: true }
+    )
+}
+
+function renderMarkdown(text: string, surface: ToolViewProps['surface']) {
+    return (
+        <MarkdownRenderer
+            content={text}
+            className={surface === 'dialog' ? 'text-[var(--app-md-quote-fg)]' : undefined}
+        />
+    )
+}
+
+function renderText(text: string, opts: { mode: 'markdown' | 'code' | 'auto'; language?: string; collapseLongContent?: boolean; surface?: ToolViewProps['surface'] } = { mode: 'auto' }) {
     if (opts.mode === 'code') {
-        return <CodeBlock code={text} language={opts.language ?? 'text'} />
+        return <CodeBlock code={text} language={opts.language ?? 'text'} {...resultCodeBlockProps(opts.surface, opts.collapseLongContent)} />
     }
 
+    const standaloneCodeBlock = parseStandaloneMarkdownCodeBlock(text)
+
     if (opts.mode === 'markdown') {
-        return <MarkdownRenderer content={text} />
+        const markdown = renderMarkdown(text, opts.surface)
+        return standaloneCodeBlock
+            ? <CodeBlock code={standaloneCodeBlock.code} language={standaloneCodeBlock.language} {...resultCodeBlockProps(opts.surface, opts.collapseLongContent)} />
+            : renderResultBody(markdown, opts.surface)
     }
 
     if (looksLikeHtml(text) || looksLikeJson(text)) {
-        return <CodeBlock code={text} language={looksLikeJson(text) ? 'json' : 'html'} />
+        return <CodeBlock code={text} language={looksLikeJson(text) ? 'json' : 'html'} {...resultCodeBlockProps(opts.surface, opts.collapseLongContent)} />
     }
 
-    return <MarkdownRenderer content={text} />
+    if (standaloneCodeBlock) {
+        return <CodeBlock code={standaloneCodeBlock.code} language={standaloneCodeBlock.language} {...resultCodeBlockProps(opts.surface, opts.collapseLongContent)} />
+    }
+
+    return renderResultBody(renderMarkdown(text, opts.surface), opts.surface)
 }
 
 function placeholderForState(state: ToolViewProps['block']['tool']['state']): string {
@@ -144,7 +310,7 @@ function placeholderForState(state: ToolViewProps['block']['tool']['state']): st
     return '(no output)'
 }
 
-function RawJsonDevOnly(props: { value: unknown }) {
+function RawJsonDevOnly(props: { value: unknown; surface?: ToolViewProps['surface'] }) {
     if (!import.meta.env.DEV) return null
     if (props.value === null || props.value === undefined) return null
 
@@ -154,7 +320,7 @@ function RawJsonDevOnly(props: { value: unknown }) {
                 Raw JSON
             </summary>
             <div className="mt-2">
-                <CodeBlock code={safeStringify(props.value)} language="json" />
+                <CodeBlock code={safeStringify(props.value)} language="json" title="Raw JSON" {...resultCodeBlockProps(props.surface, false)} />
             </div>
         </details>
     )
@@ -198,6 +364,57 @@ function extractReadFileContent(result: unknown): { filePath: string | null; con
     return { filePath, content }
 }
 
+function isReadFileToolCall(toolName: string, input: unknown): boolean {
+    if (toolName === 'Read' || toolName === 'NotebookRead') return true
+
+    const normalizedName = toolName.toLowerCase()
+    if (normalizedName.includes('read_file') || normalizedName.includes('readfile')) return true
+
+    if (!isObject(input)) return false
+    if (Array.isArray(input.parsed_cmd)) {
+        return input.parsed_cmd.some((cmd) => isObject(cmd) && cmd.type === 'read')
+    }
+
+    return false
+}
+
+function extractReadPathFromInput(input: unknown): string | null {
+    if (!isObject(input)) return null
+
+    const directPath = getInputStringAny(input, ['file_path', 'path', 'name'])
+    if (directPath) return directPath
+
+    if (Array.isArray(input.parsed_cmd)) {
+        for (const cmd of input.parsed_cmd) {
+            if (!isObject(cmd) || cmd.type !== 'read') continue
+            const parsedPath = getInputStringAny(cmd, ['name', 'path', 'file_path'])
+            if (parsedPath) return parsedPath
+        }
+    }
+
+    return null
+}
+
+function renderReadTextResult(text: string, path: string | null, surface: ToolViewProps['surface']) {
+    const language = inferCodeLanguage(path, text)
+    if (language) {
+        return <CodeBlock code={text} language={language} title="File content" {...resultCodeBlockProps(surface, surface === 'inline')} />
+    }
+    return renderPlainTextQuote(text, surface)
+}
+
+function ResultMetaPill(props: { children: ReactNode }) {
+    return (
+        <span className="inline-flex w-fit items-center rounded-full border border-[var(--app-border)] bg-[var(--app-subtle-bg)] px-2 py-0.5 font-mono text-[11px] leading-5 text-[var(--app-hint)]">
+            {props.children}
+        </span>
+    )
+}
+
+function ResultStatusPill(props: { text: string }) {
+    return <ResultMetaPill>{props.text}</ResultMetaPill>
+}
+
 function extractLineList(text: string): string[] {
     return text
         .split('\n')
@@ -227,7 +444,7 @@ const BashResultView: ToolViewComponent = (props: ToolViewProps) => {
     const result = props.block.tool.result
 
     if (result === undefined || result === null) {
-        return <div className="text-sm text-[var(--app-hint)]">{placeholderForState(props.block.tool.state)}</div>
+        return <ResultStatusPill text={placeholderForState(props.block.tool.state)} />
     }
 
     if (typeof result === 'string') {
@@ -235,8 +452,8 @@ const BashResultView: ToolViewComponent = (props: ToolViewProps) => {
         const display = toolUseError.isToolUseError ? (toolUseError.errorMessage ?? '') : result
         return (
             <>
-                <CodeBlock code={display} language="text" />
-                <RawJsonDevOnly value={result} />
+                <CodeBlock code={display} language="text" {...resultCodeBlockProps(props.surface, props.surface === 'inline')} />
+                <RawJsonDevOnly value={result} surface={props.surface} />
             </>
         )
     }
@@ -246,10 +463,10 @@ const BashResultView: ToolViewComponent = (props: ToolViewProps) => {
         return (
             <>
                 <div className="flex flex-col gap-2">
-                    {stdio.stdout ? <CodeBlock code={stdio.stdout} language="text" /> : null}
-                    {stdio.stderr ? <CodeBlock code={stdio.stderr} language="text" /> : null}
+                    {stdio.stdout ? <CodeBlock code={stdio.stdout} language="text" title="stdout" {...resultCodeBlockProps(props.surface, props.surface === 'inline')} /> : null}
+                    {stdio.stderr ? <CodeBlock code={stdio.stderr} language="text" title="stderr" {...resultCodeBlockProps(props.surface, props.surface === 'inline')} /> : null}
                 </div>
-                <RawJsonDevOnly value={result} />
+                <RawJsonDevOnly value={result} surface={props.surface} />
             </>
         )
     }
@@ -258,41 +475,72 @@ const BashResultView: ToolViewComponent = (props: ToolViewProps) => {
     if (text) {
         return (
             <>
-                {renderText(text, { mode: 'code', language: 'text' })}
-                <RawJsonDevOnly value={result} />
+                {renderText(text, { mode: 'code', language: 'text', collapseLongContent: props.surface === 'inline', surface: props.surface })}
+                <RawJsonDevOnly value={result} surface={props.surface} />
             </>
         )
     }
 
     return (
         <>
-            <div className="text-sm text-[var(--app-hint)]">(no output)</div>
-            <RawJsonDevOnly value={result} />
+            <ResultStatusPill text="(no output)" />
+            <RawJsonDevOnly value={result} surface={props.surface} />
         </>
     )
+}
+
+const CodexBashResultView: ToolViewComponent = (props: ToolViewProps) => {
+    const result = props.block.tool.result
+
+    if (result === undefined || result === null) {
+        return <ResultStatusPill text={placeholderForState(props.block.tool.state)} />
+    }
+
+    const display = extractCodexBashDisplay(result)
+    if (display) {
+        const stdout = display.stdout?.trimEnd() ?? ''
+        const stderr = display.stderr?.trimEnd() ?? ''
+        return (
+            <>
+                <div className="flex flex-col gap-2">
+                    <ResultMetaPill>
+                        {display.exitCode !== null ? `exit ${display.exitCode}` : display.status ?? 'completed'}
+                    </ResultMetaPill>
+                    {stdout ? <CodeBlock code={stdout} language="text" title="stdout" {...resultCodeBlockProps(props.surface, props.surface === 'inline')} /> : null}
+                    {stderr ? <CodeBlock code={stderr} language="text" title="stderr" {...resultCodeBlockProps(props.surface, props.surface === 'inline')} /> : null}
+                    {!stdout && !stderr ? (
+                        <ResultStatusPill text={display.exitCode === 0 || display.status === 'completed' ? 'Done' : '(no output)'} />
+                    ) : null}
+                </div>
+                <RawJsonDevOnly value={result} surface={props.surface} />
+            </>
+        )
+    }
+
+    return <GenericResultView {...props} />
 }
 
 const MarkdownResultView: ToolViewComponent = (props: ToolViewProps) => {
     const result = props.block.tool.result
 
     if (result === undefined || result === null) {
-        return <div className="text-sm text-[var(--app-hint)]">{placeholderForState(props.block.tool.state)}</div>
+        return <ResultStatusPill text={placeholderForState(props.block.tool.state)} />
     }
 
     const text = extractTextFromResult(result)
     if (text) {
         return (
             <>
-                {renderText(text, { mode: 'auto' })}
-                <RawJsonDevOnly value={result} />
+                {renderText(text, { mode: 'auto', collapseLongContent: props.surface === 'inline', surface: props.surface })}
+                <RawJsonDevOnly value={result} surface={props.surface} />
             </>
         )
     }
 
     return (
         <>
-            <div className="text-sm text-[var(--app-hint)]">(no output)</div>
-            <RawJsonDevOnly value={result} />
+            <ResultStatusPill text="(no output)" />
+            <RawJsonDevOnly value={result} surface={props.surface} />
         </>
     )
 }
@@ -301,15 +549,15 @@ const LineListResultView: ToolViewComponent = (props: ToolViewProps) => {
     const result = props.block.tool.result
 
     if (result === undefined || result === null) {
-        return <div className="text-sm text-[var(--app-hint)]">{placeholderForState(props.block.tool.state)}</div>
+        return <ResultStatusPill text={placeholderForState(props.block.tool.state)} />
     }
 
     const text = extractTextFromResult(result)
     if (!text) {
         return (
             <>
-                <div className="text-sm text-[var(--app-hint)]">(no output)</div>
-                <RawJsonDevOnly value={result} />
+                <ResultStatusPill text="(no output)" />
+                <RawJsonDevOnly value={result} surface={props.surface} />
             </>
         )
     }
@@ -317,8 +565,8 @@ const LineListResultView: ToolViewComponent = (props: ToolViewProps) => {
     if (isProbablyMarkdownList(text)) {
         return (
             <>
-                <MarkdownRenderer content={text} />
-                <RawJsonDevOnly value={result} />
+                {renderResultBody(renderMarkdown(text, props.surface), props.surface)}
+                <RawJsonDevOnly value={result} surface={props.surface} />
             </>
         )
     }
@@ -327,22 +575,25 @@ const LineListResultView: ToolViewComponent = (props: ToolViewProps) => {
     if (lines.length === 0) {
         return (
             <>
-                <div className="text-sm text-[var(--app-hint)]">(no output)</div>
-                <RawJsonDevOnly value={result} />
+                <ResultStatusPill text="(no output)" />
+                <RawJsonDevOnly value={result} surface={props.surface} />
             </>
         )
     }
 
     return (
         <>
-            <div className="flex flex-col gap-1">
-                {lines.map((line) => (
-                    <div key={line} className="text-sm font-mono text-[var(--app-fg)] break-all">
-                        {line}
-                    </div>
-                ))}
-            </div>
-            <RawJsonDevOnly value={result} />
+            {renderResultBody(
+                <div className="flex flex-col gap-1">
+                    {lines.map((line) => (
+                        <div key={line} className={props.surface === 'dialog' ? 'text-sm font-mono text-[var(--app-md-quote-fg)] break-all' : 'text-sm font-mono text-[var(--app-fg)] break-all'}>
+                            {line}
+                        </div>
+                    ))}
+                </div>,
+                props.surface
+            )}
+            <RawJsonDevOnly value={result} surface={props.surface} />
         </>
     )
 }
@@ -351,7 +602,7 @@ const ReadResultView: ToolViewComponent = (props: ToolViewProps) => {
     const result = props.block.tool.result
 
     if (result === undefined || result === null) {
-        return <div className="text-sm text-[var(--app-hint)]">{placeholderForState(props.block.tool.state)}</div>
+        return <ResultStatusPill text={placeholderForState(props.block.tool.state)} />
     }
 
     const file = extractReadFileContent(result)
@@ -364,26 +615,28 @@ const ReadResultView: ToolViewComponent = (props: ToolViewProps) => {
                         {basename(path)}
                     </div>
                 ) : null}
-                <CodeBlock code={file.content} language="text" />
-                <RawJsonDevOnly value={result} />
+                {renderReadTextResult(file.content, path, props.surface)}
+                <RawJsonDevOnly value={result} surface={props.surface} />
             </>
         )
     }
 
     const text = extractTextFromResult(result)
     if (text) {
+        const path = extractReadPathFromInput(props.block.tool.input)
+        const displayPath = path ? resolveDisplayPath(path, props.metadata) : null
         return (
             <>
-                {renderText(text, { mode: 'code', language: 'text' })}
-                <RawJsonDevOnly value={result} />
+                {renderReadTextResult(text, displayPath, props.surface)}
+                <RawJsonDevOnly value={result} surface={props.surface} />
             </>
         )
     }
 
     return (
         <>
-            <div className="text-sm text-[var(--app-hint)]">(no output)</div>
-            <RawJsonDevOnly value={result} />
+            <ResultStatusPill text="(no output)" />
+            <RawJsonDevOnly value={result} surface={props.surface} />
         </>
     )
 }
@@ -393,9 +646,9 @@ const MutationResultView: ToolViewComponent = (props: ToolViewProps) => {
 
     if (result === undefined || result === null) {
         if (state === 'completed') {
-            return <div className="text-sm text-[var(--app-hint)]">Done</div>
+            return <ResultStatusPill text="Done" />
         }
-        return <div className="text-sm text-[var(--app-hint)]">{placeholderForState(state)}</div>
+        return <ResultStatusPill text={placeholderForState(state)} />
     }
 
     const text = extractTextFromResult(result)
@@ -405,19 +658,17 @@ const MutationResultView: ToolViewComponent = (props: ToolViewProps) => {
         return (
             <>
                 <div className={`text-sm ${className}`}>
-                    {renderText(text, { mode, language })}
+                    {renderText(text, { mode, language, collapseLongContent: props.surface === 'inline', surface: props.surface })}
                 </div>
-                <RawJsonDevOnly value={result} />
+                <RawJsonDevOnly value={result} surface={props.surface} />
             </>
         )
     }
 
     return (
         <>
-            <div className="text-sm text-[var(--app-hint)]">
-                {state === 'completed' ? 'Done' : '(no output)'}
-            </div>
-            <RawJsonDevOnly value={result} />
+            <ResultStatusPill text={state === 'completed' ? 'Done' : '(no output)'} />
+            <RawJsonDevOnly value={result} surface={props.surface} />
         </>
     )
 }
@@ -428,22 +679,22 @@ const CodexPatchResultView: ToolViewComponent = (props: ToolViewProps) => {
     if (text) {
         return (
             <>
-                {renderText(text, { mode: 'auto' })}
-                <RawJsonDevOnly value={result} />
+                {renderText(text, { mode: 'auto', collapseLongContent: props.surface === 'inline', surface: props.surface })}
+                <RawJsonDevOnly value={result} surface={props.surface} />
             </>
         )
     }
 
     if (result === undefined || result === null) {
         return props.block.tool.state === 'completed'
-            ? <div className="text-sm text-[var(--app-hint)]">Done</div>
-            : <div className="text-sm text-[var(--app-hint)]">{placeholderForState(props.block.tool.state)}</div>
+            ? <ResultStatusPill text="Done" />
+            : <ResultStatusPill text={placeholderForState(props.block.tool.state)} />
     }
 
     return (
         <>
-            <div className="text-sm text-[var(--app-hint)]">(no output)</div>
-            <RawJsonDevOnly value={result} />
+            <ResultStatusPill text="(no output)" />
+            <RawJsonDevOnly value={result} surface={props.surface} />
         </>
     )
 }
@@ -451,23 +702,23 @@ const CodexPatchResultView: ToolViewComponent = (props: ToolViewProps) => {
 const CodexReasoningResultView: ToolViewComponent = (props: ToolViewProps) => {
     const result = props.block.tool.result
     if (result === undefined || result === null) {
-        return <div className="text-sm text-[var(--app-hint)]">{placeholderForState(props.block.tool.state)}</div>
+        return <ResultStatusPill text={placeholderForState(props.block.tool.state)} />
     }
 
     const text = extractTextFromResult(result)
     if (text) {
         return (
             <>
-                {renderText(text, { mode: 'auto' })}
-                <RawJsonDevOnly value={result} />
+                {renderText(text, { mode: 'auto', collapseLongContent: props.surface === 'inline', surface: props.surface })}
+                <RawJsonDevOnly value={result} surface={props.surface} />
             </>
         )
     }
 
     return (
         <>
-            <div className="text-sm text-[var(--app-hint)]">(no output)</div>
-            <RawJsonDevOnly value={result} />
+            <ResultStatusPill text="(no output)" />
+            <RawJsonDevOnly value={result} surface={props.surface} />
         </>
     )
 }
@@ -476,24 +727,24 @@ const CodexDiffResultView: ToolViewComponent = (props: ToolViewProps) => {
     const result = props.block.tool.result
     if (result === undefined || result === null) {
         return props.block.tool.state === 'completed'
-            ? <div className="text-sm text-[var(--app-hint)]">Done</div>
-            : <div className="text-sm text-[var(--app-hint)]">{placeholderForState(props.block.tool.state)}</div>
+            ? <ResultStatusPill text="Done" />
+            : <ResultStatusPill text={placeholderForState(props.block.tool.state)} />
     }
 
     const text = extractTextFromResult(result)
     if (text) {
         return (
             <>
-                {renderText(text, { mode: 'code', language: 'diff' })}
-                <RawJsonDevOnly value={result} />
+                {renderText(text, { mode: 'code', language: 'diff', collapseLongContent: props.surface === 'inline', surface: props.surface })}
+                <RawJsonDevOnly value={result} surface={props.surface} />
             </>
         )
     }
 
     return (
         <>
-            <div className="text-sm text-[var(--app-hint)]">Done</div>
-            <RawJsonDevOnly value={result} />
+            <ResultStatusPill text="Done" />
+            <RawJsonDevOnly value={result} surface={props.surface} />
         </>
     )
 }
@@ -501,50 +752,131 @@ const CodexDiffResultView: ToolViewComponent = (props: ToolViewProps) => {
 const TodoWriteResultView: ToolViewComponent = (props: ToolViewProps) => {
     const todos = extractTodoChecklist(props.block.tool.input, props.block.tool.result)
     if (todos.length === 0) {
-        return <div className="text-sm text-[var(--app-hint)]">{placeholderForState(props.block.tool.state)}</div>
+        return <ResultStatusPill text={placeholderForState(props.block.tool.state)} />
     }
 
     return <ChecklistList items={todos} />
 }
 
-const AgentResultView: ToolViewComponent = (props: ToolViewProps) => {
-    const { state, result } = props.block.tool
+function AgentIdPill(props: { label: string; value: string }) {
+    return (
+        <ResultMetaPill>
+            <span className="font-sans">{props.label}: </span>
+            <span>{props.value}</span>
+        </ResultMetaPill>
+    )
+}
+
+const CodexAgentResultView: ToolViewComponent = (props: ToolViewProps) => {
+    const { name, state, result, input } = props.block.tool
+    const showDetails = props.surface === 'dialog'
 
     if (result === undefined || result === null) {
-        return <div className="text-sm text-[var(--app-hint)]">{placeholderForState(state)}</div>
+        return <ResultStatusPill text={getCodexAgentActivity(input) ?? placeholderForState(state)} />
     }
 
-    // For errors, show the error text
     if (state === 'error') {
         const text = extractTextFromResult(result)
         return (
             <div className="text-sm text-red-600">
-                {text?.trim() ? text : 'Agent failed'}
+                {text?.trim() ? text : 'Agent tool failed'}
             </div>
         )
     }
 
+    if (name === 'spawn_agent') {
+        const parsed = parseCodexSpawnAgentResult(result)
+        if (parsed) {
+            return (
+                <div className="flex flex-wrap gap-2">
+                    <ResultStatusPill text="Agent launched" />
+                    {parsed.nickname ? <AgentIdPill label="Name" value={parsed.nickname} /> : null}
+                    {parsed.agentId ? <AgentIdPill label="ID" value={parsed.agentId} /> : null}
+                    {showDetails ? <RawJsonDevOnly value={result} surface={props.surface} /> : null}
+                </div>
+            )
+        }
+    }
+
+    if (name === 'wait_agent') {
+        const parsed = parseCodexWaitAgentResult(result)
+        if (parsed) {
+            if (parsed.statuses.length === 0) {
+                return <ResultStatusPill text={parsed.timedOut ? 'Timed out' : 'No status'} />
+            }
+
+            return (
+                <div className="flex flex-col gap-3">
+                    <div className="flex flex-wrap gap-2">
+                        {parsed.timedOut ? <ResultStatusPill text="Timed out" /> : null}
+                        <ResultStatusPill text={`${parsed.statuses.length} agent${parsed.statuses.length === 1 ? '' : 's'}`} />
+                        {Object.entries(parsed.statuses.reduce<Record<string, number>>((counts, status) => {
+                            counts[status.state] = (counts[status.state] ?? 0) + 1
+                            return counts
+                        }, {})).map(([status, count]) => (
+                            <ResultStatusPill key={status} text={`${count} ${status}`} />
+                        ))}
+                    </div>
+                    {showDetails ? (
+                        <div className="flex flex-col gap-2">
+                            {parsed.statuses.map((status) => (
+                                <div key={status.agentId} className="rounded-xl border border-[var(--app-border)] bg-[var(--app-subtle-bg)] px-3 py-2">
+                                    <div className="mb-1 flex flex-wrap items-center gap-2 text-xs text-[var(--app-hint)]">
+                                        <ResultStatusPill text={status.state} />
+                                        <span className="font-mono break-all">{status.agentId}</span>
+                                    </div>
+                                    {status.text ? (
+                                        <div className="text-sm text-[var(--app-fg)]">
+                                            {renderText(status.text, { mode: 'auto', collapseLongContent: props.surface === 'inline', surface: props.surface })}
+                                        </div>
+                                    ) : null}
+                                </div>
+                            ))}
+                        </div>
+                    ) : null}
+                    {showDetails ? <RawJsonDevOnly value={result} surface={props.surface} /> : null}
+                </div>
+            )
+        }
+    }
+
+    if (name === 'close_agent') {
+        const parsed = parseCodexCloseAgentResult(result)
+        if (parsed) {
+            const targets = getCodexAgentTargets(input)
+            return (
+                <div className="flex flex-col gap-2">
+                    <div className="flex flex-wrap gap-2">
+                        <ResultStatusPill text="Agent closed" />
+                        {targets[0] ? <AgentIdPill label="ID" value={targets[0]} /> : null}
+                        <ResultStatusPill text={parsed.state} />
+                    </div>
+                    {showDetails && parsed.text ? (
+                        <div className="text-sm text-[var(--app-fg)]">
+                            {renderText(parsed.text, { mode: 'auto', collapseLongContent: props.surface === 'inline', surface: props.surface })}
+                        </div>
+                    ) : null}
+                    {showDetails ? <RawJsonDevOnly value={result} surface={props.surface} /> : null}
+                </div>
+            )
+        }
+    }
+
     const text = extractTextFromResult(result)
-    if (!text) {
-        return <div className="text-sm text-[var(--app-hint)]">{state === 'completed' ? 'Done' : placeholderForState(state)}</div>
+    if (text) {
+        if (!showDetails) {
+            return <ResultStatusPill text={state === 'completed' ? 'Done' : placeholderForState(state)} />
+        }
+
+        return (
+            <>
+                {renderText(text, { mode: 'auto', collapseLongContent: props.surface === 'inline', surface: props.surface })}
+                {typeof result === 'object' ? <RawJsonDevOnly value={result} surface={props.surface} /> : null}
+            </>
+        )
     }
 
-    // Detect internal launch metadata. Check structurally first (result object
-    // may carry agentId/output_file keys), then fall back to a strict text
-    // pattern that is unlikely to appear in normal agent prose.
-    const isInternalMeta = isObject(result) && ('agentId' in result || 'output_file' in result)
-        || (text.startsWith('Async agent launched successfully.') && text.includes('agentId:'))
-
-    if (isInternalMeta) {
-        return <div className="text-sm text-[var(--app-hint)]">Agent launched</div>
-    }
-
-    return (
-        <>
-            <MarkdownRenderer content={text} />
-            <RawJsonDevOnly value={result} />
-        </>
-    )
+    return <ResultStatusPill text={state === 'completed' ? 'Done' : placeholderForState(state)} />
 }
 
 const SkillResultView: ToolViewComponent = (props: ToolViewProps) => {
@@ -552,9 +884,9 @@ const SkillResultView: ToolViewComponent = (props: ToolViewProps) => {
 
     if (result === undefined || result === null) {
         if (state === 'completed') {
-            return <div className="text-sm text-[var(--app-hint)]">Skill loaded</div>
+            return <ResultStatusPill text="Skill loaded" />
         }
-        return <div className="text-sm text-[var(--app-hint)]">{placeholderForState(state)}</div>
+        return <ResultStatusPill text={placeholderForState(state)} />
     }
 
     // For errors, show the error text
@@ -569,18 +901,14 @@ const SkillResultView: ToolViewComponent = (props: ToolViewProps) => {
 
     // For successful loads, show just the skill name
     const skillName = getInputStringAny(input, ['skill'])
-    return (
-        <div className="text-sm text-[var(--app-hint)]">
-            {skillName ? `Skill "${skillName}" loaded` : 'Skill loaded'}
-        </div>
-    )
+    return <ResultStatusPill text={skillName ? `Skill "${skillName}" loaded` : 'Skill loaded'} />
 }
 
 const GenericResultView: ToolViewComponent = (props: ToolViewProps) => {
     const result = props.block.tool.result
 
     if (result === undefined || result === null) {
-        return <div className="text-sm text-[var(--app-hint)]">{placeholderForState(props.block.tool.state)}</div>
+        return <ResultStatusPill text={placeholderForState(props.block.tool.state)} />
     }
 
     // Detect codex bash output format and render accordingly
@@ -589,13 +917,22 @@ const GenericResultView: ToolViewComponent = (props: ToolViewProps) => {
         if (parsed) {
             return (
                 <>
-                    <div className="text-xs text-[var(--app-hint)] mb-2">
-                        {parsed.exitCode !== null && `Exit code: ${parsed.exitCode}`}
-                        {parsed.exitCode !== null && parsed.wallTime && ' · '}
-                        {parsed.wallTime && `Wall time: ${parsed.wallTime}`}
+                    <div className="mb-2 flex flex-wrap gap-1.5">
+                        {parsed.exitCode !== null ? (
+                            <ResultMetaPill>exit {parsed.exitCode}</ResultMetaPill>
+                        ) : null}
+                        {parsed.wallTime ? (
+                            <ResultMetaPill>{parsed.wallTime}</ResultMetaPill>
+                        ) : null}
                     </div>
-                    {renderText(parsed.output.trim(), { mode: 'code' })}
-                    <RawJsonDevOnly value={result} />
+                    {isReadFileToolCall(props.block.tool.name, props.block.tool.input)
+                        ? renderReadTextResult(
+                            parsed.output.trim(),
+                            extractReadPathFromInput(props.block.tool.input),
+                            props.surface
+                        )
+                        : renderText(parsed.output.trim(), { mode: 'code', language: 'text', collapseLongContent: props.surface === 'inline', surface: props.surface })}
+                    <RawJsonDevOnly value={result} surface={props.surface} />
                 </>
             )
         }
@@ -605,17 +942,19 @@ const GenericResultView: ToolViewComponent = (props: ToolViewProps) => {
     if (text) {
         return (
             <>
-                {renderText(text, { mode: 'auto' })}
-                {typeof result === 'object' ? <RawJsonDevOnly value={result} /> : null}
+                {isReadFileToolCall(props.block.tool.name, props.block.tool.input)
+                    ? renderReadTextResult(text, extractReadPathFromInput(props.block.tool.input), props.surface)
+                    : renderText(text, { mode: 'auto', collapseLongContent: props.surface === 'inline', surface: props.surface })}
+                {typeof result === 'object' ? <RawJsonDevOnly value={result} surface={props.surface} /> : null}
             </>
         )
     }
 
     if (typeof result === 'string') {
-        return renderText(result, { mode: 'auto' })
+        return renderText(result, { mode: 'auto', collapseLongContent: props.surface === 'inline', surface: props.surface })
     }
 
-    return <CodeBlock code={safeStringify(result)} language="json" />
+    return <CodeBlock code={safeStringify(result)} language="json" title="JSON" {...resultCodeBlockProps(props.surface, props.surface === 'inline')} />
 }
 
 export const toolResultViewRegistry: Record<string, ToolViewComponent> = {
@@ -633,11 +972,17 @@ export const toolResultViewRegistry: Record<string, ToolViewComponent> = {
     NotebookRead: ReadResultView,
     NotebookEdit: MutationResultView,
     TodoWrite: TodoWriteResultView,
+    CodexBash: CodexBashResultView,
     CodexReasoning: CodexReasoningResultView,
     CodexPatch: CodexPatchResultView,
     CodexDiff: CodexDiffResultView,
+    CodexAgent: CodexAgentResultView,
     Skill: SkillResultView,
-    Agent: AgentResultView,
+    spawn_agent: CodexAgentResultView,
+    send_input: CodexAgentResultView,
+    resume_agent: CodexAgentResultView,
+    wait_agent: CodexAgentResultView,
+    close_agent: CodexAgentResultView,
     AskUserQuestion: AskUserQuestionResultView,
     ExitPlanMode: MarkdownResultView,
     ask_user_question: AskUserQuestionResultView,

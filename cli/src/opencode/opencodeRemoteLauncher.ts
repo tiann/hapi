@@ -19,6 +19,8 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     private abortController = new AbortController();
     private displayPermissionMode: PermissionMode | null = null;
     private instructionsSent = false;
+    private currentBackendModel: string | null = null;
+    private setModelSupported: boolean | undefined = undefined;
 
     constructor(session: OpencodeSession) {
         super(process.env.DEBUG ? session.logPath : undefined);
@@ -85,6 +87,26 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         }
         session.onSessionFound(acpSessionId);
 
+        // Seed currentBackendModel from the ACP session metadata so the first
+        // batch — whose model the hub mirrors from the just-discovered session —
+        // does not trigger a redundant setModel on the very first turn.
+        const initialMetadata = backend.getSessionModelsMetadata?.(acpSessionId);
+        this.currentBackendModel = initialMetadata?.currentModelId ?? null;
+
+        // Expose the cached models metadata via per-session RPC so the hub can
+        // forward it to the web UI's model selector without round-tripping ACP.
+        session.client.rpcHandlerManager.registerHandler('listOpencodeModels', async () => {
+            const metadata = backend.getSessionModelsMetadata?.(acpSessionId);
+            if (!metadata) {
+                return { success: true, availableModels: [], currentModelId: null };
+            }
+            return {
+                success: true,
+                availableModels: metadata.availableModels,
+                currentModelId: metadata.currentModelId
+            };
+        });
+
         this.permissionHandler = new OpencodePermissionHandler(
             session.client,
             backend,
@@ -109,6 +131,47 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                     continue;
                 }
                 break;
+            }
+
+            // Inline model change via ACP RPC (session/set_model — see ACP SDK
+            // schema `x-method: session/set_model`). Mirrors the Gemini pattern
+            // from PR #543: if the running OpenCode build does not implement the
+            // RPC, we learn that from the first method-not-found response and stop
+            // attempting it for the rest of this session.
+            //
+            // The very first batch seeds currentBackendModel — the OpenCode CLI was
+            // launched with that model via --model and there is nothing to switch yet.
+            if (batch.mode.model && this.currentBackendModel === null) {
+                this.currentBackendModel = batch.mode.model;
+            } else if (batch.mode.model && batch.mode.model !== this.currentBackendModel) {
+                if (!backend.setModel || this.setModelSupported === false) {
+                    batch.mode.model = this.currentBackendModel ?? undefined;
+                } else {
+                    logger.debug(`[opencode-remote] Switching model inline: ${this.currentBackendModel} -> ${batch.mode.model}`);
+                    try {
+                        await backend.setModel(acpSessionId, batch.mode.model, { flavor: 'opencode' });
+                        this.currentBackendModel = batch.mode.model;
+                        this.setModelSupported = true;
+                    } catch (error) {
+                        const message = error instanceof Error ? error.message : String(error);
+                        const methodNotFound = /method not found/i.test(message);
+                        if (methodNotFound && this.setModelSupported === undefined) {
+                            this.setModelSupported = false;
+                            logger.warn('[opencode-remote] OpenCode build does not support session/set_model; inline switching disabled for this session');
+                            session.sendSessionEvent({
+                                type: 'message',
+                                message: 'This OpenCode build does not support inline model switching. Restart the session to apply a different model.'
+                            });
+                        } else {
+                            logger.warn('[opencode-remote] Inline model switch failed', error);
+                            session.sendSessionEvent({
+                                type: 'message',
+                                message: `Failed to switch model to ${batch.mode.model}. Continuing with ${this.currentBackendModel ?? '(default)'}.`
+                            });
+                        }
+                        batch.mode.model = this.currentBackendModel ?? undefined;
+                    }
+                }
             }
 
             this.applyDisplayMode(batch.mode.permissionMode);

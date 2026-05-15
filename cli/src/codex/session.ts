@@ -4,7 +4,7 @@ import { AgentSessionBase } from '@/agent/sessionBase';
 import type { EnhancedMode, PermissionMode } from './loop';
 import type { CodexCliOverrides } from './utils/codexCliOverrides';
 import type { LocalLaunchExitReason } from '@/agent/localLaunchPolicy';
-import type { SessionModel, SessionModelReasoningEffort } from '@/api/types';
+import type { Metadata, SessionModel, SessionModelReasoningEffort } from '@/api/types';
 
 type LocalLaunchFailure = {
     message: string;
@@ -95,6 +95,16 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
         this.transcriptPath = null;
     }
 
+    resetCodexThread(): void {
+        this.sessionId = null;
+        this.resetTranscriptPath();
+        this.client.updateMetadata((metadata: Metadata) => {
+            const updated = { ...metadata };
+            delete updated.codexSessionId;
+            return updated;
+        });
+    }
+
     setPermissionMode = (mode: PermissionMode): void => {
         this.permissionMode = mode;
     };
@@ -109,7 +119,7 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
 
     setCollaborationMode = (mode: EnhancedMode['collaborationMode']): void => {
         this.collaborationMode = mode;
-        this.client.keepAlive(this.thinking, this.mode, this.getKeepAliveRuntime());
+        this.pushKeepAlive();
     };
 
     recordLocalLaunchFailure = (message: string, exitReason: LocalLaunchExitReason): void => {

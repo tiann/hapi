@@ -1,0 +1,593 @@
+{
+  "model": "gemini-3.1-pro-preview",
+  "scenario": "run_shell",
+  "prompt": "Please run ls -la /tmp",
+  "captured_at": "2026-05-04T03:08:46.000Z",
+  "updates": [
+    {
+      "sessionUpdate": "agent_thought_chunk",
+      "content": {
+        "type": "text",
+        "text": "[current working directory /home/lupin/workspace/hapi-fix-gemini-display/cli]"
+      }
+    },
+    {
+      "sessionUpdate": "tool_call",
+      "toolCallId": "run_shell_command-1777863968255-1",
+      "status": "in_progress",
+      "title": "ls -la /tmp",
+      "content": [],
+      "locations": [],
+      "kind": "execute"
+    },
+    {
+      "sessionUpdate": "tool_call_update",
+      "toolCallId": "run_shell_command-1777863968255-1",
+      "status": "completed",
+      "title": "ls -la /tmp",
+      "content": [],
+      "locations": [],
+      "kind": "execute"
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "`/tmp` 디렉토리의 전체 내용을 확인했습니다.\n\n```text\n합계 64"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "\ndrwxrwxrwt 28 root  root    820  5월  4 12:"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "06 .\ndrwxr-xr-x 24 root  root   4096  3월"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": " 23 12:41 ..\n-rw-rw-r--  1 lupin lupin"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "     0  5월  4 09:23 .1dee76fdf275f"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "3fb-00000000.hm\n-rw-rw-r--  1 lup"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "in lupin     0  5월  4 11:33 .58be3d37"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "f7f9f78f-00000000.hm\ndrwxrwxrwt"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "  2 root  root     80  5월  3 14:53 .ICE-unix\n"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "drwxrwxrwt  2 root  root     80  5월  3 14:53 ."
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "X11-unix\n-r--r--r--  1 lupin lupin    11  5"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "월  3 14:53 .X2-lock\ndrwxrwxrwt  2 root  root"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "     40  5월  3 14:53 .XIM-unix\n-rw-rw"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "-r--  1 lupin lupin     0  5월  4 06:01 .f"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "9ee69f7fe56ffe2-00000000.hm\ndr"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "wxrwxrwt  2 root  root     40  5월  3 14:53 .font"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "-unix\n-rw-rw-r--  1 lupin lupin    44  5월  4"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": " 09:26 cap-token\n-rw-rw-r--  1 lupin lupin "
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "16482  5월  4 09:26 capture-after-prod.log\n"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "-rw-rw-r--  1 lupin lupin 14581  5월  4"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": " 10:26 capture-upstream-shell.log\n-rw-rw-r--  1 lup"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "in lupin   292  5월  4 09:48 cera-fallback-fix"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": ".json\n-rw-rw-r--  1 lupin lupin  1512  5월"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "  4 09:27 cera_oauth_copy.py\ndrwxrwxr-x  3"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": " lupin lupin    60  5월  3 15:31 claude-100"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "0\nsrwxrwxrwx  1 gdm   gdm       0  5월  3 14:"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "53 dbus-A6icOtKae1\nsrwxrwxrwx  1 lupin lupin     "
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "0  5월  3 14:53 dbus-Me8LOgQTKo\ndrwx"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "------  2 lupin lupin    40  5월  4 12:06 gemini-"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "shell-4tEX6p\n-rw-r--r--  1 root  root   129"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "5  5월  3 14:54 glances-root.log\ndrwxrwxr-x  "
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "3 lupin lupin   180  5월  4 12:03 hapi-blo"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "bs\ndrwx------  4 lupin lupin   240  5월  4 09:"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "25 hapi-e2e-3QZ3Gx\ndrwx------  4 lupin lupin"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "   240  5월  4 12:05 hapi-e2e-pro-"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "HW0qZ3\ndrwxrwxr-x  2 lupin lupin    80  5월  "
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "4 12:06 hapi-pro-dumps\n-rw-rw-r--  1 lup"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "in lupin   703  5월  4 11:24 ollama-tool-test"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": ".json\ndrwx------  2 lupin lupin    40  5월  3 14:"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "53 pulse-PKdhtXMmr18n\ndrwx------  4 root  root     80"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "  5월  3 15:00 snap-private-tmp\ndrwx------  2 lupin"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": " lupin    60  5월  3 14:53 ssh-SvNZWI2B9"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "Tej\ndrwx------  3 root  root     60  5월  3 14:5"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "3 systemd-private-d874888c787746e688"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "10133c52700431-ModemManager.service-xQh"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "IT9\ndrwx------  3 root  root     60  5월  3 15:0"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "0 systemd-private-d874888c787746e688"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "10133c52700431-bluetooth.service-KFbHeY\n"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "drwx------  3 root  root     60  5월  3 14:53 systemd"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "-private-d874888c787746e688101"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "33c52700431-colord.service-V4OfyG\ndr"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "wx------  3 root  root     60  5월  3 15:00 systemd-"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "private-d874888c787746e6881013"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "3c52700431-fwupd.service-gYJmq8\ndr"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "wx------  3 root  root     60  5월  3 14:53 systemd-"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "private-d874888c787746e6881013"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "3c52700431-polkit.service-OQ18zt\ndrwx"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "------  3 root  root     60  5월  3 14:53 systemd-private"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "-d874888c787746e68810133"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "c52700431-power-profiles-daemon.service-pFstLv\ndrwx"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "------  3 root  root     60  5월  3 14:53 systemd-private"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "-d874888c787746e68810133"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "c52700431-switcheroo-control.service-QGDDCx\ndr"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "wx------  3 root  root     60  5월  3 14:53 systemd-"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "private-d874888c787746e6881013"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "3c52700431-systemd-logind.service-pxhf1v\n"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "drwx------  3 root  root     60  5월  3 14:53 systemd"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "-private-d874888c787746e688101"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "33c52700431-systemd-oomd.service-BSBK5N"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "\ndrwx------  3 root  root     60  5월  3 14:53 system"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "d-private-d874888c787746e68810"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "133c52700431-systemd-resolved.service-NQjZbe"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "\ndrwx------  3 root  root     60  5월  3 14:53 system"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "d-private-d874888c787746e68810"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "133c52700431-systemd-timesyncd.service-LiY"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "91S\ndrwx------  3 root  root     60  5월  3 14:"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "53 systemd-private-d874888c787746e68"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "810133c52700431-upower.service-Ltkc"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "Md\ndrwx------  2 lupin lupin   100  5월  3 14:"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "53 tigervnc.KPzKth\n```\n\n추가로 확인이 필요한 사항이 있으면 말씀해 주십시오."
+      }
+    }
+  ]
+}

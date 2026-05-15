@@ -12,6 +12,7 @@ import type {
     MachinesResponse,
     MessagesResponse,
     CodexModelsResponse,
+    OpencodeModelsResponse,
     PermissionMode,
     PushSubscriptionPayload,
     PushUnsubscribePayload,
@@ -24,6 +25,7 @@ import type {
     SessionResponse,
     SessionsResponse
 } from '@/types/api'
+import type { CancelMessageResponse } from '@hapi/protocol/schemas'
 
 type ApiClientOptions = {
     baseUrl?: string
@@ -191,8 +193,22 @@ export class ApiClient {
         return await this.request<SessionResponse>(`/api/sessions/${encodeURIComponent(sessionId)}`)
     }
 
-    async getMessages(sessionId: string, options: { beforeSeq?: number | null; limit?: number }): Promise<MessagesResponse> {
+    async getMessages(
+        sessionId: string,
+        options: {
+            beforeSeq?: number | null
+            beforeAt?: number | null
+            byPosition?: boolean
+            limit?: number
+        }
+    ): Promise<MessagesResponse> {
         const params = new URLSearchParams()
+        if (options.byPosition || options.beforeAt !== undefined && options.beforeAt !== null) {
+            params.set('byPosition', '1')
+        }
+        if (options.beforeAt !== undefined && options.beforeAt !== null) {
+            params.set('beforeAt', `${options.beforeAt}`)
+        }
         if (options.beforeSeq !== undefined && options.beforeSeq !== null) {
             params.set('beforeSeq', `${options.beforeSeq}`)
         }
@@ -268,10 +284,15 @@ export class ApiClient {
         })
     }
 
-    async resumeSession(sessionId: string): Promise<string> {
+    async resumeSession(sessionId: string, opts?: { permissionMode?: string }): Promise<string> {
         const response = await this.request<{ sessionId: string }>(
             `/api/sessions/${encodeURIComponent(sessionId)}/resume`,
-            { method: 'POST' }
+            {
+                method: 'POST',
+                ...(opts?.permissionMode !== undefined && {
+                    body: JSON.stringify({ permissionMode: opts.permissionMode })
+                })
+            }
         )
         return response.sessionId
     }
@@ -285,6 +306,14 @@ export class ApiClient {
                 attachments: attachments ?? undefined
             })
         })
+    }
+
+    async cancelMessage(sessionId: string, messageId: string): Promise<CancelMessageResponse> {
+        const response = await this.request(
+            `/api/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}`,
+            { method: 'DELETE' }
+        )
+        return response as CancelMessageResponse
     }
 
     async abortSession(sessionId: string): Promise<void> {
@@ -431,6 +460,18 @@ export class ApiClient {
     async getSessionCodexModels(sessionId: string): Promise<CodexModelsResponse> {
         return await this.request<CodexModelsResponse>(
             `/api/sessions/${encodeURIComponent(sessionId)}/codex-models`
+        )
+    }
+
+    async getSessionOpencodeModels(sessionId: string): Promise<OpencodeModelsResponse> {
+        return await this.request<OpencodeModelsResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/opencode-models`
+        )
+    }
+
+    async getMachineOpencodeModelsForCwd(machineId: string, cwd: string): Promise<OpencodeModelsResponse> {
+        return await this.request<OpencodeModelsResponse>(
+            `/api/machines/${encodeURIComponent(machineId)}/opencode-models?cwd=${encodeURIComponent(cwd)}`
         )
     }
 

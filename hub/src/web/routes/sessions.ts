@@ -1,4 +1,4 @@
-import { getPermissionModesForFlavor, isPermissionModeAllowedForFlavor, toSessionSummary } from '@hapi/protocol'
+import { getPermissionModesForFlavor, isPermissionModeAllowedForFlavor, supportsModelChange, toSessionSummary } from '@hapi/protocol'
 import { CodexCollaborationModeSchema, PermissionModeSchema } from '@hapi/protocol/schemas'
 import { Hono } from 'hono'
 import { z } from 'zod'
@@ -8,6 +8,10 @@ import { requireSessionFromParam, requireSyncEngine } from './guards'
 
 const permissionModeSchema = z.object({
     mode: PermissionModeSchema
+})
+
+const resumeBodySchema = z.object({
+    permissionMode: PermissionModeSchema.optional()
 })
 
 const collaborationModeSchema = z.object({
@@ -41,6 +45,39 @@ const uploadDeleteSchema = z.object({
 })
 
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+
+
+type SlashCommand = {
+    name: string
+    description?: string
+    source: 'builtin' | 'user' | 'plugin' | 'project'
+    content?: string
+    pluginName?: string
+}
+
+function commandsFromMetadataSlashCommands(names: readonly string[] | undefined): SlashCommand[] {
+    if (!names?.length) {
+        return []
+    }
+
+    return names
+        .filter((name): name is string => typeof name === 'string' && name.trim().length > 0)
+        .map((name) => ({
+            name,
+            source: 'builtin'
+        }))
+}
+
+function mergeSlashCommands(
+    primary: readonly SlashCommand[],
+    fallback: readonly SlashCommand[]
+): SlashCommand[] {
+    const commandMap = new Map<string, SlashCommand>()
+    for (const command of [...fallback, ...primary]) {
+        commandMap.set(command.name, command)
+    }
+    return Array.from(commandMap.values())
+}
 
 function estimateBase64Bytes(base64: string): number {
     const len = base64.length
@@ -106,8 +143,26 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return sessionResult
         }
 
+        const body = await c.req.json().catch(() => null)
+        const parsed = body ? resumeBodySchema.safeParse(body) : { success: true as const, data: {} }
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid body' }, 400)
+        }
+
+        const { permissionMode } = parsed.data
+        if (permissionMode !== undefined) {
+            const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
+            if (!isPermissionModeAllowedForFlavor(permissionMode, flavor)) {
+                return c.json({ error: 'Invalid permission mode for session flavor' }, 400)
+            }
+        }
+
         const namespace = c.get('namespace')
-        const result = await engine.resumeSession(sessionResult.sessionId, namespace)
+        const result = await engine.resumeSession(
+            sessionResult.sessionId,
+            namespace,
+            permissionMode !== undefined ? { permissionMode } : undefined
+        )
         if (result.type === 'error') {
             const status = result.code === 'no_machine_online' ? 503
                 : result.code === 'access_denied' ? 403
@@ -236,7 +291,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return engine
         }
 
-        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        const sessionResult = requireSessionFromParam(c, engine)
         if (sessionResult instanceof Response) {
             return sessionResult
         }
@@ -320,8 +375,8 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
 
         const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
-        if (flavor !== 'claude' && flavor !== 'gemini' && flavor !== 'codex') {
-            return c.json({ error: 'Model selection is only supported for Claude, Gemini, and Codex sessions' }, 400)
+        if (!supportsModelChange(flavor)) {
+            return c.json({ error: 'Model selection is not supported for this session' }, 400)
         }
         if (flavor === 'codex' && sessionResult.session.agentState?.controlledByUser === true) {
             return c.json({ error: 'Model selection can only be changed for remote Codex sessions' }, 409)
@@ -476,10 +531,29 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         // Get agent type from session metadata, default to 'claude'
         const agent = sessionResult.session.metadata?.flavor ?? 'claude'
 
+        const metadataCommands = commandsFromMetadataSlashCommands(
+            sessionResult.session.metadata?.slashCommands
+        )
+
         try {
             const result = await engine.listSlashCommands(sessionResult.sessionId, agent)
+            if (result.success && result.commands) {
+                return c.json({
+                    ...result,
+                    commands: mergeSlashCommands(result.commands, metadataCommands)
+                })
+            }
+
+            if (metadataCommands.length > 0) {
+                return c.json({ success: true, commands: metadataCommands })
+            }
+
             return c.json(result)
         } catch (error) {
+            if (metadataCommands.length > 0) {
+                return c.json({ success: true, commands: metadataCommands })
+            }
+
             return c.json({
                 success: false,
                 error: error instanceof Error ? error.message : 'Failed to list slash commands'
@@ -536,6 +610,36 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return c.json({
                 success: false,
                 error: error instanceof Error ? error.message : 'Failed to list Codex models'
+            }, 500)
+        }
+    })
+
+    app.get('/sessions/:id/opencode-models', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
+        if (flavor !== 'opencode') {
+            return c.json({
+                success: false,
+                error: 'OpenCode models are only available for OpenCode sessions'
+            }, 400)
+        }
+
+        try {
+            const result = await engine.listOpencodeModelsForSession(sessionResult.sessionId)
+            return c.json(result)
+        } catch (error) {
+            return c.json({
+                success: false,
+                error: error instanceof Error ? error.message : 'Failed to list OpenCode models'
             }, 500)
         }
     })

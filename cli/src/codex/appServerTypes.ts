@@ -44,11 +44,19 @@ export interface ModelListResponse {
     [key: string]: unknown;
 }
 
+export interface CollaborationModeListItem {
+    name?: string;
+    mode?: 'plan' | 'default' | string | null;
+    model?: string | null;
+    reasoning_effort?: ReasoningEffort | null;
+    [key: string]: unknown;
+}
+
 export interface CollaborationModeListResponse {
-    data?: Array<{ mode?: string; name?: string; id?: string } | string>;
-    modes?: Array<{ mode?: string; name?: string; id?: string } | string>;
-    collaborationModes?: Array<{ mode?: string; name?: string; id?: string } | string>;
-    items?: Array<{ mode?: string; name?: string; id?: string } | string>;
+    data?: Array<CollaborationModeListItem | string>;
+    modes?: Array<CollaborationModeListItem | string>;
+    collaborationModes?: Array<CollaborationModeListItem | string>;
+    items?: Array<CollaborationModeListItem | string>;
     [key: string]: unknown;
 }
 
@@ -175,5 +183,65 @@ export interface TurnInterruptParams {
 
 export interface TurnInterruptResponse {
     ok: boolean;
+    [key: string]: unknown;
+}
+
+export interface ThreadCompactStartParams {
+    threadId: string;
+}
+
+export interface ThreadCompactStartResponse {
+    [key: string]: unknown;
+}
+
+export type ThreadGoalStatus = 'active' | 'paused' | 'budgetLimited' | 'complete';
+
+export interface ThreadGoal {
+    threadId: string;
+    objective: string;
+    status: ThreadGoalStatus;
+    tokenBudget: number | null;
+    tokensUsed: number;
+    timeUsedSeconds: number;
+    createdAt: number;
+    updatedAt: number;
+}
+
+export interface ThreadGoalSetParams {
+    threadId: string;
+    objective?: string | null;
+    status?: ThreadGoalStatus | null;
+    tokenBudget?: number | null;
+}
+
+export interface ThreadGoalSetResponse {
+    goal: ThreadGoal;
+    [key: string]: unknown;
+}
+
+export interface ThreadGoalGetParams {
+    threadId: string;
+}
+
+export interface ThreadGoalGetResponse {
+    goal: ThreadGoal | null;
+    [key: string]: unknown;
+}
+
+export interface ThreadGoalClearParams {
+    threadId: string;
+}
+
+export interface ThreadGoalClearResponse {
+    cleared: boolean;
+    [key: string]: unknown;
+}
+
+export interface ExperimentalFeatureEnablementSetParams {
+    enablement: Record<string, boolean>;
+}
+
+export interface ExperimentalFeatureEnablementSetResponse {
+    enablement: Record<string, boolean>;
     [key: string]: unknown;
 }

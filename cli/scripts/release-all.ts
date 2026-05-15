@@ -5,7 +5,7 @@
  * 2. Build binaries (with embedded web assets)
  * 3. Publish platform packages first (so lockfile can resolve them)
  * 4. Publish main package
- * 5. bun install (to get complete lockfile with published packages)
+ * 5. bun install --lockfile-only --os=* --cpu=* (to lock all platform packages)
  * 6. Git commit + tag + push
  */
 
@@ -124,9 +124,9 @@ async function main(): Promise<void> {
     }
 
     // Step 5: bun install to get complete lockfile
-    console.log('\n📥 Step 5: Updating lockfile...');
+    console.log('\n📥 Step 5: Updating lockfile for all platform packages...');
 
-    await runWithTimeoutRetry('bun install', repoRoot);
+    await runWithTimeoutRetry('bun install --lockfile-only --os=* --cpu=*', repoRoot);
     // Step 6: Git commit + tag + push
     console.log('\n📝 Step 6: Creating git commit and tag...');
     run(`git add .`, repoRoot);

@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import { stripAnsiAndControls } from '@/components/assistant-ui/markdown-utils'
-import { Card, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
+import { CodeBlock } from '@/components/CodeBlock'
 import { useTranslation } from '@/lib/use-translation'
 
 const CLI_TAG_PATTERN = '(?:local-command-[a-z-]+|command-(?:name|message|args))'
@@ -17,6 +17,9 @@ const LABELS: Record<string, string> = {
     'local-command-stderr': 'terminal.stderr',
 }
 const COMMAND_NAME_REGEX = /<command-name>([\s\S]*?)<\/command-name>/i
+const PREVIEW_LINE_THRESHOLD = 14
+const PREVIEW_CHAR_THRESHOLD = 1600
+const PREVIEW_MAX_HEIGHT = 220
 
 export function hasCliOutputTags(text: string): boolean {
     return CLI_TAG_CHECK_REGEX.test(text)
@@ -76,6 +79,11 @@ function buildCliOutput(text: string, t?: (key: string) => string): string {
     return sections.join('\n\n')
 }
 
+function shouldCollapsePreview(text: string): boolean {
+    if (text.length > PREVIEW_CHAR_THRESHOLD) return true
+    return text.split('\n').length > PREVIEW_LINE_THRESHOLD
+}
+
 function extractCommandName(text: string): string | null {
     const match = text.match(COMMAND_NAME_REGEX)
     if (!match) return null
@@ -105,44 +113,48 @@ export function CliOutputBlock(props: { text: string }) {
     const { t } = useTranslation()
     const content = useMemo(() => buildCliOutput(props.text, t), [props.text, t])
     const commandName = useMemo(() => extractCommandName(props.text), [props.text])
+    const isCollapsedPreview = useMemo(() => shouldCollapsePreview(content), [content])
+    const title = commandName ?? t('terminal.commandName')
 
     return (
-        <Card className="min-w-0 max-w-full overflow-hidden shadow-sm">
-            <CardHeader className="p-3 space-y-0">
-                <Dialog>
-                    <DialogTrigger asChild>
-                        <button type="button" className="w-full text-left">
-                            <div className="flex flex-col gap-1">
-                                <div className="flex items-center justify-between gap-3">
-                                    <div className="min-w-0 flex items-center gap-2">
-                                        <div className="shrink-0 flex h-4 w-4 items-center justify-center text-[var(--app-hint)] leading-none">
-                                            <CliIcon />
-                                        </div>
-                                        <CardTitle className="min-w-0 text-sm font-medium leading-tight break-words">
-                                            {commandName ?? t('terminal.commandName')}
-                                        </CardTitle>
+        <div className="overflow-hidden rounded-[20px] bg-[var(--app-tool-card-bg)] p-3 shadow-none">
+            <Dialog>
+                <DialogTrigger asChild>
+                    <button type="button" className="w-full text-left">
+                        <div className="flex flex-col gap-2">
+                            <div className="flex items-center justify-between gap-3">
+                                <div className="min-w-0 flex items-center gap-2">
+                                    <div className="flex h-4 w-4 shrink-0 items-center justify-center text-[var(--app-tool-card-accent)] leading-none">
+                                        <CliIcon />
                                     </div>
-                                    <span className="text-[var(--app-hint)]">
-                                        <DetailsIcon />
-                                    </span>
+                                    <div className="min-w-0 truncate text-sm font-medium leading-tight text-[var(--app-fg)]">
+                                        {title}
+                                    </div>
                                 </div>
+                                <span className="text-[var(--app-hint)]">
+                                    <DetailsIcon />
+                                </span>
                             </div>
-                        </button>
-                    </DialogTrigger>
-                    <DialogContent className="max-w-2xl">
-                        <DialogHeader>
-                            <DialogTitle>{t('terminal.commandName')}</DialogTitle>
-                        </DialogHeader>
-                        <div className="mt-3 max-h-[75vh] overflow-auto">
-                            <div className="min-w-0 max-w-full overflow-x-auto overflow-y-hidden">
-                                <pre className="m-0 w-max min-w-full bg-[var(--app-code-bg)] p-2 text-xs font-mono">
-                                    {content}
-                                </pre>
-                            </div>
+                            <CodeBlock
+                                code={content}
+                                language="shellscript"
+                                title="Terminal output"
+                                showCopyButton={false}
+                                collapseLongContent={isCollapsedPreview}
+                                collapsedHeight={PREVIEW_MAX_HEIGHT}
+                            />
                         </div>
-                    </DialogContent>
-                </Dialog>
-            </CardHeader>
-        </Card>
+                    </button>
+                </DialogTrigger>
+                <DialogContent className="max-w-3xl">
+                    <DialogHeader>
+                        <DialogTitle>{title}</DialogTitle>
+                    </DialogHeader>
+                    <div className="mt-3 max-h-[75vh] overflow-auto">
+                        <CodeBlock code={content} language="shellscript" title="Terminal output" />
+                    </div>
+                </DialogContent>
+            </Dialog>
+        </div>
     )
 }

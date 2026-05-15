@@ -75,6 +75,53 @@ describe('getEventPresentation — limit-reached', () => {
     })
 })
 
+describe('getEventPresentation — token-count', () => {
+    it('formats Codex token-count as compact context usage', () => {
+        const result = getEventPresentation({
+            type: 'token-count',
+            info: {
+                total: {
+                    totalTokens: 23745,
+                    inputTokens: 23631,
+                    cachedInputTokens: 18176,
+                    outputTokens: 114,
+                    reasoningOutputTokens: 0
+                },
+                modelContextWindow: 258400
+            }
+        })
+
+        expect(result.icon).toBe('◷')
+        expect(result.text).toBe('Context 23.6k / 258.4k (9%) · out 114 · cached 18.2k')
+    })
+})
+
+describe('getEventPresentation — thread goals', () => {
+    it('formats goal status updates', () => {
+        const result = getEventPresentation({
+            type: 'thread-goal-updated',
+            goal: {
+                threadId: 'thread-1',
+                objective: 'ship goal support',
+                status: 'budgetLimited',
+                tokenBudget: 5000,
+                tokensUsed: 4100,
+                timeUsedSeconds: 0,
+                createdAt: 1,
+                updatedAt: 2
+            }
+        })
+
+        expect(result.text).toBe('Goal limited by budget · 4k / 5k')
+    })
+
+    it('formats goal clear events', () => {
+        const result = getEventPresentation({ type: 'thread-goal-cleared', threadId: 'thread-1' })
+
+        expect(result.text).toBe('Goal cleared')
+    })
+})
+
 describe('formatResetTime', () => {
     it('formats a unix timestamp to a non-empty string', () => {
         const result = formatResetTime(1774278000)

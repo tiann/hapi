@@ -3,8 +3,9 @@ import type { AppendMessage, AttachmentAdapter, ThreadMessageLike } from '@assis
 import { useExternalMessageConverter, useExternalStoreRuntime } from '@assistant-ui/react'
 import { safeStringify } from '@hapi/protocol'
 import { renderEventLabel } from '@/chat/presentation'
-import type { ChatBlock, CliOutputBlock } from '@/chat/types'
+import type { ChatBlock, CliOutputBlock, UsageData } from '@/chat/types'
 import type { AgentEvent, ToolCallBlock } from '@/chat/types'
+import type { ToolGroupBlock, VisibleChatBlock } from '@/chat/toolGroups'
 import type { AttachmentMetadata, MessageStatus as HappyMessageStatus, Session } from '@/types/api'
 
 export type HappyChatMessageMetadata = {
@@ -16,9 +17,13 @@ export type HappyChatMessageMetadata = {
     event?: AgentEvent
     source?: CliOutputBlock['source']
     attachments?: AttachmentMetadata[]
+    invokedAt?: number | null
+    durationMs?: number
+    usage?: UsageData
+    model?: string | null
 }
 
-function toThreadMessageLike(block: ChatBlock): ThreadMessageLike {
+function toThreadMessageLike(block: VisibleChatBlock): ThreadMessageLike {
     if (block.kind === 'user-text') {
         const messageId = `user:${block.id}`
         return {
@@ -32,7 +37,8 @@ function toThreadMessageLike(block: ChatBlock): ThreadMessageLike {
                     status: block.status,
                     localId: block.localId,
                     originalText: block.originalText,
-                    attachments: block.attachments
+                    attachments: block.attachments,
+                    invokedAt: block.invokedAt
                 } satisfies HappyChatMessageMetadata
             }
         }
@@ -46,7 +52,13 @@ function toThreadMessageLike(block: ChatBlock): ThreadMessageLike {
             createdAt: new Date(block.createdAt),
             content: [{ type: 'text', text: block.text }],
             metadata: {
-                custom: { kind: 'assistant' } satisfies HappyChatMessageMetadata
+                custom: {
+                    kind: 'assistant',
+                    invokedAt: block.invokedAt,
+                    durationMs: block.durationMs,
+                    usage: block.usage,
+                    model: block.model
+                } satisfies HappyChatMessageMetadata
             }
         }
     }
@@ -59,7 +71,13 @@ function toThreadMessageLike(block: ChatBlock): ThreadMessageLike {
             createdAt: new Date(block.createdAt),
             content: [{ type: 'reasoning', text: block.text }],
             metadata: {
-                custom: { kind: 'assistant' } satisfies HappyChatMessageMetadata
+                custom: {
+                    kind: 'assistant',
+                    invokedAt: block.invokedAt,
+                    durationMs: block.durationMs,
+                    usage: block.usage,
+                    model: block.model
+                } satisfies HappyChatMessageMetadata
             }
         }
     }
@@ -72,7 +90,12 @@ function toThreadMessageLike(block: ChatBlock): ThreadMessageLike {
             createdAt: new Date(block.createdAt),
             content: [{ type: 'text', text: renderEventLabel(block.event) }],
             metadata: {
-                custom: { kind: 'event', event: block.event } satisfies HappyChatMessageMetadata
+                custom: {
+                    kind: 'event',
+                    event: block.event,
+                    invokedAt: block.invokedAt,
+                    model: block.model
+                } satisfies HappyChatMessageMetadata
             }
         }
     }
@@ -85,7 +108,37 @@ function toThreadMessageLike(block: ChatBlock): ThreadMessageLike {
             createdAt: new Date(block.createdAt),
             content: [{ type: 'text', text: block.text }],
             metadata: {
-                custom: { kind: 'cli-output', source: block.source } satisfies HappyChatMessageMetadata
+                custom: {
+                    kind: 'cli-output',
+                    source: block.source,
+                    invokedAt: block.invokedAt,
+                    durationMs: block.durationMs,
+                    usage: block.usage,
+                    model: block.model
+                } satisfies HappyChatMessageMetadata
+            }
+        }
+    }
+
+    if (block.kind === 'tool-group') {
+        const groupBlock: ToolGroupBlock = block
+        return {
+            role: 'assistant',
+            id: `tool:${groupBlock.id}`,
+            createdAt: new Date(groupBlock.createdAt),
+            content: [{
+                type: 'tool-call',
+                toolCallId: groupBlock.id,
+                toolName: 'ToolGroup',
+                argsText: '',
+                artifact: groupBlock
+            }],
+            metadata: {
+                custom: {
+                    kind: 'tool',
+                    toolCallId: groupBlock.id,
+                    invokedAt: groupBlock.invokedAt ?? null
+                } satisfies HappyChatMessageMetadata
             }
         }
     }
@@ -108,7 +161,14 @@ function toThreadMessageLike(block: ChatBlock): ThreadMessageLike {
             artifact: toolBlock
         }],
         metadata: {
-            custom: { kind: 'tool', toolCallId: toolBlock.id } satisfies HappyChatMessageMetadata
+            custom: {
+                kind: 'tool',
+                toolCallId: toolBlock.id,
+                invokedAt: toolBlock.invokedAt,
+                durationMs: toolBlock.durationMs,
+                usage: toolBlock.usage,
+                model: toolBlock.model
+            } satisfies HappyChatMessageMetadata
         }
     }
 }
@@ -170,19 +230,22 @@ function extractMessageContent(message: AppendMessage): { text: string; attachme
 
 export function useHappyRuntime(props: {
     session: Session
-    blocks: readonly ChatBlock[]
+    blocks: readonly VisibleChatBlock[]
     isSending: boolean
+    isRunning?: boolean
     onSendMessage: (text: string, attachments?: AttachmentMetadata[]) => void
     onAbort: () => Promise<void>
     attachmentAdapter?: AttachmentAdapter
     allowSendWhenInactive?: boolean
 }) {
+    const isRunning = props.isRunning ?? props.session.thinking
+
     // Use cached message converter for performance optimization
     // This prevents re-converting all messages on every render
-    const convertedMessages = useExternalMessageConverter<ChatBlock>({
+    const convertedMessages = useExternalMessageConverter<VisibleChatBlock>({
         callback: toThreadMessageLike,
-        messages: props.blocks as ChatBlock[],
-        isRunning: props.session.thinking,
+        messages: props.blocks as VisibleChatBlock[],
+        isRunning,
     })
 
     const onNew = useCallback(async (message: AppendMessage) => {
@@ -199,7 +262,7 @@ export function useHappyRuntime(props: {
     // useExternalStoreRuntime may use adapter identity for subscriptions
     const adapter = useMemo(() => ({
         isDisabled: props.isSending || (!props.session.active && !props.allowSendWhenInactive),
-        isRunning: props.session.thinking,
+        isRunning,
         messages: convertedMessages,
         onNew,
         onCancel,
@@ -209,7 +272,7 @@ export function useHappyRuntime(props: {
         props.session.active,
         props.isSending,
         props.allowSendWhenInactive,
-        props.session.thinking,
+        isRunning,
         convertedMessages,
         onNew,
         onCancel,

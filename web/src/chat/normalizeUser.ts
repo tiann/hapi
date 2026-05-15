@@ -32,7 +32,7 @@ export function normalizeUserRecord(
     localId: string | null,
     createdAt: number,
     content: unknown,
-    meta?: unknown
+    meta?: unknown,
 ): NormalizedMessage | null {
     if (typeof content === 'string') {
         return {

@@ -35,6 +35,40 @@ vi.mock('@/hooks/useTerminalFontSize', () => ({
     ],
 }))
 
+vi.mock('@/hooks/useComposerEnterBehavior', () => ({
+    useComposerEnterBehavior: () => ({ composerEnterBehavior: 'send', setComposerEnterBehavior: vi.fn() }),
+    getComposerEnterBehaviorOptions: () => [
+        { value: 'send', labelKey: 'settings.chat.enterBehavior.send' },
+        { value: 'newline', labelKey: 'settings.chat.enterBehavior.newline' },
+    ],
+}))
+
+vi.mock('@/hooks/useTerminalToolDisplayMode', () => ({
+    useTerminalToolDisplayMode: () => ({ terminalToolDisplayMode: 'compact', setTerminalToolDisplayMode: vi.fn() }),
+    getTerminalToolDisplayModeOptions: () => [
+        { value: 'compact', labelKey: 'settings.chat.terminalToolDisplay.compact' },
+        { value: 'detailed', labelKey: 'settings.chat.terminalToolDisplay.detailed' },
+    ],
+}))
+
+vi.mock('@/hooks/useChatSurfaceColors', () => ({
+    useChatSurfaceColors: () => ({
+        toolGroupBackground: 'default',
+        userMessageBackground: 'preset:soft-blue',
+        setToolGroupBackground: vi.fn(),
+        setUserMessageBackground: vi.fn(),
+    }),
+    getChatSurfaceColorPresetOptions: () => [
+        { value: 'default', labelKey: 'settings.chat.surfaceColor.default' },
+        { value: 'soft-blue', labelKey: 'settings.chat.surfaceColor.softBlue' },
+        { value: 'soft-green', labelKey: 'settings.chat.surfaceColor.softGreen' },
+        { value: 'soft-yellow', labelKey: 'settings.chat.surfaceColor.softYellow' },
+    ],
+    getChatSurfaceColorPickerValue: () => '#7db7ff',
+    toPresetChatSurfaceColorPreference: (value: string) => value === 'default' ? 'default' : `preset:${value}`,
+    toCustomChatSurfaceColorPreference: (value: string) => `custom:${value}`,
+}))
+
 // Mock useTheme hook
 vi.mock('@/hooks/useTheme', () => ({
     useAppearance: () => ({ appearance: 'system', setAppearance: vi.fn() }),
@@ -81,8 +115,11 @@ describe('SettingsPage', () => {
             getItem: vi.fn(() => 'en'),
             setItem: vi.fn(),
             removeItem: vi.fn(),
+            clear: vi.fn(),
+            key: vi.fn(() => null),
+            length: 0,
         }
-        Object.defineProperty(window, 'localStorage', { value: localStorageMock })
+        Object.defineProperty(window, 'localStorage', { value: localStorageMock, configurable: true })
     })
 
     it('renders the About section', () => {
@@ -139,5 +176,41 @@ describe('SettingsPage', () => {
         renderWithProviders(<SettingsPage />)
         expect(screen.getAllByText('Terminal Font Size').length).toBeGreaterThanOrEqual(1)
         expect(screen.getAllByText('13px').length).toBeGreaterThanOrEqual(1)
+    })
+
+    it('renders the Enter Key setting', () => {
+        renderWithProviders(<SettingsPage />)
+        expect(screen.getAllByText('Enter Key').length).toBeGreaterThanOrEqual(1)
+        expect(screen.getAllByText('Send message').length).toBeGreaterThanOrEqual(1)
+    })
+
+    it('renders the Terminal Tool Display setting', () => {
+        renderWithProviders(<SettingsPage />)
+        expect(screen.getAllByText('Terminal Tool Cards').length).toBeGreaterThanOrEqual(1)
+        expect(screen.getAllByText('Compact (command only)').length).toBeGreaterThanOrEqual(1)
+    })
+
+    it('renders grouped tool and user message background settings', () => {
+        renderWithProviders(<SettingsPage />)
+        expect(screen.getAllByText('Grouped Tool Use Background').length).toBeGreaterThanOrEqual(1)
+        expect(screen.getAllByText('User Message Background').length).toBeGreaterThanOrEqual(1)
+        expect(screen.getAllByText('Default color').length).toBeGreaterThanOrEqual(1)
+        expect(screen.getAllByText('Soft blue').length).toBeGreaterThanOrEqual(1)
+        expect(screen.getAllByText('Soft green').length).toBeGreaterThanOrEqual(1)
+        expect(screen.getAllByText('Soft yellow').length).toBeGreaterThanOrEqual(1)
+        expect(screen.getAllByLabelText('Custom color').length).toBeGreaterThanOrEqual(2)
+    })
+
+    it('uses correct i18n keys for the Enter Key setting', () => {
+        const spyT = renderWithSpyT(<SettingsPage />)
+        const calledKeys = spyT.mock.calls.map((call) => call[0])
+        expect(calledKeys).toContain('settings.chat.title')
+        expect(calledKeys).toContain('settings.chat.enterBehavior')
+        expect(calledKeys).toContain('settings.chat.enterBehavior.send')
+        expect(calledKeys).toContain('settings.chat.terminalToolDisplay')
+        expect(calledKeys).toContain('settings.chat.terminalToolDisplay.compact')
+        expect(calledKeys).toContain('settings.chat.groupedToolBackground')
+        expect(calledKeys).toContain('settings.chat.userMessageBackground')
+        expect(calledKeys).toContain('settings.chat.surfaceColor.default')
     })
 })

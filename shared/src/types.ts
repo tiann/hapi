@@ -11,6 +11,8 @@ export type {
     TeamMessage,
     TeamState,
     TeamTask,
+    ThreadGoal,
+    ThreadGoalStatus,
     TodoItem,
     WorktreeMetadata
 } from './schemas'

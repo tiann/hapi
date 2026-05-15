@@ -19,6 +19,7 @@ export function deriveToolNameWithSource(input: {
     title?: string | null;
     kind?: string | null;
     rawInput?: unknown;
+    metaKind?: string | null;
 }): { name: string; source: ToolNameSource } {
     const title = normalizeToolName(input.title);
     if (title) {
@@ -37,6 +38,17 @@ export function deriveToolNameWithSource(input: {
         }
     }
 
+    // Gemini ACP: kind=edit with _meta.kind distinguishes write_file (add) from replace (modify).
+    // Map to the canonical Claude tool names so existing Write/Edit registry entries are reused.
+    if (input.kind === 'edit') {
+        if (input.metaKind === 'add') {
+            return { name: 'Write', source: 'kind' };
+        }
+        if (input.metaKind === 'modify') {
+            return { name: 'Edit', source: 'kind' };
+        }
+    }
+
     const kind = normalizeToolName(input.kind);
     if (kind && !isPlaceholderToolName(kind)) {
         return { name: kind, source: 'kind' };
@@ -49,6 +61,7 @@ export function deriveToolName(input: {
     title?: string | null;
     kind?: string | null;
     rawInput?: unknown;
+    metaKind?: string | null;
 }): string {
     return deriveToolNameWithSource(input).name;
 }

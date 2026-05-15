@@ -274,11 +274,11 @@ function SessionPage() {
                 return currentSessionId
             }
             try {
-                return await api.resumeSession(currentSessionId)
+                return await api.resumeSession(currentSessionId, { permissionMode: session.permissionMode ?? undefined })
             } catch (error) {
-                const message = error instanceof Error ? error.message : 'Resume failed'
+                const message = error instanceof Error ? error.message : t('dialog.error.default')
                 addToast({
-                    title: 'Resume failed',
+                    title: t('resume.failed.title'),
                     body: message,
                     sessionId: currentSessionId,
                     url: ''

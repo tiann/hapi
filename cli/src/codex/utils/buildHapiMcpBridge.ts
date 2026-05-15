@@ -35,6 +35,10 @@ export interface HapiMcpBridge {
     mcpServers: McpServersConfig;
 }
 
+export interface HapiMcpBridgeOptions {
+    emitTitleSummary?: boolean;
+}
+
 /**
  * Start the hapi MCP bridge server and return the configuration
  * needed to connect Codex to it.
@@ -42,8 +46,13 @@ export interface HapiMcpBridge {
  * This is the single source of truth for MCP bridge setup,
  * used by both local and remote launchers.
  */
-export async function buildHapiMcpBridge(client: ApiSessionClient): Promise<HapiMcpBridge> {
-    const happyServer = await startHappyServer(client);
+export async function buildHapiMcpBridge(
+    client: ApiSessionClient,
+    options: HapiMcpBridgeOptions = {}
+): Promise<HapiMcpBridge> {
+    const happyServer = await startHappyServer(client, {
+        emitTitleSummary: options.emitTitleSummary
+    });
     const bridgeCommand = getHappyCliCommand(['mcp', '--url', happyServer.url]);
 
     return {

@@ -372,4 +372,202 @@ describe('normalizeDecryptedMessage', () => {
             prompt: 'Some subagent text'
         })
     })
+
+    it('preserves Codex tool-call-result errors for timeline state', () => {
+        const message = makeMessage({
+            role: 'agent',
+            content: {
+                type: 'codex',
+                data: {
+                    type: 'tool-call-result',
+                    callId: 'call-1',
+                    output: 'tool failed',
+                    is_error: true,
+                    id: 'result-1'
+                }
+            }
+        })
+
+        const normalized = normalizeDecryptedMessage(message)
+
+        expect(normalized).toMatchObject({
+            role: 'agent',
+            content: [
+                {
+                    type: 'tool-result',
+                    tool_use_id: 'call-1',
+                    content: 'tool failed',
+                    is_error: true
+                }
+            ]
+        })
+    })
+
+    it('normalizes Codex plan updates as completed update_plan snapshots', () => {
+        const message = makeMessage({
+            role: 'agent',
+            content: {
+                type: 'codex',
+                data: {
+                    type: 'plan_update',
+                    plan: [
+                        { step: 'Inspect event stream', status: 'completed' },
+                        { step: 'Render plan card', status: 'in_progress' }
+                    ],
+                    id: 'plan-update-1'
+                }
+            }
+        })
+
+        const normalized = normalizeDecryptedMessage(message)
+
+        expect(normalized).toMatchObject({
+            role: 'agent',
+            content: [
+                {
+                    type: 'tool-call',
+                    id: 'codex-plan-state',
+                    name: 'update_plan',
+                    input: {
+                        plan: [
+                            { step: 'Inspect event stream', status: 'completed' },
+                            { step: 'Render plan card', status: 'in_progress' }
+                        ],
+                        source: 'codex'
+                    }
+                },
+                {
+                    type: 'tool-result',
+                    tool_use_id: 'codex-plan-state',
+                    content: {
+                        plan: [
+                            { step: 'Inspect event stream', status: 'completed' },
+                            { step: 'Render plan card', status: 'in_progress' }
+                        ],
+                        source: 'codex',
+                        status: 'updated'
+                    }
+                }
+            ]
+        })
+    })
+
+    it('normalizes Codex token_count as usage data for context display', () => {
+        const message = makeMessage({
+            role: 'agent',
+            content: {
+                type: 'codex',
+                data: {
+                    type: 'token_count',
+                    info: {
+                        total: {
+                            inputTokens: 82_503,
+                            cachedInputTokens: 71_808,
+                            outputTokens: 166
+                        },
+                        modelContextWindow: 258_400
+                    }
+                }
+            }
+        })
+
+        const normalized = normalizeDecryptedMessage(message)
+
+        expect(normalized).toMatchObject({
+            role: 'event',
+            content: {
+                type: 'token-count'
+            },
+            usage: {
+                input_tokens: 82503,
+                output_tokens: 166
+            }
+        })
+    })
+
+    it('normalizes Codex scoped snake_case usage fields', () => {
+        const message = makeMessage({
+            role: 'agent',
+            content: {
+                type: 'codex',
+                data: {
+                    type: 'token_count',
+                    thread_id: 'child-thread',
+                    scope: { role: 'child' },
+                    info: {
+                        last_token_usage: {
+                            input_tokens: 321,
+                            output_tokens: 12,
+                            cached_input_tokens: 100
+                        },
+                        model_context_window: 258_400
+                    }
+                }
+            }
+        })
+
+        const normalized = normalizeDecryptedMessage(message)
+
+        expect(normalized).toMatchObject({
+            role: 'event',
+            usage: {
+                input_tokens: 321,
+                output_tokens: 12,
+                cache_read_input_tokens: 100,
+                context_tokens: 321,
+                context_window: 258400,
+                thread_id: 'child-thread',
+                scope_role: 'child'
+            }
+        })
+    })
+
+    it('normalizes Codex context_compacted as a compact event', () => {
+        const message = makeMessage({
+            role: 'agent',
+            content: {
+                type: 'codex',
+                data: {
+                    type: 'context_compacted',
+                    trigger: 'auto',
+                    pre_tokens: 1234
+                }
+            }
+        })
+
+        expect(normalizeDecryptedMessage(message)).toMatchObject({
+            role: 'event',
+            content: {
+                type: 'compact',
+                trigger: 'auto',
+                preTokens: 1234
+            }
+        })
+    })
+
+    it('normalizes Codex agent-run events for timeline aggregation', () => {
+        const message = makeMessage({
+            role: 'agent',
+            content: {
+                type: 'codex',
+                data: {
+                    type: 'agent-run-start',
+                    cardId: 'spawn-1',
+                    input: { message: 'inspect files' },
+                    status: 'starting'
+                }
+            }
+        })
+
+        expect(normalizeDecryptedMessage(message)).toMatchObject({
+            role: 'event',
+            content: {
+                type: 'agent-run-start',
+                cardId: 'spawn-1',
+                input: { message: 'inspect files' },
+                status: 'starting'
+            }
+        })
+    })
+
 })

@@ -43,6 +43,70 @@ function formatDuration(ms: number): string {
     return `${mins}m ${secs}s`
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+    return value && typeof value === 'object' ? value as Record<string, unknown> : null
+}
+
+function asNumber(value: unknown): number | null {
+    return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+function formatTokenCount(value: number): string {
+    if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`
+    if (value >= 10_000) return `${(value / 1_000).toFixed(1)}k`
+    if (value >= 1_000) return `${Math.round(value / 1_000)}k`
+    return String(value)
+}
+
+function formatGoalStatus(status: string): string {
+    if (status === 'active') return 'active'
+    if (status === 'paused') return 'paused'
+    if (status === 'budgetLimited') return 'limited by budget'
+    if (status === 'complete') return 'complete'
+    return status
+}
+
+function formatThreadGoalEvent(event: AgentEvent): EventPresentation {
+    const goal = asRecord((event as Record<string, unknown>).goal)
+    if (!goal) return { icon: null, text: 'Goal updated' }
+    const status = typeof goal.status === 'string' ? goal.status : 'updated'
+    const tokensUsed = asNumber(goal.tokensUsed ?? goal.tokens_used)
+    const tokenBudget = asNumber(goal.tokenBudget ?? goal.token_budget)
+    const parts = [`Goal ${formatGoalStatus(status)}`]
+    if (tokensUsed !== null && tokenBudget !== null) {
+        parts.push(`${formatTokenCount(tokensUsed)} / ${formatTokenCount(tokenBudget)}`)
+    }
+    return { icon: null, text: parts.join(' · ') }
+}
+
+function formatTokenCountEvent(event: AgentEvent): EventPresentation {
+    const info = asRecord((event as Record<string, unknown>).info)
+    const total = asRecord(info?.total) ?? info
+    if (!total) return { icon: '◷', text: 'Context updated' }
+
+    const inputTokens = asNumber(total.inputTokens ?? total.input_tokens)
+    const outputTokens = asNumber(total.outputTokens ?? total.output_tokens)
+    const cachedTokens = asNumber(total.cachedInputTokens ?? total.cacheReadInputTokens ?? total.cache_read_input_tokens)
+    const reasoningTokens = asNumber(total.reasoningOutputTokens ?? total.reasoning_output_tokens)
+    const contextWindow = asNumber(info?.modelContextWindow ?? info?.model_context_window)
+
+    const parts: string[] = []
+    if (inputTokens !== null && contextWindow !== null) {
+        const pct = Math.round((inputTokens / contextWindow) * 100)
+        parts.push(`Context ${formatTokenCount(inputTokens)} / ${formatTokenCount(contextWindow)} (${pct}%)`)
+    } else if (inputTokens !== null) {
+        parts.push(`Context ${formatTokenCount(inputTokens)}`)
+    } else {
+        parts.push('Context updated')
+    }
+
+    if (outputTokens !== null) parts.push(`out ${formatTokenCount(outputTokens)}`)
+    if (cachedTokens !== null && cachedTokens > 0) parts.push(`cached ${formatTokenCount(cachedTokens)}`)
+    if (reasoningTokens !== null && reasoningTokens > 0) parts.push(`reasoning ${formatTokenCount(reasoningTokens)}`)
+
+    return { icon: '◷', text: parts.join(' · ') }
+}
+
 export type EventPresentation = {
     icon: string | null
     text: string
@@ -104,6 +168,15 @@ export function getEventPresentation(event: AgentEvent): EventPresentation {
     }
     if (event.type === 'compact') {
         return { icon: '📦', text: 'Conversation compacted' }
+    }
+    if (event.type === 'thread-goal-updated') {
+        return formatThreadGoalEvent(event)
+    }
+    if (event.type === 'thread-goal-cleared') {
+        return { icon: null, text: 'Goal cleared' }
+    }
+    if (event.type === 'token-count') {
+        return formatTokenCountEvent(event)
     }
     try {
         return { icon: null, text: JSON.stringify(event) }

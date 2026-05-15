@@ -12,7 +12,7 @@ import {
     useRef,
     useState
 } from 'react'
-import type { AgentState, CodexCollaborationMode, PermissionMode } from '@/types/api'
+import type { AgentState, CodexCollaborationMode, PermissionMode, ThreadGoal } from '@/types/api'
 import type { Suggestion } from '@/hooks/useActiveSuggestions'
 import type { ConversationStatus } from '@/realtime/types'
 import { useActiveWord } from '@/hooks/useActiveWord'
@@ -23,6 +23,7 @@ import { usePWAInstall } from '@/hooks/usePWAInstall'
 import { supportsEffort, supportsModelChange } from '@hapi/protocol'
 import { markSkillUsed } from '@/lib/recent-skills'
 import { useComposerDraft } from '@/hooks/useComposerDraft'
+import { useComposerEnterBehavior } from '@/hooks/useComposerEnterBehavior'
 import { FloatingOverlay } from '@/components/ChatInput/FloatingOverlay'
 import { Autocomplete } from '@/components/ChatInput/Autocomplete'
 import { StatusBar } from '@/components/AssistantChat/StatusBar'
@@ -45,6 +46,7 @@ export function HappyComposer(props: {
     disabled?: boolean
     permissionMode?: PermissionMode
     collaborationMode?: CodexCollaborationMode
+    threadGoal?: ThreadGoal | null
     model?: string | null
     modelReasoningEffort?: string | null
     effort?: string | null
@@ -54,6 +56,8 @@ export function HappyComposer(props: {
     agentState?: AgentState | null
     backgroundTaskCount?: number
     contextSize?: number
+    contextCacheRead?: number
+    contextWindow?: number | null
     controlledByUser?: boolean
     agentFlavor?: string | null
     availableModelOptions?: Array<{ value: string | null; label: string }>
@@ -79,6 +83,7 @@ export function HappyComposer(props: {
         disabled = false,
         permissionMode: rawPermissionMode,
         collaborationMode: rawCollaborationMode,
+        threadGoal,
         model: rawModel,
         modelReasoningEffort: rawModelReasoningEffort,
         effort: rawEffort,
@@ -88,6 +93,8 @@ export function HappyComposer(props: {
         agentState,
         backgroundTaskCount,
         contextSize,
+        contextCacheRead,
+        contextWindow,
         controlledByUser = false,
         agentFlavor,
         availableModelOptions,
@@ -115,6 +122,7 @@ export function HappyComposer(props: {
     const effort = rawEffort ?? null
 
     const api = useAssistantApi()
+    const { composerEnterBehavior } = useComposerEnterBehavior()
     const composerText = useAssistantState(({ composer }) => composer.text)
     const attachments = useAssistantState(({ composer }) => composer.attachments)
     const threadIsRunning = useAssistantState(({ thread }) => thread.isRunning)
@@ -199,20 +207,12 @@ export function HappyComposer(props: {
             markSkillUsed(suggestion.text.slice(1))
         }
 
-        // For Codex user prompts with content, expand the content instead of command name
-        let textToInsert = suggestion.text
-        let addSpace = true
-        if (agentFlavor === 'codex' && suggestion.source !== 'builtin' && suggestion.content) {
-            textToInsert = suggestion.content
-            addSpace = false
-        }
-
         const result = applySuggestion(
             inputState.text,
             inputState.selection,
-            textToInsert,
+            suggestion.text,
             autocompletePrefixes,
-            addSpace
+            true
         )
 
         api.composer().setText(result.text)
@@ -233,7 +233,7 @@ export function HappyComposer(props: {
         }, 0)
 
         haptic('light')
-    }, [api, suggestions, inputState, autocompletePrefixes, haptic, agentFlavor])
+    }, [api, suggestions, inputState, autocompletePrefixes, haptic])
 
     const abortDisabled = controlsDisabled || isAborting || !threadIsRunning
     const switchDisabled = controlsDisabled || isSwitching || !controlledByUser
@@ -320,6 +320,14 @@ export function HappyComposer(props: {
 
         // Only plain Enter (no modifiers) sends; other modifier combos are ignored
         if (key === 'Enter') {
+            if (composerEnterBehavior === 'newline') {
+                if ((e.ctrlKey || e.metaKey) && !e.altKey && canSend) {
+                    e.preventDefault()
+                    api.composer().send()
+                    setShowContinueHint(false)
+                }
+                return
+            }
             e.preventDefault()
             if (!e.ctrlKey && !e.altKey && !e.metaKey && canSend) {
                 api.composer().send()
@@ -380,7 +388,8 @@ export function HappyComposer(props: {
         permissionModes,
         canSend,
         api,
-        haptic
+        haptic,
+        composerEnterBehavior
     ])
 
     useEffect(() => {
@@ -762,9 +771,13 @@ export function HappyComposer(props: {
                         agentState={agentState}
                         backgroundTaskCount={backgroundTaskCount}
                         contextSize={contextSize}
+                        contextCacheRead={contextCacheRead}
+                        contextWindow={contextWindow}
                         model={model}
+                        modelReasoningEffort={modelReasoningEffort}
                         permissionMode={permissionMode}
                         collaborationMode={collaborationMode}
+                        threadGoal={threadGoal}
                         agentFlavor={agentFlavor}
                         voiceStatus={voiceStatus}
                     />

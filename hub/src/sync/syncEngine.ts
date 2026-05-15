@@ -9,7 +9,7 @@
 
 import type { CodexCollaborationMode, DecryptedMessage, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
 import type { Server } from 'socket.io'
-import type { Store } from '../store'
+import type { Store, CancelQueuedMessageResult } from '../store'
 import type { RpcRegistry } from '../socket/rpcRegistry'
 import type { SSEManager } from '../sse/sseManager'
 import { EventPublisher, type SyncEventListener } from './eventPublisher'
@@ -22,6 +22,8 @@ import {
     type RpcDeleteUploadResponse,
     type RpcListDirectoryResponse,
     type RpcListCodexModelsResponse,
+    type RpcListOpencodeModelsResponse,
+    type RpcOpencodeModel,
     type RpcPathExistsResponse,
     type RpcReadFileResponse,
     type RpcUploadFileResponse
@@ -37,6 +39,8 @@ export type {
     RpcDeleteUploadResponse,
     RpcListDirectoryResponse,
     RpcListCodexModelsResponse,
+    RpcListOpencodeModelsResponse,
+    RpcOpencodeModel,
     RpcPathExistsResponse,
     RpcReadFileResponse,
     RpcUploadFileResponse
@@ -55,7 +59,7 @@ export class SyncEngine {
     private inactivityTimer: NodeJS.Timeout | null = null
 
     constructor(
-        store: Store,
+        private readonly store: Store,
         io: Server,
         rpcRegistry: RpcRegistry,
         sseManager: SSEManager
@@ -164,6 +168,21 @@ export class SyncEngine {
         }
     } {
         return this.messageService.getMessagesPage(sessionId, options)
+    }
+
+    getMessagesPageByPosition(
+        sessionId: string,
+        options: { limit: number; before?: { at: number; seq: number } | null }
+    ): {
+        messages: DecryptedMessage[]
+        page: {
+            limit: number
+            nextBeforeSeq: number | null
+            nextBeforeAt: number | null
+            hasMore: boolean
+        }
+    } {
+        return this.messageService.getMessagesPageByPosition(sessionId, options)
     }
 
     getMessagesAfter(sessionId: string, options: { afterSeq: number; limit: number }): DecryptedMessage[] {
@@ -293,6 +312,13 @@ export class SyncEngine {
         this.sessionCache.markMessageQueued(sessionId)
     }
 
+    async cancelQueuedMessage(
+        sessionId: string,
+        messageId: string
+    ): Promise<CancelQueuedMessageResult> {
+        return this.messageService.cancelQueuedMessage(sessionId, messageId)
+    }
+
     async approvePermission(
         sessionId: string,
         requestId: string,
@@ -343,6 +369,15 @@ export class SyncEngine {
             collaborationMode?: CodexCollaborationMode
         }
     ): Promise<void> {
+        const session = this.sessionCache.getSession(sessionId)
+        if (!session?.active) {
+            // For inactive sessions, update the in-memory cache directly without
+            // an RPC call — the CLI is not running yet. The updated value will be
+            // passed to the spawned process when the session is resumed.
+            this.sessionCache.applySessionConfig(sessionId, config)
+            return
+        }
+
         const result = await this.rpcGateway.requestSessionConfig(sessionId, config)
         if (!result || typeof result !== 'object') {
             throw new Error('Invalid response from session config RPC')
@@ -392,7 +427,7 @@ export class SyncEngine {
         )
     }
 
-    async resumeSession(sessionId: string, namespace: string): Promise<ResumeSessionResult> {
+    async resumeSession(sessionId: string, namespace: string, opts?: { permissionMode?: PermissionMode }): Promise<ResumeSessionResult> {
         const access = this.sessionCache.resolveSessionAccess(sessionId, namespace)
         if (!access.ok) {
             return {
@@ -423,7 +458,7 @@ export class SyncEngine {
                     ? metadata.opencodeSessionId
                     : flavor === 'cursor'
                         ? metadata.cursorSessionId
-                        : metadata.claudeSessionId
+                        : (metadata.claudeSessionId ?? this.recoverClaudeSessionIdFromMessages(access.sessionId, namespace))
 
         if (!resumeToken) {
             return { type: 'error', message: 'Resume session ID unavailable', code: 'resume_unavailable' }
@@ -450,6 +485,7 @@ export class SyncEngine {
             return { type: 'error', message: 'No machine online', code: 'no_machine_online' }
         }
 
+        const effectivePermissionMode = opts?.permissionMode ?? session.permissionMode ?? undefined
         const spawnResult = await this.rpcGateway.spawnSession(
             targetMachine.id,
             metadata.path,
@@ -461,7 +497,7 @@ export class SyncEngine {
             undefined,
             resumeToken,
             session.effort ?? undefined,
-            session.permissionMode ?? undefined
+            effectivePermissionMode
         )
 
         if (spawnResult.type !== 'success') {
@@ -489,6 +525,78 @@ export class SyncEngine {
         }
 
         return { type: 'success', sessionId: spawnResult.sessionId }
+    }
+
+    private recoverClaudeSessionIdFromMessages(sessionId: string, namespace: string): string | null {
+        const messages = this.messageService.getMessages(sessionId, 200)
+        for (let i = messages.length - 1; i >= 0; i -= 1) {
+            const found = this.extractClaudeSessionId(messages[i].content)
+            if (!found) continue
+
+            this.persistRecoveredClaudeSessionId(sessionId, namespace, found)
+            return found
+        }
+        return null
+    }
+
+    private extractClaudeSessionId(value: unknown): string | null {
+        if (!value || typeof value !== 'object') {
+            return null
+        }
+
+        const obj = value as Record<string, unknown>
+        const direct = this.normalizeClaudeSessionId(obj.session_id) ?? this.normalizeClaudeSessionId(obj.sessionId)
+        if (direct) {
+            return direct
+        }
+
+        const content = obj.content
+        if (content && typeof content === 'object') {
+            const found = this.extractClaudeSessionId(content)
+            if (found) return found
+        }
+
+        const data = obj.data
+        if (data && typeof data === 'object') {
+            const found = this.extractClaudeSessionId(data)
+            if (found) return found
+        }
+
+        return null
+    }
+
+    private normalizeClaudeSessionId(value: unknown): string | null {
+        if (typeof value !== 'string') {
+            return null
+        }
+        const trimmed = value.trim()
+        return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(trimmed)
+            ? trimmed
+            : null
+    }
+
+    private persistRecoveredClaudeSessionId(sessionId: string, namespace: string, claudeSessionId: string): void {
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+            const latest = this.sessionCache.getSessionByNamespace(sessionId, namespace)
+                ?? this.sessionCache.refreshSession(sessionId)
+            if (!latest?.metadata) return
+            if (latest.metadata.claudeSessionId === claudeSessionId) return
+
+            const result = this.store.sessions.updateSessionMetadata(
+                sessionId,
+                { ...latest.metadata, claudeSessionId },
+                latest.metadataVersion,
+                namespace,
+                { touchUpdatedAt: false }
+            )
+            if (result.result === 'success') {
+                this.sessionCache.refreshSession(sessionId)
+                return
+            }
+            if (result.result !== 'version-mismatch') {
+                return
+            }
+        }
     }
 
     private hasSameAgentSessionIds(
@@ -585,5 +693,13 @@ export class SyncEngine {
 
     async listCodexModelsForMachine(machineId: string): Promise<RpcListCodexModelsResponse> {
         return await this.rpcGateway.listCodexModelsForMachine(machineId)
+    }
+
+    async listOpencodeModelsForSession(sessionId: string): Promise<RpcListOpencodeModelsResponse> {
+        return await this.rpcGateway.listOpencodeModelsForSession(sessionId)
+    }
+
+    async listOpencodeModelsForCwd(machineId: string, cwd: string): Promise<RpcListOpencodeModelsResponse> {
+        return await this.rpcGateway.listOpencodeModelsForCwd(machineId, cwd)
     }
 }

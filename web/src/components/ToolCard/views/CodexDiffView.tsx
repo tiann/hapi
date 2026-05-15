@@ -54,7 +54,7 @@ function parseUnifiedDiff(unifiedDiff: string): { oldText: string; newText: stri
     }
 }
 
-function renderDiff(block: ToolViewProps['block'], showFileHeader: boolean) {
+function renderDiff(block: ToolViewProps['block'], showFileHeader: boolean, surface?: ToolViewProps['surface']) {
     const input = block.tool.input
     if (!isObject(input) || typeof input.unified_diff !== 'string') return null
 
@@ -65,14 +65,16 @@ function renderDiff(block: ToolViewProps['block'], showFileHeader: boolean) {
             newString={parsed.newText}
             filePath={showFileHeader ? parsed.fileName : undefined}
             variant={showFileHeader ? 'inline' : undefined}
+            size={surface === 'dialog' ? 'comfortable' : undefined}
+            scrollY={surface === 'dialog'}
         />
     )
 }
 
 export function CodexDiffCompactView(props: ToolViewProps) {
-    return renderDiff(props.block, false)
+    return renderDiff(props.block, false, props.surface)
 }
 
 export function CodexDiffFullView(props: ToolViewProps) {
-    return renderDiff(props.block, true)
+    return renderDiff(props.block, true, props.surface)
 }

@@ -5,25 +5,22 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { MarkdownRenderer } from '@/components/MarkdownRenderer'
 import { isAskUserQuestionToolName, parseAskUserQuestionInput, type AskUserQuestionQuestion } from '@/components/ToolCard/askUserQuestion'
+import {
+    AskUserQuestionOptionBody,
+    askUserQuestionQuoteClassName,
+    getAskUserQuestionOptionFrameClassName,
+    type AskUserQuestionChoiceMode
+} from '@/components/ToolCard/askUserQuestionOptionCard'
 import { cn } from '@/lib/utils'
 import { usePlatform } from '@/hooks/usePlatform'
 import { Spinner } from '@/components/Spinner'
 import { useTranslation } from '@/lib/use-translation'
 
-function SelectionMark(props: { checked: boolean; mode: 'single' | 'multi' }) {
-    const mark = props.mode === 'multi'
-        ? (props.checked ? '☑' : '☐')
-        : (props.checked ? '●' : '○')
-    return (
-        <span className="mt-0.5 w-4 shrink-0 text-center text-[var(--app-hint)]">
-            {mark}
-        </span>
-    )
-}
+const questionNavButtonClassName = 'h-8 rounded-full border-[var(--app-border)] bg-[var(--app-tool-card-bg)] px-3.5 text-[var(--app-fg)] hover:border-[var(--app-md-quote-border)] hover:bg-[var(--app-subtle-bg)]'
 
 function OptionRow(props: {
     checked: boolean
-    mode: 'single' | 'multi'
+    mode: AskUserQuestionChoiceMode
     disabled: boolean
     title: string
     description?: string | null
@@ -32,24 +29,22 @@ function OptionRow(props: {
     return (
         <button
             type="button"
-            className={cn(
-                'flex w-full items-start gap-2 rounded-md px-2 py-2 text-left text-sm transition-colors hover:bg-[var(--app-subtle-bg)] disabled:pointer-events-none disabled:opacity-50',
-                props.checked ? 'bg-[var(--app-subtle-bg)]' : null
+            role={props.mode === 'multi' ? 'checkbox' : 'radio'}
+            aria-checked={props.checked}
+            className={getAskUserQuestionOptionFrameClassName(
+                props.checked,
+                'w-full text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] disabled:pointer-events-none disabled:opacity-50'
             )}
             disabled={props.disabled}
             onClick={props.onClick}
         >
-            <SelectionMark checked={props.checked} mode={props.mode} />
-            <span className="min-w-0 flex-1">
-                <div className="[&_.aui-md]:font-medium [&_.aui-md]:text-sm [&_.aui-md]:text-[var(--app-fg)]">
-                    <MarkdownRenderer content={props.title} />
-                </div>
-                {props.description ? (
-                    <div className="mt-0.5 [&_.aui-md]:text-xs [&_.aui-md]:text-[var(--app-hint)]">
-                        <MarkdownRenderer content={props.description} />
-                    </div>
-                ) : null}
-            </span>
+            <AskUserQuestionOptionBody
+                checked={props.checked}
+                mode={props.mode}
+                title={props.title}
+                description={props.description}
+                interactive
+            />
         </button>
     )
 }
@@ -128,7 +123,7 @@ export function AskUserQuestionFooter(props: {
     const total = Math.max(1, questions.length)
     const clampedStep = Math.min(Math.max(step, 0), total - 1)
 
-    const mode: 'single' | 'multi' = questions[clampedStep]?.multiSelect ? 'multi' : 'single'
+    const mode: AskUserQuestionChoiceMode = questions[clampedStep]?.multiSelect ? 'multi' : 'single'
 
     const validateQuestion = (idx: number): string[] | null => {
         if (questions.length === 0) {
@@ -261,14 +256,14 @@ export function AskUserQuestionFooter(props: {
     }
 
     return (
-        <div className="mt-3 rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] p-3">
+        <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg)] p-3">
             <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                     <div className="flex items-center gap-2">
                         <Badge variant="default">
                             {t('tool.question')}
                         </Badge>
-                        <span className="font-mono text-xs text-[var(--app-hint)]">
+                        <span className="rounded-full border border-[var(--app-border)] bg-[var(--app-subtle-bg)] px-2 py-0.5 font-mono text-[11px] text-[var(--app-hint)]">
                             [{clampedStep + 1}/{total}]
                         </span>
                     </div>
@@ -291,7 +286,7 @@ export function AskUserQuestionFooter(props: {
                         onChange={(e) => setFallbackText(e.target.value)}
                         disabled={props.disabled || loading}
                         placeholder={t('tool.askUserQuestion.placeholder')}
-                        className="mt-2 w-full min-h-[88px] resize-y rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-2 text-sm text-[var(--app-fg)] placeholder:text-[var(--app-hint)] focus:outline-none focus:ring-2 focus:ring-[var(--app-button)] focus:border-transparent disabled:opacity-50"
+                        className="mt-2 min-h-[88px] w-full resize-y rounded-xl border border-[var(--app-border)] bg-[var(--app-tool-card-bg)] px-3 py-2 text-sm text-[var(--app-fg)] placeholder:text-[var(--app-hint)] focus:border-transparent focus:outline-none focus:ring-2 focus:ring-[var(--app-button)] disabled:opacity-50"
                     />
                 </div>
             ) : (
@@ -306,14 +301,17 @@ export function AskUserQuestionFooter(props: {
                                 </div>
                             ) : null}
                             {questions[clampedStep]?.question ? (
-                                <div className={cn(questions[clampedStep]?.header ? "mt-2" : "")}>
+                                <div className={cn(
+                                    askUserQuestionQuoteClassName,
+                                    questions[clampedStep]?.header ? 'mt-2' : ''
+                                )}>
                                     <MarkdownRenderer content={questions[clampedStep].question} />
                                 </div>
                             ) : null}
                         </div>
                     </div>
 
-                    <div className="mt-3 flex flex-col gap-1">
+                    <div className="mt-3 flex flex-col gap-1.5">
                         {questions[clampedStep].options.map((opt, optIdx) => {
                             const selected = (selectedByQuestion[clampedStep] ?? []).includes(optIdx)
                             return (
@@ -344,14 +342,14 @@ export function AskUserQuestionFooter(props: {
                                 onChange={(e) => updateOtherText(clampedStep, e.target.value)}
                                 disabled={props.disabled || loading}
                                 placeholder={t('tool.askUserQuestion.otherPlaceholder')}
-                                className="mt-2 w-full min-h-[88px] resize-y rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-2 text-sm text-[var(--app-fg)] placeholder:text-[var(--app-hint)] focus:outline-none focus:ring-2 focus:ring-[var(--app-button)] focus:border-transparent disabled:opacity-50"
+                                className="mt-2 min-h-[88px] w-full resize-y rounded-xl border border-[var(--app-border)] bg-[var(--app-tool-card-bg)] px-3 py-2 text-sm text-[var(--app-fg)] placeholder:text-[var(--app-hint)] focus:border-transparent focus:outline-none focus:ring-2 focus:ring-[var(--app-button)] disabled:opacity-50"
                             />
                         ) : null}
                     </div>
                 </div>
             )}
 
-            <div className="mt-3 flex items-center justify-between gap-2">
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-[var(--app-border)] pt-3">
                 <div className="flex items-center gap-2">
                     {questions.length > 1 ? (
                         <Button
@@ -360,6 +358,7 @@ export function AskUserQuestionFooter(props: {
                             size="sm"
                             disabled={props.disabled || loading || clampedStep === 0}
                             onClick={prev}
+                            className={questionNavButtonClassName}
                         >
                             {t('tool.prev')}
                         </Button>
@@ -370,26 +369,27 @@ export function AskUserQuestionFooter(props: {
                     {questions.length > 1 && clampedStep < questions.length - 1 ? (
                         <Button
                             type="button"
-                            variant="default"
+                            variant="outline"
                             size="sm"
                             disabled={props.disabled || loading}
                             onClick={next}
+                            className={questionNavButtonClassName}
                         >
                             {t('tool.next')}
                         </Button>
                     ) : (
                         <Button
                             type="button"
-                            variant="default"
+                            variant="outline"
                             size="sm"
                             disabled={props.disabled || loading}
                             onClick={submit}
                             aria-busy={loading}
-                            className="gap-2"
+                            className={cn(questionNavButtonClassName, 'gap-2')}
                         >
                             {loading ? (
                                 <>
-                                    <Spinner size="sm" label={null} className="text-[var(--app-button-text)]" />
+                                    <Spinner size="sm" label={null} className="text-[var(--app-fg)]" />
                                     {t('tool.submitting')}
                                 </>
                             ) : (

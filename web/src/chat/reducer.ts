@@ -1,5 +1,6 @@
 import type { AgentState } from '@/types/api'
-import type { ChatBlock, NormalizedMessage, UsageData } from '@/chat/types'
+import type { AgentEvent, ChatBlock, NormalizedMessage, UsageData } from '@/chat/types'
+import type { ThreadGoal } from '@/types/api'
 import { traceMessages, type TracedMessage } from '@/chat/tracer'
 import { dedupeAgentEvents, foldApiErrorEvents } from '@/chat/reducerEvents'
 import { collectTitleChanges, collectToolIdsFromMessages, ensureToolBlock, getPermissions } from '@/chat/reducerTools'
@@ -7,7 +8,14 @@ import { reduceTimeline } from '@/chat/reducerTimeline'
 
 // Calculate context size from usage data
 function calculateContextSize(usage: UsageData): number {
+    if (typeof usage.context_tokens === 'number') {
+        return usage.context_tokens
+    }
     return (usage.cache_creation_input_tokens || 0) + (usage.cache_read_input_tokens || 0) + usage.input_tokens
+}
+
+function isUsageVisibleInParentContext(usage: UsageData): boolean {
+    return usage.scope_role !== 'child'
 }
 
 export type LatestUsage = {
@@ -16,13 +24,27 @@ export type LatestUsage = {
     cacheCreation: number
     cacheRead: number
     contextSize: number
+    contextWindow: number | null
     timestamp: number
+}
+
+function getLatestThreadGoal(normalized: NormalizedMessage[]): ThreadGoal | null {
+    for (let i = normalized.length - 1; i >= 0; i--) {
+        const msg = normalized[i]
+        if (msg.role !== 'event') continue
+        const event = msg.content as AgentEvent
+        if (event.type === 'thread-goal-cleared') return null
+        if (event.type === 'thread-goal-updated') {
+            return (event as { goal?: ThreadGoal }).goal ?? null
+        }
+    }
+    return null
 }
 
 export function reduceChatBlocks(
     normalized: NormalizedMessage[],
     agentState: AgentState | null | undefined
-): { blocks: ChatBlock[]; hasReadyEvent: boolean; latestUsage: LatestUsage | null } {
+): { blocks: ChatBlock[]; hasReadyEvent: boolean; latestUsage: LatestUsage | null; latestGoal: ThreadGoal | null } {
     const permissionsById = getPermissions(agentState)
     const toolIdsInMessages = collectToolIdsFromMessages(normalized)
     const titleChangesByToolUseId = collectTitleChanges(normalized)
@@ -94,18 +116,24 @@ export function reduceChatBlocks(
     let latestUsage: LatestUsage | null = null
     for (let i = normalized.length - 1; i >= 0; i--) {
         const msg = normalized[i]
-        if (msg.usage) {
+        if (msg.usage && isUsageVisibleInParentContext(msg.usage)) {
             latestUsage = {
                 inputTokens: msg.usage.input_tokens,
                 outputTokens: msg.usage.output_tokens,
                 cacheCreation: msg.usage.cache_creation_input_tokens ?? 0,
                 cacheRead: msg.usage.cache_read_input_tokens ?? 0,
                 contextSize: calculateContextSize(msg.usage),
+                contextWindow: msg.usage.context_window ?? null,
                 timestamp: msg.createdAt
             }
             break
         }
     }
 
-    return { blocks: dedupeAgentEvents(foldApiErrorEvents(rootResult.blocks)), hasReadyEvent, latestUsage }
+    return {
+        blocks: dedupeAgentEvents(foldApiErrorEvents(rootResult.blocks)),
+        hasReadyEvent,
+        latestUsage,
+        latestGoal: getLatestThreadGoal(normalized)
+    }
 }

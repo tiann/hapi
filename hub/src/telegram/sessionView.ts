@@ -101,6 +101,7 @@ function formatToolArgumentsDetailed(tool: string, args: any): string {
                 return `Command: ${truncate(cmd, MAX_TOOL_ARGS_LENGTH)}`
             }
 
+            case 'Agent':
             case 'Task': {
                 const desc = args.description || args.prompt || ''
                 return `Task: ${truncate(desc, MAX_TOOL_ARGS_LENGTH)}`

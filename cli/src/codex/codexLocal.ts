@@ -3,7 +3,8 @@ import { spawnWithTerminalGuard } from '@/utils/spawnWithTerminalGuard';
 import {
     buildMcpServerConfigArgs,
     buildDeveloperInstructionsArg,
-    buildSessionStartHookConfigArgs
+    buildSessionStartHookConfigArgs,
+    buildModelReasoningEffortConfigArgs
 } from './utils/codexMcpConfig';
 import { codexSystemPrompt } from './utils/systemPrompt';
 import type { ReasoningEffort } from './appServerTypes';
@@ -54,7 +55,7 @@ export async function codexLocal(opts: {
     }
 
     if (opts.modelReasoningEffort) {
-        args.push('--model-reasoning-effort', opts.modelReasoningEffort);
+        args.push(...buildModelReasoningEffortConfigArgs(opts.modelReasoningEffort));
     }
 
     if (opts.sandbox) {

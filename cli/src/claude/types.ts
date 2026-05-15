@@ -14,11 +14,16 @@ export const UsageSchema = z.object({
   service_tier: z.string().optional(),
 });
 
+// `passthrough` keeps fields the SDK adds going forward (e.g. `model`, future
+// usage breakdowns) so the hub forwards them verbatim. Without it, Zod's
+// default `strip` mode silently drops every undeclared key — the metadata
+// pipeline lost `message.model` and `system/turn_duration.messageId` that way.
 const RawMessageSchema = z.object({
   role: z.string().optional(),
   content: z.unknown(),
   usage: UsageSchema.optional(),
-});
+  model: z.string().optional(),
+}).passthrough();
 
 const RawJSONLinesBaseSchema = z.object({
   uuid: z.string().optional(),
@@ -62,7 +67,9 @@ export const RawJSONLinesSchema = z.discriminatedUnion("type", [
     leafUuid: z.string(),
   }),
 
-  // System message - validates uuid and subtype data used by the UI
+  // System message - validates uuid and subtype data used by the UI.
+  // `passthrough` preserves fields like `messageId` on `turn_duration` and any
+  // future system subtype data the hub forwards to the web reducer.
   RawJSONLinesBaseSchema.extend({
     type: z.literal("system"),
     uuid: z.string(),
@@ -74,7 +81,8 @@ export const RawJSONLinesSchema = z.discriminatedUnion("type", [
     maxRetries: z.number().optional(),
     error: z.unknown().optional(),
     durationMs: z.number().optional(),
-  }),
+    messageId: z.string().optional(),
+  }).passthrough(),
 ]);
 
 export type RawJSONLines = z.infer<typeof RawJSONLinesSchema>;

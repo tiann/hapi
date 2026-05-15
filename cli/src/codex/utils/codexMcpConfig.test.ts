@@ -103,6 +103,10 @@ describe('codexMcpConfig', () => {
             expect(args[1]).toContain('hooks.SessionStart=[');
             expect(args[1]).toContain('type = "command"');
             expect(args[1]).toContain('hook-forwarder --port 4312 --token secret-token');
+            expect(args[2]).toBe('-c');
+            expect(args[3]).toContain('hooks.state={');
+            expect(args[3]).toContain(':session_start:0:0');
+            expect(args[3]).toContain('trusted_hash="sha256:');
         });
     });
 });

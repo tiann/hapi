@@ -104,4 +104,120 @@ describe('registerAppServerPermissionHandlers', () => {
             { plan: '1. Edit files' }
         );
     });
+
+    it('maps latest permissions approval requests to granted permission profiles', async () => {
+        const { client, handlers } = createClient();
+        const permissions = {
+            network: { enabled: true },
+            fileSystem: null
+        };
+        const permissionHandler = {
+            handleToolCall: vi.fn(async () => ({ decision: 'approved_for_session' }))
+        };
+
+        registerAppServerPermissionHandlers({
+            client: client as never,
+            permissionHandler: permissionHandler as never
+        });
+
+        const handler = handlers.get('item/permissions/requestApproval');
+        expect(handler).toBeTypeOf('function');
+
+        await expect(handler?.({
+            itemId: 'perm-123',
+            reason: 'Need network',
+            cwd: '/workspace/project',
+            permissions
+        })).resolves.toEqual({
+            permissions,
+            scope: 'session'
+        });
+
+        expect(permissionHandler.handleToolCall).toHaveBeenCalledWith(
+            'perm-123',
+            'CodexPermission',
+            {
+                message: 'Need network',
+                cwd: '/workspace/project',
+                permissions
+            }
+        );
+    });
+
+    it('accepts MCP elicitation requests with schema defaults', async () => {
+        const { client, handlers } = createClient();
+        const permissionHandler = {
+            handleToolCall: vi.fn()
+        };
+
+        registerAppServerPermissionHandlers({
+            client: client as never,
+            permissionHandler: permissionHandler as never
+        });
+
+        const handler = handlers.get('mcpServer/elicitation/request');
+        expect(handler).toBeTypeOf('function');
+
+        await expect(handler?.({
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            serverName: 'hapi',
+            mode: 'form',
+            message: 'Approve MCP tool call?',
+            _meta: null,
+            requestedSchema: {
+                type: 'object',
+                properties: {
+                    approval: {
+                        type: 'string',
+                        enum: ['allow', 'deny']
+                    },
+                    remember: {
+                        type: 'boolean',
+                        default: false
+                    }
+                },
+                required: ['approval', 'remember']
+            }
+        })).resolves.toEqual({
+            action: 'accept',
+            content: {
+                approval: 'allow',
+                remember: false
+            },
+            _meta: null
+        });
+    });
+
+    it('cancels non-HAPI MCP elicitation requests', async () => {
+        const { client, handlers } = createClient();
+        const permissionHandler = {
+            handleToolCall: vi.fn()
+        };
+
+        registerAppServerPermissionHandlers({
+            client: client as never,
+            permissionHandler: permissionHandler as never
+        });
+
+        const handler = handlers.get('mcpServer/elicitation/request');
+        expect(handler).toBeTypeOf('function');
+
+        await expect(handler?.({
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            serverName: 'external',
+            mode: 'form',
+            message: 'Collect data',
+            _meta: null,
+            requestedSchema: {
+                type: 'object',
+                properties: {},
+            }
+        })).resolves.toEqual({
+            action: 'cancel',
+            content: null,
+            _meta: null
+        });
+    });
 });

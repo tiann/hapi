@@ -36,6 +36,32 @@ describe('getModelOptionsForFlavor', () => {
             { value: 'gpt-5.5', label: 'GPT-5.5' }
         ])
     })
+
+    it('returns only the supplied custom options for opencode flavor (no claude fallback)', () => {
+        const options = getModelOptionsForFlavor('opencode', null, [
+            { value: 'ollama/exaone:4.5-33b-q8', label: 'Ollama (SER8)/EXAONE 4.5 33B Q8' },
+            { value: 'mlx/qwen3:0.6b', label: 'MLX/Qwen3 0.6B' }
+        ])
+        expect(options).toEqual([
+            { value: 'ollama/exaone:4.5-33b-q8', label: 'Ollama (SER8)/EXAONE 4.5 33B Q8' },
+            { value: 'mlx/qwen3:0.6b', label: 'MLX/Qwen3 0.6B' }
+        ])
+    })
+
+    it('returns an empty list for opencode flavor before models are discovered (no claude fallback)', () => {
+        const options = getModelOptionsForFlavor('opencode', null)
+        expect(options).toEqual([])
+    })
+
+    it('includes the current opencode model when it is missing from explicit options', () => {
+        const options = getModelOptionsForFlavor('opencode', 'ollama/legacy', [
+            { value: 'ollama/exaone:4.5-33b-q8', label: 'Ollama EXAONE' }
+        ])
+        expect(options).toEqual([
+            { value: 'ollama/legacy', label: 'ollama/legacy' },
+            { value: 'ollama/exaone:4.5-33b-q8', label: 'Ollama EXAONE' }
+        ])
+    })
 })
 
 describe('getNextModelForFlavor', () => {
@@ -63,5 +89,20 @@ describe('getNextModelForFlavor', () => {
             { value: 'gpt-5.4', label: 'GPT-5.4' }
         ])
         expect(next).toBe('gpt-5.5')
+    })
+
+    it('keeps the current opencode model when the dynamic list has not loaded (undefined customOptions)', () => {
+        const next = getNextModelForFlavor('opencode', 'ollama/exaone:4.5-33b-q8')
+        expect(next).toBe('ollama/exaone:4.5-33b-q8')
+    })
+
+    it('keeps the current opencode model when the dynamic list is empty', () => {
+        const next = getNextModelForFlavor('opencode', 'ollama/exaone:4.5-33b-q8', [])
+        expect(next).toBe('ollama/exaone:4.5-33b-q8')
+    })
+
+    it('returns null for opencode without a current model and without dynamic options (no Claude fallback)', () => {
+        const next = getNextModelForFlavor('opencode', null, [])
+        expect(next).toBeNull()
     })
 })
