@@ -687,6 +687,7 @@ export function SessionList(props: {
     sessions: SessionSummary[]
     onSelect: (sessionId: string) => void
     onNewSession: () => void
+    onNewSessionInDirectory?: (args: { machineId: string | null; directory: string }) => void
     onBrowse?: () => void
     onRefresh: () => void
     isLoading: boolean
@@ -696,7 +697,7 @@ export function SessionList(props: {
     selectedSessionId?: string | null
 }) {
     const { t } = useTranslation()
-    const { renderHeader = true, api, selectedSessionId, machineLabelsById = {} } = props
+    const { renderHeader = true, api, selectedSessionId, machineLabelsById = {}, onNewSessionInDirectory } = props
     const [searchQuery, setSearchQuery] = useState('')
     const normalizedQuery = normalizeSearch(searchQuery)
     const isSearching = normalizedQuery.length > 0
@@ -917,6 +918,23 @@ export function SessionList(props: {
                                                         {group.displayName}
                                                     </span>
                                                     <CopyPathButton path={group.directory} className="opacity-0 group-hover/project:opacity-100 transition-opacity duration-150" />
+                                                    {onNewSessionInDirectory ? (
+                                                        <button
+                                                            type="button"
+                                                            onClick={(event) => {
+                                                                event.stopPropagation()
+                                                                onNewSessionInDirectory({
+                                                                    machineId: group.machineId,
+                                                                    directory: group.directory
+                                                                })
+                                                            }}
+                                                            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[var(--app-hint)] opacity-70 transition-colors hover:bg-[var(--app-secondary-bg)] hover:text-[var(--app-link)] hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]"
+                                                            title={t('sessions.group.new')}
+                                                            aria-label={t('sessions.group.new')}
+                                                        >
+                                                            <PlusIcon className="h-3.5 w-3.5" />
+                                                        </button>
+                                                    ) : null}
                                                     <span className="text-[11px] tabular-nums text-[var(--app-hint)] shrink-0">
                                                         ({group.sessions.length})
                                                     </span>

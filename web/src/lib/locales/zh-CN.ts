@@ -52,6 +52,7 @@ export default {
   'sessions.search.noResults': '没有匹配的会话。',
   'sessions.group.showMore': '再显示 {n} 个',
   'sessions.group.showLess': '收起',
+  'sessions.group.new': '在此目录新建会话',
 
   // Session list
   'session.item.path': '路径',

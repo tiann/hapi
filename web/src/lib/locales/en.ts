@@ -52,6 +52,7 @@ export default {
   'sessions.search.noResults': 'No sessions match your search.',
   'sessions.group.showMore': 'Show {n} more',
   'sessions.group.showLess': 'Show less',
+  'sessions.group.new': 'New session in this directory',
 
   // Session list
   'session.item.path': 'path',

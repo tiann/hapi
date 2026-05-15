@@ -150,6 +150,14 @@ function SessionsPage() {
     const selectedSessionId = sessionMatch && sessionMatch.sessionId !== 'new' ? sessionMatch.sessionId : null
     const isSessionsIndex = pathname === '/sessions' || pathname === '/sessions/'
     const sidebar = useSidebarResize()
+    const handleNewSessionInDirectory = useCallback((args: { machineId: string | null; directory: string }) => {
+        navigate({
+            to: '/sessions/new',
+            search: args.machineId
+                ? { directory: args.directory, machineId: args.machineId }
+                : { directory: args.directory }
+        })
+    }, [navigate])
 
     return (
         <div className="flex h-full min-h-0">
@@ -205,6 +213,7 @@ function SessionsPage() {
                             params: { sessionId },
                         })}
                         onNewSession={() => navigate({ to: '/sessions/new' })}
+                        onNewSessionInDirectory={handleNewSessionInDirectory}
                         onBrowse={() => navigate({ to: '/browse' })}
                         onRefresh={handleRefresh}
                         isLoading={isLoading}
