@@ -216,6 +216,7 @@ export default {
   'file.page.tab.file': '文件',
   'file.page.missingPath': '未提供文件路径。',
   'file.page.binary': '该文件看起来是二进制文件，无法显示。',
+  'file.page.imagePreviewAlt': '{name} 图片预览',
   'file.page.empty': '文件为空。',
   'file.page.noChanges': '没有可显示的变更。',
   'file.error.readFailed': '读取文件失败。',

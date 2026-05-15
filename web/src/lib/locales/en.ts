@@ -214,6 +214,7 @@ export default {
   'file.page.tab.file': 'File',
   'file.page.missingPath': 'No file path provided.',
   'file.page.binary': 'This looks like a binary file. It cannot be displayed.',
+  'file.page.imagePreviewAlt': 'Image preview for {name}',
   'file.page.empty': 'File is empty.',
   'file.page.noChanges': 'No changes to display.',
   'file.error.readFailed': 'Failed to read file.',

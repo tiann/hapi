@@ -14,6 +14,20 @@ import { useTranslation } from '@/lib/use-translation'
 import { decodeBase64 } from '@/lib/utils'
 
 const MAX_COPYABLE_FILE_BYTES = 1_000_000
+const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
+    apng: 'image/apng',
+    avif: 'image/avif',
+    bmp: 'image/bmp',
+    gif: 'image/gif',
+    ico: 'image/x-icon',
+    jpeg: 'image/jpeg',
+    jpg: 'image/jpeg',
+    png: 'image/png',
+    svg: 'image/svg+xml',
+    tif: 'image/tiff',
+    tiff: 'image/tiff',
+    webp: 'image/webp'
+}
 
 function decodePath(value: string): string {
     if (!value) return ''
@@ -98,6 +112,14 @@ function resolveLanguage(path: string): string | undefined {
     return langAlias[ext] ?? ext
 }
 
+function resolveImageMimeType(path: string): string | null {
+    const parts = path.split('.')
+    if (parts.length <= 1) return null
+    const ext = parts[parts.length - 1]?.toLowerCase()
+    if (!ext) return null
+    return IMAGE_MIME_BY_EXTENSION[ext] ?? null
+}
+
 function getUtf8ByteLength(value: string): number {
     return new TextEncoder().encode(value).length
 }
@@ -118,6 +140,20 @@ function extractCommandError(result: GitCommandResponse | undefined): string | n
     return result.error ?? result.stderr ?? 'Failed to load diff'
 }
 
+function ImagePreview(props: { dataUrl: string; fileName: string; label: string }) {
+    return (
+        <div className="flex min-h-[18rem] items-center justify-center overflow-auto rounded-md border border-[var(--app-border)] bg-[var(--app-code-bg)] p-3">
+            <img
+                src={props.dataUrl}
+                alt={props.label}
+                className="max-h-[calc(100vh-14rem)] max-w-full object-contain"
+                draggable={false}
+            />
+            <span className="sr-only">{props.fileName}</span>
+        </div>
+    )
+}
+
 export default function FilePage() {
     const { api } = useAppContext()
     const { t } = useTranslation()
@@ -131,6 +167,7 @@ export default function FilePage() {
 
     const filePath = useMemo(() => decodePath(encodedPath), [encodedPath])
     const fileName = filePath.split('/').pop() || filePath || t('file.page.fallbackName')
+    const imageMimeType = useMemo(() => resolveImageMimeType(filePath), [filePath])
 
     const diffQuery = useQuery({
         queryKey: queryKeys.gitFileDiff(sessionId, filePath, staged),
@@ -167,9 +204,12 @@ export default function FilePage() {
     const binaryFile = fileContentResult?.success
         ? !decodedContentResult.ok || isBinaryContent(decodedContent)
         : false
+    const imagePreviewUrl = fileContentResult?.success && fileContentResult.content && imageMimeType
+        ? `data:${imageMimeType};base64,${fileContentResult.content}`
+        : null
 
-    const language = useMemo(() => resolveLanguage(filePath), [filePath])
-    const highlighted = useShikiHighlighter(decodedContent, language)
+    const language = useMemo(() => imageMimeType ? undefined : resolveLanguage(filePath), [filePath, imageMimeType])
+    const highlighted = useShikiHighlighter(imageMimeType ? '' : decodedContent, language)
     const contentSizeBytes = useMemo(
         () => (decodedContent ? getUtf8ByteLength(decodedContent) : 0),
         [decodedContent]
@@ -182,6 +222,10 @@ export default function FilePage() {
     const [displayMode, setDisplayMode] = useState<'diff' | 'file'>('diff')
 
     useEffect(() => {
+        if (imageMimeType) {
+            setDisplayMode('file')
+            return
+        }
         if (diffSuccess && !diffContent) {
             setDisplayMode('file')
             return
@@ -189,7 +233,7 @@ export default function FilePage() {
         if (diffFailed) {
             setDisplayMode('file')
         }
-    }, [diffSuccess, diffFailed, diffContent])
+    }, [diffSuccess, diffFailed, diffContent, imageMimeType])
 
     const loading = diffQuery.isLoading || fileQuery.isLoading
     const fileError = fileContentResult && !fileContentResult.success
@@ -266,33 +310,41 @@ export default function FilePage() {
                         <FileContentSkeleton label={t('loading.file')} />
                     ) : fileErrorMessage ? (
                         <div className="text-sm text-[var(--app-hint)]">{fileErrorMessage}</div>
-                    ) : binaryFile ? (
-                        <div className="text-sm text-[var(--app-hint)]">
-                            {t('file.page.binary')}
-                        </div>
                     ) : displayMode === 'diff' && diffContent ? (
                         <DiffDisplay diffContent={diffContent} />
                     ) : displayMode === 'diff' && diffError ? (
                         <div className="text-sm text-[var(--app-hint)]">{diffErrorMessage}</div>
                     ) : displayMode === 'file' ? (
-                        decodedContent ? (
-                            <div className="relative">
-                                {canCopyContent ? (
-                                    <button
-                                        type="button"
-                                        onClick={() => copyContent(decodedContent)}
-                                        className="absolute right-2 top-2 z-10 rounded p-1 text-[var(--app-hint)] hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] transition-colors"
-                                        title={t('file.page.copyContent')}
-                                    >
-                                        {contentCopied ? <CheckIcon className="h-3.5 w-3.5" /> : <CopyIcon className="h-3.5 w-3.5" />}
-                                    </button>
-                                ) : null}
-                                <pre className="shiki overflow-auto rounded-md bg-[var(--app-code-bg)] p-3 pr-8 text-xs font-mono">
-                                    <code>{highlighted ?? decodedContent}</code>
-                                </pre>
+                        imagePreviewUrl ? (
+                            <ImagePreview
+                                dataUrl={imagePreviewUrl}
+                                fileName={fileName}
+                                label={t('file.page.imagePreviewAlt', { name: fileName })}
+                            />
+                        ) : binaryFile ? (
+                            <div className="text-sm text-[var(--app-hint)]">
+                                {t('file.page.binary')}
                             </div>
                         ) : (
-                            <div className="text-sm text-[var(--app-hint)]">{t('file.page.empty')}</div>
+                            decodedContent ? (
+                                <div className="relative">
+                                    {canCopyContent ? (
+                                        <button
+                                            type="button"
+                                            onClick={() => copyContent(decodedContent)}
+                                            className="absolute right-2 top-2 z-10 rounded p-1 text-[var(--app-hint)] hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] transition-colors"
+                                            title={t('file.page.copyContent')}
+                                        >
+                                            {contentCopied ? <CheckIcon className="h-3.5 w-3.5" /> : <CopyIcon className="h-3.5 w-3.5" />}
+                                        </button>
+                                    ) : null}
+                                    <pre className="shiki overflow-auto rounded-md bg-[var(--app-code-bg)] p-3 pr-8 text-xs font-mono">
+                                        <code>{highlighted ?? decodedContent}</code>
+                                    </pre>
+                                </div>
+                            ) : (
+                                <div className="text-sm text-[var(--app-hint)]">{t('file.page.empty')}</div>
+                            )
                         )
                     ) : (
                         <div className="text-sm text-[var(--app-hint)]">{t('file.page.noChanges')}</div>
