@@ -228,6 +228,43 @@ function addEventScope(events: ConvertedEvent[], scope: Record<string, unknown>)
     }));
 }
 
+const MAX_UNHANDLED_LOG_STRING_LENGTH = 512;
+const MAX_UNHANDLED_LOG_ARRAY_LENGTH = 20;
+const MAX_UNHANDLED_LOG_DEPTH = 8;
+
+function sanitizeUnhandledNotificationLogValue(value: unknown, depth: number = 0): unknown {
+    if (typeof value === 'string') {
+        if (value.length <= MAX_UNHANDLED_LOG_STRING_LENGTH) {
+            return value;
+        }
+        return `${value.slice(0, MAX_UNHANDLED_LOG_STRING_LENGTH)}... [truncated ${value.length - MAX_UNHANDLED_LOG_STRING_LENGTH} chars for logs]`;
+    }
+
+    if (Array.isArray(value)) {
+        const items = value
+            .slice(0, MAX_UNHANDLED_LOG_ARRAY_LENGTH)
+            .map((item) => sanitizeUnhandledNotificationLogValue(item, depth + 1));
+        if (value.length > MAX_UNHANDLED_LOG_ARRAY_LENGTH) {
+            items.push(`... [truncated ${value.length - MAX_UNHANDLED_LOG_ARRAY_LENGTH} array items for logs]`);
+        }
+        return items;
+    }
+
+    if (!value || typeof value !== 'object') {
+        return value;
+    }
+
+    if (depth >= MAX_UNHANDLED_LOG_DEPTH) {
+        return '[truncated nested object for logs]';
+    }
+
+    const result: Record<string, unknown> = {};
+    for (const [key, nestedValue] of Object.entries(value)) {
+        result[key] = sanitizeUnhandledNotificationLogValue(nestedValue, depth + 1);
+    }
+    return result;
+}
+
 function normalizeCollabAgentToolName(value: unknown): string | null {
     const raw = asString(value);
     if (!raw) return null;
@@ -899,7 +936,7 @@ export class AppServerEventConverter {
             }
         }
 
-        logger.debug('[AppServerEventConverter] Unhandled notification', { method, params });
+        logger.debug('[AppServerEventConverter] Unhandled notification', sanitizeUnhandledNotificationLogValue({ method, params }));
         return events;
     }
 

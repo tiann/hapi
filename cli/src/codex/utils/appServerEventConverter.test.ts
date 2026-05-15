@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { logger } from '@/ui/logger';
 import { AppServerEventConverter } from './appServerEventConverter';
 
 describe('AppServerEventConverter', () => {
@@ -742,4 +743,27 @@ describe('AppServerEventConverter', () => {
         ]);
     });
 
+    it('truncates large unhandled notification payloads before logging', () => {
+        const converter = new AppServerEventConverter();
+        const debug = vi.spyOn(logger, 'debug').mockImplementation(() => undefined);
+        const largeImageResult = 'a'.repeat(4096);
+
+        const events = converter.handleNotification('item/completed', {
+            item: {
+                id: 'image-1',
+                type: 'imageGeneration',
+                result: largeImageResult,
+                savedPath: '/tmp/image.png'
+            }
+        });
+
+        expect(events).toEqual([]);
+        expect(debug).toHaveBeenCalledTimes(1);
+        const logged = debug.mock.calls[0]?.[1] as { params?: { item?: { result?: string; savedPath?: string } } };
+        expect(logged.params?.item?.result).not.toBe(largeImageResult);
+        expect(logged.params?.item?.result).toContain('[truncated 3584 chars for logs]');
+        expect(logged.params?.item?.savedPath).toBe('/tmp/image.png');
+
+        debug.mockRestore();
+    });
 });
