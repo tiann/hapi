@@ -5,6 +5,7 @@ import type { EnhancedMode, PermissionMode } from './loop';
 import type { CodexCliOverrides } from './utils/codexCliOverrides';
 import type { LocalLaunchExitReason } from '@/agent/localLaunchPolicy';
 import type { Metadata, SessionModel, SessionModelReasoningEffort } from '@/api/types';
+import type { ResponseItem } from './appServerTypes';
 
 type LocalLaunchFailure = {
     message: string;
@@ -15,6 +16,8 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
     transcriptPath: string | null = null;
     readonly codexArgs?: string[];
     readonly codexCliOverrides?: CodexCliOverrides;
+    readonly forkSessionId?: string;
+    readonly forkHistory?: ResponseItem[];
     readonly startedBy: 'runner' | 'terminal';
     readonly startingMode: 'local' | 'remote';
     localLaunchFailure: LocalLaunchFailure | null = null;
@@ -34,6 +37,8 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
         startingMode: 'local' | 'remote';
         codexArgs?: string[];
         codexCliOverrides?: CodexCliOverrides;
+        forkSessionId?: string;
+        forkHistory?: ResponseItem[];
         permissionMode?: PermissionMode;
         model?: SessionModel;
         modelReasoningEffort?: SessionModelReasoningEffort;
@@ -62,6 +67,8 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
 
         this.codexArgs = opts.codexArgs;
         this.codexCliOverrides = opts.codexCliOverrides;
+        this.forkSessionId = opts.forkSessionId;
+        this.forkHistory = opts.forkHistory;
         this.startedBy = opts.startedBy;
         this.startingMode = opts.startingMode;
         this.permissionMode = opts.permissionMode;

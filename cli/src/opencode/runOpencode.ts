@@ -99,7 +99,8 @@ export async function runOpencode(opts: {
         logger.debug(`[opencode] Synced session config for keepalive: permissionMode=${currentPermissionMode}, model=${sessionModel ?? '(default)'}`);
     };
 
-    session.onUserMessage((message, localId) => {
+    session.onUserMessage((message, meta) => {
+        const localId = meta.localId
         const formattedText = formatMessageWithAttachments(message.content.text, message.content.attachments);
         const mode: OpencodeMode = {
             permissionMode: currentPermissionMode,

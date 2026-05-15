@@ -6,7 +6,7 @@ import { MessageStatusIndicator } from '@/components/AssistantChat/messages/Mess
 import { MessageAttachments } from '@/components/AssistantChat/messages/MessageAttachments'
 import { UserBubbleContent, getUserBubbleClassName, shouldShowMessageStatus } from '@/components/AssistantChat/messages/user-bubble'
 import { CliOutputBlock } from '@/components/CliOutputBlock'
-import { CopyIcon, CheckIcon } from '@/components/icons'
+import { CopyIcon, CheckIcon, ForkIcon } from '@/components/icons'
 import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
 import { getConversationMessageAnchorId } from '@/chat/outline'
 import { MessageMetadata } from '@/components/AssistantChat/messages/MessageMetadata'
@@ -35,6 +35,11 @@ export function HappyUserMessage() {
         if (message.role !== 'user') return null
         const custom = message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
         return custom?.localId ?? null
+    })
+    const seq = useAssistantState(({ message }) => {
+        if (message.role !== 'user') return null
+        const custom = message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
+        return typeof custom?.seq === 'number' ? custom.seq : null
     })
     const attachments = useAssistantState(({ message }) => {
         if (message.role !== 'user') return undefined
@@ -66,6 +71,7 @@ export function HappyUserMessage() {
     const canRetry = status === 'failed' && typeof localId === 'string' && Boolean(ctx.onRetryMessage)
     const onRetry = canRetry ? () => ctx.onRetryMessage!(localId) : undefined
     const showStatus = shouldShowMessageStatus(status)
+    const canForkBefore = typeof seq === 'number' && Boolean(ctx.onForkBeforeMessage)
 
     if (isCliOutput) {
         return (
@@ -114,7 +120,7 @@ export function HappyUserMessage() {
                         {hasText ? <UserBubbleContent text={text} /> : null}
                         {hasAttachments ? <MessageAttachments attachments={attachments} /> : null}
                     </div>
-                    {(hasText || showStatus) && (
+                    {(hasText || showStatus || canForkBefore) && (
                         <div className="happy-message-actions-first-line flex shrink-0 items-center gap-1">
                             {hasText && (
                                 <button
@@ -132,6 +138,19 @@ export function HappyUserMessage() {
                                 </button>
                             )}
                             {showStatus ? <MessageStatusIndicator status={status} onRetry={onRetry} /> : null}
+                            {canForkBefore && (
+                                <button
+                                    type="button"
+                                    title="Fork before here"
+                                    className="opacity-60 sm:opacity-0 sm:group-hover/msg:opacity-100 transition-[opacity,background-color] p-0.5 rounded hover:bg-[var(--app-subtle-bg)]"
+                                    onClick={(e) => {
+                                        e.stopPropagation()
+                                        ctx.onForkBeforeMessage!(seq)
+                                    }}
+                                >
+                                    <ForkIcon className="h-3.5 w-3.5 text-[var(--app-hint)]" />
+                                </button>
+                            )}
                         </div>
                     )}
                 </div>

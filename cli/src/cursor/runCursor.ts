@@ -77,7 +77,8 @@ export async function runCursor(opts: {
         logger.debug(`[cursor] Synced session permission mode: ${currentPermissionMode}`);
     };
 
-    session.onUserMessage((message, localId) => {
+    session.onUserMessage((message, meta) => {
+        const localId = meta.localId
         const enhancedMode: EnhancedMode = {
             permissionMode: currentPermissionMode ?? 'default',
             model: currentModel

@@ -15,6 +15,7 @@ export type HappyChatContextValue = {
     hasMoreMessages: boolean
     isLoadingMoreMessages: boolean
     loadOlderMessagesPreservingScroll: () => Promise<boolean>
+    onForkBeforeMessage?: (seq: number) => void
 }
 
 const HappyChatContext = createContext<HappyChatContextValue | null>(null)

@@ -37,6 +37,7 @@ export function normalizeUserRecord(
     if (typeof content === 'string') {
         return {
             id: messageId,
+            seq: null,
             localId,
             createdAt,
             role: 'user',
@@ -50,6 +51,7 @@ export function normalizeUserRecord(
         const attachments = parseAttachments(content.attachments)
         return {
             id: messageId,
+            seq: null,
             localId,
             createdAt,
             role: 'user',

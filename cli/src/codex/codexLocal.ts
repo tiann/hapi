@@ -9,27 +9,28 @@ import { codexSystemPrompt } from './utils/systemPrompt';
 import type { ReasoningEffort } from './appServerTypes';
 
 /**
- * Filter out 'resume' subcommand which is managed internally by hapi.
- * Codex CLI format is `codex resume <session-id>`, so subcommand is always first.
+ * Filter out HAPI-managed session subcommands which are handled internally.
+ * Codex CLI format is `codex <subcommand> <session-id>`, so the subcommand is always first.
  */
-export function filterResumeSubcommand(args: string[]): string[] {
-    if (args.length === 0 || args[0] !== 'resume') {
+export function filterManagedSessionSubcommand(args: string[]): string[] {
+    if (args.length === 0 || (args[0] !== 'resume' && args[0] !== 'fork')) {
         return args;
     }
 
-    // First arg is 'resume', filter it and optional session ID
+    // First arg is 'resume' or 'fork'; filter it and optional session ID
     if (args.length > 1 && !args[1].startsWith('-')) {
-        logger.debug(`[CodexLocal] Filtered 'resume ${args[1]}' - session managed by hapi`);
+        logger.debug(`[CodexLocal] Filtered '${args[0]} ${args[1]}' - session managed by hapi`);
         return args.slice(2);
     }
 
-    logger.debug(`[CodexLocal] Filtered 'resume' - session managed by hapi`);
+    logger.debug(`[CodexLocal] Filtered '${args[0]}' - session managed by hapi`);
     return args.slice(1);
 }
 
 export async function codexLocal(opts: {
     abort: AbortSignal;
-    sessionId: string | null;
+    resumeSessionId: string | null;
+    forkSessionId?: string;
     path: string;
     model?: string;
     modelReasoningEffort?: ReasoningEffort;
@@ -44,9 +45,11 @@ export async function codexLocal(opts: {
 }): Promise<void> {
     const args: string[] = [];
 
-    if (opts.sessionId) {
-        args.push('resume', opts.sessionId);
-        opts.onSessionFound(opts.sessionId);
+    if (opts.forkSessionId) {
+        args.push('fork', opts.forkSessionId);
+    } else if (opts.resumeSessionId) {
+        args.push('resume', opts.resumeSessionId);
+        opts.onSessionFound(opts.resumeSessionId);
     }
 
     if (opts.model) {
@@ -74,7 +77,7 @@ export async function codexLocal(opts: {
     args.push(...buildDeveloperInstructionsArg(codexSystemPrompt));
 
     if (opts.codexArgs) {
-        const safeArgs = filterResumeSubcommand(opts.codexArgs);
+        const safeArgs = filterManagedSessionSubcommand(opts.codexArgs);
         args.push(...safeArgs);
     }
 

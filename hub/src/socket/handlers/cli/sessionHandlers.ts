@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto'
 import type { CodexCollaborationMode, PermissionMode } from '@hapi/protocol/types'
 import type { Store, StoredSession } from '../../../store'
 import type { SyncEvent } from '../../../sync/syncEngine'
+import { mergeSessionMetadata } from '../../../sync/sessionMetadata'
 import { extractTodoWriteTodosFromMessageContent } from '../../../sync/todos'
 import { extractTeamStateFromMessageContent, applyTeamStateDelta } from '../../../sync/teams'
 import { extractBackgroundTaskDelta } from '../../../sync/backgroundTasks'
@@ -41,6 +42,16 @@ const messageSchema = z.object({
     sid: z.string(),
     message: z.union([z.string(), z.unknown()]),
     localId: z.string().optional()
+})
+
+const codexHistoryItemSchema = z.object({
+    sid: z.string(),
+    codexThreadId: z.string(),
+    turnId: z.string().nullable().optional(),
+    itemId: z.string(),
+    itemKind: z.enum(['user', 'assistant', 'tool', 'event', 'unknown']),
+    messageSeq: z.number().int().nullable().optional(),
+    rawItem: z.unknown()
 })
 
 const updateMetadataSchema = z.object({
@@ -156,6 +167,30 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         })
     })
 
+    socket.on('codex-history-item', (data: unknown) => {
+        const parsed = codexHistoryItemSchema.safeParse(data)
+        if (!parsed.success) {
+            return
+        }
+
+        const { sid } = parsed.data
+        const sessionAccess = resolveSessionAccess(sid)
+        if (!sessionAccess.ok) {
+            emitAccessError('session', sid, sessionAccess.reason)
+            return
+        }
+
+        store.codexHistory.addItem({
+            sessionId: sid,
+            codexThreadId: parsed.data.codexThreadId,
+            turnId: parsed.data.turnId ?? null,
+            itemId: parsed.data.itemId,
+            itemKind: parsed.data.itemKind,
+            messageSeq: parsed.data.messageSeq ?? null,
+            rawItem: parsed.data.rawItem
+        })
+    })
+
     const handleUpdateMetadata: UpdateMetadataHandler = (data, cb) => {
         const parsed = updateMetadataSchema.safeParse(data)
         if (!parsed.success) {
@@ -170,9 +205,12 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             return
         }
 
+        const currentSession = store.sessions.getSessionByNamespace(sid, sessionAccess.value.namespace)
+        const mergedMetadata = mergeSessionMetadata(currentSession?.metadata ?? null, metadata)
+
         const result = store.sessions.updateSessionMetadata(
             sid,
-            metadata,
+            mergedMetadata,
             expectedVersion,
             sessionAccess.value.namespace
         )
@@ -192,7 +230,7 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
                 body: {
                     t: 'update-session' as const,
                     sid,
-                    metadata: { version: result.version, value: metadata },
+                    metadata: { version: result.version, value: mergedMetadata },
                     agentState: null
                 }
             }

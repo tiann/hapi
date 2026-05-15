@@ -648,6 +648,7 @@ export function reduceTimeline(
             blocks.push({
                 kind: 'user-text',
                 id: msg.id,
+                seq: msg.seq,
                 localId: msg.localId,
                 createdAt: msg.createdAt,
                 invokedAt: msg.invokedAt,
@@ -719,6 +720,7 @@ export function reduceTimeline(
                     blocks.push({
                         kind: 'agent-text',
                         id: `${msg.id}:${idx}`,
+                        seq: msg.seq,
                         localId: msg.localId,
                         createdAt: msg.createdAt,
                         invokedAt: msg.invokedAt,
@@ -734,6 +736,7 @@ export function reduceTimeline(
                     blocks.push({
                         kind: 'agent-reasoning',
                         id: `${msg.id}:${idx}`,
+                        seq: msg.seq,
                         localId: msg.localId,
                         createdAt: msg.createdAt,
                         invokedAt: msg.invokedAt,

@@ -3,6 +3,7 @@ import type { CodexCollaborationMode, PermissionMode, Session } from '@hapi/prot
 import type { Store } from '../store'
 import { clampAliveTime } from './aliveTime'
 import { EventPublisher } from './eventPublisher'
+import { mergeSessionMetadata } from './sessionMetadata'
 import { extractTodoWriteTodosFromMessageContent, TodosSchema } from './todos'
 import { extractBackgroundTaskDelta } from './backgroundTasks'
 
@@ -458,6 +459,50 @@ export class SessionCache {
         this.refreshSession(sessionId)
     }
 
+    async inheritSessionMetadata(sourceSessionId: string, targetSessionId: string): Promise<void> {
+        const source = this.sessions.get(sourceSessionId) ?? this.refreshSession(sourceSessionId)
+        if (!source) {
+            throw new Error('Session not found')
+        }
+
+        // Retry on version-mismatch: by the time the fork's target session has become active, the CLI
+        // has typically already emitted update-metadata events that bumped metadataVersion. Re-read the
+        // latest snapshot and re-merge so a concurrent CLI write does not silently drop inheritance.
+        // Small backoff between attempts gives any in-flight CLI write room to land before we reread.
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+            if (attempt > 0) {
+                await new Promise((resolve) => setTimeout(resolve, 25 * attempt))
+            }
+            const target = this.refreshSession(targetSessionId)
+            if (!target) {
+                throw new Error('Session not found')
+            }
+
+            const mergedMetadata = mergeSessionMetadata(source.metadata ?? null, target.metadata ?? null)
+            if (mergedMetadata === target.metadata) {
+                return
+            }
+
+            const result = this.store.sessions.updateSessionMetadata(
+                targetSessionId,
+                mergedMetadata,
+                target.metadataVersion,
+                target.namespace,
+                { touchUpdatedAt: false }
+            )
+
+            if (result.result === 'success') {
+                this.refreshSession(targetSessionId)
+                return
+            }
+            if (result.result === 'error') {
+                throw new Error('Failed to inherit session metadata')
+            }
+        }
+
+        throw new Error('Session was modified concurrently. Please try again.')
+    }
+
     async deleteSession(sessionId: string): Promise<void> {
         const session = this.sessions.get(sessionId)
         if (!session) {
@@ -514,6 +559,10 @@ export class SessionCache {
         }
 
         const movedMessages = this.store.messages.mergeSessionMessages(oldSessionId, newSessionId)
+        const targetMessageSeqOffset = movedMessages.oldMaxSeq > 0 && movedMessages.newMaxSeq > 0
+            ? movedMessages.oldMaxSeq
+            : 0
+        this.store.codexHistory.moveSessionHistory(oldSessionId, newSessionId, targetMessageSeqOffset)
         if (movedMessages.moved > 0) {
             if (!options.deleteOldSession) {
                 this.publisher.emit({ type: 'messages-invalidated', sessionId: oldSessionId, namespace })
@@ -521,7 +570,7 @@ export class SessionCache {
             this.publisher.emit({ type: 'messages-invalidated', sessionId: newSessionId, namespace })
         }
 
-        const mergedMetadata = this.mergeSessionMetadata(oldStored.metadata, newStored.metadata)
+        const mergedMetadata = mergeSessionMetadata(oldStored.metadata, newStored.metadata)
         if (mergedMetadata !== null && mergedMetadata !== newStored.metadata) {
             for (let attempt = 0; attempt < 2; attempt += 1) {
                 const latest = this.store.sessions.getSessionByNamespace(newSessionId, namespace)
@@ -629,51 +678,6 @@ export class SessionCache {
             this.publisher.emit({ type: 'session-updated', sessionId: newSessionId, data: refreshed })
         }
     }
-
-    private mergeSessionMetadata(oldMetadata: unknown | null, newMetadata: unknown | null): unknown | null {
-        if (!oldMetadata || typeof oldMetadata !== 'object') {
-            return newMetadata
-        }
-        if (!newMetadata || typeof newMetadata !== 'object') {
-            return oldMetadata
-        }
-
-        const oldObj = oldMetadata as Record<string, unknown>
-        const newObj = newMetadata as Record<string, unknown>
-        const merged: Record<string, unknown> = { ...newObj }
-        let changed = false
-
-        if (typeof oldObj.name === 'string' && typeof newObj.name !== 'string') {
-            merged.name = oldObj.name
-            changed = true
-        }
-
-        const oldSummary = oldObj.summary as { text?: unknown; updatedAt?: unknown } | undefined
-        const newSummary = newObj.summary as { text?: unknown; updatedAt?: unknown } | undefined
-        const oldUpdatedAt = typeof oldSummary?.updatedAt === 'number' ? oldSummary.updatedAt : null
-        const newUpdatedAt = typeof newSummary?.updatedAt === 'number' ? newSummary.updatedAt : null
-        if (oldUpdatedAt !== null && (newUpdatedAt === null || oldUpdatedAt > newUpdatedAt)) {
-            merged.summary = oldSummary
-            changed = true
-        }
-
-        if (oldObj.worktree && !newObj.worktree) {
-            merged.worktree = oldObj.worktree
-            changed = true
-        }
-
-        if (typeof oldObj.path === 'string' && typeof newObj.path !== 'string') {
-            merged.path = oldObj.path
-            changed = true
-        }
-        if (typeof oldObj.host === 'string' && typeof newObj.host !== 'string') {
-            merged.host = oldObj.host
-            changed = true
-        }
-
-        return changed ? merged : newMetadata
-    }
-
     private mergeAgentState(oldState: unknown | null, newState: unknown | null): unknown | null {
         if (oldState === null) return newState
         if (newState === null) return oldState

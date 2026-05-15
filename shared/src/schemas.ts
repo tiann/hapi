@@ -222,6 +222,10 @@ export const SyncEventSchema = z.discriminatedUnion('type', [
         type: z.literal('session-ended'),
         reason: z.enum(['completed', 'terminated', 'error']).optional()
     }),
+    SessionChangedSchema.extend({
+        type: z.literal('session-forked'),
+        sourceSessionId: z.string()
+    }),
     MachineChangedSchema.extend({
         type: z.literal('machine-updated'),
         data: z.unknown().optional()

@@ -91,6 +91,29 @@ export interface ThreadResumeResponse {
     [key: string]: unknown;
 }
 
+export interface ThreadForkParams {
+    threadId: string;
+    path?: string;
+    model?: string;
+    modelProvider?: string;
+    cwd?: string;
+    approvalPolicy?: ApprovalPolicy;
+    sandbox?: SandboxMode;
+    config?: Record<string, unknown>;
+    baseInstructions?: string;
+    developerInstructions?: string;
+    ephemeral?: boolean;
+    persistExtendedHistory: boolean;
+}
+
+export interface ThreadForkResponse {
+    thread: {
+        id: string;
+    };
+    model: string;
+    [key: string]: unknown;
+}
+
 export type UserInput =
     | {
         type: 'text';

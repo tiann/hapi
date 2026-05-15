@@ -1,7 +1,7 @@
 import type { Database } from 'bun:sqlite'
 
 import type { StoredMessage } from './types'
-import { addMessage, cancelQueuedMessage, deleteQueuedMessageById, lookupQueuedMessage, getMessages, getMessagesAfter, getMessagesByPosition, getUninvokedLocalMessages, markMessagesInvoked, mergeSessionMessages, type CancelQueuedMessageResult, type LookupQueuedMessageResult } from './messages'
+import { addMessage, cancelQueuedMessage, cloneSessionMessages, deleteQueuedMessageById, getMessageBySeq, getMessages, getMessagesAfter, getMessagesByPosition, getNextUserMessageSeq, getPreviousUserMessageSeq, getUninvokedLocalMessages, lookupQueuedMessage, markMessagesInvoked, mergeSessionMessages, type CancelQueuedMessageResult, type LookupQueuedMessageResult } from './messages'
 
 export class MessageStore {
     private readonly db: Database
@@ -42,11 +42,27 @@ export class MessageStore {
         deleteQueuedMessageById(this.db, sessionId, messageId)
     }
 
+    getMessageBySeq(sessionId: string, seq: number): StoredMessage | null {
+        return getMessageBySeq(this.db, sessionId, seq)
+    }
+
+    getNextUserMessageSeq(sessionId: string, afterSeq: number): number | null {
+        return getNextUserMessageSeq(this.db, sessionId, afterSeq)
+    }
+
+    getPreviousUserMessageSeq(sessionId: string, beforeSeq: number): number | null {
+        return getPreviousUserMessageSeq(this.db, sessionId, beforeSeq)
+    }
+
     markMessagesInvoked(sessionId: string, localIds: string[], invokedAt: number): void {
         markMessagesInvoked(this.db, sessionId, localIds, invokedAt)
     }
 
     mergeSessionMessages(fromSessionId: string, toSessionId: string): { moved: number; oldMaxSeq: number; newMaxSeq: number } {
         return mergeSessionMessages(this.db, fromSessionId, toSessionId)
+    }
+
+    cloneSessionMessages(fromSessionId: string, toSessionId: string, beforeSeq?: number): { cloned: number; sourceMaxSeq: number; targetMaxSeq: number } {
+        return cloneSessionMessages(this.db, fromSessionId, toSessionId, beforeSeq)
     }
 }
