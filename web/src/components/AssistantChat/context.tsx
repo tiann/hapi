@@ -27,8 +27,12 @@ export function HappyChatProvider(props: { value: HappyChatContextValue; childre
     )
 }
 
+export function useOptionalHappyChatContext(): HappyChatContextValue | null {
+    return useContext(HappyChatContext)
+}
+
 export function useHappyChatContext(): HappyChatContextValue {
-    const ctx = useContext(HappyChatContext)
+    const ctx = useOptionalHappyChatContext()
     if (!ctx) {
         throw new Error('HappyChatContext is missing')
     }

@@ -1,6 +1,6 @@
 import '@assistant-ui/react-markdown/styles/dot.css'
 
-import type { ComponentPropsWithoutRef } from 'react'
+import type { ComponentPropsWithoutRef, MouseEvent } from 'react'
 import {
     MarkdownTextPrimitive,
     unstable_memoizeMarkdownComponents as memoizeMarkdownComponents,
@@ -11,16 +11,19 @@ import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import remarkDisableIndentedCode from '@/lib/remark-disable-indented-code'
+import { useNavigate } from '@tanstack/react-router'
 import remarkStripCjkAutolink from '@/lib/remark-strip-cjk-autolink'
-import { cn } from '@/lib/utils'
+import { cn, encodeBase64 } from '@/lib/utils'
 import { SyntaxHighlighter } from '@/components/assistant-ui/shiki-highlighter'
 import { MermaidDiagram } from '@/components/assistant-ui/mermaid-diagram'
 import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
 import { CopyIcon, CheckIcon } from '@/components/icons'
+import { useOptionalHappyChatContext } from '@/components/AssistantChat/context'
+import { decodeFilePathHref, remarkFilePathLinks } from '@/lib/remark-file-path-links'
 
 import type { MarkdownTextPrimitiveProps } from '@assistant-ui/react-markdown'
 
-export const MARKDOWN_PLUGINS = [remarkGfm, remarkStripCjkAutolink, remarkMath, remarkDisableIndentedCode] satisfies NonNullable<MarkdownTextPrimitiveProps['remarkPlugins']>
+export const MARKDOWN_PLUGINS = [remarkGfm, remarkStripCjkAutolink, remarkMath, remarkDisableIndentedCode, remarkFilePathLinks] satisfies NonNullable<MarkdownTextPrimitiveProps['remarkPlugins']>
 export const MARKDOWN_REHYPE_PLUGINS = [rehypeKatex] satisfies NonNullable<MarkdownTextPrimitiveProps['rehypePlugins']>
 export const MARKDOWN_CLASSNAME = 'aui-md happy-chat-text min-w-0 max-w-full break-words text-[var(--app-fg)]'
 export const MARKDOWN_COMPONENTS_BY_LANGUAGE = {
@@ -89,8 +92,47 @@ function Code(props: ComponentPropsWithoutRef<'code'>) {
     )
 }
 
-function A(props: ComponentPropsWithoutRef<'a'>) {
+function FilePathAnchor(props: ComponentPropsWithoutRef<'a'> & { filePath: string; sessionId: string }) {
+    const navigate = useNavigate()
     const rel = props.target === '_blank' ? (props.rel ?? 'noreferrer') : props.rel
+    const search = new URLSearchParams({ path: encodeBase64(props.filePath) }).toString()
+    const href = `/sessions/${encodeURIComponent(props.sessionId)}/file?${search}`
+
+    const handleClick = (event: MouseEvent<HTMLAnchorElement>) => {
+        props.onClick?.(event)
+        if (event.defaultPrevented) return
+        if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+
+        event.preventDefault()
+        void navigate({
+            to: '/sessions/$sessionId/file',
+            params: { sessionId: props.sessionId },
+            search: { path: encodeBase64(props.filePath) }
+        })
+    }
+
+    return (
+        <a
+            {...props}
+            href={href}
+            rel={rel}
+            onClick={handleClick}
+            className={cn('aui-md-a font-medium text-[var(--app-link)] underline decoration-[color:var(--app-link-muted)] underline-offset-3', props.className)}
+        />
+    )
+}
+
+function A(props: ComponentPropsWithoutRef<'a'>) {
+    const chat = useOptionalHappyChatContext()
+    const filePath = typeof props.href === 'string' ? decodeFilePathHref(props.href) : null
+    const rel = props.target === '_blank' ? (props.rel ?? 'noreferrer') : props.rel
+
+    if (filePath) {
+        if (!chat) {
+            return <>{props.children}</>
+        }
+        return <FilePathAnchor {...props} filePath={filePath} sessionId={chat.sessionId} />
+    }
 
     return (
         <a
