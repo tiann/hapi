@@ -6,6 +6,10 @@ type ColorScheme = 'light' | 'dark'
 export type AppearancePreference = 'system' | 'dark' | 'light'
 
 const APPEARANCE_KEY = 'hapi-appearance'
+const THEME_COLORS: Record<ColorScheme, string> = {
+    light: '#ffffff',
+    dark: '#1c1c1e',
+}
 
 function isBrowser(): boolean {
     return typeof window !== 'undefined' && typeof document !== 'undefined'
@@ -77,8 +81,27 @@ function isIOS(): boolean {
     return /iPad|iPhone|iPod/.test(navigator.userAgent)
 }
 
+function applyBrowserThemeColor(scheme: ColorScheme): void {
+    if (!isBrowser()) return
+
+    let meta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')
+    if (!meta) {
+        meta = document.createElement('meta')
+        meta.name = 'theme-color'
+        document.head.appendChild(meta)
+    }
+
+    meta.content = THEME_COLORS[scheme]
+    meta.removeAttribute('media')
+}
+
+export function getThemeColor(scheme: ColorScheme): string {
+    return THEME_COLORS[scheme]
+}
+
 function applyTheme(scheme: ColorScheme): void {
     document.documentElement.setAttribute('data-theme', scheme)
+    applyBrowserThemeColor(scheme)
 }
 
 function applyPlatform(): void {

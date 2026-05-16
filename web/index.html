@@ -8,8 +8,7 @@
         />
 
         <!-- PWA Meta Tags -->
-        <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
-        <meta name="theme-color" content="#1c1c1e" media="(prefers-color-scheme: dark)" />
+        <meta name="theme-color" content="#ffffff" />
         <meta name="description" content="AI-powered development assistant" />
 
         <!-- iOS PWA Meta Tags -->
@@ -25,13 +24,6 @@
         <!-- Safari Pinned Tab -->
         <link rel="mask-icon" href="/mask-icon.svg" color="#111827" />
 
-        <!-- Prevent flash of white background on dark mode -->
-        <style>
-            html { background: #fff }
-            @media (prefers-color-scheme: dark) {
-                html { background: #1c1c1e; color-scheme: dark }
-            }
-        </style>
         <script>
             (function () {
                 try {
@@ -46,10 +38,34 @@
             })()
         </script>
         <script>
-            if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
-                document.documentElement.setAttribute('data-theme', 'dark')
-            }
+            (function () {
+                var lightColor = '#ffffff'
+                var darkColor = '#1c1c1e'
+
+                function getInitialScheme() {
+                    try {
+                        var appearance = localStorage.getItem('hapi-appearance')
+                        if (appearance === 'dark' || appearance === 'light') return appearance
+                    } catch (error) {
+                        // Ignore storage errors.
+                    }
+
+                    return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
+                        ? 'dark'
+                        : 'light'
+                }
+
+                var scheme = getInitialScheme()
+                var color = scheme === 'dark' ? darkColor : lightColor
+                document.documentElement.setAttribute('data-theme', scheme)
+                document.querySelector('meta[name="theme-color"]').setAttribute('content', color)
+            })()
         </script>
+        <!-- Prevent flash of mismatched background on app launch -->
+        <style>
+            html { background: #fff }
+            html[data-theme="dark"] { background: #1c1c1e; color-scheme: dark }
+        </style>
 
         <title>HAPI</title>
     </head>
