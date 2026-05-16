@@ -8,6 +8,7 @@ import { clearRunnerState, readRunnerState, readSettings } from '@/persistence';
 import { Metadata } from '@/api/types';
 import packageJson from '../../package.json';
 import { existsSync, statSync } from 'node:fs';
+import { connect } from 'node:net';
 import { join } from 'node:path';
 import { isBunCompiled, projectPath } from '@/projectPath';
 import { isProcessAlive, killProcess } from '@/utils/process';
@@ -53,32 +54,86 @@ async function runnerPost(path: string, body?: any): Promise<{ error?: string } 
     };
   }
 
-  try {
-    const timeout = process.env.HAPI_RUNNER_HTTP_TIMEOUT ? parseInt(process.env.HAPI_RUNNER_HTTP_TIMEOUT) : 10_000;
-    const response = await fetch(`http://127.0.0.1:${state.httpPort}${path}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body || {}),
-      // Mostly increased for stress test
-      signal: AbortSignal.timeout(timeout)
-    });
-    
-    if (!response.ok) {
-      const errorMessage = `Request failed: ${path}, HTTP ${response.status}`;
+  const timeout = process.env.HAPI_RUNNER_HTTP_TIMEOUT ? parseInt(process.env.HAPI_RUNNER_HTTP_TIMEOUT) : 10_000;
+  const port = state.httpPort;
+  const payload = Buffer.from(JSON.stringify(body || {}));
+
+  // Speak HTTP/1.1 over a raw TCP socket instead of using fetch / node:http.
+  // bun honors HTTP_PROXY at process startup for both APIs and offers no
+  // per-request bypass; if the user's NO_PROXY is misformatted (e.g. "127.*",
+  // a wildcard libcurl-style parsers don't accept) this loopback webhook
+  // gets routed through the proxy and times out. Going through node:net
+  // is the only path that reliably skips the proxy stack.
+  return await new Promise((resolve) => {
+    const fail = (reason: string) => {
+      const errorMessage = `Request failed: ${path}, ${reason}`;
       logger.debug(`[CONTROL CLIENT] ${errorMessage}`);
-      return {
-        error: errorMessage
-      };
-    }
-    
-    return await response.json();
-  } catch (error) {
-    const errorMessage = `Request failed: ${path}, ${error instanceof Error ? error.message : 'Unknown error'}`;
-    logger.debug(`[CONTROL CLIENT] ${errorMessage}`);
-    return {
-      error: errorMessage
-    }
-  }
+      resolve({ error: errorMessage });
+    };
+
+    const socket = connect({ host: '127.0.0.1', port });
+    const chunks: Buffer[] = [];
+    let settled = false;
+    const settle = (action: () => void) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      action();
+    };
+
+    socket.setTimeout(timeout, () => {
+      settle(() => fail(`timed out after ${timeout}ms`));
+    });
+
+    socket.on('connect', () => {
+      const head =
+        `POST ${path} HTTP/1.1\r\n` +
+        `Host: 127.0.0.1:${port}\r\n` +
+        `Content-Type: application/json\r\n` +
+        `Content-Length: ${payload.length}\r\n` +
+        `Connection: close\r\n\r\n`;
+      socket.write(head);
+      socket.write(payload);
+    });
+
+    socket.on('data', (chunk: Buffer) => chunks.push(chunk));
+
+    socket.on('end', () => {
+      if (settled) return;
+      const raw = Buffer.concat(chunks).toString('utf8');
+      const headerEnd = raw.indexOf('\r\n\r\n');
+      if (headerEnd < 0) {
+        settle(() => fail('malformed HTTP response'));
+        return;
+      }
+      const statusLine = raw.slice(0, raw.indexOf('\r\n'));
+      const statusMatch = /^HTTP\/\d\.\d (\d+)/.exec(statusLine);
+      if (!statusMatch) {
+        settle(() => fail('malformed HTTP status line'));
+        return;
+      }
+      const status = parseInt(statusMatch[1]!, 10);
+      const responseBody = raw.slice(headerEnd + 4);
+
+      settle(() => {
+        if (status < 200 || status >= 300) {
+          const errorMessage = `Request failed: ${path}, HTTP ${status}`;
+          logger.debug(`[CONTROL CLIENT] ${errorMessage}`);
+          resolve({ error: errorMessage });
+          return;
+        }
+        try {
+          resolve(responseBody ? JSON.parse(responseBody) : {});
+        } catch (error) {
+          fail(error instanceof Error ? error.message : 'invalid JSON response');
+        }
+      });
+    });
+
+    socket.on('error', (error) => {
+      settle(() => fail(error.message));
+    });
+  });
 }
 
 export async function notifyRunnerSessionStarted(
