@@ -7,6 +7,12 @@ import { getTerminalFontSizeOptions, useTerminalFontSize, type TerminalFontSize 
 import { getComposerEnterBehaviorOptions, useComposerEnterBehavior, type ComposerEnterBehavior } from '@/hooks/useComposerEnterBehavior'
 import { getTerminalToolDisplayModeOptions, useTerminalToolDisplayMode, type TerminalToolDisplayMode } from '@/hooks/useTerminalToolDisplayMode'
 import {
+    MAX_SESSION_PREVIEW_LIMIT,
+    MIN_SESSION_PREVIEW_LIMIT,
+    normalizeSessionPreviewLimit,
+    useSessionPreviewLimit,
+} from '@/hooks/useSessionPreviewLimit'
+import {
     getChatSurfaceColorPickerValue,
     getChatSurfaceColorPresetOptions,
     toCustomChatSurfaceColorPreference,
@@ -79,6 +85,125 @@ function ChevronDownIcon(props: { className?: string }) {
         >
             <polyline points="6 9 12 15 18 9" />
         </svg>
+    )
+}
+
+function MinusIcon(props: { className?: string }) {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={props.className}
+        >
+            <line x1="5" y1="12" x2="19" y2="12" />
+        </svg>
+    )
+}
+
+function PlusIcon(props: { className?: string }) {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={props.className}
+        >
+            <line x1="12" y1="5" x2="12" y2="19" />
+            <line x1="5" y1="12" x2="19" y2="12" />
+        </svg>
+    )
+}
+
+function SessionPreviewLimitControl(props: {
+    label: string
+    value: number
+    onChange: (value: number) => void
+    decreaseLabel: string
+    increaseLabel: string
+}) {
+    const [draft, setDraft] = useState(String(props.value))
+
+    useEffect(() => {
+        setDraft(String(props.value))
+    }, [props.value])
+
+    const commitDraft = () => {
+        const parsed = draft.trim() === '' ? props.value : Number(draft)
+        const next = normalizeSessionPreviewLimit(parsed)
+        props.onChange(next)
+        setDraft(String(next))
+    }
+
+    const step = (delta: number) => {
+        const next = normalizeSessionPreviewLimit(props.value + delta)
+        props.onChange(next)
+        setDraft(String(next))
+    }
+
+    return (
+        <div className="flex w-full items-center justify-between gap-3 px-3 py-3">
+            <label htmlFor="session-preview-limit" className="text-[var(--app-fg)]">
+                {props.label}
+            </label>
+            <div className="flex h-9 shrink-0 items-center rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] shadow-sm">
+                <button
+                    type="button"
+                    onClick={() => step(-1)}
+                    disabled={props.value <= MIN_SESSION_PREVIEW_LIMIT}
+                    aria-label={props.decreaseLabel}
+                    title={props.decreaseLabel}
+                    className="flex h-8 w-8 items-center justify-center rounded-l-lg text-[var(--app-hint)] transition-colors hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                    <MinusIcon className="h-3.5 w-3.5" />
+                </button>
+                <input
+                    id="session-preview-limit"
+                    type="number"
+                    inputMode="numeric"
+                    min={MIN_SESSION_PREVIEW_LIMIT}
+                    max={MAX_SESSION_PREVIEW_LIMIT}
+                    value={draft}
+                    onChange={(event) => setDraft(event.target.value)}
+                    onBlur={commitDraft}
+                    onKeyDown={(event) => {
+                        if (event.key === 'Enter') {
+                            event.preventDefault()
+                            commitDraft()
+                            event.currentTarget.blur()
+                        }
+                        if (event.key === 'Escape') {
+                            event.preventDefault()
+                            setDraft(String(props.value))
+                            event.currentTarget.blur()
+                        }
+                    }}
+                    className="h-8 w-14 border-x border-[var(--app-border)] bg-transparent text-center text-sm font-medium tabular-nums text-[var(--app-fg)] outline-none focus:bg-[var(--app-subtle-bg)]"
+                />
+                <button
+                    type="button"
+                    onClick={() => step(1)}
+                    disabled={props.value >= MAX_SESSION_PREVIEW_LIMIT}
+                    aria-label={props.increaseLabel}
+                    title={props.increaseLabel}
+                    className="flex h-8 w-8 items-center justify-center rounded-r-lg text-[var(--app-hint)] transition-colors hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                    <PlusIcon className="h-3.5 w-3.5" />
+                </button>
+            </div>
+        </div>
     )
 }
 
@@ -158,6 +283,7 @@ export default function SettingsPage() {
     const voiceContainerRef = useRef<HTMLDivElement>(null)
     const { fontScale, setFontScale } = useFontScale()
     const { terminalFontSize, setTerminalFontSize } = useTerminalFontSize()
+    const { sessionPreviewLimit, setSessionPreviewLimit } = useSessionPreviewLimit()
     const { composerEnterBehavior, setComposerEnterBehavior } = useComposerEnterBehavior()
     const { terminalToolDisplayMode, setTerminalToolDisplayMode } = useTerminalToolDisplayMode()
     const {
@@ -499,6 +625,13 @@ export default function SettingsPage() {
                                 </div>
                             )}
                         </div>
+                        <SessionPreviewLimitControl
+                            label={t('settings.display.sessionPreviewLimit')}
+                            value={sessionPreviewLimit}
+                            onChange={setSessionPreviewLimit}
+                            decreaseLabel={t('settings.display.sessionPreviewLimit.decrease')}
+                            increaseLabel={t('settings.display.sessionPreviewLimit.increase')}
+                        />
                     </div>
 
                     {/* Chat section */}

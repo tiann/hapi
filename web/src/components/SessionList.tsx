@@ -10,6 +10,7 @@ import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { CopyIcon, CheckIcon } from '@/components/icons'
 import { cn } from '@/lib/utils'
 import { useTranslation } from '@/lib/use-translation'
+import { DEFAULT_SESSION_PREVIEW_LIMIT, useSessionPreviewLimit } from '@/hooks/useSessionPreviewLimit'
 
 type SessionGroup = {
     key: string
@@ -91,7 +92,7 @@ function getGroupDisplayName(directory: string): string {
 }
 
 export const UNKNOWN_MACHINE_ID = '__unknown__'
-export const GROUP_SESSION_PREVIEW_LIMIT = 8
+export const GROUP_SESSION_PREVIEW_LIMIT = DEFAULT_SESSION_PREVIEW_LIMIT
 
 export function deduplicateSessionsByAgentId(sessions: SessionSummary[], selectedSessionId?: string | null): SessionSummary[] {
     const byAgentId = new Map<string, SessionSummary[]>()
@@ -698,6 +699,7 @@ export function SessionList(props: {
 }) {
     const { t } = useTranslation()
     const { renderHeader = true, api, selectedSessionId, machineLabelsById = {}, onNewSessionInDirectory } = props
+    const { sessionPreviewLimit } = useSessionPreviewLimit()
     const [searchQuery, setSearchQuery] = useState('')
     const normalizedQuery = normalizeSearch(searchQuery)
     const isSearching = normalizedQuery.length > 0
@@ -756,7 +758,7 @@ export function SessionList(props: {
     }
 
     const isSessionGroupExpanded = (group: SessionGroup): boolean => {
-        if (isSearching || group.sessions.length <= GROUP_SESSION_PREVIEW_LIMIT) return true
+        if (isSearching || group.sessions.length <= sessionPreviewLimit) return true
         const key = `sessions::${group.key}`
         const override = collapseOverrides.get(key)
         if (override !== undefined) return !override
@@ -778,7 +780,8 @@ export function SessionList(props: {
             group.sessions,
             {
                 expanded: isSessionGroupExpanded(group),
-                selectedSessionId
+                selectedSessionId,
+                limit: sessionPreviewLimit
             }
         )
     }
@@ -955,7 +958,7 @@ export function SessionList(props: {
                                                                 selected={s.id === selectedSessionId}
                                                             />
                                                         ))}
-                                                        {!isSearching && group.sessions.length > GROUP_SESSION_PREVIEW_LIMIT && (sessionGroupExpanded || hiddenSessionCount > 0) ? (
+                                                        {!isSearching && group.sessions.length > sessionPreviewLimit && (sessionGroupExpanded || hiddenSessionCount > 0) ? (
                                                             <button
                                                                 type="button"
                                                                 onClick={() => toggleSessionGroup(group)}

@@ -51,6 +51,13 @@ vi.mock('@/hooks/useTerminalToolDisplayMode', () => ({
     ],
 }))
 
+vi.mock('@/hooks/useSessionPreviewLimit', () => ({
+    MIN_SESSION_PREVIEW_LIMIT: 1,
+    MAX_SESSION_PREVIEW_LIMIT: 99,
+    normalizeSessionPreviewLimit: (value: number) => Number.isInteger(value) ? Math.min(99, Math.max(1, value)) : 8,
+    useSessionPreviewLimit: () => ({ sessionPreviewLimit: 8, setSessionPreviewLimit: vi.fn() }),
+}))
+
 vi.mock('@/hooks/useChatSurfaceColors', () => ({
     useChatSurfaceColors: () => ({
         toolGroupBackground: 'default',
@@ -170,12 +177,23 @@ describe('SettingsPage', () => {
         const calledKeys = spyT.mock.calls.map((call) => call[0])
         expect(calledKeys).toContain('settings.display.appearance')
         expect(calledKeys).toContain('settings.display.appearance.system')
+        expect(calledKeys).toContain('settings.display.sessionPreviewLimit')
+        expect(calledKeys).toContain('settings.display.sessionPreviewLimit.decrease')
+        expect(calledKeys).toContain('settings.display.sessionPreviewLimit.increase')
     })
 
     it('renders the Terminal Font Size setting', () => {
         renderWithProviders(<SettingsPage />)
         expect(screen.getAllByText('Terminal Font Size').length).toBeGreaterThanOrEqual(1)
         expect(screen.getAllByText('13px').length).toBeGreaterThanOrEqual(1)
+    })
+
+    it('renders the Session Preview Limit setting', () => {
+        renderWithProviders(<SettingsPage />)
+        expect(screen.getAllByText('Sessions Before Folding').length).toBeGreaterThanOrEqual(1)
+        expect(screen.getByLabelText('Sessions Before Folding')).toHaveValue(8)
+        expect(screen.getAllByLabelText('Show fewer sessions before folding').length).toBeGreaterThanOrEqual(1)
+        expect(screen.getAllByLabelText('Show more sessions before folding').length).toBeGreaterThanOrEqual(1)
     })
 
     it('renders the Enter Key setting', () => {
