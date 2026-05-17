@@ -65,6 +65,16 @@ describe('getScrollRestorationKey', () => {
         expect(getScrollRestorationKey(unstaged)).not.toBe(getScrollRestorationKey(staged))
     })
 
+    it('differentiates browse route by machineId', () => {
+        const noMachine = makeLocation({ pathname: '/browse', search: {} })
+        const machineA = makeLocation({ pathname: '/browse', search: { machineId: 'm-aaa' } })
+        const machineB = makeLocation({ pathname: '/browse', search: { machineId: 'm-bbb' } })
+        expect(getScrollRestorationKey(noMachine)).toBe('/browse')
+        expect(getScrollRestorationKey(machineA)).toBe('/browse?machineId=m-aaa')
+        expect(getScrollRestorationKey(machineB)).toBe('/browse?machineId=m-bbb')
+        expect(getScrollRestorationKey(machineA)).not.toBe(getScrollRestorationKey(machineB))
+    })
+
     it('differentiates files route by directories tab', () => {
         const changes = makeLocation({
             pathname: '/sessions/abc123/files',

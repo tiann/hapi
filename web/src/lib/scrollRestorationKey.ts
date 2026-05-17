@@ -17,13 +17,21 @@ const FILES_ROUTE = /^\/sessions\/[^/]+\/files$/
  * scroll positions are still remembered.
  */
 export function getScrollRestorationKey(location: ParsedLocation): string {
-    const search = location.search as { path?: unknown; staged?: unknown; tab?: unknown }
+    const search = location.search as {
+        path?: unknown
+        staged?: unknown
+        tab?: unknown
+        machineId?: unknown
+    }
     if (FILE_ROUTE.test(location.pathname) && typeof search.path === 'string') {
         const stagedSuffix = search.staged === true ? '&staged=true' : ''
         return `${location.pathname}?path=${search.path}${stagedSuffix}`
     }
     if (FILES_ROUTE.test(location.pathname) && search.tab === 'directories') {
         return `${location.pathname}?tab=directories`
+    }
+    if (location.pathname === '/browse' && typeof search.machineId === 'string') {
+        return `${location.pathname}?machineId=${search.machineId}`
     }
     return location.pathname
 }
