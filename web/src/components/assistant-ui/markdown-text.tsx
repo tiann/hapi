@@ -123,6 +123,26 @@ export function classifyScheme(url: string): 'iana' | 'deny' | 'custom' {
     return 'custom'
 }
 
+/**
+ * Returns true when href contains a URL scheme (i.e. a "scheme:" prefix that
+ * appears before any path/query/fragment delimiter).
+ *
+ * This distinguishes `mailto:foo@bar` (has scheme → true) from purely relative
+ * hrefs like `/settings`, `./foo`, `#section`, `?q=1`, or paths that contain a
+ * colon after a path segment like `/path:colon` (→ false, because `/` appears
+ * before `:`).
+ *
+ * Used by <A> to short-circuit classifyScheme for no-scheme hrefs and treat them
+ * as 'iana' so the browser/router can handle them normally (fixing the regression
+ * where relative markdown links were silently blocked by the onClick deny guard).
+ */
+function hasScheme(href: string): boolean {
+    const colonIdx = href.indexOf(':')
+    if (colonIdx <= 0) return false
+    const boundaryIdx = href.search(/[/?#]/)
+    return boundaryIdx < 0 || colonIdx < boundaryIdx
+}
+
 // ── URL sanitize transform (deny-only) ──────────────────────────────────────
 // Passed as urlTransform to MarkdownTextPrimitive. Only deny-listed schemes
 // are stripped; every other scheme (IANA + custom) passes through so the
@@ -407,6 +427,8 @@ function FilePathAnchor(props: ComponentPropsWithoutRef<'a'> & { filePath: strin
 /**
  * Anchor component with URI scheme policy enforcement.
  *
+ * - Relative / no-scheme hrefs (/settings, ./foo, #section, ?q=1): passed through
+ *   without interception so the browser or SPA router can navigate normally.
  * - IANA safe schemes (https/http/mailto/irc/ircs/xmpp): navigate directly.
  * - Deny schemes (javascript/data/vbscript/file): silently block. denyOnlyTransform
  *   already strips the href to "", so href="" in DOM (belt-and-suspenders onClick
@@ -444,9 +466,15 @@ function A(props: ComponentPropsWithoutRef<'a'>) {
     const isAllowed = ctx?.isAllowed ?? (() => false)
 
     const { onClick, href, ...rest } = props
-    const classification = href ? classifyScheme(href) : 'deny'
+    // Relative / no-scheme hrefs (/settings, ./foo, #section, ?q=1) must not be
+    // classified via classifyScheme — it returns 'deny' for inputs with no valid
+    // scheme, which previously caused the onClick handler to preventDefault and
+    // silently break all relative markdown links. Treat them as 'iana' so the
+    // browser or SPA router can navigate normally.
+    const isRelative = href ? !hasScheme(href) : false
+    const classification = href && !isRelative ? classifyScheme(href) : 'iana'
     const colonIdx = href ? href.indexOf(':') : -1
-    const scheme = colonIdx > 0 ? href!.slice(0, colonIdx).toLowerCase() : ''
+    const scheme = colonIdx > 0 && !isRelative ? href!.slice(0, colonIdx).toLowerCase() : ''
     const isCustomAllowed = classification === 'custom' && isAllowed(scheme)
 
     const domHref =

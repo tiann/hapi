@@ -26,9 +26,11 @@ const AnchorComponent = (defaultComponents as Record<string, unknown>).a as Reac
 // removed; tests must provide the context instead.
 function renderA(props: React.ComponentPropsWithoutRef<'a'>) {
     return render(
-        <UriConfirmProvider>
-            <AnchorComponent {...props} />
-        </UriConfirmProvider>
+        <I18nProvider>
+            <UriConfirmProvider>
+                <AnchorComponent {...props} />
+            </UriConfirmProvider>
+        </I18nProvider>
     )
 }
 
@@ -209,6 +211,55 @@ describe('markdown <A> component — click handler', () => {
         fireEvent.click(document.querySelector('a')!)
         expect(openSpy).not.toHaveBeenCalled()
         openSpy.mockRestore()
+    })
+})
+
+// ── relative / no-scheme hrefs — regression guard ────────────────────────────
+//
+// Finding 2: denyOnlyTransform passes relative hrefs through unchanged (no colon
+// → not a scheme URL), but the <A> onClick handler called classifyScheme(href)
+// which returned 'deny' for inputs with no valid scheme → preventDefault was
+// called → relative/internal links were silently blocked.
+//
+// Fix: <A> must detect hrefs that have no scheme and treat them as 'iana' so the
+// browser/router can navigate normally.
+
+describe('markdown <A> component — relative / no-scheme hrefs navigate normally', () => {
+    // Each of these hrefs has no URL scheme. Clicks must NOT be prevented.
+    // We verify by checking that preventDefault is NOT called on the click event.
+
+    function clickAndCheckNotPrevented(href: string) {
+        renderA({ href, children: 'link' })
+        const clickEvent = new MouseEvent('click', { bubbles: true, cancelable: true })
+        const preventSpy = vi.spyOn(clickEvent, 'preventDefault')
+        document.querySelector('a')!.dispatchEvent(clickEvent)
+        expect(preventSpy).not.toHaveBeenCalled()
+        cleanup()
+    }
+
+    it('/settings → click not prevented (absolute-path relative link)', () => {
+        clickAndCheckNotPrevented('/settings')
+    })
+
+    it('./foo → click not prevented (relative-path link)', () => {
+        clickAndCheckNotPrevented('./foo')
+    })
+
+    it('#section → click not prevented (hash fragment link)', () => {
+        clickAndCheckNotPrevented('#section')
+    })
+
+    it('?q=1 → click not prevented (query-only link)', () => {
+        clickAndCheckNotPrevented('?q=1')
+    })
+
+    it('/path:colon → click not prevented (path with colon, no scheme)', () => {
+        // "/" appears before ":" so this is a path, not a scheme.
+        clickAndCheckNotPrevented('/path:colon')
+    })
+
+    it('https://example.com → click not prevented (regression: IANA still passes through)', () => {
+        clickAndCheckNotPrevented('https://example.com')
     })
 })
 
