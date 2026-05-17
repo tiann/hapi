@@ -17,6 +17,10 @@ const filePathSchema = z.object({
     path: z.string().min(1)
 })
 
+const generatedImageSchema = z.object({
+    imageId: z.string().min(1)
+})
+
 function parseBooleanParam(value: string | undefined): boolean | undefined {
     if (value === 'true') return true
     if (value === 'false') return false
@@ -128,6 +132,35 @@ export function createGitRoutes(getSyncEngine: () => SyncEngine | null): Hono<We
 
         const result = await runRpc(() => engine.readSessionFile(sessionResult.sessionId, parsed.data.path))
         return c.json(result)
+    })
+
+    app.get('/sessions/:id/generated-images/:imageId', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const parsed = generatedImageSchema.safeParse(c.req.param())
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid generated image id' }, 400)
+        }
+
+        const result = await runRpc(() => engine.readGeneratedImage(sessionResult.sessionId, parsed.data.imageId))
+        if (!result.success || !result.content) {
+            return c.json({ success: false, error: result.error ?? 'Generated image not found' }, 404)
+        }
+
+        const bytes = Uint8Array.from(Buffer.from(result.content, 'base64'))
+        return c.body(bytes, 200, {
+            'Content-Type': result.mimeType ?? 'application/octet-stream',
+            'Content-Disposition': `inline; filename="${encodeURIComponent(result.fileName ?? 'generated-image')}"`,
+            'Cache-Control': 'no-store'
+        })
     })
 
     app.get('/sessions/:id/files', async (c) => {

@@ -13,6 +13,7 @@ import type { CodexSession } from './session';
 import type { EnhancedMode } from './loop';
 import { hasCodexCliOverrides } from './utils/codexCliOverrides';
 import { AppServerEventConverter } from './utils/appServerEventConverter';
+import { registerGeneratedImage } from '@/modules/common/generatedImages';
 import { registerAppServerPermissionHandlers } from './utils/appServerPermissionAdapter';
 import { buildThreadStartParams, buildTurnStartParams } from './utils/appServerConfig';
 import type { ThreadGoal, ThreadGoalStatus } from './appServerTypes';
@@ -1964,6 +1965,28 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     session.sendAgentMessage({
                         type: 'message',
                         message,
+                        id: randomUUID()
+                    });
+                }
+            }
+            if (msgType === 'generated_image') {
+                const sourceImageId = asString(msg.image_id ?? msg.imageId ?? msg.id);
+                const imageId = randomUUID();
+                const savedPath = asString(msg.saved_path ?? msg.savedPath);
+                if (savedPath) {
+                    const image = registerGeneratedImage({
+                        id: imageId,
+                        path: savedPath,
+                        fileName: asString(msg.file_name ?? msg.fileName),
+                        mimeType: asString(msg.mime_type ?? msg.mimeType)
+                    });
+                    messageBuffer.addMessage(`Generated image: ${image.fileName}`, 'assistant');
+                    session.sendAgentMessage({
+                        type: 'generated-image',
+                        imageId: image.id,
+                        sourceImageId,
+                        fileName: image.fileName,
+                        mimeType: image.mimeType,
                         id: randomUUID()
                     });
                 }

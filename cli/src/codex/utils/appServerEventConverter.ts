@@ -56,6 +56,28 @@ function extractCommand(value: unknown): string | null {
     return null;
 }
 
+function extractGeneratedImagePath(item: Record<string, unknown>): string | null {
+    return asString(
+        item.savedPath
+        ?? item.saved_path
+        ?? item.path
+        ?? item.filePath
+        ?? item.file_path
+        ?? item.outputPath
+        ?? item.output_path
+    );
+}
+
+function extractGeneratedImageMimeType(item: Record<string, unknown>): string | null {
+    return asString(item.mimeType ?? item.mime_type ?? item.mediaType ?? item.media_type);
+}
+
+function extractGeneratedImageFileName(item: Record<string, unknown>, savedPath: string): string {
+    const direct = asString(item.fileName ?? item.file_name ?? item.filename ?? item.name);
+    if (direct) return direct;
+    return savedPath.split(/[\\/]/).filter(Boolean).pop() ?? 'generated-image.png';
+}
+
 function extractChanges(value: unknown): Record<string, unknown> | null {
     const record = asRecord(value);
     if (record) return record;
@@ -868,6 +890,24 @@ export class AppServerEventConverter {
                     }));
                 }
 
+                return events;
+            }
+
+            if (itemType === 'imagegeneration') {
+                if (method === 'item/completed') {
+                    const savedPath = extractGeneratedImagePath(item);
+                    if (!savedPath) {
+                        logger.debug('[AppServerEventConverter] imageGeneration missing savedPath', sanitizeUnhandledNotificationLogValue({ item }));
+                        return events;
+                    }
+                    events.push(scoped({
+                        type: 'generated_image',
+                        image_id: itemId,
+                        saved_path: savedPath,
+                        file_name: extractGeneratedImageFileName(item, savedPath),
+                        ...(extractGeneratedImageMimeType(item) ? { mime_type: extractGeneratedImageMimeType(item) } : {})
+                    }));
+                }
                 return events;
             }
 

@@ -480,6 +480,28 @@ export function normalizeAgentRecord(
             }
         }
 
+        if (data.type === 'generated-image') {
+            const imageId = asString(data.imageId ?? data.image_id)
+            if (!imageId) return null
+            const uuid = asString(data.id) ?? messageId
+            return {
+                id: messageId,
+                localId,
+                createdAt,
+                role: 'agent',
+                isSidechain: false,
+                content: [{
+                    type: 'generated-image',
+                    imageId,
+                    fileName: asString(data.fileName ?? data.file_name) ?? 'generated-image',
+                    mimeType: asString(data.mimeType ?? data.mime_type),
+                    uuid,
+                    parentUUID: null
+                }],
+                meta
+            }
+        }
+
         if (data.type === 'message' && typeof data.message === 'string') {
             return {
                 id: messageId,

@@ -19,6 +19,14 @@ export type RpcReadFileResponse = {
     error?: string
 }
 
+export type RpcGeneratedImageResponse = {
+    success: boolean
+    content?: string
+    mimeType?: string
+    fileName?: string
+    error?: string
+}
+
 export type RpcUploadFileResponse = {
     success: boolean
     path?: string
@@ -227,6 +235,10 @@ export class RpcGateway {
 
     async readSessionFile(sessionId: string, path: string): Promise<RpcReadFileResponse> {
         return await this.sessionRpc(sessionId, 'readFile', { path }) as RpcReadFileResponse
+    }
+
+    async readGeneratedImage(sessionId: string, imageId: string): Promise<RpcGeneratedImageResponse> {
+        return await this.sessionRpc(sessionId, 'readGeneratedImage', { id: imageId }) as RpcGeneratedImageResponse
     }
 
     async listDirectory(sessionId: string, path: string): Promise<RpcListDirectoryResponse> {

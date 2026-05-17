@@ -252,6 +252,31 @@ export class ApiClient {
         return await this.request<FileSearchResponse>(`/api/sessions/${encodeURIComponent(sessionId)}/files${qs ? `?${qs}` : ''}`)
     }
 
+    async getGeneratedImageBlob(sessionId: string, imageId: string, attempt: number = 0, overrideToken?: string | null): Promise<Blob> {
+        const headers = new Headers()
+        const liveToken = this.getToken ? this.getToken() : null
+        const authToken = overrideToken !== undefined
+            ? (overrideToken ?? (liveToken ?? this.token))
+            : (liveToken ?? this.token)
+        if (authToken) {
+            headers.set('authorization', `Bearer ${authToken}`)
+        }
+        const res = await fetch(this.buildUrl(`/api/sessions/${encodeURIComponent(sessionId)}/generated-images/${encodeURIComponent(imageId)}`), {
+            headers
+        })
+        if (res.status === 401 && attempt === 0 && this.onUnauthorized) {
+            const refreshed = await this.onUnauthorized()
+            if (refreshed) {
+                this.token = refreshed
+                return await this.getGeneratedImageBlob(sessionId, imageId, attempt + 1, refreshed)
+            }
+        }
+        if (!res.ok) {
+            throw new ApiError(`HTTP ${res.status}`, res.status, undefined, await res.text().catch(() => undefined))
+        }
+        return await res.blob()
+    }
+
     async readSessionFile(sessionId: string, path: string): Promise<FileReadResponse> {
         const params = new URLSearchParams()
         params.set('path', path)

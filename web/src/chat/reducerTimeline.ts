@@ -730,6 +730,21 @@ export function reduceTimeline(
                     continue
                 }
 
+                if (c.type === 'generated-image') {
+                    blocks.push({
+                        kind: 'generated-image',
+                        id: `${msg.id}:${idx}`,
+                        localId: msg.localId,
+                        createdAt: msg.createdAt,
+                        invokedAt: msg.invokedAt,
+                        imageId: c.imageId,
+                        fileName: c.fileName,
+                        mimeType: c.mimeType,
+                        meta: msg.meta
+                    })
+                    continue
+                }
+
                 if (c.type === 'reasoning') {
                     blocks.push({
                         kind: 'agent-reasoning',

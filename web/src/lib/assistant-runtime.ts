@@ -63,6 +63,28 @@ function toThreadMessageLike(block: VisibleChatBlock): ThreadMessageLike {
         }
     }
 
+    if (block.kind === 'generated-image') {
+        return {
+            role: 'assistant',
+            id: `generated-image:${block.id}`,
+            createdAt: new Date(block.createdAt),
+            content: [{
+                type: 'tool-call',
+                toolCallId: block.id,
+                toolName: 'GeneratedImage',
+                argsText: '',
+                artifact: block
+            }],
+            metadata: {
+                custom: {
+                    kind: 'tool',
+                    toolCallId: block.id,
+                    invokedAt: block.invokedAt ?? null
+                } satisfies HappyChatMessageMetadata
+            }
+        }
+    }
+
     if (block.kind === 'agent-reasoning') {
         const messageId = `assistant:${block.id}`
         return {

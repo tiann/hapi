@@ -20,6 +20,7 @@ import {
     type RpcCodexModel,
     type RpcCommandResponse,
     type RpcDeleteUploadResponse,
+    type RpcGeneratedImageResponse,
     type RpcListDirectoryResponse,
     type RpcListCodexModelsResponse,
     type RpcListOpencodeModelsResponse,
@@ -37,6 +38,7 @@ export type {
     RpcCodexModel,
     RpcCommandResponse,
     RpcDeleteUploadResponse,
+    RpcGeneratedImageResponse,
     RpcListDirectoryResponse,
     RpcListCodexModelsResponse,
     RpcListOpencodeModelsResponse,
@@ -653,6 +655,10 @@ export class SyncEngine {
 
     async readSessionFile(sessionId: string, path: string): Promise<RpcReadFileResponse> {
         return await this.rpcGateway.readSessionFile(sessionId, path)
+    }
+
+    async readGeneratedImage(sessionId: string, imageId: string): Promise<RpcGeneratedImageResponse> {
+        return await this.rpcGateway.readGeneratedImage(sessionId, imageId)
     }
 
     async listDirectory(sessionId: string, path: string): Promise<RpcListDirectoryResponse> {

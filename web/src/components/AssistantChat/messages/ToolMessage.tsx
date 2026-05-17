@@ -1,6 +1,7 @@
+import { useEffect, useState } from 'react'
 import type { ToolCallMessagePartProps } from '@assistant-ui/react'
 import type { ChatBlock } from '@/chat/types'
-import type { ToolCallBlock } from '@/chat/types'
+import type { GeneratedImageBlock, ToolCallBlock } from '@/chat/types'
 import type { ToolGroupBlock } from '@/chat/toolGroups'
 import { isObject, safeStringify } from '@hapi/protocol'
 import { isSubagentToolName } from '@/chat/subagentTool'
@@ -35,6 +36,69 @@ function isToolGroupBlock(value: unknown): value is ToolGroupBlock {
     if (typeof value.id !== 'string') return false
     if (!Array.isArray(value.tools)) return false
     return true
+}
+
+function isGeneratedImageBlock(value: unknown): value is GeneratedImageBlock {
+    if (!isObject(value)) return false
+    if (value.kind !== 'generated-image') return false
+    if (typeof value.id !== 'string') return false
+    if (typeof value.imageId !== 'string') return false
+    if (typeof value.fileName !== 'string') return false
+    if (value.mimeType !== null && typeof value.mimeType !== 'string') return false
+    return true
+}
+
+function GeneratedImageCard(props: { block: GeneratedImageBlock }) {
+    const ctx = useHappyChatContext()
+    const [objectUrl, setObjectUrl] = useState<string | null>(null)
+    const [error, setError] = useState<string | null>(null)
+
+    useEffect(() => {
+        let disposed = false
+        let nextObjectUrl: string | null = null
+
+        setObjectUrl(null)
+        setError(null)
+        void ctx.api.getGeneratedImageBlob(ctx.sessionId, props.block.imageId)
+            .then((blob) => {
+                if (disposed) return
+                nextObjectUrl = URL.createObjectURL(blob)
+                setObjectUrl(nextObjectUrl)
+            })
+            .catch((err: unknown) => {
+                if (disposed) return
+                setError(err instanceof Error ? err.message : 'Failed to load generated image')
+            })
+
+        return () => {
+            disposed = true
+            if (nextObjectUrl) {
+                URL.revokeObjectURL(nextObjectUrl)
+            }
+        }
+    }, [ctx.api, ctx.sessionId, props.block.imageId])
+
+    return (
+        <div className="max-w-[92%] rounded-2xl border border-[var(--app-border)] bg-[var(--app-tool-card-bg)] p-3">
+            <div className="mb-2 min-w-0 truncate text-xs font-medium text-[var(--app-hint)]">
+                Generated image · {props.block.fileName}
+            </div>
+            {objectUrl ? (
+                <img
+                    src={objectUrl}
+                    alt={props.block.fileName}
+                    className="max-h-[min(28rem,60vh)] max-w-full rounded-xl object-contain"
+                    draggable={false}
+                />
+            ) : error ? (
+                <div className="text-sm text-[var(--app-hint)]">
+                    Generated image is unavailable. {error}
+                </div>
+            ) : (
+                <div className="h-48 w-72 max-w-full animate-pulse rounded-xl bg-[var(--app-subtle-bg)]" />
+            )}
+        </div>
+    )
 }
 
 function isPendingPermissionBlock(block: ChatBlock): boolean {
@@ -101,6 +165,14 @@ function HappyNestedBlockList(props: {
                             <div className={alignClass}>
                                 <CliOutputBlock text={block.text} />
                             </div>
+                        </div>
+                    )
+                }
+
+                if (block.kind === 'generated-image') {
+                    return (
+                        <div key={`generated-image:${block.id}`} className="px-1">
+                            <GeneratedImageCard block={block} />
                         </div>
                     )
                 }
@@ -181,6 +253,14 @@ export function HappyToolMessage(props: ToolCallMessagePartProps) {
                     block={artifact}
                     metadata={ctx.metadata}
                 />
+            </div>
+        )
+    }
+
+    if (isGeneratedImageBlock(artifact)) {
+        return (
+            <div className="py-1 min-w-0 max-w-full overflow-x-hidden">
+                <GeneratedImageCard block={artifact} />
             </div>
         )
     }

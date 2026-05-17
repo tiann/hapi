@@ -743,9 +743,8 @@ describe('AppServerEventConverter', () => {
         ]);
     });
 
-    it('truncates large unhandled notification payloads before logging', () => {
+    it('converts completed image generation items without including large result payloads', () => {
         const converter = new AppServerEventConverter();
-        const debug = vi.spyOn(logger, 'debug').mockImplementation(() => undefined);
         const largeImageResult = 'a'.repeat(4096);
 
         const events = converter.handleNotification('item/completed', {
@@ -753,6 +752,31 @@ describe('AppServerEventConverter', () => {
                 id: 'image-1',
                 type: 'imageGeneration',
                 result: largeImageResult,
+                savedPath: '/tmp/image.png',
+                mimeType: 'image/png'
+            }
+        });
+
+        expect(events).toEqual([{
+            type: 'generated_image',
+            image_id: 'image-1',
+            saved_path: '/tmp/image.png',
+            file_name: 'image.png',
+            mime_type: 'image/png'
+        }]);
+        expect(JSON.stringify(events)).not.toContain(largeImageResult);
+    });
+
+    it('truncates large unhandled notification payloads before logging', () => {
+        const converter = new AppServerEventConverter();
+        const debug = vi.spyOn(logger, 'debug').mockImplementation(() => undefined);
+        const largeResult = 'a'.repeat(4096);
+
+        const events = converter.handleNotification('item/completed', {
+            item: {
+                id: 'unknown-1',
+                type: 'unknownLargePayload',
+                result: largeResult,
                 savedPath: '/tmp/image.png'
             }
         });
@@ -760,7 +784,7 @@ describe('AppServerEventConverter', () => {
         expect(events).toEqual([]);
         expect(debug).toHaveBeenCalledTimes(1);
         const logged = debug.mock.calls[0]?.[1] as { params?: { item?: { result?: string; savedPath?: string } } };
-        expect(logged.params?.item?.result).not.toBe(largeImageResult);
+        expect(logged.params?.item?.result).not.toBe(largeResult);
         expect(logged.params?.item?.result).toContain('[truncated 3584 chars for logs]');
         expect(logged.params?.item?.savedPath).toBe('/tmp/image.png');
 
