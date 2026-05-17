@@ -45,6 +45,26 @@ describe('getScrollRestorationKey', () => {
         expect(getScrollRestorationKey(location)).toBe('/sessions/abc123/file')
     })
 
+    it('differentiates staged vs unstaged file diffs for the same path', () => {
+        const unstaged = makeLocation({
+            pathname: '/sessions/abc123/file',
+            search: { path: 'src/foo.ts' },
+        })
+        const staged = makeLocation({
+            pathname: '/sessions/abc123/file',
+            search: { path: 'src/foo.ts', staged: true },
+        })
+        const stagedFalse = makeLocation({
+            pathname: '/sessions/abc123/file',
+            search: { path: 'src/foo.ts', staged: false },
+        })
+        expect(getScrollRestorationKey(unstaged)).toBe('/sessions/abc123/file?path=src/foo.ts')
+        expect(getScrollRestorationKey(staged)).toBe('/sessions/abc123/file?path=src/foo.ts&staged=true')
+        // staged=false is the default and not included in the key (matches unstaged)
+        expect(getScrollRestorationKey(stagedFalse)).toBe('/sessions/abc123/file?path=src/foo.ts')
+        expect(getScrollRestorationKey(unstaged)).not.toBe(getScrollRestorationKey(staged))
+    })
+
     it('differentiates files route by directories tab', () => {
         const changes = makeLocation({
             pathname: '/sessions/abc123/files',
