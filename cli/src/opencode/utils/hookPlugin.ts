@@ -107,7 +107,7 @@ function buildPluginSource(hookUrl: string, token: string): string {
         '    };',
         '};',
         ''
-    ].join('\\n');
+    ].join('\n');
 }
 
 function resolvePluginDir(rootPath: string): string {
