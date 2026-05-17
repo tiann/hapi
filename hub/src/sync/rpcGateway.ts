@@ -79,6 +79,13 @@ export class RpcGateway {
         await this.sessionRpc(sessionId, RPC_METHODS.Abort, { reason: 'User aborted via Telegram Bot' })
     }
 
+    async steerQueuedMessage(
+        sessionId: string,
+        localId: string
+    ): Promise<unknown> {
+        return await this.sessionRpc(sessionId, 'steer-queued-message', { localId })
+    }
+
     async switchSession(sessionId: string, to: 'remote' | 'local'): Promise<void> {
         await this.sessionRpc(sessionId, RPC_METHODS.Switch, { to })
     }

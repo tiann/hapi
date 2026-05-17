@@ -7,6 +7,7 @@ import { EMPTY_STATE } from '@/hooks/queries/useMessages'
 import { normalizeDecryptedMessage } from '@/chat/normalize'
 import type { DecryptedMessage } from '@/types/api'
 import { useCancelQueuedMessage } from '@/hooks/mutations/useCancelQueuedMessage'
+import { useSteerQueuedMessage } from '@/hooks/mutations/useSteerQueuedMessage'
 import { useTranslation } from '@/lib/use-translation'
 import { useToast } from '@/lib/toast-context'
 import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
@@ -180,6 +181,7 @@ export function QueuedMessagesBar({
     const queued = useQueuedMessages(sessionId)
     const assistantApi = useAssistantApi()
     const cancelMutation = useCancelQueuedMessage(api)
+    const steerMutation = useSteerQueuedMessage(api)
     const { t } = useTranslation()
     const { addToast } = useToast()
 
@@ -209,7 +211,9 @@ export function QueuedMessagesBar({
                         const hasAttachments = attachmentNames.length > 0
                         const localId = msg.localId ?? msg.id
                         const isPending = cancelMutation.isPending && cancelMutation.variables?.localId === localId
+                        const isSteering = steerMutation.isPending && steerMutation.variables?.localId === localId
                         const canCancel = computeCanCancel({ id: msg.id, localId: msg.localId, isPending })
+                        const canSteer = computeCanCancel({ id: msg.id, localId: msg.localId, isPending: isPending || isSteering })
 
                         const handleCancel = () => {
                             if (!canCancel) return
@@ -258,6 +262,14 @@ export function QueuedMessagesBar({
                             )
                         }
 
+                        const handleSteer = () => {
+                            if (!canSteer) return
+                            steerMutation.mutate({
+                                sessionId,
+                                messageId: msg.id,
+                                localId,
+                            })
+                        }
                         const canEdit = canCancel
 
                         return (
@@ -295,6 +307,30 @@ export function QueuedMessagesBar({
                                     )}
                                 </div>
                                 <div className="flex shrink-0 items-center gap-1">
+                                    <button
+                                        type="button"
+                                        aria-label="Steer queued message"
+                                        disabled={!canSteer}
+                                        onClick={handleSteer}
+                                        onMouseDown={(e) => e.preventDefault()}
+                                        className="flex h-6 items-center gap-1 rounded px-1.5 text-[var(--app-hint)] transition-colors hover:bg-[var(--app-border)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-40"
+                                    >
+                                        <svg
+                                            viewBox="0 0 16 16"
+                                            fill="none"
+                                            className="h-3.5 w-3.5"
+                                            aria-hidden="true"
+                                        >
+                                            <path
+                                                d="M3 5h5a4 4 0 0 1 4 4v3M12 12l-3-3M12 12l3-3"
+                                                stroke="currentColor"
+                                                strokeWidth="1.5"
+                                                strokeLinecap="round"
+                                                strokeLinejoin="round"
+                                            />
+                                        </svg>
+                                        <span className="text-xs">{isSteering ? '引导中' : '引导'}</span>
+                                    </button>
                                     <button
                                         type="button"
                                         aria-label="Edit queued message"

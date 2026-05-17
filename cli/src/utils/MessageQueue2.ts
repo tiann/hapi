@@ -234,6 +234,19 @@ export class MessageQueue2<T> {
     }
 
     /**
+     * Remove and return the first queued message that matches the given localId.
+     * Used when a caller needs to consume a queued item through a path other
+     * than the normal batch drain, such as steering it into an active turn.
+     */
+    takeByLocalId(localId: string): QueueItem<T> | null {
+        if (!localId) return null;
+        const idx = this.queue.findIndex(item => item.localId === localId);
+        if (idx === -1) return null;
+        const [item] = this.queue.splice(idx, 1);
+        return item ?? null;
+    }
+
+    /**
      * Reset the queue - clears all messages and resets to empty state
      */
     reset(): void {

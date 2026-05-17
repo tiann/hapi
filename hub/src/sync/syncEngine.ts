@@ -10,6 +10,7 @@
 import { isKnownFlavor, type LocalResumeTarget, type ResumableSession } from '@hapi/protocol'
 import type { SlashCommandsResponse } from '@hapi/protocol/apiTypes'
 import type { AgentFlavor, CodexCollaborationMode, DecryptedMessage, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
+import type { SteerQueuedMessageResponse } from '@hapi/protocol/schemas'
 import { unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
 import type { Server } from 'socket.io'
 import type { Store, CancelQueuedMessageResult } from '../store'
@@ -393,6 +394,62 @@ export class SyncEngine {
 
     sweepImmediateQueuedOnSessionEnd(sessionId: string, invokedAt: number): void {
         this.messageService.sweepImmediateQueuedOnSessionEnd(sessionId, invokedAt)
+    }
+
+    async steerQueuedMessage(
+        sessionId: string,
+        messageId: string
+    ): Promise<SteerQueuedMessageResponse> {
+        const lookup = this.store.messages.lookupQueuedMessage(sessionId, messageId)
+        if (lookup.status === 'absent') {
+            return { status: 'absent' }
+        }
+        if (lookup.status === 'invoked') {
+            return lookup
+        }
+        if (!lookup.localId) {
+            return { status: 'failed', error: 'Queued message has no localId' }
+        }
+
+        let result: unknown
+        try {
+            result = await this.rpcGateway.steerQueuedMessage(sessionId, lookup.localId)
+        } catch (error) {
+            return {
+                status: 'failed',
+                error: error instanceof Error ? error.message : String(error)
+            }
+        }
+
+        if (!result || typeof result !== 'object') {
+            return { status: 'failed', error: 'Unexpected steer response' }
+        }
+
+        const status = (result as { status?: unknown }).status
+        if (status === 'steered') {
+            const invokedAt = Date.now()
+            this.store.messages.markMessagesInvoked(sessionId, [lookup.localId], invokedAt)
+            this.recordSessionActivity(sessionId, invokedAt)
+            this.eventPublisher.emit({
+                type: 'messages-consumed',
+                sessionId,
+                localIds: [lookup.localId],
+                invokedAt
+            })
+            return { status: 'steered', localId: lookup.localId, invokedAt }
+        }
+        if (status === 'not-active' || status === 'not-found') {
+            return { status }
+        }
+        if (status === 'failed') {
+            const error = (result as { error?: unknown }).error
+            return {
+                status: 'failed',
+                error: typeof error === 'string' ? error : 'Steer failed'
+            }
+        }
+
+        return { status: 'failed', error: 'Unexpected steer response' }
     }
 
     async approvePermission(
