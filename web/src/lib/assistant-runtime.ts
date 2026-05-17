@@ -22,6 +22,12 @@ export type HappyChatMessageMetadata = {
     usage?: UsageData
     model?: string | null
     review?: CodexReview
+    /**
+     * Distinct turn count when this block carries an aggregated response
+     * group footer. Single-turn blocks omit this field so the existing
+     * per-message footer is rendered unchanged.
+     */
+    turnCount?: number
 }
 
 function formatCodexReviewText(review: CodexReview): string {
