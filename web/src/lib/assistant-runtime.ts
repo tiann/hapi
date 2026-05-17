@@ -190,7 +190,13 @@ export function aggregateResponseGroups(
 ): Map<string, AggregatedAssistantMeta> {
     const aggregates = new Map<string, AggregatedAssistantMeta>()
     let groupFirstBlockId: string | null = null
-    const seenTurnKeys = new Set<string>()
+    // Ordering-based turn dedup: we compare each block's turn key against
+    // the immediately previous turn's key. A `Set` of all seen keys would
+    // collapse a third turn whose `(model, usage)` fingerprint happens to
+    // match a non-adjacent earlier turn — claude code spawn sessions
+    // legitimately produce repeated fingerprints when token totals
+    // coincide, and merging them under-counts the visible turn count.
+    let prevTurnKey: string | null = null
     const seenModels: string[] = []
     let groupInvokedAt: number | null = null
     let groupUsage: UsageData | undefined
@@ -208,7 +214,7 @@ export function aggregateResponseGroups(
             })
         }
         groupFirstBlockId = null
-        seenTurnKeys.clear()
+        prevTurnKey = null
         seenModels.length = 0
         groupInvokedAt = null
         groupUsage = undefined
@@ -234,8 +240,7 @@ export function aggregateResponseGroups(
         // (today's claude code spawn flow) fall back to a fingerprint
         // built from `model` + `usage` totals — every block emitted in
         // one Claude SDK message carries the same usage object, so the
-        // fingerprint dedups blocks within a turn without merging
-        // distinct turns whose token counts happen to differ.
+        // fingerprint collapses adjacent blocks within a turn.
         const turnKey = turn.localId !== null
             ? `id:${turn.localId}`
             : `fp:${turnFingerprint(turn.model, turn.usage)}`
@@ -244,8 +249,10 @@ export function aggregateResponseGroups(
         // no model) so they don't inflate the turn count.
         if (turn.localId === null && !turn.usage && !turn.model) continue
 
-        if (seenTurnKeys.has(turnKey)) continue
-        seenTurnKeys.add(turnKey)
+        // Only the immediately previous turn's key dedups — see prevTurnKey
+        // comment above. Non-adjacent matches keep their separate counts.
+        if (turnKey === prevTurnKey) continue
+        prevTurnKey = turnKey
 
         groupTurnCount += 1
         if (turn.invokedAt != null && (groupInvokedAt === null || turn.invokedAt < groupInvokedAt)) {

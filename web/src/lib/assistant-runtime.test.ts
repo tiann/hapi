@@ -258,6 +258,37 @@ describe('aggregateResponseGroups', () => {
         expect(meta?.model).toBe('claude-sonnet-4-6, claude-haiku-4-5-20251001')
     })
 
+    it('5a. fingerprint dedup is ordering-based: identical adjacent blocks count as one turn, identical non-adjacent blocks count as separate turns', () => {
+        // Each Claude SDK message emits multiple blocks that share an
+        // identical usage object — adjacent blocks must collapse to one
+        // turn. But two distinct SDK messages occasionally happen to
+        // produce the same (model, usage) fingerprint when separated by
+        // a third turn with different totals. A Set-based dedup would
+        // collapse those non-adjacent matches into one turn and under-
+        // count; an ordering-based dedup only merges adjacent matches.
+        const sharedUsage = { input_tokens: 5, output_tokens: 7, service_tier: 'standard' as const }
+        const middleUsage = { input_tokens: 11, output_tokens: 13, service_tier: 'standard' as const }
+        const blocks: VisibleChatBlock[] = [
+            userText('u1'),
+            // Turn 1 emits two blocks sharing the same usage fingerprint.
+            agentText('a1', { localId: null, invokedAt: 100, model: 'claude-sonnet-4-6', usage: sharedUsage }),
+            toolCall('t1', { localId: null, invokedAt: 101, model: 'claude-sonnet-4-6', usage: sharedUsage }),
+            // Turn 2: different fingerprint.
+            agentText('a2', { localId: null, invokedAt: 200, model: 'claude-sonnet-4-6', usage: middleUsage }),
+            // Turn 3 happens to repeat turn 1's (model, usage) fingerprint.
+            agentText('a3', { localId: null, invokedAt: 300, model: 'claude-sonnet-4-6', usage: sharedUsage })
+        ]
+
+        const aggregates = aggregateResponseGroups(blocks)
+        const meta = aggregates.get('a1')
+        // Three distinct turns: adjacent fingerprint match collapses (a1+t1),
+        // non-adjacent fingerprint match does not (a1 vs a3).
+        expect(meta?.turnCount).toBe(3)
+        // Sum: shared + middle + shared.
+        expect(meta?.usage?.input_tokens).toBe(5 + 11 + 5)
+        expect(meta?.usage?.output_tokens).toBe(7 + 13 + 7)
+    })
+
     it("5b. skips chunk blocks without model or usage so they do not inflate the turn count", () => {
         // hapi's hub stores tool_result chunks as separate agent-role
         // messages with no `model`, no `usage`, and `localId=null`.
