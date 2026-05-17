@@ -83,6 +83,10 @@ export default {
   'session.action.copy': 'Copy',
 
   // Dialogs
+  'dialog.uri.title': 'Open this link?',
+  'dialog.uri.description': 'This link uses a custom URI scheme. Make sure you trust this link before opening it.',
+  'dialog.uri.open': 'Open',
+  'dialog.uri.alwaysAllow': 'Always allow {scheme}:',
   'dialog.rename.title': 'Rename Session',
   'dialog.rename.placeholder': 'Session name',
   'dialog.rename.save': 'Save',

@@ -83,6 +83,10 @@ export default {
   'session.action.copy': '复制',
 
   // Dialogs
+  'dialog.uri.title': '打开此链接？',
+  'dialog.uri.description': '此链接使用自定义 URI 协议。请确认您信任此链接后再打开。',
+  'dialog.uri.open': '打开',
+  'dialog.uri.alwaysAllow': '始终允许 {scheme}:',
   'dialog.rename.title': '重命名会话',
   'dialog.rename.placeholder': '会话名称',
   'dialog.rename.save': '保存',
