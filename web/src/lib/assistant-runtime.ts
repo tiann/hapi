@@ -8,6 +8,19 @@ import type { AgentEvent, ToolCallBlock } from '@/chat/types'
 import type { ToolGroupBlock, VisibleChatBlock } from '@/chat/toolGroups'
 import type { AttachmentMetadata, MessageStatus as HappyMessageStatus, Session } from '@/types/api'
 
+/**
+ * Aggregated metadata for a multi-turn response group, surfaced on the
+ * group's first visible block so the `@assistant-ui/react` converter
+ * preserves it after joining adjacent assistant messages.
+ */
+export type AggregatedAssistantMeta = {
+    usage?: UsageData
+    model: string | null
+    invokedAt: number | null
+    durationMs: undefined
+    turnCount: number
+}
+
 export type HappyChatMessageMetadata = {
     kind: 'user' | 'assistant' | 'tool' | 'event' | 'cli-output' | 'codex-review'
     status?: HappyMessageStatus
@@ -50,6 +63,178 @@ function formatCodexReviewText(review: CodexReview): string {
         }
     }
     return lines.join('\n')
+}
+
+type VisibleChatBlockRole = 'user' | 'assistant' | 'system'
+
+/**
+ * Mirror the role assignment used by `toThreadMessageLike` so response
+ * group boundaries (the `@assistant-ui/react` converter joins adjacent
+ * assistant-role messages only) stay consistent with what the library
+ * actually flushes as one card.
+ */
+function visibleBlockRole(block: VisibleChatBlock): VisibleChatBlockRole {
+    if (block.kind === 'user-text') return 'user'
+    if (block.kind === 'agent-event') return 'system'
+    if (block.kind === 'cli-output') return block.source === 'user' ? 'user' : 'assistant'
+    return 'assistant'
+}
+
+function turnSourceFromBlock(block: VisibleChatBlock): {
+    localId: string | null
+    invokedAt: number | null
+    durationMs: number | undefined
+    model: string | null
+    usage: UsageData | undefined
+} | null {
+    if (block.kind === 'agent-text' || block.kind === 'agent-reasoning' || block.kind === 'cli-output') {
+        return {
+            localId: block.localId,
+            invokedAt: block.invokedAt ?? null,
+            durationMs: block.durationMs,
+            model: block.model ?? null,
+            usage: block.usage
+        }
+    }
+    if (block.kind === 'tool-call') {
+        return {
+            localId: block.localId,
+            invokedAt: block.invokedAt ?? null,
+            durationMs: block.durationMs,
+            model: block.model ?? null,
+            usage: block.usage
+        }
+    }
+    if (block.kind === 'tool-group') {
+        // A tool-group is a derived view of tool-call blocks; turn-level
+        // metadata lives on the underlying tool-call entries.
+        return null
+    }
+    return null
+}
+
+/**
+ * Fallback turn key for environments where the CLI does not stamp a
+ * non-null `localId` on each turn's blocks (e.g. claude code spawn
+ * sessions today). All blocks emitted within one Claude SDK message
+ * share identical `usage` totals and `model`, so the combination acts
+ * as a stable per-turn fingerprint within a single response group.
+ */
+function turnFingerprint(
+    model: string | null,
+    usage: UsageData | undefined
+): string {
+    if (!usage) return `m=${model ?? ''}|u=`
+    return [
+        `m=${model ?? ''}`,
+        `i=${usage.input_tokens}`,
+        `o=${usage.output_tokens}`,
+        `cc=${usage.cache_creation_input_tokens ?? ''}`,
+        `cr=${usage.cache_read_input_tokens ?? ''}`,
+        `t=${usage.service_tier ?? ''}`
+    ].join('|')
+}
+
+function addUsage(target: UsageData, addend: UsageData): UsageData {
+    return {
+        input_tokens: target.input_tokens + addend.input_tokens,
+        output_tokens: target.output_tokens + addend.output_tokens,
+        cache_creation_input_tokens:
+            (target.cache_creation_input_tokens ?? 0) + (addend.cache_creation_input_tokens ?? 0) || undefined,
+        cache_read_input_tokens:
+            (target.cache_read_input_tokens ?? 0) + (addend.cache_read_input_tokens ?? 0) || undefined,
+        // service_tier dedup follows the rule documented in the plan: pick
+        // the first turn's tier when the group is mixed. We keep it on the
+        // target so downstream label logic sees a stable value.
+        service_tier: target.service_tier
+    }
+}
+
+/**
+ * Walk the visible block list, identify response groups (runs of
+ * assistant-role blocks separated by user-text / agent-event /
+ * user-source cli-output boundaries), and return a map keyed by the
+ * id of each group's first visible block whose value is the summed
+ * metadata for that group. Only groups spanning two or more distinct
+ * turns produce an entry so single-turn cards remain byte-for-byte
+ * unchanged at the call site.
+ */
+export function aggregateResponseGroups(
+    blocks: readonly VisibleChatBlock[]
+): Map<string, AggregatedAssistantMeta> {
+    const aggregates = new Map<string, AggregatedAssistantMeta>()
+    let groupFirstBlockId: string | null = null
+    const seenTurnKeys = new Set<string>()
+    const seenModels: string[] = []
+    let groupInvokedAt: number | null = null
+    let groupUsage: UsageData | undefined
+    let groupTurnCount = 0
+
+    const flush = () => {
+        if (groupFirstBlockId !== null && groupTurnCount >= 2) {
+            const joinedModel = seenModels.length > 0 ? seenModels.join(', ') : null
+            aggregates.set(groupFirstBlockId, {
+                usage: groupUsage,
+                model: joinedModel,
+                invokedAt: groupInvokedAt,
+                durationMs: undefined,
+                turnCount: groupTurnCount
+            })
+        }
+        groupFirstBlockId = null
+        seenTurnKeys.clear()
+        seenModels.length = 0
+        groupInvokedAt = null
+        groupUsage = undefined
+        groupTurnCount = 0
+    }
+
+    for (const block of blocks) {
+        const role = visibleBlockRole(block)
+        if (role !== 'assistant') {
+            // Boundary: close the open group, if any.
+            flush()
+            continue
+        }
+
+        if (groupFirstBlockId === null) {
+            groupFirstBlockId = block.id
+        }
+
+        const turn = turnSourceFromBlock(block)
+        if (!turn) continue
+
+        // Prefer the CLI-stamped `localId` when present. When it is null
+        // (today's claude code spawn flow) fall back to a fingerprint
+        // built from `model` + `usage` totals — every block emitted in
+        // one Claude SDK message carries the same usage object, so the
+        // fingerprint dedups blocks within a turn without merging
+        // distinct turns whose token counts happen to differ.
+        const turnKey = turn.localId !== null
+            ? `id:${turn.localId}`
+            : `fp:${turnFingerprint(turn.model, turn.usage)}`
+
+        // Skip blocks with no turn signal at all (no localId, no usage,
+        // no model) so they don't inflate the turn count.
+        if (turn.localId === null && !turn.usage && !turn.model) continue
+
+        if (seenTurnKeys.has(turnKey)) continue
+        seenTurnKeys.add(turnKey)
+
+        groupTurnCount += 1
+        if (turn.invokedAt != null && (groupInvokedAt === null || turn.invokedAt < groupInvokedAt)) {
+            groupInvokedAt = turn.invokedAt
+        }
+        if (turn.model && !seenModels.includes(turn.model)) {
+            seenModels.push(turn.model)
+        }
+        if (turn.usage) {
+            groupUsage = groupUsage ? addUsage(groupUsage, turn.usage) : { ...turn.usage }
+        }
+    }
+
+    flush()
+    return aggregates
 }
 
 function toThreadMessageLike(block: VisibleChatBlock): ThreadMessageLike {
@@ -311,10 +496,44 @@ export function useHappyRuntime(props: {
 }) {
     const isRunning = props.isRunning ?? props.session.thinking
 
+    // Compute response-group aggregates once per block list so we can
+    // inject the summed metadata onto each group's first visible block.
+    // The library's `joinExternalMessages` only preserves
+    // `metadata.custom` from the first block of a joined chunk, so this
+    // is the surface that survives the join.
+    const aggregates = useMemo(
+        () => aggregateResponseGroups(props.blocks),
+        [props.blocks]
+    )
+
+    const convertBlock = useCallback(
+        (block: VisibleChatBlock): ThreadMessageLike => {
+            const message = toThreadMessageLike(block)
+            const aggregate = aggregates.get(block.id)
+            if (!aggregate) return message
+            const existing = message.metadata?.custom as HappyChatMessageMetadata | undefined
+            return {
+                ...message,
+                metadata: {
+                    ...message.metadata,
+                    custom: {
+                        ...(existing ?? { kind: 'assistant' }),
+                        usage: aggregate.usage,
+                        model: aggregate.model,
+                        invokedAt: aggregate.invokedAt,
+                        durationMs: aggregate.durationMs,
+                        turnCount: aggregate.turnCount
+                    } satisfies HappyChatMessageMetadata
+                }
+            }
+        },
+        [aggregates]
+    )
+
     // Use cached message converter for performance optimization
     // This prevents re-converting all messages on every render
     const convertedMessages = useExternalMessageConverter<VisibleChatBlock>({
-        callback: toThreadMessageLike,
+        callback: convertBlock,
         messages: props.blocks as VisibleChatBlock[],
         isRunning,
     })

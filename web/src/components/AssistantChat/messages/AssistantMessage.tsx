@@ -59,6 +59,7 @@ export function HappyAssistantMessage() {
     const durationMs = useAssistantState(({ message }) => (message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined)?.durationMs)
     const usage = useAssistantState(({ message }) => (message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined)?.usage)
     const messageModel = useAssistantState(({ message }) => (message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined)?.model)
+    const turnCount = useAssistantState(({ message }) => (message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined)?.turnCount)
 
     const hasMetadata = invokedAt != null
         || (typeof durationMs === 'number' && durationMs >= 0)
@@ -100,6 +101,7 @@ export function HappyAssistantMessage() {
                         durationMs={durationMs}
                         usage={usage}
                         model={messageModel ?? null}
+                        turnCount={turnCount}
                         className="mt-1"
                     />
                 )}
@@ -165,6 +167,7 @@ export function HappyAssistantMessage() {
                         durationMs={durationMs}
                         usage={usage}
                         model={messageModel ?? null}
+                        turnCount={turnCount}
                         className="mt-1"
                     />
                 )}
@@ -193,6 +196,7 @@ export function HappyAssistantMessage() {
                             durationMs={durationMs}
                             usage={usage}
                             model={messageModel ?? null}
+                            turnCount={turnCount}
                             className="mt-1"
                         />
                     )}
