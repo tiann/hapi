@@ -71,6 +71,34 @@ function cliOutput(id: string, source: CliOutputBlock['source'], overrides: Part
     }
 }
 
+function toolGroup(id: string, tools: ToolCallBlock[], overrides: Partial<ToolGroupBlock> = {}): ToolGroupBlock {
+    return {
+        kind: 'tool-group',
+        id,
+        createdAt: 0,
+        invokedAt: tools[0]?.invokedAt ?? null,
+        firstToolId: tools[0]?.id ?? id,
+        lastToolId: tools[tools.length - 1]?.id ?? id,
+        tools,
+        defaultOpen: false,
+        historyState: 'complete',
+        needsOlderHistory: false,
+        summary: {
+            totalTools: tools.length,
+            countsByKind: { read: 0, search: 0, command: 0, mutation: 0, web: 0, other: 0 },
+            fileTargets: [],
+            commandTargets: [],
+            searchTargets: [],
+            urlTargets: [],
+            otherTargets: [],
+            errorCount: 0,
+            runningCount: 0,
+            pendingCount: 0
+        },
+        ...overrides
+    }
+}
+
 describe('aggregateResponseGroups', () => {
     it('1. sums usage and dedups model across distinct localIds in a single response group', () => {
         // user (no aggregate) → agent-text L1 → tool-call L1 → tool-call L2 → agent-text L3
@@ -317,6 +345,166 @@ describe('aggregateResponseGroups', () => {
         // a1 is the first visible block of the response group spanning L1+L2.
         const meta = aggregates.get('a1')
         expect(meta?.turnCount).toBe(2)
+    })
+
+    it('counts the underlying tool-call when a tool-group block stands in for a turn', () => {
+        // `buildVisibleChatBlocks` merges adjacent eligible tool-calls into a
+        // single `tool-group` block. The group is the visible representation
+        // but the turn-level metadata still lives on the underlying tool-call
+        // entries — we read the first tool's localId/usage/model so the
+        // turn count does not drop the entire group.
+        const turn1Usage = { input_tokens: 7, output_tokens: 11, service_tier: 'standard' as const }
+        const turn2Usage = { input_tokens: 2, output_tokens: 9, service_tier: 'standard' as const }
+        const tool1 = toolCall('t1', { localId: 'L1', invokedAt: 100, model: 'claude-sonnet-4-6', usage: turn1Usage })
+        const tool2 = toolCall('t2', { localId: 'L1', invokedAt: 105, model: 'claude-sonnet-4-6', usage: turn1Usage })
+        const blocks: VisibleChatBlock[] = [
+            userText('u1'),
+            toolGroup('g1', [tool1, tool2]),
+            agentText('a1', {
+                localId: 'L2',
+                invokedAt: 200,
+                model: 'claude-sonnet-4-6',
+                usage: turn2Usage
+            })
+        ]
+
+        const aggregates = aggregateResponseGroups(blocks)
+        // g1 is the group's first visible block.
+        const meta = aggregates.get('g1')
+        expect(meta?.turnCount).toBe(2)
+        // input/output sums across the tool-group turn and the agent-text turn.
+        expect(meta?.usage?.input_tokens).toBe(7 + 2)
+        expect(meta?.usage?.output_tokens).toBe(11 + 9)
+        expect(meta?.invokedAt).toBe(100)
+    })
+
+    it('skips an empty tool-group block without throwing or inflating the turn count', () => {
+        // Defensive: a malformed tool-group with zero tools must degrade to
+        // null rather than crash. The surrounding response group continues.
+        const blocks: VisibleChatBlock[] = [
+            userText('u1'),
+            toolGroup('g0', []),
+            agentText('a1', {
+                localId: 'L1',
+                invokedAt: 100,
+                model: 'claude-sonnet-4-6',
+                usage: { input_tokens: 1, output_tokens: 2, service_tier: 'standard' }
+            }),
+            agentText('a2', {
+                localId: 'L2',
+                invokedAt: 200,
+                model: 'claude-sonnet-4-6',
+                usage: { input_tokens: 3, output_tokens: 4, service_tier: 'standard' }
+            })
+        ]
+
+        const aggregates = aggregateResponseGroups(blocks)
+        // g0 is the first visible block of the response group (no entry — the
+        // empty group contributes no turn, and the boundary remains at the
+        // user block).
+        const meta = aggregates.get('g0')
+        expect(meta?.turnCount).toBe(2)
+        expect(meta?.usage?.input_tokens).toBe(4)
+        expect(meta?.usage?.output_tokens).toBe(6)
+    })
+
+    it('preserves a 0 sum on cache token fields instead of folding it to undefined', () => {
+        // Both turns omit cache_creation/cache_read entirely. The aggregator
+        // must not invent a 0 either — the field remains undefined when no
+        // turn carried a value. Conversely, if one turn reports 0 explicitly
+        // we keep 0 in the sum (covered by the next case).
+        const blocks: VisibleChatBlock[] = [
+            userText('u1'),
+            agentText('a1', {
+                localId: 'L1',
+                invokedAt: 100,
+                model: 'claude-sonnet-4-6',
+                usage: { input_tokens: 1, output_tokens: 2, service_tier: 'standard' }
+            }),
+            agentText('a2', {
+                localId: 'L2',
+                invokedAt: 200,
+                model: 'claude-sonnet-4-6',
+                usage: { input_tokens: 3, output_tokens: 4, service_tier: 'standard' }
+            })
+        ]
+
+        const aggregates = aggregateResponseGroups(blocks)
+        const meta = aggregates.get('a1')
+        expect(meta?.usage?.cache_creation_input_tokens).toBeUndefined()
+        expect(meta?.usage?.cache_read_input_tokens).toBeUndefined()
+    })
+
+    it('keeps an explicit 0 in a cache token sum (does not coerce 0 → undefined via ||)', () => {
+        // Regression for the `(a ?? 0) + (b ?? 0) || undefined` pattern:
+        // 0 + 0 must remain 0 when at least one turn carried the field
+        // explicitly, otherwise downstream surfaces lose the signal.
+        const blocks: VisibleChatBlock[] = [
+            userText('u1'),
+            agentText('a1', {
+                localId: 'L1',
+                invokedAt: 100,
+                model: 'claude-sonnet-4-6',
+                usage: {
+                    input_tokens: 1,
+                    output_tokens: 2,
+                    cache_creation_input_tokens: 0,
+                    cache_read_input_tokens: 0,
+                    service_tier: 'standard'
+                }
+            }),
+            agentText('a2', {
+                localId: 'L2',
+                invokedAt: 200,
+                model: 'claude-sonnet-4-6',
+                usage: {
+                    input_tokens: 3,
+                    output_tokens: 4,
+                    cache_creation_input_tokens: 0,
+                    cache_read_input_tokens: 0,
+                    service_tier: 'standard'
+                }
+            })
+        ]
+
+        const aggregates = aggregateResponseGroups(blocks)
+        const meta = aggregates.get('a1')
+        expect(meta?.usage?.cache_creation_input_tokens).toBe(0)
+        expect(meta?.usage?.cache_read_input_tokens).toBe(0)
+    })
+
+    it('keeps a partial cache token value when only one turn carries it', () => {
+        // The other turn contributes 0 (treated as the missing-side default)
+        // and the sum equals the side that did carry a value.
+        const blocks: VisibleChatBlock[] = [
+            userText('u1'),
+            agentText('a1', {
+                localId: 'L1',
+                invokedAt: 100,
+                model: 'claude-sonnet-4-6',
+                usage: {
+                    input_tokens: 1,
+                    output_tokens: 2,
+                    cache_creation_input_tokens: 50,
+                    service_tier: 'standard'
+                }
+            }),
+            agentText('a2', {
+                localId: 'L2',
+                invokedAt: 200,
+                model: 'claude-sonnet-4-6',
+                usage: {
+                    input_tokens: 3,
+                    output_tokens: 4,
+                    service_tier: 'standard'
+                }
+            })
+        ]
+
+        const aggregates = aggregateResponseGroups(blocks)
+        const meta = aggregates.get('a1')
+        expect(meta?.usage?.cache_creation_input_tokens).toBe(50)
+        expect(meta?.usage?.cache_read_input_tokens).toBeUndefined()
     })
 
     it('does not surface cache_read/cache_creation tokens via aggregation (sums them but display ignores)', () => {

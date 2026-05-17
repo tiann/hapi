@@ -107,8 +107,19 @@ function turnSourceFromBlock(block: VisibleChatBlock): {
     }
     if (block.kind === 'tool-group') {
         // A tool-group is a derived view of tool-call blocks; turn-level
-        // metadata lives on the underlying tool-call entries.
-        return null
+        // metadata lives on the underlying tool-call entries. Read the
+        // first underlying tool-call so the surrounding turn still
+        // contributes its usage/model. Defensively degrade when the
+        // group somehow holds zero tools.
+        const first = block.tools[0]
+        if (!first) return null
+        return {
+            localId: first.localId,
+            invokedAt: first.invokedAt ?? null,
+            durationMs: first.durationMs,
+            model: first.model ?? null,
+            usage: first.usage
+        }
     }
     return null
 }
@@ -135,14 +146,29 @@ function turnFingerprint(
     ].join('|')
 }
 
+/**
+ * Sum two optional token counters. Returns `undefined` only when both
+ * operands are absent; an explicit `0` on either side participates in
+ * the sum (so a `0 + 0` total stays `0` instead of collapsing to
+ * `undefined` via JavaScript's falsy `||`).
+ */
+function sumOptional(a: number | undefined, b: number | undefined): number | undefined {
+    if (a === undefined && b === undefined) return undefined
+    return (a ?? 0) + (b ?? 0)
+}
+
 function addUsage(target: UsageData, addend: UsageData): UsageData {
     return {
         input_tokens: target.input_tokens + addend.input_tokens,
         output_tokens: target.output_tokens + addend.output_tokens,
-        cache_creation_input_tokens:
-            (target.cache_creation_input_tokens ?? 0) + (addend.cache_creation_input_tokens ?? 0) || undefined,
-        cache_read_input_tokens:
-            (target.cache_read_input_tokens ?? 0) + (addend.cache_read_input_tokens ?? 0) || undefined,
+        cache_creation_input_tokens: sumOptional(
+            target.cache_creation_input_tokens,
+            addend.cache_creation_input_tokens
+        ),
+        cache_read_input_tokens: sumOptional(
+            target.cache_read_input_tokens,
+            addend.cache_read_input_tokens
+        ),
         // service_tier dedup follows the rule documented in the plan: pick
         // the first turn's tier when the group is mixed. We keep it on the
         // target so downstream label logic sees a stable value.
