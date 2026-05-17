@@ -666,6 +666,11 @@ export function createAppRouter(history?: RouterHistory) {
         routeTree,
         history,
         scrollRestoration: true,
+        // Collapse the cache key to pathname so sessionStorage size stays bounded
+        // by distinct pathnames visited rather than per-history-entry __TSR_key
+        // (the default), which grows the cache without bound and eventually
+        // throws QuotaExceededError that blocks the React commit. See #611.
+        getScrollRestorationKey: (location) => location.pathname,
     })
 }
 
