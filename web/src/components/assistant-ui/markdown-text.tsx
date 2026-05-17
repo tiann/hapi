@@ -73,25 +73,51 @@ const DENY_SCHEMES: ReadonlySet<string> = new Set([
 ])
 
 /**
+ * Extract the normalised scheme from a URL string.
+ *
+ * Applies up to two rounds of decodeURIComponent so that double-encoded
+ * bypass attempts (`javascript%253A` → `javascript%3A` → `javascript:`)
+ * are unwrapped before the scheme is extracted.
+ *
+ * After decoding, ASCII control characters (U+0000–U+001F, U+007F) and
+ * all whitespace are stripped from the extracted scheme string so that
+ * browsers' built-in normalization — which silently discards \t, \n, \r
+ * and space from scheme names during navigation — cannot be used to bypass
+ * the deny list (e.g. `java\nscript:alert(1)` → scheme `"javascript"`).
+ *
+ * Returns null when no valid scheme separator is found.
+ */
+function normalizedScheme(url: string): string | null {
+    let value = url.trimStart()
+    for (let i = 0; i < 2; i++) {
+        try {
+            const next = decodeURIComponent(value)
+            if (next === value) break
+            value = next
+        } catch {
+            break
+        }
+    }
+    const colonIndex = value.indexOf(':')
+    if (colonIndex <= 0) return null
+    // Strip ASCII control chars (U+0000–U+001F, DEL U+007F) and all whitespace
+    // from the scheme name. Browsers strip exactly these characters during
+    // navigation, so `java\nscript` navigates as `javascript`.
+    return value.slice(0, colonIndex).replace(/[\x00-\x1F\x7F\s]/g, '').toLowerCase()
+}
+
+/**
  * Classify a URL string by its scheme.
  *
- * Strips leading whitespace and percent-decodes the input before extracting
- * the scheme so that common bypass patterns (tab-prefix, %6A encoding,
- * double encoding) are all caught.
+ * Uses normalizedScheme() so that common bypass patterns — control characters
+ * spliced into the scheme name, tab/space prefix, single- and double-encoded
+ * scheme characters — are all caught before the deny/IANA comparison.
  *
  * @returns 'iana' | 'deny' | 'custom'
  */
 export function classifyScheme(url: string): 'iana' | 'deny' | 'custom' {
-    const trimmed = url.trimStart()
-    let decoded: string
-    try {
-        decoded = decodeURIComponent(trimmed)
-    } catch {
-        decoded = trimmed
-    }
-    const colonIndex = decoded.indexOf(':')
-    if (colonIndex <= 0) return 'deny'
-    const scheme = decoded.slice(0, colonIndex).toLowerCase()
+    const scheme = normalizedScheme(url)
+    if (scheme === null) return 'deny'
     if (DENY_SCHEMES.has(scheme)) return 'deny'
     if (IANA_SAFE_SCHEMES.has(scheme)) return 'iana'
     return 'custom'

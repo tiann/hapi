@@ -71,22 +71,33 @@ describe('classifyScheme — security bypass axes', () => {
     it.each(['JavaScript:alert(1)', 'JAVASCRIPT:alert(1)'])('blocks %s (case) as deny', (url) =>
         expect(classifyScheme(url)).toBe('deny')
     )
-    // (b) whitespace prefix
-    it.each(['\tjavascript:alert(1)', '\njavascript:alert(1)', ' javascript:alert(1)'])('blocks %s (whitespace) as deny', (url) =>
+    // (b) whitespace prefix on entire URL
+    it.each(['\tjavascript:alert(1)', '\njavascript:alert(1)', ' javascript:alert(1)'])('blocks %s (whitespace prefix) as deny', (url) =>
         expect(classifyScheme(url)).toBe('deny')
     )
     // (c) percent-encoding
     it('%6Aavascript: (encoded j) → deny', () => expect(classifyScheme('%6Aavascript:alert(1)')).toBe('deny'))
     it('jav%61script: (encoded a) → deny', () => expect(classifyScheme('jav%61script:alert(1)')).toBe('deny'))
-    // (d) double-encoding
-    // Note: `javascript%253Aalert(1)` — one decodeURIComponent pass converts %25 → %, giving
-    // `javascript%3Aalert(1)`. There is no literal colon left, so colonIdx <= 0 → 'deny'
-    // via the fallback path (not via scheme-match). This tests the fallback guard.
-    it('javascript%253A (double-encoded colon) → deny via no-colon fallback', () => expect(classifyScheme('javascript%253Aalert(1)')).toBe('deny'))
+    // (d) double-encoding — 2-pass decode unwraps javascript%253A → javascript%3A → javascript:
+    // With 2-pass decode, the second pass resolves %3A → literal colon, so the scheme
+    // "javascript" is extracted and hits DENY_SCHEMES → 'deny' via scheme-match.
+    it('javascript%253A (double-encoded colon) → deny', () => expect(classifyScheme('javascript%253Aalert(1)')).toBe('deny'))
     // `javascript%3Aalert(1)` — single-encoded colon. decodeURIComponent yields
     // `javascript:alert(1)` with a literal colon, so classifyScheme extracts scheme
     // "javascript" → hits DENY_SCHEMES → 'deny'. This is the real scheme-match path.
     it('javascript%3A (single-encoded colon) → deny via scheme-match', () => expect(classifyScheme('javascript%3Aalert(1)')).toBe('deny'))
+    // (e) control characters spliced into scheme name
+    // Browsers strip \n, \t, \r from URL schemes during navigation; our normalizer
+    // must do the same before comparing against the deny list.
+    it('java\\nscript: (newline in scheme) → deny', () => expect(classifyScheme('java\nscript:alert(1)')).toBe('deny'))
+    it('java\\tscript: (tab in scheme) → deny', () => expect(classifyScheme('java\tscript:alert(1)')).toBe('deny'))
+    it('java\\rscript: (carriage return in scheme) → deny', () => expect(classifyScheme('java\rscript:alert(1)')).toBe('deny'))
+    it('java script: (space in scheme) → deny', () => expect(classifyScheme('java script:alert(1)')).toBe('deny'))
+    // leading whitespace on the URL itself (already covered by trimStart, added for completeness)
+    it('\\tjavascript: (leading tab on URL) → deny', () => expect(classifyScheme('\tjavascript:alert(1)')).toBe('deny'))
+    // case sanity (also covered above but keep explicit)
+    it('JAVASCRIPT: → deny', () => expect(classifyScheme('JAVASCRIPT:alert(1)')).toBe('deny'))
+    it('JaVaScRipT: → deny', () => expect(classifyScheme('JaVaScRipT:')).toBe('deny'))
     // edge
     it('empty string → deny', () => expect(classifyScheme('')).toBe('deny'))
     it('no-colon string → deny', () => expect(classifyScheme('not-a-url')).toBe('deny'))
