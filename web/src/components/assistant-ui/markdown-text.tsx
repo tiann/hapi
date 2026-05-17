@@ -130,7 +130,9 @@ export function classifyScheme(url: string): 'iana' | 'deny' | 'custom' {
  * This distinguishes `mailto:foo@bar` (has scheme → true) from purely relative
  * hrefs like `/settings`, `./foo`, `#section`, `?q=1`, or paths that contain a
  * colon after a path segment like `/path:colon` (→ false, because `/` appears
- * before `:`).
+ * before `:`). Protocol-relative URLs (`//host/path`) have no colon and are
+ * also treated as scheme-less; browsers navigate them as the current origin's
+ * protocol, same as a normal relative path would do.
  *
  * Used by <A> to short-circuit classifyScheme for no-scheme hrefs and treat them
  * as 'iana' so the browser/router can handle them normally (fixing the regression

@@ -95,6 +95,8 @@ describe('classifyScheme — security bypass axes', () => {
     it('java\\tscript: (tab in scheme) → deny', () => expect(classifyScheme('java\tscript:alert(1)')).toBe('deny'))
     it('java\\rscript: (carriage return in scheme) → deny', () => expect(classifyScheme('java\rscript:alert(1)')).toBe('deny'))
     it('java script: (space in scheme) → deny', () => expect(classifyScheme('java script:alert(1)')).toBe('deny'))
+    // percent-encoded control chars inside the scheme — decoded by pass 1 then stripped
+    it('java%0Ascript: (percent-encoded newline in scheme) → deny', () => expect(classifyScheme('java%0Ascript:alert(1)')).toBe('deny'))
     // leading whitespace on the URL itself (already covered by trimStart, added for completeness)
     it('\\tjavascript: (leading tab on URL) → deny', () => expect(classifyScheme('\tjavascript:alert(1)')).toBe('deny'))
     // case sanity (also covered above but keep explicit)
@@ -256,6 +258,12 @@ describe('markdown <A> component — relative / no-scheme hrefs navigate normall
     it('/path:colon → click not prevented (path with colon, no scheme)', () => {
         // "/" appears before ":" so this is a path, not a scheme.
         clickAndCheckNotPrevented('/path:colon')
+    })
+
+    it('//example.com → click not prevented (protocol-relative URL, no colon)', () => {
+        // Protocol-relative URLs have no colon; browsers navigate them as the
+        // current origin's protocol, same as any other relative href.
+        clickAndCheckNotPrevented('//example.com/path')
     })
 
     it('https://example.com → click not prevented (regression: IANA still passes through)', () => {
