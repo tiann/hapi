@@ -1,7 +1,16 @@
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { isAbsolute, join, relative } from 'node:path';
+import { logger } from '@/ui/logger';
+import { configuration } from '@/configuration';
 
 const PLUGIN_FILENAME = 'hapi-hook.ts';
+const PACKAGE_JSON_FILENAME = 'package.json';
+const PLUGIN_PACKAGE = '@opencode-ai/plugin';
+// Pinned to the major version HAPI has been validated against (opencode
+// 1.14.x). Using '*' would let an unrelated registry change pull a moving
+// target into a code-execution path (the plugin runtime executes inside
+// opencode with the session hook URL + token in scope).
+const PLUGIN_PACKAGE_VERSION = '^1.14.0';
 
 function buildPluginSource(hookUrl: string, token: string): string {
     const escapedUrl = JSON.stringify(hookUrl);
@@ -114,9 +123,98 @@ function resolvePluginDir(rootPath: string): string {
     return join(rootPath, 'plugins');
 }
 
+/**
+ * `rootPath` is a HAPI-managed directory only when it lives under
+ * `configuration.happyHomeDir` (the default `OPENCODE_CONFIG_DIR` we
+ * synthesize per-session). If a user has exported `OPENCODE_CONFIG_DIR`
+ * pointing at e.g. their own `~/.config/opencode`, we must not pollute it
+ * with a placeholder `package.json`.
+ */
+function isHapiManagedDir(rootPath: string): boolean {
+    const home = configuration.happyHomeDir;
+    if (!home) {
+        return false;
+    }
+    const rel = relative(home, rootPath);
+    // `relative` returns a path that does NOT start with '..' and is not
+    // absolute when rootPath is inside home. On Windows a cross-volume
+    // input (e.g. home=`C:\\hapi`, rootPath=`D:\\…`) makes `relative`
+    // return the absolute `D:\\…` verbatim — `startsWith('/')` would miss
+    // that, so use `isAbsolute` which covers both POSIX `/` and win32
+    // `<letter>:\\`.
+    return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
+}
+
+function hasDeclaredPluginPackage(packageJsonPath: string): boolean {
+    try {
+        const parsed = JSON.parse(readFileSync(packageJsonPath, 'utf-8')) as {
+            dependencies?: Record<string, string>;
+            devDependencies?: Record<string, string>;
+        };
+        return Boolean(parsed.dependencies?.[PLUGIN_PACKAGE] ?? parsed.devDependencies?.[PLUGIN_PACKAGE]);
+    } catch {
+        return false;
+    }
+}
+
+function buildMinimalPackageJson(): string {
+    return `${JSON.stringify({
+        dependencies: { [PLUGIN_PACKAGE]: PLUGIN_PACKAGE_VERSION }
+    }, null, 2)}\n`;
+}
+
+/**
+ * Ensure the opencode runtime can resolve `@opencode-ai/plugin` from our
+ * isolated config dir. Since opencode 1.14.x the plugin loader is a separate
+ * npm package, and `<configDir>/plugins/*.ts` files are only evaluated when
+ * that package is resolvable from `<configDir>`. HAPI's per-session
+ * OPENCODE_CONFIG_DIR is otherwise an empty directory, so plugin discovery
+ * never even attempts to load hapi-hook.ts.
+ *
+ * Writing a minimal `package.json` declaring the dependency is enough:
+ * opencode itself materializes `node_modules` and `package-lock.json` on
+ * the next launch (the same install path `opencode plugin install`
+ * follows). No symlinks, no install spawn, no cross-platform branches —
+ * just a one-line dependency declaration.
+ *
+ * Guards against three failure modes:
+ *   - **Non-managed dir**: when the caller pointed OPENCODE_CONFIG_DIR at a
+ *     directory outside `happyHomeDir` (e.g. the user's global opencode
+ *     config) we leave it alone — that filesystem is not ours to mutate.
+ *   - **Existing package.json missing our dep**: parse it and only short-
+ *     circuit when `@opencode-ai/plugin` is already declared. Otherwise
+ *     overwrite the placeholder so plugin discovery actually works.
+ *   - **Write failure**: log and continue; the scanner channel restored in
+ *     upstream #589 still carries messages, so a non-writable cfg dir is
+ *     degraded but not fatal.
+ */
+function ensurePluginRuntime(rootPath: string): void {
+    if (!isHapiManagedDir(rootPath)) {
+        logger.debug(`[opencode-hook] Skipping plugin runtime materialization for non-HAPI dir: ${rootPath}`);
+        return;
+    }
+
+    const packageJsonPath = join(rootPath, PACKAGE_JSON_FILENAME);
+    if (existsSync(packageJsonPath)) {
+        if (hasDeclaredPluginPackage(packageJsonPath)) {
+            // Existing file already declares the plugin (likely opencode-
+            // installed with a matching lock file). Leave it untouched.
+            return;
+        }
+        logger.debug(`[opencode-hook] package.json exists at ${packageJsonPath} but does not declare ${PLUGIN_PACKAGE}; overwriting placeholder.`);
+    }
+
+    try {
+        writeFileSync(packageJsonPath, buildMinimalPackageJson(), 'utf-8');
+    } catch (error) {
+        logger.warn(`[opencode-hook] Failed to materialize ${packageJsonPath}; the hook plugin channel may stay inert. Storage scanner remains as fallback. Error: ${(error as Error).message}`);
+    }
+}
+
 export function ensureOpencodeHookPlugin(rootPath: string, hookUrl: string, token: string): string {
     const pluginDir = resolvePluginDir(rootPath);
     mkdirSync(pluginDir, { recursive: true });
+    ensurePluginRuntime(rootPath);
 
     const pluginPath = join(pluginDir, PLUGIN_FILENAME);
     const nextSource = buildPluginSource(hookUrl, token);
