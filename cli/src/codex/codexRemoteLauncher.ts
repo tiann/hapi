@@ -2276,6 +2276,38 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             onSwitch: () => this.handleSwitchRequest()
         });
 
+        session.client.rpcHandlerManager.registerHandler('steer-queued-message', async (payload: unknown) => {
+            const record = asRecord(payload);
+            const localId = asString(record?.localId);
+            if (!localId) {
+                return { status: 'failed', error: 'Invalid localId' };
+            }
+
+            if (!turnInFlight || !this.currentThreadId || !this.currentTurnId) {
+                return { status: 'not-active' };
+            }
+
+            const item = session.queue.takeByLocalId(localId);
+            if (!item) {
+                return { status: 'not-found' };
+            }
+
+            try {
+                await appServerClient.steerTurn({
+                    threadId: this.currentThreadId,
+                    expectedTurnId: this.currentTurnId,
+                    input: [{ type: 'text', text: item.message }]
+                });
+                return { status: 'steered', localId };
+            } catch (error) {
+                session.queue.unshift(item.message, item.mode, item.localId);
+                return {
+                    status: 'failed',
+                    error: error instanceof Error ? error.message : String(error)
+                };
+            }
+        });
+
         function logActiveHandles(tag: string) {
             if (!process.env.DEBUG) return;
             const anyProc: any = process as any;

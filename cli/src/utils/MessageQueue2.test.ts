@@ -551,6 +551,30 @@ describe('MessageQueue2', () => {
         });
     });
 
+    describe('takeByLocalId', () => {
+        it('should remove and return the message with matching localId', () => {
+            const queue = new MessageQueue2<string>(mode => mode);
+            queue.push('msg1', 'local', 'id-abc');
+            queue.push('msg2', 'remote', 'id-def');
+
+            const taken = queue.takeByLocalId('id-def');
+            expect(taken?.message).toBe('msg2');
+            expect(taken?.mode).toBe('remote');
+            expect(taken?.localId).toBe('id-def');
+            expect(queue.size()).toBe(1);
+            expect(queue.queue[0].localId).toBe('id-abc');
+        });
+
+        it('should return null when localId is not found', () => {
+            const queue = new MessageQueue2<string>(mode => mode);
+            queue.push('msg1', 'local', 'id-abc');
+
+            const taken = queue.takeByLocalId('missing');
+            expect(taken).toBeNull();
+            expect(queue.size()).toBe(1);
+        });
+    });
+
     it('should differentiate between pushImmediate and pushIsolateAndClear behavior', async () => {
         const queue = new MessageQueue2<{ type: string }>((mode) => mode.type);
         

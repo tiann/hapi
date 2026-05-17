@@ -13,6 +13,8 @@ import type {
     ThreadResumeResponse,
     TurnStartParams,
     TurnStartResponse,
+    TurnSteerParams,
+    TurnSteerResponse,
     TurnInterruptParams,
     TurnInterruptResponse,
     ThreadCompactStartParams,
@@ -192,6 +194,13 @@ export class CodexAppServerClient {
             timeoutMs: CodexAppServerClient.DEFAULT_TIMEOUT_MS
         });
         return response as TurnStartResponse;
+    }
+
+    async steerTurn(params: TurnSteerParams): Promise<TurnSteerResponse> {
+        const response = await this.sendRequest('turn/steer', params, {
+            timeoutMs: 30_000
+        });
+        return response as TurnSteerResponse;
     }
 
     async interruptTurn(params: TurnInterruptParams): Promise<TurnInterruptResponse> {
