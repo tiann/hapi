@@ -7,6 +7,8 @@ import {
     MARKDOWN_COMPONENTS_BY_LANGUAGE,
     MARKDOWN_CLASSNAME,
     defaultComponents,
+    denyOnlyTransform,
+    UriConfirmProvider,
 } from '@/components/assistant-ui/markdown-text'
 import { cn } from '@/lib/utils'
 
@@ -22,15 +24,18 @@ function MarkdownContent(props: MarkdownRendererProps) {
         : defaultComponents
 
     return (
-        <TextMessagePartProvider text={props.content}>
-            <MarkdownTextPrimitive
-                remarkPlugins={MARKDOWN_PLUGINS}
-                rehypePlugins={MARKDOWN_REHYPE_PLUGINS}
-                components={mergedComponents}
-                componentsByLanguage={MARKDOWN_COMPONENTS_BY_LANGUAGE}
-                className={cn(MARKDOWN_CLASSNAME, props.className)}
-            />
-        </TextMessagePartProvider>
+        <UriConfirmProvider>
+            <TextMessagePartProvider text={props.content}>
+                <MarkdownTextPrimitive
+                    remarkPlugins={MARKDOWN_PLUGINS}
+                    rehypePlugins={MARKDOWN_REHYPE_PLUGINS}
+                    components={mergedComponents}
+                    componentsByLanguage={MARKDOWN_COMPONENTS_BY_LANGUAGE}
+                    urlTransform={denyOnlyTransform}
+                    className={cn(MARKDOWN_CLASSNAME, props.className)}
+                />
+            </TextMessagePartProvider>
+        </UriConfirmProvider>
     )
 }
 

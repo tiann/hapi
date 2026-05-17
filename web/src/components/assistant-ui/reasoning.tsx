@@ -8,6 +8,8 @@ import {
     MARKDOWN_PLUGINS,
     MARKDOWN_REHYPE_PLUGINS,
     defaultComponents,
+    denyOnlyTransform,
+    UriConfirmProvider,
 } from '@/components/assistant-ui/markdown-text'
 
 function ChevronIcon(props: { className?: string; open?: boolean }) {
@@ -41,13 +43,16 @@ function ShimmerDot() {
 
 export const Reasoning: FC = () => {
     return (
-        <MarkdownTextPrimitive
-            remarkPlugins={MARKDOWN_PLUGINS}
-            rehypePlugins={MARKDOWN_REHYPE_PLUGINS}
-            components={defaultComponents}
-            componentsByLanguage={MARKDOWN_COMPONENTS_BY_LANGUAGE}
-            className={cn(MARKDOWN_CLASSNAME, 'aui-reasoning-content text-[13.5px] text-[var(--app-hint)]')}
-        />
+        <UriConfirmProvider>
+            <MarkdownTextPrimitive
+                remarkPlugins={MARKDOWN_PLUGINS}
+                rehypePlugins={MARKDOWN_REHYPE_PLUGINS}
+                components={defaultComponents}
+                componentsByLanguage={MARKDOWN_COMPONENTS_BY_LANGUAGE}
+                urlTransform={denyOnlyTransform}
+                className={cn(MARKDOWN_CLASSNAME, 'aui-reasoning-content text-[13.5px] text-[var(--app-hint)]')}
+            />
+        </UriConfirmProvider>
     )
 }
 
