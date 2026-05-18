@@ -769,17 +769,23 @@ describe('MessageService.releaseMatureScheduledMessages', () => {
     it('#10 hub cold-start restart: mature message is re-emitted by new Store+Service (true restart sim)', () => {
         const dir = mkdtempSync(join(tmpdir(), 'hapi-restart-test-'))
         const dbPath = join(dir, 'test.db')
+        let store1: Store | undefined
+        let store2: Store | undefined
         try {
             // First "run": write a mature scheduled message to disk
-            const store1 = new Store(dbPath)
+            store1 = new Store(dbPath)
             const session = store1.sessions.getOrCreateSession('restart-test', { path: '/tmp/restart' }, null, 'default')
+            const sessionId = session.id
             const now = Date.now()
             const past = now - 2000
-            store1.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'restart me' } }, 'local-restart', past)
+            store1.messages.addMessage(sessionId, { role: 'user', content: { type: 'text', text: 'restart me' } }, 'local-restart', past)
 
-            // Simulate hub shutdown — close is implicit when GC'd in Bun, but we move on
+            // Simulate hub shutdown before opening a fresh Store.
+            store1.close()
+            store1 = undefined
+
             // Second "run": fresh Store + fresh MessageService (cold start)
-            const store2 = new Store(dbPath)
+            store2 = new Store(dbPath)
             const cliEmitted: unknown[] = []
             const io2 = {
                 of: (ns: string) => ({
@@ -801,10 +807,12 @@ describe('MessageService.releaseMatureScheduledMessages', () => {
             expect(cliEmitted).toHaveLength(1)
 
             // invoked_at must still be null (CLI hasn't acked yet)
-            const msgs = store2.messages.getMessages(session.id)
+            const msgs = store2.messages.getMessages(sessionId)
             const msg = msgs.find(m => m.localId === 'local-restart')!
             expect(msg.invokedAt).toBeNull()
         } finally {
+            store2?.close()
+            store1?.close()
             rmSync(dir, { recursive: true, force: true })
         }
     })

@@ -19,6 +19,7 @@ describe('Store V8→V9 migration: scheduled_at column', () => {
     it('V8 DB migrates to V9 via Store: scheduled_at added, existing rows have NULL scheduled_at', () => {
         const dir = mkdtempSync(join(tmpdir(), 'hapi-migration-v9-test-'))
         const dbPath = join(dir, 'test.db')
+        let store: Store | undefined
         try {
             // Build a V8 DB on disk, insert rows, then open via Store to trigger migration
             const db = new Database(dbPath, { create: true, readwrite: true, strict: true })
@@ -35,7 +36,7 @@ describe('Store V8→V9 migration: scheduled_at column', () => {
             db.close()
 
             // Open via Store — should auto-migrate V8→V9
-            const store = new Store(dbPath)
+            store = new Store(dbPath)
             const cols = getMessageColumns(store)
             expect(cols).toContain('scheduled_at')
 
@@ -47,6 +48,7 @@ describe('Store V8→V9 migration: scheduled_at column', () => {
             expect(m1.scheduledAt).toBeNull()
             expect(m2.scheduledAt).toBeNull()
         } finally {
+            store?.close()
             rmSync(dir, { recursive: true, force: true })
         }
     })
@@ -54,6 +56,7 @@ describe('Store V8→V9 migration: scheduled_at column', () => {
     it('V7 DB migrates to V9 (multi-hop: V7→V8→V9)', () => {
         const dir = mkdtempSync(join(tmpdir(), 'hapi-migration-v7-to-v9-'))
         const dbPath = join(dir, 'test.db')
+        let store: Store | undefined
         try {
             const db = new Database(dbPath, { create: true, readwrite: true, strict: true })
             db.exec('PRAGMA journal_mode = WAL')
@@ -62,11 +65,12 @@ describe('Store V8→V9 migration: scheduled_at column', () => {
             db.exec('PRAGMA user_version = 7')
             db.close()
 
-            const store = new Store(dbPath)
+            store = new Store(dbPath)
             const cols = getMessageColumns(store)
             expect(cols).toContain('invoked_at')
             expect(cols).toContain('scheduled_at')
         } finally {
+            store?.close()
             rmSync(dir, { recursive: true, force: true })
         }
     })
@@ -74,6 +78,7 @@ describe('Store V8→V9 migration: scheduled_at column', () => {
     it('V6 DB migrates to V9 (multi-hop)', () => {
         const dir = mkdtempSync(join(tmpdir(), 'hapi-migration-v6-to-v9-'))
         const dbPath = join(dir, 'test.db')
+        let store: Store | undefined
         try {
             const db = new Database(dbPath, { create: true, readwrite: true, strict: true })
             db.exec('PRAGMA journal_mode = WAL')
@@ -82,12 +87,13 @@ describe('Store V8→V9 migration: scheduled_at column', () => {
             db.exec('PRAGMA user_version = 6')
             db.close()
 
-            const store = new Store(dbPath)
+            store = new Store(dbPath)
             const cols = getMessageColumns(store)
             expect(cols).toContain('scheduled_at')
             const sessionCols = getSessionColumns(store)
             expect(sessionCols).toContain('model_reasoning_effort')
         } finally {
+            store?.close()
             rmSync(dir, { recursive: true, force: true })
         }
     })
@@ -95,16 +101,20 @@ describe('Store V8→V9 migration: scheduled_at column', () => {
     it('V9 DB reopen is idempotent: schema unchanged', () => {
         const dir = mkdtempSync(join(tmpdir(), 'hapi-migration-v9-idempotent-'))
         const dbPath = join(dir, 'test.db')
+        let store1: Store | undefined
+        let store2: Store | undefined
         try {
-            const store1 = new Store(dbPath)
+            store1 = new Store(dbPath)
             const cols1 = getMessageColumns(store1)
             expect(cols1).toContain('scheduled_at')
 
             // Re-open same DB — version is already 9, must not throw or alter schema
-            const store2 = new Store(dbPath)
+            store2 = new Store(dbPath)
             const cols2 = getMessageColumns(store2)
             expect(cols2).toEqual(cols1)
         } finally {
+            store2?.close()
+            store1?.close()
             rmSync(dir, { recursive: true, force: true })
         }
     })
@@ -112,6 +122,7 @@ describe('Store V8→V9 migration: scheduled_at column', () => {
     it('migrateFromV8ToV9 PRAGMA guard: scheduled_at column appears exactly once', () => {
         const dir = mkdtempSync(join(tmpdir(), 'hapi-migration-v9-guard-'))
         const dbPath = join(dir, 'test.db')
+        let store: Store | undefined
         try {
             const db = new Database(dbPath, { create: true, readwrite: true, strict: true })
             db.exec('PRAGMA journal_mode = WAL')
@@ -120,11 +131,12 @@ describe('Store V8→V9 migration: scheduled_at column', () => {
             db.exec('PRAGMA user_version = 8')
             db.close()
 
-            const store = new Store(dbPath)
+            store = new Store(dbPath)
             const cols = getMessageColumns(store)
             const count = cols.filter(c => c === 'scheduled_at').length
             expect(count).toBe(1)
         } finally {
+            store?.close()
             rmSync(dir, { recursive: true, force: true })
         }
     })
@@ -141,6 +153,7 @@ describe('Store V8→V9 migration: scheduled_at column', () => {
     it('idx_messages_scheduled_pending index exists after V8→V9 migration', () => {
         const dir = mkdtempSync(join(tmpdir(), 'hapi-index-v8-v9-'))
         const dbPath = join(dir, 'test.db')
+        let store: Store | undefined
         try {
             const db = new Database(dbPath, { create: true, readwrite: true, strict: true })
             db.exec('PRAGMA journal_mode = WAL')
@@ -149,13 +162,14 @@ describe('Store V8→V9 migration: scheduled_at column', () => {
             db.exec('PRAGMA user_version = 8')
             db.close()
 
-            const store = new Store(dbPath)
+            store = new Store(dbPath)
             const db2: Database = (store as any).db
             const rows = db2.prepare(
                 "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_messages_scheduled_pending'"
             ).all() as Array<{ name: string }>
             expect(rows).toHaveLength(1)
         } finally {
+            store?.close()
             rmSync(dir, { recursive: true, force: true })
         }
     })
@@ -266,6 +280,7 @@ describe('Store V9: scheduled_at store operations', () => {
     it('legacy DB (user_version=0 with V8-shape tables): step ladder backfills scheduled_at', () => {
         const dir = mkdtempSync(join(tmpdir(), 'hapi-legacy-v0-v9-'))
         const dbPath = join(dir, 'test.db')
+        let store: Store | undefined
         try {
             const db = new Database(dbPath, { create: true, readwrite: true, strict: true })
             db.exec('PRAGMA journal_mode = WAL')
@@ -278,10 +293,11 @@ describe('Store V9: scheduled_at store operations', () => {
                      VALUES ('m1', 's1', '"hi"', 1500, 1, 'l1', NULL)`)
             db.close()
 
-            const store = new Store(dbPath)
+            store = new Store(dbPath)
             const cols = getMessageColumns(store)
             expect(cols).toContain('scheduled_at')
         } finally {
+            store?.close()
             rmSync(dir, { recursive: true, force: true })
         }
     })

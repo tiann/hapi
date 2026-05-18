@@ -35,6 +35,7 @@ const REQUIRED_TABLES = [
 export class Store {
     private db: Database
     private readonly dbPath: string
+    private closed: boolean = false
 
     readonly sessions: SessionStore
     readonly machines: MachineStore
@@ -82,6 +83,20 @@ export class Store {
         this.messages = new MessageStore(this.db)
         this.users = new UserStore(this.db)
         this.push = new PushStore(this.db)
+    }
+
+    close(): void {
+        if (this.closed) return
+        this.db.close()
+        this.closed = true
+
+        // Bun's SQLite close uses sqlite3_close_v2 by default, so prepared
+        // statements that are already unreachable may keep the underlying file
+        // handle alive until the next GC cycle. Windows refuses to remove a
+        // directory while those SQLite WAL/SHM handles are still pending.
+        if (process.platform === 'win32') {
+            Bun.gc(true)
+        }
     }
 
     private initSchema(): void {
