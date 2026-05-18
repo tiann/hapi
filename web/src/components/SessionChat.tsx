@@ -49,6 +49,35 @@ export function shouldAutoClearPendingSchedule(pending: PendingSchedule | null):
     return pending !== null && pending.type === 'absolute'
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+export function isVoiceReadyMessage(message: DecryptedMessage): boolean {
+    const envelope = isRecord(message.content) && 'content' in message.content
+        ? message.content
+        : null
+    const content = isRecord(envelope?.content)
+        ? envelope.content
+        : isRecord(message.content)
+            ? message.content
+            : null
+    if (!content) return false
+
+    const data = isRecord(content.data) ? content.data : null
+    if (!data) return false
+
+    if (content.type === 'event') {
+        return data.type === 'ready'
+    }
+
+    if (content.type === 'codex') {
+        return data.type === 'ready' || data.type === 'task_complete'
+    }
+
+    return false
+}
+
 function getOutlineTitle(session: Session): string {
     if (session.metadata?.name) {
         return session.metadata.name
@@ -195,6 +224,16 @@ export function SessionChat(props: {
     // Track and report new messages to voice assistant
     // Note: voiceHooks internally checks isVoiceSessionStarted() so we don't need to check voice.status here
     const prevMessagesRef = useRef<DecryptedMessage[]>([])
+    const lastVoiceReadyAtRef = useRef(0)
+
+    const reportVoiceReady = useCallback(() => {
+        const now = Date.now()
+        if (now - lastVoiceReadyAtRef.current < 3000) {
+            return
+        }
+        lastVoiceReadyAtRef.current = now
+        voiceHooks.onReady(props.session.id)
+    }, [props.session.id])
 
     useEffect(() => {
         const prevIds = new Set(prevMessagesRef.current.map(m => m.id))
@@ -202,10 +241,13 @@ export function SessionChat(props: {
 
         if (newMessages.length > 0) {
             voiceHooks.onMessages(props.session.id, newMessages)
+            if (newMessages.some(isVoiceReadyMessage)) {
+                reportVoiceReady()
+            }
         }
 
         prevMessagesRef.current = props.messages
-    }, [props.messages, props.session.id])
+    }, [props.messages, props.session.id, reportVoiceReady])
 
     // Report ready event when thinking stops
     // Note: voiceHooks internally checks isVoiceSessionStarted() so we don't need to check voice.status here
@@ -214,11 +256,11 @@ export function SessionChat(props: {
     useEffect(() => {
         // Detect transition: thinking → not thinking
         if (prevThinkingRef.current && !props.session.thinking) {
-            voiceHooks.onReady(props.session.id)
+            reportVoiceReady()
         }
 
         prevThinkingRef.current = props.session.thinking
-    }, [props.session.thinking, props.session.id])
+    }, [props.session.thinking, reportVoiceReady])
 
     // Report permission requests to voice assistant
     // Note: voiceHooks internally checks isVoiceSessionStarted() so we don't need to check voice.status here
