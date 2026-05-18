@@ -378,12 +378,11 @@ describe('aggregateResponseGroups', () => {
         expect(meta?.turnCount).toBe(2)
     })
 
-    it('counts the underlying tool-call when a tool-group block stands in for a turn', () => {
+    it('counts a tool-group whose tools all belong to a single turn as one turn', () => {
         // `buildVisibleChatBlocks` merges adjacent eligible tool-calls into a
-        // single `tool-group` block. The group is the visible representation
-        // but the turn-level metadata still lives on the underlying tool-call
-        // entries — we read the first tool's localId/usage/model so the
-        // turn count does not drop the entire group.
+        // single `tool-group` block. When every underlying tool shares one
+        // turn (same localId, same usage), the aggregator must collapse them
+        // to one turn — the group is not its own turn boundary.
         const turn1Usage = { input_tokens: 7, output_tokens: 11, service_tier: 'standard' as const }
         const turn2Usage = { input_tokens: 2, output_tokens: 9, service_tier: 'standard' as const }
         const tool1 = toolCall('t1', { localId: 'L1', invokedAt: 100, model: 'claude-sonnet-4-6', usage: turn1Usage })
@@ -437,6 +436,46 @@ describe('aggregateResponseGroups', () => {
         expect(meta?.turnCount).toBe(2)
         expect(meta?.usage?.input_tokens).toBe(4)
         expect(meta?.usage?.output_tokens).toBe(6)
+    })
+
+    it('counts every turn inside a tool-group that spans multiple assistant turns', () => {
+        // Regression guard for the case the helper expands: a single
+        // `tool-group` block may wrap tool-calls from two distinct turns.
+        const turn1Usage = { input_tokens: 7, output_tokens: 11, service_tier: 'standard' as const }
+        const turn2Usage = { input_tokens: 2, output_tokens: 9, service_tier: 'standard' as const }
+        const tool1 = toolCall('t1', { localId: 'L1', invokedAt: 100, model: 'claude-sonnet-4-6', usage: turn1Usage })
+        const tool2 = toolCall('t2', { localId: 'L2', invokedAt: 110, model: 'claude-haiku-4-5-20251001', usage: turn2Usage })
+        const blocks: VisibleChatBlock[] = [
+            userText('u1'),
+            toolGroup('g1', [tool1, tool2])
+        ]
+
+        const aggregates = aggregateResponseGroups(blocks)
+        const meta = aggregates.get('g1')
+        expect(meta?.turnCount).toBe(2)
+        expect(meta?.usage?.input_tokens).toBe(7 + 2)
+        expect(meta?.usage?.output_tokens).toBe(11 + 9)
+        expect(meta?.model).toBe('claude-sonnet-4-6, claude-haiku-4-5-20251001')
+        expect(meta?.invokedAt).toBe(100)
+    })
+
+    it('keeps two fingerprint-mode turns distinct when only token totals coincide (different createdAt)', () => {
+        // Two consecutive SDK messages happen to report identical
+        // `(model, usage)` (rare but possible on very short turns). Different
+        // createdAt values keep their fingerprints distinct so the aggregator
+        // counts both turns instead of dedupping them.
+        const usage = { input_tokens: 3, output_tokens: 5, service_tier: 'standard' as const }
+        const blocks: VisibleChatBlock[] = [
+            userText('u1'),
+            agentText('a1', { localId: null, createdAt: 1000, invokedAt: 100, model: 'claude-sonnet-4-6', usage }),
+            agentText('a2', { localId: null, createdAt: 2000, invokedAt: 200, model: 'claude-sonnet-4-6', usage })
+        ]
+
+        const aggregates = aggregateResponseGroups(blocks)
+        const meta = aggregates.get('a1')
+        expect(meta?.turnCount).toBe(2)
+        expect(meta?.usage?.input_tokens).toBe(3 + 3)
+        expect(meta?.usage?.output_tokens).toBe(5 + 5)
     })
 
     it('preserves a 0 sum on cache token fields instead of folding it to undefined', () => {

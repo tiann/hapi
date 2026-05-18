@@ -80,69 +80,74 @@ function visibleBlockRole(block: VisibleChatBlock): VisibleChatBlockRole {
     return 'assistant'
 }
 
-function turnSourceFromBlock(block: VisibleChatBlock): {
+type TurnSource = {
     localId: string | null
     invokedAt: number | null
     durationMs: number | undefined
     model: string | null
     usage: UsageData | undefined
-} | null {
-    if (block.kind === 'agent-text' || block.kind === 'agent-reasoning' || block.kind === 'cli-output') {
-        return {
-            localId: block.localId,
-            invokedAt: block.invokedAt ?? null,
-            durationMs: block.durationMs,
-            model: block.model ?? null,
-            usage: block.usage
-        }
-    }
-    if (block.kind === 'tool-call') {
-        return {
-            localId: block.localId,
-            invokedAt: block.invokedAt ?? null,
-            durationMs: block.durationMs,
-            model: block.model ?? null,
-            usage: block.usage
-        }
-    }
+    createdAt: number
+}
+
+// Return one turn source per claude-SDK message that the visible block
+// represents. `tool-group` is a derived view: `buildVisibleChatBlocks` merges
+// adjacent eligible tool-calls without checking that they share a turn, so
+// each underlying tool-call contributes its own source. Other assistant-role
+// kinds map to a single source.
+function turnSourcesFromBlock(block: VisibleChatBlock): TurnSource[] {
     if (block.kind === 'tool-group') {
-        // A tool-group is a derived view of tool-call blocks; turn-level
-        // metadata lives on the underlying tool-call entries. Read the
-        // first underlying tool-call so the surrounding turn still
-        // contributes its usage/model. Defensively degrade when the
-        // group somehow holds zero tools.
-        const first = block.tools[0]
-        if (!first) return null
-        return {
-            localId: first.localId,
-            invokedAt: first.invokedAt ?? null,
-            durationMs: first.durationMs,
-            model: first.model ?? null,
-            usage: first.usage
-        }
+        return block.tools.map((tool) => ({
+            localId: tool.localId,
+            invokedAt: tool.invokedAt ?? null,
+            durationMs: tool.durationMs,
+            model: tool.model ?? null,
+            usage: tool.usage,
+            createdAt: tool.createdAt
+        }))
     }
-    return null
+    if (
+        block.kind === 'agent-text'
+        || block.kind === 'agent-reasoning'
+        || block.kind === 'cli-output'
+        || block.kind === 'tool-call'
+    ) {
+        return [{
+            localId: block.localId,
+            invokedAt: block.invokedAt ?? null,
+            durationMs: block.durationMs,
+            model: block.model ?? null,
+            usage: block.usage,
+            createdAt: block.createdAt
+        }]
+    }
+    return []
 }
 
 /**
  * Fallback turn key for environments where the CLI does not stamp a
  * non-null `localId` on each turn's blocks (e.g. claude code spawn
- * sessions today). All blocks emitted within one Claude SDK message
- * share identical `usage` totals and `model`, so the combination acts
- * as a stable per-turn fingerprint within a single response group.
+ * sessions today). The key combines `(model, usage totals, createdAt)`:
+ * the reducer copies `msg.createdAt` onto every derived `ChatBlock`, so
+ * blocks from the same SDK message share createdAt and collapse to one
+ * turn, while blocks from different SDK messages stay distinct even
+ * when their `(model, usage)` happens to coincide. Limitation: two SDK
+ * messages stamped at the same wall-clock millisecond would still
+ * collide, but the hub stamp resolution makes that vanishingly rare.
  */
 function turnFingerprint(
     model: string | null,
-    usage: UsageData | undefined
+    usage: UsageData | undefined,
+    createdAt: number
 ): string {
-    if (!usage) return `m=${model ?? ''}|u=`
+    if (!usage) return `m=${model ?? ''}|u=|c=${createdAt}`
     return [
         `m=${model ?? ''}`,
         `i=${usage.input_tokens}`,
         `o=${usage.output_tokens}`,
         `cc=${usage.cache_creation_input_tokens ?? ''}`,
         `cr=${usage.cache_read_input_tokens ?? ''}`,
-        `t=${usage.service_tier ?? ''}`
+        `t=${usage.service_tier ?? ''}`,
+        `c=${createdAt}`
     ].join('|')
 }
 
@@ -233,36 +238,34 @@ export function aggregateResponseGroups(
             groupFirstBlockId = block.id
         }
 
-        const turn = turnSourceFromBlock(block)
-        if (!turn) continue
+        for (const turn of turnSourcesFromBlock(block)) {
+            // Prefer the CLI-stamped `localId` when present. When it is null
+            // (today's claude code spawn flow) fall back to a fingerprint
+            // built from `(model, usage totals, createdAt)` — see
+            // `turnFingerprint` for the createdAt rationale.
+            const turnKey = turn.localId !== null
+                ? `id:${turn.localId}`
+                : `fp:${turnFingerprint(turn.model, turn.usage, turn.createdAt)}`
 
-        // Prefer the CLI-stamped `localId` when present. When it is null
-        // (today's claude code spawn flow) fall back to a fingerprint
-        // built from `model` + `usage` totals — every block emitted in
-        // one Claude SDK message carries the same usage object, so the
-        // fingerprint collapses adjacent blocks within a turn.
-        const turnKey = turn.localId !== null
-            ? `id:${turn.localId}`
-            : `fp:${turnFingerprint(turn.model, turn.usage)}`
+            // Skip blocks with no turn signal at all (no localId, no usage,
+            // no model) so they don't inflate the turn count.
+            if (turn.localId === null && !turn.usage && !turn.model) continue
 
-        // Skip blocks with no turn signal at all (no localId, no usage,
-        // no model) so they don't inflate the turn count.
-        if (turn.localId === null && !turn.usage && !turn.model) continue
+            // Only the immediately previous turn's key dedups — see prevTurnKey
+            // comment above. Non-adjacent matches keep their separate counts.
+            if (turnKey === prevTurnKey) continue
+            prevTurnKey = turnKey
 
-        // Only the immediately previous turn's key dedups — see prevTurnKey
-        // comment above. Non-adjacent matches keep their separate counts.
-        if (turnKey === prevTurnKey) continue
-        prevTurnKey = turnKey
-
-        groupTurnCount += 1
-        if (turn.invokedAt != null && (groupInvokedAt === null || turn.invokedAt < groupInvokedAt)) {
-            groupInvokedAt = turn.invokedAt
-        }
-        if (turn.model && !seenModels.includes(turn.model)) {
-            seenModels.push(turn.model)
-        }
-        if (turn.usage) {
-            groupUsage = groupUsage ? addUsage(groupUsage, turn.usage) : { ...turn.usage }
+            groupTurnCount += 1
+            if (turn.invokedAt != null && (groupInvokedAt === null || turn.invokedAt < groupInvokedAt)) {
+                groupInvokedAt = turn.invokedAt
+            }
+            if (turn.model && !seenModels.includes(turn.model)) {
+                seenModels.push(turn.model)
+            }
+            if (turn.usage) {
+                groupUsage = groupUsage ? addUsage(groupUsage, turn.usage) : { ...turn.usage }
+            }
         }
     }
 
