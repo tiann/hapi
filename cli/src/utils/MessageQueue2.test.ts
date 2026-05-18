@@ -627,4 +627,18 @@ describe('MessageQueue2', () => {
         expect(batch3?.message).toBe('after-isolated');
         expect(batch3?.mode.type).toBe('B');
     });
+
+    it('should preserve isolation when unshifting a message with isolate=true', async () => {
+        const queue = new MessageQueue2<string>(mode => mode);
+
+        queue.unshift('isolated', 'local', 'id-isolated', true);
+        queue.push('after', 'local', 'id-after');
+
+        const batch1 = await queue.waitForMessagesAndGetAsString();
+        expect(batch1?.message).toBe('isolated');
+        expect(batch1?.isolate).toBe(true);
+
+        const batch2 = await queue.waitForMessagesAndGetAsString();
+        expect(batch2?.message).toBe('after');
+    });
 });
