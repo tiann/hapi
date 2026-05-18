@@ -20,6 +20,7 @@ type TerminalRuntime = TerminalSession & {
     proc: { killed?: boolean; exitCode?: number | null; kill: () => unknown }
     terminal: TerminalHandle
     idleTimer: ReturnType<typeof setTimeout> | null
+    killOnCleanup: boolean
 }
 
 type TerminalManagerOptions = {
@@ -94,9 +95,18 @@ def terminate_child_group(sig=signal.SIGTERM):
     except OSError:
         pass
 
-def handle_bridge_signal(signum, _frame):
-    terminate_child_group(signal.SIGTERM)
+def shutdown_child_group(sig=signal.SIGTERM):
+    terminate_child_group(sig)
     close_master_fd()
+    if proc.poll() is None:
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            terminate_child_group(signal.SIGKILL)
+            proc.wait()
+
+def handle_bridge_signal(signum, _frame):
+    shutdown_child_group(signal.SIGTERM)
     os._exit(128 + signum)
 
 for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
@@ -153,12 +163,7 @@ while True:
 close_master_fd()
 
 if proc.poll() is None:
-    terminate_child_group()
-    try:
-        proc.wait(timeout=2)
-    except subprocess.TimeoutExpired:
-        terminate_child_group(signal.SIGKILL)
-        proc.wait()
+    shutdown_child_group()
 
 os._exit(proc.returncode if proc.returncode is not None else 0)
 `;
@@ -324,6 +329,9 @@ export class TerminalManager {
                 cols,
                 rows,
                 data: (_terminal, data) => {
+                    if (!this.isRuntimeProc(terminalId, proc)) {
+                        return
+                    }
                     const text = decoder.decode(data, { stream: true })
                     if (text) {
                         this.onOutput({ sessionId: this.sessionId, terminalId, data: text })
@@ -335,6 +343,9 @@ export class TerminalManager {
                 }
             },
             onExit: (subprocess, exitCode) => {
+                if (!this.isRuntimeProc(terminalId, proc)) {
+                    return
+                }
                 const signal = subprocess.signalCode ?? null
                 this.onExit({
                     sessionId: this.sessionId,
@@ -369,7 +380,8 @@ export class TerminalManager {
             rows,
             proc,
             terminal,
-            idleTimer: null
+            idleTimer: null,
+            killOnCleanup: true
         }
 
         this.terminals.set(terminalId, runtime)
@@ -397,6 +409,9 @@ export class TerminalManager {
         })
 
         const emitOutput = (data: Buffer | string) => {
+            if (!this.isRuntimeProc(terminalId, proc)) {
+                return
+            }
             const text = data.toString()
             if (text) {
                 this.onOutput({ sessionId: this.sessionId, terminalId, data: text })
@@ -410,11 +425,17 @@ export class TerminalManager {
         proc.stdout.on('data', emitOutput)
         proc.stderr.on('data', emitOutput)
         proc.on('error', (error) => {
+            if (!this.isRuntimeProc(terminalId, proc)) {
+                return
+            }
             logger.debug('[TERMINAL] Python PTY bridge process error', { error })
             this.emitError(terminalId, 'Terminal process failed.')
             this.cleanup(terminalId)
         })
         proc.on('exit', (exitCode, signal) => {
+            if (!this.isRuntimeProc(terminalId, proc)) {
+                return
+            }
             this.onExit({
                 sessionId: this.sessionId,
                 terminalId,
@@ -451,7 +472,8 @@ export class TerminalManager {
             rows,
             proc: proc as ChildProcessWithoutNullStreams,
             terminal,
-            idleTimer: null
+            idleTimer: null,
+            killOnCleanup: false
         }
 
         this.terminals.set(terminalId, runtime)
@@ -474,6 +496,9 @@ export class TerminalManager {
         })
 
         const emitOutput = (data: Buffer | string) => {
+            if (!this.isRuntimeProc(terminalId, proc)) {
+                return
+            }
             const text = data.toString()
             if (text) {
                 this.onOutput({ sessionId: this.sessionId, terminalId, data: text })
@@ -487,11 +512,17 @@ export class TerminalManager {
         proc.stdout.on('data', emitOutput)
         proc.stderr.on('data', emitOutput)
         proc.on('error', (error) => {
+            if (!this.isRuntimeProc(terminalId, proc)) {
+                return
+            }
             logger.debug('[TERMINAL] Pipe terminal process error', { error })
             this.emitError(terminalId, 'Terminal process failed.')
             this.cleanup(terminalId)
         })
         proc.on('exit', (exitCode, signal) => {
+            if (!this.isRuntimeProc(terminalId, proc)) {
+                return
+            }
             this.onExit({
                 sessionId: this.sessionId,
                 terminalId,
@@ -531,7 +562,8 @@ export class TerminalManager {
             rows,
             proc: proc as ChildProcessWithoutNullStreams,
             terminal,
-            idleTimer: null
+            idleTimer: null,
+            killOnCleanup: true
         }
 
         this.terminals.set(terminalId, runtime)
@@ -589,6 +621,10 @@ export class TerminalManager {
         }, this.idleTimeoutMs)
     }
 
+    private isRuntimeProc(terminalId: string, proc: unknown): boolean {
+        return this.terminals.get(terminalId)?.proc === proc
+    }
+
     private cleanup(terminalId: string): void {
         const runtime = this.terminals.get(terminalId)
         if (!runtime) {
@@ -606,7 +642,7 @@ export class TerminalManager {
             logger.debug('[TERMINAL] Failed to close terminal stream', { error })
         }
 
-        if (!runtime.proc.killed && runtime.proc.exitCode === null) {
+        if (runtime.killOnCleanup && !runtime.proc.killed && runtime.proc.exitCode === null) {
             try {
                 runtime.proc.kill()
             } catch (error) {

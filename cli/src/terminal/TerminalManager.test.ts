@@ -58,6 +58,7 @@ describe('TerminalManager', () => {
     const originalShell = process.env.SHELL;
     const originalDisableScriptPty = process.env.HAPI_TERMINAL_DISABLE_SCRIPT_PTY;
     const originalUseBunPty = process.env.HAPI_TERMINAL_USE_BUN_PTY;
+    const originalBun = (globalThis as unknown as { Bun?: unknown }).Bun;
 
     beforeEach(() => {
         vi.clearAllMocks();
@@ -78,6 +79,8 @@ describe('TerminalManager', () => {
 
         if (originalUseBunPty === undefined) delete process.env.HAPI_TERMINAL_USE_BUN_PTY;
         else process.env.HAPI_TERMINAL_USE_BUN_PTY = originalUseBunPty;
+
+        (globalThis as unknown as { Bun?: unknown }).Bun = originalBun;
     });
 
     it('uses the Python PTY bridge for runner remote terminals and forwards writes/resizes', () => {
@@ -122,6 +125,7 @@ describe('TerminalManager', () => {
         const pythonScript = mocks.spawn.mock.calls[0]?.[1]?.[1] as string;
         expect(pythonScript).toContain('TIOCSCTTY');
         expect(pythonScript).toContain('terminate_child_group');
+        expect(pythonScript).toContain('shutdown_child_group');
         expect(pythonScript).toContain('os.killpg(proc.pid, sig)');
         expect(onReady).toHaveBeenCalledWith({ sessionId: 'session-1', terminalId: 'terminal-1' });
         expect(JSON.parse(stdinLines[0] ?? '{}')).toEqual({
@@ -137,4 +141,68 @@ describe('TerminalManager', () => {
         expect(onExit).toHaveBeenCalledWith({ sessionId: 'session-1', terminalId: 'terminal-1', code: 0, signal: null });
         expect(onError).not.toHaveBeenCalled();
     });
+
+    it('lets the Python PTY bridge run its own child-group cleanup on close', () => {
+        const { child, stdinLines } = createMockChild();
+        mocks.spawn.mockReturnValue(child);
+        const manager = new TerminalManager({
+            sessionId: 'session-1',
+            getSessionPath: () => '/workspace/project',
+            onReady: vi.fn(),
+            onOutput: vi.fn(),
+            onExit: vi.fn(),
+            onError: vi.fn(),
+            idleTimeoutMs: 0
+        });
+
+        manager.create('terminal-1', 80, 24);
+        manager.close('terminal-1');
+
+        expect(JSON.parse(stdinLines[0] ?? '{}')).toEqual({ type: 'close' });
+        expect(child.stdin.writableEnded).toBe(true);
+        expect(child.kill).not.toHaveBeenCalled();
+    });
+
+    it('ignores stale Bun PTY exits after falling back to a pipe terminal', () => {
+        process.env.HAPI_TERMINAL_USE_BUN_PTY = '1';
+        const bunProc = {
+            terminal: undefined,
+            killed: false,
+            exitCode: null,
+            signalCode: null,
+            kill: vi.fn(function (this: { killed: boolean; exitCode: number | null }) {
+                this.killed = true;
+                this.exitCode = 0;
+            })
+        };
+        const bunSpawn = vi.fn(() => bunProc);
+        (globalThis as unknown as { Bun?: unknown }).Bun = { spawn: bunSpawn };
+        const { child: pipeChild } = createMockChild();
+        mocks.spawn.mockReturnValue(pipeChild);
+        const onReady = vi.fn();
+        const onExit = vi.fn();
+
+        const manager = new TerminalManager({
+            sessionId: 'session-1',
+            getSessionPath: () => '/workspace/project',
+            onReady,
+            onOutput: vi.fn(),
+            onExit,
+            onError: vi.fn(),
+            idleTimeoutMs: 0
+        });
+
+        manager.create('terminal-1', 80, 24);
+        const bunSpawnOptions = (bunSpawn.mock.calls[0] as unknown[])[1] as { onExit: (proc: unknown, code: number | null) => void };
+        const bunOnExit = bunSpawnOptions.onExit;
+        bunOnExit(bunProc, 0);
+        manager.write('terminal-1', 'echo still alive\n');
+
+        expect(bunProc.kill).toHaveBeenCalledTimes(1);
+        expect(onReady).toHaveBeenCalledTimes(1);
+        expect(onExit).not.toHaveBeenCalled();
+        expect(pipeChild.kill).not.toHaveBeenCalled();
+        expect(mocks.spawn).toHaveBeenCalled();
+    });
+
 });
