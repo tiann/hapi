@@ -2300,7 +2300,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 });
                 return { status: 'steered', localId };
             } catch (error) {
-                session.queue.unshift(item.message, item.mode, item.localId);
+                session.queue.unshift(item.message, item.mode, item.localId, item.isolate);
                 return {
                     status: 'failed',
                     error: error instanceof Error ? error.message : String(error)

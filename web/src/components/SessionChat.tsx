@@ -492,7 +492,11 @@ export function SessionChat(props: {
                     ) : null}
 
                     <div className="px-3">
-                        <QueuedMessagesBar sessionId={props.session.id} api={props.api} />
+                        <QueuedMessagesBar
+                            sessionId={props.session.id}
+                            api={props.api}
+                            enableSteer={agentFlavor === 'codex' && !controlledByUser}
+                        />
                     </div>
 
                     <HappyComposer

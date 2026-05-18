@@ -101,7 +101,7 @@ export function computeCanCancel({
  * Edit = client-side cancel + prefill composer with message text (Codex dialect).
  * Cancel = DELETE /sessions/:id/messages/:messageId with optimistic removal.
  */
-export function QueuedMessagesBar({ sessionId, api }: { sessionId: string; api: ApiClient | null }) {
+export function QueuedMessagesBar({ sessionId, api, enableSteer = false }: { sessionId: string; api: ApiClient | null; enableSteer?: boolean }) {
     const queued = useQueuedMessages(sessionId)
     const assistantApi = useAssistantApi()
     const cancelMutation = useCancelQueuedMessage(api)
@@ -132,7 +132,7 @@ export function QueuedMessagesBar({ sessionId, api }: { sessionId: string; api: 
                         const isPending = cancelMutation.isPending && cancelMutation.variables?.localId === localId
                         const isSteering = steerMutation.isPending && steerMutation.variables?.localId === localId
                         const canCancel = computeCanCancel({ id: msg.id, localId: msg.localId, isPending })
-                        const canSteer = computeCanCancel({ id: msg.id, localId: msg.localId, isPending: isPending || isSteering })
+                        const canSteer = enableSteer && computeCanCancel({ id: msg.id, localId: msg.localId, isPending: isPending || isSteering })
 
                         const handleCancel = () => {
                             if (!canCancel) return
@@ -187,30 +187,32 @@ export function QueuedMessagesBar({ sessionId, api }: { sessionId: string; api: 
                                     {text}
                                 </span>
                                 <div className="flex shrink-0 items-center gap-1">
-                                    <button
-                                        type="button"
-                                        aria-label="Steer queued message"
-                                        disabled={!canSteer}
-                                        onClick={handleSteer}
-                                        onMouseDown={(e) => e.preventDefault()}
-                                        className="flex h-6 items-center gap-1 rounded px-1.5 text-[var(--app-hint)] transition-colors hover:bg-[var(--app-border)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-40"
-                                    >
-                                        <svg
-                                            viewBox="0 0 16 16"
-                                            fill="none"
-                                            className="h-3.5 w-3.5"
-                                            aria-hidden="true"
+                                    {enableSteer ? (
+                                        <button
+                                            type="button"
+                                            aria-label="Steer queued message"
+                                            disabled={!canSteer}
+                                            onClick={handleSteer}
+                                            onMouseDown={(e) => e.preventDefault()}
+                                            className="flex h-6 items-center gap-1 rounded px-1.5 text-[var(--app-hint)] transition-colors hover:bg-[var(--app-border)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-40"
                                         >
-                                            <path
-                                                d="M3 5h5a4 4 0 0 1 4 4v3M12 12l-3-3M12 12l3-3"
-                                                stroke="currentColor"
-                                                strokeWidth="1.5"
-                                                strokeLinecap="round"
-                                                strokeLinejoin="round"
-                                            />
-                                        </svg>
-                                        <span className="text-xs">{isSteering ? '引导中' : '引导'}</span>
-                                    </button>
+                                            <svg
+                                                viewBox="0 0 16 16"
+                                                fill="none"
+                                                className="h-3.5 w-3.5"
+                                                aria-hidden="true"
+                                            >
+                                                <path
+                                                    d="M3 5h5a4 4 0 0 1 4 4v3M12 12l-3-3M12 12l3-3"
+                                                    stroke="currentColor"
+                                                    strokeWidth="1.5"
+                                                    strokeLinecap="round"
+                                                    strokeLinejoin="round"
+                                                />
+                                            </svg>
+                                            <span className="text-xs">{isSteering ? '引导中' : '引导'}</span>
+                                        </button>
+                                    ) : null}
                                     <button
                                         type="button"
                                         aria-label="Edit queued message"

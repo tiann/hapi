@@ -150,7 +150,7 @@ export class MessageQueue2<T> {
     /**
      * Push a message to the beginning of the queue with a mode.
      */
-    unshift(message: string, mode: T, localId?: string): void {
+    unshift(message: string, mode: T, localId?: string, isolate = false): void {
         if (this.closed) {
             throw new Error('Cannot unshift to closed queue');
         }
@@ -163,7 +163,7 @@ export class MessageQueue2<T> {
             mode,
             modeHash,
             localId,
-            isolate: false
+            isolate
         });
 
         // Trigger message handler if set
