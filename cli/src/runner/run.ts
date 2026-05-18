@@ -14,6 +14,7 @@ import { spawnHappyCLI } from '@/utils/spawnHappyCLI';
 import { writeRunnerState, RunnerLocallyPersistedState, readRunnerState, acquireRunnerLock, releaseRunnerLock } from '@/persistence';
 import { isProcessAlive, isWindows, killProcess, killProcessByChildProcess } from '@/utils/process';
 import { PERMISSION_MODES } from '@hapi/protocol/modes';
+import { CLAUDE_MODEL_PRESETS } from '@hapi/protocol';
 import { withRetry } from '@/utils/time';
 import { isRetryableConnectionError } from '@/utils/errorUtils';
 
@@ -24,6 +25,16 @@ import { join } from 'path';
 import { buildMachineMetadata } from '@/agent/sessionFactory';
 import { resolveWorkspaceRoots } from '@/utils/workspaceRoot';
 import { hashRunnerCliApiToken } from './runnerIdentity';
+
+const CLAUDE_BUILT_IN_MODEL_ALIASES = new Set<string>(CLAUDE_MODEL_PRESETS);
+
+export function shouldSetClaudeHaikuModelEnv(agent: string, model?: string): boolean {
+  if (agent !== 'claude') {
+    return false;
+  }
+  const normalizedModel = model?.trim();
+  return Boolean(normalizedModel && !CLAUDE_BUILT_IN_MODEL_ALIASES.has(normalizedModel));
+}
 
 export async function startRunner(options: { workspaceRoots?: string[] } = {}): Promise<void> {
   // We don't have cleanup function at the time of server construction
@@ -375,6 +386,13 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
             HAPI_WORKTREE_NAME: worktreeInfo.name,
             HAPI_WORKTREE_PATH: worktreeInfo.worktreePath,
             HAPI_WORKTREE_CREATED_AT: String(worktreeInfo.createdAt)
+          };
+        }
+
+        if (shouldSetClaudeHaikuModelEnv(agent, options.model) && options.model) {
+          extraEnv = {
+            ...extraEnv,
+            ANTHROPIC_DEFAULT_HAIKU_MODEL: options.model
           };
         }
 

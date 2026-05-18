@@ -130,6 +130,8 @@ export default {
   'newSession.model': '模型',
   'newSession.effort': '思考强度',
   'newSession.model.optional': '可选',
+  'newSession.model.custom.placeholder': '输入自定义模型名称',
+  'newSession.model.custom.required': '请输入自定义模型名称',
   'newSession.model.loadFailed': '加载 Codex 模型失败',
   'newSession.opencodeModel.loading': '正在发现 OpenCode 模型…',
   'newSession.opencodeModel.loadFailed': '加载 OpenCode 模型失败',

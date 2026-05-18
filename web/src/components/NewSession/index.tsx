@@ -54,6 +54,7 @@ export function NewSession(props: {
     const [isDirectoryFocused, setIsDirectoryFocused] = useState(false)
     const [agent, setAgent] = useState<AgentType>(loadPreferredAgent)
     const [model, setModel] = useState('auto')
+    const [customModel, setCustomModel] = useState('')
     const [effort, setEffort] = useState<ClaudeEffort>('auto')
     const [modelReasoningEffort, setModelReasoningEffort] = useState<CodexReasoningEffort>('default')
     const [yoloMode, setYoloMode] = useState(loadPreferredYoloMode)
@@ -71,6 +72,7 @@ export function NewSession(props: {
 
     useEffect(() => {
         setModel('auto')
+        setCustomModel('')
         setEffort('auto')
     }, [agent])
 
@@ -315,9 +317,16 @@ export function NewSession(props: {
                 return
             }
 
+            const trimmedCustomModel = customModel.trim()
+            if (agent === 'claude' && model === 'custom' && !trimmedCustomModel) {
+                setError(t('newSession.model.custom.required'))
+                return
+            }
             const resolvedModel = agent === 'opencode'
                 ? (opencodeSelectedModel ?? undefined)
-                : (model !== 'auto' ? model : undefined)
+                : agent === 'claude' && model === 'custom'
+                    ? trimmedCustomModel
+                    : (model !== 'auto' ? model : undefined)
             const resolvedEffort = agent === 'claude' && effort !== 'auto' ? effort : undefined
             const resolvedModelReasoningEffort = agent === 'codex' && modelReasoningEffort !== 'default'
                 ? modelReasoningEffort
@@ -411,6 +420,7 @@ export function NewSession(props: {
                 <ModelSelector
                     agent={agent}
                     model={model}
+                    customModel={customModel}
                     options={agent === 'codex' ? codexModelOptions : undefined}
                     isDisabled={isFormDisabled || (agent === 'codex' && Boolean(codexModelsState.error))}
                     isLoading={agent === 'codex' && codexModelsState.isLoading}
@@ -418,6 +428,7 @@ export function NewSession(props: {
                         ? `${t('newSession.model.loadFailed')}: ${codexModelsState.error}`
                         : null}
                     onModelChange={setModel}
+                    onCustomModelChange={setCustomModel}
                 />
             )}
             <ClaudeEffortSelector
