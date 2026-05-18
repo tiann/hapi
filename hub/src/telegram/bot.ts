@@ -11,6 +11,7 @@ import { handleCallback, CallbackContext } from './callbacks'
 import { formatSessionNotification, createNotificationKeyboard } from './sessionView'
 import { getAgentName } from '../notifications/sessionInfo'
 import type { NotificationChannel, TaskNotification } from '../notifications/notificationTypes'
+import { isFailureStatus } from '../notifications/notificationTypes'
 import type { Store } from '../store'
 
 export interface BotContext extends Context {
@@ -248,8 +249,7 @@ export class HappyBot implements NotificationChannel {
         }
 
         const agentName = getAgentName(session)
-        const status = notification.status?.trim().toLowerCase()
-        const prefix = status === 'failed' || status === 'error' || status === 'killed' || status === 'aborted'
+        const prefix = isFailureStatus(notification.status)
             ? 'Task failed'
             : 'Task completed'
         const url = buildMiniAppDeepLink(this.publicUrl, `session_${session.id}`)
