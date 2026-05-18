@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { AgentMessage } from '@/agent/types';
 import { AcpMessageHandler } from './AcpMessageHandler';
 import { ACP_SESSION_UPDATE_TYPES } from './constants';
@@ -1367,7 +1369,7 @@ describe('AcpMessageHandler', () => {
         // include rawInput in tool_call events and emits prose (non-JSON)
         // thoughts. There is therefore no JSON-thought-hoisting trigger —
         // tool_call input is null and the thought text surfaces as reasoning.
-        const fixtureDir = new URL('./__fixtures__', import.meta.url).pathname;
+        const fixtureDir = fileURLToPath(new URL('./__fixtures__', import.meta.url));
 
         const fixtures = [
             {
@@ -1375,14 +1377,14 @@ describe('AcpMessageHandler', () => {
                 // model expresses reasoning as a `kind: think` tool_call rather
                 // than as a thought chunk, so the reasoning channel is empty.
                 name: 'gemini-3-flash-preview / read_file',
-                file: `${fixtureDir}/gemini-3-flash-preview-read-file.json`,
+                file: join(fixtureDir, 'gemini-3-flash-preview-read-file.json'),
                 expectedMinToolCalls: 2,
                 expectedMinReasoning: 0,
                 hasMessageChunks: true,
             },
             {
                 name: 'gemini-3-flash-preview / run_shell',
-                file: `${fixtureDir}/gemini-3-flash-preview-run-shell.json`,
+                file: join(fixtureDir, 'gemini-3-flash-preview-run-shell.json'),
                 expectedMinToolCalls: 1,
                 expectedMinReasoning: 1,
                 hasMessageChunks: true,
@@ -1391,7 +1393,7 @@ describe('AcpMessageHandler', () => {
                 // write_file: kind=edit, locations carries the file path.
                 // Same shape (and zero thought chunks) as read_file.
                 name: 'gemini-3-flash-preview / write_file',
-                file: `${fixtureDir}/gemini-3-flash-preview-write-file.json`,
+                file: join(fixtureDir, 'gemini-3-flash-preview-write-file.json'),
                 expectedMinToolCalls: 2,
                 expectedMinReasoning: 0,
                 hasMessageChunks: true,
@@ -1399,7 +1401,7 @@ describe('AcpMessageHandler', () => {
             {
                 // replace (in-place edit): same kind=edit + locations pattern.
                 name: 'gemini-3-flash-preview / edit_file',
-                file: `${fixtureDir}/gemini-3-flash-preview-edit-file.json`,
+                file: join(fixtureDir, 'gemini-3-flash-preview-edit-file.json'),
                 expectedMinToolCalls: 2,
                 expectedMinReasoning: 0,
                 hasMessageChunks: true,
@@ -1411,7 +1413,7 @@ describe('AcpMessageHandler', () => {
             // assertions below match the flash captures.
             {
                 name: 'gemini-3.1-pro-preview / read_file',
-                file: `${fixtureDir}/gemini-3.1-pro-preview-read-file.json`,
+                file: join(fixtureDir, 'gemini-3.1-pro-preview-read-file.json'),
                 expectedMinToolCalls: 2,
                 expectedMinReasoning: 0,
                 hasMessageChunks: true,
@@ -1420,7 +1422,7 @@ describe('AcpMessageHandler', () => {
                 // run_shell: pro emits a single agent_thought_chunk in addition
                 // to the execute tool_call.
                 name: 'gemini-3.1-pro-preview / run_shell',
-                file: `${fixtureDir}/gemini-3.1-pro-preview-run-shell.json`,
+                file: join(fixtureDir, 'gemini-3.1-pro-preview-run-shell.json'),
                 expectedMinToolCalls: 1,
                 expectedMinReasoning: 1,
                 hasMessageChunks: true,
@@ -1428,7 +1430,7 @@ describe('AcpMessageHandler', () => {
             {
                 // write_file: kind=edit, locations carries the file path.
                 name: 'gemini-3.1-pro-preview / write_file',
-                file: `${fixtureDir}/gemini-3.1-pro-preview-write-file.json`,
+                file: join(fixtureDir, 'gemini-3.1-pro-preview-write-file.json'),
                 expectedMinToolCalls: 1,
                 expectedMinReasoning: 0,
                 hasMessageChunks: true,
@@ -1437,7 +1439,7 @@ describe('AcpMessageHandler', () => {
                 // replace (in-place edit): pro version interleaves think + read
                 // + edit kinds before the final agent_message_chunk burst.
                 name: 'gemini-3.1-pro-preview / edit_file',
-                file: `${fixtureDir}/gemini-3.1-pro-preview-edit-file.json`,
+                file: join(fixtureDir, 'gemini-3.1-pro-preview-edit-file.json'),
                 expectedMinToolCalls: 2,
                 expectedMinReasoning: 0,
                 hasMessageChunks: true,
@@ -1786,9 +1788,9 @@ describe('AcpMessageHandler', () => {
 
         it('replays write_file fixture and produces Write-shaped tool_call input', () => {
             // Integration: full fixture replay must produce Write with {file_path, content}
-            const fixtureDir = new URL('./__fixtures__', import.meta.url).pathname;
+            const fixtureDir = fileURLToPath(new URL('./__fixtures__', import.meta.url));
             // eslint-disable-next-line @typescript-eslint/no-require-imports
-            const data = require(`${fixtureDir}/gemini-3-flash-preview-write-file.json`) as {
+            const data = require(join(fixtureDir, 'gemini-3-flash-preview-write-file.json')) as {
                 updates: unknown[];
             };
 
@@ -1814,9 +1816,9 @@ describe('AcpMessageHandler', () => {
 
         it('replays edit_file fixture and produces Edit-shaped tool_call input', () => {
             // Integration: full fixture replay must produce Edit with {file_path, old_string, new_string}
-            const fixtureDir = new URL('./__fixtures__', import.meta.url).pathname;
+            const fixtureDir = fileURLToPath(new URL('./__fixtures__', import.meta.url));
             // eslint-disable-next-line @typescript-eslint/no-require-imports
-            const data = require(`${fixtureDir}/gemini-3-flash-preview-edit-file.json`) as {
+            const data = require(join(fixtureDir, 'gemini-3-flash-preview-edit-file.json')) as {
                 updates: unknown[];
             };
 
