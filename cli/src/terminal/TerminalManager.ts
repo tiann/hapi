@@ -1,3 +1,5 @@
+import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import { logger } from '@/ui/logger'
 import { getInvokedCwd } from '@/utils/invokedCwd'
 import type {
@@ -8,10 +10,17 @@ import type {
 } from '@hapi/protocol'
 import type { TerminalSession } from './types'
 
+type TerminalHandle = {
+    write: (data: string) => void
+    resize: (cols: number, rows: number) => void
+    close: () => void
+}
+
 type TerminalRuntime = TerminalSession & {
-    proc: Bun.Subprocess
-    terminal: Bun.Terminal
+    proc: { killed?: boolean; exitCode?: number | null; kill: () => unknown }
+    terminal: TerminalHandle
     idleTimer: ReturnType<typeof setTimeout> | null
+    killOnCleanup: boolean
 }
 
 type TerminalManagerOptions = {
@@ -27,6 +36,138 @@ type TerminalManagerOptions = {
 
 const DEFAULT_IDLE_TIMEOUT_MS = 15 * 60_000
 const DEFAULT_MAX_TERMINALS = 4
+
+const PYTHON_PTY_BRIDGE_SCRIPT = String.raw`
+import base64
+import errno
+import fcntl
+import json
+import os
+import pty
+import select
+import signal
+import struct
+import subprocess
+import sys
+import threading
+import termios
+
+shell = sys.argv[1]
+cols = int(sys.argv[2])
+rows = int(sys.argv[3])
+name = os.path.basename(shell)
+argv = [shell, '-i'] if name in ('bash', 'zsh', 'fish') else [shell]
+master_fd, slave_fd = pty.openpty()
+master_fd_closed = False
+master_fd_lock = threading.Lock()
+
+def close_master_fd():
+    global master_fd_closed
+    with master_fd_lock:
+        if master_fd_closed:
+            return
+        try:
+            os.close(master_fd)
+        except OSError:
+            pass
+        master_fd_closed = True
+
+def set_size(next_cols, next_rows):
+    winsize = struct.pack('HHHH', int(next_rows), int(next_cols), 0, 0)
+    fcntl.ioctl(master_fd, termios.TIOCSWINSZ, winsize)
+    try:
+        fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, winsize)
+    except OSError:
+        pass
+
+set_size(cols, rows)
+
+def setup_child():
+    os.setsid()
+    fcntl.ioctl(slave_fd, termios.TIOCSCTTY, 0)
+
+proc = subprocess.Popen(argv, stdin=slave_fd, stdout=slave_fd, stderr=slave_fd, preexec_fn=setup_child)
+os.close(slave_fd)
+
+def terminate_child_group(sig=signal.SIGTERM):
+    try:
+        os.killpg(proc.pid, sig)
+    except OSError:
+        pass
+
+def shutdown_child_group(sig=signal.SIGTERM):
+    terminate_child_group(sig)
+    close_master_fd()
+    if proc.poll() is None:
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            terminate_child_group(signal.SIGKILL)
+            proc.wait()
+
+def handle_bridge_signal(signum, _frame):
+    shutdown_child_group(signal.SIGTERM)
+    os._exit(128 + signum)
+
+for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+    signal.signal(signum, handle_bridge_signal)
+
+def input_loop():
+    for raw in sys.stdin.buffer:
+        try:
+            msg = json.loads(raw.decode('utf-8'))
+            msg_type = msg.get('type')
+            if msg_type == 'write':
+                os.write(master_fd, base64.b64decode(msg.get('data', '')))
+            elif msg_type == 'resize':
+                set_size(msg.get('cols', cols), msg.get('rows', rows))
+                try:
+                    os.killpg(proc.pid, signal.SIGWINCH)
+                except OSError:
+                    pass
+            elif msg_type == 'close':
+                break
+        except Exception as exc:
+            print('[hapi-terminal-pty] input error: %s' % exc, file=sys.stderr)
+            break
+    terminate_child_group()
+    close_master_fd()
+
+threading.Thread(target=input_loop, daemon=True).start()
+
+while True:
+    if master_fd_closed:
+        break
+    if proc.poll() is not None:
+        timeout = 0
+    else:
+        timeout = 0.1
+    try:
+        readable, _, _ = select.select([master_fd], [], [], timeout)
+    except OSError:
+        break
+    if master_fd in readable:
+        try:
+            data = os.read(master_fd, 65536)
+        except OSError as exc:
+            if exc.errno == errno.EIO:
+                break
+            raise
+        if not data:
+            break
+        sys.stdout.buffer.write(data)
+        sys.stdout.buffer.flush()
+    elif proc.poll() is not None:
+        break
+
+close_master_fd()
+
+if proc.poll() is None:
+    shutdown_child_group()
+
+os._exit(proc.returncode if proc.returncode is not None else 0)
+`;
+
 const SENSITIVE_ENV_KEYS = new Set([
     'CLI_API_TOKEN',
     'HAPI_API_URL',
@@ -55,6 +196,35 @@ function resolveShell(): string {
         return '/bin/zsh'
     }
     return '/bin/bash'
+}
+
+function shellArgs(shell: string): string[] {
+    const name = shell.split(/[\\/]/).pop() ?? shell
+    if (name === 'bash' || name === 'zsh' || name === 'fish') {
+        return [shell, '-i']
+    }
+    return [shell]
+}
+
+function quotePosixShellArg(value: string): string {
+    return "'" + value.replace(/'/g, "'\\''") + "'"
+}
+
+function resolvePythonExecutable(): string | null {
+    for (const candidate of ['python3', 'python']) {
+        const result = spawnSync(candidate, ['--version'], { stdio: 'ignore' })
+        if (result.status === 0) {
+            return candidate
+        }
+    }
+    return null
+}
+
+function resolveTerminalCommand(shell: string): string[] {
+    if (process.platform !== 'darwin' && process.env.HAPI_TERMINAL_DISABLE_SCRIPT_PTY !== '1' && existsSync('/usr/bin/script')) {
+        return ['/usr/bin/script', '-q', '/dev/null', '-c', `${quotePosixShellArg(shell)} -i`]
+    }
+    return shellArgs(shell)
 }
 
 function buildFilteredEnv(): NodeJS.ProcessEnv {
@@ -125,77 +295,280 @@ export class TerminalManager {
             return
         }
 
-        if (typeof Bun === 'undefined' || typeof Bun.spawn !== 'function') {
-            this.emitError(terminalId, 'Terminal is unavailable in this runtime.')
-            return
-        }
-
         const sessionPath = this.getSessionPath() ?? getInvokedCwd()
         const shell = resolveShell()
-        const decoder = new TextDecoder()
 
         try {
-            const proc = Bun.spawn([shell], {
-                cwd: sessionPath,
-                env: this.filteredEnv,
-                terminal: {
-                    cols,
-                    rows,
-                    data: (terminal, data) => {
-                        const text = decoder.decode(data, { stream: true })
-                        if (text) {
-                            this.onOutput({ sessionId: this.sessionId, terminalId, data: text })
-                        }
-                        const active = this.terminals.get(terminalId)
-                        if (active) {
-                            this.markActivity(active)
-                        }
-                    },
-                    exit: (terminal, exitCode) => {
-                        if (exitCode === 1) {
-                            this.emitError(terminalId, 'Terminal stream closed unexpectedly.')
-                        }
-                    }
-                },
-                onExit: (subprocess, exitCode) => {
-                    const signal = subprocess.signalCode ?? null
-                    this.onExit({
-                        sessionId: this.sessionId,
-                        terminalId,
-                        code: exitCode ?? null,
-                        signal
-                    })
-                    this.cleanup(terminalId)
-                }
-            })
-
-            const terminal = proc.terminal
-            if (!terminal) {
-                try {
-                    proc.kill()
-                } catch (error) {
-                    logger.debug('[TERMINAL] Failed to kill process after missing terminal', { error })
-                }
-                this.emitError(terminalId, 'Failed to attach terminal.')
+            if (process.platform === 'darwin' || process.env.HAPI_TERMINAL_USE_BUN_PTY === '1') {
+                this.createBunTerminal(terminalId, cols, rows, sessionPath, shell)
                 return
             }
-
-            const runtime: TerminalRuntime = {
-                terminalId,
-                cols,
-                rows,
-                proc,
-                terminal,
-                idleTimer: null
+            const python = resolvePythonExecutable()
+            if (python) {
+                this.createPythonPtyTerminal(terminalId, cols, rows, sessionPath, shell, python)
+                return
             }
-
-            this.terminals.set(terminalId, runtime)
-            this.markActivity(runtime)
-            this.onReady({ sessionId: this.sessionId, terminalId })
+            this.createPipeTerminal(terminalId, cols, rows, sessionPath, shell)
         } catch (error) {
             logger.debug('[TERMINAL] Failed to spawn terminal', { error })
             this.emitError(terminalId, 'Failed to spawn terminal.')
         }
+    }
+
+    private createBunTerminal(terminalId: string, cols: number, rows: number, cwd: string, shell: string): void {
+        if (typeof Bun === 'undefined' || typeof Bun.spawn !== 'function') {
+            this.createPipeTerminal(terminalId, cols, rows, cwd, shell)
+            return
+        }
+
+        const decoder = new TextDecoder()
+        const proc = Bun.spawn(shellArgs(shell), {
+            cwd,
+            env: this.filteredEnv,
+            terminal: {
+                cols,
+                rows,
+                data: (_terminal, data) => {
+                    if (!this.isRuntimeProc(terminalId, proc)) {
+                        return
+                    }
+                    const text = decoder.decode(data, { stream: true })
+                    if (text) {
+                        this.onOutput({ sessionId: this.sessionId, terminalId, data: text })
+                    }
+                    const active = this.terminals.get(terminalId)
+                    if (active) {
+                        this.markActivity(active)
+                    }
+                }
+            },
+            onExit: (subprocess, exitCode) => {
+                if (!this.isRuntimeProc(terminalId, proc)) {
+                    return
+                }
+                const signal = subprocess.signalCode ?? null
+                this.onExit({
+                    sessionId: this.sessionId,
+                    terminalId,
+                    code: exitCode ?? null,
+                    signal
+                })
+                this.cleanup(terminalId)
+            }
+        })
+
+        const bunTerminal = proc.terminal
+        if (!bunTerminal) {
+            try {
+                proc.kill()
+            } catch (error) {
+                logger.debug('[TERMINAL] Failed to kill process after missing Bun terminal', { error })
+            }
+            this.createPipeTerminal(terminalId, cols, rows, cwd, shell)
+            return
+        }
+
+        const terminal: TerminalHandle = {
+            write: (data: string) => bunTerminal.write(data),
+            resize: (nextCols: number, nextRows: number) => bunTerminal.resize(nextCols, nextRows),
+            close: () => bunTerminal.close()
+        }
+
+        const runtime: TerminalRuntime = {
+            terminalId,
+            cols,
+            rows,
+            proc,
+            terminal,
+            idleTimer: null,
+            killOnCleanup: true
+        }
+
+        this.terminals.set(terminalId, runtime)
+        this.markActivity(runtime)
+        this.onReady({ sessionId: this.sessionId, terminalId })
+    }
+
+    private createPythonPtyTerminal(
+        terminalId: string,
+        cols: number,
+        rows: number,
+        cwd: string,
+        shell: string,
+        python: string
+    ): void {
+        const proc = spawn(python, ['-c', PYTHON_PTY_BRIDGE_SCRIPT, shell, String(cols), String(rows)], {
+            cwd,
+            env: {
+                ...this.filteredEnv,
+                COLUMNS: String(cols),
+                LINES: String(rows)
+            },
+            stdio: ['pipe', 'pipe', 'pipe'],
+            windowsHide: process.platform === 'win32'
+        })
+
+        const emitOutput = (data: Buffer | string) => {
+            if (!this.isRuntimeProc(terminalId, proc)) {
+                return
+            }
+            const text = data.toString()
+            if (text) {
+                this.onOutput({ sessionId: this.sessionId, terminalId, data: text })
+            }
+            const active = this.terminals.get(terminalId)
+            if (active) {
+                this.markActivity(active)
+            }
+        }
+
+        proc.stdout.on('data', emitOutput)
+        proc.stderr.on('data', emitOutput)
+        proc.on('error', (error) => {
+            if (!this.isRuntimeProc(terminalId, proc)) {
+                return
+            }
+            logger.debug('[TERMINAL] Python PTY bridge process error', { error })
+            this.emitError(terminalId, 'Terminal process failed.')
+            this.cleanup(terminalId)
+        })
+        proc.on('exit', (exitCode, signal) => {
+            if (!this.isRuntimeProc(terminalId, proc)) {
+                return
+            }
+            this.onExit({
+                sessionId: this.sessionId,
+                terminalId,
+                code: exitCode ?? null,
+                signal: signal ?? null
+            })
+            this.cleanup(terminalId)
+        })
+
+        const writeControl = (payload: Record<string, unknown>) => {
+            if (!proc.stdin.destroyed) {
+                proc.stdin.write(`${JSON.stringify(payload)}\n`)
+            }
+        }
+
+        const terminal: TerminalHandle = {
+            write: (data: string) => writeControl({ type: 'write', data: Buffer.from(data).toString('base64') }),
+            resize: (nextCols: number, nextRows: number) => writeControl({ type: 'resize', cols: nextCols, rows: nextRows }),
+            close: () => {
+                writeControl({ type: 'close' })
+                try {
+                    if (!proc.stdin.destroyed) {
+                        proc.stdin.end()
+                    }
+                } catch (error) {
+                    logger.debug('[TERMINAL] Failed to close Python PTY stdin', { error })
+                }
+            }
+        }
+
+        const runtime: TerminalRuntime = {
+            terminalId,
+            cols,
+            rows,
+            proc: proc as ChildProcessWithoutNullStreams,
+            terminal,
+            idleTimer: null,
+            killOnCleanup: false
+        }
+
+        this.terminals.set(terminalId, runtime)
+        this.markActivity(runtime)
+        this.onReady({ sessionId: this.sessionId, terminalId })
+    }
+
+    private createPipeTerminal(terminalId: string, cols: number, rows: number, cwd: string, shell: string): void {
+        const [command, ...args] = resolveTerminalCommand(shell)
+        const env = {
+            ...this.filteredEnv,
+            COLUMNS: String(cols),
+            LINES: String(rows)
+        }
+        const proc = spawn(command, args, {
+            cwd,
+            env,
+            stdio: ['pipe', 'pipe', 'pipe'],
+            windowsHide: process.platform === 'win32'
+        })
+
+        const emitOutput = (data: Buffer | string) => {
+            if (!this.isRuntimeProc(terminalId, proc)) {
+                return
+            }
+            const text = data.toString()
+            if (text) {
+                this.onOutput({ sessionId: this.sessionId, terminalId, data: text })
+            }
+            const active = this.terminals.get(terminalId)
+            if (active) {
+                this.markActivity(active)
+            }
+        }
+
+        proc.stdout.on('data', emitOutput)
+        proc.stderr.on('data', emitOutput)
+        proc.on('error', (error) => {
+            if (!this.isRuntimeProc(terminalId, proc)) {
+                return
+            }
+            logger.debug('[TERMINAL] Pipe terminal process error', { error })
+            this.emitError(terminalId, 'Terminal process failed.')
+            this.cleanup(terminalId)
+        })
+        proc.on('exit', (exitCode, signal) => {
+            if (!this.isRuntimeProc(terminalId, proc)) {
+                return
+            }
+            this.onExit({
+                sessionId: this.sessionId,
+                terminalId,
+                code: exitCode ?? null,
+                signal: signal ?? null
+            })
+            this.cleanup(terminalId)
+        })
+
+        const terminal: TerminalHandle = {
+            write: (data: string) => {
+                if (!proc.stdin.destroyed) {
+                    proc.stdin.write(data)
+                }
+            },
+            resize: (nextCols: number, nextRows: number) => {
+                // Pipes cannot resize a pseudo terminal. Preserve dimensions for
+                // reconnect/idleness bookkeeping and expose them to child shells
+                // that consult COLUMNS/LINES before prompt redraws.
+                env.COLUMNS = String(nextCols)
+                env.LINES = String(nextRows)
+            },
+            close: () => {
+                try {
+                    if (!proc.stdin.destroyed) {
+                        proc.stdin.end()
+                    }
+                } catch (error) {
+                    logger.debug('[TERMINAL] Failed to close pipe stdin', { error })
+                }
+            }
+        }
+
+        const runtime: TerminalRuntime = {
+            terminalId,
+            cols,
+            rows,
+            proc: proc as ChildProcessWithoutNullStreams,
+            terminal,
+            idleTimer: null,
+            killOnCleanup: true
+        }
+
+        this.terminals.set(terminalId, runtime)
+        this.markActivity(runtime)
+        this.onReady({ sessionId: this.sessionId, terminalId })
     }
 
     write(terminalId: string, data: string): void {
@@ -248,6 +621,10 @@ export class TerminalManager {
         }, this.idleTimeoutMs)
     }
 
+    private isRuntimeProc(terminalId: string, proc: unknown): boolean {
+        return this.terminals.get(terminalId)?.proc === proc
+    }
+
     private cleanup(terminalId: string): void {
         const runtime = this.terminals.get(terminalId)
         if (!runtime) {
@@ -259,18 +636,18 @@ export class TerminalManager {
             clearTimeout(runtime.idleTimer)
         }
 
-        if (!runtime.proc.killed && runtime.proc.exitCode === null) {
+        try {
+            runtime.terminal.close()
+        } catch (error) {
+            logger.debug('[TERMINAL] Failed to close terminal stream', { error })
+        }
+
+        if (runtime.killOnCleanup && !runtime.proc.killed && runtime.proc.exitCode === null) {
             try {
                 runtime.proc.kill()
             } catch (error) {
                 logger.debug('[TERMINAL] Failed to kill process', { error })
             }
-        }
-
-        try {
-            runtime.terminal.close()
-        } catch (error) {
-            logger.debug('[TERMINAL] Failed to close terminal', { error })
         }
     }
 
