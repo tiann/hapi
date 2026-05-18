@@ -5,5 +5,5 @@ export function isWindowsHostOs(os: string | null | undefined): boolean {
 }
 
 export function isRemoteTerminalSupported(metadata: SessionMetadataSummary | null | undefined): boolean {
-    return !isWindowsHostOs(metadata?.os)
+    return metadata?.capabilities?.terminal ?? true
 }

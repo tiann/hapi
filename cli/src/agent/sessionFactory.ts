@@ -78,6 +78,9 @@ export function buildSessionMetadata(options: {
         lifecycleState: 'running',
         lifecycleStateSince: now,
         flavor: options.flavor,
+        capabilities: {
+            terminal: true
+        },
         worktree: worktreeInfo ?? undefined,
         ...options.metadataOverrides
     }

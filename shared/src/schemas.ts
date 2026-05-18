@@ -9,6 +9,10 @@ const MetadataSummarySchema = z.object({
     updatedAt: z.number()
 })
 
+const SessionCapabilitiesSchema = z.object({
+    terminal: z.boolean().optional()
+})
+
 export const WorktreeMetadataSchema = z.object({
     basePath: z.string(),
     branch: z.string(),
@@ -46,6 +50,7 @@ export const MetadataSchema = z.object({
     archivedBy: z.string().optional(),
     archiveReason: z.string().optional(),
     flavor: z.string().nullish(),
+    capabilities: SessionCapabilitiesSchema.optional(),
     worktree: WorktreeMetadataSchema.optional()
 })
 

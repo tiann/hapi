@@ -34,6 +34,9 @@ export type SessionMetadataSummary = {
     machineId?: string
     tools?: string[]
     flavor?: string | null
+    capabilities?: {
+        terminal?: boolean
+    }
     worktree?: WorktreeMetadata
 }
 

@@ -25,4 +25,16 @@ describe('buildSessionMetadata', () => {
 
         expect(metadata.host).toBe('custom-session-host')
     })
+
+    it('advertises remote terminal capability in session metadata', () => {
+        const metadata = buildSessionMetadata({
+            flavor: 'codex',
+            startedBy: 'terminal',
+            workingDirectory: '/tmp/project',
+            machineId: 'machine-1',
+            now: 123
+        })
+
+        expect(metadata.capabilities?.terminal).toBe(true)
+    })
 })

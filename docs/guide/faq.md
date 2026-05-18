@@ -97,9 +97,9 @@ Yes. Open any session and use the chat interface to send messages directly to th
 
 ### Can I access a terminal remotely?
 
-Yes, on Linux and macOS hosts. Open a session in the web app and tap the Terminal tab for a remote shell.
+Yes. Open a session in the web app and tap the Terminal tab for a remote shell.
 
-Windows hosts do not support the remote Terminal yet because the Bun PTY API used by HAPI is currently POSIX-only.
+Linux and macOS hosts use Bun's POSIX PTY support. Windows hosts use Bun's ConPTY support, which requires Bun 1.3.14 or newer.
 
 ### How do I use voice control?
 
