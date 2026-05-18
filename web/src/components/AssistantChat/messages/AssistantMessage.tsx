@@ -160,17 +160,26 @@ export function HappyAssistantMessage() {
                 id={getConversationMessageAnchorId(messageId)}
                 className={`${rootClass} ${copyText ? 'group/msg' : ''} scroll-mt-4`}
             >
-                <MessagePrimitive.Content components={MESSAGE_PART_COMPONENTS} />
-                {showMetadata && (
-                    <MessageMetadata
-                        invokedAt={invokedAt}
-                        durationMs={durationMs}
-                        usage={usage}
-                        model={messageModel ?? null}
-                        turnCount={turnCount}
-                        className="mt-1"
-                    />
-                )}
+                <div
+                    className={hasMetadata ? 'min-w-0 cursor-pointer' : 'min-w-0'}
+                    onClick={hasMetadata ? toggleMetadata : undefined}
+                    onKeyDown={hasMetadata ? onMetadataKeyDown : undefined}
+                    role={hasMetadata ? 'button' : undefined}
+                    tabIndex={hasMetadata ? 0 : undefined}
+                    aria-expanded={hasMetadata ? showMetadata : undefined}
+                >
+                    <MessagePrimitive.Content components={MESSAGE_PART_COMPONENTS} />
+                    {showMetadata && (
+                        <MessageMetadata
+                            invokedAt={invokedAt}
+                            durationMs={durationMs}
+                            usage={usage}
+                            model={messageModel ?? null}
+                            turnCount={turnCount}
+                            className="mt-1"
+                        />
+                    )}
+                </div>
             </MessagePrimitive.Root>
         )
     }
