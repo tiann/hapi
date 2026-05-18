@@ -104,6 +104,41 @@ describe('remarkNonHttpsAutolink', () => {
         expect(trailingText?.value).toContain(expectedTrailing)
     })
 
+    // ── Balanced paren/bracket preservation (GFM autolink literal behaviour) ───
+
+    it.each([
+        ['balanced paren in URL', 'obsidian://open?file=Note(1)',   'obsidian://open?file=Note(1)'],
+        ['balanced bracket in URL', 'obsidian://open?file=Note[1]', 'obsidian://open?file=Note[1]'],
+        ['nested balanced parens', 'obsidian://open?q=(a(b)c)',     'obsidian://open?q=(a(b)c)'],
+    ])('keeps %s inside the linked URL', (_label, inputText, expectedUrl) => {
+        const tree = makeRoot([makeParagraph([makeText(inputText)])])
+        transform(tree)
+        const link = tree.children[0].children.find((c: any) => c.type === 'link')
+        expect(link?.url).toBe(expectedUrl)
+        // No trailing text node should be emitted for a balanced URL.
+        expect(tree.children[0].children.length).toBe(1)
+    })
+
+    it('strips period after a balanced-paren URL but keeps the parens', () => {
+        const tree = makeRoot([makeParagraph([makeText('See obsidian://open?file=Note(1).')])])
+        transform(tree)
+        const para = tree.children[0]
+        const link = para.children.find((c: any) => c.type === 'link')
+        expect(link?.url).toBe('obsidian://open?file=Note(1)')
+        const trailingText = para.children[para.children.indexOf(link) + 1]
+        expect(trailingText?.value).toBe('.')
+    })
+
+    it('strips an unmatched closing paren (no opener in URL body)', () => {
+        const tree = makeRoot([makeParagraph([makeText('(see obsidian://x).')])])
+        transform(tree)
+        const para = tree.children[0]
+        const link = para.children.find((c: any) => c.type === 'link')
+        expect(link?.url).toBe('obsidian://x')
+        const trailingText = para.children[para.children.indexOf(link) + 1]
+        expect(trailingText?.value).toBe(').')
+    })
+
     // ── Multiple URIs in one text node ───────────────────────────────────
 
     it('converts multiple non-https URIs in the same text node', () => {

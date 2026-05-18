@@ -23,9 +23,47 @@
 // by a post-match trim step so "See obsidian://x." doesn't include the ".".
 const NON_HTTPS_URI_RE = /\b(?!https?:\/\/)([a-zA-Z][a-zA-Z0-9+\-.]*):\/\/[^\s]*/g
 
-// Characters that should be stripped from the end of a matched URI.
-// Mirrors common browser / CommonMark behaviour.
-const TRAILING_PUNCT_RE = /[.,;!?:)>\]'"]+$/
+// Characters that may be stripped from the end of a matched URI.
+// `)` and `]` are only stripped when the URL body has no unmatched opening
+// counterpart — this mirrors GFM autolink literal behaviour and keeps URIs
+// like `obsidian://open?file=Note(1)` intact.
+const TRAILING_PUNCT_CHARS = /[.,;!?:)>\]'"]/
+
+/**
+ * Strip trailing punctuation from a URI, but preserve `)` / `]` that close an
+ * unmatched `(` / `[` inside the URL body.
+ *
+ * Examples:
+ *   `obsidian://x.`              → stripped `obsidian://x`,  trailing `.`
+ *   `obsidian://open?file=Note(1)` → stripped unchanged,       trailing ``
+ *   `obsidian://x).`             → stripped `obsidian://x`,  trailing `).` (no `(` to balance)
+ */
+function stripTrailingPunct(uri: string): { stripped: string; trailing: string } {
+    let stripped = uri
+    let trailing = ''
+    while (stripped.length > 0) {
+        const last = stripped[stripped.length - 1]
+        if (!TRAILING_PUNCT_CHARS.test(last)) break
+
+        if (last === ')' || last === ']') {
+            const open = last === ')' ? '(' : '['
+            const inner = stripped.slice(0, -1)
+            let opens = 0
+            let closes = 0
+            for (const ch of inner) {
+                if (ch === open) opens++
+                else if (ch === last) closes++
+            }
+            // If the inner URL already has more opens than closes, the trailing
+            // closer balances an earlier opener and belongs to the URL.
+            if (closes < opens) break
+        }
+
+        trailing = last + trailing
+        stripped = stripped.slice(0, -1)
+    }
+    return { stripped, trailing }
+}
 
 interface MdastNode {
     type: string
@@ -91,10 +129,9 @@ function linkifyText(text: string): MdastNode[] {
         const rawUri = match[0]
         const matchStart = match.index
 
-        // Strip trailing punctuation characters from the URI.
-        const trailingMatch = rawUri.match(TRAILING_PUNCT_RE)
-        const stripped = trailingMatch ? rawUri.slice(0, -trailingMatch[0].length) : rawUri
-        const trailing = trailingMatch ? trailingMatch[0] : ''
+        // Strip trailing punctuation characters from the URI, preserving
+        // balanced ()/[].
+        const { stripped, trailing } = stripTrailingPunct(rawUri)
 
         // Text before this match.
         if (matchStart > lastIndex) {
