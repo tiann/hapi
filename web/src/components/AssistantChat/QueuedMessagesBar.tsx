@@ -214,8 +214,11 @@ export function QueuedMessagesBar({
                         const localId = msg.localId ?? msg.id
                         const isPending = cancelMutation.isPending && cancelMutation.variables?.localId === localId
                         const isSteering = steerMutation.isPending && steerMutation.variables?.localId === localId
+                        const isFutureScheduled = msg.scheduledAt != null && msg.scheduledAt > Date.now()
                         const canCancel = computeCanCancel({ id: msg.id, localId: msg.localId, isPending })
-                        const canSteer = enableSteer && computeCanCancel({ id: msg.id, localId: msg.localId, isPending: isPending || isSteering })
+                        const canSteer = enableSteer
+                            && !isFutureScheduled
+                            && computeCanCancel({ id: msg.id, localId: msg.localId, isPending: isPending || isSteering })
 
                         const handleCancel = () => {
                             if (!canCancel) return
@@ -332,7 +335,9 @@ export function QueuedMessagesBar({
                                                     strokeLinejoin="round"
                                                 />
                                             </svg>
-                                            <span className="text-xs">{isSteering ? '引导中' : '引导'}</span>
+                                            <span className="text-xs">
+                                                {isSteering ? t('queuedMessages.steering') : t('queuedMessages.steer')}
+                                            </span>
                                         </button>
                                     ) : null}
                                     <button

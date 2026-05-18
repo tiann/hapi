@@ -395,6 +395,8 @@ export default {
   'composer.scheduleErrorTooFar': '最多只能定时 7 天。',
   'queuedMessages.scheduledFor': '定时发送: {time}',
   'queuedMessages.editAlreadyInvoked': '消息已发送，无法编辑',
+  'queuedMessages.steer': '引导',
+  'queuedMessages.steering': '引导中',
 
   // Scratchlist (per-session workbench, issue #11)
   'scratchlist.title': '草稿夹',
@@ -414,6 +416,7 @@ export default {
   'scratchlist.action.promoteToComposer': '复制到输入框',
   'scratchlist.action.promoteToQueue': '加入发送队列',
   'scratchlist.action.delete': '删除条目',
+
   'composer.codexSlashUnsupported.title': '无法执行 Codex 命令',
   'composer.codexSlashUnsupported.body': 'HAPI 远程模式暂不支持 {command} 这类 Codex 内建 slash command，请改用自然语言，或在本地 Codex TUI 中执行。',
 

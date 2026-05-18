@@ -393,6 +393,8 @@ export default {
   'composer.scheduleErrorTooFar': 'Maximum schedule time is 7 days.',
   'queuedMessages.scheduledFor': 'Scheduled for {time}',
   'queuedMessages.editAlreadyInvoked': "Message already sent — it can't be edited",
+  'queuedMessages.steer': 'Steer',
+  'queuedMessages.steering': 'Steering',
 
   // Scratchlist (per-session workbench, issue #11)
   'scratchlist.title': 'Scratchlist',
@@ -412,6 +414,7 @@ export default {
   'scratchlist.action.promoteToComposer': 'Copy into composer',
   'scratchlist.action.promoteToQueue': 'Send to queue',
   'scratchlist.action.delete': 'Delete entry',
+
   'composer.codexSlashUnsupported.title': 'Codex command unavailable',
   'composer.codexSlashUnsupported.body': 'HAPI remote mode does not yet run built-in Codex slash commands like {command}. Use natural language instead, or run it in the local Codex TUI.',
 
