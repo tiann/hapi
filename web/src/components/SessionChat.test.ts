@@ -1,6 +1,17 @@
 import { describe, expect, it } from 'vitest'
-import { shouldAutoClearPendingSchedule } from './SessionChat'
+import { isVoiceReadyMessage, shouldAutoClearPendingSchedule } from './SessionChat'
 import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
+import type { DecryptedMessage } from '@/types/api'
+
+function makeMessage(content: unknown): DecryptedMessage {
+    return {
+        id: 'msg-1',
+        seq: 1,
+        localId: null,
+        content,
+        createdAt: 1_742_372_800_000
+    }
+}
 
 /**
  * Unit tests for shouldAutoClearPendingSchedule.
@@ -39,5 +50,40 @@ describe('shouldAutoClearPendingSchedule', () => {
     it('returns true for expired absolute schedule (ms in the past)', () => {
         const expired: PendingSchedule = { type: 'absolute', ms: Date.now() - 1000 }
         expect(shouldAutoClearPendingSchedule(expired)).toBe(true)
+    })
+})
+
+describe('isVoiceReadyMessage', () => {
+    it('detects role-wrapped ready events', () => {
+        expect(isVoiceReadyMessage(makeMessage({
+            role: 'agent',
+            content: {
+                type: 'event',
+                data: { type: 'ready' }
+            }
+        }))).toBe(true)
+    })
+
+    it('detects Codex completion events', () => {
+        expect(isVoiceReadyMessage(makeMessage({
+            role: 'agent',
+            content: {
+                type: 'codex',
+                data: { type: 'task_complete' }
+            }
+        }))).toBe(true)
+    })
+
+    it('ignores normal Codex assistant messages', () => {
+        expect(isVoiceReadyMessage(makeMessage({
+            role: 'agent',
+            content: {
+                type: 'codex',
+                data: {
+                    type: 'message',
+                    message: 'Done.'
+                }
+            }
+        }))).toBe(false)
     })
 })
