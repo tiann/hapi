@@ -13,9 +13,17 @@
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { createReadStream } from 'node:fs';
+import type { Readable } from 'node:stream';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { z } from 'zod';
+
+export function createHapiMcpStdin(): Readable {
+  return process.versions.bun
+    ? createReadStream('/dev/stdin', { fd: 0, autoClose: false }) as Readable
+    : process.stdin;
+}
 
 function parseArgs(argv: string[]): { url: string | null } {
   let url: string | null = null;
@@ -93,8 +101,11 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
       }
     );
 
-    // Start STDIO transport
-    const stdio = new StdioServerTransport();
+    // Start STDIO transport. Bun's global process.stdin stream can fail
+    // with EPERM when Codex app-server owns the stdio pipe. Reading fd 0 via
+    // an explicit fs stream avoids that Bun stdin edge case while keeping HAPI
+    // on the Bun runtime.
+    const stdio = new StdioServerTransport(createHapiMcpStdin(), process.stdout);
     await server.connect(stdio);
   } catch (err) {
     try {
