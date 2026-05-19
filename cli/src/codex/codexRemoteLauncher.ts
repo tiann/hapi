@@ -65,6 +65,40 @@ const SAME_THREAD_COMPACT_TIMEOUT_MS = 10 * 60 * 1000;
 const CODEX_GOALS_UNSUPPORTED_MESSAGE = 'Codex goals are not supported by this Codex runtime. Upgrade Codex or enable features.goals.';
 const MAX_CODEX_GOAL_OBJECTIVE_CHARS = 4_000;
 
+type GoalForwardSignature = {
+    objective: string | null;
+    status: string | null;
+    tokenBudget: number | null;
+    tokenBucket: number | null;
+};
+
+function goalNumber(value: unknown): number | null {
+    return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function goalString(value: unknown): string | null {
+    return typeof value === 'string' ? value : null;
+}
+
+function buildGoalForwardSignature(goal: Record<string, unknown>): GoalForwardSignature {
+    const tokenBudget = goalNumber(goal.tokenBudget ?? goal.token_budget);
+    const tokensUsed = goalNumber(goal.tokensUsed ?? goal.tokens_used) ?? 0;
+    const tokenBucket = tokenBudget !== null && tokenBudget > 0
+        ? Math.floor(Math.min(tokensUsed, tokenBudget) / Math.max(1, tokenBudget * 0.05))
+        : null;
+
+    return {
+        objective: goalString(goal.objective),
+        status: goalString(goal.status),
+        tokenBudget,
+        tokenBucket
+    };
+}
+
+function goalForwardSignatureKey(signature: GoalForwardSignature): string {
+    return JSON.stringify(signature);
+}
+
 function isSameThreadRetryableCodexError(error: string | null): boolean {
     if (!error) {
         return false;
@@ -1820,6 +1854,33 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 });
         };
 
+        const forwardedGoalSignaturesByThreadId = new Map<string, string>();
+
+        const shouldForwardGoalUpdate = (msg: Record<string, unknown>, threadId: string | null): boolean => {
+            const goal = asRecord(msg.goal);
+            const scopedThreadId = threadId
+                ?? asString(goal?.threadId ?? goal?.thread_id)
+                ?? this.currentThreadId;
+            if (!goal || !scopedThreadId) {
+                return true;
+            }
+
+            const signature = goalForwardSignatureKey(buildGoalForwardSignature(goal));
+            if (forwardedGoalSignaturesByThreadId.get(scopedThreadId) === signature) {
+                logger.debug(`[Codex] Suppressing duplicate thread goal update; threadId=${scopedThreadId}`);
+                return false;
+            }
+
+            forwardedGoalSignaturesByThreadId.set(scopedThreadId, signature);
+            return true;
+        };
+
+        const noteGoalCleared = (threadId: string | null) => {
+            if (threadId) {
+                forwardedGoalSignaturesByThreadId.delete(threadId);
+            }
+        };
+
         const handleCodexEvent = (msg: Record<string, unknown>) => {
             const msgType = asString(msg.type);
             if (!msgType) return;
@@ -1876,14 +1937,17 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             }
 
             if (msgType === 'thread_goal_updated') {
-                session.sendAgentMessage({
-                    ...addCodexEventScope(msg, 'parent', eventThreadId ?? this.currentThreadId),
-                    id: randomUUID()
-                });
+                if (shouldForwardGoalUpdate(msg, eventThreadId)) {
+                    session.sendAgentMessage({
+                        ...addCodexEventScope(msg, 'parent', eventThreadId ?? this.currentThreadId),
+                        id: randomUUID()
+                    });
+                }
                 return;
             }
 
             if (msgType === 'thread_goal_cleared') {
+                noteGoalCleared(eventThreadId ?? this.currentThreadId);
                 session.sendAgentMessage({
                     ...addCodexEventScope(msg, 'parent', eventThreadId ?? this.currentThreadId),
                     id: randomUUID()
@@ -2461,6 +2525,12 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         };
 
         const sendGoalEvent = (event: Record<string, unknown>) => {
+            const threadId = asString(event.thread_id ?? event.threadId) ?? this.currentThreadId;
+            if (event.type === 'thread_goal_cleared') {
+                noteGoalCleared(threadId);
+            } else if (event.type === 'thread_goal_updated' && !shouldForwardGoalUpdate(event, threadId)) {
+                return;
+            }
             session.sendAgentMessage({
                 ...addCodexEventScope(event, 'parent', this.currentThreadId),
                 id: randomUUID()

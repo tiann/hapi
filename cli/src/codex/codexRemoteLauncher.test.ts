@@ -41,6 +41,7 @@ const harness = vi.hoisted(() => ({
     emitSecondChildMessage: false,
     emitLateChildCommandAfterParentTool: false,
     emitParentUsageEvents: false,
+    emitParentGoalDuplicateEvents: false,
     emitChildNestedAgentTool: false,
     emitParentTitleChange: false,
     emitParentSpawnFailureWithoutAgentId: false,
@@ -223,6 +224,41 @@ vi.mock('./codexAppServerClient', () => {
             }
 
             if (params?.threadId === 'thread-1') {
+                if (harness.emitParentGoalDuplicateEvents) {
+                    const goalBase = {
+                        threadId,
+                        objective: 'keep benchmark work moving',
+                        status: 'active',
+                        tokenBudget: null,
+                        tokensUsed: 0,
+                        timeUsedSeconds: 0,
+                        createdAt: 1
+                    };
+                    for (let index = 0; index < 4; index += 1) {
+                        const notification = {
+                            threadId,
+                            goal: {
+                                ...goalBase,
+                                timeUsedSeconds: index,
+                                updatedAt: 2 + index
+                            }
+                        };
+                        harness.notifications.push({ method: 'thread/goal/updated', params: notification });
+                        this.notificationHandler?.('thread/goal/updated', notification);
+                    }
+                    const pausedNotification = {
+                        threadId,
+                        goal: {
+                            ...goalBase,
+                            status: 'paused',
+                            timeUsedSeconds: 4,
+                            updatedAt: 6
+                        }
+                    };
+                    harness.notifications.push({ method: 'thread/goal/updated', params: pausedNotification });
+                    this.notificationHandler?.('thread/goal/updated', pausedNotification);
+                }
+
                 if (harness.emitParentTitleChange) {
                     const titleStart = {
                         item: {
@@ -928,6 +964,7 @@ describe('codexRemoteLauncher', () => {
         harness.emitSecondChildMessage = false;
         harness.emitLateChildCommandAfterParentTool = false;
         harness.emitParentUsageEvents = false;
+        harness.emitParentGoalDuplicateEvents = false;
         harness.emitChildNestedAgentTool = false;
         harness.emitParentTitleChange = false;
         harness.emitParentSpawnFailureWithoutAgentId = false;
@@ -1697,6 +1734,57 @@ describe('codexRemoteLauncher', () => {
         expect(codexMessages).not.toContainEqual(expect.objectContaining({
             type: 'thread_goal_updated',
             thread_id: 'child-thread'
+        }));
+    });
+
+    it('suppresses duplicate parent goal updates that only change runtime counters', async () => {
+        harness.emitParentGoalDuplicateEvents = true;
+        const { session, codexMessages } = createSessionStub();
+
+        await codexRemoteLauncher(session as never);
+
+        const goalMessages = codexMessages.filter((message): message is Record<string, unknown> => {
+            return Boolean(message && typeof message === 'object' && (message as Record<string, unknown>).type === 'thread_goal_updated');
+        });
+        expect(goalMessages).toHaveLength(2);
+        expect(goalMessages).toEqual([
+            expect.objectContaining({
+                thread_id: 'thread-1',
+                goal: expect.objectContaining({
+                    status: 'active',
+                    updatedAt: 2
+                })
+            }),
+            expect.objectContaining({
+                thread_id: 'thread-1',
+                goal: expect.objectContaining({
+                    status: 'paused',
+                    updatedAt: 6
+                })
+            })
+        ]);
+    });
+
+    it('suppresses duplicate goal events from repeated show commands', async () => {
+        const { session, codexMessages } = createSessionStub([
+            '/goal keep benchmark work moving',
+            '/goal'
+        ]);
+
+        await codexRemoteLauncher(session as never);
+
+        expect(harness.goalSetCalls).toHaveLength(1);
+        expect(harness.goalGetCalls).toEqual([{ threadId: 'thread-1' }]);
+        const goalMessages = codexMessages.filter((message): message is Record<string, unknown> => {
+            return Boolean(message && typeof message === 'object' && (message as Record<string, unknown>).type === 'thread_goal_updated');
+        });
+        expect(goalMessages).toHaveLength(1);
+        expect(goalMessages[0]).toEqual(expect.objectContaining({
+            thread_id: 'thread-1',
+            goal: expect.objectContaining({
+                objective: 'keep benchmark work moving',
+                status: 'active'
+            })
         }));
     });
 
