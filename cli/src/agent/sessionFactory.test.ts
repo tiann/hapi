@@ -47,7 +47,7 @@ vi.mock('@/ui/logger', () => ({
     }
 }))
 
-import { bootstrapExistingSession } from './sessionFactory'
+import { bootstrapExistingSession, buildSessionMetadata } from './sessionFactory'
 
 function createSession(): Session {
     return {
