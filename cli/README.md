@@ -34,6 +34,16 @@ Run Claude Code, Codex, Cursor Agent, Gemini, or OpenCode sessions from your ter
   Note: Gemini runs in remote mode only; it waits for messages from the hub UI/Telegram.
 - `hapi opencode` - Start OpenCode mode via ACP. See `src/opencode/runOpencode.ts`.
   Note: OpenCode supports local and remote modes; local mode streams via OpenCode plugins.
+- `hapi resume [sessionId]` - List resumable sessions for this machine or resume one locally.
+
+### Resume a remote session locally
+
+```bash
+hapi resume
+hapi resume <session-id>
+```
+
+`hapi resume` lists resumable sessions for the current machine. `hapi resume <session-id>` hands off an active remote session and opens the same HAPI session in the local terminal.
 
 ### Authentication
 

@@ -3,11 +3,11 @@ import { registerLocalHandoffHandler } from './localHandoff'
 
 describe('registerLocalHandoffHandler', () => {
     it('registers handoff-local and schedules clean exit', async () => {
-        const handlers = new Map<string, () => unknown>()
-        const rpcHandlerManager = {
-            registerHandler: vi.fn((method: string, handler: () => unknown) => {
-                handlers.set(method, handler)
-            })
+        const handlers = new Map<string, (params?: unknown) => unknown>()
+        const rpcHandlerManager: Parameters<typeof registerLocalHandoffHandler>[0] = {
+            registerHandler: (method, handler) => {
+                handlers.set(method, handler as (params?: unknown) => unknown)
+            }
         }
         const lifecycle = {
             setArchiveReason: vi.fn(),

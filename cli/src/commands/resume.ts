@@ -11,6 +11,7 @@ import type {
     OpencodePermissionMode
 } from '@hapi/protocol/types'
 import { ApiClient } from '@/api/api'
+import type { ReasoningEffort } from '@/codex/appServerTypes'
 import { authAndSetupMachineIfNeeded } from '@/ui/auth'
 import { initializeToken } from '@/ui/tokenInit'
 import { maybeAutoStartServer } from '@/utils/autoStartServer'
@@ -95,7 +96,7 @@ async function dispatchLocalResume(target: LocalResumeTarget): Promise<void> {
             startedBy: base.startedBy,
             permissionMode: base.permissionMode as CodexPermissionMode | undefined,
             model: target.model ?? undefined,
-            modelReasoningEffort: target.modelReasoningEffort ?? undefined
+            modelReasoningEffort: (target.modelReasoningEffort ?? undefined) as ReasoningEffort | undefined
         })
         return
     }

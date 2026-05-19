@@ -479,7 +479,7 @@ export class SyncEngine {
         }
 
         const session = access.session
-        const metadata = session.metadata!
+        const metadata = session.metadata
         if (!metadata || typeof metadata.path !== 'string' || metadata.path.length === 0) {
             return { type: 'error', message: 'Session metadata missing path', code: 'resume_unavailable' }
         }
@@ -561,7 +561,7 @@ export class SyncEngine {
         }
 
         const target = targetResult.target
-        const metadata = session.metadata
+        const metadata = session.metadata!
         const flavor = target.flavor
         const resumeToken = target.agentSessionId
 
