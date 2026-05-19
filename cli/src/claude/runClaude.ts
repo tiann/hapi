@@ -13,6 +13,7 @@ import { generateHookSettingsFile, cleanupHookSettingsFile } from '@/modules/com
 import { registerKillSessionHandler } from './registerKillSessionHandler';
 import type { Session } from './session';
 import { bootstrapSession } from '@/agent/sessionFactory';
+import { registerLocalHandoffHandler } from '@/agent/localHandoff';
 import { createModeChangeHandler, createRunnerLifecycle, setControlledByUser } from '@/agent/runnerLifecycle';
 import { isPermissionModeAllowedForFlavor } from '@hapi/protocol';
 import { PermissionModeSchema } from '@hapi/protocol/schemas';
@@ -133,6 +134,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
 
     lifecycle.registerProcessHandlers();
     registerKillSessionHandler(session.rpcHandlerManager, lifecycle.cleanupAndExit);
+    registerLocalHandoffHandler(session.rpcHandlerManager, lifecycle);
 
     // Set initial agent state
     const startingMode = options.startingMode ?? (startedBy === 'runner' ? 'remote' : 'local');

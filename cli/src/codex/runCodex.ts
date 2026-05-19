@@ -8,6 +8,7 @@ import type { AgentState } from '@/api/types';
 import type { CodexSession } from './session';
 import { parseCodexCliOverrides } from './utils/codexCliOverrides';
 import { bootstrapSession } from '@/agent/sessionFactory';
+import { registerLocalHandoffHandler } from '@/agent/localHandoff';
 import { createModeChangeHandler, createRunnerLifecycle, setControlledByUser } from '@/agent/runnerLifecycle';
 import { isPermissionModeAllowedForFlavor } from '@hapi/protocol';
 import { CodexCollaborationModeSchema, PermissionModeSchema } from '@hapi/protocol/schemas';
@@ -74,6 +75,7 @@ export async function runCodex(opts: {
 
     lifecycle.registerProcessHandlers();
     registerKillSessionHandler(session.rpcHandlerManager, lifecycle.cleanupAndExit);
+    registerLocalHandoffHandler(session.rpcHandlerManager, lifecycle);
 
     const applyCurrentConfigToSession = (options?: { syncModel?: boolean }) => {
         const sessionInstance = sessionWrapperRef.current;

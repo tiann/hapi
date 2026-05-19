@@ -6,6 +6,7 @@ import { registerKillSessionHandler } from '@/claude/registerKillSessionHandler'
 import type { AgentState } from '@/api/types';
 import type { CursorSession } from './session';
 import { bootstrapSession } from '@/agent/sessionFactory';
+import { registerLocalHandoffHandler } from '@/agent/localHandoff';
 import { createModeChangeHandler, createRunnerLifecycle, setControlledByUser } from '@/agent/runnerLifecycle';
 import { isPermissionModeAllowedForFlavor } from '@hapi/protocol';
 import { PermissionModeSchema } from '@hapi/protocol/schemas';
@@ -67,6 +68,7 @@ export async function runCursor(opts: {
 
     lifecycle.registerProcessHandlers();
     registerKillSessionHandler(session.rpcHandlerManager, lifecycle.cleanupAndExit);
+    registerLocalHandoffHandler(session.rpcHandlerManager, lifecycle);
 
     const syncSessionMode = () => {
         const sessionInstance = sessionWrapperRef.current;
