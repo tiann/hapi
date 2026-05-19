@@ -864,6 +864,133 @@ describe('session model', () => {
         }
     })
 
+    it('resolves a local resume target for a Codex session', () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            const session = engine.getOrCreateSession(
+                'local-resume-codex',
+                {
+                    path: '/tmp/project',
+                    host: 'localhost',
+                    machineId: 'machine-1',
+                    flavor: 'codex',
+                    codexSessionId: 'codex-thread-1'
+                },
+                { controlledByUser: false },
+                'default',
+                'gpt-5.4',
+                undefined,
+                'xhigh'
+            )
+
+            const result = engine.resolveLocalResumeTarget(session.id, 'default')
+
+            expect(result).toEqual({
+                type: 'success',
+                target: {
+                    sessionId: session.id,
+                    flavor: 'codex',
+                    directory: '/tmp/project',
+                    machineId: 'machine-1',
+                    host: 'localhost',
+                    active: session.active,
+                    thinking: session.thinking,
+                    controlledByUser: false,
+                    agentSessionId: 'codex-thread-1',
+                    model: 'gpt-5.4',
+                    effort: null,
+                    modelReasoningEffort: 'xhigh',
+                    permissionMode: undefined,
+                    collaborationMode: undefined
+                }
+            })
+        } finally {
+            engine.stop()
+        }
+    })
+
+    it('recovers a Claude local resume target from stored messages', () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            const session = engine.getOrCreateSession(
+                'local-resume-claude-from-message',
+                {
+                    path: '/tmp/project',
+                    host: 'localhost',
+                    machineId: 'machine-1',
+                    flavor: 'claude'
+                },
+                null,
+                'default'
+            )
+            store.messages.addMessage(session.id, {
+                role: 'agent',
+                content: {
+                    type: 'output',
+                    data: {
+                        sessionId: '22222222-2222-4222-8222-222222222222'
+                    }
+                }
+            })
+
+            const result = engine.resolveLocalResumeTarget(session.id, 'default')
+
+            expect(result.type).toBe('success')
+            if (result.type === 'success') {
+                expect(result.target.flavor).toBe('claude')
+                expect(result.target.agentSessionId).toBe('22222222-2222-4222-8222-222222222222')
+            }
+        } finally {
+            engine.stop()
+        }
+    })
+
+    it('returns resume_unavailable when the local resume target lacks an agent session id', () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            const session = engine.getOrCreateSession(
+                'local-resume-no-agent-id',
+                {
+                    path: '/tmp/project',
+                    host: 'localhost',
+                    machineId: 'machine-1',
+                    flavor: 'codex'
+                },
+                null,
+                'default'
+            )
+
+            expect(engine.resolveLocalResumeTarget(session.id, 'default')).toEqual({
+                type: 'error',
+                message: 'Resume session ID unavailable',
+                code: 'resume_unavailable'
+            })
+        } finally {
+            engine.stop()
+        }
+    })
+
     describe('session dedup by agent session ID', () => {
         it('merges duplicate when codexSessionId collides', async () => {
             const store = new Store(':memory:')

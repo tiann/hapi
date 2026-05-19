@@ -7,7 +7,8 @@
  * - No E2E encryption; data is stored as JSON in SQLite
  */
 
-import type { CodexCollaborationMode, DecryptedMessage, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
+import type { LocalResumeTarget, ResumableSession } from '@hapi/protocol'
+import type { AgentFlavor, CodexCollaborationMode, DecryptedMessage, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
 import type { Server } from 'socket.io'
 import type { Store, CancelQueuedMessageResult } from '../store'
 import type { RpcRegistry } from '../socket/rpcRegistry'
@@ -51,6 +52,14 @@ export type {
 export type ResumeSessionResult =
     | { type: 'success'; sessionId: string }
     | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'no_machine_online' | 'resume_unavailable' | 'resume_failed' }
+
+export type LocalResumeTargetResult =
+    | { type: 'success'; target: LocalResumeTarget }
+    | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'resume_unavailable' }
+
+export type LocalHandoffResult =
+    | { type: 'success' }
+    | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'already_local' | 'handoff_failed' }
 
 export class SyncEngine {
     private readonly eventPublisher: EventPublisher
@@ -437,6 +446,100 @@ export class SyncEngine {
         )
     }
 
+    private resolveFlavor(session: Session): AgentFlavor {
+        const flavor = session.metadata?.flavor
+        return flavor === 'codex' || flavor === 'gemini' || flavor === 'opencode' || flavor === 'cursor'
+            ? flavor
+            : 'claude'
+    }
+
+    private resolveAgentResumeId(session: Session, namespace: string): string | null {
+        const metadata = session.metadata
+        if (!metadata) {
+            return null
+        }
+
+        const flavor = this.resolveFlavor(session)
+        if (flavor === 'codex') return metadata.codexSessionId ?? null
+        if (flavor === 'gemini') return metadata.geminiSessionId ?? null
+        if (flavor === 'opencode') return metadata.opencodeSessionId ?? null
+        if (flavor === 'cursor') return metadata.cursorSessionId ?? null
+
+        return metadata.claudeSessionId ?? this.recoverClaudeSessionIdFromMessages(session.id, namespace)
+    }
+
+    resolveLocalResumeTarget(sessionId: string, namespace: string): LocalResumeTargetResult {
+        const access = this.sessionCache.resolveSessionAccess(sessionId, namespace)
+        if (!access.ok) {
+            return {
+                type: 'error',
+                message: access.reason === 'access-denied' ? 'Session access denied' : 'Session not found',
+                code: access.reason === 'access-denied' ? 'access_denied' : 'session_not_found'
+            }
+        }
+
+        const session = access.session
+        const metadata = session.metadata!
+        if (!metadata || typeof metadata.path !== 'string' || metadata.path.length === 0) {
+            return { type: 'error', message: 'Session metadata missing path', code: 'resume_unavailable' }
+        }
+
+        const agentSessionId = this.resolveAgentResumeId(session, namespace)
+        if (!agentSessionId) {
+            return { type: 'error', message: 'Resume session ID unavailable', code: 'resume_unavailable' }
+        }
+
+        return {
+            type: 'success',
+            target: {
+                sessionId: access.sessionId,
+                flavor: this.resolveFlavor(session),
+                directory: metadata.path,
+                machineId: metadata.machineId,
+                host: metadata.host,
+                active: session.active,
+                thinking: session.thinking,
+                controlledByUser: session.agentState?.controlledByUser === true,
+                agentSessionId,
+                model: session.model ?? null,
+                effort: session.effort ?? null,
+                modelReasoningEffort: session.modelReasoningEffort ?? null,
+                permissionMode: session.permissionMode,
+                collaborationMode: session.collaborationMode
+            }
+        }
+    }
+
+    listLocalResumableSessions(namespace: string, opts?: { machineId?: string }): ResumableSession[] {
+        return this.getSessionsByNamespace(namespace)
+            .map((session) => this.resolveLocalResumeTarget(session.id, namespace))
+            .filter((result): result is { type: 'success'; target: LocalResumeTarget } => result.type === 'success')
+            .map(({ target }) => {
+                const session = this.getSessionByNamespace(target.sessionId, namespace)
+                return {
+                    sessionId: target.sessionId,
+                    flavor: target.flavor,
+                    directory: target.directory,
+                    machineId: target.machineId,
+                    host: target.host,
+                    active: target.active,
+                    thinking: target.thinking,
+                    controlledByUser: target.controlledByUser,
+                    agentSessionId: target.agentSessionId,
+                    model: target.model,
+                    effort: target.effort,
+                    modelReasoningEffort: target.modelReasoningEffort,
+                    permissionMode: target.permissionMode,
+                    collaborationMode: target.collaborationMode,
+                    updatedAt: session?.updatedAt ?? 0,
+                    name: session?.metadata?.name,
+                    summary: session?.metadata?.summary?.text
+                }
+            })
+            .filter((session) => !opts?.machineId || session.machineId === opts.machineId)
+            .sort((a, b) => b.updatedAt - a.updatedAt)
+    }
+
     async resumeSession(sessionId: string, namespace: string, opts?: { permissionMode?: PermissionMode }): Promise<ResumeSessionResult> {
         const access = this.sessionCache.resolveSessionAccess(sessionId, namespace)
         if (!access.ok) {
@@ -452,27 +555,15 @@ export class SyncEngine {
             return { type: 'success', sessionId: access.sessionId }
         }
 
+        const targetResult = this.resolveLocalResumeTarget(access.sessionId, namespace)
+        if (targetResult.type === 'error') {
+            return targetResult
+        }
+
+        const target = targetResult.target
         const metadata = session.metadata
-        if (!metadata || typeof metadata.path !== 'string') {
-            return { type: 'error', message: 'Session metadata missing path', code: 'resume_unavailable' }
-        }
-
-        const flavor = metadata.flavor === 'codex' || metadata.flavor === 'gemini' || metadata.flavor === 'opencode' || metadata.flavor === 'cursor'
-            ? metadata.flavor
-            : 'claude'
-        const resumeToken = flavor === 'codex'
-            ? metadata.codexSessionId
-            : flavor === 'gemini'
-                ? metadata.geminiSessionId
-                : flavor === 'opencode'
-                    ? metadata.opencodeSessionId
-                    : flavor === 'cursor'
-                        ? metadata.cursorSessionId
-                        : (metadata.claudeSessionId ?? this.recoverClaudeSessionIdFromMessages(access.sessionId, namespace))
-
-        if (!resumeToken) {
-            return { type: 'error', message: 'Resume session ID unavailable', code: 'resume_unavailable' }
-        }
+        const flavor = target.flavor
+        const resumeToken = target.agentSessionId
 
         const onlineMachines = this.machineCache.getOnlineMachinesByNamespace(namespace)
         if (onlineMachines.length === 0) {
@@ -498,7 +589,7 @@ export class SyncEngine {
         const effectivePermissionMode = opts?.permissionMode ?? session.permissionMode ?? undefined
         const spawnResult = await this.rpcGateway.spawnSession(
             targetMachine.id,
-            metadata.path,
+            target.directory,
             flavor,
             session.model ?? undefined,
             session.modelReasoningEffort ?? undefined,
