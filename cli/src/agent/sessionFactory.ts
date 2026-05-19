@@ -156,3 +156,43 @@ export async function bootstrapSession(options: SessionBootstrapOptions): Promis
         workingDirectory
     }
 }
+
+export async function bootstrapExistingSession(options: {
+    sessionId: string
+    flavor: string
+    startedBy?: SessionStartedBy
+    workingDirectory: string
+    metadataOverrides?: Partial<Metadata>
+}): Promise<SessionBootstrapResult> {
+    const startedBy = options.startedBy ?? 'terminal'
+    const api = await ApiClient.create()
+    const machineId = await getMachineIdOrExit()
+
+    await api.getOrCreateMachine({
+        machineId,
+        metadata: buildMachineMetadata()
+    })
+
+    const sessionInfo = await api.getSession(options.sessionId)
+    const metadata = buildSessionMetadata({
+        flavor: options.flavor,
+        startedBy,
+        workingDirectory: options.workingDirectory,
+        machineId,
+        metadataOverrides: options.metadataOverrides
+    })
+
+    const session = api.sessionSyncClient(sessionInfo)
+    session.updateMetadata(() => metadata)
+    await reportSessionStarted(sessionInfo.id, metadata)
+
+    return {
+        api,
+        session,
+        sessionInfo,
+        metadata,
+        machineId,
+        startedBy,
+        workingDirectory: options.workingDirectory
+    }
+}

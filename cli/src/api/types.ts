@@ -6,6 +6,11 @@ import {
     PermissionModeSchema,
     TodosSchema
 } from '@hapi/protocol/schemas'
+import {
+    LocalHandoffResponseSchema,
+    LocalResumeTargetResponseSchema,
+    ResumableSessionsResponseSchema
+} from '@hapi/protocol'
 import type { CodexCollaborationMode, PermissionMode } from '@hapi/protocol/types'
 import { z } from 'zod'
 import { UsageSchema } from '@/claude/types'
@@ -141,6 +146,15 @@ export const CreateMachineResponseSchema = z.object({
 })
 
 export type CreateMachineResponse = z.infer<typeof CreateMachineResponseSchema>
+
+export const GetSessionResponseSchema = CreateSessionResponseSchema
+export type GetSessionResponse = z.infer<typeof GetSessionResponseSchema>
+
+export {
+    LocalHandoffResponseSchema,
+    LocalResumeTargetResponseSchema,
+    ResumableSessionsResponseSchema
+}
 
 export const MessageMetaSchema = z.object({
     sentFrom: z.string().optional(),

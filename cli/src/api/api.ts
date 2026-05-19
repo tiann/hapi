@@ -1,6 +1,18 @@
 import axios from 'axios'
 import type { AgentState, CreateMachineResponse, CreateSessionResponse, RunnerState, Machine, MachineMetadata, Metadata, Session } from '@/api/types'
-import { AgentStateSchema, CreateMachineResponseSchema, CreateSessionResponseSchema, RunnerStateSchema, MachineMetadataSchema, MetadataSchema } from '@/api/types'
+import type { LocalResumeTarget, ResumableSession } from '@hapi/protocol'
+import {
+    AgentStateSchema,
+    CreateMachineResponseSchema,
+    CreateSessionResponseSchema,
+    GetSessionResponseSchema,
+    LocalHandoffResponseSchema,
+    LocalResumeTargetResponseSchema,
+    RunnerStateSchema,
+    MachineMetadataSchema,
+    MetadataSchema,
+    ResumableSessionsResponseSchema
+} from '@/api/types'
 import { configuration } from '@/configuration'
 import { getAuthToken } from '@/api/auth'
 import { apiValidationError } from '@/utils/errorUtils'
@@ -14,6 +26,13 @@ export class ApiClient {
     }
 
     private constructor(private readonly token: string) { }
+
+    private authHeaders(): Record<string, string> {
+        return buildHubRequestHeaders({
+            Authorization: `Bearer ${this.token}`,
+            'Content-Type': 'application/json'
+        })
+    }
 
     async getOrCreateSession(opts: {
         tag: string
@@ -55,6 +74,55 @@ export class ApiClient {
             return parsedMetadata.success ? parsedMetadata.data : null
         })()
 
+        const agentState = (() => {
+            if (raw.agentState == null) return null
+            const parsedAgentState = AgentStateSchema.safeParse(raw.agentState)
+            return parsedAgentState.success ? parsedAgentState.data : null
+        })()
+
+        return {
+            id: raw.id,
+            namespace: raw.namespace,
+            seq: raw.seq,
+            createdAt: raw.createdAt,
+            updatedAt: raw.updatedAt,
+            active: raw.active,
+            activeAt: raw.activeAt,
+            metadata,
+            metadataVersion: raw.metadataVersion,
+            agentState,
+            agentStateVersion: raw.agentStateVersion,
+            thinking: raw.thinking,
+            thinkingAt: raw.thinkingAt,
+            todos: raw.todos,
+            model: raw.model,
+            modelReasoningEffort: raw.modelReasoningEffort,
+            effort: raw.effort,
+            permissionMode: raw.permissionMode,
+            collaborationMode: raw.collaborationMode
+        }
+    }
+
+    async getSession(sessionId: string): Promise<Session> {
+        const response = await axios.get(
+            `${configuration.apiUrl}/cli/sessions/${encodeURIComponent(sessionId)}`,
+            {
+                headers: this.authHeaders(),
+                timeout: 60_000
+            }
+        )
+
+        const parsed = GetSessionResponseSchema.safeParse(response.data)
+        if (!parsed.success) {
+            throw apiValidationError('Invalid /cli/sessions/:id response', response)
+        }
+
+        const raw = parsed.data.session
+        const metadata = (() => {
+            if (raw.metadata == null) return null
+            const parsedMetadata = MetadataSchema.safeParse(raw.metadata)
+            return parsedMetadata.success ? parsedMetadata.data : null
+        })()
         const agentState = (() => {
             if (raw.agentState == null) return null
             const parsedAgentState = AgentStateSchema.safeParse(raw.agentState)
@@ -135,6 +203,52 @@ export class ApiClient {
             metadataVersion: raw.metadataVersion,
             runnerState,
             runnerStateVersion: raw.runnerStateVersion
+        }
+    }
+
+    async listResumableSessions(machineId?: string): Promise<ResumableSession[]> {
+        const qs = machineId ? `?machineId=${encodeURIComponent(machineId)}` : ''
+        const response = await axios.get(
+            `${configuration.apiUrl}/cli/sessions/resumable${qs}`,
+            {
+                headers: this.authHeaders(),
+                timeout: 60_000
+            }
+        )
+        const parsed = ResumableSessionsResponseSchema.safeParse(response.data)
+        if (!parsed.success) {
+            throw apiValidationError('Invalid /cli/sessions/resumable response', response)
+        }
+        return parsed.data.sessions
+    }
+
+    async getLocalResumeTarget(sessionId: string): Promise<LocalResumeTarget> {
+        const response = await axios.get(
+            `${configuration.apiUrl}/cli/sessions/${encodeURIComponent(sessionId)}/resume-target`,
+            {
+                headers: this.authHeaders(),
+                timeout: 60_000
+            }
+        )
+        const parsed = LocalResumeTargetResponseSchema.safeParse(response.data)
+        if (!parsed.success) {
+            throw apiValidationError('Invalid /cli/sessions/:id/resume-target response', response)
+        }
+        return parsed.data.target
+    }
+
+    async handoffSessionToLocal(sessionId: string): Promise<void> {
+        const response = await axios.post(
+            `${configuration.apiUrl}/cli/sessions/${encodeURIComponent(sessionId)}/handoff-local`,
+            {},
+            {
+                headers: this.authHeaders(),
+                timeout: 60_000
+            }
+        )
+        const parsed = LocalHandoffResponseSchema.safeParse(response.data)
+        if (!parsed.success || !parsed.data.ok) {
+            throw apiValidationError('Invalid /cli/sessions/:id/handoff-local response', response)
         }
     }
 

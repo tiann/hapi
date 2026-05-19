@@ -1,29 +1,123 @@
-import { afterEach, describe, expect, it } from 'vitest'
-import { buildSessionMetadata } from './sessionFactory'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import type { Session } from '@/api/types'
 
-describe('buildSessionMetadata', () => {
-    const originalHostname = process.env.HAPI_HOSTNAME
+const {
+    getSessionMock,
+    getOrCreateMachineMock,
+    sessionSyncClientMock,
+    notifyRunnerSessionStartedMock,
+    readSettingsMock
+} = vi.hoisted(() => ({
+    getSessionMock: vi.fn(),
+    getOrCreateMachineMock: vi.fn(),
+    sessionSyncClientMock: vi.fn(),
+    notifyRunnerSessionStartedMock: vi.fn(async () => ({})),
+    readSettingsMock: vi.fn()
+}))
 
-    afterEach(() => {
-        if (originalHostname === undefined) {
-            delete process.env.HAPI_HOSTNAME
-        } else {
-            process.env.HAPI_HOSTNAME = originalHostname
-        }
+vi.mock('@/api/api', () => ({
+    ApiClient: {
+        create: async () => ({
+            getSession: getSessionMock,
+            getOrCreateMachine: getOrCreateMachineMock,
+            sessionSyncClient: sessionSyncClientMock
+        })
+    }
+}))
+
+vi.mock('@/runner/controlClient', () => ({
+    notifyRunnerSessionStarted: notifyRunnerSessionStartedMock
+}))
+
+vi.mock('@/persistence', () => ({
+    readSettings: readSettingsMock
+}))
+
+vi.mock('@/configuration', () => ({
+    configuration: {
+        happyHomeDir: '/tmp/.hapi',
+        logsDir: '/tmp/.hapi/logs',
+        isRunnerProcess: false
+    }
+}))
+
+vi.mock('@/ui/logger', () => ({
+    logger: {
+        debug: vi.fn()
+    }
+}))
+
+import { bootstrapExistingSession } from './sessionFactory'
+
+function createSession(): Session {
+    return {
+        id: 'hapi-session-1',
+        namespace: 'default',
+        seq: 1,
+        createdAt: 1,
+        updatedAt: 1,
+        active: false,
+        activeAt: 1,
+        metadata: {
+            path: '/tmp/project',
+            host: 'localhost',
+            machineId: 'machine-1',
+            flavor: 'codex',
+            codexSessionId: 'codex-thread-1'
+        },
+        metadataVersion: 1,
+        agentState: { controlledByUser: false },
+        agentStateVersion: 1,
+        thinking: false,
+        thinkingAt: 1,
+        todos: [],
+        model: null,
+        modelReasoningEffort: null,
+        effort: null,
+        permissionMode: undefined,
+        collaborationMode: undefined
+    }
+}
+
+describe('bootstrapExistingSession', () => {
+    beforeEach(() => {
+        getSessionMock.mockReset()
+        getOrCreateMachineMock.mockReset()
+        sessionSyncClientMock.mockReset()
+        notifyRunnerSessionStartedMock.mockClear()
+        readSettingsMock.mockReset()
     })
 
-    it('uses HAPI_HOSTNAME for session metadata host when provided', () => {
-        process.env.HAPI_HOSTNAME = 'custom-session-host'
+    it('loads an existing HAPI session and reports it to the runner', async () => {
+        const session = createSession()
+        const sessionClient = {
+            updateMetadata: vi.fn()
+        }
+        getSessionMock.mockResolvedValue(session)
+        getOrCreateMachineMock.mockResolvedValue({ id: 'machine-1' })
+        sessionSyncClientMock.mockReturnValue(sessionClient)
+        readSettingsMock.mockResolvedValue({ machineId: 'machine-1' })
 
-        const metadata = buildSessionMetadata({
+        const result = await bootstrapExistingSession({
+            sessionId: 'hapi-session-1',
             flavor: 'codex',
-            startedBy: 'terminal',
-            workingDirectory: '/tmp/project',
-            machineId: 'machine-1',
-            now: 123
+            workingDirectory: '/tmp/project'
         })
 
-        expect(metadata.host).toBe('custom-session-host')
+        expect(result.sessionInfo.id).toBe('hapi-session-1')
+        expect(result.workingDirectory).toBe('/tmp/project')
+        expect(sessionSyncClientMock).toHaveBeenCalledWith(session)
+        expect(sessionClient.updateMetadata).toHaveBeenCalledOnce()
+        expect(notifyRunnerSessionStartedMock).toHaveBeenCalledWith(
+            'hapi-session-1',
+            expect.objectContaining({
+                path: '/tmp/project',
+                flavor: 'codex',
+                startedBy: 'terminal',
+                startedFromRunner: false,
+                machineId: 'machine-1'
+            })
+        )
     })
 
     it('advertises remote terminal capability in session metadata', () => {
