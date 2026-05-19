@@ -67,7 +67,7 @@ export const TerminalErrorPayloadSchema = z.object({
 })
 
 export type TerminalErrorPayload = z.infer<typeof TerminalErrorPayloadSchema>
-export const SessionEndReasonSchema = z.enum(['completed', 'terminated', 'error'])
+export const SessionEndReasonSchema = z.enum(['completed', 'terminated', 'error', 'handoff'])
 export type SessionEndReason = z.infer<typeof SessionEndReasonSchema>
 
 export const UpdateNewMessageBodySchema = z.object({
