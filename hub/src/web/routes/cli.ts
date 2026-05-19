@@ -115,6 +115,55 @@ export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<Cl
         return c.json({ session })
     })
 
+    app.get('/sessions/resumable', (c) => {
+        const engine = getSyncEngine()
+        if (!engine) {
+            return c.json({ error: 'Not ready' }, 503)
+        }
+
+        const namespace = c.get('namespace')
+        const machineId = c.req.query('machineId') || undefined
+        const sessions = engine.listLocalResumableSessions(namespace, { machineId })
+        return c.json({ sessions })
+    })
+
+    app.get('/sessions/:id/resume-target', (c) => {
+        const engine = getSyncEngine()
+        if (!engine) {
+            return c.json({ error: 'Not ready' }, 503)
+        }
+
+        const namespace = c.get('namespace')
+        const result = engine.resolveLocalResumeTarget(c.req.param('id'), namespace)
+        if (result.type === 'error') {
+            const status = result.code === 'access_denied' ? 403
+                : result.code === 'session_not_found' ? 404
+                    : 409
+            return c.json({ error: result.message, code: result.code }, status)
+        }
+
+        return c.json({ target: result.target })
+    })
+
+    app.post('/sessions/:id/handoff-local', async (c) => {
+        const engine = getSyncEngine()
+        if (!engine) {
+            return c.json({ error: 'Not ready' }, 503)
+        }
+
+        const namespace = c.get('namespace')
+        const result = await engine.handoffSessionToLocal(c.req.param('id'), namespace)
+        if (result.type === 'error') {
+            const status = result.code === 'access_denied' ? 403
+                : result.code === 'session_not_found' ? 404
+                    : result.code === 'already_local' ? 409
+                        : 500
+            return c.json({ error: result.message, code: result.code }, status)
+        }
+
+        return c.json({ ok: true })
+    })
+
     app.get('/sessions/:id', (c) => {
         const engine = getSyncEngine()
         if (!engine) {

@@ -991,6 +991,72 @@ describe('session model', () => {
         }
     })
 
+    it('local handoff succeeds immediately for inactive sessions', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            const session = engine.getOrCreateSession(
+                'local-handoff-inactive',
+                {
+                    path: '/tmp/project',
+                    host: 'localhost',
+                    machineId: 'machine-1',
+                    flavor: 'codex',
+                    codexSessionId: 'codex-thread-1'
+                },
+                { controlledByUser: false },
+                'default'
+            )
+            engine.handleSessionEnd({ sid: session.id, time: Date.now() })
+
+            await expect(engine.handoffSessionToLocal(session.id, 'default')).resolves.toEqual({
+                type: 'success'
+            })
+        } finally {
+            engine.stop()
+        }
+    })
+
+    it('local handoff rejects sessions already controlled by a local terminal', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            const session = engine.getOrCreateSession(
+                'local-handoff-already-local',
+                {
+                    path: '/tmp/project',
+                    host: 'localhost',
+                    machineId: 'machine-1',
+                    flavor: 'codex',
+                    codexSessionId: 'codex-thread-1'
+                },
+                { controlledByUser: true },
+                'default'
+            )
+            engine.handleSessionAlive({ sid: session.id, time: Date.now(), mode: 'local' })
+
+            await expect(engine.handoffSessionToLocal(session.id, 'default')).resolves.toEqual({
+                type: 'error',
+                message: 'Session is already controlled by a local terminal',
+                code: 'already_local'
+            })
+        } finally {
+            engine.stop()
+        }
+    })
+
     describe('session dedup by agent session ID', () => {
         it('merges duplicate when codexSessionId collides', async () => {
             const store = new Store(':memory:')

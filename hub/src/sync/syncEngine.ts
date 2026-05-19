@@ -628,6 +628,50 @@ export class SyncEngine {
         return { type: 'success', sessionId: spawnResult.sessionId }
     }
 
+    async handoffSessionToLocal(sessionId: string, namespace: string): Promise<LocalHandoffResult> {
+        const access = this.sessionCache.resolveSessionAccess(sessionId, namespace)
+        if (!access.ok) {
+            return {
+                type: 'error',
+                message: access.reason === 'access-denied' ? 'Session access denied' : 'Session not found',
+                code: access.reason === 'access-denied' ? 'access_denied' : 'session_not_found'
+            }
+        }
+
+        if (!access.session.active) {
+            return { type: 'success' }
+        }
+
+        if (access.session.agentState?.controlledByUser === true) {
+            return {
+                type: 'error',
+                message: 'Session is already controlled by a local terminal',
+                code: 'already_local'
+            }
+        }
+
+        try {
+            await this.rpcGateway.handoffSessionToLocal(access.sessionId)
+        } catch (error) {
+            return {
+                type: 'error',
+                message: error instanceof Error ? error.message : String(error),
+                code: 'handoff_failed'
+            }
+        }
+
+        const inactive = await this.waitForSessionInactive(access.sessionId)
+        if (!inactive) {
+            return {
+                type: 'error',
+                message: 'Timed out waiting for remote session to hand off',
+                code: 'handoff_failed'
+            }
+        }
+
+        return { type: 'success' }
+    }
+
     private recoverClaudeSessionIdFromMessages(sessionId: string, namespace: string): string | null {
         const messages = this.messageService.getMessages(sessionId, 200)
         for (let i = messages.length - 1; i >= 0; i -= 1) {
@@ -725,6 +769,18 @@ export class SyncEngine {
         while (Date.now() - start < timeoutMs) {
             const session = this.getSession(sessionId)
             if (session?.active) {
+                return true
+            }
+            await new Promise((resolve) => setTimeout(resolve, 250))
+        }
+        return false
+    }
+
+    async waitForSessionInactive(sessionId: string, timeoutMs: number = 15_000): Promise<boolean> {
+        const start = Date.now()
+        while (Date.now() - start < timeoutMs) {
+            const session = this.getSession(sessionId)
+            if (!session?.active) {
                 return true
             }
             await new Promise((resolve) => setTimeout(resolve, 250))

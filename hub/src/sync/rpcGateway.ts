@@ -143,6 +143,10 @@ export class RpcGateway {
         await this.sessionRpc(sessionId, 'killSession', {})
     }
 
+    async handoffSessionToLocal(sessionId: string): Promise<void> {
+        await this.sessionRpc(sessionId, 'handoff-local', {})
+    }
+
     async spawnSession(
         machineId: string,
         directory: string,
