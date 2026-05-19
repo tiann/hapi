@@ -1,5 +1,7 @@
 import { z } from 'zod'
 import type { CodexCollaborationMode, PermissionMode } from './modes'
+import type { SessionEndReason } from './schemas'
+export { SessionEndReasonSchema, type SessionEndReason } from './schemas'
 
 export type SocketErrorReason = 'namespace-missing' | 'access-denied' | 'not-found'
 
@@ -67,9 +69,6 @@ export const TerminalErrorPayloadSchema = z.object({
 })
 
 export type TerminalErrorPayload = z.infer<typeof TerminalErrorPayloadSchema>
-export const SessionEndReasonSchema = z.enum(['completed', 'terminated', 'error', 'handoff'])
-export type SessionEndReason = z.infer<typeof SessionEndReasonSchema>
-
 export const UpdateNewMessageBodySchema = z.object({
     t: z.literal('new-message'),
     sid: z.string(),

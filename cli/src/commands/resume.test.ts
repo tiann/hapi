@@ -92,7 +92,8 @@ describe('resumeCommand', () => {
             startedBy: 'terminal',
             permissionMode: 'default',
             model: 'gpt-5.4',
-            modelReasoningEffort: 'xhigh'
+            modelReasoningEffort: 'xhigh',
+            collaborationMode: 'default'
         })
     })
 
@@ -147,6 +148,40 @@ describe('resumeCommand', () => {
             await expect(resumeCommand.run(createContext(['hapi-session-3']))).rejects.toThrow('process.exit:1')
             expect(runCodexMock).not.toHaveBeenCalled()
             expect(consoleErrorSpy).toHaveBeenCalledWith(expect.any(String), expect.stringContaining('another machine'))
+        } finally {
+            consoleErrorSpy.mockRestore()
+            exitSpy.mockRestore()
+        }
+    })
+
+    it('resumes an inactive local target even when controlledByUser is sticky', async () => {
+        const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+        const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+            throw new Error(`process.exit:${code ?? 'undefined'}`)
+        }) as never)
+
+        getLocalResumeTargetMock.mockResolvedValue({
+            sessionId: 'hapi-session-4',
+            flavor: 'claude',
+            directory: '/tmp/project',
+            machineId: 'machine-1',
+            active: false,
+            thinking: false,
+            controlledByUser: true,
+            agentSessionId: '11111111-1111-4111-8111-111111111111',
+            permissionMode: 'default'
+        })
+
+        try {
+            await resumeCommand.run(createContext(['hapi-session-4']))
+
+            expect(exitSpy).not.toHaveBeenCalled()
+            expect(consoleErrorSpy).not.toHaveBeenCalled()
+            expect(handoffSessionToLocalMock).not.toHaveBeenCalled()
+            expect(runClaudeMock).toHaveBeenCalledWith(expect.objectContaining({
+                existingSessionId: 'hapi-session-4',
+                resumeSessionId: '11111111-1111-4111-8111-111111111111'
+            }))
         } finally {
             consoleErrorSpy.mockRestore()
             exitSpy.mockRestore()

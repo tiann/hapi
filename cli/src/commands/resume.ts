@@ -96,7 +96,8 @@ async function dispatchLocalResume(target: LocalResumeTarget): Promise<void> {
             startedBy: base.startedBy,
             permissionMode: base.permissionMode as CodexPermissionMode | undefined,
             model: target.model ?? undefined,
-            modelReasoningEffort: (target.modelReasoningEffort ?? undefined) as ReasoningEffort | undefined
+            modelReasoningEffort: (target.modelReasoningEffort ?? undefined) as ReasoningEffort | undefined,
+            collaborationMode: target.collaborationMode
         })
         return
     }
@@ -176,7 +177,7 @@ export const resumeCommand: CommandDefinition = {
             assertTargetMachine(target, machineId)
             assertDirectoryExists(target)
 
-            if (target.controlledByUser) {
+            if (target.active && target.controlledByUser) {
                 throw new Error('Session is already controlled by a local terminal')
             }
 

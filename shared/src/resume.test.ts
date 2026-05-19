@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 import { LocalResumeTargetSchema, ResumableSessionSchema } from './resume'
+import { SyncEventSchema } from './schemas'
 import { SessionEndReasonSchema } from './socket'
 
 describe('resume schemas', () => {
@@ -43,5 +44,15 @@ describe('resume schemas', () => {
 
     it('accepts handoff as a session end reason', () => {
         expect(SessionEndReasonSchema.parse('handoff')).toBe('handoff')
+    })
+
+    it('accepts handoff in session-ended sync events', () => {
+        const parsed = SyncEventSchema.safeParse({
+            type: 'session-ended',
+            sessionId: 'hapi-session-1',
+            reason: 'handoff'
+        })
+
+        expect(parsed.success).toBe(true)
     })
 })

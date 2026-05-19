@@ -3,6 +3,8 @@ import { CODEX_COLLABORATION_MODES, PERMISSION_MODES } from './modes'
 
 export const PermissionModeSchema = z.enum(PERMISSION_MODES)
 export const CodexCollaborationModeSchema = z.enum(CODEX_COLLABORATION_MODES)
+export const SessionEndReasonSchema = z.enum(['completed', 'terminated', 'error', 'handoff'])
+export type SessionEndReason = z.infer<typeof SessionEndReasonSchema>
 
 const MetadataSummarySchema = z.object({
     text: z.string(),
@@ -242,7 +244,7 @@ export const SyncEventSchema = z.discriminatedUnion('type', [
     }),
     SessionChangedSchema.extend({
         type: z.literal('session-ended'),
-        reason: z.enum(['completed', 'terminated', 'error']).optional()
+        reason: SessionEndReasonSchema.optional()
     }),
     MachineChangedSchema.extend({
         type: z.literal('machine-updated'),
