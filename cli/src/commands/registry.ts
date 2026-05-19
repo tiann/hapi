@@ -4,6 +4,7 @@ import { codexCommand } from './codex'
 import { cursorCommand } from './cursor'
 import { connectCommand } from './connect'
 import { runnerCommand } from './runner'
+import { resumeCommand } from './resume'
 import { doctorCommand } from './doctor'
 import { geminiCommand } from './gemini'
 import { opencodeCommand } from './opencode'
@@ -25,6 +26,7 @@ const COMMANDS: CommandDefinition[] = [
     { ...hubCommand, name: 'server' },
     hookForwarderCommand,
     doctorCommand,
+    resumeCommand,
     runnerCommand,
     notifyCommand
 ]
