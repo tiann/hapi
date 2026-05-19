@@ -273,9 +273,9 @@ describe('appServerConfig', () => {
         });
 
         const instructions = params.collaborationMode?.settings.developer_instructions;
-        expect(instructions).toContain('If you call spawn_agent with fork_context: true');
+        expect(instructions).toContain('Treat omitted fork_context the same as fork_context: true');
         expect(instructions).toContain('do not set agent_type, model, or reasoning_effort');
-        expect(instructions).toContain('omit fork_context or set fork_context: false');
+        expect(instructions).toContain('set fork_context: false');
         expect(instructions).toContain('Do not rely on parent turn reasoning settings for spawned agents');
     });
 

@@ -77,9 +77,14 @@ export class CodexAppServerClient {
     private readonly pending = new Map<number, PendingRequest>();
     private readonly requestHandlers = new Map<string, RequestHandler>();
     private notificationHandler: ((method: string, params: unknown) => void) | null = null;
+    private stderrHandler: ((text: string) => void) | null = null;
     private protocolError: Error | null = null;
 
     static readonly DEFAULT_TIMEOUT_MS = 14 * 24 * 60 * 60 * 1000;
+
+    setStderrHandler(handler: ((text: string) => void) | null): void {
+        this.stderrHandler = handler;
+    }
 
     async connect(): Promise<void> {
         if (this.connected) {
@@ -105,6 +110,7 @@ export class CodexAppServerClient {
             const text = chunk.toString().trim();
             if (text.length > 0) {
                 logger.debug(`[CodexAppServer][stderr] ${text}`);
+                this.stderrHandler?.(text);
             }
         });
 

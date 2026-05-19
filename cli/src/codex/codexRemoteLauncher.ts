@@ -46,6 +46,9 @@ type ChildAgentRuntime = {
 const AGENT_RUN_UPDATE_THROTTLE_MS = 300;
 const AGENT_RUN_START_TIMEOUT_MS = 30 * 1000;
 const THROTTLED_AGENT_RUN_ACTIVITY_KINDS = new Set(['thinking']);
+const CODEX_SPAWN_AGENT_FULL_HISTORY_ARGUMENT_ERROR =
+    'Full-history forked agents inherit the parent agent type, model, and reasoning effort; ' +
+    'omit agent_type, model, and reasoning_effort, or spawn without a full-history fork.';
 
 const SAME_THREAD_RETRYABLE_ERROR_PATTERNS = [
     'selected model is at capacity',
@@ -101,6 +104,10 @@ function formatGoalUsage(goal: ThreadGoal): string {
         parts.push(`${goal.tokensUsed} tokens`);
     }
     return parts.join(' · ');
+}
+
+function stripAnsi(value: string): string {
+    return value.replace(/\u001b\[[0-9;]*m/g, '');
 }
 
 class CodexRemoteLauncher extends RemoteLauncherBase {
@@ -252,6 +259,13 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
 
         const errorMessage = (error: unknown): string => {
             return error instanceof Error ? error.message : String(error);
+        };
+
+        const extractSpawnAgentStartErrorFromStderr = (text: string): string | null => {
+            const cleanText = stripAnsi(text);
+            return cleanText.includes(CODEX_SPAWN_AGENT_FULL_HISTORY_ARGUMENT_ERROR)
+                ? CODEX_SPAWN_AGENT_FULL_HISTORY_ARGUMENT_ERROR
+                : null;
         };
 
         const isExitPlanModeTool = (toolName: string): boolean => {
@@ -714,6 +728,38 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             flushPendingAgentTraces(agentId);
         };
 
+        const getOnlyPendingAgentStartCardId = (): string | null => {
+            if (pendingAgentStartCardIds.size !== 1) return null;
+            return pendingAgentStartCardIds.values().next().value ?? null;
+        };
+
+        const linkPendingAgentStartFromChildTask = (agentId: string): void => {
+            if (agentCardByAgentId.has(agentId)) {
+                return;
+            }
+
+            const cardId = getOnlyPendingAgentStartCardId();
+            if (!cardId) {
+                if (pendingAgentStartCardIds.size > 1) {
+                    logger.debug(
+                        `[Codex] Child task_started while ${pendingAgentStartCardIds.size} spawn_agent cards are pending; ` +
+                        `not linking automatically; agentId=${agentId}`
+                    );
+                }
+                return;
+            }
+
+            logger.debug(`[Codex] Linking pending spawn_agent card from child task_started; cardId=${cardId}, agentId=${agentId}`);
+            linkAgentToCard(agentId, cardId);
+            emitAgentRunUpdate(agentId, {
+                status: 'running',
+                statusText: 'Running',
+                activity: 'Started',
+                activityKind: 'running'
+            }, cardId);
+            flushPendingAgentUpdates(agentId);
+        };
+
         const flushPendingAgentUpdates = (agentId: string): void => {
             const updates = pendingAgentUpdatesByAgentId.get(agentId);
             if (!updates || updates.length === 0) return;
@@ -915,6 +961,56 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             for (const cardId of Array.from(pendingAgentStartCardIds)) {
                 failAgentStartCard(cardId, error);
             }
+        };
+
+        const isPresentSpawnOption = (value: unknown): boolean => {
+            if (value === undefined || value === null) return false;
+            return typeof value !== 'string' || value.trim().length > 0;
+        };
+
+        const isFullHistorySpawnWithInheritedOverrides = (input: unknown): boolean => {
+            const record = asRecord(input);
+            if (!record) return false;
+
+            const forkContext = record.fork_context ?? record.forkContext;
+            if (forkContext === false) {
+                return false;
+            }
+
+            return [
+                record.agent_type,
+                record.agentType,
+                record.subagent_type,
+                record.subagentType,
+                record.model,
+                record.reasoning_effort,
+                record.reasoningEffort
+            ].some(isPresentSpawnOption);
+        };
+
+        const failPendingAgentStartsForSpawnArgumentError = (error: unknown): void => {
+            const matchingCardIds = Array.from(pendingAgentStartCardIds).filter((cardId) => {
+                return isFullHistorySpawnWithInheritedOverrides(
+                    pendingAgentToolInputByCallId.get(cardId)?.input
+                );
+            });
+
+            if (matchingCardIds.length > 0) {
+                for (const cardId of matchingCardIds) {
+                    failAgentStartCard(cardId, error);
+                }
+                return;
+            }
+
+            if (pendingAgentStartCardIds.size === 1) {
+                failPendingAgentStarts(error);
+                return;
+            }
+
+            logger.debug(
+                `[Codex] Ignoring spawn_agent argument stderr error for ${pendingAgentStartCardIds.size} ` +
+                'pending starts because none have detectable inherited-override args'
+            );
         };
 
         const emitAgentRunTraceMessage = (agentId: string, message: unknown): void => {
@@ -1763,6 +1859,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     } else {
                         logger.debug(`[Codex] Child task_started missing turn id; threadId=${eventThreadId}`);
                     }
+                    linkPendingAgentStartFromChildTask(eventThreadId);
                 } else if (isTerminalEvent) {
                     this.activeChildTurns.delete(eventThreadId);
                 }
@@ -2259,6 +2356,18 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 const eventRecord = asRecord(event) ?? { type: undefined };
                 handleCodexEvent(eventRecord);
             }
+        });
+
+        appServerClient.setStderrHandler((text) => {
+            const spawnAgentError = extractSpawnAgentStartErrorFromStderr(text);
+            if (!spawnAgentError || pendingAgentStartCardIds.size === 0) {
+                return;
+            }
+            logger.debug(
+                `[Codex] Failing ${pendingAgentStartCardIds.size} pending spawn_agent start(s) ` +
+                `from app-server stderr: ${spawnAgentError}`
+            );
+            failPendingAgentStartsForSpawnArgumentError(spawnAgentError);
         });
 
         const { server: happyServer, mcpServers } = await buildHapiMcpBridge(session.client, {
@@ -2859,6 +2968,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
 
     protected async cleanup(): Promise<void> {
         logger.debug('[codex-remote]: cleanup start');
+        this.appServerClient.setStderrHandler(null);
         try {
             await this.appServerClient.disconnect();
         } catch (error) {

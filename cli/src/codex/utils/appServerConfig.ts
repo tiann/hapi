@@ -13,8 +13,9 @@ import { resolveCodexPermissionModeConfig } from './permissionModeConfig';
 
 export const codexCollaborationSpawnAgentInstructions = [
     'Codex sub-agent spawning rules:',
-    '- If you call spawn_agent with fork_context: true, do not set agent_type, model, or reasoning_effort; full-history forked agents inherit these values from the parent.',
-    '- If you need a specific agent_type, model, or reasoning_effort, omit fork_context or set fork_context: false, and include only the necessary context in the message.',
+    '- Treat omitted fork_context the same as fork_context: true: a full-history fork inherits the parent agent type, model, and reasoning effort.',
+    '- If you call spawn_agent with fork_context omitted or true, do not set agent_type, model, or reasoning_effort.',
+    '- If you need a specific agent_type, model, or reasoning_effort, set fork_context: false and include only the necessary context in the message.',
     '- Do not rely on parent turn reasoning settings for spawned agents; only set reasoning_effort on spawn_agent when the chosen child model supports it.'
 ].join('\n');
 

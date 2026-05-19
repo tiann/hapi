@@ -45,6 +45,9 @@ const harness = vi.hoisted(() => ({
     emitParentTitleChange: false,
     emitParentSpawnFailureWithoutAgentId: false,
     emitParentSpawnStartWithoutEnd: false,
+    emitParentSpawnRouterStderrError: false,
+    emitChildTaskStartedAfterParentSpawnStart: false,
+    emitSecondParentSpawnStartWithoutEnd: false,
     emitParentSendInputFailure: false,
     emitParentResumeSuccess: false,
     emitRunningChildTurnBeforeSuppressedParent: false,
@@ -56,6 +59,7 @@ const harness = vi.hoisted(() => ({
 vi.mock('./codexAppServerClient', () => {
     class MockCodexAppServerClient {
         private notificationHandler: ((method: string, params: unknown) => void) | null = null;
+        private stderrHandler: ((text: string) => void) | null = null;
 
         async connect(): Promise<void> {}
 
@@ -66,6 +70,10 @@ vi.mock('./codexAppServerClient', () => {
 
         setNotificationHandler(handler: ((method: string, params: unknown) => void) | null): void {
             this.notificationHandler = handler;
+        }
+
+        setStderrHandler(handler: ((text: string) => void) | null): void {
+            this.stderrHandler = handler;
         }
 
         async listCollaborationModes(): Promise<unknown> {
@@ -309,6 +317,42 @@ vi.mock('./codexAppServerClient', () => {
                     };
                     harness.notifications.push({ method: 'item/started', params: spawnStart });
                     this.notificationHandler?.('item/started', spawnStart);
+
+                    if (harness.emitSecondParentSpawnStartWithoutEnd) {
+                        const secondSpawnStart = {
+                            item: {
+                                id: 'second-spawn',
+                                type: 'collabAgentToolCall',
+                                tool: 'spawnAgent',
+                                prompt: 'do other side work',
+                                senderThreadId: threadId,
+                                receiverThreadIds: []
+                            },
+                            threadId,
+                            turnId
+                        };
+                        harness.notifications.push({ method: 'item/started', params: secondSpawnStart });
+                        this.notificationHandler?.('item/started', secondSpawnStart);
+                    }
+
+                    if (harness.emitParentSpawnRouterStderrError) {
+                        this.stderrHandler?.(
+                            'codex_core::tools::router: error=Full-history forked agents inherit the parent agent type, model, and reasoning effort; ' +
+                            'omit agent_type, model, and reasoning_effort, or spawn without a full-history fork.'
+                        );
+                    }
+
+                    if (harness.emitChildTaskStartedAfterParentSpawnStart) {
+                        const childStarted = {
+                            msg: {
+                                type: 'task_started',
+                                thread_id: 'child-thread',
+                                turn_id: 'child-turn'
+                            }
+                        };
+                        harness.notifications.push({ method: 'codex/event/task_started', params: childStarted });
+                        this.notificationHandler?.('codex/event/task_started', childStarted);
+                    }
 
                     if (harness.emitParentSpawnFailureWithoutAgentId) {
                         const spawnCompleted = {
@@ -888,6 +932,9 @@ describe('codexRemoteLauncher', () => {
         harness.emitParentTitleChange = false;
         harness.emitParentSpawnFailureWithoutAgentId = false;
         harness.emitParentSpawnStartWithoutEnd = false;
+        harness.emitParentSpawnRouterStderrError = false;
+        harness.emitChildTaskStartedAfterParentSpawnStart = false;
+        harness.emitSecondParentSpawnStartWithoutEnd = false;
         harness.emitParentSendInputFailure = false;
         harness.emitParentResumeSuccess = false;
         harness.emitRunningChildTurnBeforeSuppressedParent = false;
@@ -1740,6 +1787,83 @@ describe('codexRemoteLauncher', () => {
                 status: 'failed',
                 error: 'invalid spawn arguments'
             })
+        }));
+    });
+
+    it('marks pending spawn_agent cards failed with the Codex router argument error from stderr', async () => {
+        harness.emitParentSpawnStartWithoutEnd = true;
+        harness.emitParentSpawnRouterStderrError = true;
+        const { session, codexMessages } = createSessionStub();
+
+        await codexRemoteLauncher(session as never);
+
+        expect(codexMessages).toContainEqual(expect.objectContaining({
+            type: 'agent-run-update',
+            agentId: 'spawn-error:failed-spawn',
+            cardId: 'failed-spawn',
+            status: 'failed',
+            statusText: 'Failed to start',
+            activityKind: 'failed',
+            error: 'Full-history forked agents inherit the parent agent type, model, and reasoning effort; ' +
+                'omit agent_type, model, and reasoning_effort, or spawn without a full-history fork.'
+        }));
+        expect(codexMessages).not.toContainEqual(expect.objectContaining({
+            type: 'agent-run-update',
+            agentId: 'spawn-error:failed-spawn',
+            cardId: 'failed-spawn',
+            error: 'spawn_agent did not return an agent id before the Codex session ended'
+        }));
+    });
+
+    it('links a lone pending spawn_agent card from the child task_started event', async () => {
+        harness.emitParentSpawnStartWithoutEnd = true;
+        harness.emitChildTaskStartedAfterParentSpawnStart = true;
+        const { session, codexMessages } = createSessionStub();
+
+        await codexRemoteLauncher(session as never);
+
+        expect(codexMessages).toContainEqual(expect.objectContaining({
+            type: 'agent-run-update',
+            agentId: 'child-thread',
+            cardId: 'failed-spawn',
+            status: 'running',
+            activity: 'Started',
+            activityKind: 'running'
+        }));
+        expect(codexMessages).not.toContainEqual(expect.objectContaining({
+            type: 'agent-run-update',
+            agentId: 'spawn-error:failed-spawn',
+            cardId: 'failed-spawn'
+        }));
+    });
+
+    it('does not guess a child task_started card when multiple spawn_agent starts are pending', async () => {
+        harness.emitParentSpawnStartWithoutEnd = true;
+        harness.emitSecondParentSpawnStartWithoutEnd = true;
+        harness.emitChildTaskStartedAfterParentSpawnStart = true;
+        const { session, codexMessages } = createSessionStub();
+
+        await codexRemoteLauncher(session as never);
+
+        expect(codexMessages).not.toContainEqual(expect.objectContaining({
+            type: 'agent-run-update',
+            agentId: 'child-thread',
+            cardId: 'failed-spawn'
+        }));
+        expect(codexMessages).not.toContainEqual(expect.objectContaining({
+            type: 'agent-run-update',
+            agentId: 'child-thread',
+            cardId: 'second-spawn'
+        }));
+        expect(codexMessages).toContainEqual(expect.objectContaining({
+            type: 'agent-run-update',
+            agentId: 'spawn-error:failed-spawn',
+            cardId: 'failed-spawn'
+        }));
+        expect(codexMessages).toContainEqual(expect.objectContaining({
+            type: 'agent-run-update',
+            agentId: 'spawn-error:second-spawn',
+            cardId: 'second-spawn'
         }));
     });
 
