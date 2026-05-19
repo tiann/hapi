@@ -6,7 +6,7 @@ import { registerKillSessionHandler } from '@/claude/registerKillSessionHandler'
 import type { AgentState } from '@/api/types';
 import type { GeminiSession } from './session';
 import type { GeminiMode, PermissionMode } from './types';
-import { bootstrapSession } from '@/agent/sessionFactory';
+import { bootstrapExistingSession, bootstrapSession } from '@/agent/sessionFactory';
 import { registerLocalHandoffHandler } from '@/agent/localHandoff';
 import { createModeChangeHandler, createRunnerLifecycle, setControlledByUser } from '@/agent/runnerLifecycle';
 import { startHookServer } from '@/claude/utils/startHookServer';
@@ -23,8 +23,10 @@ export async function runGemini(opts: {
     permissionMode?: PermissionMode;
     model?: string;
     resumeSessionId?: string;
+    existingSessionId?: string;
+    workingDirectory?: string;
 } = {}): Promise<void> {
-    const workingDirectory = getInvokedCwd();
+    const workingDirectory = opts.workingDirectory ?? getInvokedCwd();
     const startedBy = opts.startedBy ?? 'terminal';
 
     logger.debug(`[gemini] Starting with options: startedBy=${startedBy}, startingMode=${opts.startingMode}`);
@@ -48,13 +50,21 @@ export async function runGemini(opts: {
         ? undefined
         : runtimeConfig.model;
 
-    const { api, session } = await bootstrapSession({
-        flavor: 'gemini',
-        startedBy,
-        workingDirectory,
-        agentState: initialState,
-        model: persistedModel
-    });
+    const bootstrap = opts.existingSessionId
+        ? await bootstrapExistingSession({
+            sessionId: opts.existingSessionId,
+            flavor: 'gemini',
+            startedBy,
+            workingDirectory
+        })
+        : await bootstrapSession({
+            flavor: 'gemini',
+            startedBy,
+            workingDirectory,
+            agentState: initialState,
+            model: persistedModel
+        });
+    const { api, session } = bootstrap;
 
     const startingMode: 'local' | 'remote' = opts.startingMode
         ?? (startedBy === 'runner' ? 'remote' : 'local');

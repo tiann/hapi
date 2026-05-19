@@ -6,7 +6,7 @@ import { registerKillSessionHandler } from '@/claude/registerKillSessionHandler'
 import type { AgentState } from '@/api/types';
 import type { OpencodeSession } from './session';
 import type { OpencodeMode, PermissionMode } from './types';
-import { bootstrapSession } from '@/agent/sessionFactory';
+import { bootstrapExistingSession, bootstrapSession } from '@/agent/sessionFactory';
 import { registerLocalHandoffHandler } from '@/agent/localHandoff';
 import { createModeChangeHandler, createRunnerLifecycle, setControlledByUser } from '@/agent/runnerLifecycle';
 import { isPermissionModeAllowedForFlavor } from '@hapi/protocol';
@@ -21,8 +21,10 @@ export async function runOpencode(opts: {
     permissionMode?: PermissionMode;
     model?: string;
     resumeSessionId?: string;
+    existingSessionId?: string;
+    workingDirectory?: string;
 } = {}): Promise<void> {
-    const workingDirectory = getInvokedCwd();
+    const workingDirectory = opts.workingDirectory ?? getInvokedCwd();
     const startedBy = opts.startedBy ?? 'terminal';
 
     logger.debug(`[opencode] Starting with options: startedBy=${startedBy}, startingMode=${opts.startingMode}`);
@@ -41,13 +43,21 @@ export async function runOpencode(opts: {
     // not by this initial bootstrap.
     const initialModel = opts.model ?? null;
 
-    const { api, session } = await bootstrapSession({
-        flavor: 'opencode',
-        startedBy,
-        workingDirectory,
-        agentState: initialState,
-        model: initialModel ?? undefined
-    });
+    const bootstrap = opts.existingSessionId
+        ? await bootstrapExistingSession({
+            sessionId: opts.existingSessionId,
+            flavor: 'opencode',
+            startedBy,
+            workingDirectory
+        })
+        : await bootstrapSession({
+            flavor: 'opencode',
+            startedBy,
+            workingDirectory,
+            agentState: initialState,
+            model: initialModel ?? undefined
+        });
+    const { api, session } = bootstrap;
 
     const startingMode: 'local' | 'remote' = opts.startingMode
         ?? (startedBy === 'runner' ? 'remote' : 'local');

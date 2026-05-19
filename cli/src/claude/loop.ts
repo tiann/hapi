@@ -39,6 +39,7 @@ interface LoopOptions {
     allowedTools?: string[]
     onSessionReady?: (session: Session) => void
     hookSettingsPath: string
+    resumeSessionId?: string
 }
 
 export async function loop(opts: LoopOptions) {
@@ -51,7 +52,7 @@ export async function loop(opts: LoopOptions) {
         api: opts.api,
         client: opts.session,
         path: opts.path,
-        sessionId: null,
+        sessionId: opts.resumeSessionId ?? null,
         claudeEnvVars: opts.claudeEnvVars,
         claudeArgs: opts.claudeArgs,
         mcpServers: opts.mcpServers,
