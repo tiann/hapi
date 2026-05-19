@@ -86,6 +86,25 @@ export function buildSessionMetadata(options: {
     }
 }
 
+function pickExistingSessionMetadata(metadata: Metadata | null | undefined): Partial<Metadata> {
+    if (!metadata) return {}
+
+    const preserved: Partial<Metadata> = {}
+
+    if (metadata.name !== undefined) preserved.name = metadata.name
+    if (metadata.summary !== undefined) preserved.summary = metadata.summary
+    if (metadata.claudeSessionId !== undefined) preserved.claudeSessionId = metadata.claudeSessionId
+    if (metadata.codexSessionId !== undefined) preserved.codexSessionId = metadata.codexSessionId
+    if (metadata.geminiSessionId !== undefined) preserved.geminiSessionId = metadata.geminiSessionId
+    if (metadata.opencodeSessionId !== undefined) preserved.opencodeSessionId = metadata.opencodeSessionId
+    if (metadata.cursorSessionId !== undefined) preserved.cursorSessionId = metadata.cursorSessionId
+    if (metadata.tools !== undefined) preserved.tools = metadata.tools
+    if (metadata.slashCommands !== undefined) preserved.slashCommands = metadata.slashCommands
+    if (metadata.worktree !== undefined) preserved.worktree = metadata.worktree
+
+    return preserved
+}
+
 async function getMachineIdOrExit(): Promise<string> {
     const settings = await readSettings()
     const machineId = settings?.machineId
@@ -174,16 +193,26 @@ export async function bootstrapExistingSession(options: {
     })
 
     const sessionInfo = await api.getSession(options.sessionId)
-    const metadata = buildSessionMetadata({
+    const baseMetadata = buildSessionMetadata({
         flavor: options.flavor,
         startedBy,
         workingDirectory: options.workingDirectory,
-        machineId,
-        metadataOverrides: options.metadataOverrides
+        machineId
+    })
+    const metadata = {
+        ...baseMetadata,
+        ...pickExistingSessionMetadata(sessionInfo.metadata),
+        ...options.metadataOverrides
+    }
+
+    const buildUpdatedMetadata = (current: Metadata): Metadata => ({
+        ...baseMetadata,
+        ...pickExistingSessionMetadata(current),
+        ...options.metadataOverrides
     })
 
     const session = api.sessionSyncClient(sessionInfo)
-    session.updateMetadata(() => metadata)
+    session.updateMetadata(buildUpdatedMetadata)
     await reportSessionStarted(sessionInfo.id, metadata)
 
     return {

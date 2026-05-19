@@ -120,6 +120,65 @@ describe('bootstrapExistingSession', () => {
         )
     })
 
+    it('preserves existing native resume metadata when reactivating a session', async () => {
+        const session = createSession()
+        const existingMetadata = session.metadata
+        if (!existingMetadata) throw new Error('expected test session metadata')
+
+        session.metadata = {
+            ...existingMetadata,
+            claudeSessionId: 'claude-thread-1',
+            codexSessionId: 'codex-thread-1',
+            geminiSessionId: 'gemini-thread-1',
+            opencodeSessionId: 'opencode-thread-1',
+            cursorSessionId: 'cursor-thread-1',
+            summary: {
+                text: 'resume me',
+                updatedAt: 100
+            },
+            tools: ['read_file'],
+            slashCommands: ['/compact']
+        }
+        const sessionClient = {
+            updateMetadata: vi.fn()
+        }
+        getSessionMock.mockResolvedValue(session)
+        getOrCreateMachineMock.mockResolvedValue({ id: 'machine-1' })
+        sessionSyncClientMock.mockReturnValue(sessionClient)
+        readSettingsMock.mockResolvedValue({ machineId: 'machine-1' })
+
+        const result = await bootstrapExistingSession({
+            sessionId: 'hapi-session-1',
+            flavor: 'codex',
+            workingDirectory: '/tmp/project'
+        })
+
+        expect(result.metadata).toEqual(expect.objectContaining({
+            claudeSessionId: 'claude-thread-1',
+            codexSessionId: 'codex-thread-1',
+            geminiSessionId: 'gemini-thread-1',
+            opencodeSessionId: 'opencode-thread-1',
+            cursorSessionId: 'cursor-thread-1',
+            summary: {
+                text: 'resume me',
+                updatedAt: 100
+            },
+            tools: ['read_file'],
+            slashCommands: ['/compact']
+        }))
+        expect(sessionClient.updateMetadata).toHaveBeenCalledOnce()
+        const updateHandler = sessionClient.updateMetadata.mock.calls[0][0]
+        expect(updateHandler(session.metadata)).toEqual(expect.objectContaining({
+            codexSessionId: 'codex-thread-1'
+        }))
+        expect(notifyRunnerSessionStartedMock).toHaveBeenCalledWith(
+            'hapi-session-1',
+            expect.objectContaining({
+                codexSessionId: 'codex-thread-1'
+            })
+        )
+    })
+
     it('advertises remote terminal capability in session metadata', () => {
         const metadata = buildSessionMetadata({
             flavor: 'codex',
