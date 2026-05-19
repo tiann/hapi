@@ -22,7 +22,7 @@ import {
     type PermissionResult,
     AbortError
 } from './types'
-import { getDefaultClaudeCodePath, logDebug, streamToStdin } from './utils'
+import { getClaudeCodeExecutableShell, getDefaultClaudeCodePath, isClaudeCodeCommandOnly, logDebug, streamToStdin } from './utils'
 import { withBunRuntimeEnv } from '@/utils/bunRuntime'
 import { killProcessByChildProcess } from '@/utils/process'
 import { stripNewlinesForWindowsShellArg } from '@/utils/shellEscape'
@@ -362,10 +362,10 @@ export function query(config: {
         args.push('--input-format', 'stream-json')
     }
 
-    // Determine how to spawn Claude Code
-    // - If it's just 'claude' command → spawn('claude', args) with shell on Windows
-    // - If it's a full path to binary or script → spawn(path, args)
-    const isCommandOnly = pathToClaudeCodeExecutable === 'claude'
+    // Determine how to spawn Claude Code.
+    // Windows shell wrappers (.cmd/.bat) need shell mode, while real binaries
+    // should keep shell disabled to avoid cmd.exe path resolution issues.
+    const isCommandOnly = isClaudeCodeCommandOnly(pathToClaudeCodeExecutable)
     
     // Validate executable path (skip for command-only mode)
     if (!isCommandOnly && !existsSync(pathToClaudeCodeExecutable)) {
@@ -386,9 +386,7 @@ export function query(config: {
         stdio: ['pipe', 'pipe', 'pipe'],
         signal: config.options?.abort,
         env: spawnEnv,
-        // Use shell: false with absolute path from getDefaultClaudeCodePath()
-        // This avoids cmd.exe resolution issues on Windows
-        shell: false,
+        shell: getClaudeCodeExecutableShell(pathToClaudeCodeExecutable),
         // Hide transient console windows on Windows when spawning Claude Code
         windowsHide: process.platform === 'win32'
     }) as ChildProcessWithoutNullStreams

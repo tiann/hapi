@@ -79,6 +79,26 @@ describe('Query', () => {
         await expect(result.next()).rejects.toThrow('prompt failed')
     })
 
+    it('allows command-only Claude wrappers from HAPI_CLAUDE_PATH', async () => {
+        const child = createFakeChild()
+        spawnMock.mockReturnValueOnce(child)
+        process.env.HAPI_CLAUDE_PATH = 'claude'
+
+        const { query } = await import('./query')
+        const result = query({ prompt: 'hello' })
+        child.stdout.end()
+        child.emit('close', 0)
+
+        await expect(result.next()).resolves.toEqual({ done: true, value: undefined })
+        expect(spawnMock).toHaveBeenCalledWith(
+            'claude',
+            expect.arrayContaining(['--print', 'hello']),
+            expect.objectContaining({
+                shell: process.platform === 'win32'
+            })
+        )
+    })
+
     it('fails fast after cleanup timeout when prompt cleanup hangs', async () => {
         const child = createFakeChild()
         spawnMock.mockReturnValueOnce(child)

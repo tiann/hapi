@@ -185,6 +185,8 @@ npm install -g @anthropic-ai/claude-code
 export HAPI_CLAUDE_PATH=/path/to/claude
 ```
 
+`HAPI_CLAUDE_PATH` can also point to a Claude-compatible wrapper. HAPI validates the path at startup and reports missing files, wrapper failures, or likely recursive wrappers before starting the session.
+
 ### Cursor Agent not found
 
 Install Cursor Agent CLI:
