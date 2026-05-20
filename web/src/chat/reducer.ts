@@ -29,13 +29,24 @@ export type LatestUsage = {
 }
 
 function getLatestThreadGoal(normalized: NormalizedMessage[]): ThreadGoal | null {
+    let sawNewerNonGoalUserMessage = false
     for (let i = normalized.length - 1; i >= 0; i--) {
         const msg = normalized[i]
+        if (msg.role === 'user') {
+            if (!/^\s*\/goal(?:\s|$)/i.test(msg.content.text)) {
+                sawNewerNonGoalUserMessage = true
+            }
+            continue
+        }
         if (msg.role !== 'event') continue
         const event = msg.content as AgentEvent
         if (event.type === 'thread-goal-cleared') return null
         if (event.type === 'thread-goal-updated') {
-            return (event as { goal?: ThreadGoal }).goal ?? null
+            const goal = (event as { goal?: ThreadGoal }).goal ?? null
+            if (goal?.status === 'complete' && sawNewerNonGoalUserMessage) {
+                return null
+            }
+            return goal
         }
     }
     return null

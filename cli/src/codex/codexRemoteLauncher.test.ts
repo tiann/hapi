@@ -23,6 +23,7 @@ const harness = vi.hoisted(() => ({
     goalGetCalls: [] as unknown[],
     goalClearCalls: [] as unknown[],
     goal: null as Record<string, unknown> | null,
+    suppressGoalNotifications: false,
     suppressTurnCompletion: false,
     remainingThreadSystemErrors: 0,
     startTurnMessages: [] as string[],
@@ -140,8 +141,10 @@ vi.mock('./codexAppServerClient', () => {
                 updatedAt: 2
             };
             const notification = { threadId, goal: harness.goal };
-            harness.notifications.push({ method: 'thread/goal/updated', params: notification });
-            this.notificationHandler?.('thread/goal/updated', notification);
+            if (!harness.suppressGoalNotifications) {
+                harness.notifications.push({ method: 'thread/goal/updated', params: notification });
+                this.notificationHandler?.('thread/goal/updated', notification);
+            }
             return { goal: harness.goal };
         }
 
@@ -156,8 +159,10 @@ vi.mock('./codexAppServerClient', () => {
             harness.goal = null;
             if (cleared) {
                 const notification = { threadId: params?.threadId ?? 'thread-unknown' };
-                harness.notifications.push({ method: 'thread/goal/cleared', params: notification });
-                this.notificationHandler?.('thread/goal/cleared', notification);
+                if (!harness.suppressGoalNotifications) {
+                    harness.notifications.push({ method: 'thread/goal/cleared', params: notification });
+                    this.notificationHandler?.('thread/goal/cleared', notification);
+                }
             }
             return { cleared };
         }
@@ -946,6 +951,7 @@ describe('codexRemoteLauncher', () => {
         harness.goalGetCalls = [];
         harness.goalClearCalls = [];
         harness.goal = null;
+        harness.suppressGoalNotifications = false;
         harness.suppressTurnCompletion = false;
         harness.startTurnMessages = [];
         harness.failResumeThreadIds = [];
@@ -1175,6 +1181,9 @@ describe('codexRemoteLauncher', () => {
             type: 'message',
             message: 'Goal active'
         });
+        expect(sessionEvents).not.toContainEqual({
+            type: 'ready'
+        });
         expect(codexMessages).toEqual(expect.arrayContaining([
             expect.objectContaining({
                 type: 'thread_goal_updated',
@@ -1203,6 +1212,44 @@ describe('codexRemoteLauncher', () => {
         expect(sessionEvents).toContainEqual({
             type: 'message',
             message: 'Goal active'
+        });
+    });
+
+    it('forwards goal RPC responses when the app-server does not emit goal notifications', async () => {
+        harness.suppressGoalNotifications = true;
+        const { session, codexMessages } = createSessionStub(['/goal improve benchmark coverage']);
+
+        const exitReason = await codexRemoteLauncher(session as never);
+
+        expect(exitReason).toBe('exit');
+        expect(codexMessages).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                type: 'thread_goal_updated',
+                thread_id: 'thread-1',
+                goal: expect.objectContaining({
+                    objective: 'improve benchmark coverage',
+                    status: 'active'
+                })
+            })
+        ]));
+    });
+
+    it('does not emit ready when a goal command interrupts an active turn', async () => {
+        harness.suppressTurnCompletion = true;
+        harness.emitTurnAbortedOnInterrupt = true;
+        const { session, sessionEvents } = createSessionStub(['first message', '/goal improve benchmark coverage']);
+
+        const exitReason = await codexRemoteLauncher(session as never);
+
+        expect(exitReason).toBe('exit');
+        expect(harness.interruptedTurns).toEqual([{ threadId: 'thread-1', turnId: 'turn-1' }]);
+        expect(harness.goalSetCalls).toEqual([{
+            threadId: 'thread-1',
+            objective: 'improve benchmark coverage',
+            status: 'active'
+        }]);
+        expect(sessionEvents).not.toContainEqual({
+            type: 'ready'
         });
     });
 
