@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ReactNode } from 'react'
@@ -93,5 +93,104 @@ describe('SessionList directory action', () => {
         )
 
         expect(screen.queryByRole('button', { name: 'New session in this directory' })).toBeNull()
+    })
+})
+
+describe('SessionList collapse behavior', () => {
+    function renderSessionList(sessions: SessionSummary[], selectedSessionId = 'session-running') {
+        return (
+            <QueryClientProvider client={new QueryClient({
+                defaultOptions: {
+                    queries: { retry: false },
+                    mutations: { retry: false },
+                }
+            })}>
+                <I18nProvider>
+                    <SessionList
+                        sessions={sessions}
+                        selectedSessionId={selectedSessionId}
+                        onSelect={vi.fn()}
+                        onNewSession={vi.fn()}
+                        onRefresh={vi.fn()}
+                        isLoading={false}
+                        renderHeader={false}
+                        api={null}
+                    />
+                </I18nProvider>
+            </QueryClientProvider>
+        )
+    }
+
+    function getProjectPanel(): Element {
+        const header = screen.getByTitle('/work/hapi')
+        const panel = header.nextElementSibling
+        if (!panel) {
+            throw new Error('Expected project collapse panel')
+        }
+        return panel
+    }
+
+    it('keeps a selected running path collapsed across live session-list refreshes', async () => {
+        const baseSessions = [
+            makeSession({
+                id: 'session-running',
+                active: true,
+                thinking: true,
+                pendingRequestsCount: 1,
+                updatedAt: 100,
+                metadata: { path: '/work/hapi', name: 'Running task', flavor: 'codex' },
+            }),
+            makeSession({
+                id: 'session-old',
+                updatedAt: 50,
+                metadata: { path: '/work/hapi', name: 'Older task', flavor: 'codex' },
+            })
+        ]
+        const { rerender } = render(renderSessionList(baseSessions))
+
+        expect(getProjectPanel().getAttribute('data-open')).toBe('true')
+
+        fireEvent.click(screen.getByTitle('/work/hapi'))
+        expect(getProjectPanel().getAttribute('data-open')).toBeNull()
+
+        rerender(renderSessionList([
+            {
+                ...baseSessions[0]!,
+                pendingRequestsCount: 2,
+                updatedAt: 200,
+            },
+            baseSessions[1]!
+        ]))
+
+        await waitFor(() => {
+            expect(getProjectPanel().getAttribute('data-open')).toBeNull()
+        })
+    })
+
+    it('auto-expands the path again when the selected session changes', async () => {
+        const sessions = [
+            makeSession({
+                id: 'session-running',
+                active: true,
+                thinking: true,
+                updatedAt: 100,
+                metadata: { path: '/work/hapi', name: 'Running task', flavor: 'codex' },
+            }),
+            makeSession({
+                id: 'session-next',
+                updatedAt: 90,
+                metadata: { path: '/work/hapi', name: 'Next task', flavor: 'codex' },
+            })
+        ]
+        const { rerender } = render(renderSessionList(sessions))
+
+        fireEvent.click(screen.getByTitle('/work/hapi'))
+        expect(getProjectPanel().getAttribute('data-open')).toBeNull()
+
+        rerender(renderSessionList(sessions, 'session-next'))
+
+        await waitFor(() => {
+            expect(getProjectPanel().getAttribute('data-open')).toBe('true')
+        })
     })
 })
