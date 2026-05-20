@@ -1,5 +1,5 @@
 import { unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
-import { isObject } from '@hapi/protocol'
+import { AGENT_MESSAGE_PAYLOAD_TYPE, isObject } from '@hapi/protocol'
 import type { DecryptedMessage, Session } from '@/types/api'
 import { VOICE_CONFIG } from '../voiceConfig'
 
@@ -73,6 +73,35 @@ function formatPlainText(role: NormalizedRole | null, text: string): string {
     return `User sent message: \n<text>${text}</text>`
 }
 
+function formatToolCall(name: string, input: unknown): string {
+    if (VOICE_CONFIG.LIMITED_TOOL_CALLS) {
+        return `Claude Code is using ${name}`
+    }
+    return `Claude Code is using ${name} with arguments: <arguments>${JSON.stringify(input)}</arguments>`
+}
+
+function formatCodexContent(content: Record<string, unknown>): string | null {
+    if (content.type !== AGENT_MESSAGE_PAYLOAD_TYPE) {
+        return null
+    }
+
+    const data = isObject(content.data) ? content.data : null
+    if (!data || typeof data.type !== 'string') {
+        return null
+    }
+
+    if (data.type === 'message' && typeof data.message === 'string') {
+        return formatPlainText('assistant', data.message)
+    }
+
+    if (data.type === 'tool-call' && !VOICE_CONFIG.DISABLE_TOOL_CALLS) {
+        const name = typeof data.name === 'string' ? data.name : 'unknown'
+        return formatToolCall(name, data.input)
+    }
+
+    return null
+}
+
 /**
  * Format a permission request for natural language context
  */
@@ -104,6 +133,9 @@ export function formatMessage(message: DecryptedMessage): string | null {
         if (isObject(content) && content.type === 'text' && typeof content.text === 'string') {
             return formatPlainText(normalizedRole, content.text)
         }
+        if (isObject(content)) {
+            return formatCodexContent(content)
+        }
         return null
     }
 
@@ -120,11 +152,7 @@ export function formatMessage(message: DecryptedMessage): string | null {
             lines.push(formatPlainText(isAssistant ? 'assistant' : 'user', item.text))
         } else if (item.type === 'tool_use' && !VOICE_CONFIG.DISABLE_TOOL_CALLS) {
             const name = item.name || 'unknown'
-            if (VOICE_CONFIG.LIMITED_TOOL_CALLS) {
-                lines.push(`Claude Code is using ${name}`)
-            } else {
-                lines.push(`Claude Code is using ${name} with arguments: <arguments>${JSON.stringify(item.input)}</arguments>`)
-            }
+            lines.push(formatToolCall(name, item.input))
         }
     }
 
