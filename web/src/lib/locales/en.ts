@@ -128,6 +128,8 @@ export default {
   'newSession.model': 'Model',
   'newSession.effort': 'Effort',
   'newSession.model.optional': 'optional',
+  'newSession.model.custom.placeholder': 'Enter Claude model name',
+  'newSession.model.custom.required': 'Custom model is required',
   'newSession.model.loadFailed': 'Failed to load Codex models',
   'newSession.opencodeModel.loading': 'Discovering OpenCode models…',
   'newSession.opencodeModel.loadFailed': 'Failed to load OpenCode models',
