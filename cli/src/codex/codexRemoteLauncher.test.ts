@@ -836,6 +836,7 @@ function createSessionStub(messages = ['hello from launcher test'], mode = creat
     const foundSessionIds: string[] = [];
     const resetThreadCalls: string[] = [];
     const collaborationModes: Array<EnhancedMode['collaborationMode'] | undefined> = [];
+    let currentPermissionMode: EnhancedMode['permissionMode'] = mode.permissionMode;
     let currentModel: string | null | undefined = mode.model;
     let currentCollaborationMode: EnhancedMode['collaborationMode'] | undefined = mode.collaborationMode;
     let agentState: FakeAgentState = {
@@ -875,7 +876,7 @@ function createSessionStub(messages = ['hello from launcher test'], mode = creat
         sessionId: null as string | null,
         thinking: false,
         getPermissionMode() {
-            return 'default' as const;
+            return currentPermissionMode;
         },
         setModel(nextModel: string | null) {
             currentModel = nextModel;
@@ -922,6 +923,9 @@ function createSessionStub(messages = ['hello from launcher test'], mode = creat
         foundSessionIds,
         resetThreadCalls,
         rpcHandlers,
+        setPermissionMode: (nextMode: EnhancedMode['permissionMode']) => {
+            currentPermissionMode = nextMode;
+        },
         getModel: () => currentModel,
         getCollaborationMode: () => currentCollaborationMode,
         collaborationModes,
@@ -1019,6 +1023,56 @@ describe('codexRemoteLauncher', () => {
         expect(sessionEvents.filter((event) => event.type === 'ready').length).toBeGreaterThanOrEqual(1);
         expect(thinkingChanges).toContain(true);
         expect(session.thinking).toBe(false);
+    });
+
+    it('uses live permission mode for app-server MCP elicitation handlers', async () => {
+        const { session, setPermissionMode } = createSessionStub();
+
+        const exitReason = await codexRemoteLauncher(session as never);
+
+        expect(exitReason).toBe('exit');
+        const handler = harness.requestHandlers.get('mcpServer/elicitation/request');
+        expect(handler).toBeTypeOf('function');
+        const request = {
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            serverName: 'qmd',
+            mode: 'form',
+            message: 'Allow the qmd MCP server to run tool "status"?',
+            _meta: null,
+            requestedSchema: {
+                type: 'object',
+                properties: {
+                    approval: {
+                        type: 'string',
+                        enum: ['allow', 'deny']
+                    }
+                },
+                required: ['approval']
+            }
+        };
+
+        await expect(handler?.(request)).resolves.toEqual({
+            action: 'cancel',
+            content: null,
+            _meta: null
+        });
+
+        setPermissionMode('yolo');
+        await expect(handler?.(request)).resolves.toEqual({
+            action: 'accept',
+            content: {
+                approval: 'allow'
+            },
+            _meta: null
+        });
+
+        setPermissionMode('default');
+        await expect(handler?.(request)).resolves.toEqual({
+            action: 'cancel',
+            content: null,
+            _meta: null
+        });
     });
 
     it('sends Codex plan collaboration mode when the app-server advertises it', async () => {

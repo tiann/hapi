@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { logger } from '@/ui/logger';
+import type { CodexPermissionMode } from '@hapi/protocol/types';
 import type { CodexPermissionHandler } from './permissionHandler';
 import type { CodexAppServerClient } from '../codexAppServerClient';
 
@@ -157,12 +158,13 @@ function isHapiBridgeElicitation(params: unknown): boolean {
 export function registerAppServerPermissionHandlers(args: {
     client: CodexAppServerClient;
     permissionHandler: CodexPermissionHandler;
+    getPermissionMode?: () => CodexPermissionMode | undefined;
     onUserInputRequest?: (request: { id: string; input: unknown }) => Promise<
         | { decision: 'accept'; answers: Record<string, string[]> | Record<string, { answers: string[] }> }
         | { decision: 'decline' | 'cancel' }
     >;
 }): void {
-    const { client, permissionHandler, onUserInputRequest } = args;
+    const { client, permissionHandler, getPermissionMode, onUserInputRequest } = args;
 
     client.registerRequestHandler('item/commandExecution/requestApproval', async (params) => {
         const record = asRecord(params) ?? {};
@@ -258,11 +260,15 @@ export function registerAppServerPermissionHandlers(args: {
     client.registerRequestHandler('mcpServer/elicitation/request', async (params) => {
         const record = asRecord(params) ?? {};
 
-        if (!isHapiBridgeElicitation(params)) {
+        const currentPermissionMode = getPermissionMode?.();
+        const shouldAccept = isHapiBridgeElicitation(params) || currentPermissionMode === 'yolo';
+
+        if (!shouldAccept) {
             logger.debug('[CodexAppServer] Cancelling unsupported MCP elicitation request', {
                 serverName: record.serverName,
                 mode: record.mode,
-                message: record.message
+                message: record.message,
+                permissionMode: currentPermissionMode ?? 'unknown'
             });
 
             return {
@@ -275,7 +281,8 @@ export function registerAppServerPermissionHandlers(args: {
         logger.debug('[CodexAppServer] Accepting MCP elicitation request', {
             serverName: record.serverName,
             mode: record.mode,
-            message: record.message
+            message: record.message,
+            permissionMode: currentPermissionMode ?? 'unknown'
         });
 
         return {

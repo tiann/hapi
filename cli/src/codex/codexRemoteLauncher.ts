@@ -505,12 +505,14 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             return `${match[1]}.${match[2]}`;
         };
 
-        const permissionHandler = new CodexPermissionHandler(session.client, () => {
+        const getCurrentCodexPermissionMode = () => {
             const mode = session.getPermissionMode();
             return mode === 'default' || mode === 'read-only' || mode === 'safe-yolo' || mode === 'yolo'
                 ? mode
                 : undefined;
-        }, {
+        };
+
+        const permissionHandler = new CodexPermissionHandler(session.client, getCurrentCodexPermissionMode, {
             onRequest: ({ id, toolName, input }) => {
                 if (toolName === 'request_user_input') {
                     session.sendAgentMessage({
@@ -2443,6 +2445,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         registerAppServerPermissionHandlers({
             client: appServerClient,
             permissionHandler,
+            getPermissionMode: getCurrentCodexPermissionMode,
             onUserInputRequest: async ({ id, input }) => {
                 try {
                     const answers = await permissionHandler.handleUserInputRequest(id, input);

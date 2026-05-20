@@ -189,6 +189,97 @@ describe('registerAppServerPermissionHandlers', () => {
         });
     });
 
+    it('accepts non-HAPI MCP elicitation requests when live permission mode is yolo', async () => {
+        const { client, handlers } = createClient();
+        let permissionMode: 'default' | 'read-only' | 'safe-yolo' | 'yolo' = 'default';
+        const permissionHandler = {
+            handleToolCall: vi.fn()
+        };
+
+        registerAppServerPermissionHandlers({
+            client: client as never,
+            permissionHandler: permissionHandler as never,
+            getPermissionMode: () => permissionMode
+        });
+
+        const handler = handlers.get('mcpServer/elicitation/request');
+        expect(handler).toBeTypeOf('function');
+
+        const request = {
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            serverName: 'qmd',
+            mode: 'form',
+            message: 'Allow the qmd MCP server to run tool "status"?',
+            _meta: null,
+            requestedSchema: {
+                type: 'object',
+                properties: {
+                    approval: {
+                        type: 'string',
+                        enum: ['allow', 'deny']
+                    }
+                },
+                required: ['approval']
+            }
+        };
+
+        await expect(handler?.(request)).resolves.toEqual({
+            action: 'cancel',
+            content: null,
+            _meta: null
+        });
+
+        permissionMode = 'yolo';
+        await expect(handler?.(request)).resolves.toEqual({
+            action: 'accept',
+            content: {
+                approval: 'allow'
+            },
+            _meta: null
+        });
+
+        permissionMode = 'default';
+        await expect(handler?.(request)).resolves.toEqual({
+            action: 'cancel',
+            content: null,
+            _meta: null
+        });
+    });
+
+    it('does not auto-accept non-HAPI MCP elicitation requests in safe-yolo mode', async () => {
+        const { client, handlers } = createClient();
+        const permissionHandler = {
+            handleToolCall: vi.fn()
+        };
+
+        registerAppServerPermissionHandlers({
+            client: client as never,
+            permissionHandler: permissionHandler as never,
+            getPermissionMode: () => 'safe-yolo'
+        });
+
+        const handler = handlers.get('mcpServer/elicitation/request');
+        expect(handler).toBeTypeOf('function');
+
+        await expect(handler?.({
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            serverName: 'external',
+            mode: 'form',
+            message: 'Collect data',
+            _meta: null,
+            requestedSchema: {
+                type: 'object',
+                properties: {},
+            }
+        })).resolves.toEqual({
+            action: 'cancel',
+            content: null,
+            _meta: null
+        });
+    });
+
     it('cancels non-HAPI MCP elicitation requests', async () => {
         const { client, handlers } = createClient();
         const permissionHandler = {
