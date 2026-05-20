@@ -28,6 +28,7 @@ export const EMPTY_STATE: MessageWindowState = {
 
 export function useMessages(api: ApiClient | null, sessionId: string | null): {
     messages: DecryptedMessage[]
+    pendingMessages: DecryptedMessage[]
     warning: string | null
     isLoading: boolean
     isLoadingMore: boolean
@@ -88,6 +89,7 @@ export function useMessages(api: ApiClient | null, sessionId: string | null): {
 
     return {
         messages: state.messages,
+        pendingMessages: state.pending,
         warning: state.warning,
         isLoading: state.isLoading,
         isLoadingMore: state.isLoadingMore,

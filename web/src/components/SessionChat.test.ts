@@ -1,6 +1,31 @@
 import { describe, expect, it } from 'vitest'
-import { shouldAutoClearPendingSchedule } from './SessionChat'
+import { buildGoalStateMessages, shouldAutoClearPendingSchedule } from './SessionChat'
 import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
+import type { DecryptedMessage } from '@/types/api'
+
+function userMessage(props: {
+    id: string
+    createdAt: number
+    localId?: string | null
+    invokedAt?: number | null
+    scheduledAt?: number | null
+}): DecryptedMessage {
+    return {
+        id: props.id,
+        seq: null,
+        localId: props.localId ?? null,
+        content: {
+            role: 'user',
+            content: {
+                type: 'text',
+                text: 'hello'
+            }
+        },
+        createdAt: props.createdAt,
+        invokedAt: props.invokedAt,
+        scheduledAt: props.scheduledAt
+    }
+}
 
 /**
  * Unit tests for shouldAutoClearPendingSchedule.
@@ -39,5 +64,60 @@ describe('shouldAutoClearPendingSchedule', () => {
     it('returns true for expired absolute schedule (ms in the past)', () => {
         const expired: PendingSchedule = { type: 'absolute', ms: Date.now() - 1000 }
         expect(shouldAutoClearPendingSchedule(expired)).toBe(true)
+    })
+})
+
+describe('buildGoalStateMessages', () => {
+    it('keeps immediate queued user messages so completed goal status can clear before timeline render', () => {
+        const now = 1_700_000_000_000
+        const messages = [
+            userMessage({
+                id: 'local-immediate',
+                localId: 'local-immediate',
+                createdAt: now,
+                invokedAt: null
+            })
+        ]
+
+        expect(buildGoalStateMessages(messages).map((message) => message.id))
+            .toEqual(['local-immediate'])
+    })
+
+    it('includes pending messages that are outside the visible timeline window', () => {
+        const now = 1_700_000_000_000
+        const visible = [
+            userMessage({ id: 'visible', createdAt: now - 10 })
+        ]
+        const pending = [
+            userMessage({ id: 'pending', createdAt: now })
+        ]
+
+        expect(buildGoalStateMessages(visible, pending).map((message) => message.id))
+            .toEqual(['visible', 'pending'])
+    })
+
+    it('ignores uninvoked scheduled messages, including mature prompts, until they are invoked', () => {
+        const now = 1_700_000_000_000
+        const futureQueued = userMessage({
+            id: 'future',
+            createdAt: now,
+            invokedAt: null,
+            scheduledAt: now + 60_000
+        })
+        const matureQueued = userMessage({
+            id: 'mature',
+            createdAt: now + 1,
+            invokedAt: null,
+            scheduledAt: now - 60_000
+        })
+        const invokedScheduled = userMessage({
+            id: 'invoked',
+            createdAt: now + 2,
+            invokedAt: now + 30_000,
+            scheduledAt: now - 60_000
+        })
+
+        expect(buildGoalStateMessages([futureQueued, matureQueued, invokedScheduled]).map((message) => message.id))
+            .toEqual(['invoked'])
     })
 })

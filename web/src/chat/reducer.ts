@@ -5,6 +5,7 @@ import { traceMessages, type TracedMessage } from '@/chat/tracer'
 import { dedupeAgentEvents, foldApiErrorEvents } from '@/chat/reducerEvents'
 import { collectTitleChanges, collectToolIdsFromMessages, ensureToolBlock, getPermissions } from '@/chat/reducerTools'
 import { reduceTimeline } from '@/chat/reducerTimeline'
+import { isRedundantGoalStatusMessageText } from '@hapi/protocol/messages'
 
 // Calculate context size from usage data
 function calculateContextSize(usage: UsageData): number {
@@ -26,6 +27,10 @@ export type LatestUsage = {
     contextSize: number
     contextWindow: number | null
     timestamp: number
+}
+
+export type ReduceChatBlocksOptions = {
+    goalStateMessages?: NormalizedMessage[]
 }
 
 function getLatestThreadGoal(normalized: NormalizedMessage[]): ThreadGoal | null {
@@ -52,9 +57,42 @@ function getLatestThreadGoal(normalized: NormalizedMessage[]): ThreadGoal | null
     return null
 }
 
+function isRedundantGoalStatusMessage(event: AgentEvent): boolean {
+    if (event.type !== 'message') return false
+    return isRedundantGoalStatusMessageText(event.message)
+}
+
+function isSilentGoalEventBlock(block: ChatBlock): boolean {
+    return block.kind === 'agent-event'
+        && (
+            block.event.type === 'thread-goal-updated'
+            || block.event.type === 'thread-goal-cleared'
+            || isRedundantGoalStatusMessage(block.event)
+        )
+}
+
+function filterSilentGoalBlocks(blocks: ChatBlock[]): ChatBlock[] {
+    const filtered: ChatBlock[] = []
+
+    for (const block of blocks) {
+        if (isSilentGoalEventBlock(block)) continue
+        if (block.kind === 'tool-call' && block.children.length > 0) {
+            filtered.push({
+                ...block,
+                children: filterSilentGoalBlocks(block.children)
+            })
+            continue
+        }
+        filtered.push(block)
+    }
+
+    return filtered
+}
+
 export function reduceChatBlocks(
     normalized: NormalizedMessage[],
-    agentState: AgentState | null | undefined
+    agentState: AgentState | null | undefined,
+    options: ReduceChatBlocksOptions = {}
 ): { blocks: ChatBlock[]; hasReadyEvent: boolean; latestUsage: LatestUsage | null; latestGoal: ThreadGoal | null } {
     const permissionsById = getPermissions(agentState)
     const toolIdsInMessages = collectToolIdsFromMessages(normalized)
@@ -142,9 +180,9 @@ export function reduceChatBlocks(
     }
 
     return {
-        blocks: dedupeAgentEvents(foldApiErrorEvents(rootResult.blocks)),
+        blocks: filterSilentGoalBlocks(dedupeAgentEvents(foldApiErrorEvents(rootResult.blocks))),
         hasReadyEvent,
         latestUsage,
-        latestGoal: getLatestThreadGoal(normalized)
+        latestGoal: getLatestThreadGoal(options.goalStateMessages ?? normalized)
     }
 }

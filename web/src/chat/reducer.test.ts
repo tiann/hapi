@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { reduceChatBlocks } from './reducer'
+import { normalizeDecryptedMessage } from './normalize'
 import type { NormalizedMessage } from './types'
+import type { DecryptedMessage } from '@/types/api'
 import type { ThreadGoal, ThreadGoalStatus } from '@/types/api'
 
 function userMessage(id: string, text: string, createdAt: number): NormalizedMessage {
@@ -50,6 +52,30 @@ function goalClearedMessage(id: string, createdAt: number): NormalizedMessage {
             threadId: 'thread-1'
         },
         isSidechain: false
+    }
+}
+
+function eventMessage(id: string, message: string, createdAt: number): NormalizedMessage {
+    return {
+        id,
+        localId: null,
+        createdAt,
+        role: 'event',
+        content: {
+            type: 'message',
+            message
+        },
+        isSidechain: false
+    }
+}
+
+function decryptedMessage(id: string, content: unknown, createdAt: number): DecryptedMessage {
+    return {
+        id,
+        seq: 1,
+        localId: null,
+        content,
+        createdAt
     }
 }
 
@@ -127,6 +153,21 @@ describe('reduceChatBlocks', () => {
         expect(reduced.latestGoal).toBeNull()
     })
 
+    it('can clear completed goal state using messages hidden from the rendered timeline', () => {
+        const renderedMessages = [
+            goalMessage('goal-complete', 'complete', 1)
+        ]
+        const goalStateMessages = [
+            ...renderedMessages,
+            userMessage('queued-user-later', 'start a new task', 2)
+        ]
+
+        const reduced = reduceChatBlocks(renderedMessages, null, { goalStateMessages })
+
+        expect(reduced.blocks).toHaveLength(0)
+        expect(reduced.latestGoal).toBeNull()
+    })
+
     it('does not treat later goal slash commands as non-goal activity', () => {
         const reduced = reduceChatBlocks([
             goalMessage('goal-complete', 'complete', 1),
@@ -154,5 +195,88 @@ describe('reduceChatBlocks', () => {
         ], null)
 
         expect(reduced.latestGoal).toBeNull()
+    })
+
+    it('uses goal events for latest goal state without rendering timeline prompts', () => {
+        const reduced = reduceChatBlocks([
+            goalMessage('goal-active', 'active', 1)
+        ], null)
+
+        expect(reduced.blocks).toHaveLength(0)
+        expect(reduced.latestGoal).toMatchObject({
+            threadId: 'thread-1',
+            objective: 'ship goal support',
+            status: 'active'
+        })
+    })
+
+    it('uses goal clear events to clear latest goal without rendering timeline prompts', () => {
+        const reduced = reduceChatBlocks([
+            goalMessage('goal-active', 'active', 1),
+            goalClearedMessage('goal-cleared', 2)
+        ], null)
+
+        expect(reduced.blocks).toHaveLength(0)
+        expect(reduced.latestGoal).toBeNull()
+    })
+
+    it('hides redundant goal status messages but keeps actionable goal messages', () => {
+        const reduced = reduceChatBlocks([
+            eventMessage('goal-active-message', 'Goal active', 1),
+            eventMessage('goal-active-usage-message', 'Goal active · 181737 tokens', 2),
+            eventMessage('goal-complete-message', 'Goal complete', 3),
+            eventMessage('goal-cleared-message', 'Goal cleared', 4),
+            eventMessage('goal-actionable-message', 'No goal to clear', 5)
+        ], null)
+
+        expect(reduced.blocks).toHaveLength(1)
+        expect(reduced.blocks[0]).toMatchObject({
+            kind: 'agent-event',
+            event: { type: 'message', message: 'No goal to clear' }
+        })
+    })
+
+    it('hides persisted goal status event envelopes alongside structured goal events', () => {
+        const goal: ThreadGoal = {
+            threadId: 'thread-1',
+            objective: 'ship goal support',
+            status: 'active',
+            tokenBudget: null,
+            tokensUsed: 8016,
+            timeUsedSeconds: 10,
+            createdAt: 1,
+            updatedAt: 2
+        }
+        const normalized = [
+            decryptedMessage('goal-status-envelope', {
+                role: 'agent',
+                content: {
+                    id: 'event-1',
+                    type: 'event',
+                    data: { type: 'message', message: 'Goal active · 8016 tokens' }
+                }
+            }, 1),
+            decryptedMessage('goal-structured-envelope', {
+                role: 'agent',
+                content: {
+                    type: 'codex',
+                    data: {
+                        type: 'thread_goal_updated',
+                        thread_id: 'thread-1',
+                        goal
+                    }
+                }
+            }, 2)
+        ].map(message => normalizeDecryptedMessage(message))
+            .filter((message): message is NormalizedMessage => message !== null)
+
+        const reduced = reduceChatBlocks(normalized, null)
+
+        expect(reduced.blocks).toHaveLength(0)
+        expect(reduced.latestGoal).toMatchObject({
+            threadId: 'thread-1',
+            status: 'active',
+            tokensUsed: 8016
+        })
     })
 })

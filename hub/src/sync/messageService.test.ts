@@ -65,6 +65,68 @@ function makePublisher() {
 // Tests
 // ---------------------------------------------------------------------------
 
+describe('MessageService goal status filtering', () => {
+    function redundantGoalStatusContent(message: string): unknown {
+        return {
+            role: 'agent',
+            content: {
+                id: `event-${message}`,
+                type: 'event',
+                data: { type: 'message', message }
+            }
+        }
+    }
+
+    it('hides stored redundant goal status events but keeps actionable goal messages', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'goal-status-filter')
+
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: '/goal ship it' } })
+        store.messages.addMessage(session.id, redundantGoalStatusContent('Goal active · 8016 tokens'))
+        store.messages.addMessage(session.id, redundantGoalStatusContent('No goal to clear'))
+
+        const service = new MessageService(store, makeIo(() => {}), makePublisher() as any)
+        const page = service.getMessagesPage(session.id, { limit: 10, beforeSeq: null })
+
+        expect(page.messages.map(message => message.content)).toEqual([
+            { role: 'user', content: { type: 'text', text: '/goal ship it' } },
+            redundantGoalStatusContent('No goal to clear')
+        ])
+    })
+
+    it('pages past hidden-only goal status rows', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'goal-status-pagination')
+
+        const user = store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: '/goal ship it' } })
+        store.messages.addMessage(session.id, redundantGoalStatusContent('Goal active'))
+
+        const service = new MessageService(store, makeIo(() => {}), makePublisher() as any)
+        const latest = service.getMessagesPage(session.id, { limit: 1, beforeSeq: null })
+
+        expect(latest.messages).toHaveLength(1)
+        expect(latest.messages[0]?.id).toBe(user.id)
+        expect(latest.page.nextBeforeSeq).toBe(user.seq)
+        expect(latest.page.hasMore).toBe(false)
+    })
+
+    it('pages past hidden-only goal status rows in position pagination', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'goal-status-position-pagination')
+
+        const user = store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: '/goal ship it' } })
+        store.messages.addMessage(session.id, redundantGoalStatusContent('Goal active · 8016 tokens'))
+
+        const service = new MessageService(store, makeIo(() => {}), makePublisher() as any)
+        const latest = service.getMessagesPageByPosition(session.id, { limit: 1, before: null })
+
+        expect(latest.messages).toHaveLength(1)
+        expect(latest.messages[0]?.id).toBe(user.id)
+        expect(latest.page.nextBeforeSeq).toBe(user.seq)
+        expect(latest.page.hasMore).toBe(false)
+    })
+})
+
 describe('MessageService.cancelQueuedMessage race scenarios', () => {
     describe('Race-A: CLI ack removed:true → DELETE + status=cancelled', () => {
         it('returns cancelled and emits message-cancelled SSE after CLI confirms removal', async () => {

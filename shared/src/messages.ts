@@ -50,4 +50,24 @@ export function isClaudeChatVisibleMessage(message: { type: unknown; subtype?: u
     return isClaudeChatVisibleSystemSubtype(message.subtype)
 }
 
+export function isRedundantGoalStatusMessageText(value: unknown): boolean {
+    if (typeof value !== 'string') return false
+    const message = value.trim()
+    return message === 'Goal cleared'
+        || /^Goal (active|paused|complete|limited by budget)(?:$|\s+·\s+)/.test(message)
+}
+
+export function isRedundantGoalStatusEventContent(value: unknown): boolean {
+    const record = unwrapRoleWrappedRecordEnvelope(value)
+    if (record?.role !== 'agent') return false
+
+    const eventContent = record.content
+    if (!isObject(eventContent) || eventContent.type !== 'event') return false
+
+    const data = isObject(eventContent.data) ? eventContent.data : null
+    if (!data || data.type !== 'message') return false
+
+    return isRedundantGoalStatusMessageText(data.message)
+}
+
 export type { RoleWrappedRecord }
