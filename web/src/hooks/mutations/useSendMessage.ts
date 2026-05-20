@@ -31,7 +31,7 @@ type UseSendMessageOptions = {
 
 /** Create an optimistic message for display. Extracted as an extension point
  *  so a future floating-UI PR can route queued messages to a separate area. */
-function createOptimisticMessage(input: SendMessageInput, status: 'queued' | 'sending'): DecryptedMessage {
+function createOptimisticMessage(input: SendMessageInput, status: 'queued' | 'sending' | 'failed'): DecryptedMessage {
     return {
         id: input.localId,
         seq: null,
@@ -145,6 +145,21 @@ export function useSendMessage(
                     targetSessionId = resolved
                 }
             } catch (error) {
+                // The composer has already cleared its text by the time async
+                // inactive-session resume fails. Surface a failed local prompt
+                // bubble so 500/502 resume errors cannot make the user's prompt
+                // disappear with no way to copy or retry it.
+                appendOptimisticMessage(
+                    sessionId,
+                    createOptimisticMessage({
+                        sessionId,
+                        text,
+                        localId,
+                        createdAt,
+                        attachments,
+                        scheduledAt,
+                    }, 'failed')
+                )
                 haptic.notification('error')
                 console.error('Failed to resolve session before send:', error)
                 return false
@@ -182,16 +197,40 @@ export function useSendMessage(
 
         const message = findMessageByLocalId(sessionId, localId)
         if (!message?.originalText) return false
+        const originalText = message.originalText
 
         updateMessageStatus(sessionId, localId, 'sending')
 
-        mutation.mutate({
-            sessionId,
-            text: message.originalText,
-            localId,
-            createdAt: message.createdAt,
-            scheduledAt: message.scheduledAt ?? null,
-        })
+        void (async () => {
+            let targetSessionId = sessionId
+            if (options?.resolveSessionId) {
+                resolveGuardRef.current = true
+                setIsResolving(true)
+                try {
+                    const resolved = await options.resolveSessionId(sessionId)
+                    if (resolved && resolved !== sessionId) {
+                        options.onSessionResolved?.(resolved)
+                        targetSessionId = resolved
+                    }
+                } catch (error) {
+                    updateMessageStatus(sessionId, localId, 'failed')
+                    haptic.notification('error')
+                    console.error('Failed to resolve session before retry:', error)
+                    return
+                } finally {
+                    resolveGuardRef.current = false
+                    setIsResolving(false)
+                }
+            }
+
+            mutation.mutate({
+                sessionId: targetSessionId,
+                text: originalText,
+                localId,
+                createdAt: message.createdAt,
+                scheduledAt: message.scheduledAt ?? null,
+            })
+        })()
         return true
     }
 
