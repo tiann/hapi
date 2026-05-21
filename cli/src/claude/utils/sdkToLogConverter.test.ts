@@ -382,6 +382,75 @@ describe('SDKToLogConverter', () => {
         })
     })
 
+    describe('Sidechain UUID chain', () => {
+        it('should not break sidechain chain with system init messages', () => {
+            // Simulate a subagent: prompt → system init → assistant with tool_use
+            const taskToolUseId = 'toolu_task123'
+
+            // 1. Create the sidechain prompt message (like convertSidechainUserMessage)
+            const promptMsg = converter.convertSidechainUserMessage(taskToolUseId, 'Do something')
+            const promptUuid = promptMsg.uuid
+
+            // 2. System init message (sidechain) — this is skipped by web UI normalizer
+            const systemInit = converter.convert({
+                type: 'system',
+                subtype: 'init',
+                session_id: 'subagent-session-456',
+                model: 'claude-sonnet-4-6',
+                parent_tool_use_id: taskToolUseId
+            } as unknown as SDKSystemMessage)
+
+            // 3. Subagent's assistant message with tool_use
+            const assistantMsg = converter.convert({
+                type: 'assistant',
+                message: {
+                    role: 'assistant',
+                    content: [{ type: 'tool_use', id: 'toolu_bash1', name: 'Bash', input: { command: 'npm test' } }]
+                },
+                parent_tool_use_id: taskToolUseId
+            } as unknown as SDKAssistantMessage)
+
+            // The assistant message should chain to the prompt UUID, not the system init UUID,
+            // because the system init is invisible to the tracer.
+            expect(systemInit?.isSidechain).toBe(true)
+            expect(systemInit?.parentUuid).toBe(promptUuid)
+            expect(assistantMsg?.isSidechain).toBe(true)
+            expect(assistantMsg?.parentUuid).toBe(promptUuid)
+        })
+
+        it('should chain visible system messages normally in sidechain', () => {
+            const taskToolUseId = 'toolu_task456'
+
+            // Prompt
+            const promptMsg = converter.convertSidechainUserMessage(taskToolUseId, 'Do something')
+            const promptUuid = promptMsg.uuid
+
+            // api_error system message (visible in normalizer)
+            const apiError = converter.convert({
+                type: 'system',
+                subtype: 'api_error',
+                parent_tool_use_id: taskToolUseId,
+                error: { message: 'rate limited' },
+                retryAttempt: 1,
+                maxRetries: 3
+            } as unknown as SDKSystemMessage)
+            const apiErrorUuid = apiError!.uuid
+
+            // Next assistant message should chain to the api_error (visible message)
+            const assistantMsg = converter.convert({
+                type: 'assistant',
+                message: {
+                    role: 'assistant',
+                    content: [{ type: 'text', text: 'Retrying...' }]
+                },
+                parent_tool_use_id: taskToolUseId
+            } as unknown as SDKAssistantMessage)
+
+            expect(apiError?.parentUuid).toBe(promptUuid)
+            expect(assistantMsg?.parentUuid).toBe(apiErrorUuid)
+        })
+    })
+
     describe('Tool results with mode', () => {
         it('should add mode to tool result when available in responses', () => {
             const responses = new Map<string, { approved: boolean; mode?: ClaudePermissionMode; reason?: string }>()
