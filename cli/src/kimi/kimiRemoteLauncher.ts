@@ -22,6 +22,7 @@ class KimiRemoteLauncher extends RemoteLauncherBase {
     private displayPermissionMode: PermissionMode | null = null;
     private currentBackendModel: string | null = null;
     private setModelSupported: boolean | undefined = undefined;
+    private lastDisplayedToolCall = new Map<string, string>();
 
     constructor(session: KimiSession, opts: { model?: string }) {
         super(process.env.DEBUG ? session.logPath : undefined);
@@ -216,9 +217,14 @@ class KimiRemoteLauncher extends RemoteLauncherBase {
             case 'reasoning':
                 this.messageBuffer.addMessage(`[Thinking] ${message.text.substring(0, 100)}...`, 'system');
                 break;
-            case 'tool_call':
-                this.messageBuffer.addMessage(`Tool call: ${message.name}`, 'tool');
+            case 'tool_call': {
+                const lastName = this.lastDisplayedToolCall.get(message.id);
+                if (lastName !== message.name) {
+                    this.messageBuffer.addMessage(`Tool call: ${message.name}`, 'tool');
+                    this.lastDisplayedToolCall.set(message.id, message.name);
+                }
                 break;
+            }
             case 'tool_result':
                 this.messageBuffer.addMessage('Tool result received', 'result');
                 break;
