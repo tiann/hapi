@@ -596,13 +596,14 @@ export function normalizeAgentRecord(
         }
 
         if (data.type === 'reasoning' && typeof data.message === 'string') {
+            const streamId = asString(data.id) ?? messageId
             return {
                 id: messageId,
                 localId,
                 createdAt,
                 role: 'agent',
                 isSidechain: false,
-                content: [{ type: 'reasoning', text: data.message, uuid: messageId, parentUUID: null }],
+                content: [{ type: 'reasoning', text: data.message, uuid: messageId, streamId, parentUUID: null }],
                 meta
             }
         }

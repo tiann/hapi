@@ -35,4 +35,18 @@ describe('convertAgentMessage', () => {
             is_error: true
         });
     });
+
+    it('preserves stable reasoning id when provided', () => {
+        const converted = convertAgentMessage({
+            type: 'reasoning',
+            text: 'thinking',
+            id: 'reasoning-stream-1'
+        });
+
+        expect(converted).toEqual({
+            type: 'reasoning',
+            message: 'thinking',
+            id: 'reasoning-stream-1'
+        });
+    });
 });

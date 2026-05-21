@@ -93,6 +93,7 @@ export type NormalizedAgentContent =
         type: 'reasoning'
         text: string
         uuid: string
+        streamId?: string
         parentUUID: string | null
     }
     | ToolUse

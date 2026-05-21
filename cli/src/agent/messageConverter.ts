@@ -28,7 +28,7 @@ export function convertAgentMessage(message: AgentMessage): CodexMessage | null 
             // AgentMessage uses `text` (consistent with the `text` variant);
             // the wire-level CodexMessage uses `message` to match the
             // existing reasoning format emitted by the Codex path.
-            return { type: 'reasoning', message: message.text, id: randomUUID() };
+            return { type: 'reasoning', message: message.text, id: message.id ?? randomUUID() };
         case 'tool_call':
             return {
                 type: 'tool-call',

@@ -1,4 +1,5 @@
 import type { AgentMessage, PlanItem } from '@/agent/types';
+import { randomUUID } from 'node:crypto';
 import { asString, isObject } from '@hapi/protocol';
 import { deriveToolNameWithSource, isPlaceholderToolName } from '@/agent/utils';
 import { parseRateLimitText } from '@/agent/rateLimitParser';
@@ -13,6 +14,8 @@ function normalizeStatus(status: unknown): 'pending' | 'in_progress' | 'complete
 }
 
 type DerivedToolName = ReturnType<typeof deriveToolNameWithSource>;
+
+const REASONING_SNAPSHOT_INTERVAL_MS = 250;
 
 /**
  * Extracts _meta.kind from the first diff block in a content array.
@@ -278,6 +281,10 @@ export class AcpMessageHandler {
     // otherwise incur — a 10k-token reasoning trace allocates 10k full-buffer
     // copies if we use `+=`.
     private bufferedReasoning: string[] = [];
+    private reasoningStreamId: string | null = null;
+    private lastReasoningSnapshotAt: number | null = null;
+    private lastReasoningSnapshotText = '';
+    private reasoningSnapshotEmitted = false;
 
     constructor(private readonly onMessage: (message: AgentMessage) => void) {}
 
@@ -299,14 +306,14 @@ export class AcpMessageHandler {
     /**
      * Emits buffered thought chunks as a single reasoning message and clears
      * the buffer. ACP agents (notably OpenCode/Zen) stream thoughts at the
-     * granularity of one chunk per token; emitting each chunk inline would
-     * make the web reducer render one row per token. Coalescing here keeps
-     * the reasoning block intact while preserving its position relative to
-     * adjacent text segments and tool events.
+     * granularity of one chunk per token; raw per-token messages would make
+     * the web reducer render one row per token. We stream throttled full-text
+     * snapshots with a stable id while the buffer is open, then emit one final
+     * message with the same id at the boundary.
      *
-     * Called automatically before every non-thought update inside
-     * `handleUpdate`, and externally at turn boundaries by `drainBuffers`
-     * from AcpSdkBackend.
+     * Called automatically before visible boundaries inside `handleUpdate`
+     * (assistant text, tool lifecycle, plan), and externally at turn
+     * boundaries by `drainBuffers` from AcpSdkBackend.
      *
      * Whitespace-only buffers are dropped: a turn that happens to emit a
      * single whitespace token would otherwise render an empty Reasoning row
@@ -317,11 +324,12 @@ export class AcpMessageHandler {
             return;
         }
         const text = this.bufferedReasoning.join('');
-        this.bufferedReasoning = [];
+        const id = this.reasoningSnapshotEmitted ? this.reasoningStreamId ?? undefined : undefined;
+        this.resetReasoningState();
         if (text.trim().length === 0) {
             return;
         }
-        this.onMessage({ type: 'reasoning', text });
+        this.onMessage(id ? { type: 'reasoning', text, id } : { type: 'reasoning', text });
     }
 
     /**
@@ -375,6 +383,56 @@ export class AcpMessageHandler {
         this.bufferedText += text;
     }
 
+    private appendReasoningChunk(text: string): void {
+        if (!text) {
+            return;
+        }
+        this.bufferedReasoning.push(text);
+        if (!this.reasoningStreamId) {
+            this.reasoningStreamId = randomUUID();
+        }
+        this.emitReasoningSnapshotIfDue();
+    }
+
+    private emitReasoningSnapshotIfDue(): void {
+        if (!this.reasoningStreamId) {
+            return;
+        }
+
+        const now = Date.now();
+        if (this.lastReasoningSnapshotAt === null) {
+            this.lastReasoningSnapshotAt = now;
+            return;
+        }
+        if (now - this.lastReasoningSnapshotAt < REASONING_SNAPSHOT_INTERVAL_MS) {
+            return;
+        }
+
+        const text = this.bufferedReasoning.join('');
+        if (text.trim().length === 0 || text === this.lastReasoningSnapshotText) {
+            this.lastReasoningSnapshotAt = now;
+            return;
+        }
+
+        this.lastReasoningSnapshotAt = now;
+        this.lastReasoningSnapshotText = text;
+        this.reasoningSnapshotEmitted = true;
+        this.onMessage({
+            type: 'reasoning',
+            text,
+            id: this.reasoningStreamId,
+            live: true
+        });
+    }
+
+    private resetReasoningState(): void {
+        this.bufferedReasoning = [];
+        this.reasoningStreamId = null;
+        this.lastReasoningSnapshotAt = null;
+        this.lastReasoningSnapshotText = '';
+        this.reasoningSnapshotEmitted = false;
+    }
+
     handleUpdate(update: unknown): void {
         if (!isObject(update)) return;
         const updateType = asString(update.sessionUpdate);
@@ -394,16 +452,10 @@ export class AcpMessageHandler {
             // should not cause the reasoning to be silently dropped.
             const content = update.content;
             if (isObject(content) && content.type === 'text' && typeof content.text === 'string' && content.text.length > 0) {
-                this.bufferedReasoning.push(content.text);
+                this.appendReasoningChunk(content.text);
             }
             return;
         }
-
-        // Any non-thought update is a reasoning-segment boundary: emit the
-        // accumulated thought now so it arrives before the next event in
-        // the same arrival order that streamed in. Tool calls / plans
-        // additionally flush the text buffer below.
-        this.flushReasoning();
 
         if (updateType === ACP_SESSION_UPDATE_TYPES.agentMessageChunk) {
             const content = update.content;
@@ -423,6 +475,7 @@ export class AcpMessageHandler {
                     if (rateLimit.suppress) {
                         return;
                     }
+                    this.flushReasoning();
                     this.flushText();
                     this.onMessage(rateLimit.message);
                     return;
@@ -435,12 +488,20 @@ export class AcpMessageHandler {
                     }
                     return;
                 }
+                // Visible assistant text is a reasoning-segment boundary:
+                // emit accumulated thoughts first so the rendered turn keeps
+                // Reasoning above the answer. Empty / filtered message chunks
+                // are not boundaries; OpenCode can interleave bookkeeping
+                // updates while streaming thoughts, and flushing on those
+                // would split reasoning back into one row per token.
+                this.flushReasoning();
                 this.appendTextChunk(text);
             }
             return;
         }
 
         if (updateType === ACP_SESSION_UPDATE_TYPES.toolCall) {
+            this.flushReasoning();
             // A new tool invocation closes the preceding text segment.
             // Flushing here preserves the arrival order between text and
             // tool lifecycle events without disturbing cumulative dedup
@@ -451,16 +512,20 @@ export class AcpMessageHandler {
         }
 
         if (updateType === ACP_SESSION_UPDATE_TYPES.toolCallUpdate) {
-            // Do not flush here: a toolCallUpdate is a lifecycle event on
-            // an already-open tool call, not a boundary between text
+            this.flushReasoning();
+            // Do not flush text here: a toolCallUpdate is a lifecycle event
+            // on an already-open tool call, not a boundary between text
             // segments. If the agent streams a new text segment while the
-            // tool is running, flushing here would leak that segment
-            // across the tool_result boundary.
+            // tool is running, flushing text here would leak that segment
+            // across the tool_result boundary. Reasoning is separate and is
+            // flushed above so tool results still appear after the thought
+            // that led to them.
             this.handleToolCallUpdate(update);
             return;
         }
 
         if (updateType === ACP_SESSION_UPDATE_TYPES.plan) {
+            this.flushReasoning();
             this.flushText();
             const items = normalizePlanEntries(update.entries);
             if (items.length > 0) {

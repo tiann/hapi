@@ -255,6 +255,46 @@ describe('reduceTimeline', () => {
         expect(agentTextBlock.model).toBeUndefined()
     })
 
+    it('collapses reasoning snapshots with the same stream id', () => {
+        const first: TracedMessage = {
+            id: 'reasoning-row-1',
+            localId: null,
+            createdAt: 1_700_000_000_000,
+            role: 'agent',
+            content: [{
+                type: 'reasoning',
+                text: 'first ',
+                uuid: 'reasoning-row-1',
+                streamId: 'reasoning-stream-1',
+                parentUUID: null
+            }],
+            isSidechain: false
+        } as TracedMessage
+        const second: TracedMessage = {
+            id: 'reasoning-row-2',
+            localId: null,
+            createdAt: 1_700_000_000_100,
+            role: 'agent',
+            content: [{
+                type: 'reasoning',
+                text: 'first second',
+                uuid: 'reasoning-row-2',
+                streamId: 'reasoning-stream-1',
+                parentUUID: null
+            }],
+            isSidechain: false
+        } as TracedMessage
+
+        const { blocks } = reduceTimeline([first, second], makeContext())
+        const reasoningBlocks = blocks.filter((block) => block.kind === 'agent-reasoning')
+
+        expect(reasoningBlocks).toHaveLength(1)
+        expect(reasoningBlocks[0]).toMatchObject({
+            id: 'reasoning-row-1:0',
+            text: 'first second'
+        })
+    })
+
     it('falls back to the last duration-bearing block when targetMessageId resolves to a non-duration block', () => {
         // Regression: the matcher used to take the first id-prefix match and
         // then silently drop the duration when that block was not duration-

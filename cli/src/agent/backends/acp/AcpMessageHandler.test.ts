@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { AgentMessage } from '@/agent/types';
@@ -16,6 +16,14 @@ function getToolResult(messages: AgentMessage[], id: string): Extract<AgentMessa
 }
 
 describe('AcpMessageHandler', () => {
+    beforeEach(() => {
+        vi.spyOn(Date, 'now').mockReturnValue(0);
+    });
+
+    afterEach(() => {
+        vi.restoreAllMocks();
+    });
+
     it('does not synthesize {status} output when tool completes without payload', () => {
         const messages: AgentMessage[] = [];
         const handler = new AcpMessageHandler((message) => messages.push(message));
@@ -759,6 +767,98 @@ describe('AcpMessageHandler', () => {
         ]);
     });
 
+    it('streams throttled reasoning snapshots with a stable id before final flush', () => {
+        let now = 0;
+        vi.spyOn(Date, 'now').mockImplementation(() => now);
+
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message));
+
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentThoughtChunk,
+            content: { type: 'text', text: 'first ' }
+        });
+        expect(messages).toEqual([]);
+
+        now = 300;
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentThoughtChunk,
+            content: { type: 'text', text: 'second' }
+        });
+
+        expect(messages).toHaveLength(1);
+        expect(messages[0]).toMatchObject({
+            type: 'reasoning',
+            text: 'first second',
+            live: true
+        });
+        const streamId = (messages[0] as Extract<AgentMessage, { type: 'reasoning' }>).id;
+        expect(streamId).toEqual(expect.any(String));
+
+        handler.flushReasoning();
+
+        expect(messages).toHaveLength(2);
+        expect(messages[1]).toEqual({
+            type: 'reasoning',
+            text: 'first second',
+            id: streamId
+        });
+    });
+
+    it('does not split reasoning on ignored agent message chunks', () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message));
+
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentThoughtChunk,
+            content: { type: 'text', text: 'first ' }
+        });
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+            content: { type: 'text', text: '' }
+        });
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+            content: {
+                type: 'text',
+                text: 'user-only bookkeeping',
+                annotations: { audience: ['user'] }
+            }
+        });
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentThoughtChunk,
+            content: { type: 'text', text: 'second' }
+        });
+        handler.drainBuffers();
+
+        expect(messages).toEqual([
+            { type: 'reasoning', text: 'first second' }
+        ]);
+    });
+
+    it('does not split reasoning on unknown ACP bookkeeping updates', () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message));
+
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentThoughtChunk,
+            content: { type: 'text', text: 'first ' }
+        });
+        handler.handleUpdate({
+            sessionUpdate: 'session_status',
+            status: 'running'
+        });
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentThoughtChunk,
+            content: { type: 'text', text: 'second' }
+        });
+        handler.drainBuffers();
+
+        expect(messages).toEqual([
+            { type: 'reasoning', text: 'first second' }
+        ]);
+    });
+
     it('emits buffered reasoning before a tool_call boundary', () => {
         const messages: AgentMessage[] = [];
         const handler = new AcpMessageHandler((message) => messages.push(message));
@@ -789,10 +889,10 @@ describe('AcpMessageHandler', () => {
         expect(messages[1]).toMatchObject({ type: 'tool_call', id: 'tc-1' });
     });
 
-    // Locks the flush-before-every-non-thought-boundary contract introduced
-    // in this fix: a future refactor that forgets to call flushReasoning() in
-    // one branch of handleUpdate would otherwise silently regress reasoning
-    // ordering for that update type.
+    // Locks the flush-before-visible-boundary contract: a future refactor
+    // that forgets to call flushReasoning() in one visible branch of
+    // handleUpdate would otherwise silently regress reasoning ordering for
+    // that update type.
     it.each([
         [
             'agentMessageChunk',

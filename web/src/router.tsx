@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from 'react'
+import { useCallback, useEffect, useMemo } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import {
     Navigate,
@@ -255,6 +255,7 @@ function SessionPage() {
     const { sessionId } = useParams({ from: '/sessions/$sessionId' })
     const {
         session,
+        error: sessionError,
         refetch: refetchSession,
     } = useSession(api, sessionId)
     const {
@@ -360,6 +361,30 @@ function SessionPage() {
     }, [refetchMessages, refetchSession])
 
     if (!session) {
+        if (sessionError) {
+            return (
+                <div className="flex h-full flex-col items-center justify-center gap-3 p-4 text-center">
+                    <div className="text-sm font-medium text-[var(--app-fg)]">Session unavailable</div>
+                    <div className="max-w-md text-xs text-[var(--app-hint)]">{sessionError}</div>
+                    <div className="flex gap-2">
+                        <button
+                            type="button"
+                            onClick={() => navigate({ to: '/sessions', replace: true })}
+                            className="rounded-md border border-[var(--app-border)] px-3 py-1.5 text-sm text-[var(--app-fg)] hover:bg-[var(--app-secondary-bg)]"
+                        >
+                            Back to sessions
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => { void refetchSession() }}
+                            className="rounded-md bg-[var(--app-link)] px-3 py-1.5 text-sm text-white"
+                        >
+                            Retry
+                        </button>
+                    </div>
+                </div>
+            )
+        }
         return (
             <div className="flex-1 flex items-center justify-center p-4">
                 <LoadingState label="Loading session…" className="text-sm" />
@@ -394,10 +419,28 @@ function SessionPage() {
 }
 
 function SessionDetailRoute() {
+    const { api } = useAppContext()
     const pathname = useLocation({ select: location => location.pathname })
     const { sessionId } = useParams({ from: '/sessions/$sessionId' })
+    const navigate = useNavigate()
+    const { notFound: sessionNotFound } = useSession(api, sessionId)
     const basePath = `/sessions/${sessionId}`
     const isChat = pathname === basePath || pathname === `${basePath}/`
+
+    useEffect(() => {
+        if (!sessionNotFound) {
+            return
+        }
+        navigate({ to: '/sessions', replace: true })
+    }, [navigate, sessionNotFound])
+
+    if (sessionNotFound) {
+        return (
+            <div className="flex-1 flex items-center justify-center p-4">
+                <LoadingState label="Session not found. Returning to sessions…" className="text-sm" />
+            </div>
+        )
+    }
 
     return isChat ? <SessionPage /> : <Outlet />
 }
