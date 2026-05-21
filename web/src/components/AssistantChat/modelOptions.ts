@@ -62,6 +62,10 @@ export function getModelOptionsForFlavor(
     if (flavor === 'opencode') {
         return []
     }
+    // Kimi has no predefined model list — show just the auto/default option.
+    if (flavor === 'kimi') {
+        return withCurrentModelOption([{ value: null, label: 'Default' }], currentModel)
+    }
     return getClaudeComposerModelOptions(currentModel)
 }
 
@@ -87,6 +91,9 @@ export function getNextModelForFlavor(
     // OpenCode session and the next turn would attempt `session/set_model` with a
     // Claude id. Keep the current model unchanged instead.
     if (flavor === 'opencode') {
+        return normalizeCurrentModel(currentModel)
+    }
+    if (flavor === 'kimi') {
         return normalizeCurrentModel(currentModel)
     }
     return getNextClaudeComposerModel(currentModel)

@@ -505,6 +505,10 @@ const FLAVOR_BADGES: Record<string, { label: string; colors: string }> = {
         label: 'Gm',
         colors: 'bg-[#2563eb] text-white',
     },
+    kimi: {
+        label: 'Km',
+        colors: 'bg-[#7c3aed] text-white',
+    },
     opencode: {
         label: 'Op',
         colors: 'bg-[#15803d] text-white',
