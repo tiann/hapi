@@ -832,10 +832,10 @@ export function reduceTimeline(
                         block.tool = { ...block.tool, state: 'running', startedAt: msg.createdAt }
                     }
 
-                    if (isSubagentToolName(c.name) && !context.consumedGroupIds.has(msg.id)) {
-                        const sidechain = context.groups.get(msg.id) ?? null
+                    if (isSubagentToolName(c.name) && !context.consumedGroupIds.has(c.id)) {
+                        const sidechain = context.groups.get(c.id) ?? null
                         if (sidechain && sidechain.length > 0) {
-                            context.consumedGroupIds.add(msg.id)
+                            context.consumedGroupIds.add(c.id)
                             const child = reduceTimeline(sidechain, context)
                             hasReadyEvent = hasReadyEvent || child.hasReadyEvent
                             block.children = child.blocks

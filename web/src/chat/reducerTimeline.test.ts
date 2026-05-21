@@ -343,7 +343,7 @@ describe('reduceTimeline', () => {
             isSidechain: false
         } as TracedMessage
 
-        // Sidechain child message that would be in the group for msg-agent
+        // Sidechain child message that would be in the group for the tool-call id
         const sidechainChild: TracedMessage = {
             id: 'sc-msg-1',
             localId: null,
@@ -359,12 +359,12 @@ describe('reduceTimeline', () => {
                 parentUUID: null
             }],
             isSidechain: true,
-            sidechainId: 'msg-agent'
+            sidechainId: 'tc-agent-1'
         } as TracedMessage
 
-        // Build groups map the way the real pipeline does it
+        // Build groups map the way the real pipeline does it (keyed by tool-call id)
         const groups = new Map<string, TracedMessage[]>()
-        groups.set('msg-agent', [sidechainChild])
+        groups.set('tc-agent-1', [sidechainChild])
 
         const ctx = { ...makeContext(), groups }
         const { blocks } = reduceTimeline([agentToolMsg], ctx)
