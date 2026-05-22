@@ -32,9 +32,9 @@ async function waitForPendingRequest(handler: PermissionHandler, timeout = 2000)
     }
 }
 
-function getRpcHandler(session: { client: { rpcHandlerManager: { registerHandler: ReturnType<typeof vi.fn> } } }) {
-    const calls = session.client.rpcHandlerManager.registerHandler.mock.calls;
-    return calls.find(([method]: [string]) => method === 'permission')![1];
+function getRpcHandler(session: ReturnType<typeof createFakeSession>['session']) {
+    const calls = (session.client.rpcHandlerManager.registerHandler as ReturnType<typeof vi.fn>).mock.calls;
+    return calls.find((call: string[]) => call[0] === 'permission')![1];
 }
 
 describe('PermissionHandler — ExitPlanMode preserves current mode', () => {
@@ -60,6 +60,36 @@ describe('PermissionHandler — ExitPlanMode preserves current mode', () => {
 
         await waitForPendingRequest(handler);
         await getRpcHandler(session)({ id: 'tc-plan3', approved: true });
+
+        const result = await toolCallPromise;
+        expect(result.behavior).toBe('deny');
+
+        expect(queueItems).toHaveLength(1);
+        expect(queueItems[0].mode).toEqual({ permissionMode: 'default' });
+    });
+
+    it('falls back to default mode when ExitPlanMode approved while in plan mode', async () => {
+        const { session, queueItems } = createFakeSession();
+        const handler = new PermissionHandler(session);
+        handler.handleModeChange('plan');
+
+        handler.onMessage({
+            type: 'assistant',
+            message: {
+                role: 'assistant',
+                content: [{ type: 'tool_use', id: 'tc-plan4', name: 'ExitPlanMode', input: {} }],
+            },
+        } as any);
+
+        const toolCallPromise = handler.handleToolCall(
+            'ExitPlanMode',
+            {},
+            { permissionMode: 'plan' } as any,
+            { signal: new AbortController().signal }
+        );
+
+        await waitForPendingRequest(handler);
+        await getRpcHandler(session)({ id: 'tc-plan4', approved: true });
 
         const result = await toolCallPromise;
         expect(result.behavior).toBe('deny');
