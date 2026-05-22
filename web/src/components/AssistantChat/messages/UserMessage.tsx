@@ -11,6 +11,7 @@ import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
 import { getConversationMessageAnchorId } from '@/chat/outline'
 import { MessageMetadata } from '@/components/AssistantChat/messages/MessageMetadata'
 import { isNestedInteractiveEvent } from '@/components/AssistantChat/messages/metadataToggle'
+import { MessageTimestamp } from '@/components/AssistantChat/messages/MessageTimestamp'
 
 export function HappyUserMessage() {
     const ctx = useHappyChatContext()
@@ -75,8 +76,9 @@ export function HappyUserMessage() {
             >
                 <div className="ml-auto w-full max-w-[92%]">
                     <CliOutputBlock text={cliText} />
-                    {hasMetadata && (
-                        <div className="mt-1 flex justify-end">
+                    <div className="mt-1 flex items-center justify-end gap-2">
+                        <MessageTimestamp className="text-[10px] leading-none text-[var(--app-hint)]" />
+                        {hasMetadata && (
                             <button
                                 type="button"
                                 onClick={() => setShowMetadata((open) => !open)}
@@ -85,8 +87,8 @@ export function HappyUserMessage() {
                             >
                                 {showMetadata ? 'Hide metadata' : 'Show metadata'}
                             </button>
-                        </div>
-                    )}
+                        )}
+                    </div>
                     {showMetadata && invokedAt != null && (
                         <MessageMetadata invokedAt={invokedAt} className="mt-1 justify-end" />
                     )}
@@ -134,6 +136,9 @@ export function HappyUserMessage() {
                             {showStatus ? <MessageStatusIndicator status={status} onRetry={onRetry} /> : null}
                         </div>
                     )}
+                </div>
+                <div className="flex justify-end">
+                    <MessageTimestamp className="text-[10px] leading-none text-[var(--app-hint)]" />
                 </div>
                 {showMetadata && invokedAt != null && (
                     <MessageMetadata invokedAt={invokedAt} className="justify-end opacity-60" />

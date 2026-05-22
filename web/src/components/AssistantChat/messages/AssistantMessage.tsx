@@ -12,6 +12,7 @@ import { getConversationMessageAnchorId } from '@/chat/outline'
 import { MessageMetadata } from '@/components/AssistantChat/messages/MessageMetadata'
 import { isNestedInteractiveEvent } from '@/components/AssistantChat/messages/metadataToggle'
 import { CodexReviewCard } from '@/components/AssistantChat/messages/CodexReviewCard'
+import { MessageTimestamp } from '@/components/AssistantChat/messages/MessageTimestamp'
 
 const TOOL_COMPONENTS = {
     Fallback: HappyToolMessage
@@ -85,16 +86,19 @@ export function HappyAssistantMessage() {
                 className="scroll-mt-4 px-1 min-w-0 max-w-full overflow-x-hidden"
             >
                 <CliOutputBlock text={cliText} />
-                {hasMetadata && (
-                    <button
-                        type="button"
-                        onClick={() => setShowMetadata((open) => !open)}
-                        aria-expanded={showMetadata}
-                        className="mt-1 text-[10px] text-[var(--app-hint)] underline-offset-2 hover:text-[var(--app-fg)] hover:underline"
-                    >
-                        {showMetadata ? 'Hide metadata' : 'Show metadata'}
-                    </button>
-                )}
+                <div className="mt-1 flex items-center gap-2">
+                    <MessageTimestamp className="text-[10px] leading-none text-[var(--app-hint)]" />
+                    {hasMetadata && (
+                        <button
+                            type="button"
+                            onClick={() => setShowMetadata((open) => !open)}
+                            aria-expanded={showMetadata}
+                            className="text-[10px] text-[var(--app-hint)] underline-offset-2 hover:text-[var(--app-fg)] hover:underline"
+                        >
+                            {showMetadata ? 'Hide metadata' : 'Show metadata'}
+                        </button>
+                    )}
+                </div>
                 {showMetadata && (
                     <MessageMetadata
                         invokedAt={invokedAt}
@@ -125,6 +129,9 @@ export function HappyAssistantMessage() {
                         aria-expanded={hasMetadata ? showMetadata : undefined}
                     >
                         <CodexReviewCard review={codexReview} />
+                        <div className="mt-1 flex justify-start">
+                            <MessageTimestamp className="text-[10px] leading-none text-[var(--app-hint)]" />
+                        </div>
                         {showMetadata && (
                             <MessageMetadata
                                 invokedAt={invokedAt}
@@ -169,6 +176,9 @@ export function HappyAssistantMessage() {
                     aria-expanded={hasMetadata ? showMetadata : undefined}
                 >
                     <MessagePrimitive.Content components={MESSAGE_PART_COMPONENTS} />
+                    <div className="mt-1 flex justify-start">
+                        <MessageTimestamp className="text-[10px] leading-none text-[var(--app-hint)]" />
+                    </div>
                     {showMetadata && (
                         <MessageMetadata
                             invokedAt={invokedAt}
@@ -199,6 +209,9 @@ export function HappyAssistantMessage() {
                     aria-expanded={hasMetadata ? showMetadata : undefined}
                 >
                     <MessagePrimitive.Content components={MESSAGE_PART_COMPONENTS} />
+                    <div className="mt-1 flex justify-start">
+                        <MessageTimestamp className="text-[10px] leading-none text-[var(--app-hint)]" />
+                    </div>
                     {showMetadata && (
                         <MessageMetadata
                             invokedAt={invokedAt}

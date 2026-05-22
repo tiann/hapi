@@ -26,6 +26,34 @@ export function formatResetTime(value: number): string {
     return date.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
 }
 
+export function formatMessageTimestamp(date: Date, now: Date = new Date()): string {
+    const sameDay = date.getFullYear() === now.getFullYear()
+        && date.getMonth() === now.getMonth()
+        && date.getDate() === now.getDate()
+
+    if (sameDay) {
+        return date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
+    }
+
+    const sameYear = date.getFullYear() === now.getFullYear()
+    if (sameYear) {
+        return date.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+    }
+
+    return date.toLocaleString(undefined, { year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+}
+
+export function formatMessageTimestampTitle(date: Date): string {
+    return date.toLocaleString(undefined, {
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit',
+        second: '2-digit'
+    })
+}
+
 // Known types: five_hour → "5-hour", seven_day → "7-day".
 // Unknown types use underscore-to-space fallback (e.g. thirty_day → "thirty day").
 function formatLimitType(limitType: string | undefined): string {
