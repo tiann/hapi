@@ -4,11 +4,51 @@ import { codexLocal } from './codexLocal';
 import type { ReasoningEffort } from './appServerTypes';
 import { CodexSession } from './session';
 import { createCodexSessionScanner, type CodexSessionScanner } from './utils/codexSessionScanner';
-import { convertCodexEvent } from './utils/codexEventConverter';
+import { CodexTranscriptEventConverter } from './utils/codexEventConverter';
 import { buildHapiMcpBridge } from './utils/buildHapiMcpBridge';
 import { stripCodexCliOverrides } from './utils/codexCliOverrides';
 import { buildCodexPermissionModeCliArgs } from './utils/permissionModeConfig';
+import { CodexPermissionHandler } from './utils/permissionHandler';
 import { BaseLocalLauncher } from '@/modules/common/launcher/BaseLocalLauncher';
+import type { CodexPermissionMode } from '@hapi/protocol/types';
+
+function asRecord(value: unknown): Record<string, unknown> {
+    return value && typeof value === 'object' ? value as Record<string, unknown> : {};
+}
+
+function codexPermissionHookResponse(decision: 'approved' | 'approved_for_session' | 'denied' | 'abort', reason?: string): Record<string, unknown> {
+    if (decision === 'approved' || decision === 'approved_for_session') {
+        return {
+            hookSpecificOutput: {
+                hookEventName: 'PermissionRequest',
+                decision: {
+                    behavior: 'allow'
+                }
+            }
+        };
+    }
+
+    return {
+        hookSpecificOutput: {
+            hookEventName: 'PermissionRequest',
+            decision: {
+                behavior: 'deny',
+                message: reason ?? (decision === 'abort' ? 'Permission request aborted' : 'Permission request denied')
+            }
+        }
+    };
+}
+
+function codexPermissionMode(sessionMode: ReturnType<CodexSession['getPermissionMode']>): CodexPermissionMode {
+    switch (sessionMode) {
+        case 'read-only':
+        case 'safe-yolo':
+        case 'yolo':
+            return sessionMode;
+        default:
+            return 'default';
+    }
+}
 
 export async function codexLocalLauncher(session: CodexSession): Promise<'switch' | 'exit'> {
     const resumeSessionId = session.sessionId;
@@ -18,7 +58,9 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
     let hookReady = false;
     let shuttingDown = false;
     let pendingScannerSetup: Promise<void> | null = null;
+    const transcriptEventConverter = new CodexTranscriptEventConverter();
     const permissionMode = session.getPermissionMode();
+    const permissionHandler = new CodexPermissionHandler(session.client, () => codexPermissionMode(session.getPermissionMode()));
     const managedPermissionMode = permissionMode === 'read-only' || permissionMode === 'safe-yolo' || permissionMode === 'yolo'
         ? permissionMode
         : null;
@@ -79,6 +121,7 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
         }
         if (scanner) {
             await scanner.setTranscriptPath(transcriptPath);
+            transcriptEventConverter.reset();
             return;
         }
         const createdScanner = await createCodexSessionScanner({
@@ -91,19 +134,21 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
                 session.onSessionFound(sessionId);
             },
             onEvent: (event) => {
-                const converted = convertCodexEvent(event);
-                if (converted?.sessionId) {
-                    if (!isPrimarySessionId(converted.sessionId)) {
-                        logger.debug(`[codex-local]: Ignoring converted session id ${converted.sessionId}; primary is ${primarySessionId}`);
-                        return;
+                const convertedEvents = transcriptEventConverter.convert(event);
+                for (const converted of convertedEvents) {
+                    if (converted.sessionId) {
+                        if (!isPrimarySessionId(converted.sessionId)) {
+                            logger.debug(`[codex-local]: Ignoring converted session id ${converted.sessionId}; primary is ${primarySessionId}`);
+                            continue;
+                        }
+                        session.onSessionFound(converted.sessionId);
                     }
-                    session.onSessionFound(converted.sessionId);
-                }
-                if (converted?.userMessage) {
-                    session.sendUserMessage(converted.userMessage);
-                }
-                if (converted?.message) {
-                    session.sendAgentMessage(converted.message);
+                    if (converted.userMessage) {
+                        session.sendUserMessage(converted.userMessage);
+                    }
+                    if (converted.message) {
+                        session.sendAgentMessage(converted.message);
+                    }
                 }
             }
         });
@@ -154,6 +199,36 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
                 return;
             }
             handleSessionHook(sessionId, data);
+        },
+        onPermissionRequest: async (data) => {
+            if (shuttingDown) {
+                return codexPermissionHookResponse('abort', 'Session is shutting down');
+            }
+
+            const toolName = typeof data.tool_name === 'string' && data.tool_name.length > 0
+                ? data.tool_name
+                : 'CodexTool';
+            const toolInput = asRecord(data.tool_input);
+            const toolCallId = [
+                typeof data.session_id === 'string' ? data.session_id : null,
+                typeof data.turn_id === 'string' ? data.turn_id : null,
+                toolName,
+                typeof toolInput.command === 'string' ? toolInput.command : null
+            ].filter(Boolean).join(':') || `${toolName}:${Date.now()}`;
+
+            const result = await permissionHandler.handleToolCall(
+                toolCallId,
+                toolName === 'Bash' ? 'CodexBash' : toolName === 'Edit' ? 'CodexPatch' : `Codex${toolName}`,
+                {
+                    message: typeof toolInput.description === 'string' ? toolInput.description : undefined,
+                    command: toolInput.command,
+                    cwd: typeof data.cwd === 'string' ? data.cwd : undefined,
+                    hookEventName: data.hook_event_name,
+                    permissionMode: data.permission_mode
+                }
+            );
+
+            return codexPermissionHookResponse(result.decision, result.reason);
         }
     });
     logger.debug(`[codex-local]: Started Codex SessionStart hook server on port ${hookServer.port}`);
@@ -175,6 +250,10 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
                 codexArgs,
                 mcpServers,
                 sessionHook: {
+                    port: hookServer.port,
+                    token: hookServer.token
+                },
+                permissionHook: {
                     port: hookServer.port,
                     token: hookServer.token
                 }
@@ -209,6 +288,7 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
         if (activeScanner) {
             await activeScanner.cleanup();
         }
+        permissionHandler.reset();
         happyServer.stop();
         if (!hookReady) {
             logger.debug('[codex-local]: SessionStart hook did not provide transcript path before shutdown');

@@ -70,6 +70,10 @@ describe('codexLocal', () => {
             sessionHook: {
                 port: 63996,
                 token: 'secret-token'
+            },
+            permissionHook: {
+                port: 63996,
+                token: 'secret-token'
             }
         });
 
@@ -90,6 +94,9 @@ describe('codexLocal', () => {
         const hookArg = args.find((arg) => arg.startsWith('hooks.SessionStart='));
         expect(hookArg).toBeDefined();
         expect(hookArg).toContain('{ hooks = [{ type = "command", command = "');
+        const permissionHookArg = args.find((arg) => arg.startsWith('hooks.PermissionRequest='));
+        expect(permissionHookArg).toBeDefined();
+        expect(permissionHookArg).toContain('--path /hook/permission-request');
         expect(args).toContain("mcp_servers.hapi.args=['mcp','--url','http://127.0.0.1:63995/']");
     });
 

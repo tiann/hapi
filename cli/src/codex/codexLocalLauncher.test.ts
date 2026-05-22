@@ -93,7 +93,8 @@ function createSessionStub(
             client: {
                 rpcHandlerManager: {
                     registerHandler: () => {}
-                }
+                },
+                updateAgentState: () => {}
             },
             getPermissionMode: () => permissionMode,
             getModelReasoningEffort: () => null,
@@ -345,6 +346,48 @@ describe('codexLocalLauncher', () => {
             type: 'message',
             message: 'hello from transcript',
             id: expect.any(String)
+        });
+    });
+
+    it('syncs app-server transcript events while running local Codex', async () => {
+        const transcriptPath = join(tempDir, 'codex-app-server-transcript.jsonl');
+        const { session, agentMessages } = createSessionStub('default');
+        let releaseRunBarrier: (() => void) | undefined;
+        harness.runBarrier = new Promise((resolve) => {
+            releaseRunBarrier = resolve;
+        });
+
+        await writeFile(
+            transcriptPath,
+            JSON.stringify({ type: 'session_meta', payload: { id: 'codex-thread-1' } }) + '\n'
+        );
+
+        const launcherPromise = codexLocalLauncher(session as never);
+        await wait(50);
+
+        harness.sessionHookHandlers[0]?.('codex-thread-1', {
+            transcript_path: transcriptPath
+        });
+        await wait(100);
+
+        await appendFile(
+            transcriptPath,
+            [
+                JSON.stringify({ type: 'item/agentMessage/delta', payload: { itemId: 'msg-1', delta: 'Goal is ' } }),
+                JSON.stringify({ type: 'item/agentMessage/delta', payload: { itemId: 'msg-1', delta: 'running' } }),
+                JSON.stringify({ type: 'item/completed', payload: { item: { id: 'msg-1', type: 'agentMessage' } } })
+            ].join('\n') + '\n'
+        );
+
+        await wait(700);
+        if (releaseRunBarrier) {
+            releaseRunBarrier();
+        }
+        await launcherPromise;
+
+        expect(agentMessages).toContainEqual({
+            type: 'agent_message',
+            message: 'Goal is running'
         });
     });
 

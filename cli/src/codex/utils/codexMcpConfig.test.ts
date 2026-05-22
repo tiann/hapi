@@ -2,7 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
     buildMcpServerConfigArgs,
     buildDeveloperInstructionsArg,
-    buildSessionStartHookConfigArgs
+    buildSessionStartHookConfigArgs,
+    buildPermissionRequestHookConfigArgs
 } from './codexMcpConfig';
 
 describe('codexMcpConfig', () => {
@@ -103,9 +104,27 @@ describe('codexMcpConfig', () => {
             expect(args[1]).toContain('hooks.SessionStart=[');
             expect(args[1]).toContain('type = "command"');
             expect(args[1]).toContain('hook-forwarder --port 4312 --token secret-token');
+            if (process.platform === 'win32') {
+                expect(args[1]).toContain('command = "& ');
+            }
             expect(args[2]).toBe('-c');
-            expect(args[3]).toContain('hooks.state={');
+            expect(args[3]).toContain('hooks.state."');
             expect(args[3]).toContain(':session_start:0:0');
+            expect(args[3]).toContain('trusted_hash="sha256:');
+        });
+    });
+
+    describe('buildPermissionRequestHookConfigArgs', () => {
+        it('builds a PermissionRequest hook config override', () => {
+            const args = buildPermissionRequestHookConfigArgs(4312, 'secret-token');
+
+            expect(args[0]).toBe('-c');
+            expect(args[1]).toContain('hooks.PermissionRequest=[');
+            expect(args[1]).toContain('type = "command"');
+            expect(args[1]).toContain('hook-forwarder --port 4312 --token secret-token --path /hook/permission-request');
+            expect(args[2]).toBe('-c');
+            expect(args[3]).toContain('hooks.state."');
+            expect(args[3]).toContain(':permission_request:0:0');
             expect(args[3]).toContain('trusted_hash="sha256:');
         });
     });

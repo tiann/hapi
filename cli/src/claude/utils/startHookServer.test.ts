@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { request } from 'node:http'
 import { startHookServer, type SessionHookData } from './startHookServer'
 
-const sendHookRequest = async (port: number, body: string, token?: string): Promise<{ statusCode?: number; body: string }> => {
+const sendHookRequest = async (port: number, body: string, token?: string, path = '/hook/session-start'): Promise<{ statusCode?: number; body: string }> => {
     return await new Promise((resolve, reject) => {
         const headers: Record<string, string | number> = {
             'Content-Type': 'application/json',
@@ -15,7 +15,7 @@ const sendHookRequest = async (port: number, body: string, token?: string): Prom
         const req = request({
             host: '127.0.0.1',
             port,
-            path: '/hook/session-start',
+            path,
             method: 'POST',
             headers
         }, (res) => {
@@ -113,5 +113,45 @@ describe('startHookServer', () => {
         }
 
         expect(hookCalled).toBe(false)
+    })
+
+    it('returns PermissionRequest hook output from callback', async () => {
+        const received: SessionHookData[] = []
+        const server = await startHookServer({
+            onSessionHook: () => {},
+            onPermissionRequest: async (data) => {
+                received.push(data)
+                return {
+                    hookSpecificOutput: {
+                        hookEventName: 'PermissionRequest',
+                        decision: {
+                            behavior: 'allow'
+                        }
+                    }
+                }
+            }
+        })
+
+        try {
+            const body = JSON.stringify({
+                hook_event_name: 'PermissionRequest',
+                tool_name: 'Bash',
+                tool_input: { command: 'pwd' }
+            })
+            const response = await sendHookRequest(server.port, body, server.token, '/hook/permission-request')
+            expect(response.statusCode).toBe(200)
+            expect(JSON.parse(response.body)).toEqual({
+                hookSpecificOutput: {
+                    hookEventName: 'PermissionRequest',
+                    decision: {
+                        behavior: 'allow'
+                    }
+                }
+            })
+        } finally {
+            server.stop()
+        }
+
+        expect(received[0]?.tool_name).toBe('Bash')
     })
 })
