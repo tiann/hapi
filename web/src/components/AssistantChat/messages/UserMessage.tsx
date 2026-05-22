@@ -1,4 +1,4 @@
-import { useCallback, useState, type KeyboardEvent, type MouseEvent } from 'react'
+import { useState } from 'react'
 import { MessagePrimitive, useAssistantState } from '@assistant-ui/react'
 import { useHappyChatContext } from '@/components/AssistantChat/context'
 import type { HappyChatMessageMetadata } from '@/lib/assistant-runtime'
@@ -10,17 +10,12 @@ import { CopyIcon, CheckIcon } from '@/components/icons'
 import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
 import { getConversationMessageAnchorId } from '@/chat/outline'
 import { MessageMetadata } from '@/components/AssistantChat/messages/MessageMetadata'
-import { isNestedInteractiveEvent } from '@/components/AssistantChat/messages/metadataToggle'
 import { MessageTimestamp } from '@/components/AssistantChat/messages/MessageTimestamp'
 
 export function HappyUserMessage() {
     const ctx = useHappyChatContext()
     const { copied, copy } = useCopyToClipboard()
     const [showMetadata, setShowMetadata] = useState(false)
-    const toggleMetadata = useCallback((event: MouseEvent<HTMLElement>) => {
-        if (isNestedInteractiveEvent(event)) return
-        setShowMetadata((open) => !open)
-    }, [])
     const role = useAssistantState(({ message }) => message.role)
     const messageId = useAssistantState(({ message }) => message.id)
     const text = useAssistantState(({ message }) => {
@@ -55,14 +50,6 @@ export function HappyUserMessage() {
 
     const hasMetadata = invokedAt != null
 
-    const onMetadataKeyDown = useCallback((event: KeyboardEvent<HTMLElement>) => {
-        if (isNestedInteractiveEvent(event)) return
-        if (event.key === 'Enter' || event.key === ' ') {
-            event.preventDefault()
-            setShowMetadata((open) => !open)
-        }
-    }, [])
-
     if (role !== 'user') return null
     const canRetry = status === 'failed' && typeof localId === 'string' && Boolean(ctx.onRetryMessage)
     const onRetry = canRetry ? () => ctx.onRetryMessage!(localId) : undefined
@@ -85,12 +72,12 @@ export function HappyUserMessage() {
                                 aria-expanded={showMetadata}
                                 className="text-[10px] text-[var(--app-hint)] underline-offset-2 hover:text-[var(--app-fg)] hover:underline"
                             >
-                                {showMetadata ? 'Hide metadata' : 'Show metadata'}
+                                {showMetadata ? 'Hide info' : 'Show info'}
                             </button>
                         )}
                     </div>
                     {showMetadata && invokedAt != null && (
-                        <MessageMetadata invokedAt={invokedAt} className="mt-1 justify-end" />
+                        <MessageMetadata invokedAt={invokedAt} />
                     )}
                 </div>
             </MessagePrimitive.Root>
@@ -103,12 +90,7 @@ export function HappyUserMessage() {
     return (
         <MessagePrimitive.Root
             id={getConversationMessageAnchorId(messageId)}
-            className={`${getUserBubbleClassName(status)} group/msg scroll-mt-4 ${hasMetadata ? 'cursor-pointer' : ''}`}
-            onClick={hasMetadata ? toggleMetadata : undefined}
-            onKeyDown={hasMetadata ? onMetadataKeyDown : undefined}
-            role={hasMetadata ? 'button' : undefined}
-            tabIndex={hasMetadata ? 0 : undefined}
-            aria-expanded={hasMetadata ? showMetadata : undefined}
+            className={`${getUserBubbleClassName(status)} group/msg scroll-mt-4`}
         >
             <div className="flex flex-col gap-1">
                 <div className="flex items-start gap-2">
@@ -123,10 +105,7 @@ export function HappyUserMessage() {
                                     type="button"
                                     title="Copy"
                                     className="rounded-md p-0.5 opacity-60 transition-[opacity,background-color] hover:bg-[var(--app-chat-user-chip-bg)] sm:opacity-0 sm:group-hover/msg:opacity-100"
-                                    onClick={(event) => {
-                                        event.stopPropagation()
-                                        copy(text)
-                                    }}
+                                    onClick={() => copy(text)}
                                 >
                                     {copied
                                         ? <CheckIcon className="h-3.5 w-3.5 text-green-500" />
@@ -137,11 +116,21 @@ export function HappyUserMessage() {
                         </div>
                     )}
                 </div>
-                <div className="flex justify-end">
+                <div className="flex justify-end items-center gap-2">
                     <MessageTimestamp className="text-[10px] leading-none text-[var(--app-hint)]" />
+                    {hasMetadata && (
+                        <button
+                            type="button"
+                            onClick={() => setShowMetadata((open) => !open)}
+                            aria-expanded={showMetadata}
+                            className="text-[10px] text-[var(--app-hint)] underline-offset-2 hover:text-[var(--app-fg)] hover:underline"
+                        >
+                            {showMetadata ? 'Hide info' : 'Show info'}
+                        </button>
+                    )}
                 </div>
                 {showMetadata && invokedAt != null && (
-                    <MessageMetadata invokedAt={invokedAt} className="justify-end opacity-60" />
+                    <MessageMetadata invokedAt={invokedAt} />
                 )}
             </div>
         </MessagePrimitive.Root>
