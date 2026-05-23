@@ -200,25 +200,32 @@ async function getOrCreateAgentId(apiKey: string): Promise<string | null> {
         return cached
     }
 
-    let toolIds: string[]
-    try {
-        toolIds = await ensureHapiToolIds(apiKey)
-    } catch (error) {
-        console.error('[Voice] Failed to ensure Hapi tools:', error)
-        return null
-    }
-
-    // Try to find existing agent
+    // Try to find existing agent first. Token issuance only needs an
+    // agent id, so deployments with read/token permissions should keep
+    // working even if the API key cannot manage tools or patch agents.
     console.log('[Voice] No agent ID configured, searching for existing agent...')
     let agentId = await findHapiAgent(apiKey)
 
     if (agentId) {
         console.log('[Voice] Found existing agent:', agentId)
-        const updated = await updateHapiAgent(apiKey, agentId, toolIds)
-        if (!updated) {
-            return null
+        try {
+            const toolIds = await ensureHapiToolIds(apiKey)
+            const updated = await updateHapiAgent(apiKey, agentId, toolIds)
+            if (!updated) {
+                console.warn('[Voice] Using existing agent without auto-update')
+            }
+        } catch (error) {
+            console.warn('[Voice] Using existing agent without auto-update:', error)
         }
     } else {
+        let toolIds: string[]
+        try {
+            toolIds = await ensureHapiToolIds(apiKey)
+        } catch (error) {
+            console.error('[Voice] Failed to ensure Hapi tools:', error)
+            return null
+        }
+
         // Create new agent
         console.log('[Voice] No existing agent found, creating new one...')
         agentId = await createHapiAgent(apiKey, toolIds)
