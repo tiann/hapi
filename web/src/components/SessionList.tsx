@@ -191,13 +191,6 @@ export function expandSelectedSessionCollapseOverrides(
         changed = true
     }
 
-    // Session preview keys use inverted semantics: false = expanded, true/missing = collapsed.
-    const sessionPreviewKey = `sessions::${group.key}`
-    if (overrides.get(sessionPreviewKey) !== false) {
-        next.set(sessionPreviewKey, false)
-        changed = true
-    }
-
     const machineKey = `machine::${group.machineId ?? UNKNOWN_MACHINE_ID}`
     if (overrides.has(machineKey) && overrides.get(machineKey)) {
         next.delete(machineKey)
@@ -438,7 +431,7 @@ export function getVisibleSessionPreview(
 
     const requiredIds = new Set<string>()
     for (const session of sessions) {
-        if (session.active) requiredIds.add(session.id)
+        if (session.pendingRequestsCount > 0) requiredIds.add(session.id)
     }
     if (options.selectedSessionId && sessions.some(session => session.id === options.selectedSessionId)) {
         requiredIds.add(options.selectedSessionId)

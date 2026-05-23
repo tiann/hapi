@@ -102,10 +102,10 @@ describe('session list search helpers', () => {
 })
 
 describe('getVisibleSessionPreview', () => {
-    it('keeps selected and active sessions inside the collapsed preview without promoting them', () => {
+    it('keeps selected and pending sessions inside the collapsed preview without promoting them', () => {
         const sessions = Array.from({ length: 6 }, (_, index) => makeSession({
             id: `s-${index + 1}`,
-            active: index === 4,
+            pendingRequestsCount: index === 4 ? 1 : 0,
             metadata: { path: '/work/hapi' },
             updatedAt: 100 - index
         }))
@@ -116,6 +116,19 @@ describe('getVisibleSessionPreview', () => {
         })
 
         expect(preview.map(session => session.id)).toEqual(['s-1', 's-5', 's-6'])
+    })
+
+    it('does not exceed the limit just because many sessions are active', () => {
+        const sessions = Array.from({ length: 6 }, (_, index) => makeSession({
+            id: `s-${index + 1}`,
+            active: true,
+            metadata: { path: '/work/hapi' },
+            updatedAt: 100 - index
+        }))
+
+        const preview = getVisibleSessionPreview(sessions, { limit: 4 })
+
+        expect(preview.map(session => session.id)).toEqual(['s-1', 's-2', 's-3', 's-4'])
     })
 
     it('does not move an already-visible selected session to the top', () => {
@@ -145,7 +158,7 @@ describe('getVisibleSessionPreview', () => {
 
 
 describe('expandSelectedSessionCollapseOverrides', () => {
-    it('expands collapsed project, machine, and session preview overrides for selected sessions', () => {
+    it('expands collapsed project and machine, but preserves session preview folding', () => {
         const overrides = new Map<string, boolean>([
             ['machine-1::/work/hapi', true],
             ['sessions::machine-1::/work/hapi', true],
@@ -158,11 +171,11 @@ describe('expandSelectedSessionCollapseOverrides', () => {
         })
 
         expect(result.has('machine-1::/work/hapi')).toBe(false)
-        expect(result.get('sessions::machine-1::/work/hapi')).toBe(false)
+        expect(result.get('sessions::machine-1::/work/hapi')).toBe(true)
         expect(result.has('machine::machine-1')).toBe(false)
     })
 
-    it('sets missing session preview override to expanded', () => {
+    it('leaves missing session preview override unset', () => {
         const overrides = new Map<string, boolean>()
 
         const result = expandSelectedSessionCollapseOverrides(overrides, {
@@ -170,6 +183,6 @@ describe('expandSelectedSessionCollapseOverrides', () => {
             machineId: 'machine-1'
         })
 
-        expect(result.get('sessions::machine-1::/work/hapi')).toBe(false)
+        expect(result.has('sessions::machine-1::/work/hapi')).toBe(false)
     })
 })
