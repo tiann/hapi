@@ -889,12 +889,12 @@ export class SyncEngine {
         return await this.rpcGateway.listSlashCommands(sessionId, agent)
     }
 
-    async listSkills(sessionId: string): Promise<{
+    async listSkills(sessionId: string, flavor?: string): Promise<{
         success: boolean
         skills?: Array<{ name: string; description?: string }>
         error?: string
     }> {
-        return await this.rpcGateway.listSkills(sessionId)
+        return await this.rpcGateway.listSkills(sessionId, flavor)
     }
 
     async listCodexModelsForSession(sessionId: string): Promise<RpcListCodexModelsResponse> {

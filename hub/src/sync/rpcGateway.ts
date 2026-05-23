@@ -218,12 +218,12 @@ export class RpcGateway {
         return await this.sessionRpc(sessionId, RPC_METHODS.ListSlashCommands, { agent }) as SlashCommandsResponse
     }
 
-    async listSkills(sessionId: string): Promise<{
+    async listSkills(sessionId: string, flavor?: string): Promise<{
         success: boolean
         skills?: Array<{ name: string; description?: string }>
         error?: string
     }> {
-        return await this.sessionRpc(sessionId, RPC_METHODS.ListSkills, {}) as {
+        return await this.sessionRpc(sessionId, RPC_METHODS.ListSkills, { flavor }) as {
             success: boolean
             skills?: Array<{ name: string; description?: string }>
             error?: string

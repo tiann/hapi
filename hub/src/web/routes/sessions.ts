@@ -540,7 +540,10 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
 
         try {
-            const result = await engine.listSkills(sessionResult.sessionId)
+            const result = await engine.listSkills(
+                sessionResult.sessionId,
+                sessionResult.session.metadata?.flavor ?? 'claude'
+            )
             return c.json(result)
         } catch (error) {
             return c.json({
