@@ -1,0 +1,2 @@
+# Fork-only: keep AGENTS.md deleted when merging upstream/main (requires: git config merge.ours.driver true)
+AGENTS.md merge=ours

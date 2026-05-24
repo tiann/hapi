@@ -1,0 +1,13 @@
+---
+description: Operator fork - canonical agent guide is docs/operator/AGENTS.md only
+alwaysApply: true
+---
+
+# heavygee/hapi operator fork
+
+This repo is a **fork** of `tiann/hapi`. Root **`AGENTS.md` is intentionally absent** - upstream's copy is not used here.
+
+**Read `docs/operator/AGENTS.md`** - single canonical guide (HAPI baseline + fork intent + upstream PR discipline).
+
+- Upstream PR branches: from `upstream/main` only; never include `docs/operator/`, `docs/plans/`, or `AGENTS.md` edits in the PR diff.
+- Plans: `docs/plans/`.
