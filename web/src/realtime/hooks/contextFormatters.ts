@@ -100,7 +100,7 @@ export function formatMessage(message: DecryptedMessage): string | null {
         return null
     }
 
-    const speakable = extractSpeakableFromContent(content)
+    const speakable = !isContentArray(content) ? extractSpeakableFromContent(content) : null
     if (speakable) {
         const roleForFormat = normalizedRole === 'user' ? 'user' : 'assistant'
         return formatPlainText(roleForFormat, speakable)

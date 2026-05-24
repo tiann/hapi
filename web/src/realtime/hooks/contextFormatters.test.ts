@@ -158,6 +158,23 @@ describe('formatMessage', () => {
             }
         }))).toBeNull()
     })
+
+    it('preserves tool-call context for mixed text+tool_use content array', () => {
+        const formatted = formatMessage(msg({
+            id: '1',
+            seq: 1,
+            content: {
+                role: 'assistant',
+                content: [
+                    { type: 'text', text: 'Here is the result.' },
+                    { type: 'tool_use', name: 'Bash', input: { command: 'ls' } }
+                ]
+            }
+        }))
+
+        expect(formatted).toContain('Here is the result.')
+        expect(formatted).toContain('Claude Code is using Bash')
+    })
 })
 
 describe('formatNewMessages', () => {
