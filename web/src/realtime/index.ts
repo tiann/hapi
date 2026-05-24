@@ -32,7 +32,8 @@ export {
     formatSessionOffline,
     formatSessionFocus,
     formatPermissionRequest,
-    formatReadyEvent
+    formatReadyEvent,
+    extractLastAssistantSpeakable
 } from './hooks/contextFormatters'
 
 // Config
