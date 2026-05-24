@@ -159,6 +159,21 @@ describe('formatMessage', () => {
         }))).toBeNull()
     })
 
+    it('does not treat session status events as speakable assistant text', () => {
+        expect(formatMessage(msg({
+            id: '1',
+            seq: 1,
+            content: {
+                role: 'agent',
+                content: {
+                    id: 'some-uuid',
+                    type: 'event',
+                    data: { type: 'message', message: 'Aborting task.' }
+                }
+            }
+        }))).toBeNull()
+    })
+
     it('preserves tool-call context for mixed text+tool_use content array', () => {
         const formatted = formatMessage(msg({
             id: '1',

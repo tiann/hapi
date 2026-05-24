@@ -149,7 +149,7 @@ function extractSpeakableFromContent(content: unknown): string | null {
     }
 
     // Codex / stream-json agent messages: { type: 'codex', data: { type: 'message', message: '...' } }
-    if (isObject(content) && typeof content.type === 'string' && isObject(content.data)) {
+    if (isObject(content) && content.type === 'codex' && isObject(content.data)) {
         const data = content.data
         if (data.type === 'message' && typeof data.message === 'string' && data.message.trim()) {
             return data.message.trim()
