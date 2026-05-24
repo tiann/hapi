@@ -29,10 +29,10 @@ describe('extractLastAssistantSpeakable', () => {
 
     it('skips trailing user messages and reads earlier assistant text', () => {
         const messages = [
-            msg({ id: '1', seq: 1, content: { role: 'assistant', content: 'done with subtitle search' } }),
+            msg({ id: '1', seq: 1, content: { role: 'assistant', content: 'done with the refactor' } }),
             msg({ id: '2', seq: 2, content: { role: 'user', content: 'thanks' } })
         ]
-        expect(extractLastAssistantSpeakable(messages)).toBe('done with subtitle search')
+        expect(extractLastAssistantSpeakable(messages)).toBe('done with the refactor')
     })
 
     it('extracts text blocks from assistant content arrays', () => {
@@ -63,7 +63,7 @@ describe('extractLastAssistantSpeakable', () => {
                         type: 'codex',
                         data: {
                             type: 'message',
-                            message: '**Subtitle coverage** — 5,018 indexed items.'
+                            message: 'Indexed 5,018 items in the search database.'
                         }
                     }
                 }
@@ -80,7 +80,7 @@ describe('extractLastAssistantSpeakable', () => {
                 }
             })
         ]
-        expect(extractLastAssistantSpeakable(messages)).toBe('**Subtitle coverage** — 5,018 indexed items.')
+        expect(extractLastAssistantSpeakable(messages)).toBe('Indexed 5,018 items in the search database.')
     })
 
     it('unwraps codex-style output envelopes', () => {
@@ -105,7 +105,7 @@ describe('formatReadyEvent', () => {
     const sessionId = '9d04335d-2b90-4941-98a7-eb414823f0e0'
 
     it('embeds assistant text when provided', () => {
-        const text = 'Added subtitle index search to jellybot.'
+        const text = 'Added full-text search to the API module.'
         const event = formatReadyEvent(sessionId, text)
         expect(event).toContain('coding agent finished working')
         expect(event).toContain(`<text>${text}</text>`)
@@ -135,14 +135,14 @@ describe('formatMessage', () => {
                     type: 'codex',
                     data: {
                         type: 'message',
-                        message: '**Subtitle coverage** — 5,018 indexed items.'
+                        message: 'Indexed 5,018 items in the search database.'
                     }
                 }
             }
         }))
 
         expect(formatted).toContain('Claude Code:')
-        expect(formatted).toContain('<text>**Subtitle coverage** — 5,018 indexed items.</text>')
+        expect(formatted).toContain('<text>Indexed 5,018 items in the search database.</text>')
     })
 
     it('ignores codex ready and tool-call payloads', () => {
@@ -172,7 +172,7 @@ describe('formatNewMessages', () => {
                         type: 'codex',
                         data: {
                             type: 'message',
-                            message: 'Database size is 2.43 GiB.'
+                            message: 'Local database file size is 2.43 GiB.'
                         }
                     }
                 }
@@ -180,6 +180,6 @@ describe('formatNewMessages', () => {
         ])
 
         expect(update).toContain('New messages in session: session-1')
-        expect(update).toContain('Database size is 2.43 GiB.')
+        expect(update).toContain('Local database file size is 2.43 GiB.')
     })
 })
