@@ -19,6 +19,7 @@ import { useAppGoBack } from '@/hooks/useAppGoBack'
 import { useTranslation } from '@/lib/use-translation'
 import { VoiceProvider } from '@/lib/voice-context'
 import { requireHubUrlForLogin } from '@/lib/runtime-config'
+import { getAppGlobalSseSubscription, getAppSessionSseSubscription } from '@/lib/appSseSubscriptions'
 import { LoginPrompt } from '@/components/LoginPrompt'
 import { InstallPrompt } from '@/components/InstallPrompt'
 import { OfflineBanner } from '@/components/OfflineBanner'
@@ -295,28 +296,44 @@ function AppInner() {
         })
     }, [addToast, translateIncomingToast])
 
-    const eventSubscription = useMemo(() => {
-        if (selectedSessionId) {
-            return { sessionId: selectedSessionId }
-        }
-        return { all: true }
-    }, [selectedSessionId])
+    const globalEventSubscription = useMemo(() => getAppGlobalSseSubscription(), [])
+    const sessionEventSubscription = useMemo(
+        () => getAppSessionSseSubscription(selectedSessionId),
+        [selectedSessionId]
+    )
+    const sseEnabled = Boolean(api && token)
 
-    const { subscriptionId } = useSSE({
-        enabled: Boolean(api && token),
+    const { subscriptionId: globalSubscriptionId } = useSSE({
+        enabled: sseEnabled,
         token: token ?? '',
         baseUrl,
-        subscription: eventSubscription,
+        subscription: globalEventSubscription,
+        scope: 'global',
         onConnect: handleSseConnect,
         onDisconnect: handleSseDisconnect,
-        onEvent: handleSseEvent,
+        onEvent: () => {},
         onToast: handleToast
+    })
+
+    const { subscriptionId: sessionSubscriptionId } = useSSE({
+        enabled: sseEnabled && Boolean(sessionEventSubscription),
+        token: token ?? '',
+        baseUrl,
+        subscription: sessionEventSubscription ?? undefined,
+        scope: 'full',
+        onEvent: handleSseEvent
     })
 
     useVisibilityReporter({
         api,
-        subscriptionId,
-        enabled: Boolean(api && token)
+        subscriptionId: globalSubscriptionId,
+        enabled: sseEnabled
+    })
+
+    useVisibilityReporter({
+        api,
+        subscriptionId: sessionSubscriptionId,
+        enabled: sseEnabled && Boolean(sessionEventSubscription)
     })
 
     // Loading auth source

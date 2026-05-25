@@ -364,6 +364,7 @@ export class SyncEngine {
     ): Promise<void> {
         await this.messageService.sendMessage(sessionId, payload)
         this.sessionCache.markMessageQueued(sessionId)
+        this.sessionCache.recordSessionActivity(sessionId, Date.now())
     }
 
     async cancelQueuedMessage(
