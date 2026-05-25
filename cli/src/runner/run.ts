@@ -10,10 +10,11 @@ import { authAndSetupMachineIfNeeded } from '@/ui/auth';
 import { configuration } from '@/configuration';
 import packageJson from '../../package.json';
 import { getEnvironmentInfo } from '@/ui/doctor';
-import { spawnHappyCLI } from '@/utils/spawnHappyCLI';
+import { buildHappyCliSpawnPlan, spawnHappyCLI, spawnHappyCLIPlan } from '@/utils/spawnHappyCLI';
 import { writeRunnerState, RunnerLocallyPersistedState, readRunnerState, acquireRunnerLock, releaseRunnerLock } from '@/persistence';
 import { isProcessAlive, isWindows, killProcess, killProcessByChildProcess } from '@/utils/process';
 import { PERMISSION_MODES } from '@hapi/protocol/modes';
+import type { PermissionMode } from '@hapi/protocol/modes';
 import { withRetry } from '@/utils/time';
 import { isRetryableConnectionError } from '@/utils/errorUtils';
 
@@ -24,6 +25,8 @@ import { join } from 'path';
 import { buildMachineMetadata } from '@/agent/sessionFactory';
 import { resolveWorkspaceRoots } from '@/utils/workspaceRoot';
 import { hashRunnerCliApiToken } from './runnerIdentity';
+import { RunnerPluginManager } from './plugins/runnerPluginManager';
+import { AgentIdSchema, RunnerSpawnContextSchema } from '@hapi/protocol/plugins';
 
 export async function startRunner(options: { workspaceRoots?: string[] } = {}): Promise<void> {
   // We don't have cleanup function at the time of server construction
@@ -158,6 +161,16 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       return String(error);
     };
 
+    const runnerPluginManager = new RunnerPluginManager({
+      hapiHome: configuration.happyHomeDir,
+      machineId,
+      envPluginDirs: process.env.HAPI_PLUGIN_DIRS,
+      env: process.env,
+      includeBundledCore: true,
+      includeBundledExamples: process.env.HAPI_ENABLE_BUNDLED_EXAMPLES === '1'
+    });
+    await runnerPluginManager.start();
+
     // Helper functions
     const getCurrentChildren = () => Array.from(pidToTrackedSession.values());
 
@@ -233,16 +246,23 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     const spawnSession = async (options: SpawnSessionOptions): Promise<SpawnSessionResult> => {
       logger.debugLargeJson('[RUNNER RUN] Spawning session', options);
 
-      const { directory, sessionId, machineId, approvedNewDirectoryCreation = true } = options;
+      const { directory, sessionId, approvedNewDirectoryCreation = true } = options;
       const agent = options.agent ?? 'claude';
-      const yolo = options.yolo === true;
       const sessionType = options.sessionType ?? 'simple';
       const worktreeName = options.worktreeName;
       let directoryCreated = false;
       let spawnDirectory = directory;
       let worktreeInfo: WorktreeInfo | null = null;
-      let happyProcess: ReturnType<typeof spawnHappyCLI> | null = null;
+      let happyProcess: ReturnType<typeof spawnHappyCLIPlan> | null = null;
 
+      const agentDescriptor = runnerPluginManager.getAgentDescriptor(agent);
+      if (!agentDescriptor || agentDescriptor.available === false) {
+        const unavailableReason = agentDescriptor?.unavailableReason ? `: ${agentDescriptor.unavailableReason}` : '';
+        return {
+          type: 'error',
+          errorMessage: `Agent ${agent} is not available on this runner${unavailableReason}`
+        };
+      }
       if (sessionType === 'simple') {
         try {
           await fs.access(directory);
@@ -344,25 +364,51 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       };
 
       try {
+        const spawnOptionsResult = await runnerPluginManager.resolveSpawnOptions({
+          options,
+          agent,
+          cwd: spawnDirectory
+        });
+        const effectiveOptions = spawnOptionsResult.options;
+        const yolo = effectiveOptions.yolo === true;
+
+        if (
+          effectiveOptions.permissionMode
+          && (
+            !(PERMISSION_MODES as readonly string[]).includes(effectiveOptions.permissionMode)
+            || !agentDescriptor.capabilities.permissionModes.includes(effectiveOptions.permissionMode as PermissionMode)
+          )
+        ) {
+          return {
+            type: 'error',
+            errorMessage: `Permission mode ${effectiveOptions.permissionMode} is not available for agent ${agent}`
+          };
+        }
+        if (yolo && !agentDescriptor.capabilities.permissionModes.some((mode) => mode === 'yolo' || mode === 'bypassPermissions')) {
+          return {
+            type: 'error',
+            errorMessage: `YOLO mode is not available for agent ${agent}`
+          };
+        }
 
         // Resolve authentication token if provided
         let extraEnv: Record<string, string> = {};
-        if (options.token) {
-          if (options.agent === 'codex') {
+        if (effectiveOptions.token) {
+          if (agent === 'codex') {
 
             // Create a temporary directory for Codex
             const codexHomeDir = await fs.mkdtemp(join(os.tmpdir(), 'hapi-codex-'));
 
             // Write the token to the temporary directory
-            await fs.writeFile(join(codexHomeDir, 'auth.json'), options.token);
+            await fs.writeFile(join(codexHomeDir, 'auth.json'), effectiveOptions.token);
 
             // Set the environment variable for Codex
             extraEnv = {
               CODEX_HOME: codexHomeDir
             };
-          } else if (options.agent === 'claude' || !options.agent) {
+          } else if (agent === 'claude') {
             extraEnv = {
-              CLAUDE_CODE_OAUTH_TOKEN: options.token
+              CLAUDE_CODE_OAUTH_TOKEN: effectiveOptions.token
             };
           }
         }
@@ -378,7 +424,43 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           };
         }
 
-        const args = buildCliArgs(agent, options, yolo);
+        const args = buildCliArgs(agent, effectiveOptions, yolo);
+        const basePlan = buildHappyCliSpawnPlan(args);
+        const extensionPlan = await runnerPluginManager.resolveSpawnPlan({
+          options: effectiveOptions,
+          agent,
+          basePlan,
+          cwd: spawnDirectory,
+          env: {
+            ...process.env,
+            ...extraEnv
+          }
+        });
+
+        if (extensionPlan.blocked) {
+          const errorMessage = `Plugin beforeSpawn blocked session spawn: ${extensionPlan.blocked.reason}`;
+          logger.debug(`[RUNNER RUN] ${errorMessage}`);
+          reportSpawnOutcomeToHub?.({
+            type: 'error',
+            details: {
+              message: errorMessage
+            }
+          });
+          await maybeCleanupWorktree('plugin-before-spawn-blocked');
+          return {
+            type: 'error',
+            errorMessage
+          };
+        }
+
+        const pluginSpawnContext = buildRunnerPluginSpawnContext({
+          runnerMachineId: machineId,
+          options: effectiveOptions,
+          agent,
+          cwd: extensionPlan.cwd,
+          displayArgs: extensionPlan.displayArgs,
+          env: extensionPlan.env
+        });
 
         // sessionId reserved for future use
         const MAX_TAIL_CHARS = 4000;
@@ -399,14 +481,16 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           logger.debug('[RUNNER RUN] Child stderr tail', trimmed);
         };
 
-        happyProcess = spawnHappyCLI(args, {
-          cwd: spawnDirectory,
+        happyProcess = spawnHappyCLIPlan({
+          command: basePlan.command,
+          args: extensionPlan.args,
+          displayArgs: extensionPlan.displayArgs,
+          mode: basePlan.mode
+        }, {
+          cwd: extensionPlan.cwd,
           detached: true,  // Sessions stay alive when runner stops
           stdio: ['ignore', 'pipe', 'pipe'],  // Capture stdout/stderr for debugging
-          env: {
-            ...process.env,
-            ...extraEnv
-          }
+          env: extensionPlan.env
         });
 
         happyProcess.stderr?.on('data', (data) => {
@@ -484,10 +568,22 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
 
         pidToTrackedSession.set(pid, trackedSession);
 
+        void runnerPluginManager.notifyAfterSpawn({ context: pluginSpawnContext, pid }).catch((error) => {
+          logger.debug('[RUNNER RUN] Runner plugin afterSpawn notification failed', error);
+        });
+
         happyProcess.on('exit', (code, signal) => {
           observedExitCode = typeof code === 'number' ? code : null;
           observedExitSignal = signal ?? null;
           logger.debug(`[RUNNER RUN] Child PID ${pid} exited with code ${code}, signal ${signal}`);
+          void runnerPluginManager.notifyExit({
+            context: pluginSpawnContext,
+            pid,
+            exitCode: observedExitCode,
+            signal: observedExitSignal
+          }).catch((error) => {
+            logger.debug('[RUNNER RUN] Runner plugin onExit notification failed', error);
+          });
           if (code !== 0 || signal) {
             logStderrTail();
           }
@@ -679,7 +775,10 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       status: 'offline',
       pid: process.pid,
       httpPort: controlPort,
-      startedAt: Date.now()
+      startedAt: Date.now(),
+      pluginInventory: runnerPluginManager.getInventory(),
+      agentDescriptors: runnerPluginManager.getAgentDescriptors(),
+      agentCapabilities: runnerPluginManager.getAgentCapabilities()
     };
 
     // Create API client
@@ -717,6 +816,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       stopSession,
       requestShutdown: () => requestShutdown('hapi-app')
     });
+    apiMachine.registerRunnerPluginHandlers(runnerPluginManager);
 
     // Connect to server
     apiMachine.connect();
@@ -880,6 +980,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       // Give time for metadata update to send
       await new Promise(resolve => setTimeout(resolve, 100));
 
+      await runnerPluginManager.dispose();
       apiMachine.shutdown();
       await stopControlServer();
       await cleanupRunnerState();
@@ -915,8 +1016,12 @@ export function buildCliArgs(
           ? 'kimi'
           : agent === 'opencode'
             ? 'opencode'
-            : 'claude';
-  const args = [agentCommand];
+            : agent === 'claude'
+              ? 'claude'
+              : 'agent-plugin';
+  const args = agentCommand === 'agent-plugin'
+    ? ['agent-plugin', '--type', AgentIdSchema.parse(agent)]
+    : [agentCommand];
   if (options.resumeSessionId) {
     if (agent === 'codex') {
       args.push('resume', options.resumeSessionId);
@@ -942,4 +1047,32 @@ export function buildCliArgs(
     args.push('--yolo');
   }
   return args;
+}
+
+export function buildRunnerPluginSpawnContext(args: {
+  runnerMachineId: string
+  options: SpawnSessionOptions
+  agent: string
+  cwd: string
+  displayArgs: string[]
+  env: Record<string, string | undefined>
+}) {
+  return RunnerSpawnContextSchema.parse({
+    machineId: args.runnerMachineId,
+    agent: args.agent,
+    directory: args.options.directory,
+    cwd: args.cwd,
+    args: args.displayArgs,
+    envKeys: Object.keys(args.env).filter((key) => typeof args.env[key] === 'string').sort(),
+    ...(args.options.sessionType ? { sessionType: args.options.sessionType } : {}),
+    ...(args.options.worktreeName ? { worktreeName: args.options.worktreeName } : {}),
+    ...(args.options.resumeSessionId ? { resumeSessionId: args.options.resumeSessionId } : {}),
+    ...(args.options.model ? { model: args.options.model } : {}),
+    ...(args.options.effort ? { effort: args.options.effort } : {}),
+    ...(args.options.modelReasoningEffort ? { modelReasoningEffort: args.options.modelReasoningEffort } : {}),
+    ...(args.options.permissionMode ? { permissionMode: args.options.permissionMode } : {}),
+    ...(args.options.yolo !== undefined ? { yolo: args.options.yolo } : {}),
+    ...(args.options.manualFields?.length ? { manualFields: args.options.manualFields } : {}),
+    ...(args.options.pluginFields ? { pluginFields: args.options.pluginFields } : {})
+  });
 }
