@@ -350,7 +350,7 @@ export function buildGeminiLiveFunctionDeclarations(): GeminiLiveFunctionDeclara
 export function buildGeminiLiveConfig(): GeminiLiveConfig {
     return {
         model: GEMINI_LIVE_MODEL,
-        systemInstruction: VOICE_SYSTEM_PROMPT + VOICE_CHINESE_LANGUAGE_BLOCK,
+        systemInstruction: VOICE_SYSTEM_PROMPT,
         tools: [
             {
                 functionDeclarations: buildGeminiLiveFunctionDeclarations()
