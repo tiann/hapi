@@ -4,6 +4,7 @@ export interface VoiceSessionConfig {
     sessionId: string
     initialContext?: string
     language?: ElevenLabsLanguage
+    voiceId?: string
 }
 
 export interface VoiceSession {

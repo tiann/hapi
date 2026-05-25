@@ -49,7 +49,9 @@ class RealtimeVoiceSessionImpl implements VoiceSession {
         // Fetch conversation token from server
         let tokenResponse: Awaited<ReturnType<typeof fetchVoiceToken>>
         try {
-            tokenResponse = await fetchVoiceToken(this.api)
+            tokenResponse = await fetchVoiceToken(this.api, {
+                voiceId: config.voiceId
+            })
         } catch (error) {
             console.error('[Voice] Failed to fetch voice token:', error)
             statusCallback?.('error', 'Network error')
@@ -62,30 +64,38 @@ class RealtimeVoiceSessionImpl implements VoiceSession {
             throw error
         }
 
+        const baseSessionConfig = {
+            conversationToken: tokenResponse.token,
+            connectionType: 'webrtc' as const,
+            dynamicVariables: {
+                sessionId: config.sessionId,
+                initialConversationContext: config.initialContext || ''
+            },
+            // Language override — requires override permissions enabled on the agent
+            // See: https://elevenlabs.io/docs/agents-platform/customization/personalization/overrides
+            overrides: {
+                agent: {
+                    language: config.language
+                }
+            }
+        }
+
         // Use conversation token from server (private agent flow)
         try {
-            const conversationId = await conversationInstance.startSession({
-                conversationToken: tokenResponse.token,
-                connectionType: 'webrtc',
-                dynamicVariables: {
-                    sessionId: config.sessionId,
-                    initialConversationContext: config.initialContext || ''
-                },
-                // Language override - requires agent to have platform_settings.overrides enabled
-                // See: https://elevenlabs.io/docs/agents-platform/customization/personalization/overrides
-                overrides: {
-                    agent: {
-                        language: config.language
-                    }
-                }
-            })
+            const conversationId = await conversationInstance.startSession(baseSessionConfig)
 
             if (DEBUG) {
                 console.log('[Voice] Started conversation with ID:', conversationId)
             }
         } catch (error) {
-            console.error('[Voice] Failed to start realtime session:', error)
-            statusCallback?.('error', 'Failed to start voice session')
+            const errorMessage = error instanceof Error ? error.message : String(error)
+            console.error('[Voice] Failed to start realtime session:', {
+                error: errorMessage,
+                sessionId: config.sessionId,
+                language: config.language,
+                voiceId: config.voiceId
+            })
+            statusCallback?.('error', `Failed to start voice session: ${errorMessage}`)
             throw error
         }
     }

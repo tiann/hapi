@@ -403,6 +403,8 @@ export default {
   'settings.voice.title': 'Voice Assistant',
   'settings.voice.language': 'Voice Language',
   'settings.voice.autoDetect': 'Auto-detect',
+  'settings.voice.voice': 'Voice',
+  'settings.voice.voiceDefault': 'Default',
   'settings.about.title': 'About',
   'settings.about.website': 'Website',
   'settings.about.appVersion': 'App Version',

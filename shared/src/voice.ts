@@ -208,6 +208,9 @@ export interface VoiceAgentConfig {
                     language?: boolean
                     first_message?: boolean
                 }
+                tts?: {
+                    voice_id?: boolean
+                }
             }
         }
     }
@@ -249,6 +252,9 @@ export function buildVoiceAgentConfig(): VoiceAgentConfig {
                 conversation_config_override: {
                     agent: {
                         language: true
+                    },
+                    tts: {
+                        voice_id: true
                     }
                 }
             }
