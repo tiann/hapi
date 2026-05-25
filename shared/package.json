@@ -5,6 +5,9 @@
     "type": "module",
     "main": "./src/index.ts",
     "types": "./src/index.ts",
+    "scripts": {
+        "test": "bun test"
+    },
     "exports": {
         ".": "./src/index.ts",
         "./apiTypes": "./src/apiTypes.ts",
@@ -15,7 +18,25 @@
         "./rpcMethods": "./src/rpcMethods.ts",
         "./schemas": "./src/schemas.ts",
         "./types": "./src/types.ts",
-        "./voice": "./src/voice.ts"
+        "./voice": "./src/voice.ts",
+        "./plugins": "./src/plugins/index.ts",
+        "./plugins/bundledCore": "./src/plugins/bundledCore.ts",
+        "./plugins/bundledExamples": "./src/plugins/bundledExamples.ts",
+        "./plugins/foundation": "./src/plugins/foundation.ts",
+        "./plugins/admin": "./src/plugins/admin.ts",
+        "./plugins/marketplace": "./src/plugins/marketplace.ts",
+        "./plugins/marketplaceSources.generated": "./src/plugins/marketplaceSources.generated.ts",
+        "./plugins/extensionPoints": "./src/plugins/extensionPoints.ts",
+        "./plugins/runtime/activation": "./src/plugins/runtime/activation.ts",
+        "./plugins/runtime/capabilityView": "./src/plugins/runtime/capabilityView.ts",
+        "./plugins/runtime/compatibility": "./src/plugins/runtime/compatibility.ts",
+        "./plugins/runtime/diagnostics": "./src/plugins/runtime/diagnostics.ts",
+        "./plugins/runtime/fsHelpers": "./src/plugins/runtime/fsHelpers.ts",
+        "./plugins/runtime/networkPolicy": "./src/plugins/runtime/networkPolicy.ts",
+        "./plugins/runtime/registryBase": "./src/plugins/runtime/registryBase.ts",
+        "./plugins/runtime/reloadController": "./src/plugins/runtime/reloadController.ts",
+        "./plugins/runtime/stateController": "./src/plugins/runtime/stateController.ts",
+        "./plugins/runtime/versioning": "./src/plugins/runtime/versioning.ts"
     },
     "sideEffects": false,
     "dependencies": {
