@@ -25,9 +25,15 @@ describe('NewSession preferences', () => {
     })
 
     it('falls back to default agent on invalid stored value', () => {
-        localStorage.setItem('hapi:newSession:agent', 'unknown-agent')
+        localStorage.setItem('hapi:newSession:agent', 'bad/id')
 
         expect(loadPreferredAgent()).toBe('claude')
+    })
+
+    it('loads saved plugin agent ids', () => {
+        localStorage.setItem('hapi:newSession:agent', 'plugin.example-agent')
+
+        expect(loadPreferredAgent()).toBe('plugin.example-agent')
     })
 
     it('persists new values to storage', () => {

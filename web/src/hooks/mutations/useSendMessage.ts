@@ -2,6 +2,7 @@ import { useMutation } from '@tanstack/react-query'
 import { useRef, useState } from 'react'
 import type { ApiClient } from '@/api/client'
 import type { AttachmentMetadata, DecryptedMessage } from '@/types/api'
+import type { PluginMessageActionRequest } from '@hapi/protocol/apiTypes'
 import { makeClientSideId } from '@/lib/messages'
 import {
     appendOptimisticMessage,
@@ -17,6 +18,7 @@ type SendMessageInput = {
     createdAt: number
     attachments?: AttachmentMetadata[]
     scheduledAt?: number | null
+    pluginAction?: PluginMessageActionRequest
 }
 
 type BlockedReason = 'no-api' | 'no-session' | 'pending'
@@ -52,7 +54,24 @@ function createOptimisticMessage(input: SendMessageInput, status: 'queued' | 'se
         scheduledAt: input.scheduledAt ?? null,
         status,
         originalText: input.text,
+        pluginAction: input.pluginAction,
+    } as DecryptedMessage
+}
+
+function optimisticScheduledAt(pluginAction?: PluginMessageActionRequest): number | null {
+    if (!pluginAction || !pluginAction.payload || typeof pluginAction.payload !== 'object' || Array.isArray(pluginAction.payload)) {
+        return null
     }
+    const notBefore = (pluginAction.payload as Record<string, unknown>).notBefore
+    return typeof notBefore === 'number' && Number.isFinite(notBefore) ? notBefore : null
+}
+
+function getOptimisticPluginAction(message: DecryptedMessage): PluginMessageActionRequest | undefined {
+    const candidate = (message as DecryptedMessage & { pluginAction?: unknown }).pluginAction
+    if (!candidate || typeof candidate !== 'object') {
+        return undefined
+    }
+    return candidate as PluginMessageActionRequest
 }
 
 function findMessageByLocalId(
@@ -80,7 +99,7 @@ export function useSendMessage(
     // resume happens before mutation.mutate(), and a sync `true` would let the
     // caller clear UI state (e.g. pendingSchedule) before knowing whether
     // resume succeeded — see SessionChat.handleSend.
-    sendMessage: (text: string, attachments?: AttachmentMetadata[], scheduledAt?: number | null) => Promise<boolean>
+    sendMessage: (text: string, attachments?: AttachmentMetadata[], pluginAction?: PluginMessageActionRequest) => Promise<boolean>
     retryMessage: (localId: string) => boolean
     isSending: boolean
 } {
@@ -95,7 +114,7 @@ export function useSendMessage(
             if (!api) {
                 throw new Error('API unavailable')
             }
-            await api.sendMessage(input.sessionId, input.text, input.localId, input.attachments, input.scheduledAt)
+            await api.sendMessage(input.sessionId, input.text, input.localId, input.attachments, input.pluginAction)
         },
         onMutate: async (input) => {
             const status = isSessionThinkingRef.current ? 'queued' as const : 'sending' as const
@@ -117,7 +136,7 @@ export function useSendMessage(
         },
     })
 
-    const sendMessage = async (text: string, attachments?: AttachmentMetadata[], scheduledAt?: number | null): Promise<boolean> => {
+    const sendMessage = async (text: string, attachments?: AttachmentMetadata[], pluginAction?: PluginMessageActionRequest): Promise<boolean> => {
         if (!api) {
             options?.onBlocked?.('no-api')
             haptic.notification('error')
@@ -159,7 +178,8 @@ export function useSendMessage(
             localId,
             createdAt,
             attachments,
-            scheduledAt,
+            scheduledAt: optimisticScheduledAt(pluginAction),
+            pluginAction,
         })
         return true
     }
@@ -191,6 +211,7 @@ export function useSendMessage(
             localId,
             createdAt: message.createdAt,
             scheduledAt: message.scheduledAt ?? null,
+            pluginAction: getOptimisticPluginAction(message),
         })
         return true
     }

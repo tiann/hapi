@@ -4,7 +4,9 @@ import type { AppendMessage, AttachmentAdapter, ThreadMessageLike } from '@assis
 import { useExternalMessageConverter, useExternalStoreRuntime } from '@assistant-ui/react'
 import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
 import { resolvePendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
+import type { PluginMessageComposerAction } from '@/components/AssistantChat/composerActions'
 import { safeStringify } from '@hapi/protocol'
+import type { PluginMessageActionRequest } from '@hapi/protocol/apiTypes'
 import { renderEventLabel } from '@/chat/presentation'
 import type { ChatBlock, CliOutputBlock, CodexReview, UsageData } from '@/chat/types'
 import type { AgentEvent, ToolCallBlock } from '@/chat/types'
@@ -44,6 +46,24 @@ export type HappyChatMessageMetadata = {
      * per-message footer is rendered unchanged.
      */
     turnCount?: number
+}
+
+export type PendingPluginMessageAction = {
+    action: PluginMessageComposerAction
+    payload?: unknown
+}
+
+export function buildPluginMessageActionRequest(
+    action: PluginMessageComposerAction,
+    payload: unknown
+): PluginMessageActionRequest {
+    return {
+        pluginId: action.pluginId,
+        capabilityId: action.capabilityId,
+        position: action.handler.position,
+        actionId: action.handler.actionId,
+        payload
+    }
 }
 
 function formatCodexReviewText(review: CodexReview): string {
@@ -528,11 +548,13 @@ export function useHappyRuntime(props: {
     blocks: readonly VisibleChatBlock[]
     isSending: boolean
     isRunning?: boolean
-    onSendMessage: (text: string, attachments?: AttachmentMetadata[], scheduledAt?: number | null) => void
+    onSendMessage: (text: string, attachments?: AttachmentMetadata[], pluginAction?: PluginMessageActionRequest) => void
     onAbort: () => Promise<void>
     attachmentAdapter?: AttachmentAdapter
     allowSendWhenInactive?: boolean
     pendingScheduleRef?: React.RefObject<PendingSchedule | null>
+    scheduleAction?: PluginMessageComposerAction | null
+    pendingPluginActionRef?: React.RefObject<PendingPluginMessageAction | null>
 }) {
     const isRunning = props.isRunning ?? props.session.thinking
 
@@ -580,14 +602,29 @@ export function useHappyRuntime(props: {
 
     const onNew = useCallback(async (message: AppendMessage) => {
         const { text, attachments } = extractMessageContent(message)
+        const pendingPluginAction = props.pendingPluginActionRef?.current ?? null
+        if (props.pendingPluginActionRef) {
+            props.pendingPluginActionRef.current = null
+        }
         if (!text && attachments.length === 0) return
+        if (pendingPluginAction) {
+            props.onSendMessage(
+                text,
+                attachments.length > 0 ? attachments : undefined,
+                buildPluginMessageActionRequest(pendingPluginAction.action, pendingPluginAction.payload ?? {})
+            )
+            return
+        }
         // Resolve pendingSchedule at send time (Date.now()) so preset-type schedules
         // ("5 minutes from now") are relative to the actual send action, not the
         // moment the user clicked the preset button.
         const sendNow = Date.now()
-        const scheduledAt = resolvePendingSchedule(props.pendingScheduleRef?.current ?? null, sendNow)
-        props.onSendMessage(text, attachments.length > 0 ? attachments : undefined, scheduledAt)
-    }, [props.onSendMessage, props.pendingScheduleRef])
+        const notBefore = resolvePendingSchedule(props.pendingScheduleRef?.current ?? null, sendNow)
+        const pluginAction = notBefore == null || !props.scheduleAction
+            ? undefined
+            : buildPluginMessageActionRequest(props.scheduleAction, { notBefore })
+        props.onSendMessage(text, attachments.length > 0 ? attachments : undefined, pluginAction)
+    }, [props.onSendMessage, props.pendingScheduleRef, props.scheduleAction, props.pendingPluginActionRef])
 
     const onCancel = useCallback(async () => {
         await props.onAbort()

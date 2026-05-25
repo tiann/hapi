@@ -10,6 +10,7 @@ import type {
     Session,
     SlashCommand
 } from '@/types/api'
+import type { PluginMessageActionRequest } from '@hapi/protocol/apiTypes'
 import type { ChatBlock, NormalizedMessage } from '@/chat/types'
 import type { Suggestion } from '@/hooks/useActiveSuggestions'
 import { normalizeDecryptedMessage } from '@/chat/normalize'
@@ -20,10 +21,11 @@ import { buildVisibleChatBlocks, isToolGroupBlock, type ToolGroupBlock } from '@
 import { isQueuedForInvocation, mergeMessages } from '@/lib/messages'
 import { HappyComposer } from '@/components/AssistantChat/HappyComposer'
 import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
-import { resolvePendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
+import { collectPluginMessageComposerActions } from '@/components/AssistantChat/composerActions'
 import { HappyThread } from '@/components/AssistantChat/HappyThread'
 import { QueuedMessagesBar } from '@/components/AssistantChat/QueuedMessagesBar'
 import { useHappyRuntime } from '@/lib/assistant-runtime'
+import type { PendingPluginMessageAction } from '@/lib/assistant-runtime'
 import { createAttachmentAdapter } from '@/lib/attachmentAdapter'
 import { useTranslation } from '@/lib/use-translation'
 import { SessionHeader } from '@/components/SessionHeader'
@@ -32,6 +34,7 @@ import { usePlatform } from '@/hooks/usePlatform'
 import { useSessionActions } from '@/hooks/mutations/useSessionActions'
 import { useCodexModels } from '@/hooks/queries/useCodexModels'
 import { useOpencodeModels } from '@/hooks/queries/useOpencodeModels'
+import { usePluginCapabilities } from '@/hooks/queries/usePluginCapabilities'
 import { useVoiceOptional } from '@/lib/voice-context'
 import { RealtimeVoiceSession, registerSessionStore, registerVoiceHooksStore, voiceHooks } from '@/realtime'
 import { isRemoteTerminalSupported } from '@/utils/terminalSupport'
@@ -113,7 +116,7 @@ export function SessionChat(props: {
     // pre-mutation guards (no-api / no-session / pending) rejected the call OR async
     // inactive-session resume failed. Composer state that should only be cleared on
     // actual send (pendingSchedule) must await this — see handleSend below.
-    onSend: (text: string, attachments?: AttachmentMetadata[], scheduledAt?: number | null) => Promise<boolean>
+    onSend: (text: string, attachments?: AttachmentMetadata[], pluginAction?: PluginMessageActionRequest) => Promise<boolean>
     onFlushPending: () => void
     onAtBottomChange: (atBottom: boolean) => void
     onRetryMessage?: (localId: string) => void
@@ -121,7 +124,7 @@ export function SessionChat(props: {
     availableSlashCommands?: readonly SlashCommand[]
 }) {
     const { haptic } = usePlatform()
-    const { t } = useTranslation()
+    const { t, locale } = useTranslation()
     const navigate = useNavigate()
     const sessionInactive = !props.session.active
     const terminalSupported = isRemoteTerminalSupported(props.session.metadata)
@@ -167,6 +170,16 @@ export function SessionChat(props: {
             label: opencodeModel.name ?? opencodeModel.modelId
         }))
     }, [agentFlavor, opencodeModelsState.availableModels])
+    const pluginCapabilitiesState = usePluginCapabilities(props.api, { sessionId: props.session.id })
+    const pluginMessageActions = useMemo(
+        () => collectPluginMessageComposerActions(pluginCapabilitiesState.capabilities, { locale }),
+        [pluginCapabilitiesState.capabilities, locale]
+    )
+    const scheduleAction = pluginMessageActions.find((action) => action.ui.kind === 'delayPicker') ?? null
+    const buttonPluginMessageActions = useMemo(
+        () => pluginMessageActions.filter((action) => action.ui.kind === 'button' || action.ui.kind === 'confirm'),
+        [pluginMessageActions]
+    )
     const {
         abortSession,
         switchSession,
@@ -463,10 +476,11 @@ export function SessionChat(props: {
     // Scheduled message state — lifted here so useHappyRuntime can read the ref.
     //
     // pendingSchedule holds what the user selected (preset or absolute ms).
-    // The ref is read at send time; resolvePendingSchedule converts it to an
-    // absolute epoch-ms using Date.now() at that moment (send-time base for presets).
+    // The ref is read at send time; useHappyRuntime converts it into the active
+    // plugin message-action payload using Date.now() at that moment.
     const [pendingSchedule, setPendingSchedule] = useState<PendingSchedule | null>(null)
     const pendingScheduleRef = useRef<PendingSchedule | null>(null)
+    const pendingPluginActionRef = useRef<PendingPluginMessageAction | null>(null)
     // Keep render ref in sync so onNew can snapshot at send time
     pendingScheduleRef.current = pendingSchedule
 
@@ -488,8 +502,8 @@ export function SessionChat(props: {
         return () => clearTimeout(timer)
     }, [pendingSchedule])
 
-    const handleSend = useCallback(async (text: string, attachments?: AttachmentMetadata[], scheduledAt?: number | null) => {
-        const accepted = await props.onSend(text, attachments, scheduledAt)
+    const handleSend = useCallback(async (text: string, attachments?: AttachmentMetadata[], pluginAction?: PluginMessageActionRequest) => {
+        const accepted = await props.onSend(text, attachments, pluginAction)
         if (!accepted) return
         // Clear pendingSchedule only after the mutation is actually accepted —
         // covers both pre-mutation guards AND async inactive-session resume
@@ -515,7 +529,9 @@ export function SessionChat(props: {
         onAbort: handleAbort,
         attachmentAdapter,
         allowSendWhenInactive: true,
-        pendingScheduleRef
+        pendingScheduleRef,
+        scheduleAction,
+        pendingPluginActionRef
     })
 
     return (
@@ -595,6 +611,9 @@ export function SessionChat(props: {
                         pendingSchedule={pendingSchedule}
                         onSchedule={setPendingSchedule}
                         onClearSchedule={() => setPendingSchedule(null)}
+                        scheduleAction={scheduleAction}
+                        pluginMessageActions={buttonPluginMessageActions}
+                        pendingPluginActionRef={pendingPluginActionRef}
                         permissionMode={props.session.permissionMode}
                         collaborationMode={codexCollaborationModeSupported ? props.session.collaborationMode : undefined}
                         threadGoal={reduced.latestGoal}

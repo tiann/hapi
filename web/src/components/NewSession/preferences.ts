@@ -1,16 +1,15 @@
-import { AGENT_FLAVORS } from '@hapi/protocol'
+import { AgentIdSchema } from '@hapi/protocol/plugins'
 import type { AgentType } from './types'
 
 const AGENT_STORAGE_KEY = 'hapi:newSession:agent'
 const YOLO_STORAGE_KEY = 'hapi:newSession:yolo'
 
-const VALID_AGENTS = AGENT_FLAVORS
-
 export function loadPreferredAgent(): AgentType {
     try {
         const stored = localStorage.getItem(AGENT_STORAGE_KEY)
-        if (stored && VALID_AGENTS.includes(stored as AgentType)) {
-            return stored as AgentType
+        const parsed = AgentIdSchema.safeParse(stored)
+        if (parsed.success) {
+            return parsed.data
         }
     } catch {
         // Ignore storage errors
