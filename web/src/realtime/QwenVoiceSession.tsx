@@ -283,6 +283,7 @@ class QwenVoiceSessionImpl implements VoiceSession {
             }
 
             ws.onclose = (event) => {
+                if (state.ws !== ws) return
                 if (DEBUG) console.log('[Qwen] WebSocket closed:', event.code, event.reason)
                 cleanup()
                 resetRealtimeSessionState()
