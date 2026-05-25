@@ -9,7 +9,6 @@ import {
     QWEN_REALTIME_MODEL,
     QWEN_REALTIME_VOICE,
     VOICE_SYSTEM_PROMPT,
-    VOICE_CHINESE_LANGUAGE_BLOCK,
     VOICE_TOOL_DEFINITIONS
 } from '@hapi/protocol/voice'
 import type { VoiceSession, VoiceSessionConfig, StatusCallback } from './types'
@@ -158,7 +157,7 @@ class QwenVoiceSessionImpl implements VoiceSession {
                     }))
 
                     // Send session.update with full configuration
-                    const basePrompt = VOICE_SYSTEM_PROMPT + VOICE_CHINESE_LANGUAGE_BLOCK
+                    const basePrompt = VOICE_SYSTEM_PROMPT
                     const instructions = config.initialContext
                         ? `${basePrompt}\n\n[Current Context]\n${config.initialContext}`
                         : basePrompt
