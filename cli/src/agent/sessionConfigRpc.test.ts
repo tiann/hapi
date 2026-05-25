@@ -23,6 +23,10 @@ describe('sessionConfigRpc', () => {
         expect(() => resolveSessionConfigPermissionMode('bypassPermissions', 'gemini')).toThrow('Invalid permission mode')
     })
 
+    it('accepts OpenCode plan permission mode', () => {
+        expect(resolveSessionConfigPermissionMode('plan', 'opencode')).toBe('plan')
+    })
+
     it('accepts null model for agents that support model config', () => {
         expect(resolveNullableSessionModel(null)).toBeNull()
     })

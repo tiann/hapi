@@ -5,6 +5,7 @@ import type { OpencodeMode, PermissionMode } from './types';
 const harness = vi.hoisted(() => ({
     setModelArgs: [] as Array<{ sessionId: string; modelId: string; flavor?: string }>,
     promptCount: 0,
+    promptContents: [] as unknown[],
     events: [] as string[],
     setModelImpl: null as null | ((sessionId: string, modelId: string) => Promise<void>)
 }));
@@ -21,7 +22,8 @@ vi.mock('./utils/opencodeBackend', () => ({
                 await harness.setModelImpl(sessionId, modelId);
             }
         }),
-        prompt: vi.fn(async () => {
+        prompt: vi.fn(async (_sessionId: string, content: unknown[]) => {
+            harness.promptContents.push(content);
             harness.events.push('prompt:start');
             harness.promptCount++;
             await new Promise<void>((resolve) => setImmediate(resolve));
@@ -66,6 +68,13 @@ import { opencodeRemoteLauncher } from './opencodeRemoteLauncher';
 function createMode(model?: string): OpencodeMode {
     return {
         permissionMode: 'default' as PermissionMode,
+        model
+    };
+}
+
+function createPlanMode(model?: string): OpencodeMode {
+    return {
+        permissionMode: 'plan' as PermissionMode,
         model
     };
 }
@@ -128,6 +137,7 @@ describe('opencodeRemoteLauncher inline model switch', () => {
     afterEach(() => {
         harness.setModelArgs = [];
         harness.promptCount = 0;
+        harness.promptContents = [];
         harness.events = [];
         harness.setModelImpl = null;
     });
@@ -207,6 +217,19 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         expect(failureMessages.length).toBe(1);
         expect(failureMessages[0]?.message).toContain('ollama/b');
         expect(harness.promptCount).toBe(2);
+    });
+
+    it('injects plan-mode instructions into plan turns', async () => {
+        const { session } = createSessionStub([
+            { message: 'design the fix', mode: createPlanMode() }
+        ]);
+
+        await opencodeRemoteLauncher(session as never);
+
+        const content = harness.promptContents[0] as Array<{ type: string; text: string }>;
+        expect(content[0]?.text).toContain('You are in plan mode');
+        expect(content[0]?.text).toContain('Do not execute tools');
+        expect(content[0]?.text).toContain('design the fix');
     });
 
     it('registers a listOpencodeModels RPC handler that returns the backend cache', async () => {

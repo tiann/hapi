@@ -26,7 +26,7 @@ export type GeminiPermissionMode = typeof GEMINI_PERMISSION_MODES[number]
 export const KIMI_PERMISSION_MODES = ['default', 'read-only', 'safe-yolo', 'yolo'] as const
 export type KimiPermissionMode = typeof KIMI_PERMISSION_MODES[number]
 
-export const OPENCODE_PERMISSION_MODES = ['default', 'yolo'] as const
+export const OPENCODE_PERMISSION_MODES = ['default', 'plan', 'yolo'] as const
 export type OpencodePermissionMode = typeof OPENCODE_PERMISSION_MODES[number]
 
 export const CURSOR_PERMISSION_MODES = ['default', 'plan', 'ask', 'yolo'] as const

@@ -178,6 +178,17 @@ describe('runOpencode set-session-config handler', () => {
         expect(applied.permissionMode).toBe('yolo');
     });
 
+    it('accepts plan mode via set-session-config RPC', async () => {
+        await runOpencode({});
+
+        const handler = getConfigHandler();
+        const result = await handler({ permissionMode: 'plan' }) as Record<string, unknown>;
+        const applied = result.applied as Record<string, unknown>;
+
+        expect(applied.permissionMode).toBe('plan');
+        expect(mockOpencodeSession.setPermissionMode).toHaveBeenLastCalledWith('plan');
+    });
+
     it('passes initial model from opts through to the loop', async () => {
         await runOpencode({ model: 'ollama/exaone:4.5-33b-q8' });
 

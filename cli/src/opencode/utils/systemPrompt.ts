@@ -18,3 +18,10 @@ export const TITLE_INSTRUCTION = trimIdent(`
  * The system prompt to inject for OpenCode sessions.
  */
 export const opencodeSystemPrompt = TITLE_INSTRUCTION;
+
+/**
+ * Instruction prepended to OpenCode prompts while HAPI plan mode is active.
+ */
+export const PLAN_MODE_INSTRUCTION = trimIdent(`
+    You are in plan mode. Do not execute tools or make changes. Analyze the request, ask clarifying questions if needed, and respond with a concise implementation plan only.
+`);

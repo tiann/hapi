@@ -10,7 +10,7 @@ import type { PermissionMode } from './types';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import { createOpencodeBackend } from './utils/opencodeBackend';
 import { OpencodePermissionHandler } from './utils/permissionHandler';
-import { TITLE_INSTRUCTION } from './utils/systemPrompt';
+import { PLAN_MODE_INSTRUCTION, TITLE_INSTRUCTION } from './utils/systemPrompt';
 
 class OpencodeRemoteLauncher extends RemoteLauncherBase {
     private readonly session: OpencodeSession;
@@ -180,8 +180,11 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
 
             // Inject title instructions on first prompt
             let messageText = batch.message;
+            if (batch.mode.permissionMode === 'plan') {
+                messageText = `${PLAN_MODE_INSTRUCTION}\n\n${messageText}`;
+            }
             if (!this.instructionsSent) {
-                messageText = `${TITLE_INSTRUCTION}\n\n${batch.message}`;
+                messageText = `${TITLE_INSTRUCTION}\n\n${messageText}`;
                 this.instructionsSent = true;
             }
 

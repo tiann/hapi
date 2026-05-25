@@ -26,6 +26,13 @@ describe('parseRemoteAgentCommandOptions', () => {
         ], OPENCODE_PERMISSION_MODES).permissionMode).toBe('default')
     })
 
+    it('accepts OpenCode plan permission mode', () => {
+        expect(parseRemoteAgentCommandOptions([
+            '--permission-mode',
+            'plan'
+        ], OPENCODE_PERMISSION_MODES).permissionMode).toBe('plan')
+    })
+
     it('keeps current unknown-arg behavior by ignoring unrecognized flags', () => {
         expect(parseRemoteAgentCommandOptions([
             '--unknown',
