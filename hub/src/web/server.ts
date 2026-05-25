@@ -29,6 +29,15 @@ import { loadEmbeddedAssetMap, type EmbeddedWebAsset } from './embeddedAssets'
 import { isBunCompiled } from '../utils/bunCompiled'
 import type { Store } from '../store'
 
+// Normalise upstream close codes before forwarding to the browser client.
+// Codes 1005/1006/1015 are reserved and cannot be sent in a close frame;
+// abnormal upstream drops commonly produce 1006, which would throw on clientWs.close().
+function toClientCloseCode(code: number): number {
+    return code >= 1000 && code <= 4999 && code !== 1005 && code !== 1006 && code !== 1015
+        ? code
+        : 1011
+}
+
 // Gemini Live WebSocket proxy — relays browser WS to Google, bypassing region restrictions
 function createGeminiProxyWebSocketHandler() {
     const GEMINI_WS_BASE = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent'
@@ -65,7 +74,7 @@ function createGeminiProxyWebSocketHandler() {
             }
             upstream.onclose = (event) => {
                 pendingMap.delete(clientWs)
-                try { clientWs.close(event.code, event.reason) } catch { /* */ }
+                try { clientWs.close(toClientCloseCode(event.code), event.reason || 'Upstream closed') } catch { /* client gone */ }
                 upstreamMap.delete(clientWs)
             }
         },
@@ -120,7 +129,7 @@ function createQwenProxyWebSocketHandler() {
                 try { clientWs.close(1011, 'Upstream error') } catch { /* */ }
             }
             upstream.onclose = (event) => {
-                try { clientWs.close(event.code, event.reason) } catch { /* */ }
+                try { clientWs.close(toClientCloseCode(event.code), event.reason || 'Upstream closed') } catch { /* client gone */ }
                 upstreamMap.delete(clientWs)
             }
         },
