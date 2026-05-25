@@ -1,0 +1,76 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+        "args": {
+            "type": "array",
+            "items": {
+                "type": "string"
+            }
+        },
+        "env": {
+            "type": "object",
+            "propertyNames": {
+                "type": "string"
+            },
+            "additionalProperties": {
+                "type": "string"
+            }
+        },
+        "pathPrepend": {
+            "type": "array",
+            "items": {
+                "type": "string",
+                "minLength": 1
+            }
+        },
+        "pathAppend": {
+            "type": "array",
+            "items": {
+                "type": "string",
+                "minLength": 1
+            }
+        },
+        "cwd": {
+            "type": "string",
+            "minLength": 1
+        },
+        "reason": {
+            "type": "string"
+        },
+        "diagnostics": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "severity": {
+                        "type": "string",
+                        "enum": [
+                            "info",
+                            "warning",
+                            "error"
+                        ]
+                    },
+                    "code": {
+                        "type": "string",
+                        "minLength": 1
+                    },
+                    "message": {
+                        "type": "string",
+                        "minLength": 1
+                    },
+                    "path": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "severity",
+                    "code",
+                    "message"
+                ],
+                "additionalProperties": false
+            }
+        }
+    },
+    "additionalProperties": false
+}

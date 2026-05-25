@@ -1,0 +1,79 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+        "type": {
+            "type": "string",
+            "enum": [
+                "ready",
+                "permission-request",
+                "task-notification",
+                "session-completion",
+                "test"
+            ]
+        },
+        "session": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string",
+                    "minLength": 1
+                },
+                "namespace": {
+                    "type": "string",
+                    "minLength": 1
+                },
+                "name": {
+                    "type": "string"
+                },
+                "path": {
+                    "type": "string"
+                },
+                "agent": {
+                    "type": "string"
+                },
+                "active": {
+                    "type": "boolean"
+                },
+                "url": {
+                    "type": "string"
+                }
+            },
+            "required": [
+                "id",
+                "namespace",
+                "active"
+            ],
+            "additionalProperties": false
+        },
+        "task": {
+            "type": "object",
+            "properties": {
+                "summary": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                }
+            },
+            "required": [
+                "summary"
+            ],
+            "additionalProperties": false
+        },
+        "reason": {
+            "type": "string",
+            "enum": [
+                "completed",
+                "terminated",
+                "error",
+                "handoff"
+            ]
+        }
+    },
+    "required": [
+        "type",
+        "session"
+    ],
+    "additionalProperties": false
+}

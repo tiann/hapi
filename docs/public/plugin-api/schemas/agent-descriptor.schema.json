@@ -1,0 +1,131 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+        "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "displayName": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+        },
+        "description": {
+            "type": "string",
+            "maxLength": 1000
+        },
+        "source": {
+            "default": "plugin",
+            "type": "string",
+            "enum": [
+                "builtin",
+                "plugin"
+            ]
+        },
+        "pluginId": {
+            "type": "string",
+            "minLength": 1
+        },
+        "adapter": {
+            "type": "object",
+            "properties": {
+                "runtime": {
+                    "type": "string",
+                    "const": "runner"
+                },
+                "kind": {
+                    "type": "string",
+                    "enum": [
+                        "stdio",
+                        "acp",
+                        "custom-runner-plugin"
+                    ]
+                },
+                "contributionId": {
+                    "type": "string",
+                    "minLength": 1
+                }
+            },
+            "required": [
+                "runtime",
+                "kind",
+                "contributionId"
+            ],
+            "additionalProperties": false
+        },
+        "capabilities": {
+            "default": {
+                "permissionModes": [
+                    "default"
+                ]
+            },
+            "type": "object",
+            "properties": {
+                "supportsResume": {
+                    "type": "boolean"
+                },
+                "supportsPlanMode": {
+                    "type": "boolean"
+                },
+                "supportsImages": {
+                    "type": "boolean"
+                },
+                "supportsFileContext": {
+                    "type": "boolean"
+                },
+                "permissionModes": {
+                    "default": [
+                        "default"
+                    ],
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": [
+                            "default",
+                            "acceptEdits",
+                            "bypassPermissions",
+                            "plan",
+                            "ask",
+                            "read-only",
+                            "safe-yolo",
+                            "yolo"
+                        ]
+                    }
+                },
+                "models": {
+                    "maxItems": 100,
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128
+                    }
+                }
+            },
+            "required": [
+                "permissionModes"
+            ],
+            "additionalProperties": false
+        },
+        "available": {
+            "default": true,
+            "type": "boolean"
+        },
+        "unavailableReason": {
+            "type": "string",
+            "maxLength": 1000
+        }
+    },
+    "required": [
+        "id",
+        "displayName",
+        "source",
+        "adapter",
+        "capabilities",
+        "available"
+    ],
+    "additionalProperties": false
+}

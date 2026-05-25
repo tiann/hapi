@@ -1,0 +1,454 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+        "sourceUrl": {
+            "type": "string",
+            "minLength": 1
+        },
+        "fetchedAt": {
+            "type": "number"
+        },
+        "entry": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128
+                },
+                "name": {
+                    "type": "string",
+                    "minLength": 1
+                },
+                "display": {
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "anyOf": [
+                                {
+                                    "type": "string",
+                                    "minLength": 1
+                                },
+                                {
+                                    "type": "object",
+                                    "propertyNames": {
+                                        "type": "string",
+                                        "minLength": 1
+                                    },
+                                    "additionalProperties": {
+                                        "type": "string",
+                                        "minLength": 1
+                                    }
+                                }
+                            ]
+                        },
+                        "description": {
+                            "anyOf": [
+                                {
+                                    "type": "string",
+                                    "minLength": 1
+                                },
+                                {
+                                    "type": "object",
+                                    "propertyNames": {
+                                        "type": "string",
+                                        "minLength": 1
+                                    },
+                                    "additionalProperties": {
+                                        "type": "string",
+                                        "minLength": 1
+                                    }
+                                }
+                            ]
+                        },
+                        "featureIntro": {
+                            "anyOf": [
+                                {
+                                    "type": "string",
+                                    "minLength": 1
+                                },
+                                {
+                                    "type": "object",
+                                    "propertyNames": {
+                                        "type": "string",
+                                        "minLength": 1
+                                    },
+                                    "additionalProperties": {
+                                        "type": "string",
+                                        "minLength": 1
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    "additionalProperties": false
+                },
+                "description": {
+                    "type": "string"
+                },
+                "repo": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_.-]+\\/[A-Za-z0-9_.-]+$"
+                },
+                "homepage": {
+                    "type": "string",
+                    "format": "uri"
+                },
+                "author": {
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "minLength": 1
+                        },
+                        "url": {
+                            "type": "string",
+                            "format": "uri"
+                        }
+                    },
+                    "required": [
+                        "name"
+                    ],
+                    "additionalProperties": false
+                },
+                "license": {
+                    "type": "string",
+                    "minLength": 1
+                },
+                "categories": {
+                    "maxItems": 20,
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": [
+                            "notification",
+                            "runner",
+                            "agent",
+                            "chat",
+                            "integration",
+                            "theme",
+                            "utility"
+                        ]
+                    }
+                },
+                "keywords": {
+                    "maxItems": 30,
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "minLength": 1
+                    }
+                },
+                "runtimes": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": [
+                            "hub",
+                            "runner"
+                        ]
+                    }
+                },
+                "capabilities": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "kind": {
+                                "type": "string",
+                                "enum": [
+                                    "chat.composer.messageAction",
+                                    "chat.contextProvider",
+                                    "notification.channel",
+                                    "runner.spawnExtension",
+                                    "agent.adapter",
+                                    "agent.capabilityProvider",
+                                    "settings.panel",
+                                    "integration.bridge"
+                                ]
+                            },
+                            "label": {
+                                "type": "string",
+                                "minLength": 1
+                            }
+                        },
+                        "required": [
+                            "kind"
+                        ],
+                        "additionalProperties": false
+                    }
+                },
+                "releases": {
+                    "minItems": 1,
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "version": {
+                                "type": "string",
+                                "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-((?:0|[1-9]\\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9]\\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\\+([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?$"
+                            },
+                            "tag": {
+                                "type": "string",
+                                "minLength": 1
+                            },
+                            "releasedAt": {
+                                "type": "string",
+                                "format": "date-time",
+                                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                            },
+                            "manifest": {
+                                "type": "object",
+                                "properties": {
+                                    "id": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 128
+                                    },
+                                    "name": {
+                                        "type": "string",
+                                        "minLength": 1
+                                    },
+                                    "version": {
+                                        "type": "string",
+                                        "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-((?:0|[1-9]\\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9]\\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\\+([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?$"
+                                    },
+                                    "pluginApiVersion": {
+                                        "type": "string",
+                                        "minLength": 1
+                                    },
+                                    "display": {
+                                        "type": "object",
+                                        "properties": {
+                                            "name": {
+                                                "anyOf": [
+                                                    {
+                                                        "type": "string",
+                                                        "minLength": 1
+                                                    },
+                                                    {
+                                                        "type": "object",
+                                                        "propertyNames": {
+                                                            "type": "string",
+                                                            "minLength": 1
+                                                        },
+                                                        "additionalProperties": {
+                                                            "type": "string",
+                                                            "minLength": 1
+                                                        }
+                                                    }
+                                                ]
+                                            },
+                                            "description": {
+                                                "anyOf": [
+                                                    {
+                                                        "type": "string",
+                                                        "minLength": 1
+                                                    },
+                                                    {
+                                                        "type": "object",
+                                                        "propertyNames": {
+                                                            "type": "string",
+                                                            "minLength": 1
+                                                        },
+                                                        "additionalProperties": {
+                                                            "type": "string",
+                                                            "minLength": 1
+                                                        }
+                                                    }
+                                                ]
+                                            },
+                                            "featureIntro": {
+                                                "anyOf": [
+                                                    {
+                                                        "type": "string",
+                                                        "minLength": 1
+                                                    },
+                                                    {
+                                                        "type": "object",
+                                                        "propertyNames": {
+                                                            "type": "string",
+                                                            "minLength": 1
+                                                        },
+                                                        "additionalProperties": {
+                                                            "type": "string",
+                                                            "minLength": 1
+                                                        }
+                                                    }
+                                                ]
+                                            }
+                                        },
+                                        "additionalProperties": false
+                                    },
+                                    "permissions": {
+                                        "type": "object",
+                                        "properties": {
+                                            "network": {
+                                                "type": "array",
+                                                "items": {
+                                                    "type": "string",
+                                                    "minLength": 1
+                                                }
+                                            },
+                                            "secrets": {
+                                                "type": "array",
+                                                "items": {
+                                                    "type": "string",
+                                                    "minLength": 1
+                                                }
+                                            }
+                                        },
+                                        "additionalProperties": false
+                                    }
+                                },
+                                "required": [
+                                    "id",
+                                    "name",
+                                    "version",
+                                    "pluginApiVersion"
+                                ],
+                                "additionalProperties": {}
+                            },
+                            "package": {
+                                "type": "object",
+                                "properties": {
+                                    "filename": {
+                                        "type": "string",
+                                        "minLength": 1
+                                    },
+                                    "url": {
+                                        "type": "string",
+                                        "format": "uri"
+                                    },
+                                    "format": {
+                                        "type": "string",
+                                        "enum": [
+                                            "tgz",
+                                            "zip"
+                                        ]
+                                    },
+                                    "checksum": {
+                                        "type": "string",
+                                        "pattern": "^sha256:[a-f0-9]{64}$"
+                                    },
+                                    "size": {
+                                        "type": "integer",
+                                        "minimum": 0,
+                                        "maximum": 9007199254740991
+                                    },
+                                    "packageManifestUrl": {
+                                        "type": "string",
+                                        "format": "uri"
+                                    }
+                                },
+                                "required": [
+                                    "filename",
+                                    "url",
+                                    "format",
+                                    "checksum"
+                                ],
+                                "additionalProperties": false
+                            },
+                            "source": {
+                                "type": "object",
+                                "properties": {
+                                    "type": {
+                                        "type": "string",
+                                        "const": "hapi-source"
+                                    },
+                                    "path": {
+                                        "type": "string",
+                                        "minLength": 1
+                                    },
+                                    "treeChecksum": {
+                                        "type": "string",
+                                        "pattern": "^sha256:[a-f0-9]{64}$"
+                                    },
+                                    "embedded": {
+                                        "type": "boolean"
+                                    }
+                                },
+                                "required": [
+                                    "type",
+                                    "path"
+                                ],
+                                "additionalProperties": false
+                            },
+                            "compatibility": {
+                                "type": "object",
+                                "propertyNames": {
+                                    "type": "string"
+                                },
+                                "additionalProperties": {}
+                            },
+                            "yanked": {
+                                "type": "object",
+                                "properties": {
+                                    "reason": {
+                                        "type": "string",
+                                        "minLength": 1
+                                    },
+                                    "replacedBy": {
+                                        "type": "string",
+                                        "minLength": 1
+                                    }
+                                },
+                                "required": [
+                                    "reason"
+                                ],
+                                "additionalProperties": false
+                            }
+                        },
+                        "required": [
+                            "version",
+                            "tag",
+                            "manifest"
+                        ],
+                        "additionalProperties": false
+                    }
+                },
+                "latestCompatibleVersion": {
+                    "type": "string",
+                    "minLength": 1
+                },
+                "installed": {
+                    "type": "object",
+                    "properties": {
+                        "version": {
+                            "type": "string",
+                            "minLength": 1
+                        },
+                        "enabled": {
+                            "type": "boolean"
+                        },
+                        "updateAvailable": {
+                            "type": "boolean"
+                        },
+                        "updateVersion": {
+                            "type": "string",
+                            "minLength": 1
+                        },
+                        "yanked": {
+                            "type": "boolean"
+                        }
+                    },
+                    "additionalProperties": false
+                }
+            },
+            "required": [
+                "id",
+                "name",
+                "repo",
+                "releases"
+            ],
+            "additionalProperties": false
+        }
+    },
+    "required": [
+        "sourceUrl",
+        "fetchedAt",
+        "entry"
+    ],
+    "additionalProperties": false
+}

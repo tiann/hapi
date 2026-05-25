@@ -1,0 +1,138 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+        "command": {
+            "type": "string",
+            "minLength": 1
+        },
+        "args": {
+            "type": "array",
+            "items": {
+                "type": "string"
+            }
+        },
+        "displayArgs": {
+            "type": "array",
+            "items": {
+                "type": "string"
+            }
+        },
+        "cwd": {
+            "type": "string",
+            "minLength": 1
+        },
+        "env": {
+            "type": "object",
+            "propertyNames": {
+                "type": "string"
+            },
+            "additionalProperties": {
+                "type": "string"
+            }
+        },
+        "diagnostics": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "severity": {
+                        "type": "string",
+                        "enum": [
+                            "info",
+                            "warning",
+                            "error"
+                        ]
+                    },
+                    "code": {
+                        "type": "string",
+                        "minLength": 1
+                    },
+                    "message": {
+                        "type": "string",
+                        "minLength": 1
+                    },
+                    "path": {
+                        "type": "string"
+                    },
+                    "pluginId": {
+                        "type": "string",
+                        "minLength": 1
+                    }
+                },
+                "required": [
+                    "severity",
+                    "code",
+                    "message"
+                ],
+                "additionalProperties": false
+            }
+        },
+        "audit": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "phase": {
+                        "type": "string",
+                        "enum": [
+                            "spawnOptions",
+                            "environment",
+                            "command",
+                            "beforeSpawn",
+                            "afterSpawn",
+                            "onExit"
+                        ]
+                    },
+                    "pluginId": {
+                        "type": "string",
+                        "minLength": 1
+                    },
+                    "contributionId": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128,
+                        "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+                    },
+                    "field": {
+                        "type": "string"
+                    },
+                    "message": {
+                        "type": "string",
+                        "minLength": 1
+                    }
+                },
+                "required": [
+                    "phase",
+                    "pluginId",
+                    "contributionId",
+                    "message"
+                ],
+                "additionalProperties": false
+            }
+        },
+        "blocked": {
+            "type": "object",
+            "properties": {
+                "reason": {
+                    "type": "string",
+                    "minLength": 1
+                }
+            },
+            "required": [
+                "reason"
+            ],
+            "additionalProperties": false
+        }
+    },
+    "required": [
+        "command",
+        "args",
+        "displayArgs",
+        "cwd",
+        "env",
+        "diagnostics",
+        "audit"
+    ],
+    "additionalProperties": false
+}

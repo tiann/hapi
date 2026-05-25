@@ -1,0 +1,200 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+        "options": {
+            "type": "object",
+            "properties": {
+                "directory": {
+                    "type": "string",
+                    "minLength": 1
+                },
+                "agent": {
+                    "type": "string",
+                    "minLength": 1
+                },
+                "sessionId": {
+                    "type": "string"
+                },
+                "resumeSessionId": {
+                    "type": "string"
+                },
+                "approvedNewDirectoryCreation": {
+                    "type": "boolean"
+                },
+                "model": {
+                    "type": "string"
+                },
+                "effort": {
+                    "type": "string"
+                },
+                "modelReasoningEffort": {
+                    "type": "string"
+                },
+                "permissionMode": {
+                    "type": "string"
+                },
+                "yolo": {
+                    "type": "boolean"
+                },
+                "manualFields": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "minLength": 1
+                    }
+                },
+                "token": {
+                    "type": "string"
+                },
+                "sessionType": {
+                    "type": "string",
+                    "enum": [
+                        "simple",
+                        "worktree"
+                    ]
+                },
+                "worktreeName": {
+                    "type": "string"
+                },
+                "pluginFields": {
+                    "type": "object",
+                    "propertyNames": {
+                        "type": "string"
+                    },
+                    "additionalProperties": {}
+                }
+            },
+            "required": [
+                "directory"
+            ],
+            "additionalProperties": false
+        },
+        "diagnostics": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "severity": {
+                        "type": "string",
+                        "enum": [
+                            "info",
+                            "warning",
+                            "error"
+                        ]
+                    },
+                    "code": {
+                        "type": "string",
+                        "minLength": 1
+                    },
+                    "message": {
+                        "type": "string",
+                        "minLength": 1
+                    },
+                    "path": {
+                        "type": "string"
+                    },
+                    "pluginId": {
+                        "type": "string",
+                        "minLength": 1
+                    }
+                },
+                "required": [
+                    "severity",
+                    "code",
+                    "message"
+                ],
+                "additionalProperties": false
+            }
+        },
+        "audit": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "phase": {
+                        "type": "string",
+                        "enum": [
+                            "spawnOptions",
+                            "environment",
+                            "command",
+                            "beforeSpawn",
+                            "afterSpawn",
+                            "onExit"
+                        ]
+                    },
+                    "pluginId": {
+                        "type": "string",
+                        "minLength": 1
+                    },
+                    "contributionId": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128,
+                        "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+                    },
+                    "field": {
+                        "type": "string"
+                    },
+                    "message": {
+                        "type": "string",
+                        "minLength": 1
+                    }
+                },
+                "required": [
+                    "phase",
+                    "pluginId",
+                    "contributionId",
+                    "message"
+                ],
+                "additionalProperties": false
+            }
+        },
+        "applied": {
+            "default": [],
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "pluginId": {
+                        "type": "string",
+                        "minLength": 1
+                    },
+                    "contributionId": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128,
+                        "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+                    },
+                    "label": {
+                        "type": "string",
+                        "minLength": 1
+                    },
+                    "description": {
+                        "type": "string",
+                        "minLength": 1
+                    },
+                    "fields": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "minLength": 1
+                        }
+                    }
+                },
+                "required": [
+                    "pluginId",
+                    "contributionId"
+                ],
+                "additionalProperties": false
+            }
+        }
+    },
+    "required": [
+        "options",
+        "diagnostics",
+        "audit",
+        "applied"
+    ],
+    "additionalProperties": false
+}

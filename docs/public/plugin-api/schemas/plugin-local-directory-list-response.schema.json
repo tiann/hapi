@@ -1,0 +1,59 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+        "success": {
+            "type": "boolean"
+        },
+        "path": {
+            "type": "string"
+        },
+        "parentPath": {
+            "type": "string"
+        },
+        "hasPluginManifest": {
+            "type": "boolean"
+        },
+        "entries": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "minLength": 1
+                    },
+                    "type": {
+                        "type": "string",
+                        "enum": [
+                            "file",
+                            "directory",
+                            "other"
+                        ]
+                    },
+                    "size": {
+                        "type": "number"
+                    },
+                    "modified": {
+                        "type": "number"
+                    },
+                    "hasPluginManifest": {
+                        "type": "boolean"
+                    }
+                },
+                "required": [
+                    "name",
+                    "type"
+                ],
+                "additionalProperties": false
+            }
+        },
+        "error": {
+            "type": "string"
+        }
+    },
+    "required": [
+        "success"
+    ],
+    "additionalProperties": false
+}

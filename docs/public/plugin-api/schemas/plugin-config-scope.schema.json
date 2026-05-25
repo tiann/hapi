@@ -1,0 +1,17 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "anyOf": [
+        {
+            "type": "string",
+            "pattern": "^hub:[A-Za-z0-9][A-Za-z0-9._-]*$"
+        },
+        {
+            "type": "string",
+            "pattern": "^runner:[A-Za-z0-9][A-Za-z0-9._-]*:[A-Za-z0-9][A-Za-z0-9._-]*$"
+        },
+        {
+            "type": "string",
+            "pattern": "^agent:[A-Za-z0-9][A-Za-z0-9._-]*:[A-Za-z0-9][A-Za-z0-9._:-]*:[A-Za-z0-9][A-Za-z0-9._-]*$"
+        }
+    ]
+}

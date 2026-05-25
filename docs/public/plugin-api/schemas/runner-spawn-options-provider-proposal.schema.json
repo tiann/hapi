@@ -1,0 +1,89 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+        "options": {
+            "type": "object",
+            "properties": {
+                "model": {
+                    "type": "string",
+                    "minLength": 1
+                },
+                "effort": {
+                    "type": "string",
+                    "minLength": 1
+                },
+                "modelReasoningEffort": {
+                    "type": "string",
+                    "minLength": 1
+                },
+                "permissionMode": {
+                    "type": "string",
+                    "minLength": 1
+                },
+                "yolo": {
+                    "type": "boolean"
+                }
+            },
+            "additionalProperties": false
+        },
+        "applied": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "label": {
+                        "type": "string",
+                        "minLength": 1
+                    },
+                    "description": {
+                        "type": "string",
+                        "minLength": 1
+                    },
+                    "fields": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "minLength": 1
+                        }
+                    }
+                },
+                "additionalProperties": false
+            }
+        },
+        "diagnostics": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "severity": {
+                        "type": "string",
+                        "enum": [
+                            "info",
+                            "warning",
+                            "error"
+                        ]
+                    },
+                    "code": {
+                        "type": "string",
+                        "minLength": 1
+                    },
+                    "message": {
+                        "type": "string",
+                        "minLength": 1
+                    },
+                    "path": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "severity",
+                    "code",
+                    "message"
+                ],
+                "additionalProperties": false
+            }
+        }
+    },
+    "additionalProperties": false
+}

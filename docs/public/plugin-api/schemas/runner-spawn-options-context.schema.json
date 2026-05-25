@@ -1,0 +1,71 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+        "machineId": {
+            "type": "string",
+            "minLength": 1
+        },
+        "agent": {
+            "type": "string",
+            "minLength": 1
+        },
+        "directory": {
+            "type": "string",
+            "minLength": 1
+        },
+        "cwd": {
+            "type": "string",
+            "minLength": 1
+        },
+        "sessionType": {
+            "type": "string",
+            "enum": [
+                "simple",
+                "worktree"
+            ]
+        },
+        "worktreeName": {
+            "type": "string"
+        },
+        "resumeSessionId": {
+            "type": "string"
+        },
+        "model": {
+            "type": "string"
+        },
+        "effort": {
+            "type": "string"
+        },
+        "modelReasoningEffort": {
+            "type": "string"
+        },
+        "permissionMode": {
+            "type": "string"
+        },
+        "yolo": {
+            "type": "boolean"
+        },
+        "manualFields": {
+            "type": "array",
+            "items": {
+                "type": "string",
+                "minLength": 1
+            }
+        },
+        "pluginFields": {
+            "type": "object",
+            "propertyNames": {
+                "type": "string"
+            },
+            "additionalProperties": {}
+        }
+    },
+    "required": [
+        "machineId",
+        "agent",
+        "directory",
+        "cwd"
+    ],
+    "additionalProperties": false
+}

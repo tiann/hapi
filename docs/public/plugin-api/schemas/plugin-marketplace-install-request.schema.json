@@ -1,0 +1,47 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+        "version": {
+            "type": "string",
+            "minLength": 1
+        },
+        "runnerSelection": {
+            "type": "object",
+            "properties": {
+                "mode": {
+                    "default": "compatible",
+                    "type": "string",
+                    "enum": [
+                        "compatible",
+                        "all",
+                        "selected"
+                    ]
+                },
+                "machineIds": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 256,
+                        "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+                    }
+                }
+            },
+            "required": [
+                "mode"
+            ],
+            "additionalProperties": false
+        },
+        "enable": {
+            "type": "boolean"
+        },
+        "reload": {
+            "type": "boolean"
+        },
+        "overwrite": {
+            "type": "boolean"
+        }
+    },
+    "additionalProperties": false
+}

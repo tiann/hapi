@@ -1,0 +1,405 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+        "marketplace": {
+            "type": "object",
+            "properties": {
+                "sourceUrl": {
+                    "type": "string",
+                    "minLength": 1
+                },
+                "pluginId": {
+                    "type": "string",
+                    "minLength": 1
+                },
+                "repo": {
+                    "type": "string",
+                    "minLength": 1
+                },
+                "version": {
+                    "type": "string",
+                    "minLength": 1
+                },
+                "distribution": {
+                    "type": "string",
+                    "enum": [
+                        "package",
+                        "hapi-source"
+                    ]
+                },
+                "assetUrl": {
+                    "type": "string",
+                    "minLength": 1
+                },
+                "sourcePath": {
+                    "type": "string",
+                    "minLength": 1
+                },
+                "checksum": {
+                    "type": "string",
+                    "minLength": 1
+                }
+            },
+            "required": [
+                "sourceUrl",
+                "pluginId",
+                "repo",
+                "version",
+                "distribution",
+                "checksum"
+            ],
+            "additionalProperties": false
+        },
+        "plan": {
+            "type": "object",
+            "properties": {
+                "planId": {
+                    "type": "string",
+                    "minLength": 1
+                },
+                "createdAt": {
+                    "type": "number"
+                },
+                "expiresAt": {
+                    "type": "number"
+                },
+                "plugin": {
+                    "type": "object",
+                    "properties": {
+                        "id": {
+                            "type": "string",
+                            "minLength": 1
+                        },
+                        "name": {
+                            "type": "string",
+                            "minLength": 1
+                        },
+                        "version": {
+                            "type": "string",
+                            "minLength": 1
+                        },
+                        "description": {
+                            "type": "string"
+                        },
+                        "display": {
+                            "type": "object",
+                            "properties": {
+                                "name": {
+                                    "anyOf": [
+                                        {
+                                            "type": "string",
+                                            "minLength": 1
+                                        },
+                                        {
+                                            "type": "object",
+                                            "propertyNames": {
+                                                "type": "string",
+                                                "minLength": 1
+                                            },
+                                            "additionalProperties": {
+                                                "type": "string",
+                                                "minLength": 1
+                                            }
+                                        }
+                                    ]
+                                },
+                                "description": {
+                                    "anyOf": [
+                                        {
+                                            "type": "string",
+                                            "minLength": 1
+                                        },
+                                        {
+                                            "type": "object",
+                                            "propertyNames": {
+                                                "type": "string",
+                                                "minLength": 1
+                                            },
+                                            "additionalProperties": {
+                                                "type": "string",
+                                                "minLength": 1
+                                            }
+                                        }
+                                    ]
+                                },
+                                "featureIntro": {
+                                    "anyOf": [
+                                        {
+                                            "type": "string",
+                                            "minLength": 1
+                                        },
+                                        {
+                                            "type": "object",
+                                            "propertyNames": {
+                                                "type": "string",
+                                                "minLength": 1
+                                            },
+                                            "additionalProperties": {
+                                                "type": "string",
+                                                "minLength": 1
+                                            }
+                                        }
+                                    ]
+                                }
+                            },
+                            "additionalProperties": false
+                        }
+                    },
+                    "required": [
+                        "id",
+                        "name",
+                        "version"
+                    ],
+                    "additionalProperties": false
+                },
+                "source": {
+                    "type": "object",
+                    "properties": {
+                        "type": {
+                            "type": "string",
+                            "enum": [
+                                "uploaded-package",
+                                "marketplace-package",
+                                "marketplace-source"
+                            ]
+                        },
+                        "filename": {
+                            "type": "string",
+                            "minLength": 1
+                        },
+                        "checksum": {
+                            "type": "string",
+                            "minLength": 1
+                        },
+                        "format": {
+                            "type": "string",
+                            "enum": [
+                                "tgz",
+                                "zip"
+                            ]
+                        },
+                        "assetUrl": {
+                            "type": "string",
+                            "minLength": 1
+                        },
+                        "sourcePath": {
+                            "type": "string",
+                            "minLength": 1
+                        }
+                    },
+                    "required": [
+                        "type",
+                        "filename",
+                        "checksum"
+                    ],
+                    "additionalProperties": false
+                },
+                "positions": {
+                    "minItems": 1,
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": [
+                            "web",
+                            "hub",
+                            "runner"
+                        ]
+                    }
+                },
+                "targets": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "target": {
+                                "type": "object",
+                                "properties": {
+                                    "scope": {
+                                        "anyOf": [
+                                            {
+                                                "type": "string",
+                                                "const": "hub"
+                                            },
+                                            {
+                                                "type": "string",
+                                                "const": "all-runners"
+                                            },
+                                            {
+                                                "type": "string",
+                                                "pattern": "^runner:[A-Za-z0-9][A-Za-z0-9._-]*$"
+                                            }
+                                        ]
+                                    },
+                                    "runtime": {
+                                        "type": "string",
+                                        "enum": [
+                                            "hub",
+                                            "runner"
+                                        ]
+                                    },
+                                    "machineId": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 256,
+                                        "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+                                    },
+                                    "displayName": {
+                                        "type": "string"
+                                    },
+                                    "active": {
+                                        "type": "boolean"
+                                    },
+                                    "stale": {
+                                        "type": "boolean"
+                                    },
+                                    "updatedAt": {
+                                        "type": "number"
+                                    },
+                                    "hostInfo": {
+                                        "type": "object",
+                                        "properties": {
+                                            "runtime": {
+                                                "type": "string",
+                                                "enum": [
+                                                    "hub",
+                                                    "runner"
+                                                ]
+                                            },
+                                            "hapiVersion": {
+                                                "type": "string",
+                                                "minLength": 1
+                                            },
+                                            "pluginApiVersion": {
+                                                "type": "string",
+                                                "minLength": 1
+                                            },
+                                            "supportedPluginApiVersions": {
+                                                "type": "array",
+                                                "items": {
+                                                    "type": "string",
+                                                    "minLength": 1
+                                                }
+                                            },
+                                            "os": {
+                                                "type": "string",
+                                                "minLength": 1
+                                            },
+                                            "arch": {
+                                                "type": "string",
+                                                "minLength": 1
+                                            },
+                                            "supportedExtensionPoints": {
+                                                "default": [],
+                                                "type": "array",
+                                                "items": {
+                                                    "type": "string",
+                                                    "minLength": 1
+                                                }
+                                            }
+                                        },
+                                        "required": [
+                                            "runtime",
+                                            "hapiVersion",
+                                            "pluginApiVersion",
+                                            "os",
+                                            "arch",
+                                            "supportedExtensionPoints"
+                                        ],
+                                        "additionalProperties": false
+                                    },
+                                    "error": {
+                                        "type": "string"
+                                    }
+                                },
+                                "required": [
+                                    "scope",
+                                    "runtime",
+                                    "active"
+                                ],
+                                "additionalProperties": false
+                            },
+                            "runtime": {
+                                "type": "string",
+                                "enum": [
+                                    "hub",
+                                    "runner"
+                                ]
+                            },
+                            "required": {
+                                "type": "boolean"
+                            },
+                            "compatible": {
+                                "type": "boolean"
+                            },
+                            "status": {
+                                "type": "string",
+                                "enum": [
+                                    "compatible",
+                                    "incompatible",
+                                    "offline",
+                                    "conflict"
+                                ]
+                            },
+                            "action": {
+                                "type": "string",
+                                "enum": [
+                                    "install",
+                                    "overwrite",
+                                    "unchanged",
+                                    "skip",
+                                    "block"
+                                ]
+                            },
+                            "reason": {
+                                "type": "string"
+                            },
+                            "existingVersion": {
+                                "type": "string"
+                            }
+                        },
+                        "required": [
+                            "target",
+                            "runtime",
+                            "required",
+                            "compatible",
+                            "status",
+                            "action"
+                        ],
+                        "additionalProperties": false
+                    }
+                },
+                "warnings": {
+                    "default": [],
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "blockingErrors": {
+                    "default": [],
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                }
+            },
+            "required": [
+                "planId",
+                "createdAt",
+                "plugin",
+                "source",
+                "positions",
+                "targets",
+                "warnings",
+                "blockingErrors"
+            ],
+            "additionalProperties": false
+        }
+    },
+    "required": [
+        "marketplace",
+        "plan"
+    ],
+    "additionalProperties": false
+}
