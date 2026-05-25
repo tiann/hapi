@@ -366,7 +366,7 @@ With the runner running:
 If you prefer pm2 for process management:
 
 ```bash
-pm2 start "hapi runner start --foreground" --name hapi-runner
+pm2 start "hapi runner start-sync" --name hapi-runner
 pm2 save
 ```
 </details>
@@ -385,7 +385,7 @@ Simple one-liner for quick background runs:
 nohup hapi hub --relay > ~/.hapi/logs/hub.log 2>&1 &
 
 # Runner
-nohup hapi runner start --foreground > ~/.hapi/logs/runner.log 2>&1 &
+nohup hapi runner start-sync > ~/.hapi/logs/runner.log 2>&1 &
 ```
 
 View logs:
@@ -414,7 +414,7 @@ npm install -g pm2
 
 # Start hub and runner
 pm2 start "hapi hub --relay" --name hapi-hub
-pm2 start "hapi runner start --foreground" --name hapi-runner
+pm2 start "hapi runner start-sync" --name hapi-runner
 
 # View status and logs
 pm2 status
@@ -537,7 +537,7 @@ After=network.target hapi-hub.service
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/hapi runner start --foreground
+ExecStart=/usr/local/bin/hapi runner start-sync
 Restart=always
 RestartSec=5
 
