@@ -1,0 +1,44 @@
+{
+    "name": "ServerChan Notifier",
+    "display": {
+        "name": {
+            "en": "ServerChan Notifier",
+            "zh-CN": "Server 酱通知"
+        },
+        "description": {
+            "en": "Sends selected HAPI notifications through ServerChan from the Hub runtime.",
+            "zh-CN": "通过 Hub 运行时把选定的 HAPI 通知发送到 Server 酱。"
+        },
+        "featureIntro": {
+            "en": "- Registers a Hub notification channel backed by ServerChan.\n- Lets you choose which HAPI events are forwarded.\n- Filters notifications by agent and workspace with selectable recent values.\n- Reads `SERVERCHAN_SENDKEY` from the Hub environment; Web never stores the secret.",
+            "zh-CN": "- 注册由 Server 酱驱动的 Hub 通知通道。\n- 可配置需要转发的 HAPI 事件类型。\n- 可用最近值选择 Agent 和工作区过滤通知。\n- 从 Hub 环境变量读取 `SERVERCHAN_SENDKEY`，Web 不保存密钥。"
+        }
+    },
+    "description": "First-party Hub plugin that sends selected HAPI notifications through ServerChan.",
+    "repo": "tiann/hapi",
+    "homepage": "https://github.com/tiann/hapi",
+    "author": {
+        "name": "HAPI",
+        "url": "https://github.com/tiann/hapi"
+    },
+    "license": "AGPL-3.0-only",
+    "categories": [
+        "notification"
+    ],
+    "keywords": [
+        "serverchan",
+        "notification",
+        "push",
+        "wechat",
+        "sctapi"
+    ],
+    "runtimes": [
+        "hub"
+    ],
+    "capabilities": [
+        {
+            "kind": "notification.channel",
+            "label": "ServerChan Notifier"
+        }
+    ]
+}

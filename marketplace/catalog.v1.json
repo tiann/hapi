@@ -1,0 +1,744 @@
+{
+    "schemaVersion": "hapi-plugin-marketplace/v1",
+    "updatedAt": "2026-05-25T12:45:27.737Z",
+    "plugins": [
+        {
+            "id": "com.hapi.runner-launch-presets",
+            "name": "Runner Launch Presets",
+            "display": {
+                "name": {
+                    "en": "Runner Launch Presets",
+                    "zh-CN": "Runner 启动预设"
+                },
+                "description": {
+                    "en": "Applies default model, reasoning, and permission settings for Runner launches by agent and workspace.",
+                    "zh-CN": "按 Agent 和工作区为 Runner 启动自动应用默认模型、思考强度和权限设置。"
+                },
+                "featureIntro": {
+                    "en": "- Applies launch defaults before agent command args are built.\n- Matches all agents/workspaces or selected agents and workspace prefixes.\n- Supports model, Claude effort, Codex reasoning effort, and permission/yolo defaults.\n- User-selected fields in the New Session UI override presets.",
+                    "zh-CN": "- 在构建 agent 启动参数前应用默认值。\n- 可匹配全部或指定 Agent、指定工作区前缀。\n- 支持模型、Claude effort、Codex reasoning effort、权限/yolo 默认值。\n- 新建会话 UI 中用户手动选择的字段优先。"
+                }
+            },
+            "description": "First-party Runner plugin for applying default launch settings by agent and workspace.",
+            "repo": "tiann/hapi",
+            "homepage": "https://github.com/tiann/hapi",
+            "author": {
+                "name": "HAPI",
+                "url": "https://github.com/tiann/hapi"
+            },
+            "license": "AGPL-3.0-only",
+            "categories": [
+                "runner",
+                "utility"
+            ],
+            "keywords": [
+                "runner",
+                "launch",
+                "presets",
+                "defaults",
+                "model",
+                "permissions"
+            ],
+            "runtimes": [
+                "runner"
+            ],
+            "capabilities": [
+                {
+                    "kind": "runner.spawnExtension",
+                    "label": "Runner Launch Presets"
+                }
+            ],
+            "releases": [
+                {
+                    "version": "0.1.1",
+                    "tag": "hapi-source-com.hapi.runner-launch-presets-v0.1.1",
+                    "releasedAt": "2026-05-24T07:28:18.035Z",
+                    "manifest": {
+                        "id": "com.hapi.runner-launch-presets",
+                        "name": "Runner Launch Presets",
+                        "version": "0.1.1",
+                        "pluginApiVersion": "0.1",
+                        "display": {
+                            "name": {
+                                "en": "Runner Launch Presets",
+                                "zh-CN": "Runner 启动预设"
+                            },
+                            "description": {
+                                "en": "Applies default model, reasoning, and permission settings for Runner launches by agent and workspace.",
+                                "zh-CN": "按 Agent 和工作区为 Runner 启动自动应用默认模型、思考强度和权限设置。"
+                            },
+                            "featureIntro": {
+                                "en": "- Applies launch defaults before agent command args are built.\n- Matches all agents/workspaces or selected agents and workspace prefixes.\n- Supports model, Claude effort, Codex reasoning effort, and permission/yolo defaults.\n- User-selected fields in the New Session UI override presets.",
+                                "zh-CN": "- 在构建 agent 启动参数前应用默认值。\n- 可匹配全部或指定 Agent、指定工作区前缀。\n- 支持模型、Claude effort、Codex reasoning effort、权限/yolo 默认值。\n- 新建会话 UI 中用户手动选择的字段优先。"
+                            }
+                        },
+                        "description": "First-party Runner plugin for applying default launch settings by agent and workspace.",
+                        "capabilities": [
+                            {
+                                "id": "runner-launch-presets",
+                                "kind": "runner.spawnExtension",
+                                "displayName": "Runner Launch Presets",
+                                "description": "Applies configured launch defaults before an agent process starts.",
+                                "display": {
+                                    "name": {
+                                        "en": "Runner Launch Presets",
+                                        "zh-CN": "Runner 启动预设"
+                                    },
+                                    "description": {
+                                        "en": "Applies configured launch defaults before an agent process starts.",
+                                        "zh-CN": "在 agent 进程启动前应用启动默认值。"
+                                    }
+                                },
+                                "parts": {
+                                    "web": {
+                                        "required": true,
+                                        "contributions": [
+                                            {
+                                                "type": "settingsPanel",
+                                                "id": "runner-launch-presets"
+                                            }
+                                        ]
+                                    },
+                                    "runner": {
+                                        "required": true,
+                                        "target": "selected-runner",
+                                        "contributions": [
+                                            {
+                                                "type": "spawnOptionsProvider",
+                                                "id": "runner-launch-presets"
+                                            }
+                                        ]
+                                    }
+                                }
+                            }
+                        ],
+                        "runtimes": {
+                            "runner": {
+                                "entry": "src/runner.js"
+                            }
+                        },
+                        "contributions": {
+                            "runner": {
+                                "spawnOptionsProviders": [
+                                    {
+                                        "id": "runner-launch-presets",
+                                        "displayName": "Runner Launch Presets",
+                                        "description": "Applies default launch options before command args are built.",
+                                        "display": {
+                                            "name": {
+                                                "en": "Runner Launch Presets",
+                                                "zh-CN": "Runner 启动预设"
+                                            },
+                                            "description": {
+                                                "en": "Applies default launch options before command args are built.",
+                                                "zh-CN": "在构建命令参数前应用启动默认值。"
+                                            }
+                                        }
+                                    }
+                                ]
+                            },
+                            "web": {
+                                "settingsPanels": [
+                                    {
+                                        "id": "runner-launch-presets",
+                                        "title": {
+                                            "en": "Runner Launch Presets",
+                                            "zh-CN": "Runner 启动预设"
+                                        },
+                                        "description": {
+                                            "en": "Set default launch options by agent and workspace. User choices in New Session override these defaults.",
+                                            "zh-CN": "按 Agent 和工作区设置默认启动参数。新建会话中用户手动选择的值会覆盖预设。"
+                                        },
+                                        "components": [
+                                            {
+                                                "id": "runner-launch-presets-editor",
+                                                "kind": "runnerSpawnDefaultsEditor",
+                                                "configKey": "rulesJson"
+                                            }
+                                        ]
+                                    }
+                                ]
+                            }
+                        },
+                        "compatibility": {
+                            "pluginApi": ">=0.1 <0.2",
+                            "hub": {
+                                "extensionPoints": [
+                                    "web.settingsPanel"
+                                ]
+                            },
+                            "runner": {
+                                "extensionPoints": [
+                                    "runner.spawnOptionsProvider"
+                                ]
+                            }
+                        },
+                        "install": {
+                            "runnerPlacement": "compatible-runners",
+                            "offlineRunnerPolicy": "skip",
+                            "minReadyRunnerCount": 1
+                        }
+                    },
+                    "source": {
+                        "type": "hapi-source",
+                        "path": "plugins/com.hapi.runner-launch-presets",
+                        "treeChecksum": "sha256:17639a98279ad0fc643e01db1aee49f4d6c812624590a666797adfaec1862eca",
+                        "embedded": true
+                    },
+                    "compatibility": {
+                        "pluginApi": ">=0.1 <0.2",
+                        "hub": {
+                            "extensionPoints": [
+                                "web.settingsPanel"
+                            ]
+                        },
+                        "runner": {
+                            "extensionPoints": [
+                                "runner.spawnOptionsProvider"
+                            ]
+                        }
+                    }
+                }
+            ]
+        },
+        {
+            "id": "com.hapi.schedule-send",
+            "name": "Schedule Send",
+            "display": {
+                "name": {
+                    "en": "Schedule Send",
+                    "zh-CN": "定时发送"
+                },
+                "description": {
+                    "en": "Adds a delay picker to the chat composer and routes scheduled delivery through the Hub.",
+                    "zh-CN": "在聊天输入框添加延迟发送选择器，并通过 Hub 可靠投递队列安排发送。"
+                },
+                "featureIntro": {
+                    "en": "- Adds a delay picker to the chat composer.\n- Validates scheduled-message requests in the Hub runtime.\n- Uses HAPI reliable delivery so queued messages survive reloads.",
+                    "zh-CN": "- 在聊天输入框提供延迟发送选择器。\n- 由 Hub 运行时校验定时消息请求。\n- 使用 HAPI 可靠投递队列，重载后仍可继续发送。"
+                }
+            },
+            "description": "First-party cross-runtime plugin that contributes a Web composer action and a Hub message-action handler backed by the core reliable delivery queue.",
+            "repo": "tiann/hapi",
+            "homepage": "https://github.com/tiann/hapi",
+            "author": {
+                "name": "HAPI",
+                "url": "https://github.com/tiann/hapi"
+            },
+            "license": "AGPL-3.0-only",
+            "categories": [
+                "chat",
+                "utility"
+            ],
+            "keywords": [
+                "schedule",
+                "delay",
+                "chat",
+                "message-action",
+                "reliable-delivery"
+            ],
+            "runtimes": [
+                "hub"
+            ],
+            "capabilities": [
+                {
+                    "kind": "chat.composer.messageAction",
+                    "label": "Schedule Send"
+                }
+            ],
+            "releases": [
+                {
+                    "version": "0.1.1",
+                    "tag": "hapi-source-com.hapi.schedule-send-v0.1.1",
+                    "releasedAt": "2026-05-24T07:28:18.035Z",
+                    "manifest": {
+                        "id": "com.hapi.schedule-send",
+                        "name": "Schedule Send",
+                        "version": "0.1.1",
+                        "pluginApiVersion": "0.1",
+                        "display": {
+                            "name": {
+                                "en": "Schedule Send",
+                                "zh-CN": "定时发送"
+                            },
+                            "description": {
+                                "en": "Adds a delay picker to the chat composer and routes scheduled delivery through the Hub.",
+                                "zh-CN": "在聊天输入框添加延迟发送选择器，并通过 Hub 可靠投递队列安排发送。"
+                            },
+                            "featureIntro": {
+                                "en": "- Adds a delay picker to the chat composer.\n- Validates scheduled-message requests in the Hub runtime.\n- Uses HAPI reliable delivery so queued messages survive reloads.",
+                                "zh-CN": "- 在聊天输入框提供延迟发送选择器。\n- 由 Hub 运行时校验定时消息请求。\n- 使用 HAPI 可靠投递队列，重载后仍可继续发送。"
+                            }
+                        },
+                        "description": "First-party cross-runtime plugin that contributes a Web composer action and a Hub message-action handler backed by the core reliable delivery queue.",
+                        "capabilities": [
+                            {
+                                "id": "schedule-send",
+                                "kind": "chat.composer.messageAction",
+                                "displayName": "Schedule Send",
+                                "description": "Adds a delay picker to the chat composer and returns a Hub-owned message delivery plan.",
+                                "display": {
+                                    "name": {
+                                        "en": "Schedule Send",
+                                        "zh-CN": "定时发送"
+                                    },
+                                    "description": {
+                                        "en": "Adds a delay picker to the chat composer and returns a Hub-owned message delivery plan.",
+                                        "zh-CN": "在聊天输入框添加延迟选择器，并返回由 Hub 管理的消息投递计划。"
+                                    }
+                                },
+                                "parts": {
+                                    "web": {
+                                        "required": true,
+                                        "contributions": [
+                                            {
+                                                "type": "composerAction",
+                                                "id": "schedule-send"
+                                            }
+                                        ]
+                                    },
+                                    "hub": {
+                                        "required": true,
+                                        "contributions": [
+                                            {
+                                                "type": "messageAction",
+                                                "id": "schedule-send"
+                                            }
+                                        ]
+                                    }
+                                }
+                            }
+                        ],
+                        "runtimes": {
+                            "hub": {
+                                "entry": "src/hub.js"
+                            }
+                        },
+                        "contributions": {
+                            "hub": {
+                                "messageActions": [
+                                    {
+                                        "id": "schedule-send",
+                                        "displayName": "Schedule Send",
+                                        "description": "Plans delayed delivery for a user message.",
+                                        "display": {
+                                            "name": {
+                                                "en": "Schedule Send",
+                                                "zh-CN": "定时发送"
+                                            },
+                                            "description": {
+                                                "en": "Plans delayed delivery for a user message.",
+                                                "zh-CN": "为用户消息创建延迟投递计划。"
+                                            }
+                                        }
+                                    }
+                                ]
+                            },
+                            "web": {
+                                "composerActions": [
+                                    {
+                                        "id": "schedule-send",
+                                        "kind": "pluginMessageAction",
+                                        "capabilityId": "schedule-send",
+                                        "label": {
+                                            "en": "Schedule send",
+                                            "zh-CN": "定时发送"
+                                        },
+                                        "icon": "clock",
+                                        "handler": {
+                                            "position": "hub",
+                                            "actionId": "schedule-send"
+                                        },
+                                        "ui": {
+                                            "kind": "delayPicker",
+                                            "maxDelayMs": 604800000,
+                                            "presets": [
+                                                {
+                                                    "id": "plus-5m",
+                                                    "label": "+5m",
+                                                    "delayMs": 300000
+                                                },
+                                                {
+                                                    "id": "plus-30m",
+                                                    "label": "+30m",
+                                                    "delayMs": 1800000
+                                                },
+                                                {
+                                                    "id": "plus-1h",
+                                                    "label": "+1h",
+                                                    "delayMs": 3600000
+                                                },
+                                                {
+                                                    "id": "plus-4h",
+                                                    "label": "+4h",
+                                                    "delayMs": 14400000
+                                                }
+                                            ]
+                                        }
+                                    }
+                                ]
+                            }
+                        },
+                        "compatibility": {
+                            "pluginApi": ">=0.1 <0.2",
+                            "hub": {
+                                "extensionPoints": [
+                                    "hub.messageAction",
+                                    "web.composerAction"
+                                ]
+                            }
+                        }
+                    },
+                    "source": {
+                        "type": "hapi-source",
+                        "path": "plugins/com.hapi.schedule-send",
+                        "treeChecksum": "sha256:60981a234359a3431824f5eebeea960ebf9511691c342bc02fdc8e738e935628",
+                        "embedded": true
+                    },
+                    "compatibility": {
+                        "pluginApi": ">=0.1 <0.2",
+                        "hub": {
+                            "extensionPoints": [
+                                "hub.messageAction",
+                                "web.composerAction"
+                            ]
+                        }
+                    }
+                }
+            ]
+        },
+        {
+            "id": "com.hapi.serverchan-notifier",
+            "name": "ServerChan Notifier",
+            "display": {
+                "name": {
+                    "en": "ServerChan Notifier",
+                    "zh-CN": "Server 酱通知"
+                },
+                "description": {
+                    "en": "Sends selected HAPI notifications through ServerChan from the Hub runtime.",
+                    "zh-CN": "通过 Hub 运行时把选定的 HAPI 通知发送到 Server 酱。"
+                },
+                "featureIntro": {
+                    "en": "- Registers a Hub notification channel backed by ServerChan.\n- Lets you choose which HAPI events are forwarded.\n- Filters notifications by agent and workspace with selectable recent values.\n- Reads `SERVERCHAN_SENDKEY` from the Hub environment; Web never stores the secret.",
+                    "zh-CN": "- 注册由 Server 酱驱动的 Hub 通知通道。\n- 可配置需要转发的 HAPI 事件类型。\n- 可用最近值选择 Agent 和工作区过滤通知。\n- 从 Hub 环境变量读取 `SERVERCHAN_SENDKEY`，Web 不保存密钥。"
+                }
+            },
+            "description": "First-party Hub plugin that sends selected HAPI notifications through ServerChan.",
+            "repo": "tiann/hapi",
+            "homepage": "https://github.com/tiann/hapi",
+            "author": {
+                "name": "HAPI",
+                "url": "https://github.com/tiann/hapi"
+            },
+            "license": "AGPL-3.0-only",
+            "categories": [
+                "notification"
+            ],
+            "keywords": [
+                "serverchan",
+                "notification",
+                "push",
+                "wechat",
+                "sctapi"
+            ],
+            "runtimes": [
+                "hub"
+            ],
+            "capabilities": [
+                {
+                    "kind": "notification.channel",
+                    "label": "ServerChan Notifier"
+                }
+            ],
+            "releases": [
+                {
+                    "version": "0.1.2",
+                    "tag": "hapi-source-com.hapi.serverchan-notifier-v0.1.2",
+                    "releasedAt": "2026-05-24T07:28:18.035Z",
+                    "manifest": {
+                        "id": "com.hapi.serverchan-notifier",
+                        "name": "ServerChan Notifier",
+                        "version": "0.1.2",
+                        "pluginApiVersion": "0.1",
+                        "display": {
+                            "name": {
+                                "en": "ServerChan Notifier",
+                                "zh-CN": "Server 酱通知"
+                            },
+                            "description": {
+                                "en": "Sends selected HAPI notifications through ServerChan from the Hub runtime.",
+                                "zh-CN": "通过 Hub 运行时把选定的 HAPI 通知发送到 Server 酱。"
+                            },
+                            "featureIntro": {
+                                "en": "- Registers a Hub notification channel backed by ServerChan.\n- Lets you choose which HAPI events are forwarded.\n- Filters notifications by agent and workspace with selectable recent values.\n- Reads `SERVERCHAN_SENDKEY` from the Hub environment; Web never stores the secret.",
+                                "zh-CN": "- 注册由 Server 酱驱动的 Hub 通知通道。\n- 可配置需要转发的 HAPI 事件类型。\n- 可用最近值选择 Agent 和工作区过滤通知。\n- 从 Hub 环境变量读取 `SERVERCHAN_SENDKEY`，Web 不保存密钥。"
+                            }
+                        },
+                        "permissions": {
+                            "network": [
+                                "https://sctapi.ftqq.com"
+                            ],
+                            "secrets": [
+                                "SERVERCHAN_SENDKEY"
+                            ]
+                        },
+                        "description": "First-party Hub plugin that sends selected HAPI notifications through ServerChan.",
+                        "capabilities": [
+                            {
+                                "id": "serverchan-notifier",
+                                "kind": "notification.channel",
+                                "displayName": "ServerChan Notifier",
+                                "description": "Adds a configurable ServerChan notification channel backed by Hub plugin notifications.",
+                                "display": {
+                                    "name": {
+                                        "en": "ServerChan Notifier",
+                                        "zh-CN": "Server 酱通知"
+                                    },
+                                    "description": {
+                                        "en": "Adds a configurable ServerChan notification channel backed by Hub plugin notifications.",
+                                        "zh-CN": "添加可配置的 Server 酱通知通道，由 Hub 插件通知能力驱动。"
+                                    }
+                                },
+                                "parts": {
+                                    "web": {
+                                        "required": true,
+                                        "contributions": [
+                                            {
+                                                "type": "settingsPanel",
+                                                "id": "serverchan-notifier"
+                                            }
+                                        ]
+                                    },
+                                    "hub": {
+                                        "required": true,
+                                        "contributions": [
+                                            {
+                                                "type": "notificationChannel",
+                                                "id": "serverchan"
+                                            }
+                                        ]
+                                    }
+                                }
+                            }
+                        ],
+                        "runtimes": {
+                            "hub": {
+                                "entry": "src/hub.js"
+                            }
+                        },
+                        "contributions": {
+                            "hub": {
+                                "notificationChannels": [
+                                    {
+                                        "id": "serverchan",
+                                        "displayName": "ServerChan Notifier",
+                                        "display": {
+                                            "name": {
+                                                "en": "ServerChan Notifier",
+                                                "zh-CN": "Server 酱通知"
+                                            }
+                                        }
+                                    }
+                                ]
+                            },
+                            "web": {
+                                "settingsPanels": [
+                                    {
+                                        "id": "serverchan-notifier",
+                                        "title": {
+                                            "en": "ServerChan Notifier",
+                                            "zh-CN": "Server 酱通知"
+                                        },
+                                        "description": {
+                                            "en": "Send ready-for-input, permission, failed task, and session completion notifications via ServerChan.",
+                                            "zh-CN": "通过 Server 酱发送等待输入、权限请求、失败任务和会话完成通知。"
+                                        },
+                                        "components": [
+                                            {
+                                                "kind": "text",
+                                                "text": {
+                                                    "en": "Set SERVERCHAN_SENDKEY in the Hub environment, then enable this plugin on Hub. Legacy SERVERCHAN_NOTIFICATION no longer creates a core notification channel.",
+                                                    "zh-CN": "在 Hub 环境变量中设置 SERVERCHAN_SENDKEY 后启用此插件。旧的 SERVERCHAN_NOTIFICATION 不再创建核心通知通道。"
+                                                },
+                                                "tone": "info"
+                                            },
+                                            {
+                                                "id": "test-push",
+                                                "kind": "actionButton",
+                                                "label": {
+                                                    "en": "Send test push",
+                                                    "zh-CN": "发送测试推送"
+                                                },
+                                                "actionId": "plugin.notificationTest",
+                                                "variant": "secondary",
+                                                "confirm": {
+                                                    "title": {
+                                                        "en": "Send ServerChan test push?",
+                                                        "zh-CN": "发送 Server 酱测试推送？"
+                                                    },
+                                                    "description": {
+                                                        "en": "HAPI will send a synthetic test notification using the currently saved Hub plugin config and SERVERCHAN_SENDKEY.",
+                                                        "zh-CN": "HAPI 会使用当前已保存的 Hub 插件配置和 SERVERCHAN_SENDKEY 发送一条测试通知。"
+                                                    }
+                                                }
+                                            },
+                                            {
+                                                "kind": "schemaForm",
+                                                "title": {
+                                                    "en": "Notification events",
+                                                    "zh-CN": "通知事件"
+                                                },
+                                                "description": {
+                                                    "en": "Ready-for-input is enabled by default so phone pushes also arrive when the agent needs you.",
+                                                    "zh-CN": "默认打开“等待输入”，当 Agent 需要你继续操作时也会推送到手机。"
+                                                },
+                                                "fields": [
+                                                    {
+                                                        "key": "notifyReady",
+                                                        "label": {
+                                                            "en": "Ready-for-input events",
+                                                            "zh-CN": "等待输入事件"
+                                                        },
+                                                        "type": "boolean",
+                                                        "defaultValue": true
+                                                    },
+                                                    {
+                                                        "key": "notifyPermissionRequest",
+                                                        "label": {
+                                                            "en": "Permission requests",
+                                                            "zh-CN": "权限请求"
+                                                        },
+                                                        "type": "boolean",
+                                                        "defaultValue": true
+                                                    },
+                                                    {
+                                                        "key": "notifyTaskFailuresOnly",
+                                                        "label": {
+                                                            "en": "Only failed task notifications",
+                                                            "zh-CN": "仅通知失败任务"
+                                                        },
+                                                        "type": "boolean",
+                                                        "defaultValue": true
+                                                    },
+                                                    {
+                                                        "key": "notifySessionCompletion",
+                                                        "label": {
+                                                            "en": "Session completion",
+                                                            "zh-CN": "会话完成"
+                                                        },
+                                                        "type": "boolean",
+                                                        "defaultValue": true
+                                                    }
+                                                ]
+                                            },
+                                            {
+                                                "kind": "schemaForm",
+                                                "title": {
+                                                    "en": "Notification scope",
+                                                    "zh-CN": "通知范围"
+                                                },
+                                                "description": {
+                                                    "en": "Leave a field empty to notify all. Choices come from recent sessions; custom values are still allowed.",
+                                                    "zh-CN": "某项留空表示全部。可选项来自最近会话，也可以手动添加。"
+                                                },
+                                                "fields": [
+                                                    {
+                                                        "key": "agentNames",
+                                                        "label": {
+                                                            "en": "Agents",
+                                                            "zh-CN": "Agent"
+                                                        },
+                                                        "description": {
+                                                            "en": "Matches the agent label in notifications, for example Codex or Claude.",
+                                                            "zh-CN": "匹配通知中的 Agent 名称，例如 Codex 或 Claude。"
+                                                        },
+                                                        "type": "multiSelect",
+                                                        "optionsSource": "sessions.agents"
+                                                    },
+                                                    {
+                                                        "key": "sessionPathPrefixes",
+                                                        "label": {
+                                                            "en": "Workspaces",
+                                                            "zh-CN": "工作区"
+                                                        },
+                                                        "description": {
+                                                            "en": "Selected paths also match subdirectories. Empty = all workspaces.",
+                                                            "zh-CN": "选择的路径会同时匹配其子目录。留空 = 全部工作区。"
+                                                        },
+                                                        "type": "multiSelect",
+                                                        "optionsSource": "sessions.workspaces"
+                                                    }
+                                                ]
+                                            },
+                                            {
+                                                "kind": "schemaForm",
+                                                "title": {
+                                                    "en": "Advanced",
+                                                    "zh-CN": "高级"
+                                                },
+                                                "fields": [
+                                                    {
+                                                        "key": "titlePrefix",
+                                                        "label": {
+                                                            "en": "Title prefix",
+                                                            "zh-CN": "标题前缀"
+                                                        },
+                                                        "type": "text",
+                                                        "defaultValue": "HAPI"
+                                                    },
+                                                    {
+                                                        "key": "timeoutMs",
+                                                        "label": {
+                                                            "en": "HTTP timeout ms",
+                                                            "zh-CN": "HTTP 超时毫秒"
+                                                        },
+                                                        "type": "number",
+                                                        "defaultValue": 10000
+                                                    },
+                                                    {
+                                                        "key": "maxTaskSummaryLength",
+                                                        "label": {
+                                                            "en": "Max task summary characters",
+                                                            "zh-CN": "任务摘要最大字符数"
+                                                        },
+                                                        "type": "number",
+                                                        "defaultValue": 2000
+                                                    }
+                                                ]
+                                            }
+                                        ]
+                                    }
+                                ]
+                            }
+                        },
+                        "compatibility": {
+                            "pluginApi": ">=0.1 <0.2",
+                            "hub": {
+                                "extensionPoints": [
+                                    "hub.notificationChannel",
+                                    "web.settingsPanel"
+                                ]
+                            }
+                        }
+                    },
+                    "source": {
+                        "type": "hapi-source",
+                        "path": "plugins/com.hapi.serverchan-notifier",
+                        "treeChecksum": "sha256:0d0db17e5449f70a7250befd98c26ccc8206765dd6208e2ab46f6c7c46ef589a",
+                        "embedded": true
+                    },
+                    "compatibility": {
+                        "pluginApi": ">=0.1 <0.2",
+                        "hub": {
+                            "extensionPoints": [
+                                "hub.notificationChannel",
+                                "web.settingsPanel"
+                            ]
+                        }
+                    }
+                }
+            ]
+        }
+    ]
+}

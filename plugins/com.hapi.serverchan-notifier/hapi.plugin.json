@@ -1,0 +1,266 @@
+{
+    "id": "com.hapi.serverchan-notifier",
+    "version": "0.1.2",
+    "name": "ServerChan Notifier",
+    "description": "First-party Hub plugin that sends selected HAPI notifications through ServerChan.",
+    "display": {
+        "name": {
+            "en": "ServerChan Notifier",
+            "zh-CN": "Server 酱通知"
+        },
+        "description": {
+            "en": "Sends selected HAPI notifications through ServerChan from the Hub runtime.",
+            "zh-CN": "通过 Hub 运行时把选定的 HAPI 通知发送到 Server 酱。"
+        },
+        "featureIntro": {
+            "en": "- Registers a Hub notification channel backed by ServerChan.\n- Lets you choose which HAPI events are forwarded.\n- Filters notifications by agent and workspace with selectable recent values.\n- Reads `SERVERCHAN_SENDKEY` from the Hub environment; Web never stores the secret.",
+            "zh-CN": "- 注册由 Server 酱驱动的 Hub 通知通道。\n- 可配置需要转发的 HAPI 事件类型。\n- 可用最近值选择 Agent 和工作区过滤通知。\n- 从 Hub 环境变量读取 `SERVERCHAN_SENDKEY`，Web 不保存密钥。"
+        }
+    },
+    "capabilities": [
+        {
+            "id": "serverchan-notifier",
+            "kind": "notification.channel",
+            "displayName": "ServerChan Notifier",
+            "description": "Adds a configurable ServerChan notification channel backed by Hub plugin notifications.",
+            "display": {
+                "name": {
+                    "en": "ServerChan Notifier",
+                    "zh-CN": "Server 酱通知"
+                },
+                "description": {
+                    "en": "Adds a configurable ServerChan notification channel backed by Hub plugin notifications.",
+                    "zh-CN": "添加可配置的 Server 酱通知通道，由 Hub 插件通知能力驱动。"
+                }
+            },
+            "parts": {
+                "web": {
+                    "required": true,
+                    "contributions": [
+                        {
+                            "type": "settingsPanel",
+                            "id": "serverchan-notifier"
+                        }
+                    ]
+                },
+                "hub": {
+                    "required": true,
+                    "contributions": [
+                        {
+                            "type": "notificationChannel",
+                            "id": "serverchan"
+                        }
+                    ]
+                }
+            }
+        }
+    ],
+    "runtimes": {
+        "hub": {
+            "entry": "src/hub.js"
+        }
+    },
+    "contributions": {
+        "hub": {
+            "notificationChannels": [
+                {
+                    "id": "serverchan",
+                    "displayName": "ServerChan Notifier",
+                    "display": {
+                        "name": {
+                            "en": "ServerChan Notifier",
+                            "zh-CN": "Server 酱通知"
+                        }
+                    }
+                }
+            ]
+        },
+        "web": {
+            "settingsPanels": [
+                {
+                    "id": "serverchan-notifier",
+                    "title": {
+                        "en": "ServerChan Notifier",
+                        "zh-CN": "Server 酱通知"
+                    },
+                    "description": {
+                        "en": "Send ready-for-input, permission, failed task, and session completion notifications via ServerChan.",
+                        "zh-CN": "通过 Server 酱发送等待输入、权限请求、失败任务和会话完成通知。"
+                    },
+                    "components": [
+                        {
+                            "kind": "text",
+                            "tone": "info",
+                            "text": {
+                                "en": "Set SERVERCHAN_SENDKEY in the Hub environment, then enable this plugin on Hub. Legacy SERVERCHAN_NOTIFICATION no longer creates a core notification channel.",
+                                "zh-CN": "在 Hub 环境变量中设置 SERVERCHAN_SENDKEY 后启用此插件。旧的 SERVERCHAN_NOTIFICATION 不再创建核心通知通道。"
+                            }
+                        },
+                        {
+                            "kind": "actionButton",
+                            "id": "test-push",
+                            "label": {
+                                "en": "Send test push",
+                                "zh-CN": "发送测试推送"
+                            },
+                            "actionId": "plugin.notificationTest",
+                            "variant": "secondary",
+                            "confirm": {
+                                "title": {
+                                    "en": "Send ServerChan test push?",
+                                    "zh-CN": "发送 Server 酱测试推送？"
+                                },
+                                "description": {
+                                    "en": "HAPI will send a synthetic test notification using the currently saved Hub plugin config and SERVERCHAN_SENDKEY.",
+                                    "zh-CN": "HAPI 会使用当前已保存的 Hub 插件配置和 SERVERCHAN_SENDKEY 发送一条测试通知。"
+                                }
+                            }
+                        },
+                        {
+                            "kind": "schemaForm",
+                            "title": {
+                                "en": "Notification events",
+                                "zh-CN": "通知事件"
+                            },
+                            "description": {
+                                "en": "Ready-for-input is enabled by default so phone pushes also arrive when the agent needs you.",
+                                "zh-CN": "默认打开“等待输入”，当 Agent 需要你继续操作时也会推送到手机。"
+                            },
+                            "fields": [
+                                {
+                                    "key": "notifyReady",
+                                    "label": {
+                                        "en": "Ready-for-input events",
+                                        "zh-CN": "等待输入事件"
+                                    },
+                                    "type": "boolean",
+                                    "defaultValue": true
+                                },
+                                {
+                                    "key": "notifyPermissionRequest",
+                                    "label": {
+                                        "en": "Permission requests",
+                                        "zh-CN": "权限请求"
+                                    },
+                                    "type": "boolean",
+                                    "defaultValue": true
+                                },
+                                {
+                                    "key": "notifyTaskFailuresOnly",
+                                    "label": {
+                                        "en": "Only failed task notifications",
+                                        "zh-CN": "仅通知失败任务"
+                                    },
+                                    "type": "boolean",
+                                    "defaultValue": true
+                                },
+                                {
+                                    "key": "notifySessionCompletion",
+                                    "label": {
+                                        "en": "Session completion",
+                                        "zh-CN": "会话完成"
+                                    },
+                                    "type": "boolean",
+                                    "defaultValue": true
+                                }
+                            ]
+                        },
+                        {
+                            "kind": "schemaForm",
+                            "title": {
+                                "en": "Notification scope",
+                                "zh-CN": "通知范围"
+                            },
+                            "description": {
+                                "en": "Leave a field empty to notify all. Choices come from recent sessions; custom values are still allowed.",
+                                "zh-CN": "某项留空表示全部。可选项来自最近会话，也可以手动添加。"
+                            },
+                            "fields": [
+                                {
+                                    "key": "agentNames",
+                                    "label": {
+                                        "en": "Agents",
+                                        "zh-CN": "Agent"
+                                    },
+                                    "description": {
+                                        "en": "Matches the agent label in notifications, for example Codex or Claude.",
+                                        "zh-CN": "匹配通知中的 Agent 名称，例如 Codex 或 Claude。"
+                                    },
+                                    "type": "multiSelect",
+                                    "optionsSource": "sessions.agents"
+                                },
+                                {
+                                    "key": "sessionPathPrefixes",
+                                    "label": {
+                                        "en": "Workspaces",
+                                        "zh-CN": "工作区"
+                                    },
+                                    "description": {
+                                        "en": "Selected paths also match subdirectories. Empty = all workspaces.",
+                                        "zh-CN": "选择的路径会同时匹配其子目录。留空 = 全部工作区。"
+                                    },
+                                    "type": "multiSelect",
+                                    "optionsSource": "sessions.workspaces"
+                                }
+                            ]
+                        },
+                        {
+                            "kind": "schemaForm",
+                            "title": {
+                                "en": "Advanced",
+                                "zh-CN": "高级"
+                            },
+                            "fields": [
+                                {
+                                    "key": "titlePrefix",
+                                    "label": {
+                                        "en": "Title prefix",
+                                        "zh-CN": "标题前缀"
+                                    },
+                                    "type": "text",
+                                    "defaultValue": "HAPI"
+                                },
+                                {
+                                    "key": "timeoutMs",
+                                    "label": {
+                                        "en": "HTTP timeout ms",
+                                        "zh-CN": "HTTP 超时毫秒"
+                                    },
+                                    "type": "number",
+                                    "defaultValue": 10000
+                                },
+                                {
+                                    "key": "maxTaskSummaryLength",
+                                    "label": {
+                                        "en": "Max task summary characters",
+                                        "zh-CN": "任务摘要最大字符数"
+                                    },
+                                    "type": "number",
+                                    "defaultValue": 2000
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }
+    },
+    "permissions": {
+        "network": [
+            "https://sctapi.ftqq.com"
+        ],
+        "secrets": [
+            "SERVERCHAN_SENDKEY"
+        ]
+    },
+    "compatibility": {
+        "pluginApi": ">=0.1 <0.2",
+        "hub": {
+            "extensionPoints": [
+                "hub.notificationChannel",
+                "web.settingsPanel"
+            ]
+        }
+    },
+    "pluginApiVersion": "0.1"
+}
