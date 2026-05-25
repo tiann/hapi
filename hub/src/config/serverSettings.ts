@@ -15,8 +15,6 @@ const OLD_SETTINGS_FIELDS = ['webappHost', 'webappPort', 'webappUrl'] as const
 export interface ServerSettings {
     telegramBotToken: string | null
     telegramNotification: boolean
-    serverChanSendKey: string | null
-    serverChanNotification: boolean
     listenHost: string
     listenPort: number
     publicUrl: string
@@ -28,8 +26,6 @@ export interface ServerSettingsResult {
     sources: {
         telegramBotToken: 'env' | 'file' | 'default'
         telegramNotification: 'env' | 'file' | 'default'
-        serverChanSendKey: 'env' | 'file' | 'default'
-        serverChanNotification: 'env' | 'file' | 'default'
         listenHost: 'env' | 'file' | 'default'
         listenPort: 'env' | 'file' | 'default'
         publicUrl: 'env' | 'file' | 'default'
@@ -105,8 +101,6 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
     const sources: ServerSettingsResult['sources'] = {
         telegramBotToken: 'default',
         telegramNotification: 'default',
-        serverChanSendKey: 'default',
-        serverChanNotification: 'default',
         listenHost: 'default',
         listenPort: 'default',
         publicUrl: 'default',
@@ -140,33 +134,6 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
         sources.telegramNotification = 'file'
     }
 
-    // serverChanSendKey: env > file > null
-    let serverChanSendKey: string | null = null
-    if (process.env.SERVERCHAN_SENDKEY) {
-        serverChanSendKey = process.env.SERVERCHAN_SENDKEY
-        sources.serverChanSendKey = 'env'
-        if (settings.serverChanSendKey === undefined) {
-            settings.serverChanSendKey = serverChanSendKey
-            needsSave = true
-        }
-    } else if (settings.serverChanSendKey !== undefined) {
-        serverChanSendKey = settings.serverChanSendKey
-        sources.serverChanSendKey = 'file'
-    }
-
-    // serverChanNotification: env > file > true
-    let serverChanNotification = true
-    if (process.env.SERVERCHAN_NOTIFICATION !== undefined) {
-        serverChanNotification = process.env.SERVERCHAN_NOTIFICATION === 'true'
-        sources.serverChanNotification = 'env'
-        if (settings.serverChanNotification === undefined) {
-            settings.serverChanNotification = serverChanNotification
-            needsSave = true
-        }
-    } else if (settings.serverChanNotification !== undefined) {
-        serverChanNotification = settings.serverChanNotification
-        sources.serverChanNotification = 'file'
-    }
 
     // listenHost: env > file > default
     let listenHost = '127.0.0.1'
@@ -239,8 +206,6 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
         settings: {
             telegramBotToken,
             telegramNotification,
-            serverChanSendKey,
-            serverChanNotification,
             listenHost,
             listenPort,
             publicUrl,

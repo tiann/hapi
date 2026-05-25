@@ -1,6 +1,8 @@
 import {
+    AgentHistoryImportRequestSchema,
     MachineListDirectoryRequestSchema,
     MachinePathsExistsRequestSchema,
+    RunnerSpawnOptionsPreviewRequestSchema,
     SpawnSessionRequestSchema
 } from '@hapi/protocol'
 import { Hono } from 'hono'
@@ -50,9 +52,33 @@ export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Ho
             parsed.data.sessionType,
             parsed.data.worktreeName,
             undefined,
-            parsed.data.effort
+            parsed.data.effort,
+            parsed.data.permissionMode,
+            parsed.data.pluginFields,
+            parsed.data.manualFields
         )
         return c.json(result)
+    })
+
+    app.post('/machines/:id/spawn-options/preview', async (c) => {
+        const engine = getSyncEngine()
+        if (!engine) {
+            return c.json({ error: 'Not connected' }, 503)
+        }
+
+        const machineId = c.req.param('id')
+        const machine = requireMachine(c, engine, machineId)
+        if (machine instanceof Response) {
+            return machine
+        }
+
+        const body = await c.req.json().catch(() => null)
+        const parsed = RunnerSpawnOptionsPreviewRequestSchema.safeParse(body)
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid body' }, 400)
+        }
+
+        return c.json(await engine.previewRunnerSpawnOptions(machineId, parsed.data))
     })
 
     app.post('/machines/:id/list-directory', async (c) => {
@@ -78,6 +104,35 @@ export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return c.json(result)
         } catch (error) {
             return c.json({ error: error instanceof Error ? error.message : 'Failed to list directory' }, 500)
+        }
+    })
+
+    app.post('/machines/:id/agents/:agentId/history/import', async (c) => {
+        const engine = getSyncEngine()
+        if (!engine) {
+            return c.json({ error: 'Not connected' }, 503)
+        }
+
+        const machineId = c.req.param('id')
+        const machine = requireMachine(c, engine, machineId)
+        if (machine instanceof Response) {
+            return machine
+        }
+
+        const body = await c.req.json().catch(() => null)
+        const parsed = AgentHistoryImportRequestSchema.safeParse({
+            ...(body && typeof body === 'object' ? body : {}),
+            agentId: c.req.param('agentId')
+        })
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid body' }, 400)
+        }
+
+        try {
+            const result = await engine.importRunnerAgentHistory(machineId, parsed.data)
+            return c.json(result)
+        } catch (error) {
+            return c.json({ error: error instanceof Error ? error.message : 'Failed to import native history' }, 500)
         }
     })
 

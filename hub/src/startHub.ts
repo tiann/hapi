@@ -14,7 +14,7 @@ import { PushNotificationChannel } from './push/pushNotificationChannel'
 import { VisibilityTracker } from './visibility/visibilityTracker'
 import { TunnelManager } from './tunnel'
 import { waitForTunnelTlsReady } from './tunnel/tlsGate'
-import { ServerChanChannel } from './serverchan/channel'
+import { HubPluginManager } from './plugins/pluginManager'
 import QRCode from 'qrcode'
 import type { Server as BunServer } from 'bun'
 import type { WebSocketData } from '@socket.io/bun-engine'
@@ -105,6 +105,7 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
     let sseManager: SSEManager | null = null
     let visibilityTracker: VisibilityTracker | null = null
     let notificationHub: NotificationHub | null = null
+    let pluginManager: HubPluginManager | null = null
     let tunnelManager: TunnelManager | null = null
 
     // Load configuration (async - loads from env/file with persistence)
@@ -148,14 +149,6 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
         const notificationSource = formatSource(config.sources.telegramNotification)
         console.log(`[Hub] Telegram notifications: ${config.telegramNotification ? 'enabled' : 'disabled'} (${notificationSource})`)
     }
-    if (config.serverChanSendKey) {
-        const source = formatSource(config.sources.serverChanSendKey)
-        const notificationSource = formatSource(config.sources.serverChanNotification)
-        console.log(`[Hub] ServerChan: enabled (${source})`)
-        console.log(`[Hub] ServerChan notifications: ${config.serverChanNotification ? 'enabled' : 'disabled'} (${notificationSource})`)
-    } else {
-        console.log('[Hub] ServerChan: disabled (no SERVERCHAN_SENDKEY)')
-    }
 
     // Display tunnel status
     if (relayFlag.enabled) {
@@ -198,8 +191,23 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
         new PushNotificationChannel(pushService, sseManager, visibilityTracker, config.publicUrl)
     ]
 
-    if (config.serverChanSendKey && config.serverChanNotification) {
-        notificationChannels.push(new ServerChanChannel(config.serverChanSendKey, config.publicUrl))
+    pluginManager = new HubPluginManager({
+        hapiHome: config.dataDir,
+        publicUrl: config.publicUrl,
+        env: process.env,
+        includeBundledCore: true,
+        includeBundledExamples: process.env.HAPI_ENABLE_BUNDLED_EXAMPLES === '1'
+    })
+    await pluginManager.start()
+    for (const diagnostic of pluginManager.getDiagnostics()) {
+        const message = `[Hub Plugin] ${diagnostic.code}: ${diagnostic.message}`
+        if (diagnostic.severity === 'error') {
+            console.error(message)
+        } else if (diagnostic.severity === 'warning') {
+            console.warn(message)
+        } else {
+            console.log(message)
+        }
     }
 
     // Initialize Telegram bot (optional)
@@ -216,6 +224,8 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
         }
     }
 
+    notificationChannels.push(pluginManager.getNotificationChannel())
+
     notificationHub = new NotificationHub(syncEngine, notificationChannels)
 
     // Start HTTP service first (before tunnel, so tunnel has something to forward to)
@@ -223,6 +233,7 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
         getSyncEngine: () => syncEngine,
         getSseManager: () => sseManager,
         getVisibilityTracker: () => visibilityTracker,
+        getPluginManager: () => pluginManager,
         jwtSecret,
         store,
         vapidPublicKey: vapidKeys.publicKey,
@@ -309,6 +320,7 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
             await tunnelManager?.stop()
             await happyBot?.stop()
             notificationHub?.stop()
+            await pluginManager?.dispose()
             syncEngine?.stop()
             sseManager?.stop()
             webServer?.stop()
