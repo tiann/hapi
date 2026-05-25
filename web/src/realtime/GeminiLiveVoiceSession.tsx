@@ -59,6 +59,8 @@ function cleanup() {
         }
         state.ws = null
     }
+    // Always reset modelSpeaking so a restart doesn't begin with audio capture silenced
+    state.modelSpeaking = false
 }
 
 class GeminiLiveVoiceSessionImpl implements VoiceSession {
