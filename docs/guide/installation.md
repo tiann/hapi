@@ -472,8 +472,7 @@ Create plist files for automatic startup on macOS.
     <array>
         <string>/usr/local/bin/hapi</string>
         <string>runner</string>
-        <string>start</string>
-        <string>--foreground</string>
+        <string>start-sync</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
