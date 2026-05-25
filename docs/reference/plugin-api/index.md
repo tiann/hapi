@@ -17,7 +17,7 @@ HAPI plugins are trusted local packages. Web parts are declarative descriptors; 
 ## Machine-readable contracts
 
 - [Admin API](./admin-api.md) — generated endpoint table.
-- [OpenAPI JSON](/docs/plugin-api/openapi.json)
+- [OpenAPI JSON](/plugin-api/openapi.json)
 - [JSON Schemas](./schemas.md)
 
 ## Source of truth

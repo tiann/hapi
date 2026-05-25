@@ -133,7 +133,7 @@ Human reference:
 
 Machine contracts:
 
-- [OpenAPI JSON](/docs/plugin-api/openapi.json)
+- [OpenAPI JSON](/plugin-api/openapi.json)
 - [JSON Schemas](/reference/plugin-api/schemas)
 
 Source of truth for AI-assisted development:

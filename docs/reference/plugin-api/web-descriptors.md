@@ -44,4 +44,4 @@ Web descriptors are JSON UI descriptions. HAPI Web renders them with built-in pr
 }
 ```
 
-For exact shapes, use [PluginWebContributions](/docs/plugin-api/schemas/plugin-web-contributions.schema.json).
+For exact shapes, use [PluginWebContributions](/plugin-api/schemas/plugin-web-contributions.schema.json).

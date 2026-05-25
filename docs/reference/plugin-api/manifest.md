@@ -2,7 +2,7 @@
 
 `hapi.plugin.json` is the cold-path contract. HAPI validates it before importing runtime code.
 
-For the exact schema, use [PluginManifestLite](/docs/plugin-api/schemas/plugin-manifest.schema.json).
+For the exact schema, use [PluginManifestLite](/plugin-api/schemas/plugin-manifest.schema.json).
 
 ## Minimal manifest
 

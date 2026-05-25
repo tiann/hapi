@@ -23,7 +23,7 @@ const groupLabels: Record<SchemaGroup, string> = {
 }
 
 export function schemaPublicPath(id: string): string {
-    return `/docs/plugin-api/schemas/${id}.schema.json`
+    return `/plugin-api/schemas/${id}.schema.json`
 }
 
 function markdownSchemaLink(doc: SchemaDoc): string {
@@ -60,7 +60,7 @@ export function renderAdminApiPage(endpoints: EndpointDoc[]): string {
         '',
         'Authenticated HAPI Web API endpoints for plugin management. This page is generated from `scripts/plugin-api-docs/endpointCatalog.ts`.',
         '',
-        'OpenAPI JSON: [/docs/plugin-api/openapi.json](/docs/plugin-api/openapi.json)',
+        'OpenAPI JSON: [/plugin-api/openapi.json](/plugin-api/openapi.json)',
         '',
         '| Method | Path | Query | Body | Response | Notes |',
         '|---|---|---|---|---|---|',

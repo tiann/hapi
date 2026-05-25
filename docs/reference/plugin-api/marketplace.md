@@ -39,7 +39,7 @@ bun run marketplace:check
 
 ## Contracts
 
-- [PluginMarketplaceCatalog](/docs/plugin-api/schemas/plugin-marketplace-catalog.schema.json)
-- [PluginMarketplaceListResponse](/docs/plugin-api/schemas/plugin-marketplace-list-response.schema.json)
-- [PluginMarketplaceInstallRequest](/docs/plugin-api/schemas/plugin-marketplace-install-request.schema.json)
-- [PluginMarketplaceInstallPlanResponse](/docs/plugin-api/schemas/plugin-marketplace-install-plan-response.schema.json)
+- [PluginMarketplaceCatalog](/plugin-api/schemas/plugin-marketplace-catalog.schema.json)
+- [PluginMarketplaceListResponse](/plugin-api/schemas/plugin-marketplace-list-response.schema.json)
+- [PluginMarketplaceInstallRequest](/plugin-api/schemas/plugin-marketplace-install-request.schema.json)
+- [PluginMarketplaceInstallPlanResponse](/plugin-api/schemas/plugin-marketplace-install-plan-response.schema.json)

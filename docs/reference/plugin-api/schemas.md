@@ -10,82 +10,82 @@ These schemas are the public contract. Human-oriented tutorials are intentionall
 
 | Schema | Description |
 |---|---|
-| [PluginManifestLite](/docs/plugin-api/schemas/plugin-manifest.schema.json) | Cold-path hapi.plugin.json contract. Read before plugin code is imported. |
+| [PluginManifestLite](/plugin-api/schemas/plugin-manifest.schema.json) | Cold-path hapi.plugin.json contract. Read before plugin code is imported. |
 
 ## State files
 
 | Schema | Description |
 |---|---|
-| [PluginStateFile](/docs/plugin-api/schemas/plugin-state-file.schema.json) | $HAPI_HOME/plugins.json enable/config state. Secret values must not be stored here. |
+| [PluginStateFile](/plugin-api/schemas/plugin-state-file.schema.json) | $HAPI_HOME/plugins.json enable/config state. Secret values must not be stored here. |
 
 ## Admin API
 
 | Schema | Description |
 |---|---|
-| [PluginTargetScope](/docs/plugin-api/schemas/plugin-target-scope.schema.json) | Target selector for Hub, one Runner, or all Runners. |
-| [PluginConfigScope](/docs/plugin-api/schemas/plugin-config-scope.schema.json) | Runtime/machine/agent-scoped config key. |
-| [PluginListResponse](/docs/plugin-api/schemas/plugin-list-response.schema.json) | Plugin inventory response for Hub and Runner targets. |
-| [PluginDetailResponse](/docs/plugin-api/schemas/plugin-detail-response.schema.json) | Detailed plugin metadata, diagnostics, permissions, config metadata, and contributions. |
-| [PluginDiagnosticsResponse](/docs/plugin-api/schemas/plugin-diagnostics-response.schema.json) | Flattened plugin diagnostics response. |
-| [PluginCapabilitiesResponse](/docs/plugin-api/schemas/plugin-capabilities-response.schema.json) | Aggregated capability readiness across Web, Hub, and Runner parts. |
-| [PluginCapabilityView](/docs/plugin-api/schemas/plugin-capability-view.schema.json) | One user-facing plugin capability with per-position part status and Web-safe descriptors. |
-| [PluginNotificationFilterOptionsResponse](/docs/plugin-api/schemas/plugin-notification-filter-options-response.schema.json) | Recent namespace, agent, and workspace option values for descriptor option sources. |
-| [PluginNotificationTestResponse](/docs/plugin-api/schemas/plugin-notification-test-response.schema.json) | Result returned after sending a synthetic notification through one active Hub plugin. |
-| [PluginReloadResult](/docs/plugin-api/schemas/plugin-reload-result.schema.json) | Reload/enable/disable/config result, including partial target results. |
-| [PluginInstallLocalRequest](/docs/plugin-api/schemas/plugin-install-local-request.schema.json) | Install a plugin from a path local to the selected target machine. |
-| [PluginInstallPackageRequest](/docs/plugin-api/schemas/plugin-install-package-request.schema.json) | Install a tgz/zip plugin package by upload payload. |
-| [PluginInstallPlanRequest](/docs/plugin-api/schemas/plugin-install-plan-request.schema.json) | Create a manifest-driven cross-runtime install plan from a tgz/zip plugin package upload. |
-| [PluginInstallPlanResponse](/docs/plugin-api/schemas/plugin-install-plan-response.schema.json) | Install plan with inferred positions, compatible targets, warnings, and blocking errors. |
-| [PluginInstallResult](/docs/plugin-api/schemas/plugin-install-result.schema.json) | Install result for Hub, one Runner, or all Runners. |
-| [PluginDeleteResult](/docs/plugin-api/schemas/plugin-delete-result.schema.json) | Delete result for Hub, one Runner, or all Runners. |
-| [PluginEnableRequest](/docs/plugin-api/schemas/plugin-enable-request.schema.json) | Enable a plugin with optional non-secret config. |
-| [PluginDisableRequest](/docs/plugin-api/schemas/plugin-disable-request.schema.json) | Disable a plugin with optional reload control. |
-| [PluginConfigUpdateRequest](/docs/plugin-api/schemas/plugin-config-update-request.schema.json) | Replace a plugin scoped config object. |
-| [PluginLocalDirectoryListRequest](/docs/plugin-api/schemas/plugin-local-directory-list-request.schema.json) | List a local directory on the selected target machine for install browsing. |
-| [PluginLocalDirectoryListResponse](/docs/plugin-api/schemas/plugin-local-directory-list-response.schema.json) | Local directory listing result for install browsing. |
-| [RunnerPluginInventory](/docs/plugin-api/schemas/runner-plugin-inventory.schema.json) | Runner-reported plugin inventory published through machine state. |
+| [PluginTargetScope](/plugin-api/schemas/plugin-target-scope.schema.json) | Target selector for Hub, one Runner, or all Runners. |
+| [PluginConfigScope](/plugin-api/schemas/plugin-config-scope.schema.json) | Runtime/machine/agent-scoped config key. |
+| [PluginListResponse](/plugin-api/schemas/plugin-list-response.schema.json) | Plugin inventory response for Hub and Runner targets. |
+| [PluginDetailResponse](/plugin-api/schemas/plugin-detail-response.schema.json) | Detailed plugin metadata, diagnostics, permissions, config metadata, and contributions. |
+| [PluginDiagnosticsResponse](/plugin-api/schemas/plugin-diagnostics-response.schema.json) | Flattened plugin diagnostics response. |
+| [PluginCapabilitiesResponse](/plugin-api/schemas/plugin-capabilities-response.schema.json) | Aggregated capability readiness across Web, Hub, and Runner parts. |
+| [PluginCapabilityView](/plugin-api/schemas/plugin-capability-view.schema.json) | One user-facing plugin capability with per-position part status and Web-safe descriptors. |
+| [PluginNotificationFilterOptionsResponse](/plugin-api/schemas/plugin-notification-filter-options-response.schema.json) | Recent namespace, agent, and workspace option values for descriptor option sources. |
+| [PluginNotificationTestResponse](/plugin-api/schemas/plugin-notification-test-response.schema.json) | Result returned after sending a synthetic notification through one active Hub plugin. |
+| [PluginReloadResult](/plugin-api/schemas/plugin-reload-result.schema.json) | Reload/enable/disable/config result, including partial target results. |
+| [PluginInstallLocalRequest](/plugin-api/schemas/plugin-install-local-request.schema.json) | Install a plugin from a path local to the selected target machine. |
+| [PluginInstallPackageRequest](/plugin-api/schemas/plugin-install-package-request.schema.json) | Install a tgz/zip plugin package by upload payload. |
+| [PluginInstallPlanRequest](/plugin-api/schemas/plugin-install-plan-request.schema.json) | Create a manifest-driven cross-runtime install plan from a tgz/zip plugin package upload. |
+| [PluginInstallPlanResponse](/plugin-api/schemas/plugin-install-plan-response.schema.json) | Install plan with inferred positions, compatible targets, warnings, and blocking errors. |
+| [PluginInstallResult](/plugin-api/schemas/plugin-install-result.schema.json) | Install result for Hub, one Runner, or all Runners. |
+| [PluginDeleteResult](/plugin-api/schemas/plugin-delete-result.schema.json) | Delete result for Hub, one Runner, or all Runners. |
+| [PluginEnableRequest](/plugin-api/schemas/plugin-enable-request.schema.json) | Enable a plugin with optional non-secret config. |
+| [PluginDisableRequest](/plugin-api/schemas/plugin-disable-request.schema.json) | Disable a plugin with optional reload control. |
+| [PluginConfigUpdateRequest](/plugin-api/schemas/plugin-config-update-request.schema.json) | Replace a plugin scoped config object. |
+| [PluginLocalDirectoryListRequest](/plugin-api/schemas/plugin-local-directory-list-request.schema.json) | List a local directory on the selected target machine for install browsing. |
+| [PluginLocalDirectoryListResponse](/plugin-api/schemas/plugin-local-directory-list-response.schema.json) | Local directory listing result for install browsing. |
+| [RunnerPluginInventory](/plugin-api/schemas/runner-plugin-inventory.schema.json) | Runner-reported plugin inventory published through machine state. |
 
 ## Hub runtime
 
 | Schema | Description |
 |---|---|
-| [PluginNotificationEvent](/docs/plugin-api/schemas/plugin-notification-event.schema.json) | Narrow event DTO sent to Hub notification channels. |
+| [PluginNotificationEvent](/plugin-api/schemas/plugin-notification-event.schema.json) | Narrow event DTO sent to Hub notification channels. |
 
 ## Runner runtime
 
 | Schema | Description |
 |---|---|
-| [RunnerSpawnContext](/docs/plugin-api/schemas/runner-spawn-context.schema.json) | Runner spawn context visible to environment providers, command resolvers, and spawn hooks. |
-| [RunnerSpawnOptionsContext](/docs/plugin-api/schemas/runner-spawn-options-context.schema.json) | Runner spawn-options context visible to spawn options providers before command construction. |
-| [RunnerSpawnOptionsProviderProposal](/docs/plugin-api/schemas/runner-spawn-options-provider-proposal.schema.json) | Spawn-options provider proposal. Core applies defaults before command construction. |
-| [RunnerEnvironmentProposal](/docs/plugin-api/schemas/runner-environment-proposal.schema.json) | Environment provider proposal. Core merges allowed fields only. |
-| [RunnerCommandResolverProposal](/docs/plugin-api/schemas/runner-command-resolver-proposal.schema.json) | Command resolver proposal. Final command construction remains core-owned. |
-| [RunnerSpawnHookProposal](/docs/plugin-api/schemas/runner-spawn-hook-proposal.schema.json) | Spawn hook proposal, including optional block reason. |
-| [RunnerResolvedSpawnOptions](/docs/plugin-api/schemas/runner-resolved-spawn-options.schema.json) | Resolved spawn options after Runner spawn-options providers are applied and audited. |
-| [RunnerResolvedSpawnPlan](/docs/plugin-api/schemas/runner-resolved-spawn-plan.schema.json) | Resolved spawn plan after Runner plugin extensions are applied and audited. |
+| [RunnerSpawnContext](/plugin-api/schemas/runner-spawn-context.schema.json) | Runner spawn context visible to environment providers, command resolvers, and spawn hooks. |
+| [RunnerSpawnOptionsContext](/plugin-api/schemas/runner-spawn-options-context.schema.json) | Runner spawn-options context visible to spawn options providers before command construction. |
+| [RunnerSpawnOptionsProviderProposal](/plugin-api/schemas/runner-spawn-options-provider-proposal.schema.json) | Spawn-options provider proposal. Core applies defaults before command construction. |
+| [RunnerEnvironmentProposal](/plugin-api/schemas/runner-environment-proposal.schema.json) | Environment provider proposal. Core merges allowed fields only. |
+| [RunnerCommandResolverProposal](/plugin-api/schemas/runner-command-resolver-proposal.schema.json) | Command resolver proposal. Final command construction remains core-owned. |
+| [RunnerSpawnHookProposal](/plugin-api/schemas/runner-spawn-hook-proposal.schema.json) | Spawn hook proposal, including optional block reason. |
+| [RunnerResolvedSpawnOptions](/plugin-api/schemas/runner-resolved-spawn-options.schema.json) | Resolved spawn options after Runner spawn-options providers are applied and audited. |
+| [RunnerResolvedSpawnPlan](/plugin-api/schemas/runner-resolved-spawn-plan.schema.json) | Resolved spawn plan after Runner plugin extensions are applied and audited. |
 
 ## Agent extensions
 
 | Schema | Description |
 |---|---|
-| [AgentDescriptor](/docs/plugin-api/schemas/agent-descriptor.schema.json) | Static agent descriptor used by plugin-backed agent adapters and Web selectors. |
-| [AgentCapabilityProviderResult](/docs/plugin-api/schemas/agent-capability-provider-result.schema.json) | Dynamic agent capability provider output. |
-| [AgentCapabilityProviderSnapshot](/docs/plugin-api/schemas/agent-capability-provider-snapshot.schema.json) | Runner-published agent capability provider snapshot. |
-| [AgentHistoryImportResult](/docs/plugin-api/schemas/agent-history-import-result.schema.json) | Normalized history import output for agent-native sessions. |
+| [AgentDescriptor](/plugin-api/schemas/agent-descriptor.schema.json) | Static agent descriptor used by plugin-backed agent adapters and Web selectors. |
+| [AgentCapabilityProviderResult](/plugin-api/schemas/agent-capability-provider-result.schema.json) | Dynamic agent capability provider output. |
+| [AgentCapabilityProviderSnapshot](/plugin-api/schemas/agent-capability-provider-snapshot.schema.json) | Runner-published agent capability provider snapshot. |
+| [AgentHistoryImportResult](/plugin-api/schemas/agent-history-import-result.schema.json) | Normalized history import output for agent-native sessions. |
 
 ## Web descriptors
 
 | Schema | Description |
 |---|---|
-| [PluginWebContributions](/docs/plugin-api/schemas/plugin-web-contributions.schema.json) | Declarative Web descriptor contributions. Web never executes plugin JavaScript. |
-| [PluginWebContributionView](/docs/plugin-api/schemas/plugin-web-contribution-view.schema.json) | Plugin Web contributions with plugin and target metadata. |
+| [PluginWebContributions](/plugin-api/schemas/plugin-web-contributions.schema.json) | Declarative Web descriptor contributions. Web never executes plugin JavaScript. |
+| [PluginWebContributionView](/plugin-api/schemas/plugin-web-contribution-view.schema.json) | Plugin Web contributions with plugin and target metadata. |
 
 ## Marketplace
 
 | Schema | Description |
 |---|---|
-| [PluginMarketplaceCatalog](/docs/plugin-api/schemas/plugin-marketplace-catalog.schema.json) | Static marketplace catalog metadata. |
-| [PluginMarketplaceListResponse](/docs/plugin-api/schemas/plugin-marketplace-list-response.schema.json) | Marketplace catalog list response with installed state. |
-| [PluginMarketplaceDetailResponse](/docs/plugin-api/schemas/plugin-marketplace-detail-response.schema.json) | Marketplace detail response for one catalog entry. |
-| [PluginMarketplaceInstallRequest](/docs/plugin-api/schemas/plugin-marketplace-install-request.schema.json) | Marketplace install request selecting version, Runner placement, enable, reload, and overwrite options. |
-| [PluginMarketplaceInstallPlanResponse](/docs/plugin-api/schemas/plugin-marketplace-install-plan-response.schema.json) | Marketplace install-plan response with source metadata and the normal plugin install plan. |
+| [PluginMarketplaceCatalog](/plugin-api/schemas/plugin-marketplace-catalog.schema.json) | Static marketplace catalog metadata. |
+| [PluginMarketplaceListResponse](/plugin-api/schemas/plugin-marketplace-list-response.schema.json) | Marketplace catalog list response with installed state. |
+| [PluginMarketplaceDetailResponse](/plugin-api/schemas/plugin-marketplace-detail-response.schema.json) | Marketplace detail response for one catalog entry. |
+| [PluginMarketplaceInstallRequest](/plugin-api/schemas/plugin-marketplace-install-request.schema.json) | Marketplace install request selecting version, Runner placement, enable, reload, and overwrite options. |
+| [PluginMarketplaceInstallPlanResponse](/plugin-api/schemas/plugin-marketplace-install-plan-response.schema.json) | Marketplace install-plan response with source metadata and the normal plugin install plan. |
