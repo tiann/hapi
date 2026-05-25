@@ -349,6 +349,20 @@ export default function SettingsPage() {
     const [playingVoiceId, setPlayingVoiceId] = useState<string | null>(null)
     const currentAudioRef = useRef<HTMLAudioElement | null>(null)
 
+    // Voice proactive mode - read from localStorage, default false (reactive)
+    const [voiceProactive, setVoiceProactive] = useState<boolean>(() => {
+        return localStorage.getItem('hapi-voice-proactive') === 'true'
+    })
+
+    const handleVoiceProactiveChange = (value: boolean) => {
+        setVoiceProactive(value)
+        if (value) {
+            localStorage.setItem('hapi-voice-proactive', 'true')
+        } else {
+            localStorage.removeItem('hapi-voice-proactive')
+        }
+    }
+
     const fontScaleOptions = getFontScaleOptions()
     const terminalFontSizeOptions = getTerminalFontSizeOptions()
     const composerEnterBehaviorOptions = getComposerEnterBehaviorOptions()
@@ -988,7 +1002,6 @@ export default function SettingsPage() {
                                 </div>
                             )}
                         </div>
-
                         <div ref={voicePickerContainerRef} className="relative">
                             <button
                                 type="button"
@@ -1074,6 +1087,28 @@ export default function SettingsPage() {
                                     })}
                                 </div>
                             )}
+                        </div>
+
+                        <div className="border-t border-[var(--app-divider)] px-3 py-3">
+                            <div className="flex items-center justify-between">
+                                <span className="text-[var(--app-fg)]">{t('settings.voice.proactive')}</span>
+                                <button
+                                    type="button"
+                                    role="switch"
+                                    aria-checked={voiceProactive}
+                                    onClick={() => handleVoiceProactiveChange(!voiceProactive)}
+                                    className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus-visible:outline-none ${
+                                        voiceProactive ? 'bg-[var(--app-link)]' : 'bg-[var(--app-border)]'
+                                    }`}
+                                >
+                                    <span
+                                        className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-lg transition-transform ${
+                                            voiceProactive ? 'translate-x-5' : 'translate-x-0'
+                                        }`}
+                                    />
+                                </button>
+                            </div>
+                            <p className="mt-1 text-xs text-[var(--app-hint)]">{t('settings.voice.proactive.description')}</p>
                         </div>
                     </div>
 

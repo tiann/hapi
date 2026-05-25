@@ -418,6 +418,8 @@ export default {
   'settings.voice.autoDetect': 'Auto-detect',
   'settings.voice.voice': 'Voice',
   'settings.voice.voiceDefault': 'Default',
+  'settings.voice.proactive': 'Proactive voice',
+  'settings.voice.proactive.description': 'When on, the assistant narrates agent activity and speaks unprompted when the agent finishes a task. When off, it waits for you to speak first.',
   'settings.about.title': 'About',
   'settings.about.website': 'Website',
   'settings.about.appVersion': 'App Version',

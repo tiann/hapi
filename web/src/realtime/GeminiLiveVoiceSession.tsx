@@ -182,8 +182,10 @@ class GeminiLiveVoiceSessionImpl implements VoiceSession {
                     startAudioCapture(state.playbackContext!)
 
                     // Send initial context if available (no clientContent greeting — it breaks tool calls)
+                    // In reactive mode (default) send silently so Gemini doesn't narrate on connect.
                     if (config.initialContext) {
-                        sendClientContent(`[Context] ${config.initialContext}`)
+                        const proactive = localStorage.getItem('hapi-voice-proactive') === 'true'
+                        sendClientContent(`[Context] ${config.initialContext}`, proactive)
                     }
 
                     resolve()

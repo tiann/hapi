@@ -420,6 +420,8 @@ export default {
   'settings.voice.autoDetect': '自动检测',
   'settings.voice.voice': '声音',
   'settings.voice.voiceDefault': '默认',
+  'settings.voice.proactive': '主动语音',
+  'settings.voice.proactive.description': '开启后，助手会主动播报代理活动，并在任务完成时主动发言。关闭后，助手等待您先开口。',
   'settings.about.title': '关于',
   'settings.about.website': '官方网站',
   'settings.about.appVersion': '应用版本',
