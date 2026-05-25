@@ -132,4 +132,59 @@ describe('POST /api/voice/token', () => {
         if (prevAgent) process.env.ELEVENLABS_AGENT_ID = prevAgent
         else delete process.env.ELEVENLABS_AGENT_ID
     })
+
+    it('prefers voice-specific agent over ELEVENLABS_AGENT_ID when voiceId is provided', async () => {
+        const app = createApp()
+        const headers = {
+            ...(await authHeaders()),
+            'content-type': 'application/json'
+        }
+
+        const prevKey = process.env.ELEVENLABS_API_KEY
+        const prevAgent = process.env.ELEVENLABS_AGENT_ID
+        process.env.ELEVENLABS_API_KEY = 'test-key'
+        process.env.ELEVENLABS_AGENT_ID = 'env_default_agent'
+
+        const requests: Array<{ url: string; init?: RequestInit }> = []
+        const originalFetch = global.fetch
+        // @ts-expect-error test override
+        global.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+            const url = String(input)
+            requests.push({ url, init })
+
+            if (url.endsWith('/convai/agents') && init?.method === 'GET') {
+                return new Response(JSON.stringify({ agents: [] }), { status: 200 })
+            }
+            if (url.endsWith('/convai/agents/create') && init?.method === 'POST') {
+                return new Response(JSON.stringify({ agent_id: 'agent_voice_jessicax' }), { status: 200 })
+            }
+            if (url.includes('/convai/conversation/token?agent_id=')) {
+                return new Response(JSON.stringify({ token: 'tok_jessicax' }), { status: 200 })
+            }
+            return new Response('not found', { status: 404 })
+        }) as typeof fetch
+
+        const res = await app.request('/api/voice/token', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ voiceId: 'jessicax-voice-id' })
+        })
+
+        expect(res.status).toBe(200)
+        expect(await res.json()).toEqual({
+            allowed: true,
+            token: 'tok_jessicax',
+            agentId: 'agent_voice_jessicax'
+        })
+
+        const tokenCall = requests.find(r => r.url.includes('/convai/conversation/token?agent_id='))
+        expect(tokenCall?.url).toContain('agent_id=agent_voice_jessicax')
+        expect(tokenCall?.url).not.toContain('agent_id=env_default_agent')
+
+        global.fetch = originalFetch
+        if (prevKey) process.env.ELEVENLABS_API_KEY = prevKey
+        else delete process.env.ELEVENLABS_API_KEY
+        if (prevAgent) process.env.ELEVENLABS_AGENT_ID = prevAgent
+        else delete process.env.ELEVENLABS_AGENT_ID
+    })
 })

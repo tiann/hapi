@@ -349,6 +349,45 @@ describe('SettingsPage', () => {
         expect(screen.getByLabelText('Preview voice')).not.toBeDisabled()
     })
 
+    it('stops preview audio on unmount', async () => {
+        mockFetchVoices.mockResolvedValue([
+            { id: 'dyn1', name: 'Alice', previewUrl: 'https://example.com/alice.mp3', category: 'premade' },
+        ])
+
+        const pause = vi.fn()
+        const play = vi.fn(() => Promise.resolve())
+        const addEventListener = vi.fn()
+        class MockAudio {
+            pause = pause
+            play = play
+            addEventListener = addEventListener
+            constructor(_url: string) {}
+        }
+        const OriginalAudio = globalThis.Audio
+        const OriginalWindowAudio = window.Audio
+        // @ts-expect-error test override
+        globalThis.Audio = MockAudio
+        // @ts-expect-error test override
+        window.Audio = MockAudio
+
+        const view = renderWithProviders(<SettingsPage />)
+        const pickerButton = screen.getByRole('button', { name: /Voice\s*Default/i })
+        fireEvent.click(pickerButton)
+        const aliceLabel = await screen.findByText('Alice')
+        const optionRow = aliceLabel.closest('[role="option"]')
+        expect(optionRow).toBeTruthy()
+        const enabledPreview = optionRow?.querySelector('button[aria-label="Preview voice"]') as HTMLButtonElement | null
+        expect(enabledPreview).toBeTruthy()
+        expect(enabledPreview?.disabled).toBe(false)
+        fireEvent.click(enabledPreview as HTMLElement)
+
+        view.unmount()
+        expect(pause).toHaveBeenCalled()
+
+        globalThis.Audio = OriginalAudio
+        window.Audio = OriginalWindowAudio
+    })
+
     it('selecting a voice calls localStorage.setItem with the voice id', async () => {
         mockFetchVoices.mockResolvedValue([
             { id: 'dyn1', name: 'Alice', previewUrl: '', category: 'premade' },

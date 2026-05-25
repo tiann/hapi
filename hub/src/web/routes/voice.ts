@@ -182,7 +182,7 @@ export function createVoiceRoutes(): Hono<WebAppEnv> {
         const apiKey = customApiKey || process.env.ELEVENLABS_API_KEY
         const voiceAgentMap = parseVoiceAgentMap()
         const mappedAgentId = voiceId ? voiceAgentMap[voiceId] : undefined
-        let agentId = customAgentId || mappedAgentId || process.env.ELEVENLABS_AGENT_ID
+        let agentId = customAgentId || mappedAgentId
 
         if (!apiKey) {
             console.warn('[Voice][Token] Missing API key', { requestId })
@@ -192,16 +192,28 @@ export function createVoiceRoutes(): Hono<WebAppEnv> {
             }, 400)
         }
 
-        // Auto-create agent if not configured
+        // If a voice was selected and no explicit mapping/custom agent is set,
+        // resolve/create a dedicated per-voice agent so selection always takes effect.
+        if (!agentId && voiceId) {
+            agentId = await getOrCreateAgentIdForVoice(apiKey, voiceId) ?? undefined
+        }
+
+        // Fallback to environment default agent only when no voice-specific route applies.
         if (!agentId) {
-            agentId = await getOrCreateAgentIdForVoice(apiKey, mappedAgentId ? undefined : voiceId) ?? undefined
-            if (!agentId) {
-                console.error('[Voice][Token] Failed to resolve/create agent ID', { requestId })
-                return c.json({
-                    allowed: false,
-                    error: 'Failed to create ElevenLabs agent automatically'
-                }, 500)
-            }
+            agentId = process.env.ELEVENLABS_AGENT_ID
+        }
+
+        // Final fallback for setups without configured agent id.
+        if (!agentId) {
+            agentId = await getOrCreateAgentIdForVoice(apiKey, undefined) ?? undefined
+        }
+
+        if (!agentId) {
+            console.error('[Voice][Token] Failed to resolve/create agent ID', { requestId })
+            return c.json({
+                allowed: false,
+                error: 'Failed to create ElevenLabs agent automatically'
+            }, 500)
         }
 
         try {

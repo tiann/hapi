@@ -447,6 +447,14 @@ export default function SettingsPage() {
         })
     }
 
+    useEffect(() => {
+        return () => {
+            currentAudioRef.current?.pause()
+            currentAudioRef.current = null
+            setPlayingVoiceId(null)
+        }
+    }, [])
+
     // Close dropdown when clicking outside
     useEffect(() => {
         if (!isOpen && !isAppearanceOpen && !isFontOpen && !isTerminalFontOpen && !isChatOpen && !isTerminalToolDisplayOpen && !isVoiceOpen && !isVoicePickerOpen) return
