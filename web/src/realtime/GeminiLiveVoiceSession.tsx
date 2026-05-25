@@ -212,9 +212,9 @@ class GeminiLiveVoiceSessionImpl implements VoiceSession {
                     }
                     if (serverContent.turnComplete) {
                         console.log('[GeminiLive] Turn complete')
-                        // Model done — unmute mic for next user turn
+                        // Restore to user's chosen mute state, not unconditionally unmuted
                         state.modelSpeaking = false
-                        state.recorder?.setMuted(false)
+                        state.recorder?.setMuted(state.micMuted)
                     }
                 }
 
@@ -279,17 +279,18 @@ class GeminiLiveVoiceSessionImpl implements VoiceSession {
     }
 
     sendContextualUpdate(update: string): void {
-        // Send as a system-like context message
-        sendClientContent(`[System Context Update] ${update}`)
+        // Append context without triggering a response — turnComplete: false accumulates
+        // silently until the next sendTextMessage fires with turnComplete: true
+        sendClientContent(`[System Context Update] ${update}`, false)
     }
 }
 
-function sendClientContent(text: string): void {
+function sendClientContent(text: string, turnComplete = true): void {
     if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return
     state.ws.send(JSON.stringify({
         clientContent: {
             turns: [{ role: 'user', parts: [{ text }] }],
-            turnComplete: true
+            turnComplete
         }
     }))
 }
