@@ -27,4 +27,21 @@ describe('sessionLastSeen', () => {
 
         setItem.mockRestore()
     })
+
+    it('returns zero when localStorage getter throws', () => {
+        const localStorageDescriptor = Object.getOwnPropertyDescriptor(window, 'localStorage')
+        Object.defineProperty(window, 'localStorage', {
+            configurable: true,
+            get() {
+                throw new Error('storage denied')
+            },
+        })
+
+        expect(getSessionLastSeenAt('session-a')).toBe(0)
+        expect(() => markSessionSeen('session-a', 1000)).not.toThrow()
+
+        if (localStorageDescriptor) {
+            Object.defineProperty(window, 'localStorage', localStorageDescriptor)
+        }
+    })
 })

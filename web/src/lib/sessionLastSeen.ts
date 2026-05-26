@@ -2,13 +2,25 @@ const STORAGE_KEY = 'hapi.sessionLastSeen.v1'
 
 type LastSeenStore = Record<string, number>
 
+function getLocalStorage(): Storage | null {
+    if (typeof window === 'undefined') {
+        return null
+    }
+    try {
+        return window.localStorage
+    } catch {
+        return null
+    }
+}
+
 function readStore(): LastSeenStore {
-    if (typeof localStorage === 'undefined') {
+    const storage = getLocalStorage()
+    if (!storage) {
         return {}
     }
 
     try {
-        const raw = localStorage.getItem(STORAGE_KEY)
+        const raw = storage.getItem(STORAGE_KEY)
         if (!raw) {
             return {}
         }
@@ -23,11 +35,12 @@ function readStore(): LastSeenStore {
 }
 
 function writeStore(store: LastSeenStore): void {
-    if (typeof localStorage === 'undefined') {
+    const storage = getLocalStorage()
+    if (!storage) {
         return
     }
     try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(store))
+        storage.setItem(STORAGE_KEY, JSON.stringify(store))
     } catch {
         // Ignore storage errors
     }
