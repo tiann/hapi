@@ -1,7 +1,7 @@
 /**
  * HAPI MCP STDIO Bridge
  *
- * Minimal STDIO MCP server exposing a single tool `change_title`.
+ * Minimal STDIO MCP server exposing HAPI tools such as `change_title` and `display_image`.
  * On invocation it forwards the tool call to an existing HAPI HTTP MCP server
  * using the StreamableHTTPClientTransport.
  *
@@ -64,7 +64,7 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
       version: '1.0.0',
     });
 
-    // Register the single tool and forward to HTTP MCP
+    // Register tools and forward to HTTP MCP
     const changeTitleInputSchema: z.ZodTypeAny = z.object({
       title: z.string().describe('The new title for the chat session'),
     });
@@ -86,6 +86,36 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
           return {
             content: [
               { type: 'text' as const, text: `Failed to change chat title: ${error instanceof Error ? error.message : String(error)}` },
+            ],
+            isError: true,
+          };
+        }
+      }
+    );
+
+
+
+    const displayImageInputSchema: z.ZodTypeAny = z.object({
+      path: z.string().describe('Local filesystem path of the image to display to the user'),
+      title: z.string().optional().describe('Optional display title or filename for the image'),
+    });
+
+    server.registerTool<any, any>(
+      'display_image',
+      {
+        description: 'Display a local image file inline in the current HAPI chat session',
+        title: 'Display Image',
+        inputSchema: displayImageInputSchema,
+      },
+      async (args: Record<string, unknown>) => {
+        try {
+          const client = await ensureHttpClient();
+          const response = await client.callTool({ name: 'display_image', arguments: args });
+          return response as any;
+        } catch (error) {
+          return {
+            content: [
+              { type: 'text' as const, text: `Failed to display image: ${error instanceof Error ? error.message : String(error)}` },
             ],
             isError: true,
           };

@@ -17,6 +17,7 @@ export const TITLE_INSTRUCTION = trimIdent(`
     Prefer calling functions.hapi__change_title.
     If that exact tool name is unavailable, call an equivalent alias such as hapi__change_title, mcp__hapi__change_title, or hapi_change_title.
     If the task focus changes significantly later, call the title tool again with a better title.
+    When you create or find a local image file that the user should see, call functions.hapi__display_image with the image path. If that exact tool name is unavailable, use an equivalent alias such as hapi__display_image, mcp__hapi__display_image, or hapi_display_image.
 `);
 
 /**
