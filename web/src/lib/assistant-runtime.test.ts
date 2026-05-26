@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { aggregateResponseGroups, assignThreadMessageIds } from './assistant-runtime'
+import {
+    type BlockWithThreadMessageId,
+    aggregateResponseGroups,
+    assignThreadMessageIds,
+    assignThreadMessageIdsWithStableWrappers
+} from './assistant-runtime'
 import type { AgentEventBlock, AgentTextBlock, CliOutputBlock, ToolCallBlock, UserTextBlock } from '@/chat/types'
 import type { ToolGroupBlock, VisibleChatBlock } from '@/chat/toolGroups'
 
@@ -113,6 +118,16 @@ describe('assignThreadMessageIds', () => {
             'user-text:u1',
             'agent-text:dup~1'
         ])
+    })
+
+    it('reuses wrapper objects from a WeakMap cache when block ref and thread id are unchanged', () => {
+        const block = agentText('a')
+        const cache = new WeakMap<VisibleChatBlock, BlockWithThreadMessageId>()
+        const first = assignThreadMessageIdsWithStableWrappers([block], cache)
+        const second = assignThreadMessageIdsWithStableWrappers([block, userText('u')], cache)
+        expect(second[0]).toBe(first[0])
+        expect(second[0].threadMessageId).toBe('agent-text:a')
+        expect(second[1].threadMessageId).toBe('user-text:u')
     })
 })
 

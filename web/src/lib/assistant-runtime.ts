@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from 'react'
+import { useCallback, useMemo, useRef } from 'react'
 import type React from 'react'
 import type { AppendMessage, AttachmentAdapter, ThreadMessageLike } from '@assistant-ui/react'
 import { useExternalMessageConverter, useExternalStoreRuntime } from '@assistant-ui/react'
@@ -286,9 +286,15 @@ export type BlockWithThreadMessageId = {
  * Uses `${kind}:${block.id}`; suffixes `~1`, `~2`, … when the same kind+id
  * appears more than once (should be rare — indicates duplicate hub rows or
  * a reducer bug, but must not crash the thread).
+ *
+ * Reuses `{ block, threadMessageId }` objects from `wrapperCache` when the
+ * reconciled `block` reference and computed id match, so
+ * `useExternalMessageConverter`'s WeakMap caches stay warm across streaming
+ * appends (see PR review).
  */
-export function assignThreadMessageIds(
-    blocks: readonly VisibleChatBlock[]
+export function assignThreadMessageIdsWithStableWrappers(
+    blocks: readonly VisibleChatBlock[],
+    wrapperCache: WeakMap<VisibleChatBlock, BlockWithThreadMessageId>
 ): BlockWithThreadMessageId[] {
     const seen = new Map<string, number>()
     return blocks.map((block) => {
@@ -296,8 +302,20 @@ export function assignThreadMessageIds(
         const occurrence = seen.get(base) ?? 0
         seen.set(base, occurrence + 1)
         const threadMessageId = occurrence === 0 ? base : `${base}~${occurrence}`
-        return { block, threadMessageId }
+        const cached = wrapperCache.get(block)
+        if (cached?.threadMessageId === threadMessageId) {
+            return cached
+        }
+        const next: BlockWithThreadMessageId = { block, threadMessageId }
+        wrapperCache.set(block, next)
+        return next
     })
+}
+
+export function assignThreadMessageIds(
+    blocks: readonly VisibleChatBlock[]
+): BlockWithThreadMessageId[] {
+    return assignThreadMessageIdsWithStableWrappers(blocks, new WeakMap())
 }
 
 function toThreadMessageLike(block: VisibleChatBlock, threadMessageId: string): ThreadMessageLike {
@@ -558,8 +576,14 @@ export function useHappyRuntime(props: {
     // The library's `joinExternalMessages` only preserves
     // `metadata.custom` from the first block of a joined chunk, so this
     // is the surface that survives the join.
+    const threadIdWrapperCacheRef = useRef(
+        new WeakMap<VisibleChatBlock, BlockWithThreadMessageId>()
+    )
     const blocksWithThreadIds = useMemo(
-        () => assignThreadMessageIds(props.blocks),
+        () => assignThreadMessageIdsWithStableWrappers(
+            props.blocks,
+            threadIdWrapperCacheRef.current
+        ),
         [props.blocks]
     )
 
