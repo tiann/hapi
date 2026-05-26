@@ -112,6 +112,7 @@ class QwenVoiceSessionImpl implements VoiceSession {
     }
 
     async startSession(config: VoiceSessionConfig): Promise<void> {
+        this.currentSessionConfig = null
         cleanup()
         state.statusCallback?.('connecting')
 
@@ -214,8 +215,11 @@ class QwenVoiceSessionImpl implements VoiceSession {
                     return
                 }
 
-                // Session updated - ready to go
+                // Session updated - only act on the first one (initial config ack).
+                // Subsequent session.update calls (for instruction appends) also
+                // echo session.updated — ignore those after setup is complete.
                 if (eventType === 'session.updated') {
+                    if (sessionReady) return
                     sessionReady = true
                     if (DEBUG) console.log('[Qwen] Session configured')
                     try {
@@ -359,6 +363,8 @@ class QwenVoiceSessionImpl implements VoiceSession {
     sendTextMessage(message: string): void {
         // Qwen only supports conversation.item.create for function_call_output.
         // Inject text as an instruction update then trigger a response.
+        // response.create without a prior conversation.item.create is valid —
+        // it generates from the current session context (updated instructions).
         this.updateInstructions(message)
         sendEvent('response.create')
     }
