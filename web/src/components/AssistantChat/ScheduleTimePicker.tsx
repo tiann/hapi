@@ -298,7 +298,7 @@ export function ScheduleTimePicker({ onSchedule, onClose, anchorRef, pendingSche
             }
             className={
                 isMobilePanel
-                    ? `z-50 box-border max-h-[min(85dvh,calc(var(--app-viewport-height,100dvh)-24px))] ${isContentConstrained ? 'overflow-y-auto' : 'overflow-y-visible'} rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] shadow-lg fixed inset-x-3 bottom-[calc(env(safe-area-inset-bottom)+12px)] sm:inset-x-auto sm:w-80`
+                    ? `z-50 box-border max-h-[min(85dvh,calc(var(--app-viewport-height,100dvh)-24px))] ${isContentConstrained ? 'overflow-y-auto' : 'overflow-y-visible'} rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] shadow-lg fixed inset-x-3 bottom-[calc(env(safe-area-inset-bottom)+12px)] sm:left-1/2 sm:right-auto sm:w-80 sm:-translate-x-1/2`
                     : `z-50 box-border w-80 max-w-[calc(100vw-16px)] ${isContentConstrained ? 'overflow-y-auto' : 'overflow-y-visible'} rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] shadow-lg`
             }
             onPointerDown={(e) => e.stopPropagation()}
