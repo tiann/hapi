@@ -155,10 +155,10 @@ function SessionsPage() {
         [sessions, selectedSessionId]
     )
     useEffect(() => {
-        if (!selectedSessionId) {
+        if (!selectedSessionId || !selectedSession) {
             return
         }
-        markSessionSeen(selectedSessionId, Math.max(Date.now(), selectedSession?.updatedAt ?? 0))
+        markSessionSeen(selectedSessionId, selectedSession.updatedAt)
     }, [selectedSessionId, selectedSession?.updatedAt])
     const isSessionsIndex = pathname === '/sessions' || pathname === '/sessions/'
     const sidebar = useSidebarResize()
