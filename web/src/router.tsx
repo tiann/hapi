@@ -35,7 +35,6 @@ import { useTranslation } from '@/lib/use-translation'
 import { fetchLatestMessages, seedMessageWindowFromSession } from '@/lib/message-window-store'
 import { clearDraftsAfterSend } from '@/lib/clearDraftsAfterSend'
 import { markSessionSeen } from '@/lib/sessionLastSeen'
-import { useSessionListStatusMode } from '@/hooks/useSessionListStatusMode'
 import type { Machine } from '@/types/api'
 import FilesPage from '@/routes/sessions/files'
 import FilePage from '@/routes/sessions/file'
@@ -155,13 +154,12 @@ function SessionsPage() {
         () => sessions.find((session) => session.id === selectedSessionId) ?? null,
         [sessions, selectedSessionId]
     )
-    const { sessionListStatusMode } = useSessionListStatusMode()
     useEffect(() => {
-        if (sessionListStatusMode !== 'detailed' || !selectedSessionId || !selectedSession) {
+        if (!selectedSessionId || !selectedSession) {
             return
         }
         markSessionSeen(selectedSessionId, selectedSession.updatedAt)
-    }, [sessionListStatusMode, selectedSessionId, selectedSession?.updatedAt])
+    }, [selectedSessionId, selectedSession?.updatedAt])
     const isSessionsIndex = pathname === '/sessions' || pathname === '/sessions/'
     const sidebar = useSidebarResize()
     const handleNewSessionInDirectory = useCallback((args: { machineId: string | null; directory: string }) => {

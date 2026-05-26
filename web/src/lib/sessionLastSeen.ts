@@ -26,7 +26,11 @@ function writeStore(store: LastSeenStore): void {
     if (typeof localStorage === 'undefined') {
         return
     }
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(store))
+    try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(store))
+    } catch {
+        // Ignore storage errors
+    }
 }
 
 export function getSessionLastSeenAt(sessionId: string): number {
