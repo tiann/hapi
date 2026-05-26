@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "docs:dev": "vitepress dev",
-    "docs:build": "vitepress build",
+    "docs:build": "bun run --cwd .. docs:plugin-api && vitepress build",
     "docs:preview": "vitepress preview"
   },
   "keywords": ["hapi", "ai", "agent", "documentation"],

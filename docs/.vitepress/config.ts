@@ -24,6 +24,15 @@ export default defineConfig({
       { text: 'How it Works', link: '/guide/how-it-works' },
       { text: 'Cursor Agent', link: '/guide/cursor' },
       { text: 'Voice Assistant', link: '/guide/voice-assistant' },
+      {
+        text: 'Plugins',
+        items: [
+          { text: 'Overview', link: '/guide/plugins' },
+          { text: 'Quickstart', link: '/reference/plugin-api/quickstart' },
+          { text: 'API Reference', link: '/reference/plugin-api/' },
+          { text: 'Schemas & OpenAPI', link: '/reference/plugin-api/schemas' }
+        ]
+      },
       { text: 'Why HAPI', link: '/guide/why-hapi' },
       { text: 'FAQ', link: '/guide/faq' }
     ],

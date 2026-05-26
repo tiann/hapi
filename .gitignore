@@ -6,6 +6,7 @@
 **/.vitepress/cache/
 **/dist-exe/
 **/*.tsbuildinfo
+docs/public/plugin-api/
 hub/src/web/embeddedAssets.generated.ts
 hub/src/generated/
 
