@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it } from 'bun:test'
 import type { Session } from './schemas'
 import { getPendingRequestKinds, toSessionSummary } from './sessionSummary'
 
