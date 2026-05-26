@@ -28,8 +28,14 @@ export function VoiceBackendSession(props: VoiceBackendSessionProps) {
 
     useEffect(() => {
         let cancelled = false
+        setBackend(null)
         fetchVoiceBackend(props.api).then((resp) => {
             if (!cancelled) setBackend(resp.backend)
+        }).catch((err: unknown) => {
+            if (!cancelled) {
+                const msg = err instanceof Error ? err.message : 'Could not detect voice backend'
+                props.onStatusChange?.('error', msg)
+            }
         })
         return () => {
             cancelled = true

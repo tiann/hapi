@@ -215,17 +215,14 @@ export interface GeminiTokenResponse {
 
 /**
  * Discover which voice backend the hub is configured to use.
+ * Throws on network or server error — callers must handle failures explicitly.
  */
 export async function fetchVoiceBackend(api: ApiClient): Promise<VoiceBackendResponse> {
-    try {
-        const result = await api.fetchVoiceBackend()
-        const backend = result.backend === 'gemini-live' ? 'gemini-live'
-            : result.backend === 'qwen-realtime' ? 'qwen-realtime'
-            : 'elevenlabs'
-        return { backend } as VoiceBackendResponse
-    } catch {
-        return { backend: 'elevenlabs' }
-    }
+    const result = await api.fetchVoiceBackend()
+    const backend = result.backend === 'gemini-live' ? 'gemini-live'
+        : result.backend === 'qwen-realtime' ? 'qwen-realtime'
+        : 'elevenlabs'
+    return { backend } as VoiceBackendResponse
 }
 
 /**
