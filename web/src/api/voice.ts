@@ -215,14 +215,15 @@ export interface GeminiTokenResponse {
 
 /**
  * Discover which voice backend the hub is configured to use.
- * Throws on network or server error — callers must handle failures explicitly.
+ * Throws on network/server error or unrecognised backend value — callers must handle failures explicitly.
  */
 export async function fetchVoiceBackend(api: ApiClient): Promise<VoiceBackendResponse> {
     const result = await api.fetchVoiceBackend()
-    const backend = result.backend === 'gemini-live' ? 'gemini-live'
-        : result.backend === 'qwen-realtime' ? 'qwen-realtime'
-        : 'elevenlabs'
-    return { backend } as VoiceBackendResponse
+    const { backend } = result
+    if (backend === 'elevenlabs' || backend === 'gemini-live' || backend === 'qwen-realtime') {
+        return { backend }
+    }
+    throw new Error(`Unrecognised voice backend: ${backend}`)
 }
 
 /**
