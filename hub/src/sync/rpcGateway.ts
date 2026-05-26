@@ -1,4 +1,4 @@
-import type { AgentFlavor, CodexCollaborationMode, PermissionMode } from '@hapi/protocol/types'
+import type { CodexCollaborationMode, PermissionMode } from '@hapi/protocol/types'
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
 import type {
     CodexModelSummary,
@@ -14,10 +14,34 @@ import type {
     OpencodeModelsResponse,
     OpencodeModelSummary,
     PathExistsResponse,
+    AgentHistoryImportResponse,
+    RunnerSpawnOptionsPreviewRequest,
+    RunnerSpawnOptionsPreviewResponse,
     SlashCommandsResponse,
     UploadFileResponse
 } from '@hapi/protocol/apiTypes'
+import { AgentHistoryImportResponseSchema, RunnerSpawnOptionsPreviewResponseSchema } from '@hapi/protocol/apiTypes'
 import type { Server } from 'socket.io'
+import {
+    PluginDeleteResultSchema,
+    PluginDetailResponseSchema,
+    PluginInstallResultSchema,
+    PluginLocalDirectoryListResponseSchema,
+    PluginReloadResultSchema,
+    RunnerPluginInventorySchema,
+    RunnerPluginActionInvokeResponseSchema,
+    RunnerPluginUnsupportedInstallResultSchema,
+    type PluginDeleteResult,
+    type PluginDetailResponse,
+    type PluginInstallLocalRequest,
+    type PluginInstallPackageRequest,
+    type PluginInstallResult,
+    type PluginLocalDirectoryListResponse,
+    type PluginReloadResult,
+    type RunnerPluginInventory,
+    type RunnerPluginActionInvokeResponse,
+    type RunnerPluginUnsupportedInstallResult
+} from '@hapi/protocol/plugins/admin'
 import type { RpcRegistry } from '../socket/rpcRegistry'
 
 const DEFAULT_RPC_TIMEOUT_MS = 30_000
@@ -107,7 +131,7 @@ export class RpcGateway {
     async spawnSession(
         machineId: string,
         directory: string,
-        agent: AgentFlavor = 'claude',
+        agent: string = 'claude',
         model?: string,
         modelReasoningEffort?: string,
         yolo?: boolean,
@@ -115,13 +139,15 @@ export class RpcGateway {
         worktreeName?: string,
         resumeSessionId?: string,
         effort?: string,
-        permissionMode?: PermissionMode
+        permissionMode?: PermissionMode,
+        pluginFields?: Record<string, unknown>,
+        manualFields?: string[]
     ): Promise<{ type: 'success'; sessionId: string } | { type: 'error'; message: string }> {
         try {
             const result = await this.machineRpc(
                 machineId,
                 RPC_METHODS.SpawnHappySession,
-                { type: 'spawn-in-directory', directory, agent, model, modelReasoningEffort, yolo, sessionType, worktreeName, resumeSessionId, effort, permissionMode }
+                { type: 'spawn-in-directory', directory, agent, model, modelReasoningEffort, yolo, sessionType, worktreeName, resumeSessionId, effort, permissionMode, pluginFields, manualFields }
             )
             if (result && typeof result === 'object') {
                 const obj = result as Record<string, unknown>
@@ -248,6 +274,95 @@ export class RpcGateway {
 
     async listCursorModelsForMachine(machineId: string): Promise<RpcListCursorModelsResponse> {
         return await this.machineRpc(machineId, RPC_METHODS.ListCursorModels, {}, MODEL_LIST_RPC_TIMEOUT_MS) as RpcListCursorModelsResponse
+    }
+
+    async listRunnerPlugins(machineId: string): Promise<RunnerPluginInventory> {
+        const result = await this.machineRpc(machineId, RPC_METHODS.RunnerPluginsList, {})
+        return RunnerPluginInventorySchema.parse(result)
+    }
+
+    async inspectRunnerPlugin(machineId: string, pluginId: string): Promise<PluginDetailResponse> {
+        const result = await this.machineRpc(machineId, RPC_METHODS.RunnerPluginsInspect, { pluginId })
+        return PluginDetailResponseSchema.parse(result)
+    }
+
+    async enableRunnerPlugin(machineId: string, pluginId: string, config?: Record<string, unknown>, reload = true): Promise<PluginReloadResult> {
+        const result = await this.machineRpc(machineId, RPC_METHODS.RunnerPluginsEnable, { pluginId, ...(config ? { config } : {}), reload })
+        return PluginReloadResultSchema.parse(result)
+    }
+
+    async disableRunnerPlugin(machineId: string, pluginId: string, reload = true): Promise<PluginReloadResult> {
+        const result = await this.machineRpc(machineId, RPC_METHODS.RunnerPluginsDisable, { pluginId, reload })
+        return PluginReloadResultSchema.parse(result)
+    }
+
+    async updateRunnerPluginConfig(machineId: string, pluginId: string, config: Record<string, unknown>): Promise<PluginReloadResult> {
+        const result = await this.machineRpc(machineId, RPC_METHODS.RunnerPluginsConfigUpdate, { pluginId, config })
+        return PluginReloadResultSchema.parse(result)
+    }
+
+    async reloadRunnerPlugins(machineId: string, pluginId?: string): Promise<PluginReloadResult> {
+        const result = await this.machineRpc(machineId, RPC_METHODS.RunnerPluginsReload, { ...(pluginId ? { pluginId } : {}) })
+        return PluginReloadResultSchema.parse(result)
+    }
+
+    async prepareRunnerPluginInstall(machineId: string, payload: unknown = {}): Promise<RunnerPluginUnsupportedInstallResult> {
+        const result = await this.machineRpc(machineId, RPC_METHODS.RunnerPluginsInstallPrepare, payload)
+        return RunnerPluginUnsupportedInstallResultSchema.parse(result)
+    }
+
+    async commitRunnerPluginInstall(machineId: string, payload: unknown = {}): Promise<RunnerPluginUnsupportedInstallResult> {
+        const result = await this.machineRpc(machineId, RPC_METHODS.RunnerPluginsInstallCommit, payload)
+        return RunnerPluginUnsupportedInstallResultSchema.parse(result)
+    }
+
+    async listRunnerPluginDirectory(machineId: string, path?: string): Promise<PluginLocalDirectoryListResponse> {
+        const result = await this.machineRpc(machineId, RPC_METHODS.RunnerPluginsLocalDirectory, { ...(path ? { path } : {}) })
+        return PluginLocalDirectoryListResponseSchema.parse(result)
+    }
+
+    async installRunnerPluginLocal(machineId: string, payload: PluginInstallLocalRequest): Promise<PluginInstallResult> {
+        const result = await this.machineRpc(machineId, RPC_METHODS.RunnerPluginsInstallLocal, payload, MODEL_LIST_RPC_TIMEOUT_MS)
+        return PluginInstallResultSchema.parse(result)
+    }
+
+    async installRunnerPluginPackage(machineId: string, payload: PluginInstallPackageRequest): Promise<PluginInstallResult> {
+        const result = await this.machineRpc(machineId, RPC_METHODS.RunnerPluginsInstallPackage, payload, MODEL_LIST_RPC_TIMEOUT_MS)
+        return PluginInstallResultSchema.parse(result)
+    }
+
+    async deleteRunnerPlugin(machineId: string, pluginId: string, reload = true): Promise<PluginDeleteResult> {
+        const result = await this.machineRpc(machineId, RPC_METHODS.RunnerPluginsDelete, { pluginId, reload })
+        return PluginDeleteResultSchema.parse(result)
+    }
+
+    async invokeRunnerPluginAction(
+        machineId: string,
+        payload: {
+            pluginId: string
+            capabilityId?: string
+            actionId: string
+            namespace: string
+            sessionId?: string
+            cwd?: string
+            payload?: unknown
+        }
+    ): Promise<RunnerPluginActionInvokeResponse> {
+        const result = await this.machineRpc(machineId, RPC_METHODS.RunnerPluginActionInvoke, payload)
+        return RunnerPluginActionInvokeResponseSchema.parse(result)
+    }
+
+    async previewRunnerSpawnOptions(machineId: string, payload: RunnerSpawnOptionsPreviewRequest): Promise<RunnerSpawnOptionsPreviewResponse> {
+        const result = await this.machineRpc(machineId, RPC_METHODS.RunnerSpawnOptionsPreview, payload)
+        return RunnerSpawnOptionsPreviewResponseSchema.parse(result)
+    }
+
+    async importRunnerAgentHistory(
+        machineId: string,
+        payload: { agentId: string; nativeSessionId: string; providerId?: string }
+    ): Promise<AgentHistoryImportResponse> {
+        const result = await this.machineRpc(machineId, RPC_METHODS.RunnerAgentHistoryImport, payload, MODEL_LIST_RPC_TIMEOUT_MS)
+        return AgentHistoryImportResponseSchema.parse(result)
     }
 
     async listOpencodeModelsForSession(sessionId: string): Promise<RpcListOpencodeModelsResponse> {

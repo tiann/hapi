@@ -3,18 +3,17 @@ import type { Server } from 'socket.io'
 import type { RpcRegistry } from '../socket/rpcRegistry'
 import { RpcGateway } from './rpcGateway'
 
-function createGateway() {
+function createGateway(responder?: (payload: { method: string; params: string }) => unknown) {
     const timeouts: number[] = []
     const socket = {
         timeout(timeoutMs: number) {
             timeouts.push(timeoutMs)
             return {
                 async emitWithAck(_event: string, payload: { method: string; params: string }) {
-                    return JSON.stringify({
-                        success: true,
-                        method: payload.method,
-                        params: JSON.parse(payload.params) as unknown
-                    })
+                    const value = responder
+                        ? responder(payload)
+                        : { success: true, method: payload.method, params: JSON.parse(payload.params) as unknown }
+                    return JSON.stringify(value)
                 }
             }
         }
@@ -62,3 +61,62 @@ describe('RpcGateway RPC timeouts', () => {
     })
 })
 
+describe('RpcGateway spawnSession', () => {
+    it('forwards plugin agent ids to the machine-scoped spawn RPC', async () => {
+        const seen: Array<{ method: string; params: unknown }> = []
+        const { gateway } = createGateway((payload) => {
+            seen.push({ method: payload.method, params: JSON.parse(payload.params) as unknown })
+            return { type: 'success', sessionId: 'session-1' }
+        })
+
+        const result = await gateway.spawnSession('machine-1', '/repo', 'vendor:example-agent')
+
+        expect(result).toEqual({ type: 'success', sessionId: 'session-1' })
+        expect(seen).toEqual([
+            {
+                method: 'machine-1:spawn-happy-session',
+                params: expect.objectContaining({
+                    type: 'spawn-in-directory',
+                    directory: '/repo',
+                    agent: 'vendor:example-agent'
+                })
+            }
+        ])
+    })
+})
+
+
+
+describe('RpcGateway runner plugin RPC methods', () => {
+    it('uses machine-scoped runner plugin method names', async () => {
+        const seen: Array<{ method: string; params: unknown }> = []
+        const { gateway } = createGateway((payload) => {
+            seen.push({ method: payload.method, params: JSON.parse(payload.params) as unknown })
+            return { machineId: 'machine-1', updatedAt: 1, plugins: [], diagnostics: [] }
+        })
+
+        const result = await gateway.listRunnerPlugins('machine-1')
+
+        expect(result.machineId).toBe('machine-1')
+        expect(seen).toEqual([{ method: 'machine-1:runner.plugins.list', params: {} }])
+    })
+
+    it('uses machine-scoped agent history import method names', async () => {
+        const seen: Array<{ method: string; params: unknown }> = []
+        const { gateway } = createGateway((payload) => {
+            seen.push({ method: payload.method, params: JSON.parse(payload.params) as unknown })
+            return { messages: [{ role: 'user', content: 'hello' }] }
+        })
+
+        const result = await gateway.importRunnerAgentHistory('machine-1', {
+            agentId: 'vendor:example-agent',
+            nativeSessionId: 'native-session-1'
+        })
+
+        expect(result).toEqual({ messages: [{ role: 'user', content: 'hello' }] })
+        expect(seen).toEqual([{
+            method: 'machine-1:runner.agent.history.import',
+            params: { agentId: 'vendor:example-agent', nativeSessionId: 'native-session-1' }
+        }])
+    })
+})

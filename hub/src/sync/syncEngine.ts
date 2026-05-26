@@ -8,7 +8,10 @@
  */
 
 import { isKnownFlavor, type LocalResumeTarget, type ResumableSession } from '@hapi/protocol'
-import type { SlashCommandsResponse } from '@hapi/protocol/apiTypes'
+import type { AgentHistoryImportResponse, SlashCommandsResponse } from '@hapi/protocol/apiTypes'
+import type { MessageSendPlan } from '@hapi/protocol/plugins'
+import type { RunnerSpawnOptionsPreviewRequest, RunnerSpawnOptionsPreviewResponse } from '@hapi/protocol/apiTypes'
+import type { PluginDeleteResult, PluginDetailResponse, PluginInstallLocalRequest, PluginInstallPackageRequest, PluginInstallResult, PluginLocalDirectoryListResponse, PluginReloadResult, RunnerPluginActionInvokeResponse, RunnerPluginInventory, RunnerPluginUnsupportedInstallResult } from '@hapi/protocol/plugins/admin'
 import type { AgentFlavor, CodexCollaborationMode, DecryptedMessage, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
 import { unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
 import type { Server } from 'socket.io'
@@ -363,7 +366,7 @@ export class SyncEngine {
                 previewUrl?: string
             }>
             sentFrom?: 'telegram-bot' | 'webapp'
-            scheduledAt?: number | null
+            plan?: MessageSendPlan
         }
     ): Promise<void> {
         await this.messageService.sendMessage(sessionId, payload)
@@ -465,7 +468,7 @@ export class SyncEngine {
     async spawnSession(
         machineId: string,
         directory: string,
-        agent: AgentFlavor = 'claude',
+        agent: string = 'claude',
         model?: string,
         modelReasoningEffort?: string,
         yolo?: boolean,
@@ -473,7 +476,9 @@ export class SyncEngine {
         worktreeName?: string,
         resumeSessionId?: string,
         effort?: string,
-        permissionMode?: PermissionMode
+        permissionMode?: PermissionMode,
+        pluginFields?: Record<string, unknown>,
+        manualFields?: string[]
     ): Promise<{ type: 'success'; sessionId: string } | { type: 'error'; message: string }> {
         return await this.rpcGateway.spawnSession(
             machineId,
@@ -486,8 +491,17 @@ export class SyncEngine {
             worktreeName,
             resumeSessionId,
             effort,
-            permissionMode
+            permissionMode,
+            pluginFields,
+            manualFields
         )
+    }
+
+    async importRunnerAgentHistory(
+        machineId: string,
+        payload: { agentId: string; nativeSessionId: string; providerId?: string }
+    ): Promise<AgentHistoryImportResponse> {
+        return await this.rpcGateway.importRunnerAgentHistory(machineId, payload)
     }
 
     private resolveFlavor(session: Session): AgentFlavor {
@@ -916,6 +930,70 @@ export class SyncEngine {
 
     async listCursorModelsForMachine(machineId: string): Promise<RpcListCursorModelsResponse> {
         return await this.rpcGateway.listCursorModelsForMachine(machineId)
+    }
+
+    async listRunnerPlugins(machineId: string): Promise<RunnerPluginInventory> {
+        return await this.rpcGateway.listRunnerPlugins(machineId)
+    }
+
+    async inspectRunnerPlugin(machineId: string, pluginId: string): Promise<PluginDetailResponse> {
+        return await this.rpcGateway.inspectRunnerPlugin(machineId, pluginId)
+    }
+
+    async enableRunnerPlugin(machineId: string, pluginId: string, config?: Record<string, unknown>, reload = true): Promise<PluginReloadResult> {
+        return await this.rpcGateway.enableRunnerPlugin(machineId, pluginId, config, reload)
+    }
+
+    async disableRunnerPlugin(machineId: string, pluginId: string, reload = true): Promise<PluginReloadResult> {
+        return await this.rpcGateway.disableRunnerPlugin(machineId, pluginId, reload)
+    }
+
+    async updateRunnerPluginConfig(machineId: string, pluginId: string, config: Record<string, unknown>): Promise<PluginReloadResult> {
+        return await this.rpcGateway.updateRunnerPluginConfig(machineId, pluginId, config)
+    }
+
+    async reloadRunnerPlugins(machineId: string, pluginId?: string): Promise<PluginReloadResult> {
+        return await this.rpcGateway.reloadRunnerPlugins(machineId, pluginId)
+    }
+
+    async prepareRunnerPluginInstall(machineId: string, payload: unknown = {}): Promise<RunnerPluginUnsupportedInstallResult> {
+        return await this.rpcGateway.prepareRunnerPluginInstall(machineId, payload)
+    }
+
+    async commitRunnerPluginInstall(machineId: string, payload: unknown = {}): Promise<RunnerPluginUnsupportedInstallResult> {
+        return await this.rpcGateway.commitRunnerPluginInstall(machineId, payload)
+    }
+
+    async listRunnerPluginDirectory(machineId: string, path?: string): Promise<PluginLocalDirectoryListResponse> {
+        return await this.rpcGateway.listRunnerPluginDirectory(machineId, path)
+    }
+
+    async installRunnerPluginLocal(machineId: string, payload: PluginInstallLocalRequest): Promise<PluginInstallResult> {
+        return await this.rpcGateway.installRunnerPluginLocal(machineId, payload)
+    }
+
+    async installRunnerPluginPackage(machineId: string, payload: PluginInstallPackageRequest): Promise<PluginInstallResult> {
+        return await this.rpcGateway.installRunnerPluginPackage(machineId, payload)
+    }
+
+    async deleteRunnerPlugin(machineId: string, pluginId: string, reload = true): Promise<PluginDeleteResult> {
+        return await this.rpcGateway.deleteRunnerPlugin(machineId, pluginId, reload)
+    }
+
+    async invokeRunnerPluginAction(machineId: string, payload: {
+        pluginId: string
+        capabilityId?: string
+        actionId: string
+        namespace: string
+        sessionId?: string
+        cwd?: string
+        payload?: unknown
+    }): Promise<RunnerPluginActionInvokeResponse> {
+        return await this.rpcGateway.invokeRunnerPluginAction(machineId, payload)
+    }
+
+    async previewRunnerSpawnOptions(machineId: string, payload: RunnerSpawnOptionsPreviewRequest): Promise<RunnerSpawnOptionsPreviewResponse> {
+        return await this.rpcGateway.previewRunnerSpawnOptions(machineId, payload)
     }
 
     async listOpencodeModelsForSession(sessionId: string): Promise<RpcListOpencodeModelsResponse> {

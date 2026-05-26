@@ -611,6 +611,12 @@ describe('MessageService.cancelQueuedMessage — future-scheduled message', () =
 // ---------------------------------------------------------------------------
 
 describe('MessageService.sendMessage with scheduledAt', () => {
+    const deliveryPlan = (notBefore: number) => ({
+        type: 'messageDelivery' as const,
+        delivery: { notBefore },
+        source: { pluginId: 'test.scheduler', actionId: 'schedule-send' }
+    })
+
     function makeNoopIo(): Server {
         let emittedUpdates: unknown[] = []
         return {
@@ -651,7 +657,7 @@ describe('MessageService.sendMessage with scheduledAt', () => {
         await service.sendMessage(session.id, {
             text: 'hello future',
             localId: 'local-sched',
-            scheduledAt: futureMs
+            plan: deliveryPlan(futureMs)
         })
 
         // DB must have the message with scheduledAt set
@@ -720,7 +726,7 @@ describe('MessageService.sendMessage with scheduledAt', () => {
         await service.sendMessage(session.id, {
             text: 'past scheduled',
             localId: 'local-past',
-            scheduledAt: pastMs
+            plan: deliveryPlan(pastMs)
         })
 
         // Past scheduled_at is already mature → emit to CLI immediately
@@ -755,7 +761,7 @@ describe('MessageService.sendMessage with scheduledAt', () => {
         await service.sendMessage(session.id, {
             text: 'toctou',
             localId: 'local-toctou',
-            scheduledAt
+            plan: deliveryPlan(scheduledAt)
         })
 
         // scheduledAt is in the past at emit-check time → must emit to CLI
@@ -778,7 +784,7 @@ describe('MessageService.sendMessage with scheduledAt', () => {
             service.sendMessage(session.id, {
                 text: 'hello',
                 localId: 'local-att',
-                scheduledAt: futureMs,
+                plan: deliveryPlan(futureMs),
                 attachments: [{
                     id: 'att-1',
                     filename: 'a.png',
@@ -804,7 +810,7 @@ describe('MessageService.sendMessage with scheduledAt', () => {
         await service.sendMessage(session.id, {
             text: 'hello',
             localId: 'local-att-2',
-            scheduledAt: futureMs,
+            plan: deliveryPlan(futureMs),
             attachments: []
         })
 
