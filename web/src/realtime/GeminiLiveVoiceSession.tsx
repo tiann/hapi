@@ -177,8 +177,17 @@ class GeminiLiveVoiceSessionImpl implements VoiceSession {
                     setupDone = true
                     if (DEBUG) console.log('[GeminiLive] Setup complete')
 
-                    // Await audio capture so setMuted runs after getUserMedia resolves
-                    await startAudioCapture(state.playbackContext!)
+                    // Await audio capture so setMuted runs after getUserMedia resolves.
+                    // Wrap so a mic failure rejects the outer startSession promise.
+                    try {
+                        await startAudioCapture(state.playbackContext!)
+                    } catch (error) {
+                        const message = error instanceof Error ? error.message : 'Microphone error'
+                        cleanup()
+                        state.statusCallback?.('error', message)
+                        reject(error instanceof Error ? error : new Error(message))
+                        return
+                    }
                     state.statusCallback?.('connected')
 
                     const proactive = localStorage.getItem('hapi-voice-proactive') === 'true'

@@ -192,7 +192,15 @@ class QwenVoiceSessionImpl implements VoiceSession {
                 if (eventType === 'session.updated') {
                     sessionReady = true
                     if (DEBUG) console.log('[Qwen] Session configured')
-                    await startAudioCapture(state.playbackContext!)
+                    try {
+                        await startAudioCapture(state.playbackContext!)
+                    } catch (error) {
+                        const message = error instanceof Error ? error.message : 'Microphone error'
+                        cleanup()
+                        state.statusCallback?.('error', message)
+                        reject(error instanceof Error ? error : new Error(message))
+                        return
+                    }
                     state.statusCallback?.('connected')
                     resolve()
                     return
