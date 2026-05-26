@@ -176,10 +176,10 @@ class GeminiLiveVoiceSessionImpl implements VoiceSession {
                 if (data.setupComplete && !setupDone) {
                     setupDone = true
                     if (DEBUG) console.log('[GeminiLive] Setup complete')
-                    state.statusCallback?.('connected')
 
-                    // Start audio capture
-                    startAudioCapture(state.playbackContext!)
+                    // Await audio capture so setMuted runs after getUserMedia resolves
+                    await startAudioCapture(state.playbackContext!)
+                    state.statusCallback?.('connected')
 
                     const proactive = localStorage.getItem('hapi-voice-proactive') === 'true'
 
@@ -323,11 +323,11 @@ function sendAudioChunk(base64Pcm: string): void {
     }))
 }
 
-function startAudioCapture(playbackContext: AudioContext): void {
+async function startAudioCapture(playbackContext: AudioContext): Promise<void> {
     state.player = new GeminiAudioPlayer(playbackContext)
     state.recorder = new GeminiAudioRecorder()
 
-    state.recorder.start(
+    await state.recorder.start(
         (pcm16Chunk) => sendAudioChunk(pcm16Chunk),
         (error) => {
             console.error('[GeminiLive] Audio capture error:', error)
@@ -335,10 +335,8 @@ function startAudioCapture(playbackContext: AudioContext): void {
         }
     )
 
-    // Apply initial mute state — the React effect may have run before the recorder existed
-    if (state.micMuted) {
-        state.recorder.setMuted(true)
-    }
+    // Apply mute state after recorder has a stream — safe to call either way
+    state.recorder.setMuted(state.micMuted)
 }
 
 // --- React component ---

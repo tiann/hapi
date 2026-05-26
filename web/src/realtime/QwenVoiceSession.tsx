@@ -192,8 +192,8 @@ class QwenVoiceSessionImpl implements VoiceSession {
                 if (eventType === 'session.updated') {
                     sessionReady = true
                     if (DEBUG) console.log('[Qwen] Session configured')
+                    await startAudioCapture(state.playbackContext!)
                     state.statusCallback?.('connected')
-                    startAudioCapture(state.playbackContext!)
                     resolve()
                     return
                 }
@@ -334,11 +334,11 @@ class QwenVoiceSessionImpl implements VoiceSession {
     }
 }
 
-function startAudioCapture(playbackContext: AudioContext): void {
+async function startAudioCapture(playbackContext: AudioContext): Promise<void> {
     state.player = new GeminiAudioPlayer(playbackContext)
     state.recorder = new GeminiAudioRecorder()
 
-    state.recorder.start(
+    await state.recorder.start(
         (base64Pcm) => {
             sendEvent('input_audio_buffer.append', { audio: base64Pcm })
         },
@@ -348,10 +348,8 @@ function startAudioCapture(playbackContext: AudioContext): void {
         }
     )
 
-    // Apply initial mute state — the React effect may have run before the recorder existed
-    if (state.micMuted) {
-        state.recorder.setMuted(true)
-    }
+    // Apply mute state after recorder has a stream — safe to call either way
+    state.recorder.setMuted(state.micMuted)
 }
 
 // --- React component ---

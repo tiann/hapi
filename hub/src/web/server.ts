@@ -92,7 +92,7 @@ function createGeminiProxyWebSocketHandler() {
             const upstream = upstreamMap.get(clientWs)
             pendingMap.delete(clientWs)
             if (upstream) {
-                try { upstream.close(code, reason) } catch { /* */ }
+                try { upstream.close(toClientCloseCode(code), (reason || 'Client closed').slice(0, 123)) } catch { /* */ }
                 upstreamMap.delete(clientWs)
             }
         }
@@ -143,7 +143,7 @@ function createQwenProxyWebSocketHandler() {
         close(clientWs: ServerWebSocket<unknown>, code: number, reason: string) {
             const upstream = upstreamMap.get(clientWs)
             if (upstream) {
-                try { upstream.close(code, reason) } catch { /* */ }
+                try { upstream.close(toClientCloseCode(code), (reason || 'Client closed').slice(0, 123)) } catch { /* */ }
                 upstreamMap.delete(clientWs)
             }
         }
