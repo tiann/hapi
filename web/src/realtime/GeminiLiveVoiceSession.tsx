@@ -190,7 +190,8 @@ class GeminiLiveVoiceSessionImpl implements VoiceSession {
 
                     if (!proactive) {
                         // Gemini won't self-start; send a greeting trigger so it introduces itself.
-                        sendClientContent('[Introduce yourself briefly and invite the user to speak.]', true)
+                        // Explicitly suppress model name and context leak.
+                        sendClientContent('[Greet the user as HAPI. Say a brief hello and invite them to speak. Do not mention Gemini or any model name. Do not reference any context or recent activity.]', true)
                     }
 
                     resolve()
