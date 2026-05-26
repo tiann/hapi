@@ -9,6 +9,15 @@ import {
 } from '@hapi/protocol/voice'
 import type { VoiceBackendType } from '@hapi/protocol/voice'
 
+function buildVoiceWsUrl(base: string, pathname: string): string {
+    const url = new URL(base)
+    url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
+    url.pathname = pathname
+    url.search = ''
+    url.hash = ''
+    return url.toString()
+}
+
 const tokenRequestSchema = z.object({
     customAgentId: z.string().optional(),
     customApiKey: z.string().optional(),
@@ -196,7 +205,7 @@ export function createVoiceRoutes(): Hono<WebAppEnv> {
         // not to localhost. HAPI_PUBLIC_URL overrides when set (e.g. behind a reverse proxy).
         const requestOrigin = new URL(c.req.url).origin
         const publicUrl = process.env.HAPI_PUBLIC_URL || requestOrigin
-        const wsProxyUrl = publicUrl.replace(/^http/, 'ws') + '/api/voice/gemini-ws'
+        const wsProxyUrl = buildVoiceWsUrl(publicUrl, '/api/voice/gemini-ws')
 
         return c.json({
             allowed: true,
@@ -219,7 +228,7 @@ export function createVoiceRoutes(): Hono<WebAppEnv> {
 
         const requestOrigin = new URL(c.req.url).origin
         const publicUrl = process.env.HAPI_PUBLIC_URL || requestOrigin
-        const wsProxyUrl = publicUrl.replace(/^http/, 'ws') + '/api/voice/qwen-ws'
+        const wsProxyUrl = buildVoiceWsUrl(publicUrl, '/api/voice/qwen-ws')
 
         return c.json({
             allowed: true,

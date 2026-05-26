@@ -152,9 +152,11 @@ class QwenVoiceSessionImpl implements VoiceSession {
                     // Build tools config
                     const tools = VOICE_TOOL_DEFINITIONS.map((td) => ({
                         type: 'function' as const,
-                        name: td.name,
-                        description: td.description,
-                        parameters: td.parameters
+                        function: {
+                            name: td.name,
+                            description: td.description,
+                            parameters: td.parameters
+                        }
                     }))
 
                     // Send session.update with full configuration
@@ -169,9 +171,8 @@ class QwenVoiceSessionImpl implements VoiceSession {
                         session: {
                             modalities: ['text', 'audio'],
                             voice: QWEN_REALTIME_VOICE,
-                            input_audio_format: 'pcm',
-                            input_audio_sample_rate: 16000,
-                            output_audio_format: 'pcm',
+                            input_audio_format: 'pcm16',
+                            output_audio_format: 'pcm24',
                             instructions,
                             temperature: 0.7,
                             turn_detection: {
