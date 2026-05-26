@@ -1,0 +1,46 @@
+{
+    "name": "Runner Launch Presets",
+    "display": {
+        "name": {
+            "en": "Runner Launch Presets",
+            "zh-CN": "Runner 启动预设"
+        },
+        "description": {
+            "en": "Applies default model, reasoning, and permission settings for Runner launches by agent and workspace.",
+            "zh-CN": "按 Agent 和工作区为 Runner 启动自动应用默认模型、思考强度和权限设置。"
+        },
+        "featureIntro": {
+            "en": "- Applies launch defaults before agent command args are built.\n- Matches all agents/workspaces or selected agents and workspace prefixes.\n- Supports model, Claude effort, Codex reasoning effort, and permission/yolo defaults.\n- User-selected fields in the New Session UI override presets.",
+            "zh-CN": "- 在构建 agent 启动参数前应用默认值。\n- 可匹配全部或指定 Agent、指定工作区前缀。\n- 支持模型、Claude effort、Codex reasoning effort、权限/yolo 默认值。\n- 新建会话 UI 中用户手动选择的字段优先。"
+        }
+    },
+    "description": "First-party Runner plugin for applying default launch settings by agent and workspace.",
+    "repo": "tiann/hapi",
+    "homepage": "https://github.com/tiann/hapi",
+    "author": {
+        "name": "HAPI",
+        "url": "https://github.com/tiann/hapi"
+    },
+    "license": "AGPL-3.0-only",
+    "categories": [
+        "runner",
+        "utility"
+    ],
+    "keywords": [
+        "runner",
+        "launch",
+        "presets",
+        "defaults",
+        "model",
+        "permissions"
+    ],
+    "runtimes": [
+        "runner"
+    ],
+    "capabilities": [
+        {
+            "kind": "runner.spawnExtension",
+            "label": "Runner Launch Presets"
+        }
+    ]
+}

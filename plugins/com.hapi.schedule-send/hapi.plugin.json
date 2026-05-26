@@ -1,0 +1,138 @@
+{
+    "id": "com.hapi.schedule-send",
+    "version": "0.1.1",
+    "name": "Schedule Send",
+    "description": "First-party cross-runtime plugin that contributes a Web composer action and a Hub message-action handler backed by the core reliable delivery queue.",
+    "display": {
+        "name": {
+            "en": "Schedule Send",
+            "zh-CN": "定时发送"
+        },
+        "description": {
+            "en": "Adds a delay picker to the chat composer and routes scheduled delivery through the Hub.",
+            "zh-CN": "在聊天输入框添加延迟发送选择器，并通过 Hub 可靠投递队列安排发送。"
+        },
+        "featureIntro": {
+            "en": "- Adds a delay picker to the chat composer.\n- Validates scheduled-message requests in the Hub runtime.\n- Uses HAPI reliable delivery so queued messages survive reloads.",
+            "zh-CN": "- 在聊天输入框提供延迟发送选择器。\n- 由 Hub 运行时校验定时消息请求。\n- 使用 HAPI 可靠投递队列，重载后仍可继续发送。"
+        }
+    },
+    "capabilities": [
+        {
+            "id": "schedule-send",
+            "kind": "chat.composer.messageAction",
+            "displayName": "Schedule Send",
+            "description": "Adds a delay picker to the chat composer and returns a Hub-owned message delivery plan.",
+            "display": {
+                "name": {
+                    "en": "Schedule Send",
+                    "zh-CN": "定时发送"
+                },
+                "description": {
+                    "en": "Adds a delay picker to the chat composer and returns a Hub-owned message delivery plan.",
+                    "zh-CN": "在聊天输入框添加延迟选择器，并返回由 Hub 管理的消息投递计划。"
+                }
+            },
+            "parts": {
+                "web": {
+                    "required": true,
+                    "contributions": [
+                        {
+                            "type": "composerAction",
+                            "id": "schedule-send"
+                        }
+                    ]
+                },
+                "hub": {
+                    "required": true,
+                    "contributions": [
+                        {
+                            "type": "messageAction",
+                            "id": "schedule-send"
+                        }
+                    ]
+                }
+            }
+        }
+    ],
+    "runtimes": {
+        "hub": {
+            "entry": "src/hub.js"
+        }
+    },
+    "contributions": {
+        "hub": {
+            "messageActions": [
+                {
+                    "id": "schedule-send",
+                    "displayName": "Schedule Send",
+                    "description": "Plans delayed delivery for a user message.",
+                    "display": {
+                        "name": {
+                            "en": "Schedule Send",
+                            "zh-CN": "定时发送"
+                        },
+                        "description": {
+                            "en": "Plans delayed delivery for a user message.",
+                            "zh-CN": "为用户消息创建延迟投递计划。"
+                        }
+                    }
+                }
+            ]
+        },
+        "web": {
+            "composerActions": [
+                {
+                    "id": "schedule-send",
+                    "kind": "pluginMessageAction",
+                    "capabilityId": "schedule-send",
+                    "label": {
+                        "en": "Schedule send",
+                        "zh-CN": "定时发送"
+                    },
+                    "icon": "clock",
+                    "handler": {
+                        "position": "hub",
+                        "actionId": "schedule-send"
+                    },
+                    "ui": {
+                        "kind": "delayPicker",
+                        "maxDelayMs": 604800000,
+                        "presets": [
+                            {
+                                "id": "plus-5m",
+                                "label": "+5m",
+                                "delayMs": 300000
+                            },
+                            {
+                                "id": "plus-30m",
+                                "label": "+30m",
+                                "delayMs": 1800000
+                            },
+                            {
+                                "id": "plus-1h",
+                                "label": "+1h",
+                                "delayMs": 3600000
+                            },
+                            {
+                                "id": "plus-4h",
+                                "label": "+4h",
+                                "delayMs": 14400000
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+    },
+    "compatibility": {
+        "pluginApi": ">=0.1 <0.2",
+        "hub": {
+            "extensionPoints": [
+                "hub.messageAction",
+                "web.composerAction"
+            ]
+        }
+    },
+    "pluginApiVersion": "0.1"
+}
