@@ -19,6 +19,7 @@ function makeSession(overrides: Partial<SessionSummary> & { id: string }): Sessi
         pendingRequestsCount: 0,
         pendingRequestKinds: [],
         backgroundTaskCount: 0,
+        futureScheduledMessageCount: 0,
         model: null,
         effort: null,
         ...overrides

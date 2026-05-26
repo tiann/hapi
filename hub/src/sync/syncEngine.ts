@@ -176,6 +176,10 @@ export class SyncEngine {
         return this.sessionCache.getSessionsByNamespace(namespace)
     }
 
+    getFutureScheduledMessageCounts(sessionIds: string[], now: number = Date.now()): Map<string, number> {
+        return this.store.messages.countFutureScheduledBySessionIds(sessionIds, now)
+    }
+
     getSession(sessionId: string): Session | undefined {
         return this.sessionCache.getSession(sessionId) ?? this.sessionCache.refreshSession(sessionId) ?? undefined
     }

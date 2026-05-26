@@ -72,5 +72,6 @@ describe('toSessionSummary', () => {
         expect(summary.pendingRequestKinds).toEqual(['input'])
         expect(summary.pendingRequestsCount).toBe(1)
         expect(summary.backgroundTaskCount).toBe(2)
+        expect(summary.futureScheduledMessageCount).toBe(0)
     })
 })

@@ -7,7 +7,7 @@ import { useSessionActions } from '@/hooks/mutations/useSessionActions'
 import { SessionActionMenu } from '@/components/SessionActionMenu'
 import { RenameSessionDialog } from '@/components/RenameSessionDialog'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
-import { CopyIcon, CheckIcon } from '@/components/icons'
+import { CopyIcon, CheckIcon, ScheduleIcon } from '@/components/icons'
 import { cn } from '@/lib/utils'
 import { useTranslation } from '@/lib/use-translation'
 import { DEFAULT_SESSION_PREVIEW_LIMIT, useSessionPreviewLimit } from '@/hooks/useSessionPreviewLimit'
@@ -570,6 +570,9 @@ function SessionItem(props: {
         [s, selected, showDetailedStatus]
     )
     const attentionLabel = attention ? getAttentionLabel(attention, t) : null
+    const scheduledLabel = s.futureScheduledMessageCount > 1
+        ? t('session.item.scheduledMessages', { count: s.futureScheduledMessageCount })
+        : t('session.item.scheduledMessage')
     return (
         <>
             <button
@@ -592,6 +595,11 @@ function SessionItem(props: {
                                 attention={attention}
                                 label={attentionLabel ?? ''}
                             />
+                        ) : null}
+                        {showDetailedStatus && s.futureScheduledMessageCount > 0 ? (
+                            <span title={scheduledLabel} aria-label={scheduledLabel} className="inline-flex shrink-0">
+                                <ScheduleIcon className="h-3.5 w-3.5 text-[var(--app-hint)]" />
+                            </span>
                         ) : null}
                     </div>
                     <div className="flex items-center gap-2 shrink-0 text-xs">

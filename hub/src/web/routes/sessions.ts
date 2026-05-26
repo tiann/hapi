@@ -64,7 +64,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         const getPendingCount = (s: Session) => s.agentState?.requests ? Object.keys(s.agentState.requests).length : 0
 
         const namespace = c.get('namespace')
-        const sessions = engine.getSessionsByNamespace(namespace)
+        const sessionRecords = engine.getSessionsByNamespace(namespace)
             .sort((a, b) => {
                 // Active sessions first
                 if (a.active !== b.active) {
@@ -79,7 +79,14 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
                 // Then by updatedAt
                 return b.updatedAt - a.updatedAt
             })
-            .map(toSessionSummary)
+        const scheduledCounts = engine.getFutureScheduledMessageCounts(sessionRecords.map((session) => session.id))
+        const sessions = sessionRecords.map((session) => {
+            const summary = toSessionSummary(session)
+            return {
+                ...summary,
+                futureScheduledMessageCount: scheduledCounts.get(session.id) ?? 0
+            }
+        })
 
         return c.json({ sessions })
     })

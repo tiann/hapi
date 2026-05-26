@@ -287,3 +287,60 @@ describe('getDeliverableMessagesAfter: CLI backfill excludes future-scheduled ro
         expect(empty).toHaveLength(0)
     })
 })
+
+describe('countFutureScheduledLocalMessages', () => {
+    it('counts only future scheduled uninvoked local messages', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'sched-count')
+        const now = Date.now()
+
+        store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'immediate queued' } },
+            'local-immediate'
+        )
+        store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'future scheduled' } },
+            'local-future',
+            now + 60_000
+        )
+        store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'mature scheduled' } },
+            'local-mature',
+            now - 1
+        )
+
+        expect(store.messages.countFutureScheduledLocalMessages(session.id, now)).toBe(1)
+    })
+
+    it('batch query returns counts keyed by session id', () => {
+        const store = makeStore()
+        const sessionA = makeSession(store, 'sched-batch-a')
+        const sessionB = makeSession(store, 'sched-batch-b')
+        const now = Date.now()
+
+        store.messages.addMessage(
+            sessionA.id,
+            { role: 'user', content: { type: 'text', text: 'a1' } },
+            'a-1',
+            now + 60_000
+        )
+        store.messages.addMessage(
+            sessionA.id,
+            { role: 'user', content: { type: 'text', text: 'a2' } },
+            'a-2',
+            now + 120_000
+        )
+        store.messages.addMessage(
+            sessionB.id,
+            { role: 'user', content: { type: 'text', text: 'immediate' } },
+            'b-1'
+        )
+
+        const counts = store.messages.countFutureScheduledBySessionIds([sessionA.id, sessionB.id], now)
+        expect(counts.get(sessionA.id)).toBe(2)
+        expect(counts.get(sessionB.id)).toBeUndefined()
+    })
+})
