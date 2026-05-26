@@ -33,8 +33,8 @@ describe('conversation outline', () => {
             userBlock('m1', 'Implement the outline panel', 1000),
         ])).toEqual([
             {
-                id: 'outline:user:m1',
-                targetMessageId: 'user:m1',
+                id: 'outline:user-text:m1',
+                targetMessageId: 'user-text:m1',
                 kind: 'user',
                 label: 'Implement the outline panel',
                 createdAt: 1000
@@ -67,7 +67,7 @@ describe('conversation outline', () => {
         ])
 
         expect(items.map((item) => item.id)).toEqual([
-            'outline:user:sent'
+            'outline:user-text:sent'
         ])
     })
 
@@ -79,8 +79,8 @@ describe('conversation outline', () => {
         ])
 
         expect(items.map((item) => item.id)).toEqual([
-            'outline:user:first',
-            'outline:user:second'
+            'outline:user-text:first',
+            'outline:user-text:second'
         ])
     })
 })

@@ -325,6 +325,9 @@ export function SessionChat(props: {
         const normalized: NormalizedMessage[] = []
         const seen = new Set<string>()
         for (const message of visibleMessages) {
+            if (seen.has(message.id)) {
+                continue
+            }
             seen.add(message.id)
             const cached = cache.get(message.id)
             if (cached && cached.source === message) {
