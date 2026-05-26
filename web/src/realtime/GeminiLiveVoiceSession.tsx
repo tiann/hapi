@@ -124,7 +124,7 @@ class GeminiLiveVoiceSessionImpl implements VoiceSession {
             ws.onopen = () => {
                 if (DEBUG) console.log('[GeminiLive] WebSocket connected, sending setup')
 
-                const liveConfig = buildGeminiLiveConfig()
+                const liveConfig = buildGeminiLiveConfig(config.language)
                 const setupMessage = {
                     setup: {
                         model: `models/${liveConfig.model}`,

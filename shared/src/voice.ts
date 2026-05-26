@@ -347,10 +347,13 @@ export function buildGeminiLiveFunctionDeclarations(): GeminiLiveFunctionDeclara
     return VOICE_TOOLS.map(cloneVoiceToolDefinition)
 }
 
-export function buildGeminiLiveConfig(): GeminiLiveConfig {
+export function buildGeminiLiveConfig(language?: string): GeminiLiveConfig {
+    const systemInstruction = language === 'zh'
+        ? `${VOICE_SYSTEM_PROMPT}${VOICE_CHINESE_LANGUAGE_BLOCK}`
+        : VOICE_SYSTEM_PROMPT
     return {
         model: GEMINI_LIVE_MODEL,
-        systemInstruction: VOICE_SYSTEM_PROMPT,
+        systemInstruction,
         tools: [
             {
                 functionDeclarations: buildGeminiLiveFunctionDeclarations()
