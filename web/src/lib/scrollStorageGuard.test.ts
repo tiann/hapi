@@ -144,6 +144,63 @@ describe('installScrollRestorationGuard', () => {
         expect(storedKeys).toContain('/route/50') // boundary kept
         expect(storedKeys).not.toContain('/route/49') // boundary dropped
         expect(storedKeys).not.toContain('/route/0') // oldest dropped
+        expect(mockScrollCacheSet).not.toHaveBeenCalled()
+    })
+
+    it('syncs TanStack in-memory scroll cache after a successful prune on real sessionStorage', () => {
+        const realSessionStorage = makeMockStorage()
+        vi.stubGlobal('window', { sessionStorage: realSessionStorage })
+
+        const off = installScrollRestorationGuard(realSessionStorage)
+
+        const fullState: Record<string, unknown> = {}
+        for (let i = 0; i < 100; i++) {
+            fullState[`/route/${i}`] = { window: { scrollX: 0, scrollY: i } }
+        }
+        const fullValue = JSON.stringify(fullState)
+
+        let call = 0
+        realSessionStorage._setItem.mockImplementation((key: string, value: string) => {
+            call += 1
+            if (call === 1) {
+                throw new QuotaExceededError()
+            }
+            realSessionStorage._store[key] = value
+        })
+
+        realSessionStorage.setItem(STORAGE_KEY, fullValue)
+
+        expect(mockScrollCacheSet).toHaveBeenCalledTimes(1)
+        const updater = mockScrollCacheSet.mock.calls[0]![0] as (
+            state: Record<string, unknown>
+        ) => Record<string, unknown>
+        const synced = updater(fullState)
+        expect(Object.keys(synced).length).toBe(RETAIN_COUNT)
+        expect(Object.keys(synced)).toContain('/route/99')
+        expect(Object.keys(synced)).not.toContain('/route/0')
+
+        off()
+    })
+
+    it('hard reset calls scrollRestorationCache through unwrapped setItem', () => {
+        const realSessionStorage = makeMockStorage()
+        vi.stubGlobal('window', { sessionStorage: realSessionStorage })
+
+        const off = installScrollRestorationGuard(realSessionStorage)
+        const wrappedSetItem = realSessionStorage.setItem
+
+        let cacheWriteSetItem: Storage['setItem'] | undefined
+        mockScrollCacheSet.mockImplementationOnce(() => {
+            cacheWriteSetItem = realSessionStorage.setItem
+        })
+
+        realSessionStorage._setItem.mockImplementationOnce(() => { throw new QuotaExceededError() })
+        realSessionStorage.setItem(STORAGE_KEY, 'not json {')
+
+        expect(cacheWriteSetItem).toBeDefined()
+        expect(cacheWriteSetItem).not.toBe(wrappedSetItem)
+
+        off()
     })
 
     it('removes the key entirely if the value is not valid JSON', () => {

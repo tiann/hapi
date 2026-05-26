@@ -6,6 +6,8 @@
  */
 import { scrollRestorationCache } from '@tanstack/router-core'
 
+type ScrollCacheUpdater = NonNullable<Parameters<NonNullable<typeof scrollRestorationCache>['set']>[0]>
+
 const STORAGE_KEY = 'tsr-scroll-restoration-v1_3'
 
 const TARGET_ENTRIES_AFTER_PRUNE = 50
@@ -14,6 +16,20 @@ const GUARD_MARKER = '__hapiScrollRestorationGuard'
 
 interface GuardedStorage extends Storage {
     [GUARD_MARKER]?: true
+}
+
+function writeScrollRestorationCache(
+    storage: Storage,
+    originalSetItem: Storage['setItem'],
+    updater: ScrollCacheUpdater,
+): void {
+    const guardedSetItem = storage.setItem
+    storage.setItem = originalSetItem
+    try {
+        scrollRestorationCache?.set(updater)
+    } finally {
+        storage.setItem = guardedSetItem
+    }
 }
 
 function hardResetScrollRestorationPersistedState(
@@ -33,7 +49,7 @@ function hardResetScrollRestorationPersistedState(
     // Pruning only the JSON string leaves RAM oversized — the next scroll
     // write throws again. Clear the library cache so persisted size matches.
     try {
-        scrollRestorationCache?.set(() => ({}))
+        writeScrollRestorationCache(storage, originalSetItem, () => ({}))
     } catch {
         try {
             originalSetItem.call(storage, STORAGE_KEY, '{}')
@@ -81,23 +97,27 @@ export function installScrollRestorationGuard(
         }
 
         let trimmed: string
+        let prunedState: Record<string, unknown>
         try {
             const parsed = JSON.parse(value) as Record<string, unknown>
             const keys = Object.keys(parsed)
             const keepKeys = keys.length > TARGET_ENTRIES_AFTER_PRUNE
                 ? keys.slice(-TARGET_ENTRIES_AFTER_PRUNE)
                 : keys
-            const next: Record<string, unknown> = {}
+            prunedState = {}
             for (const k of keepKeys) {
-                next[k] = parsed[k]
+                prunedState[k] = parsed[k]
             }
-            trimmed = JSON.stringify(next)
+            trimmed = JSON.stringify(prunedState)
         } catch {
             hardResetScrollRestorationPersistedState(storage, originalSetItem, isRealSessionStorage)
             return
         }
         try {
             originalSetItem.call(storage, key, trimmed)
+            if (isRealSessionStorage) {
+                writeScrollRestorationCache(storage, originalSetItem, (() => prunedState) as ScrollCacheUpdater)
+            }
         } catch {
             hardResetScrollRestorationPersistedState(storage, originalSetItem, isRealSessionStorage)
         }
