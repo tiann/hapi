@@ -51,6 +51,11 @@ export interface HappyCliCommand {
   args: string[];
 }
 
+export interface HappyCliSpawnPlan extends HappyCliCommand {
+  mode: 'compiled' | 'development' | 'custom';
+  displayArgs: string[];
+}
+
 function isCrossPlatformAbsolutePath(value: string): boolean {
   return isAbsolute(value) || win32.isAbsolute(value);
 }
@@ -123,7 +128,45 @@ export function getHappyCliCommand(args: string[]): HappyCliCommand {
   };
 }
 
-export function spawnHappyCLI(args: string[], options: SpawnOptions = {}): ChildProcess {
+export function buildHappyCliSpawnPlan(args: string[]): HappyCliSpawnPlan {
+  const compiledMode = isBunCompiled();
+  const command = getHappyCliCommand(args);
+  return {
+    ...command,
+    mode: compiledMode ? 'compiled' : 'development',
+    displayArgs: args
+  };
+}
+
+function finalizeHappyCliSpawnOptions(
+  plan: HappyCliSpawnPlan,
+  options: SpawnOptions = {}
+): SpawnOptions {
+  const finalOptions: SpawnOptions = { ...options };
+  const finalEnv = { ...process.env, ...options.env };
+
+  if (plan.mode === 'compiled' || plan.mode === 'custom') {
+    finalEnv[HAPI_CLI_EXECUTABLE_ENV] = plan.command;
+    finalOptions.env = finalEnv;
+  } else {
+    const invokedCwd = finalEnv.HAPI_INVOKED_CWD?.trim();
+    const hasExplicitCwd = 'cwd' in options && options.cwd !== undefined;
+    finalEnv.HAPI_INVOKED_CWD = hasExplicitCwd
+      ? resolveInvokedCwd(options.cwd)
+      : invokedCwd && isCrossPlatformAbsolutePath(invokedCwd)
+        ? invokedCwd
+        : resolveInvokedCwd(options.cwd);
+    finalOptions.env = finalEnv;
+  }
+
+  if (process.platform === 'win32' && options.detached) {
+    finalOptions.windowsHide = true;
+  }
+
+  return finalOptions;
+}
+
+export function spawnHappyCLIPlan(plan: HappyCliSpawnPlan, options: SpawnOptions = {}): ChildProcess {
 
   let directory: string | URL | undefined;
   if ('cwd' in options) {
@@ -136,45 +179,22 @@ export function spawnHappyCLI(args: string[], options: SpawnOptions = {}): Child
   // However, we log it as 'hapi' here because other engineers are typically looking
   // for when "hapi" was started and don't care about the underlying node process
   // details and flags we use to achieve the same result.
-  const fullCommand = `hapi ${args.join(' ')}`;
+  const fullCommand = `hapi ${plan.displayArgs.join(' ')}`;
   logger.debug(`[SPAWN HAPI CLI] Spawning: ${fullCommand} in ${directory}`);
-  
-  const compiledMode = isBunCompiled();
-  const { command: spawnCommand, args: spawnArgs } = getHappyCliCommand(args);
 
   // Sanity check that the entrypoint path exists
-  if (!compiledMode) {
-    const entrypoint = spawnArgs.find((arg) => arg.endsWith('index.ts'));
+  if (plan.mode === 'development') {
+    const entrypoint = plan.args.find((arg) => arg.endsWith('index.ts'));
     if (entrypoint && !existsSync(entrypoint)) {
       const errorMessage = `Entrypoint ${entrypoint} does not exist`;
       logger.debug(`[SPAWN HAPI CLI] ${errorMessage}`);
       throw new Error(errorMessage);
     }
   }
-  
-  // On Windows, detached processes allocate a new console window by default.
-  // windowsHide: true suppresses this to prevent cmd windows from accumulating.
-  const finalOptions: SpawnOptions = { ...options };
-  const finalEnv = { ...process.env, ...options.env };
-  let shouldSetEnv = false;
-  if (compiledMode) {
-    finalEnv[HAPI_CLI_EXECUTABLE_ENV] = spawnCommand;
-    shouldSetEnv = true;
-  } else {
-    const invokedCwd = finalEnv.HAPI_INVOKED_CWD?.trim();
-    const hasExplicitCwd = 'cwd' in options && options.cwd !== undefined;
-    finalEnv.HAPI_INVOKED_CWD = hasExplicitCwd
-      ? resolveInvokedCwd(options.cwd)
-      : invokedCwd && isCrossPlatformAbsolutePath(invokedCwd)
-        ? invokedCwd
-        : resolveInvokedCwd(options.cwd);
-    shouldSetEnv = true;
-  }
-  if (shouldSetEnv) {
-    finalOptions.env = finalEnv;
-  }
-  if (process.platform === 'win32' && options.detached) {
-    finalOptions.windowsHide = true;
-  }
-  return spawn(spawnCommand, spawnArgs, finalOptions);
+
+  return spawn(plan.command, plan.args, finalizeHappyCliSpawnOptions(plan, options));
+}
+
+export function spawnHappyCLI(args: string[], options: SpawnOptions = {}): ChildProcess {
+  return spawnHappyCLIPlan(buildHappyCliSpawnPlan(args), options);
 }

@@ -157,6 +157,7 @@ describe('spawnHappyCLI windowsHide behavior', () => {
 
   it('falls back to a real argv0 executable before process.execPath in compiled mode', async () => {
     isBunCompiledMock.mockReturnValue(true);
+    delete process.env.HAPI_CLI_EXECUTABLE;
     const previousArgv0 = process.argv[0];
     process.argv[0] = 'C:\\Users\\Administrator\\.hapi\\patched\\resume-recovery-0.17.2\\hapi.exe';
     const { resolveHappyCliExecutable } = await import('./spawnHappyCLI');

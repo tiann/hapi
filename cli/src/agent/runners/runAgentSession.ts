@@ -13,7 +13,7 @@ import { bootstrapSession } from '@/agent/sessionFactory';
 import { formatMessageWithAttachments } from '@/utils/attachmentFormatter';
 import { getInvokedCwd } from '@/utils/invokedCwd';
 import { PermissionModeSchema } from '@hapi/protocol/schemas';
-import { isPermissionModeAllowedForFlavor } from '@hapi/protocol';
+import { getPermissionModesForFlavor, type PermissionMode } from '@hapi/protocol';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import type { SessionEndReason } from '@hapi/protocol';
 
@@ -33,6 +33,8 @@ export async function runAgentSession(opts: {
     agentType: string;
     startedBy?: 'runner' | 'terminal';
     permissionMode?: SessionPermissionMode;
+    allowedPermissionModes?: readonly PermissionMode[];
+    model?: string;
 }): Promise<void> {
     const workingDirectory = getInvokedCwd();
     const initialState: AgentState = {
@@ -64,6 +66,7 @@ export async function runAgentSession(opts: {
     });
 
     let currentPermissionMode: SessionPermissionMode = opts.permissionMode ?? sessionInfo.permissionMode ?? 'default';
+    let currentModel: string | null | undefined = sessionInfo.model ?? undefined
 
     const backend: AgentBackend = AgentRegistry.create(opts.agentType);
     await backend.initialize();
@@ -85,6 +88,26 @@ export async function runAgentSession(opts: {
         cwd: workingDirectory,
         mcpServers
     });
+    if (opts.model) {
+        try {
+            if (backend.setModel) {
+                await backend.setModel(agentSessionId, opts.model)
+                currentModel = opts.model
+            } else {
+                logger.warn(`[agent] Agent ${opts.agentType} does not support runtime model selection; using backend default model.`)
+                session.sendSessionEvent({
+                    type: 'message',
+                    message: `Agent ${opts.agentType} does not support runtime model selection; using the default model.`
+                })
+            }
+        } catch (error) {
+            logger.warn('[agent] Initial model selection failed', error)
+            session.sendSessionEvent({
+                type: 'message',
+                message: 'Agent model selection failed. Continuing with the default model.'
+            })
+        }
+    }
 
     let thinking = false;
     let shouldExit = false;
@@ -92,13 +115,15 @@ export async function runAgentSession(opts: {
 
     const syncKeepAlive = () => {
         session.keepAlive(thinking, 'remote', {
-            permissionMode: currentPermissionMode
+            permissionMode: currentPermissionMode,
+            ...(currentModel !== undefined ? { model: currentModel } : {})
         });
     };
 
+    const allowedPermissionModes = opts.allowedPermissionModes ?? getPermissionModesForFlavor(opts.agentType);
     const resolvePermissionMode = (value: unknown): SessionPermissionMode => {
         const parsed = PermissionModeSchema.safeParse(value);
-        if (!parsed.success || !isPermissionModeAllowedForFlavor(parsed.data, opts.agentType)) {
+        if (!parsed.success || !allowedPermissionModes.includes(parsed.data)) {
             throw new Error('Invalid permission mode');
         }
         return parsed.data as SessionPermissionMode;

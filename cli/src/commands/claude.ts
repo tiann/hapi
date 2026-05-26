@@ -99,6 +99,7 @@ ${chalk.bold('Usage:')}
   hapi server            Alias for hapi hub
   hapi runner            Manage background service that allows
                             to spawn new sessions away from your computer
+  hapi plugins           Manage local plugins
   hapi doctor            System diagnostics & troubleshooting
 
 ${chalk.bold('Examples:')}

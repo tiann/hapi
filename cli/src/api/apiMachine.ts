@@ -10,7 +10,35 @@ import { logger } from '@/ui/logger'
 import { configuration } from '@/configuration'
 import type { ClientToServerEvents, ServerToClientEvents, Update, UpdateMachineBody } from '@hapi/protocol'
 import type { MachineDirectoryEntry, MachineListDirectoryResponse, PathExistsResponse } from '@hapi/protocol/apiTypes'
+import {
+    AgentHistoryImportRequestSchema,
+    AgentHistoryImportResponseSchema,
+    RunnerSpawnOptionsPreviewRequestSchema,
+    RunnerSpawnOptionsPreviewResponseSchema
+} from '@hapi/protocol/apiTypes'
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
+import {
+    PluginDeleteResultSchema,
+    PluginDetailResponseSchema,
+    PluginInstallResultSchema,
+    PluginReloadResultSchema,
+    RunnerPluginInventorySchema,
+    RunnerPluginsConfigUpdateRequestSchema,
+    RunnerPluginsDeleteRequestSchema,
+    RunnerPluginsDisableRequestSchema,
+    RunnerPluginsEnableRequestSchema,
+    RunnerPluginsInspectRequestSchema,
+    RunnerPluginsInstallCommitRequestSchema,
+    RunnerPluginsInstallLocalRequestSchema,
+    RunnerPluginsInstallPackageRequestSchema,
+    RunnerPluginsInstallPrepareRequestSchema,
+    RunnerPluginsLocalDirectoryListRequestSchema,
+    RunnerPluginsListRequestSchema,
+    RunnerPluginsReloadRequestSchema,
+    RunnerPluginActionInvokeRequestSchema,
+    RunnerPluginActionInvokeResponseSchema,
+    RunnerPluginUnsupportedInstallResultSchema
+} from '@hapi/protocol/plugins/admin'
 import type { RunnerState, Machine, MachineMetadata } from './types'
 import { RunnerStateSchema, MachineMetadataSchema } from './types'
 import { backoff } from '@/utils/time'
@@ -23,6 +51,7 @@ import {
     type ListOpencodeModelsForCwdResponse
 } from '../modules/common/opencodeModels'
 import type { SpawnSessionOptions, SpawnSessionResult } from '../modules/common/rpcTypes'
+import type { RunnerPluginManager } from '@/runner/plugins/runnerPluginManager'
 import { applyVersionedAck } from './versionedUpdate'
 import { buildSocketIoExtraHeaderOptions } from './hubExtraHeaders'
 
@@ -249,7 +278,7 @@ export class ApiMachineClient {
 
     setRPCHandlers({ spawnSession, stopSession, requestShutdown }: MachineRpcHandlers): void {
         this.rpcHandlerManager.registerHandler(RPC_METHODS.SpawnHappySession, async (params: any) => {
-            const { directory, sessionId, resumeSessionId, machineId, approvedNewDirectoryCreation, agent, model, effort, modelReasoningEffort, yolo, permissionMode, token, sessionType, worktreeName } = params || {}
+            const { directory, sessionId, resumeSessionId, approvedNewDirectoryCreation, agent, model, effort, modelReasoningEffort, yolo, permissionMode, manualFields, token, sessionType, worktreeName, pluginFields } = params || {}
 
             if (!directory) {
                 throw new Error('Directory is required')
@@ -264,7 +293,6 @@ export class ApiMachineClient {
                 directory,
                 sessionId,
                 resumeSessionId,
-                machineId,
                 approvedNewDirectoryCreation,
                 agent,
                 model,
@@ -272,9 +300,11 @@ export class ApiMachineClient {
                 modelReasoningEffort,
                 yolo,
                 permissionMode,
+                manualFields: Array.isArray(manualFields) ? manualFields.map((entry) => String(entry)).filter(Boolean) : undefined,
                 token,
                 sessionType,
-                worktreeName
+                worktreeName,
+                pluginFields: pluginFields && typeof pluginFields === 'object' && !Array.isArray(pluginFields) ? pluginFields as Record<string, unknown> : undefined
             })
 
             switch (result.type) {
@@ -304,6 +334,168 @@ export class ApiMachineClient {
         this.rpcHandlerManager.registerHandler(RPC_METHODS.StopRunner, () => {
             setTimeout(() => requestShutdown(), 100)
             return { message: 'Runner stop request acknowledged' }
+        })
+    }
+
+
+    registerRunnerPluginHandlers(manager: RunnerPluginManager): void {
+        const publishInventory = async (): Promise<void> => {
+            await this.updateRunnerState((state: RunnerState | null) => ({
+                ...(state ?? {}),
+                status: state?.status ?? 'running',
+                pid: state?.pid ?? process.pid,
+                pluginInventory: manager.getInventory(),
+                agentDescriptors: manager.getAgentDescriptors(),
+                agentCapabilities: manager.getAgentCapabilities()
+            }))
+        }
+
+        this.rpcHandlerManager.registerHandler(RPC_METHODS.RunnerPluginsList, async (params: unknown) => {
+            RunnerPluginsListRequestSchema.parse(params ?? {})
+            return RunnerPluginInventorySchema.parse(manager.getInventory())
+        })
+
+        this.rpcHandlerManager.registerHandler(RPC_METHODS.RunnerPluginsInspect, async (params: unknown) => {
+            const request = RunnerPluginsInspectRequestSchema.parse(params)
+            const plugin = manager.getPlugin(request.pluginId)
+            if (!plugin) {
+                throw new Error(`Plugin ${request.pluginId} was not found.`)
+            }
+            return PluginDetailResponseSchema.parse({ plugin })
+        })
+
+        this.rpcHandlerManager.registerHandler(RPC_METHODS.RunnerPluginsEnable, async (params: unknown) => {
+            const request = RunnerPluginsEnableRequestSchema.parse(params)
+            const result = await manager.enablePlugin(request.pluginId, request.config, request.reload !== false)
+            await publishInventory()
+            return PluginReloadResultSchema.parse(result)
+        })
+
+        this.rpcHandlerManager.registerHandler(RPC_METHODS.RunnerPluginsDisable, async (params: unknown) => {
+            const request = RunnerPluginsDisableRequestSchema.parse(params)
+            const result = await manager.disablePlugin(request.pluginId, request.reload !== false)
+            await publishInventory()
+            return PluginReloadResultSchema.parse(result)
+        })
+
+        this.rpcHandlerManager.registerHandler(RPC_METHODS.RunnerPluginsConfigUpdate, async (params: unknown) => {
+            const request = RunnerPluginsConfigUpdateRequestSchema.parse(params)
+            const result = await manager.updatePluginConfig(request.pluginId, request.config)
+            await publishInventory()
+            return PluginReloadResultSchema.parse(result)
+        })
+
+        this.rpcHandlerManager.registerHandler(RPC_METHODS.RunnerPluginsReload, async (params: unknown) => {
+            const request = RunnerPluginsReloadRequestSchema.parse(params ?? {})
+            const result = await manager.reload(request.pluginId)
+            await publishInventory()
+            return PluginReloadResultSchema.parse(result)
+        })
+
+        this.rpcHandlerManager.registerHandler(RPC_METHODS.RunnerPluginsInstallPrepare, (params: unknown) => {
+            RunnerPluginsInstallPrepareRequestSchema.parse(params ?? {})
+            return RunnerPluginUnsupportedInstallResultSchema.parse(manager.installPrepareUnsupported())
+        })
+
+        this.rpcHandlerManager.registerHandler(RPC_METHODS.RunnerPluginsInstallCommit, (params: unknown) => {
+            RunnerPluginsInstallCommitRequestSchema.parse(params ?? {})
+            return RunnerPluginUnsupportedInstallResultSchema.parse(manager.installCommitUnsupported())
+        })
+
+        this.rpcHandlerManager.registerHandler(RPC_METHODS.RunnerPluginsLocalDirectory, async (params: unknown) => {
+            const request = RunnerPluginsLocalDirectoryListRequestSchema.parse(params ?? {})
+            const requestedPath = request.path?.trim()
+            if (!this.normalizedWorkspaceRoots?.length) {
+                return { success: false, path: requestedPath ?? '', error: 'Workspace browsing is not enabled for this machine' }
+            }
+            const resolvedPath = requestedPath
+                ? await this.resolveForWorkspaceCheck(requestedPath)
+                : this.normalizedWorkspaceRoots[0]!
+            if (!this.isWithinWorkspaceRoots(resolvedPath)) {
+                return { success: false, path: resolvedPath, error: 'Path is outside workspace roots' }
+            }
+            return await manager.listLocalDirectory(resolvedPath)
+        })
+
+        this.rpcHandlerManager.registerHandler(RPC_METHODS.RunnerPluginsInstallLocal, async (params: unknown) => {
+            const request = RunnerPluginsInstallLocalRequestSchema.parse(params)
+            const result = await manager.installLocalPlugin(request)
+            await publishInventory()
+            return PluginInstallResultSchema.parse(result)
+        })
+
+        this.rpcHandlerManager.registerHandler(RPC_METHODS.RunnerPluginsInstallPackage, async (params: unknown) => {
+            const request = RunnerPluginsInstallPackageRequestSchema.parse(params)
+            const result = await manager.installPluginPackage(request)
+            await publishInventory()
+            return PluginInstallResultSchema.parse(result)
+        })
+
+        this.rpcHandlerManager.registerHandler(RPC_METHODS.RunnerPluginsDelete, async (params: unknown) => {
+            const request = RunnerPluginsDeleteRequestSchema.parse(params)
+            const result = await manager.deletePlugin(request.pluginId, request.reload !== false)
+            await publishInventory()
+            return PluginDeleteResultSchema.parse(result)
+        })
+
+        this.rpcHandlerManager.registerHandler(RPC_METHODS.RunnerPluginActionInvoke, async (params: unknown) => {
+            const request = RunnerPluginActionInvokeRequestSchema.parse(params)
+            return RunnerPluginActionInvokeResponseSchema.parse(await manager.invokeAction(request))
+        })
+
+        this.rpcHandlerManager.registerHandler(RPC_METHODS.RunnerSpawnOptionsPreview, async (params: unknown) => {
+            const request = RunnerSpawnOptionsPreviewRequestSchema.parse(params)
+            const cwd = request.cwd ?? request.directory
+            const resolvedCwd = await this.resolveForWorkspaceCheck(cwd)
+            if (!this.isWithinWorkspaceRoots(resolvedCwd)) {
+                return RunnerSpawnOptionsPreviewResponseSchema.parse({
+                    options: {},
+                    applied: [],
+                    diagnostics: [{
+                        severity: 'warning',
+                        code: 'runner-spawn-options-preview-outside-workspace',
+                        message: 'Path is outside this machine workspace roots.'
+                    }]
+                })
+            }
+
+            const agent = request.agent ?? 'claude'
+            const options = {
+                directory: request.directory,
+                agent,
+                ...(request.resumeSessionId ? { resumeSessionId: request.resumeSessionId } : {}),
+                ...(request.model ? { model: request.model } : {}),
+                ...(request.effort ? { effort: request.effort } : {}),
+                ...(request.modelReasoningEffort ? { modelReasoningEffort: request.modelReasoningEffort } : {}),
+                ...(request.permissionMode ? { permissionMode: request.permissionMode } : {}),
+                ...(request.yolo !== undefined ? { yolo: request.yolo } : {}),
+                ...(request.manualFields?.length ? { manualFields: request.manualFields } : {}),
+                ...(request.sessionType ? { sessionType: request.sessionType } : {}),
+                ...(request.worktreeName ? { worktreeName: request.worktreeName } : {}),
+                ...(request.pluginFields ? { pluginFields: request.pluginFields } : {})
+            } satisfies SpawnSessionOptions
+            const result = await manager.resolveSpawnOptions({
+                options,
+                agent,
+                cwd
+            })
+            return RunnerSpawnOptionsPreviewResponseSchema.parse({
+                options: {
+                    ...(result.options.model && result.options.model !== options.model ? { model: result.options.model } : {}),
+                    ...(result.options.effort && result.options.effort !== options.effort ? { effort: result.options.effort } : {}),
+                    ...(result.options.modelReasoningEffort && result.options.modelReasoningEffort !== options.modelReasoningEffort ? { modelReasoningEffort: result.options.modelReasoningEffort } : {}),
+                    ...(result.options.permissionMode && result.options.permissionMode !== options.permissionMode ? { permissionMode: result.options.permissionMode } : {}),
+                    ...(result.options.yolo !== undefined && result.options.yolo !== options.yolo ? { yolo: result.options.yolo } : {})
+                },
+                applied: result.applied,
+                diagnostics: result.diagnostics
+            })
+        })
+
+        this.rpcHandlerManager.registerHandler(RPC_METHODS.RunnerAgentHistoryImport, async (params: unknown) => {
+            const request = AgentHistoryImportRequestSchema.parse(params)
+            const result = await manager.importAgentHistory(request)
+            return AgentHistoryImportResponseSchema.parse(result)
         })
     }
 
