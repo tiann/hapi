@@ -20,6 +20,9 @@ export function DirectorySection(props: {
     recentPaths: string[]
     statusMessage?: string | null
     statusTone?: 'warning' | 'error' | null
+    label?: string
+    placeholder?: string
+    browseLabel?: string
     onDirectoryChange: (value: string) => void
     onDirectoryFocus: () => void
     onDirectoryBlur: () => void
@@ -33,13 +36,13 @@ export function DirectorySection(props: {
     return (
         <div className="flex flex-col gap-1.5 px-3 py-3">
             <label className="text-xs font-medium text-[var(--app-hint)]">
-                {t('newSession.directory')}
+                {props.label ?? t('newSession.directory')}
             </label>
             <div className="flex items-start gap-2">
                 <div className="relative flex-1 min-w-0">
                     <input
                         type="text"
-                        placeholder={t('newSession.placeholder')}
+                        placeholder={props.placeholder ?? t('newSession.placeholder')}
                         value={props.directory}
                         onChange={(event) => props.onDirectoryChange(event.target.value)}
                         onKeyDown={props.onDirectoryKeyDown}
@@ -66,10 +69,10 @@ export function DirectorySection(props: {
                         onClick={props.onChooseFolder}
                         disabled={props.isDisabled}
                         className="shrink-0 flex items-center gap-1 rounded-md border border-[var(--app-border)] bg-[var(--app-subtle-bg)] px-2 py-2 text-xs text-[var(--app-fg)] hover:bg-[var(--app-secondary-bg)] transition-colors disabled:opacity-50"
-                        title={t('newSession.browse')}
+                        title={props.browseLabel ?? t('newSession.browse')}
                     >
                         <FolderIcon className="h-3.5 w-3.5" />
-                        {t('newSession.browse')}
+                        {props.browseLabel ?? t('newSession.browse')}
                     </button>
                 )}
             </div>

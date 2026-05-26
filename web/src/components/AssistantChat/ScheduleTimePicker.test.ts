@@ -98,6 +98,12 @@ describe('resolvePendingSchedule', () => {
         expect(resolvePendingSchedule(pending, sendNow)).toBe(sendNow + 4 * 60 * 60 * 1000)
     })
 
+    it('plugin preset resolves custom delayMs relative to sendNow', () => {
+        const sendNow = 1_700_000_000_000
+        const pending: PendingSchedule = { type: 'preset', preset: 'plugin-short-delay', delayMs: 90_000 }
+        expect(resolvePendingSchedule(pending, sendNow)).toBe(sendNow + 90_000)
+    })
+
     it('absolute: returns stored ms unchanged regardless of sendNow', () => {
         const ms = 1_700_000_000_000 + 60_000
         const sendNow = 1_700_000_000_000 + 999_999 // very different from pick time

@@ -3,6 +3,7 @@ import type { ConversationStatus } from '@/realtime/types'
 import { useTranslation } from '@/lib/use-translation'
 import { ScheduleTimePicker } from './ScheduleTimePicker'
 import type { PendingSchedule } from './ScheduleTimePicker'
+import type { PluginMessageComposerAction } from './composerActions'
 import { useRef, useState } from 'react'
 
 function ScheduleIcon() {
@@ -104,6 +105,31 @@ function SettingsIcon() {
         >
             <circle cx="12" cy="12" r="3" />
             <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+        </svg>
+    )
+}
+
+function PluginActionIcon() {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+        >
+            <path d="M12 2v6" />
+            <path d="M12 16v6" />
+            <path d="M4.93 4.93l4.24 4.24" />
+            <path d="M14.83 14.83l4.24 4.24" />
+            <path d="M2 12h6" />
+            <path d="M16 12h6" />
+            <path d="M4.93 19.07l4.24-4.24" />
+            <path d="M14.83 9.17l4.24-4.24" />
         </svg>
     )
 }
@@ -344,6 +370,9 @@ export function ComposerButtons(props: {
     pendingSchedule?: PendingSchedule | null
     onSchedule?: (pending: PendingSchedule) => void
     onClearSchedule?: () => void
+    scheduleAction?: PluginMessageComposerAction | null
+    pluginMessageActions?: PluginMessageComposerAction[]
+    onPluginMessageAction?: (action: PluginMessageComposerAction, payload?: unknown) => void
     // The backend rejects scheduled-send + attachment combinations (the per-CLI
     // upload directory is torn down before a mature emit could read the files).
     // The composer must surface that constraint at UI time so the user never
@@ -357,6 +386,11 @@ export function ComposerButtons(props: {
 
     const hasSchedule = props.pendingSchedule != null
     const hasAttachments = props.hasAttachments ?? false
+    const scheduleAction = props.scheduleAction
+    const delayPickerUi = scheduleAction?.ui.kind === 'delayPicker'
+        ? scheduleAction.ui
+        : null
+    const pluginMessageActions = props.pluginMessageActions ?? []
 
     return (
         <div className="flex items-center justify-between px-2 pb-2">
@@ -438,14 +472,14 @@ export function ComposerButtons(props: {
                     </button>
                 ) : null}
 
-                {/* Schedule button — only shown when onSchedule handler is provided */}
-                {props.onSchedule ? (
+                {/* Delivery scheduler action — contributed through the Web composer action registry. */}
+                {props.onSchedule && scheduleAction && delayPickerUi ? (
                     <>
                         <button
                             ref={scheduleButtonRef}
                             type="button"
-                            aria-label={t('composer.scheduleSend')}
-                            title={t('composer.scheduleSend')}
+                            aria-label={typeof scheduleAction.label === 'string' ? scheduleAction.label : t('composer.delaySend')}
+                            title={typeof scheduleAction.label === 'string' ? scheduleAction.label : t('composer.delaySend')}
                             disabled={props.controlsDisabled || hasAttachments}
                             onClick={() => {
                                 if (hasSchedule && props.onClearSchedule) {
@@ -471,10 +505,45 @@ export function ComposerButtons(props: {
                                 }}
                                 onClose={() => setShowSchedulePicker(false)}
                                 pendingSchedule={props.pendingSchedule}
+                                presets={delayPickerUi.presets.map((preset) => ({
+                                    id: preset.id,
+                                    label: typeof preset.label === 'string' ? preset.label : t('composer.delaySend'),
+                                    delayMs: preset.delayMs,
+                                }))}
+                                maxDelayMs={delayPickerUi.maxDelayMs}
+                                title={typeof scheduleAction.label === 'string' ? scheduleAction.label : undefined}
                             />
                         )}
                     </>
                 ) : null}
+
+                {pluginMessageActions.map((action) => {
+                    if (action.ui.kind !== 'button' && action.ui.kind !== 'confirm') {
+                        return null
+                    }
+                    const label = typeof action.label === 'string' ? action.label : action.id
+                    return (
+                        <button
+                            key={`${action.pluginId}:${action.id}`}
+                            type="button"
+                            aria-label={label}
+                            title={label}
+                            disabled={props.controlsDisabled || !props.canSend || hasSchedule || !props.onPluginMessageAction}
+                            onClick={() => {
+                                if (action.ui.kind === 'confirm') {
+                                    const title = typeof action.ui.title === 'string' ? action.ui.title : label
+                                    const body = typeof action.ui.body === 'string' ? action.ui.body : undefined
+                                    const ok = window.confirm(body ? `${title}\n\n${body}` : title)
+                                    if (!ok) return
+                                }
+                                props.onPluginMessageAction?.(action, {})
+                            }}
+                            className="flex h-8 w-8 items-center justify-center rounded-full text-[var(--app-fg)]/60 transition-colors hover:bg-[var(--app-bg)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                            <PluginActionIcon />
+                        </button>
+                    )
+                })}
             </div>
 
             <UnifiedButton

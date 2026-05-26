@@ -191,10 +191,17 @@ describe('useSendMessage', () => {
         await expect(acceptedPromise!).resolves.toBe(true)
     })
 
-    it('preserves scheduledAt when retrying a failed scheduled message', async () => {
+    it('preserves pluginAction when retrying a failed scheduled message', async () => {
         const sendMock = vi.fn(async () => {})
         const api = createMockApi(sendMock)
         const scheduledAt = Date.now() + 5 * 60_000
+        const pluginAction = {
+            pluginId: 'com.hapi.schedule-send',
+            capabilityId: 'schedule-send',
+            position: 'hub' as const,
+            actionId: 'schedule-send',
+            payload: { notBefore: scheduledAt }
+        }
 
         const { getMessageWindowState } = await import('@/lib/message-window-store')
         vi.mocked(getMessageWindowState).mockReturnValueOnce({
@@ -207,6 +214,7 @@ describe('useSendMessage', () => {
                 createdAt: 1_000,
                 invokedAt: null,
                 scheduledAt,
+                pluginAction,
                 status: 'failed',
                 originalText: 'hi later',
             } as never],
@@ -225,13 +233,12 @@ describe('useSendMessage', () => {
             expect(sendMock).toHaveBeenCalled()
         })
 
-        // api.sendMessage(sessionId, text, localId, attachments, scheduledAt)
         expect(sendMock).toHaveBeenCalledWith(
             'session-A',
             'hi later',
             'local-retry-1',
             undefined,
-            scheduledAt,
+            pluginAction,
         )
     })
 })

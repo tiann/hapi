@@ -26,10 +26,37 @@ import type {
     MachineListDirectoryResponse,
     MachinePathsExistsResponse,
     OpencodeModelsResponse,
+    AgentHistoryImportResponse,
+    PluginMessageActionRequest,
+    RunnerSpawnOptionsPreviewRequest,
+    RunnerSpawnOptionsPreviewResponse,
     UploadFileResponse
 } from '@hapi/protocol/apiTypes'
-import type { AgentFlavor } from '@hapi/protocol'
 import type { CancelMessageResponse } from '@hapi/protocol/schemas'
+import type {
+    PluginConfigUpdateRequest,
+    PluginDeleteResult,
+    PluginDetailResponse,
+    PluginEnableRequest,
+    PluginCapabilitiesResponse,
+    PluginInstallLocalRequest,
+    PluginInstallPackageRequest,
+    PluginInstallPlanRequest,
+    PluginInstallPlanResponse,
+    PluginInstallResult,
+    PluginLocalDirectoryListResponse,
+    PluginListResponse,
+    PluginNotificationFilterOptionsResponse,
+    PluginNotificationTestResponse,
+    PluginReloadResult,
+    PluginTargetScope
+} from '@hapi/protocol/plugins/admin'
+import type {
+    PluginMarketplaceDetailResponse,
+    PluginMarketplaceInstallPlanResponse,
+    PluginMarketplaceInstallRequest,
+    PluginMarketplaceListResponse
+} from '@hapi/protocol/plugins/marketplace'
 
 type ApiClientOptions = {
     baseUrl?: string
@@ -39,6 +66,54 @@ type ApiClientOptions = {
 
 type ErrorPayload = {
     error?: unknown
+}
+
+function withPluginTarget(path: string, target?: PluginTargetScope): string {
+    if (!target) return path
+    const separator = path.includes('?') ? '&' : '?'
+    return `${path}${separator}target=${encodeURIComponent(target)}`
+}
+
+export type PluginCapabilitiesQuery = {
+    target?: PluginTargetScope
+    sessionId?: string
+}
+
+export type PluginMarketplaceQuery = {
+    q?: string
+    category?: string
+    runtime?: string
+}
+
+function withPluginCapabilitiesQuery(path: string, query?: PluginCapabilitiesQuery): string {
+    const params = new URLSearchParams()
+    if (query?.target) {
+        params.set('target', query.target)
+    }
+    if (query?.sessionId) {
+        params.set('sessionId', query.sessionId)
+    }
+    const suffix = params.toString()
+    if (!suffix) return path
+    const separator = path.includes('?') ? '&' : '?'
+    return `${path}${separator}${suffix}`
+}
+
+function withPluginMarketplaceQuery(path: string, query?: PluginMarketplaceQuery): string {
+    const params = new URLSearchParams()
+    if (query?.q) {
+        params.set('q', query.q)
+    }
+    if (query?.category) {
+        params.set('category', query.category)
+    }
+    if (query?.runtime) {
+        params.set('runtime', query.runtime)
+    }
+    const suffix = params.toString()
+    if (!suffix) return path
+    const separator = path.includes('?') ? '&' : '?'
+    return `${path}${separator}${suffix}`
 }
 
 function parseErrorCode(bodyText: string): string | undefined {
@@ -162,6 +237,120 @@ export class ApiClient {
         }
 
         return await res.json() as AuthResponse
+    }
+
+
+    async getPlugins(target?: PluginTargetScope): Promise<PluginListResponse> {
+        return await this.request<PluginListResponse>(withPluginTarget('/api/plugins', target))
+    }
+
+    async getPlugin(pluginId: string, target?: PluginTargetScope): Promise<PluginDetailResponse> {
+        return await this.request<PluginDetailResponse>(withPluginTarget(`/api/plugins/${encodeURIComponent(pluginId)}`, target))
+    }
+
+    async getPluginCapabilities(query?: PluginCapabilitiesQuery): Promise<PluginCapabilitiesResponse> {
+        return await this.request<PluginCapabilitiesResponse>(withPluginCapabilitiesQuery('/api/plugins/capabilities', query))
+    }
+
+    async getPluginNotificationFilterOptions(): Promise<PluginNotificationFilterOptionsResponse> {
+        return await this.request<PluginNotificationFilterOptionsResponse>('/api/plugins/notification-filter-options')
+    }
+
+    async enablePlugin(pluginId: string, config?: Record<string, unknown>, target?: PluginTargetScope): Promise<PluginReloadResult> {
+        const body: PluginEnableRequest = { ...(config ? { config } : {}) }
+        return await this.request<PluginReloadResult>(withPluginTarget(`/api/plugins/${encodeURIComponent(pluginId)}/enable`, target), {
+            method: 'POST',
+            body: JSON.stringify(body)
+        })
+    }
+
+    async disablePlugin(pluginId: string, target?: PluginTargetScope): Promise<PluginReloadResult> {
+        return await this.request<PluginReloadResult>(withPluginTarget(`/api/plugins/${encodeURIComponent(pluginId)}/disable`, target), {
+            method: 'POST',
+            body: JSON.stringify({})
+        })
+    }
+
+    async updatePluginConfig(pluginId: string, config: Record<string, unknown>, target?: PluginTargetScope): Promise<PluginReloadResult> {
+        const body: PluginConfigUpdateRequest = { config }
+        return await this.request<PluginReloadResult>(withPluginTarget(`/api/plugins/${encodeURIComponent(pluginId)}/config`, target), {
+            method: 'PATCH',
+            body: JSON.stringify(body)
+        })
+    }
+
+    async reloadPlugins(target?: PluginTargetScope): Promise<PluginReloadResult> {
+        return await this.request<PluginReloadResult>(withPluginTarget('/api/plugins/reload', target), { method: 'POST' })
+    }
+
+    async reloadPlugin(pluginId: string, target?: PluginTargetScope): Promise<PluginReloadResult> {
+        return await this.request<PluginReloadResult>(withPluginTarget(`/api/plugins/${encodeURIComponent(pluginId)}/reload`, target), { method: 'POST' })
+    }
+
+    async testPluginNotification(pluginId: string, target?: PluginTargetScope): Promise<PluginNotificationTestResponse> {
+        return await this.request<PluginNotificationTestResponse>(withPluginTarget(`/api/plugins/${encodeURIComponent(pluginId)}/notification-test`, target), { method: 'POST' })
+    }
+
+    async installLocalPlugin(body: PluginInstallLocalRequest, target?: PluginTargetScope): Promise<PluginInstallResult> {
+        return await this.request<PluginInstallResult>(withPluginTarget('/api/plugins/install-local', target), {
+            method: 'POST',
+            body: JSON.stringify(body)
+        })
+    }
+
+
+    async installPackagePlugin(body: PluginInstallPackageRequest, target?: PluginTargetScope): Promise<PluginInstallResult> {
+        return await this.request<PluginInstallResult>(withPluginTarget('/api/plugins/install-package', target), {
+            method: 'POST',
+            body: JSON.stringify(body)
+        })
+    }
+
+    async createPluginInstallPlan(body: PluginInstallPlanRequest): Promise<PluginInstallPlanResponse> {
+        return await this.request<PluginInstallPlanResponse>('/api/plugins/install-plan', {
+            method: 'POST',
+            body: JSON.stringify(body)
+        })
+    }
+
+    async executePluginInstallPlan(planId: string): Promise<PluginInstallResult> {
+        return await this.request<PluginInstallResult>(`/api/plugins/install-plan/${encodeURIComponent(planId)}/execute`, {
+            method: 'POST'
+        })
+    }
+
+    async getPluginMarketplace(query?: PluginMarketplaceQuery): Promise<PluginMarketplaceListResponse> {
+        return await this.request<PluginMarketplaceListResponse>(withPluginMarketplaceQuery('/api/plugins/marketplace', query))
+    }
+
+    async getPluginMarketplaceEntry(pluginId: string): Promise<PluginMarketplaceDetailResponse> {
+        return await this.request<PluginMarketplaceDetailResponse>(`/api/plugins/marketplace/${encodeURIComponent(pluginId)}`)
+    }
+
+    async refreshPluginMarketplace(): Promise<PluginMarketplaceListResponse> {
+        return await this.request<PluginMarketplaceListResponse>('/api/plugins/marketplace/refresh', {
+            method: 'POST'
+        })
+    }
+
+    async createMarketplaceInstallPlan(pluginId: string, body: PluginMarketplaceInstallRequest): Promise<PluginMarketplaceInstallPlanResponse> {
+        return await this.request<PluginMarketplaceInstallPlanResponse>(`/api/plugins/marketplace/${encodeURIComponent(pluginId)}/install-plan`, {
+            method: 'POST',
+            body: JSON.stringify(body)
+        })
+    }
+
+    async listPluginDirectory(path?: string, target?: PluginTargetScope): Promise<PluginLocalDirectoryListResponse> {
+        return await this.request<PluginLocalDirectoryListResponse>(withPluginTarget('/api/plugins/local-directory', target), {
+            method: 'POST',
+            body: JSON.stringify(path ? { path } : {})
+        })
+    }
+
+    async deletePlugin(pluginId: string, target?: PluginTargetScope): Promise<PluginDeleteResult> {
+        return await this.request<PluginDeleteResult>(withPluginTarget(`/api/plugins/${encodeURIComponent(pluginId)}`, target), {
+            method: 'DELETE'
+        })
     }
 
     async getSessions(): Promise<SessionsResponse> {
@@ -322,14 +511,20 @@ export class ApiClient {
         return response.sessionId
     }
 
-    async sendMessage(sessionId: string, text: string, localId?: string | null, attachments?: AttachmentMetadata[], scheduledAt?: number | null): Promise<void> {
+    async sendMessage(
+        sessionId: string,
+        text: string,
+        localId?: string | null,
+        attachments?: AttachmentMetadata[],
+        pluginAction?: PluginMessageActionRequest
+    ): Promise<void> {
         await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/messages`, {
             method: 'POST',
             body: JSON.stringify({
                 text,
                 localId: localId ?? undefined,
                 attachments: attachments ?? undefined,
-                scheduledAt: scheduledAt ?? undefined
+                pluginAction
             })
         })
     }
@@ -463,18 +658,34 @@ export class ApiClient {
     async spawnSession(
         machineId: string,
         directory: string,
-        agent?: AgentFlavor,
+        agent?: string,
         model?: string,
         modelReasoningEffort?: string,
         yolo?: boolean,
         sessionType?: 'simple' | 'worktree',
         worktreeName?: string,
-        effort?: string
+        effort?: string,
+        permissionMode?: string,
+        pluginFields?: Record<string, unknown>,
+        manualFields?: string[]
     ): Promise<SpawnResponse> {
         return await this.request<SpawnResponse>(`/api/machines/${encodeURIComponent(machineId)}/spawn`, {
             method: 'POST',
-            body: JSON.stringify({ directory, agent, model, modelReasoningEffort, yolo, sessionType, worktreeName, effort })
+            body: JSON.stringify({ directory, agent, model, modelReasoningEffort, yolo, sessionType, worktreeName, effort, permissionMode, pluginFields, manualFields })
         })
+    }
+
+    async previewRunnerSpawnOptions(
+        machineId: string,
+        input: RunnerSpawnOptionsPreviewRequest
+    ): Promise<RunnerSpawnOptionsPreviewResponse> {
+        return await this.request<RunnerSpawnOptionsPreviewResponse>(
+            `/api/machines/${encodeURIComponent(machineId)}/spawn-options/preview`,
+            {
+                method: 'POST',
+                body: JSON.stringify(input)
+            }
+        )
     }
 
     async getMachineCodexModels(machineId: string): Promise<CodexModelsResponse> {
@@ -510,6 +721,21 @@ export class ApiClient {
     async getMachineOpencodeModelsForCwd(machineId: string, cwd: string): Promise<OpencodeModelsResponse> {
         return await this.request<OpencodeModelsResponse>(
             `/api/machines/${encodeURIComponent(machineId)}/opencode-models?cwd=${encodeURIComponent(cwd)}`
+        )
+    }
+
+    async importAgentHistory(
+        machineId: string,
+        agentId: string,
+        nativeSessionId: string,
+        providerId?: string
+    ): Promise<AgentHistoryImportResponse> {
+        return await this.request<AgentHistoryImportResponse>(
+            `/api/machines/${encodeURIComponent(machineId)}/agents/${encodeURIComponent(agentId)}/history/import`,
+            {
+                method: 'POST',
+                body: JSON.stringify({ nativeSessionId, providerId })
+            }
         )
     }
 

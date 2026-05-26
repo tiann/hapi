@@ -1,13 +1,12 @@
+import {
+    CLAUDE_EFFORT_LABELS,
+    CLAUDE_EFFORT_PRESETS,
+    formatClaudeEffortLabel
+} from '@/lib/claude-effort'
+
 export type ClaudeComposerEffortOption = {
     value: string | null
     label: string
-}
-
-const CLAUDE_EFFORT_PRESETS = ['medium', 'high', 'max'] as const
-const CLAUDE_EFFORT_LABELS: Record<(typeof CLAUDE_EFFORT_PRESETS)[number], string> = {
-    medium: 'Medium',
-    high: 'High',
-    max: 'Max'
 }
 
 function normalizeClaudeComposerEffort(effort?: string | null): string | null {
@@ -17,11 +16,6 @@ function normalizeClaudeComposerEffort(effort?: string | null): string | null {
     }
 
     return trimmedEffort
-}
-
-function formatEffortLabel(effort: string): string {
-    return CLAUDE_EFFORT_LABELS[effort as keyof typeof CLAUDE_EFFORT_LABELS]
-        ?? `${effort.charAt(0).toUpperCase()}${effort.slice(1)}`
 }
 
 export function getClaudeComposerEffortOptions(currentEffort?: string | null): ClaudeComposerEffortOption[] {
@@ -36,7 +30,7 @@ export function getClaudeComposerEffortOptions(currentEffort?: string | null): C
     ) {
         options.push({
             value: normalizedCurrentEffort,
-            label: formatEffortLabel(normalizedCurrentEffort)
+            label: formatClaudeEffortLabel(normalizedCurrentEffort)
         })
     }
 

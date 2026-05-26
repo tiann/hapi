@@ -28,6 +28,8 @@ export type {
     OpencodeModelsResponse,
     OpencodeModelSummary,
     PathExistsResponse,
+    RunnerSpawnOptionsPreviewRequest,
+    RunnerSpawnOptionsPreviewResponse,
     SlashCommand,
     SlashCommandsResponse,
     SessionResponse,

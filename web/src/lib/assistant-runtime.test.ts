@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { aggregateResponseGroups } from './assistant-runtime'
+import { aggregateResponseGroups, buildPluginMessageActionRequest } from './assistant-runtime'
 import type { AgentEventBlock, AgentTextBlock, CliOutputBlock, ToolCallBlock, UserTextBlock } from '@/chat/types'
 import type { ToolGroupBlock, VisibleChatBlock } from '@/chat/toolGroups'
 
@@ -613,5 +613,26 @@ describe('aggregateResponseGroups', () => {
         const meta = aggregates.get('a1')
         expect(meta?.usage?.cache_creation_input_tokens).toBe(300)
         expect(meta?.usage?.cache_read_input_tokens).toBe(100)
+    })
+})
+
+describe('buildPluginMessageActionRequest', () => {
+    it('builds a pluginAction request from a ready composer action descriptor', () => {
+        expect(buildPluginMessageActionRequest({
+            id: 'cross',
+            kind: 'pluginMessageAction',
+            pluginId: 'com.example.cross',
+            capabilityId: 'cross-capability',
+            label: 'Cross',
+            icon: 'clock',
+            handler: { position: 'hub', actionId: 'cross-handler' },
+            ui: { kind: 'button' }
+        }, { value: 1 })).toEqual({
+            pluginId: 'com.example.cross',
+            capabilityId: 'cross-capability',
+            position: 'hub',
+            actionId: 'cross-handler',
+            payload: { value: 1 }
+        })
     })
 })

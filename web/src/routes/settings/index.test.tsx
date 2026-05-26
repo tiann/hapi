@@ -166,6 +166,12 @@ describe('SettingsPage', () => {
         expect(calledKeys).toContain('settings.about.protocolVersion')
     })
 
+
+    it('does not render the Plugins entry inside Settings', () => {
+        renderWithProviders(<SettingsPage />)
+        expect(screen.queryByText('Manage plugins')).toBeNull()
+    })
+
     it('renders the Appearance setting', () => {
         renderWithProviders(<SettingsPage />)
         expect(screen.getAllByText('Appearance').length).toBeGreaterThanOrEqual(1)

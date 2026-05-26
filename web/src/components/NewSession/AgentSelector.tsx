@@ -1,9 +1,10 @@
-import { AGENT_FLAVORS } from '@hapi/protocol'
 import type { AgentType } from './types'
 import { useTranslation } from '@/lib/use-translation'
+import type { AgentDescriptor } from '@hapi/protocol/plugins'
 
 export function AgentSelector(props: {
     agent: AgentType
+    agents: AgentDescriptor[]
     isDisabled: boolean
     onAgentChange: (value: AgentType) => void
 }) {
@@ -15,21 +16,22 @@ export function AgentSelector(props: {
                 {t('newSession.agent')}
             </label>
             <div className="flex flex-wrap gap-x-3 gap-y-2">
-                {AGENT_FLAVORS.map((agentType) => (
+                {props.agents.map((descriptor) => (
                     <label
-                        key={agentType}
-                        className="flex items-center gap-1.5 cursor-pointer"
+                        key={descriptor.id}
+                        className={`flex items-center gap-1.5 ${descriptor.available === false ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}
+                        title={descriptor.unavailableReason ?? descriptor.description}
                     >
                         <input
                             type="radio"
                             name="agent"
-                            value={agentType}
-                            checked={props.agent === agentType}
-                            onChange={() => props.onAgentChange(agentType)}
-                            disabled={props.isDisabled}
+                            value={descriptor.id}
+                            checked={props.agent === descriptor.id}
+                            onChange={() => props.onAgentChange(descriptor.id)}
+                            disabled={props.isDisabled || descriptor.available === false}
                             className="accent-[var(--app-link)]"
                         />
-                        <span className="text-sm capitalize">{agentType}</span>
+                        <span className="text-sm">{descriptor.displayName}</span>
                     </label>
                 ))}
             </div>

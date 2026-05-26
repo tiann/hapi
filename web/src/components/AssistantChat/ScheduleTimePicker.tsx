@@ -15,8 +15,23 @@ import { useTranslation } from '@/lib/use-translation'
  *   unchanged at send time.
  */
 export type PendingSchedule =
-    | { type: 'preset'; preset: '+5m' | '+30m' | '+1h' | '+4h' }
+    | { type: 'preset'; preset: string; delayMs?: number }
     | { type: 'absolute'; ms: number }
+
+export type SchedulePreset = {
+    id?: string
+    label: string
+    delayMs: number
+}
+
+export const DEFAULT_SCHEDULE_PRESETS: SchedulePreset[] = [
+    { id: '+5m', label: '+5m', delayMs: 5 * 60 * 1000 },
+    { id: '+30m', label: '+30m', delayMs: 30 * 60 * 1000 },
+    { id: '+1h', label: '+1h', delayMs: 60 * 60 * 1000 },
+    { id: '+4h', label: '+4h', delayMs: 4 * 60 * 60 * 1000 },
+]
+
+export const DEFAULT_MAX_DELAY_MS = 7 * 24 * 60 * 60 * 1000
 
 /**
  * Convert a PendingSchedule to an absolute epoch-ms at send time.
@@ -28,7 +43,7 @@ export type PendingSchedule =
  */
 export function resolvePendingSchedule(pending: PendingSchedule | null, sendNow: number): number | null {
     if (pending === null) return null
-    if (pending.type === 'preset') return parsePreset(pending.preset, sendNow)
+    if (pending.type === 'preset') return sendNow + (pending.delayMs ?? (parsePreset(pending.preset, sendNow) - sendNow))
     return pending.ms
 }
 
@@ -60,11 +75,12 @@ export function clampToMaxDays(value: number, now: number, maxDays: number): num
  * frustrating stale-invalid UX with no visible error cause. */
 export function validateSpecificDatetime(
     value: number,
-    now: number
+    now: number,
+    maxDelayMs = DEFAULT_MAX_DELAY_MS
 ): 'scheduleErrorPast' | 'scheduleErrorTooFar' | null {
     const GRACE_MS = 30_000 // 30 seconds
     if (value < now - GRACE_MS) return 'scheduleErrorPast'
-    const maxFuture = now + 7 * 24 * 60 * 60 * 1000
+    const maxFuture = now + maxDelayMs
     if (value > maxFuture) return 'scheduleErrorTooFar'
     return null
 }
@@ -137,9 +153,6 @@ export function computeSchedulePickerPlacement(params: {
 // Relative presets
 // ---------------------------------------------------------------------------
 
-const PRESETS = ['+5m', '+30m', '+1h', '+4h'] as const
-type Preset = typeof PRESETS[number]
-
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -156,9 +169,20 @@ interface ScheduleTimePickerProps {
     anchorRef: React.RefObject<HTMLButtonElement | null>
     /** Currently active pending schedule, used to highlight the selected preset. */
     pendingSchedule?: PendingSchedule | null
+    presets?: SchedulePreset[]
+    maxDelayMs?: number
+    title?: string
 }
 
-export function ScheduleTimePicker({ onSchedule, onClose, anchorRef, pendingSchedule }: ScheduleTimePickerProps) {
+export function ScheduleTimePicker({
+    onSchedule,
+    onClose,
+    anchorRef,
+    pendingSchedule,
+    presets = DEFAULT_SCHEDULE_PRESETS,
+    maxDelayMs = DEFAULT_MAX_DELAY_MS,
+    title,
+}: ScheduleTimePickerProps) {
     const { t } = useTranslation()
     const [tab, setTab] = useState<'relative' | 'specific'>('relative')
     const [specificValue, setSpecificValue] = useState('')
@@ -230,7 +254,7 @@ export function ScheduleTimePicker({ onSchedule, onClose, anchorRef, pendingSche
     // Compute max value for datetime-local input (7 days from now)
     const maxDatetimeLocal = (() => {
         const now = new Date()
-        const max = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000)
+        const max = new Date(now.getTime() + maxDelayMs)
         // Format: YYYY-MM-DDTHH:mm (datetime-local format, no seconds)
         const pad = (n: number) => String(n).padStart(2, '0')
         return `${max.getFullYear()}-${pad(max.getMonth() + 1)}-${pad(max.getDate())}T${pad(max.getHours())}:${pad(max.getMinutes())}`
@@ -242,9 +266,9 @@ export function ScheduleTimePicker({ onSchedule, onClose, anchorRef, pendingSche
         return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}`
     })()
 
-    const handlePresetClick = (preset: Preset) => {
+    const handlePresetClick = (preset: SchedulePreset) => {
         // Store the preset key only — absolute ms is computed at send time (send-time base).
-        onSchedule({ type: 'preset', preset })
+        onSchedule({ type: 'preset', preset: preset.id ?? preset.label, delayMs: preset.delayMs })
         onClose()
     }
 
@@ -253,7 +277,7 @@ export function ScheduleTimePicker({ onSchedule, onClose, anchorRef, pendingSche
         const parsed = new Date(specificValue).getTime()
         if (isNaN(parsed)) return
         const now = Date.now()
-        const error = validateSpecificDatetime(parsed, now)
+        const error = validateSpecificDatetime(parsed, now, maxDelayMs)
         if (error) {
             const errorKeyMap = {
                 scheduleErrorPast: 'composer.scheduleErrorPast',
@@ -275,7 +299,7 @@ export function ScheduleTimePicker({ onSchedule, onClose, anchorRef, pendingSche
         <div
             ref={panelRef}
             role="dialog"
-            aria-label={t('composer.scheduleSend')}
+            aria-label={t('composer.delaySend')}
             style={
                 isMobilePanel
                     ? { position: 'fixed' }
@@ -293,7 +317,7 @@ export function ScheduleTimePicker({ onSchedule, onClose, anchorRef, pendingSche
             {/* Header */}
             <div className="px-3 pt-3 pb-2">
                 <p className="text-xs font-semibold text-[var(--app-hint)]">
-                    {t('composer.scheduleSend')}
+                    {title ?? t('composer.delaySend')}
                 </p>
             </div>
 
@@ -327,11 +351,12 @@ export function ScheduleTimePicker({ onSchedule, onClose, anchorRef, pendingSche
             <div className="px-3 pb-3">
                 {tab === 'relative' ? (
                     <div className="grid grid-cols-2 gap-1.5">
-                        {PRESETS.map((preset) => {
-                            const isSelected = pendingSchedule?.type === 'preset' && pendingSchedule.preset === preset
+                        {presets.map((preset) => {
+                            const presetId = preset.id ?? preset.label
+                            const isSelected = pendingSchedule?.type === 'preset' && pendingSchedule.preset === presetId
                             return (
                                 <button
-                                    key={preset}
+                                    key={presetId}
                                     type="button"
                                     onClick={() => handlePresetClick(preset)}
                                     className={`rounded-lg border px-3 py-2 text-sm font-medium transition-colors ${
@@ -340,7 +365,7 @@ export function ScheduleTimePicker({ onSchedule, onClose, anchorRef, pendingSche
                                             : 'border-[var(--app-border)] text-[var(--app-fg)] hover:bg-[var(--app-secondary-bg)] hover:border-[var(--app-link)]'
                                     }`}
                                 >
-                                    {preset}
+                                    {preset.label}
                                 </button>
                             )
                         })}
@@ -368,7 +393,7 @@ export function ScheduleTimePicker({ onSchedule, onClose, anchorRef, pendingSche
                             onClick={handleSpecificSubmit}
                             className="w-full rounded-lg bg-blue-500 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-40"
                         >
-                            {t('composer.scheduleSend')}
+                            {t('composer.delaySend')}
                         </button>
                     </div>
                 )}
