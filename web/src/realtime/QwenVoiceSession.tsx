@@ -77,11 +77,38 @@ function sendEvent(type: string, payload?: Record<string, unknown>): void {
     }))
 }
 
+interface QwenSessionConfig {
+    modalities: ['text', 'audio']
+    voice: string
+    input_audio_format: 'pcm16'
+    output_audio_format: 'pcm24'
+    instructions: string
+    temperature: number
+    turn_detection: {
+        type: 'server_vad'
+        threshold: number
+        silence_duration_ms: number
+        prefix_padding_ms: number
+    }
+    tools: Array<unknown>
+    tool_choice: 'auto'
+}
+
 class QwenVoiceSessionImpl implements VoiceSession {
     private api: ApiClient
+    private currentSessionConfig: QwenSessionConfig | null = null
 
     constructor(api: ApiClient) {
         this.api = api
+    }
+
+    private updateInstructions(update: string): void {
+        if (!this.currentSessionConfig) return
+        this.currentSessionConfig = {
+            ...this.currentSessionConfig,
+            instructions: `${this.currentSessionConfig.instructions}\n\n${update}`
+        }
+        sendEvent('session.update', { session: this.currentSessionConfig })
     }
 
     async startSession(config: VoiceSessionConfig): Promise<void> {
@@ -167,24 +194,23 @@ class QwenVoiceSessionImpl implements VoiceSession {
                         ? `${basePrompt}\n\n[Current Context]\n${config.initialContext}`
                         : basePrompt
 
-                    sendEvent('session.update', {
-                        session: {
-                            modalities: ['text', 'audio'],
-                            voice: QWEN_REALTIME_VOICE,
-                            input_audio_format: 'pcm16',
-                            output_audio_format: 'pcm24',
-                            instructions,
-                            temperature: 0.7,
-                            turn_detection: {
-                                type: 'server_vad',
-                                threshold: 0.5,
-                                silence_duration_ms: 800,
-                                prefix_padding_ms: 300
-                            },
-                            tools,
-                            tool_choice: 'auto'
-                        }
-                    })
+                    this.currentSessionConfig = {
+                        modalities: ['text', 'audio'],
+                        voice: QWEN_REALTIME_VOICE,
+                        input_audio_format: 'pcm16',
+                        output_audio_format: 'pcm24',
+                        instructions,
+                        temperature: 0.7,
+                        turn_detection: {
+                            type: 'server_vad',
+                            threshold: 0.5,
+                            silence_duration_ms: 800,
+                            prefix_padding_ms: 300
+                        },
+                        tools,
+                        tool_choice: 'auto'
+                    }
+                    sendEvent('session.update', { session: this.currentSessionConfig })
                     return
                 }
 
@@ -324,32 +350,22 @@ class QwenVoiceSessionImpl implements VoiceSession {
     }
 
     async endSession(): Promise<void> {
+        this.currentSessionConfig = null
         cleanup()
         resetRealtimeSessionState()
         state.statusCallback?.('disconnected')
     }
 
     sendTextMessage(message: string): void {
-        // Send text as a user message via conversation.item.create
-        sendEvent('conversation.item.create', {
-            item: {
-                type: 'message',
-                role: 'user',
-                content: [{ type: 'input_text', text: message }]
-            }
-        })
+        // Qwen only supports conversation.item.create for function_call_output.
+        // Inject text as an instruction update then trigger a response.
+        this.updateInstructions(message)
         sendEvent('response.create')
     }
 
     sendContextualUpdate(update: string): void {
-        // Send context as a system-like user message
-        sendEvent('conversation.item.create', {
-            item: {
-                type: 'message',
-                role: 'user',
-                content: [{ type: 'input_text', text: `[System Context Update] ${update}` }]
-            }
-        })
+        // Append context silently — no response.create, so model doesn't speak yet.
+        this.updateInstructions(`[System Context Update] ${update}`)
     }
 }
 
