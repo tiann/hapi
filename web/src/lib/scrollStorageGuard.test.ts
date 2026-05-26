@@ -46,6 +46,33 @@ describe('installScrollRestorationGuard', () => {
         expect(() => storage.setItem('other-key', 'value')).toThrow(QuotaExceededError)
     })
 
+    it('handles quota errors that are not instanceof Error (DOMException-shaped)', () => {
+        const domExceptionLike = {
+            name: 'QuotaExceededError',
+            message: "Failed to execute 'setItem' on 'Storage': Setting the value of 'tsr-scroll-restoration-v1_3' exceeded the quota."
+        }
+        const fullState: Record<string, unknown> = {}
+        for (let i = 0; i < 100; i++) {
+            fullState[`/route/${i}`] = { window: { scrollX: 0, scrollY: i } }
+        }
+        const fullValue = JSON.stringify(fullState)
+
+        let call = 0
+        storage._setItem.mockImplementation((key: string, value: string) => {
+            call += 1
+            if (call === 1) {
+                throw domExceptionLike
+            }
+            storage._store[key] = value
+        })
+
+        expect(domExceptionLike instanceof Error).toBe(false)
+        storage.setItem(STORAGE_KEY, fullValue)
+
+        expect(storage._setItem).toHaveBeenCalledTimes(2)
+        expect(Object.keys(JSON.parse(storage._store[STORAGE_KEY]) as object).length).toBe(RETAIN_COUNT)
+    })
+
     it('passes through scroll restoration writes that succeed', () => {
         storage.setItem(STORAGE_KEY, JSON.stringify({ a: 1 }))
         expect(storage._store[STORAGE_KEY]).toBe(JSON.stringify({ a: 1 }))
