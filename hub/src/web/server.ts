@@ -57,7 +57,7 @@ function createGeminiProxyWebSocketHandler() {
             upstream.onopen = () => {
                 // Flush any messages queued while upstream was connecting (e.g. setup frame)
                 for (const queued of pending.splice(0)) {
-                    upstream.send(typeof queued === 'string' ? queued : queued)
+                    upstream.send(queued)
                 }
                 pendingMap.delete(clientWs)
             }
@@ -81,7 +81,7 @@ function createGeminiProxyWebSocketHandler() {
         message(clientWs: ServerWebSocket<unknown>, message: string | ArrayBuffer | Uint8Array) {
             const upstream = upstreamMap.get(clientWs)
             if (upstream?.readyState === WebSocket.OPEN) {
-                upstream.send(typeof message === 'string' ? message : message)
+                upstream.send(message)
             } else if (upstream?.readyState === WebSocket.CONNECTING) {
                 // Queue messages until upstream opens (critical for the setup frame)
                 const pending = pendingMap.get(clientWs)
@@ -126,6 +126,7 @@ function createQwenProxyWebSocketHandler() {
                 } catch { /* client gone */ }
             }
             upstream.onerror = () => {
+                upstreamMap.delete(clientWs)
                 try { clientWs.close(1011, 'Upstream error') } catch { /* */ }
             }
             upstream.onclose = (event) => {
@@ -136,7 +137,7 @@ function createQwenProxyWebSocketHandler() {
         message(clientWs: ServerWebSocket<unknown>, message: string | ArrayBuffer | Uint8Array) {
             const upstream = upstreamMap.get(clientWs)
             if (upstream?.readyState === WebSocket.OPEN) {
-                upstream.send(typeof message === 'string' ? message : message)
+                upstream.send(message)
             }
         },
         close(clientWs: ServerWebSocket<unknown>, code: number, reason: string) {
@@ -434,7 +435,7 @@ export async function startWebServer(options: {
             // Qwen Realtime WebSocket proxy
             if (url.pathname === '/api/voice/qwen-ws') {
                 const apiKey = process.env.DASHSCOPE_API_KEY || process.env.QWEN_API_KEY
-                const model = url.searchParams.get('model') || 'qwen3.5-omni-plus-realtime'
+                const model = url.searchParams.get('model') || 'qwen3-omni-flash-realtime'
                 if (!apiKey) {
                     return new Response('DashScope API key not configured', { status: 400 })
                 }

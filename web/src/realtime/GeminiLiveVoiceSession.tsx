@@ -183,14 +183,15 @@ class GeminiLiveVoiceSessionImpl implements VoiceSession {
 
                     const proactive = localStorage.getItem('hapi-voice-proactive') === 'true'
 
-                    if (config.initialContext) {
-                        // Proactive: speak the summary. Reactive: feed context silently.
-                        sendClientContent(`[Context] ${config.initialContext}`, proactive)
-                    }
-
-                    if (!proactive) {
-                        // Gemini won't self-start; send a greeting trigger so it introduces itself.
-                        // Explicitly suppress model name and context leak.
+                    if (proactive && config.initialContext) {
+                        // Proactive with context: speak the summary immediately.
+                        sendClientContent(`[Context] ${config.initialContext}`, true)
+                    } else {
+                        // Reactive, or proactive with no context: feed context silently if
+                        // available, then trigger a greeting so Gemini doesn't sit silent.
+                        if (config.initialContext) {
+                            sendClientContent(`[Context] ${config.initialContext}`, false)
+                        }
                         sendClientContent('[Greet the user as HAPI. Say a brief hello and invite them to speak. Do not mention Gemini or any model name. Do not reference any context or recent activity.]', true)
                     }
 
@@ -258,6 +259,8 @@ class GeminiLiveVoiceSessionImpl implements VoiceSession {
             ws.onerror = (event) => {
                 console.error('[GeminiLive] WebSocket error:', event)
                 if (!setupDone) {
+                    setupDone = true
+                    state.ws = null  // make stale-close guard trip in onclose
                     state.statusCallback?.('error', 'WebSocket connection failed')
                     reject(new Error('WebSocket connection failed'))
                 }
@@ -403,12 +406,6 @@ export function GeminiLiveVoiceSession({
         }
     }, [micMuted])
 
-    // Handle barge-in: clear audio queue when user starts speaking
-    const handleBargeIn = useCallback(() => {
-        if (state.player?.isPlaying()) {
-            state.player.clearQueue()
-        }
-    }, [])
 
     // Cleanup on unmount
     useEffect(() => {

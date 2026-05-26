@@ -170,6 +170,7 @@ class QwenVoiceSessionImpl implements VoiceSession {
                             modalities: ['text', 'audio'],
                             voice: QWEN_REALTIME_VOICE,
                             input_audio_format: 'pcm',
+                            input_audio_sample_rate: 16000,
                             output_audio_format: 'pcm',
                             instructions,
                             temperature: 0.7,
@@ -279,6 +280,8 @@ class QwenVoiceSessionImpl implements VoiceSession {
             ws.onerror = (event) => {
                 console.error('[Qwen] WebSocket error:', event)
                 if (!sessionReady) {
+                    sessionReady = true
+                    state.ws = null  // make stale-close guard trip in onclose
                     state.statusCallback?.('error', 'WebSocket connection failed')
                     reject(new Error('WebSocket connection failed'))
                 }
