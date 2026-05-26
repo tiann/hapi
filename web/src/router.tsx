@@ -150,11 +150,16 @@ function SessionsPage() {
     }, [machines])
     const sessionMatch = matchRoute({ to: '/sessions/$sessionId', fuzzy: true })
     const selectedSessionId = sessionMatch && sessionMatch.sessionId !== 'new' ? sessionMatch.sessionId : null
+    const selectedSession = useMemo(
+        () => sessions.find((session) => session.id === selectedSessionId) ?? null,
+        [sessions, selectedSessionId]
+    )
     useEffect(() => {
-        if (selectedSessionId) {
-            markSessionSeen(selectedSessionId)
+        if (!selectedSessionId) {
+            return
         }
-    }, [selectedSessionId])
+        markSessionSeen(selectedSessionId, Math.max(Date.now(), selectedSession?.updatedAt ?? 0))
+    }, [selectedSessionId, selectedSession?.updatedAt])
     const isSessionsIndex = pathname === '/sessions' || pathname === '/sessions/'
     const sidebar = useSidebarResize()
     const handleNewSessionInDirectory = useCallback((args: { machineId: string | null; directory: string }) => {
