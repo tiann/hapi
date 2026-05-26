@@ -67,7 +67,7 @@ export function createSocketServer(deps: SocketServerDeps): {
     const engine = new Engine({
         path: '/socket.io/',
         cors: corsOptions,
-        maxHttpBufferSize: 55 * 1024 * 1024, // 55MB to match upload limit
+        maxHttpBufferSize: 68 * 1024 * 1024, // 50 MiB decoded uploads are ~66.7 MiB as base64 JSON
         allowRequest: async (req) => {
             const origin = req.headers.get('origin')
             if (!origin || allowAllOrigins || corsOrigins.includes(origin)) {

@@ -202,6 +202,17 @@ class QwenVoiceSessionImpl implements VoiceSession {
                         return
                     }
                     state.statusCallback?.('connected')
+
+                    const proactive = localStorage.getItem('hapi-voice-proactive') === 'true'
+                    if (proactive && config.initialContext) {
+                        this.sendTextMessage(`[Context] ${config.initialContext}`)
+                    } else {
+                        if (config.initialContext) {
+                            this.sendContextualUpdate(config.initialContext)
+                        }
+                        this.sendTextMessage('[Greet the user as HAPI. Say a brief hello and invite them to speak. Do not mention Qwen or any model name. Do not reference any context or recent activity.]')
+                    }
+
                     resolve()
                     return
                 }
