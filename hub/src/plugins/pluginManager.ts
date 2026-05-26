@@ -1,4 +1,4 @@
-import { watch, type FSWatcher } from 'node:fs'
+import { mkdirSync, unwatchFile, watch, watchFile, type FSWatcher, type Stats } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { createHash } from 'node:crypto'
 import type {
@@ -120,6 +120,7 @@ export class HubPluginManager {
     private managerDiagnostics: PluginDiagnosticView[] = []
     private reloadQueue: Promise<InternalReloadResult> = Promise.resolve({ records: [], items: [] })
     private watchers: FSWatcher[] = []
+    private watchFileDisposers: Array<() => void> = []
     private watchTimer: NodeJS.Timeout | null = null
     private disposed = false
     private readonly notificationChannel: NotificationChannel
@@ -895,11 +896,19 @@ export class HubPluginManager {
             return
         }
         this.clearWatchers()
+        const userPluginsDir = join(this.options.hapiHome, 'plugins')
+        try {
+            mkdirSync(userPluginsDir, { recursive: true, mode: 0o700 })
+        } catch {
+            // Watch setup is best-effort; discover/reload will report real filesystem errors.
+        }
+        this.watchPluginStateFile(getPluginStateFile(this.options.hapiHome))
         const paths = new Set<string>([
-            this.options.hapiHome,
-            join(this.options.hapiHome, 'plugins'),
+            userPluginsDir,
             ...this.records.map((record) => record.rootPath),
-            ...this.records.flatMap((record) => record.runtimeEntryPaths.map((entry) => dirname(entry.realPath)))
+            ...this.records.flatMap((record) => record.runtimeEntryPaths
+                .filter((entry) => entry.runtime === 'hub')
+                .map((entry) => dirname(entry.realPath)))
         ])
         for (const path of paths) {
             try {
@@ -921,6 +930,22 @@ export class HubPluginManager {
             watcher.close()
         }
         this.watchers = []
+        for (const dispose of this.watchFileDisposers) {
+            dispose()
+        }
+        this.watchFileDisposers = []
+    }
+
+    private watchPluginStateFile(path: string): void {
+        const interval = Math.max(this.options.watchDebounceMs ?? 300, 100)
+        const listener = (current: Stats, previous: Stats) => {
+            if (current.ino === previous.ino && current.mtimeMs === previous.mtimeMs && current.size === previous.size) {
+                return
+            }
+            this.scheduleWatchReload()
+        }
+        watchFile(path, { persistent: false, interval }, listener)
+        this.watchFileDisposers.push(() => unwatchFile(path, listener))
     }
 
     private scheduleWatchReload(): void {

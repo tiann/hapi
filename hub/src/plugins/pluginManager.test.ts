@@ -747,6 +747,40 @@ describe('HubPluginManager', () => {
         expect(readJsonl(logFile)).toContainEqual({ type: 'send', eventType: 'ready' })
     })
 
+    it('ignores data-dir churn such as sqlite files when watching plugins', async () => {
+        class CountingHubPluginManager extends HubPluginManager {
+            watchReloads = 0
+
+            override async reload(...args: Parameters<HubPluginManager['reload']>): ReturnType<HubPluginManager['reload']> {
+                if (args[1] === 'watch') {
+                    this.watchReloads += 1
+                }
+                return await super.reload(...args)
+            }
+        }
+
+        writePlugin(pluginRoot, `
+            export function activate(ctx) {
+                ctx.notifications.registerChannel({ async send() {} });
+            }
+        `)
+        writeManifest(pluginRoot, manifest())
+        await writePluginState(join(hapiHome, 'plugins.json'), {
+            enabled: { 'com.example.plugin': { enabled: true } }
+        })
+
+        const manager = new CountingHubPluginManager({ hapiHome, watch: true, watchDebounceMs: 20 })
+        await manager.start()
+        await sleep(50)
+        writeFileSync(join(hapiHome, 'hapi.db'), 'sqlite-main')
+        writeFileSync(join(hapiHome, 'hapi.db-wal'), 'sqlite-wal')
+        writeFileSync(join(hapiHome, 'runner.state.json'), '{}')
+        await sleep(150)
+        await manager.dispose()
+
+        expect(manager.watchReloads).toBe(0)
+    })
+
     it('watches nested hub entry directory changes and reloads them when available', async () => {
         writePlugin(pluginRoot, `
             import { appendFileSync } from 'node:fs';
