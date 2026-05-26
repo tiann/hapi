@@ -24,14 +24,55 @@ function jsonResponse(value: unknown): Awaited<ReturnType<MarketplaceFetch>> {
         statusText: 'OK',
         async text() {
             return JSON.stringify(value)
-        },
-        async arrayBuffer() {
-            return new ArrayBuffer(0)
         }
     }
 }
 
+function packageCatalog(url: string, extraPackageMetadata: Record<string, unknown> = {}): unknown {
+    return {
+        schemaVersion: 'hapi-plugin-marketplace/v1',
+        updatedAt: '2026-05-24T00:00:00.000Z',
+        plugins: [{
+            id: 'com.example.package',
+            name: 'Package Plugin',
+            repo: 'example/package-plugin',
+            releases: [{
+                version: '1.0.0',
+                tag: 'v1.0.0',
+                manifest: {
+                    id: 'com.example.package',
+                    name: 'Package Plugin',
+                    version: '1.0.0',
+                    pluginApiVersion: '0.1'
+                },
+                package: {
+                    filename: 'plugin.tgz',
+                    url,
+                    format: 'tgz',
+                    checksum: `sha256:${'a'.repeat(64)}`,
+                    ...extraPackageMetadata
+                }
+            }]
+        }]
+    }
+}
+
 describe('PluginMarketplaceService', () => {
+    it('rejects non-http marketplace display links', () => {
+        const homepageCatalog = packageCatalog('https://example.com/plugin.tgz') as { plugins: Array<Record<string, unknown>> }
+        homepageCatalog.plugins[0]!.homepage = 'javascript:alert(1)'
+        expect(PluginMarketplaceCatalogSchema.safeParse(homepageCatalog).success).toBe(false)
+
+        const malformedCatalog = packageCatalog('https://example.com/plugin.tgz') as { plugins: Array<Record<string, unknown>> }
+        malformedCatalog.plugins[0]!.homepage = 'not a url'
+        expect(() => PluginMarketplaceCatalogSchema.safeParse(malformedCatalog)).not.toThrow()
+        expect(PluginMarketplaceCatalogSchema.safeParse(malformedCatalog).success).toBe(false)
+
+        const authorCatalog = packageCatalog('https://example.com/plugin.tgz') as { plugins: Array<Record<string, unknown>> }
+        authorCatalog.plugins[0]!.author = { name: 'Example', url: 'data:text/html,evil' }
+        expect(PluginMarketplaceCatalogSchema.safeParse(authorCatalog).success).toBe(false)
+    })
+
     it('rejects release metadata with duplicate versions or manifest version mismatches', () => {
         const release = (version: string, manifestVersion = version) => ({
             version,
@@ -308,6 +349,89 @@ describe('PluginMarketplaceService', () => {
         await expect(serviceForPackage(pathToFileURL('/tmp/plugin.tgz').toString()).buildInstallPlanRequest('com.example.package-policy')).rejects.toThrow('file packages are disabled')
         await expect(serviceForPackage('ftp://example.com/plugin.tgz').buildInstallPlanRequest('com.example.package-policy')).rejects.toThrow('local packages are disabled')
         await expect(serviceForPackage('http://example.com/plugin.tgz').buildInstallPlanRequest('com.example.package-policy')).rejects.toThrow('must use HTTPS')
+    })
+
+    it('rejects oversized remote marketplace packages from content-length before buffering', async () => {
+        const service = new PluginMarketplaceService({
+            sourceUrl: 'https://example.com/catalog.v1.json',
+            maxPackageBytes: 1,
+            fetch: async (url) => {
+                if (url.endsWith('/catalog.v1.json')) {
+                    return jsonResponse(packageCatalog('https://example.com/plugin.tgz'))
+                }
+                return {
+                    ok: true,
+                    status: 200,
+                    statusText: 'OK',
+                    headers: { get: (name: string) => name.toLowerCase() === 'content-length' ? '2' : null },
+                    body: null,
+                    async text() {
+                        return ''
+                    }
+                }
+            }
+        })
+
+        await expect(service.buildInstallPlanRequest('com.example.package')).rejects.toThrow('Plugin package is too large.')
+    })
+
+    it('rejects remote marketplace package responses without a readable stream', async () => {
+        const service = new PluginMarketplaceService({
+            sourceUrl: 'https://example.com/catalog.v1.json',
+            maxPackageBytes: 25,
+            fetch: async (url) => {
+                if (url.endsWith('/catalog.v1.json')) {
+                    return jsonResponse(packageCatalog('https://example.com/plugin.tgz'))
+                }
+                return {
+                    ok: true,
+                    status: 200,
+                    statusText: 'OK',
+                    headers: { get: () => null },
+                    body: null,
+                    async text() {
+                        return ''
+                    }
+                }
+            }
+        })
+
+        await expect(service.buildInstallPlanRequest('com.example.package')).rejects.toThrow('did not provide a readable stream')
+    })
+
+    it('aborts oversized streamed marketplace downloads once the quota is exceeded', async () => {
+        let reads = 0
+        const service = new PluginMarketplaceService({
+            sourceUrl: 'https://example.com/catalog.v1.json',
+            maxPackageBytes: 1,
+            fetch: async (url) => {
+                if (url.endsWith('/catalog.v1.json')) {
+                    return jsonResponse(packageCatalog('https://example.com/plugin.tgz'))
+                }
+                return {
+                    ok: true,
+                    status: 200,
+                    statusText: 'OK',
+                    headers: { get: () => null },
+                    body: {
+                        getReader: () => ({
+                            async read() {
+                                reads += 1
+                                if (reads === 1) return { done: false, value: new Uint8Array([1]) }
+                                return { done: false, value: new Uint8Array([2]) }
+                            },
+                            releaseLock() {}
+                        })
+                    },
+                    async text() {
+                        return ''
+                    }
+                }
+            }
+        })
+
+        await expect(service.buildInstallPlanRequest('com.example.package')).rejects.toThrow('Plugin package is too large.')
+        expect(reads).toBe(2)
     })
 
     it('rejects remote source catalogs without a trusted source root or embedded source metadata', async () => {

@@ -115,6 +115,7 @@ export interface PluginPackageInspectionResult extends PluginPackageValidationRe
 }
 
 export const HAPI_PLUGIN_PACKAGE_MANIFEST_FILE = 'hapi.plugin.package.json'
+export const DEFAULT_MAX_PLUGIN_PACKAGE_EXPANDED_BYTES = 256 * 1024 * 1024
 
 const PluginPackageManifestMetadataSchema = z.object({
     formatVersion: z.literal('hapi-plugin-package/v1'),
@@ -149,6 +150,13 @@ export class PluginStateLockError extends Error {
 }
 
 const execFile = promisify(execFileCallback)
+
+type ArchiveEntryType = 'file' | 'directory' | 'unsupported'
+type ArchiveEntry = {
+    path: string
+    type: ArchiveEntryType
+    size: number
+}
 
 function diagnostic(
     code: string,
@@ -657,14 +665,85 @@ function assertArchiveEntrySafe(entry: string): void {
     }
 }
 
-async function listArchiveEntries(packagePath: string, format: PluginPackageFormat): Promise<string[]> {
+function archiveEntryTypeFromMode(mode: string): ArchiveEntryType {
+    if (mode.startsWith('-')) return 'file'
+    if (mode.startsWith('d')) return 'directory'
+    return 'unsupported'
+}
+
+function archiveEntryTypeFromZipMode(mode: string, path: string): ArchiveEntryType {
+    if (mode.startsWith('l')) return 'unsupported'
+    if (mode.startsWith('d') || path.endsWith('/')) return 'directory'
+    return 'file'
+}
+
+function parseArchiveEntrySize(size: string, line: string): number {
+    const parsed = Number(size)
+    if (!Number.isSafeInteger(parsed) || parsed < 0) {
+        throw new PluginInstallError('plugin-install-invalid-source', `Plugin package entry has an invalid size: ${line}`)
+    }
+    return parsed
+}
+
+function parseTarArchiveEntry(line: string): ArchiveEntry | null {
+    const match = line.match(/^(\S{10})\s+\S+\s+(\d+)\s+\S+\s+\S+\s+(.+)$/)
+    if (!match) return null
+    const [, mode, size, rawPath] = match
+    const type = archiveEntryTypeFromMode(mode)
+    const path = type === 'unsupported' && mode.startsWith('l')
+        ? rawPath.split(' -> ')[0] ?? rawPath
+        : rawPath
+    return { path, type, size: parseArchiveEntrySize(size, line) }
+}
+
+function parseZipArchiveEntry(line: string): ArchiveEntry | null {
+    const match = line.match(/^(\S{10})\s+\S+\s+\S+\s+(\d+)\s+\S+\s+\d+\s+\S+\s+\S+\s+\S+\s+(.+)$/)
+    if (!match) return null
+    const [, mode, size, path] = match
+    return { path, type: archiveEntryTypeFromZipMode(mode, path), size: parseArchiveEntrySize(size, line) }
+}
+
+async function listArchiveEntriesWithMetadata(packagePath: string, format: PluginPackageFormat): Promise<ArchiveEntry[]> {
     const command = format === 'tgz' ? 'tar' : 'unzip'
-    const args = format === 'tgz' ? ['-tzf', packagePath] : ['-Z1', packagePath]
+    const args = format === 'tgz' ? ['-tzvf', packagePath] : ['-Z', '-l', packagePath]
     try {
         const { stdout } = await execFile(command, args, { maxBuffer: 1024 * 1024 * 10 })
-        return stdout.split('\n').map((entry) => entry.trim()).filter(Boolean)
+        return stdout
+            .split('\n')
+            .map((line) => line.trimEnd())
+            .filter(Boolean)
+            .flatMap((line) => {
+                if (format === 'zip' && (line.startsWith('Archive:') || line.startsWith('Zip file size:') || /^\d+ files?, /.test(line))) {
+                    return []
+                }
+                const entry = format === 'tgz' ? parseTarArchiveEntry(line) : parseZipArchiveEntry(line)
+                if (!entry) {
+                    throw new PluginInstallError('plugin-install-invalid-source', `Plugin package entry could not be parsed: ${line}`)
+                }
+                return [entry]
+            })
     } catch (error) {
+        if (error instanceof PluginInstallError) {
+            throw error
+        }
         throw new PluginInstallError('plugin-install-invalid-source', `Plugin package could not be listed: ${error instanceof Error ? error.message : String(error)}`)
+    }
+}
+
+function assertArchiveEntriesSafe(entries: ArchiveEntry[], maxExpandedPackageBytes: number = DEFAULT_MAX_PLUGIN_PACKAGE_EXPANDED_BYTES): void {
+    if (entries.length === 0) {
+        throw new PluginInstallError('plugin-install-invalid-source', 'Plugin package is empty.')
+    }
+    let expandedBytes = 0
+    for (const entry of entries) {
+        assertArchiveEntrySafe(entry.path)
+        if (entry.type !== 'file' && entry.type !== 'directory') {
+            throw new PluginInstallError('plugin-install-unsafe-path', `Plugin package contains an unsupported entry type: ${entry.path}`)
+        }
+        expandedBytes += entry.size
+        if (expandedBytes > maxExpandedPackageBytes) {
+            throw new PluginInstallError('plugin-install-invalid-source', 'Plugin package expands beyond the allowed size.')
+        }
     }
 }
 
@@ -762,6 +841,7 @@ export async function validatePluginPackagePayload(options: {
     format?: PluginPackageFormat
     manifest?: PluginPackageManifestMetadata
     inspectArchive?: boolean
+    maxExpandedPackageBytes?: number
 }): Promise<PluginPackageValidationResult> {
     const format = detectPackageFormat(options.filename, options.format)
     const bytes = Buffer.from(options.contentBase64, 'base64')
@@ -781,14 +861,9 @@ export async function validatePluginPackagePayload(options: {
             const extractDir = join(tempRoot, 'extract')
             await writeFile(packagePath, bytes, { mode: 0o600 })
             await mkdir(extractDir, { recursive: true, mode: 0o700 })
-            const entries = await listArchiveEntries(packagePath, format)
-            if (entries.length === 0) {
-                throw new PluginInstallError('plugin-install-invalid-source', 'Plugin package is empty.')
-            }
-            for (const entry of entries) {
-                assertArchiveEntrySafe(entry)
-            }
-            await extractArchive(packagePath, format, extractDir)
+            const entries = await listArchiveEntriesWithMetadata(packagePath, format)
+            assertArchiveEntriesSafe(entries, options.maxExpandedPackageBytes)
+            await extractArchive(packagePath, format, extractDir, entries, options.maxExpandedPackageBytes)
             await rejectSymlinks(extractDir)
             const pluginRoot = await findExtractedPluginRoot(extractDir)
             const packageManifest = options.manifest
@@ -801,7 +876,7 @@ export async function validatePluginPackagePayload(options: {
                 metadata: packageManifest,
                 pluginRoot,
                 extractDir,
-                archiveEntries: entries,
+                archiveEntries: entries.map((entry) => entry.path),
                 packageChecksum: actualChecksum,
                 strictPackageChecksum: Boolean(options.manifest)
             })
@@ -823,6 +898,7 @@ export async function inspectPluginPackagePayload(options: {
     checksum: string
     format?: PluginPackageFormat
     manifest?: PluginPackageManifestMetadata
+    maxExpandedPackageBytes?: number
 }): Promise<PluginPackageInspectionResult> {
     const validation = await validatePluginPackagePayload({ ...options, inspectArchive: false })
 
@@ -832,14 +908,9 @@ export async function inspectPluginPackagePayload(options: {
         const extractDir = join(tempRoot, 'extract')
         await writeFile(packagePath, validation.bytes, { mode: 0o600 })
         await mkdir(extractDir, { recursive: true, mode: 0o700 })
-        const entries = await listArchiveEntries(packagePath, validation.packageFormat)
-        if (entries.length === 0) {
-            throw new PluginInstallError('plugin-install-invalid-source', 'Plugin package is empty.')
-        }
-        for (const entry of entries) {
-            assertArchiveEntrySafe(entry)
-        }
-        await extractArchive(packagePath, validation.packageFormat, extractDir)
+        const entries = await listArchiveEntriesWithMetadata(packagePath, validation.packageFormat)
+        assertArchiveEntriesSafe(entries, options.maxExpandedPackageBytes)
+        await extractArchive(packagePath, validation.packageFormat, extractDir, entries, options.maxExpandedPackageBytes)
         await rejectSymlinks(extractDir)
         const pluginRoot = await findExtractedPluginRoot(extractDir)
         const packageManifest = options.manifest
@@ -852,7 +923,7 @@ export async function inspectPluginPackagePayload(options: {
             metadata: packageManifest,
             pluginRoot,
             extractDir,
-            archiveEntries: entries,
+            archiveEntries: entries.map((entry) => entry.path),
             packageChecksum: validation.checksum,
             strictPackageChecksum: Boolean(options.manifest)
         })
@@ -866,14 +937,15 @@ export async function inspectPluginPackagePayload(options: {
     }
 }
 
-async function extractArchive(packagePath: string, format: PluginPackageFormat, targetDir: string): Promise<void> {
-    const entries = await listArchiveEntries(packagePath, format)
-    if (entries.length === 0) {
-        throw new PluginInstallError('plugin-install-invalid-source', 'Plugin package is empty.')
-    }
-    for (const entry of entries) {
-        assertArchiveEntrySafe(entry)
-    }
+async function extractArchive(
+    packagePath: string,
+    format: PluginPackageFormat,
+    targetDir: string,
+    entries?: ArchiveEntry[],
+    maxExpandedPackageBytes = DEFAULT_MAX_PLUGIN_PACKAGE_EXPANDED_BYTES
+): Promise<void> {
+    const archiveEntries = entries ?? await listArchiveEntriesWithMetadata(packagePath, format)
+    assertArchiveEntriesSafe(archiveEntries, maxExpandedPackageBytes)
 
     const command = format === 'tgz' ? 'tar' : 'unzip'
     const args = format === 'tgz'
@@ -912,6 +984,7 @@ export async function installPluginFromPackage(options: {
     format?: PluginPackageFormat
     manifest?: PluginPackageManifestMetadata
     overwrite?: boolean
+    maxExpandedPackageBytes?: number
 }): Promise<PluginPackageInstallResult> {
     const validation = await validatePluginPackagePayload({ ...options, inspectArchive: true })
 
@@ -921,7 +994,7 @@ export async function installPluginFromPackage(options: {
         const extractDir = join(tempRoot, 'extract')
         await mkdir(extractDir, { recursive: true, mode: 0o700 })
         await writeFile(packagePath, validation.bytes, { mode: 0o600 })
-        await extractArchive(packagePath, validation.packageFormat, extractDir)
+        await extractArchive(packagePath, validation.packageFormat, extractDir, undefined, options.maxExpandedPackageBytes)
         await rejectSymlinks(extractDir)
         const pluginRoot = await findExtractedPluginRoot(extractDir)
         const install = await installPluginFromDirectory({

@@ -1,13 +1,19 @@
 import { PluginInstallError, PluginStateLockError } from '@hapi/protocol/plugins/foundation'
 
-export function pluginAdminErrorStatus(error: unknown): 400 | 404 | 409 | 500 {
+export function pluginAdminErrorStatus(error: unknown): 400 | 404 | 409 | 413 | 500 {
     if (error instanceof PluginStateLockError) {
         return 409
     }
     if (error instanceof PluginInstallError) {
+        if (error.message === 'Plugin package expands beyond the allowed size.') {
+            return 413
+        }
         return error.code === 'plugin-install-target-exists' ? 409 : 400
     }
     const message = error instanceof Error ? error.message : String(error)
+    if (message === 'Plugin package is too large.') {
+        return 413
+    }
     if (message.includes('was not found')) {
         return 404
     }

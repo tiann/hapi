@@ -412,6 +412,50 @@ describe('plugin foundation cold path', () => {
         expect(existsSync(join(getUserPluginInstallDir(testDir, 'com.example.package'), 'hapi.plugin.json'))).toBe(true)
     })
 
+    it('rejects plugin packages whose expanded entries exceed the configured quota', async () => {
+        const sourceRoot = join(testDir, 'package-expanded-source')
+        mkdirSync(join(sourceRoot, 'dist'), { recursive: true })
+        writeFileSync(join(sourceRoot, 'dist/hub.js'), 'export function activate() {}')
+        const parsedManifest = PluginManifestLiteSchema.parse(validManifest({ id: 'com.example.expanded', version: '1.2.3' }))
+        writeManifest(sourceRoot, parsedManifest)
+        const packageManifest = {
+            formatVersion: 'hapi-plugin-package/v1' as const,
+            manifest: parsedManifest,
+            checksum: '',
+            files: []
+        }
+
+        const tgzPath = join(testDir, 'expanded-plugin.tgz')
+        execFileSync('tar', ['-czf', tgzPath, '-C', sourceRoot, '.'])
+        const tgzBytes = readFileSync(tgzPath)
+        const tgzChecksum = `sha256:${createHash('sha256').update(tgzBytes).digest('hex')}`
+
+        await expect(installPluginFromPackage({
+            hapiHome: testDir,
+            filename: 'plugin.tgz',
+            contentBase64: tgzBytes.toString('base64'),
+            checksum: tgzChecksum,
+            format: 'tgz',
+            manifest: { ...packageManifest, checksum: tgzChecksum },
+            maxExpandedPackageBytes: 1
+        })).rejects.toThrow('expands beyond the allowed size')
+
+        const zipPath = join(testDir, 'expanded-plugin.zip')
+        execFileSync('zip', ['-qr', zipPath, '.'], { cwd: sourceRoot })
+        const zipBytes = readFileSync(zipPath)
+        const zipChecksum = `sha256:${createHash('sha256').update(zipBytes).digest('hex')}`
+
+        await expect(installPluginFromPackage({
+            hapiHome: testDir,
+            filename: 'plugin.zip',
+            contentBase64: zipBytes.toString('base64'),
+            checksum: zipChecksum,
+            format: 'zip',
+            manifest: { ...packageManifest, checksum: zipChecksum },
+            maxExpandedPackageBytes: 1
+        })).rejects.toThrow('expands beyond the allowed size')
+    })
+
     it('reads plugins.json parse errors as fail-closed disabled state', async () => {
         const stateFile = getPluginStateFile(testDir)
         writeFileSync(stateFile, '{ not json')

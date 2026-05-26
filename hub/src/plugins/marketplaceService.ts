@@ -25,6 +25,7 @@ import {
     latestCompatibleMarketplaceRelease,
     type PluginMarketplaceHostContext
 } from '@hapi/protocol/plugins/runtime/versioning'
+import { DEFAULT_MAX_PLUGIN_PACKAGE_BYTES } from './admin/packagePayloadLimits'
 
 export const DEFAULT_PLUGIN_MARKETPLACE_URL = EMBEDDED_PLUGIN_MARKETPLACE_URL
 
@@ -32,8 +33,16 @@ export type MarketplaceFetch = (url: string) => Promise<{
     ok: boolean
     status: number
     statusText: string
+    headers?: {
+        get(name: string): string | null
+    }
+    body?: {
+        getReader(): {
+            read(): Promise<{ done: true; value?: undefined } | { done: false; value: Uint8Array }>
+            releaseLock?(): void
+        }
+    } | null
     text(): Promise<string>
-    arrayBuffer(): Promise<ArrayBuffer>
 }>
 
 export interface PluginMarketplaceServiceOptions {
@@ -44,6 +53,7 @@ export interface PluginMarketplaceServiceOptions {
     cacheTtlMs?: number
     allowLocalSources?: boolean
     allowInsecureHttp?: boolean
+    maxPackageBytes?: number
 }
 
 export interface MarketplaceCatalogSnapshot {
@@ -212,6 +222,42 @@ async function createSourcePackageBytes(files: SourceFile[], release: PluginMark
     }
 }
 
+function assertPackageBytesAllowed(size: number, maxBytes: number): void {
+    if (size > maxBytes) {
+        throw new Error('Plugin package is too large.')
+    }
+}
+
+async function readLimitedPackage(response: Awaited<ReturnType<MarketplaceFetch>>, maxBytes: number): Promise<Buffer> {
+    const rawContentLength = response.headers?.get('content-length')
+    if (rawContentLength) {
+        const contentLength = Number(rawContentLength)
+        if (Number.isFinite(contentLength) && contentLength >= 0) {
+            assertPackageBytesAllowed(contentLength, maxBytes)
+        }
+    }
+
+    const reader = response.body?.getReader()
+    if (!reader) {
+        throw new Error('Marketplace package download did not provide a readable stream.')
+    }
+
+    const chunks: Uint8Array[] = []
+    let total = 0
+    try {
+        for (;;) {
+            const { done, value } = await reader.read()
+            if (done) break
+            total += value.byteLength
+            assertPackageBytesAllowed(total, maxBytes)
+            chunks.push(value)
+        }
+    } finally {
+        reader.releaseLock?.()
+    }
+    return Buffer.concat(chunks, total)
+}
+
 export class PluginMarketplaceService {
     private snapshot: MarketplaceCatalogSnapshot | null = null
     private readonly sourceUrl: string
@@ -221,6 +267,7 @@ export class PluginMarketplaceService {
     private readonly cacheTtlMs: number
     private readonly allowLocalSources: boolean
     private readonly allowInsecureHttp: boolean
+    private readonly maxPackageBytes: number
 
     constructor(options: PluginMarketplaceServiceOptions = {}) {
         this.sourceUrl = options.sourceUrl?.trim() || process.env.HAPI_PLUGIN_MARKETPLACE_URL?.trim() || DEFAULT_PLUGIN_MARKETPLACE_URL
@@ -230,6 +277,7 @@ export class PluginMarketplaceService {
         this.cacheTtlMs = options.cacheTtlMs ?? 10 * 60 * 1000
         this.allowLocalSources = options.allowLocalSources ?? process.env.HAPI_PLUGIN_MARKETPLACE_ALLOW_LOCAL === '1'
         this.allowInsecureHttp = options.allowInsecureHttp ?? process.env.HAPI_PLUGIN_MARKETPLACE_ALLOW_HTTP === '1'
+        this.maxPackageBytes = options.maxPackageBytes ?? DEFAULT_MAX_PLUGIN_PACKAGE_BYTES
     }
 
     async getCatalog(options: { force?: boolean } = {}): Promise<MarketplaceCatalogSnapshot> {
@@ -348,6 +396,9 @@ export class PluginMarketplaceService {
         if (!release.package) {
             throw new Error(`Marketplace release ${release.manifest.id} ${release.version} does not provide a package distribution.`)
         }
+        if (release.package.size !== undefined) {
+            assertPackageBytesAllowed(release.package.size, this.maxPackageBytes)
+        }
         if (isFileUrl(release.package.url)) {
             this.assertLocalSourceAllowed('Marketplace file packages')
             return await readFile(fileURLToPath(release.package.url))
@@ -361,7 +412,7 @@ export class PluginMarketplaceService {
         if (!response.ok) {
             throw new Error(`Marketplace package download failed: HTTP ${response.status} ${response.statusText}`)
         }
-        return Buffer.from(await response.arrayBuffer())
+        return await readLimitedPackage(response, this.maxPackageBytes)
     }
 
     private async packageSourceRelease(

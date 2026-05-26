@@ -11,6 +11,15 @@ const GitHubRepoSlugSchema = z.string()
 const MarketplaceSemverSchema = z.string()
     .regex(/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/, 'must be a semantic version')
 
+const ExternalHttpUrlSchema = z.string().url().refine((value) => {
+    try {
+        const protocol = new URL(value).protocol
+        return protocol === 'https:' || protocol === 'http:'
+    } catch {
+        return false
+    }
+}, 'URL must use http or https')
+
 export const PluginMarketplaceReleaseManifestSchema = z.object({
     id: z.string().min(1).max(128),
     name: z.string().min(1),
@@ -96,10 +105,10 @@ export const PluginMarketplaceEntrySchema = z.object({
     display: PluginDisplayMetadataSchema.optional(),
     description: z.string().optional(),
     repo: GitHubRepoSlugSchema,
-    homepage: z.string().url().optional(),
+    homepage: ExternalHttpUrlSchema.optional(),
     author: z.object({
         name: z.string().min(1),
-        url: z.string().url().optional()
+        url: ExternalHttpUrlSchema.optional()
     }).strict().optional(),
     license: z.string().min(1).optional(),
     categories: z.array(PluginMarketplaceCategorySchema).max(20).optional(),
