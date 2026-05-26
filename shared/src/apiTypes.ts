@@ -7,7 +7,13 @@ import {
     PermissionModeSchema,
     SessionSchema
 } from './schemas'
-import { AgentFlavorSchema } from './modes'
+import { AgentIdSchema } from './plugins/agentDescriptors'
+import { AgentHistoryImportResultSchema } from './plugins/agentCapabilities'
+import {
+    RunnerExtensionDiagnosticSchema,
+    RunnerSpawnOptionDefaultsSchema,
+    RunnerSpawnOptionsAppliedEntrySchema
+} from './plugins/runnerExtensions'
 import type {
     DecryptedMessage,
     Machine,
@@ -156,36 +162,77 @@ export const MessagesQuerySchema = z.object({
 
 export type MessagesQuery = z.infer<typeof MessagesQuerySchema>
 
+export const PluginMessageActionRequestSchema = z.object({
+    pluginId: z.string().min(1).max(128),
+    capabilityId: z.string().min(1).max(128).optional(),
+    position: z.enum(['hub', 'runner']),
+    actionId: z.string().min(1).max(128),
+    payload: z.unknown().optional()
+}).strict()
+
+export type PluginMessageActionRequest = z.infer<typeof PluginMessageActionRequestSchema>
+
 export const SendMessageRequestSchema = z.object({
     text: z.string(),
     localId: z.string().min(1).optional(),
     attachments: z.array(AttachmentMetadataSchema).optional(),
-    scheduledAt: z.number().int().positive().nullable().optional()
-}).refine(
-    (data) => data.scheduledAt == null || typeof data.localId === 'string',
-    { message: 'scheduledAt requires localId', path: ['localId'] }
-).refine(
-    (data) => data.scheduledAt == null || data.scheduledAt <= Date.now() + 7 * 24 * 60 * 60 * 1000,
-    { message: 'scheduledAt must be within 7 days from now', path: ['scheduledAt'] }
-).refine(
-    (data) => data.scheduledAt == null || !data.attachments?.length,
-    { message: 'scheduled messages with attachments are not supported', path: ['attachments'] }
-)
+    pluginAction: PluginMessageActionRequestSchema.optional()
+}).strict()
 
 export type SendMessageRequest = z.infer<typeof SendMessageRequestSchema>
 
 export const SpawnSessionRequestSchema = z.object({
     directory: z.string().min(1),
-    agent: AgentFlavorSchema.optional(),
+    agent: AgentIdSchema.optional(),
     model: z.string().optional(),
     effort: z.string().optional(),
     modelReasoningEffort: z.string().optional(),
+    permissionMode: PermissionModeSchema.optional(),
     yolo: z.boolean().optional(),
+    manualFields: z.array(z.string().min(1)).optional(),
     sessionType: z.enum(['simple', 'worktree']).optional(),
-    worktreeName: z.string().optional()
+    worktreeName: z.string().optional(),
+    pluginFields: z.record(z.string(), z.unknown()).optional()
 })
 
 export type SpawnSessionRequest = z.infer<typeof SpawnSessionRequestSchema>
+
+export const RunnerSpawnOptionsPreviewRequestSchema = z.object({
+    directory: z.string().min(1),
+    cwd: z.string().min(1).optional(),
+    agent: AgentIdSchema.optional(),
+    model: z.string().optional(),
+    effort: z.string().optional(),
+    modelReasoningEffort: z.string().optional(),
+    permissionMode: z.string().optional(),
+    yolo: z.boolean().optional(),
+    manualFields: z.array(z.string().min(1)).optional(),
+    sessionType: z.enum(['simple', 'worktree']).optional(),
+    worktreeName: z.string().optional(),
+    resumeSessionId: z.string().optional(),
+    pluginFields: z.record(z.string(), z.unknown()).optional()
+}).strict()
+
+export type RunnerSpawnOptionsPreviewRequest = z.infer<typeof RunnerSpawnOptionsPreviewRequestSchema>
+
+export const RunnerSpawnOptionsPreviewResponseSchema = z.object({
+    options: RunnerSpawnOptionDefaultsSchema.default({}),
+    applied: z.array(RunnerSpawnOptionsAppliedEntrySchema).default([]),
+    diagnostics: z.array(RunnerExtensionDiagnosticSchema).default([])
+}).strict()
+
+export type RunnerSpawnOptionsPreviewResponse = z.infer<typeof RunnerSpawnOptionsPreviewResponseSchema>
+
+export const AgentHistoryImportRequestSchema = z.object({
+    agentId: AgentIdSchema,
+    nativeSessionId: z.string().min(1).max(256),
+    providerId: z.string().min(1).max(128).optional()
+}).strict()
+
+export type AgentHistoryImportRequest = z.infer<typeof AgentHistoryImportRequestSchema>
+
+export const AgentHistoryImportResponseSchema = AgentHistoryImportResultSchema
+export type AgentHistoryImportResponse = z.infer<typeof AgentHistoryImportResponseSchema>
 
 export const MachineListDirectoryRequestSchema = z.object({
     path: z.string().min(1)

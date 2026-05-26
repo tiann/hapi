@@ -1,5 +1,8 @@
 import { z } from 'zod'
 import { CODEX_COLLABORATION_MODES, PERMISSION_MODES } from './modes'
+import { RunnerPluginInventorySchema } from './plugins/admin'
+import { AgentDescriptorSchema } from './plugins/agentDescriptors'
+import { AgentCapabilityProviderSnapshotSchema } from './plugins/agentCapabilities'
 
 export const PermissionModeSchema = z.enum(PERMISSION_MODES)
 export const CodexCollaborationModeSchema = z.enum(CODEX_COLLABORATION_MODES)
@@ -252,7 +255,10 @@ export const RunnerStateSchema = z.object({
         exitCode: z.number().nullable().optional(),
         signal: z.string().nullable().optional(),
         at: z.number()
-    }).nullable().optional()
+    }).nullable().optional(),
+    pluginInventory: RunnerPluginInventorySchema.optional(),
+    agentDescriptors: z.array(AgentDescriptorSchema).optional(),
+    agentCapabilities: z.array(AgentCapabilityProviderSnapshotSchema).optional()
 })
 
 export type RunnerState = z.infer<typeof RunnerStateSchema>

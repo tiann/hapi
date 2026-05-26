@@ -28,7 +28,22 @@ export const RPC_METHODS = {
     ListCodexModels: 'listCodexModels',
     ListCursorModels: 'listCursorModels',
     ListOpencodeModels: 'listOpencodeModels',
-    ListOpencodeModelsForCwd: 'listOpencodeModelsForCwd'
+    ListOpencodeModelsForCwd: 'listOpencodeModelsForCwd',
+    RunnerPluginsList: 'runner.plugins.list',
+    RunnerPluginsInspect: 'runner.plugins.inspect',
+    RunnerPluginsEnable: 'runner.plugins.enable',
+    RunnerPluginsDisable: 'runner.plugins.disable',
+    RunnerPluginsConfigUpdate: 'runner.plugins.config.update',
+    RunnerPluginsReload: 'runner.plugins.reload',
+    RunnerPluginsInstallPrepare: 'runner.plugins.install.prepare',
+    RunnerPluginsInstallCommit: 'runner.plugins.install.commit',
+    RunnerPluginsLocalDirectory: 'runner.plugins.local-directory',
+    RunnerPluginsInstallLocal: 'runner.plugins.install-local',
+    RunnerPluginsInstallPackage: 'runner.plugins.install-package',
+    RunnerPluginsDelete: 'runner.plugins.delete',
+    RunnerPluginActionInvoke: 'runner.plugins.action.invoke',
+    RunnerSpawnOptionsPreview: 'runner.spawn-options.preview',
+    RunnerAgentHistoryImport: 'runner.agent.history.import'
 } as const
 
 export type RpcMethod = typeof RPC_METHODS[keyof typeof RPC_METHODS]
