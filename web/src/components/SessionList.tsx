@@ -12,6 +12,9 @@ import { cn } from '@/lib/utils'
 import { useTranslation } from '@/lib/use-translation'
 import { DEFAULT_SESSION_PREVIEW_LIMIT, useSessionPreviewLimit } from '@/hooks/useSessionPreviewLimit'
 import { AgentFlavorIcon } from '@/components/AgentFlavorIcon'
+import { classifySessionAttention } from '@/lib/sessionAttention'
+import { getSessionLastSeenAt } from '@/lib/sessionLastSeen'
+import { getAttentionLabel, SessionAttentionIndicator } from '@/components/SessionAttentionIndicator'
 
 type SessionGroup = {
     key: string
@@ -555,6 +558,14 @@ function SessionItem(props: {
 
     const sessionName = getSessionTitle(s)
     const todoProgress = getTodoProgress(s)
+    const attention = useMemo(
+        () => classifySessionAttention(s, {
+            selected,
+            lastSeenAt: getSessionLastSeenAt(s.id)
+        }),
+        [s, selected]
+    )
+    const attentionLabel = attention ? getAttentionLabel(attention, t) : null
     return (
         <>
             <button
@@ -572,6 +583,11 @@ function SessionItem(props: {
                         </div>
                         {s.active && s.thinking ? (
                             <LoaderIcon className="h-3.5 w-3.5 shrink-0 text-[var(--app-hint)] animate-spin-slow" />
+                        ) : attention ? (
+                            <SessionAttentionIndicator
+                                attention={attention}
+                                label={attentionLabel ?? ''}
+                            />
                         ) : null}
                     </div>
                     <div className="flex items-center gap-2 shrink-0 text-xs">
@@ -581,7 +597,7 @@ function SessionItem(props: {
                                 {todoProgress.completed}/{todoProgress.total}
                             </span>
                         ) : null}
-                        {s.pendingRequestsCount > 0 ? (
+                        {!attention && s.pendingRequestsCount > 0 ? (
                             <span className="text-[var(--app-badge-warning-text)]">
                                 {t('session.item.pending')} {s.pendingRequestsCount}
                             </span>
