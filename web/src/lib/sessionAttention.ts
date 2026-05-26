@@ -10,7 +10,7 @@ export function classifySessionAttention(
     summary: SessionSummary,
     options: { selected: boolean; lastSeenAt: number }
 ): SessionAttention | null {
-    if (options.selected || !summary.active || summary.thinking) {
+    if (options.selected || summary.thinking) {
         return null
     }
 
@@ -22,7 +22,7 @@ export function classifySessionAttention(
         return { kind: 'input' }
     }
 
-    if (summary.backgroundTaskCount > 0) {
+    if (summary.active && summary.backgroundTaskCount > 0) {
         return { kind: 'background' }
     }
 

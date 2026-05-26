@@ -33,7 +33,7 @@ export function getSessionLastSeenAt(sessionId: string): number {
     return readStore()[sessionId] ?? 0
 }
 
-export function markSessionSeen(sessionId: string, seenAt: number = Date.now()): void {
+export function markSessionSeen(sessionId: string, seenAt: number): void {
     if (!sessionId) {
         return
     }

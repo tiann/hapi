@@ -56,4 +56,25 @@ describe('classifySessionAttention', () => {
         )
         expect(attention).toEqual({ kind: 'background' })
     })
+
+    it('shows unread activity for inactive sessions updated since last seen', () => {
+        const attention = classifySessionAttention(
+            makeSummary({ id: 'a', active: false, updatedAt: 5000 }),
+            { selected: false, lastSeenAt: 1000 }
+        )
+        expect(attention).toEqual({ kind: 'unread' })
+    })
+
+    it('prefers unread over background for inactive sessions', () => {
+        const attention = classifySessionAttention(
+            makeSummary({
+                id: 'a',
+                active: false,
+                backgroundTaskCount: 2,
+                updatedAt: 5000
+            }),
+            { selected: false, lastSeenAt: 1000 }
+        )
+        expect(attention).toEqual({ kind: 'unread' })
+    })
 })

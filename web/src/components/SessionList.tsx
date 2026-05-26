@@ -12,6 +12,7 @@ import { cn } from '@/lib/utils'
 import { useTranslation } from '@/lib/use-translation'
 import { DEFAULT_SESSION_PREVIEW_LIMIT, useSessionPreviewLimit } from '@/hooks/useSessionPreviewLimit'
 import { AgentFlavorIcon } from '@/components/AgentFlavorIcon'
+import { useSessionListStatusMode } from '@/hooks/useSessionListStatusMode'
 import { classifySessionAttention } from '@/lib/sessionAttention'
 import { getSessionLastSeenAt } from '@/lib/sessionLastSeen'
 import { getAttentionLabel, SessionAttentionIndicator } from '@/components/SessionAttentionIndicator'
@@ -526,9 +527,10 @@ function SessionItem(props: {
     showPath?: boolean
     api: ApiClient | null
     selected?: boolean
+    showDetailedStatus?: boolean
 }) {
     const { t } = useTranslation()
-    const { session: s, onSelect, showPath = true, api, selected = false } = props
+    const { session: s, onSelect, showPath = true, api, selected = false, showDetailedStatus = false } = props
     const { haptic } = usePlatform()
     const [menuOpen, setMenuOpen] = useState(false)
     const [menuAnchorPoint, setMenuAnchorPoint] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
@@ -559,11 +561,13 @@ function SessionItem(props: {
     const sessionName = getSessionTitle(s)
     const todoProgress = getTodoProgress(s)
     const attention = useMemo(
-        () => classifySessionAttention(s, {
-            selected,
-            lastSeenAt: getSessionLastSeenAt(s.id)
-        }),
-        [s, selected]
+        () => showDetailedStatus
+            ? classifySessionAttention(s, {
+                selected,
+                lastSeenAt: getSessionLastSeenAt(s.id)
+            })
+            : null,
+        [s, selected, showDetailedStatus]
     )
     const attentionLabel = attention ? getAttentionLabel(attention, t) : null
     return (
@@ -675,6 +679,8 @@ export function SessionList(props: {
     const { t } = useTranslation()
     const { renderHeader = true, api, selectedSessionId, machineLabelsById = {}, onNewSessionInDirectory } = props
     const { sessionPreviewLimit } = useSessionPreviewLimit()
+    const { sessionListStatusMode } = useSessionListStatusMode()
+    const showDetailedStatus = sessionListStatusMode === 'detailed'
     const [searchQuery, setSearchQuery] = useState('')
     const normalizedQuery = normalizeSearch(searchQuery)
     const isSearching = normalizedQuery.length > 0
@@ -942,6 +948,7 @@ export function SessionList(props: {
                                                                 showPath={false}
                                                                 api={api}
                                                                 selected={s.id === selectedSessionId}
+                                                                showDetailedStatus={showDetailedStatus}
                                                             />
                                                         ))}
                                                         {!isSearching && group.sessions.length > sessionPreviewLimit && (sessionGroupExpanded || hiddenSessionCount > 0) ? (
