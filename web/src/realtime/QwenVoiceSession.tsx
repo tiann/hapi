@@ -127,6 +127,7 @@ class QwenVoiceSessionImpl implements VoiceSession {
         if (!tokenResp.allowed) {
             const msg = tokenResp.error ?? 'DashScope API key not available'
             state.statusCallback?.('error', msg)
+            cleanup()
             throw new Error(msg)
         }
         state.apiKey = null // key stays server-side
@@ -138,6 +139,7 @@ class QwenVoiceSessionImpl implements VoiceSession {
             permissionStream = await navigator.mediaDevices.getUserMedia({ audio: true })
         } catch (error) {
             state.statusCallback?.('error', 'Microphone permission denied')
+            cleanup()
             throw error
         } finally {
             permissionStream?.getTracks().forEach((t) => t.stop())
@@ -331,7 +333,7 @@ class QwenVoiceSessionImpl implements VoiceSession {
                 console.error('[Qwen] WebSocket error:', event)
                 if (!sessionReady) {
                     sessionReady = true
-                    state.ws = null  // make stale-close guard trip in onclose
+                    cleanup()
                     state.statusCallback?.('error', 'WebSocket connection failed')
                     reject(new Error('WebSocket connection failed'))
                 }

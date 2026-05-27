@@ -88,6 +88,7 @@ class GeminiLiveVoiceSessionImpl implements VoiceSession {
             const msg = tokenResp.error ?? 'Gemini API key not available'
             console.error('[GeminiLive] Token failed:', msg)
             state.statusCallback?.('error', msg)
+            cleanup()
             throw new Error(msg)
         }
         state.apiKey = tokenResp.apiKey
@@ -95,6 +96,7 @@ class GeminiLiveVoiceSessionImpl implements VoiceSession {
         if (!state.wsBaseUrl) {
             const msg = 'Hub must provide wsUrl for Gemini connections — direct key connection is not supported'
             state.statusCallback?.('error', msg)
+            cleanup()
             throw new Error(msg)
         }
 
@@ -107,6 +109,7 @@ class GeminiLiveVoiceSessionImpl implements VoiceSession {
         } catch (error) {
             console.error('[GeminiLive] Microphone denied:', error)
             state.statusCallback?.('error', 'Microphone permission denied')
+            cleanup()
             throw error
         } finally {
             permissionStream?.getTracks().forEach((t) => t.stop())
@@ -274,7 +277,7 @@ class GeminiLiveVoiceSessionImpl implements VoiceSession {
                 console.error('[GeminiLive] WebSocket error:', event)
                 if (!setupDone) {
                     setupDone = true
-                    state.ws = null  // make stale-close guard trip in onclose
+                    cleanup()
                     state.statusCallback?.('error', 'WebSocket connection failed')
                     reject(new Error('WebSocket connection failed'))
                 }
