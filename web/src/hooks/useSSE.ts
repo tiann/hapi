@@ -447,7 +447,10 @@ export function useSSE(options: {
             }
 
             if (scope === 'global' && MESSAGE_STREAM_EVENT_TYPES.has(event.type)) {
-                if (event.type === 'message-received') {
+                if (event.type === 'message-received' && event.message.scheduledAt != null) {
+                    queueSessionListInvalidation()
+                }
+                if (event.type === 'message-cancelled' || event.type === 'messages-consumed') {
                     queueSessionListInvalidation()
                 }
                 onEventRef.current(event)
