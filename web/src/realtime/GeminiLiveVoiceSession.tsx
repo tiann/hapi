@@ -92,6 +92,11 @@ class GeminiLiveVoiceSessionImpl implements VoiceSession {
         }
         state.apiKey = tokenResp.apiKey
         state.wsBaseUrl = tokenResp.wsUrl || null
+        if (!state.wsBaseUrl) {
+            const msg = 'Hub must provide wsUrl for Gemini connections — direct key connection is not supported'
+            state.statusCallback?.('error', msg)
+            throw new Error(msg)
+        }
 
         // Request microphone
         console.log('[GeminiLive] Requesting microphone...')
