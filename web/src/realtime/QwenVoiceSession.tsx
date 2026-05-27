@@ -80,8 +80,8 @@ function sendEvent(type: string, payload?: Record<string, unknown>): void {
 interface QwenSessionConfig {
     modalities: ['text', 'audio']
     voice: string
-    input_audio_format: 'pcm16'
-    output_audio_format: 'pcm24'
+    input_audio_format: 'pcm'
+    output_audio_format: 'pcm'
     instructions: string
     temperature: number
     turn_detection: {
@@ -198,8 +198,8 @@ class QwenVoiceSessionImpl implements VoiceSession {
                     this.currentSessionConfig = {
                         modalities: ['text', 'audio'],
                         voice: QWEN_REALTIME_VOICE,
-                        input_audio_format: 'pcm16',
-                        output_audio_format: 'pcm24',
+                        input_audio_format: 'pcm',
+                        output_audio_format: 'pcm',
                         instructions,
                         temperature: 0.7,
                         turn_detection: {
