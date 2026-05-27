@@ -4,9 +4,10 @@
  * the package's public API — update this constant if the library bumps the
  * suffix on `tsr-scroll-restoration-v1_*`).
  */
-import { scrollRestorationCache } from '@tanstack/router-core'
+import { functionalUpdate, scrollRestorationCache } from '@tanstack/router-core'
 
 type ScrollCacheUpdater = NonNullable<Parameters<NonNullable<typeof scrollRestorationCache>['set']>[0]>
+type ScrollCacheState = Record<string, unknown>
 
 const STORAGE_KEY = 'tsr-scroll-restoration-v1_3'
 
@@ -18,24 +19,41 @@ interface GuardedStorage extends Storage {
     [GUARD_MARKER]?: true
 }
 
-function writeScrollRestorationCache(
-    storage: Storage,
-    originalSetItem: Storage['setItem'],
-    updater: ScrollCacheUpdater,
-): void {
-    const guardedSetItem = storage.setItem
-    storage.setItem = originalSetItem
+function readScrollCacheState(storage: Storage): ScrollCacheState {
     try {
-        scrollRestorationCache?.set(updater)
-    } finally {
-        storage.setItem = guardedSetItem
+        const raw = storage.getItem(STORAGE_KEY)
+        return raw ? JSON.parse(raw) as ScrollCacheState : {}
+    } catch {
+        return {}
+    }
+}
+
+function patchScrollRestorationCacheSet(
+    storage: Storage,
+): () => void {
+    if (!scrollRestorationCache) {
+        return () => {}
+    }
+    const originalCacheSet = scrollRestorationCache.set.bind(scrollRestorationCache)
+    let cacheState = readScrollCacheState(storage)
+
+    scrollRestorationCache.set = (updater: ScrollCacheUpdater): void => {
+        cacheState = (functionalUpdate(updater, cacheState as never) ?? cacheState) as ScrollCacheState
+        // Always persist through the guarded sessionStorage.setItem — never unwrap
+        // native setItem (see tiann/hapi#716).
+        storage.setItem(STORAGE_KEY, JSON.stringify(cacheState))
+    }
+
+    return () => {
+        scrollRestorationCache!.set = originalCacheSet
     }
 }
 
 function hardResetScrollRestorationPersistedState(
     storage: Storage,
     originalSetItem: Storage['setItem'],
-    isRealSessionStorage: boolean
+    isRealSessionStorage: boolean,
+    recoveryDepth: { current: number },
 ): void {
     try {
         storage.removeItem(STORAGE_KEY)
@@ -48,14 +66,25 @@ function hardResetScrollRestorationPersistedState(
     // TanStack keeps the full scroll map in memory even when setItem fails.
     // Pruning only the JSON string leaves RAM oversized — the next scroll
     // write throws again. Clear the library cache so persisted size matches.
+    if (recoveryDepth.current > 0) {
+        try {
+            storage.setItem(STORAGE_KEY, '{}')
+        } catch {
+            // nested recovery already in progress
+        }
+        return
+    }
+    recoveryDepth.current += 1
     try {
-        writeScrollRestorationCache(storage, originalSetItem, () => ({}))
+        scrollRestorationCache?.set(() => ({}))
     } catch {
         try {
             originalSetItem.call(storage, STORAGE_KEY, '{}')
         } catch {
             // last resort: session may be full or private-mode broken
         }
+    } finally {
+        recoveryDepth.current -= 1
     }
 }
 
@@ -85,6 +114,8 @@ export function installScrollRestorationGuard(
     }
     const originalSetItem = storage.setItem
     const isRealSessionStorage = typeof window !== 'undefined' && storage === window.sessionStorage
+    const recoveryDepth = { current: 0 }
+    const unpatchScrollCache = isRealSessionStorage ? patchScrollRestorationCacheSet(storage) : () => {}
 
     const wrappedSetItem = (key: string, value: string): void => {
         try {
@@ -97,9 +128,9 @@ export function installScrollRestorationGuard(
         }
 
         let trimmed: string
-        let prunedState: Record<string, unknown>
+        let prunedState: ScrollCacheState
         try {
-            const parsed = JSON.parse(value) as Record<string, unknown>
+            const parsed = JSON.parse(value) as ScrollCacheState
             const keys = Object.keys(parsed)
             const keepKeys = keys.length > TARGET_ENTRIES_AFTER_PRUNE
                 ? keys.slice(-TARGET_ENTRIES_AFTER_PRUNE)
@@ -110,21 +141,22 @@ export function installScrollRestorationGuard(
             }
             trimmed = JSON.stringify(prunedState)
         } catch {
-            hardResetScrollRestorationPersistedState(storage, originalSetItem, isRealSessionStorage)
+            hardResetScrollRestorationPersistedState(storage, originalSetItem, isRealSessionStorage, recoveryDepth)
             return
         }
         try {
             originalSetItem.call(storage, key, trimmed)
             if (isRealSessionStorage) {
-                writeScrollRestorationCache(storage, originalSetItem, (() => prunedState) as ScrollCacheUpdater)
+                scrollRestorationCache?.set((() => prunedState) as ScrollCacheUpdater)
             }
         } catch {
-            hardResetScrollRestorationPersistedState(storage, originalSetItem, isRealSessionStorage)
+            hardResetScrollRestorationPersistedState(storage, originalSetItem, isRealSessionStorage, recoveryDepth)
         }
     }
     storage.setItem = wrappedSetItem
     guarded[GUARD_MARKER] = true
     return () => {
+        unpatchScrollCache()
         if (storage.setItem === wrappedSetItem) {
             storage.setItem = originalSetItem
             delete guarded[GUARD_MARKER]

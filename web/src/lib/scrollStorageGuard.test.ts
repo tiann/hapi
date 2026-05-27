@@ -1,14 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-
-const mockScrollCacheSet = vi.hoisted(() => vi.fn())
-
-vi.mock('@tanstack/router-core', () => ({
-    scrollRestorationCache: {
-        state: {},
-        set: mockScrollCacheSet,
-    },
-}))
-
+import { scrollRestorationCache } from '@tanstack/router-core'
 import { installScrollRestorationGuard } from './scrollStorageGuard'
 
 const STORAGE_KEY = 'tsr-scroll-restoration-v1_3'
@@ -37,12 +28,19 @@ function makeMockStorage(): Storage & { _store: Record<string, string>; _setItem
     return storage
 }
 
+function makeFullScrollState(count = 100): Record<string, unknown> {
+    const fullState: Record<string, unknown> = {}
+    for (let i = 0; i < count; i++) {
+        fullState[`/route/${i}`] = { window: { scrollX: 0, scrollY: i } }
+    }
+    return fullState
+}
+
 describe('installScrollRestorationGuard', () => {
     let storage: ReturnType<typeof makeMockStorage>
     let uninstall: () => void
 
     beforeEach(() => {
-        mockScrollCacheSet.mockClear()
         storage = makeMockStorage()
         uninstall = installScrollRestorationGuard(storage)
     })
@@ -65,11 +63,7 @@ describe('installScrollRestorationGuard', () => {
                 this.name = 'SecurityError'
             }
         }
-        const fullState: Record<string, unknown> = {}
-        for (let i = 0; i < 100; i++) {
-            fullState[`/route/${i}`] = { window: { scrollX: 0, scrollY: i } }
-        }
-        const fullValue = JSON.stringify(fullState)
+        const fullValue = JSON.stringify(makeFullScrollState())
 
         let call = 0
         storage._setItem.mockImplementation((key: string, value: string) => {
@@ -91,11 +85,7 @@ describe('installScrollRestorationGuard', () => {
             name: 'QuotaExceededError',
             message: "Failed to execute 'setItem' on 'Storage': Setting the value of 'tsr-scroll-restoration-v1_3' exceeded the quota."
         }
-        const fullState: Record<string, unknown> = {}
-        for (let i = 0; i < 100; i++) {
-            fullState[`/route/${i}`] = { window: { scrollX: 0, scrollY: i } }
-        }
-        const fullValue = JSON.stringify(fullState)
+        const fullValue = JSON.stringify(makeFullScrollState())
 
         let call = 0
         storage._setItem.mockImplementation((key: string, value: string) => {
@@ -119,11 +109,7 @@ describe('installScrollRestorationGuard', () => {
     })
 
     it('prunes oldest entries to exactly the retain count and retries on quota error', () => {
-        const fullState: Record<string, unknown> = {}
-        for (let i = 0; i < 100; i++) {
-            fullState[`/route/${i}`] = { window: { scrollX: 0, scrollY: i } }
-        }
-        const fullValue = JSON.stringify(fullState)
+        const fullValue = JSON.stringify(makeFullScrollState())
 
         let call = 0
         storage._setItem.mockImplementation((key: string, value: string) => {
@@ -140,11 +126,10 @@ describe('installScrollRestorationGuard', () => {
         const stored = JSON.parse(storage._store[STORAGE_KEY]) as Record<string, unknown>
         const storedKeys = Object.keys(stored)
         expect(storedKeys.length).toBe(RETAIN_COUNT)
-        expect(storedKeys).toContain('/route/99') // newest kept
-        expect(storedKeys).toContain('/route/50') // boundary kept
-        expect(storedKeys).not.toContain('/route/49') // boundary dropped
-        expect(storedKeys).not.toContain('/route/0') // oldest dropped
-        expect(mockScrollCacheSet).not.toHaveBeenCalled()
+        expect(storedKeys).toContain('/route/99')
+        expect(storedKeys).toContain('/route/50')
+        expect(storedKeys).not.toContain('/route/49')
+        expect(storedKeys).not.toContain('/route/0')
     })
 
     it('syncs TanStack in-memory scroll cache after a successful prune on real sessionStorage', () => {
@@ -152,12 +137,7 @@ describe('installScrollRestorationGuard', () => {
         vi.stubGlobal('window', { sessionStorage: realSessionStorage })
 
         const off = installScrollRestorationGuard(realSessionStorage)
-
-        const fullState: Record<string, unknown> = {}
-        for (let i = 0; i < 100; i++) {
-            fullState[`/route/${i}`] = { window: { scrollX: 0, scrollY: i } }
-        }
-        const fullValue = JSON.stringify(fullState)
+        const fullValue = JSON.stringify(makeFullScrollState())
 
         let call = 0
         realSessionStorage._setItem.mockImplementation((key: string, value: string) => {
@@ -170,35 +150,66 @@ describe('installScrollRestorationGuard', () => {
 
         realSessionStorage.setItem(STORAGE_KEY, fullValue)
 
-        expect(mockScrollCacheSet).toHaveBeenCalledTimes(1)
-        const updater = mockScrollCacheSet.mock.calls[0]![0] as (
-            state: Record<string, unknown>
-        ) => Record<string, unknown>
-        const synced = updater(fullState)
-        expect(Object.keys(synced).length).toBe(RETAIN_COUNT)
-        expect(Object.keys(synced)).toContain('/route/99')
-        expect(Object.keys(synced)).not.toContain('/route/0')
+        let inMemoryKeyCount = 0
+        scrollRestorationCache!.set((state) => {
+            inMemoryKeyCount = Object.keys(state).length
+            return state
+        })
+        expect(inMemoryKeyCount).toBe(RETAIN_COUNT)
 
         off()
     })
 
-    it('hard reset calls scrollRestorationCache through unwrapped setItem', () => {
+    it('keeps sessionStorage guard active while syncing in-memory scroll cache', () => {
         const realSessionStorage = makeMockStorage()
         vi.stubGlobal('window', { sessionStorage: realSessionStorage })
 
         const off = installScrollRestorationGuard(realSessionStorage)
         const wrappedSetItem = realSessionStorage.setItem
+        const fullValue = JSON.stringify(makeFullScrollState())
 
-        let cacheWriteSetItem: Storage['setItem'] | undefined
-        mockScrollCacheSet.mockImplementationOnce(() => {
-            cacheWriteSetItem = realSessionStorage.setItem
+        let call = 0
+        let setItemDuringCacheSync: Storage['setItem'] | undefined
+        realSessionStorage._setItem.mockImplementation((key: string, value: string) => {
+            call += 1
+            if (call === 1) {
+                throw new QuotaExceededError()
+            }
+            realSessionStorage._store[key] = value
+            if (call === 2) {
+                setItemDuringCacheSync = realSessionStorage.setItem
+            }
         })
 
-        realSessionStorage._setItem.mockImplementationOnce(() => { throw new QuotaExceededError() })
-        realSessionStorage.setItem(STORAGE_KEY, 'not json {')
+        realSessionStorage.setItem(STORAGE_KEY, fullValue)
 
-        expect(cacheWriteSetItem).toBeDefined()
-        expect(cacheWriteSetItem).not.toBe(wrappedSetItem)
+        expect(setItemDuringCacheSync).toBe(wrappedSetItem)
+
+        off()
+    })
+
+    it('recovers concurrent scroll cache writes during guard sync without uncaught throws', () => {
+        const realSessionStorage = makeMockStorage()
+        vi.stubGlobal('window', { sessionStorage: realSessionStorage })
+
+        const off = installScrollRestorationGuard(realSessionStorage)
+        const fullValue = JSON.stringify(makeFullScrollState())
+
+        let call = 0
+        realSessionStorage._setItem.mockImplementation((key: string, value: string) => {
+            call += 1
+            if (call === 1) {
+                throw new QuotaExceededError()
+            }
+            if (call === 2) {
+                expect(() => scrollRestorationCache!.set(() => ({
+                    '/concurrent': { window: { scrollX: 0, scrollY: 1 } },
+                }))).not.toThrow()
+            }
+            realSessionStorage._store[key] = value
+        })
+
+        expect(() => realSessionStorage.setItem(STORAGE_KEY, fullValue)).not.toThrow()
 
         off()
     })
@@ -210,23 +221,20 @@ describe('installScrollRestorationGuard', () => {
     })
 
     it('removes the key entirely if the retried write also throws', () => {
-        const fullState: Record<string, unknown> = {}
-        for (let i = 0; i < 100; i++) {
-            fullState[`/route/${i}`] = { window: { scrollX: 0, scrollY: i } }
-        }
         storage._setItem.mockImplementation(() => { throw new QuotaExceededError() })
 
-        storage.setItem(STORAGE_KEY, JSON.stringify(fullState))
+        storage.setItem(STORAGE_KEY, JSON.stringify(makeFullScrollState()))
 
         expect(storage.removeItem).toHaveBeenCalledWith(STORAGE_KEY)
     })
 
     it('does not reset TanStack scroll cache when guarding mock storage', () => {
+        const cacheSetBefore = scrollRestorationCache!.set
         storage._setItem.mockImplementationOnce(() => { throw new QuotaExceededError() })
         storage.setItem(STORAGE_KEY, 'not json {')
 
         expect(storage.removeItem).toHaveBeenCalledWith(STORAGE_KEY)
-        expect(mockScrollCacheSet).not.toHaveBeenCalled()
+        expect(scrollRestorationCache!.set).toBe(cacheSetBefore)
     })
 
     it('resets TanStack in-memory scroll cache when hard reset uses real sessionStorage', () => {
@@ -239,11 +247,13 @@ describe('installScrollRestorationGuard', () => {
         realSessionStorage.setItem(STORAGE_KEY, JSON.stringify({ stale: { window: { scrollX: 0, scrollY: 1 } } }))
 
         expect(realSessionStorage.removeItem).toHaveBeenCalledWith(STORAGE_KEY)
-        expect(mockScrollCacheSet).toHaveBeenCalledTimes(1)
-        const updater = mockScrollCacheSet.mock.calls[0]![0] as (
-            state: Record<string, unknown>
-        ) => Record<string, unknown>
-        expect(updater({ stale: { window: { scrollX: 0, scrollY: 1 } } })).toEqual({})
+
+        let inMemoryKeys: string[] = []
+        scrollRestorationCache!.set((state) => {
+            inMemoryKeys = Object.keys(state)
+            return state
+        })
+        expect(inMemoryKeys).toEqual([])
 
         off()
     })
