@@ -2,206 +2,314 @@
 
 **Status:** Draft  
 **Date:** 2026-05-27  
+**Goal:** Make long-session AI voice feel as natural, warm, and pleasing as possible — a command
+centre experience where listening never becomes fatiguing.  
 **Related:** `voice-selection-all-backends.md`, `self-bootstrapping-config.md` Phase 3, PR #692
 
 ---
 
-## Goal
+## TL;DR capability table
 
-Go beyond which voice is used to configure *how* each voice agent engages: speaking pace, emotional
-expressiveness, personality framing, and — where APIs allow — fine-grained paralinguistic controls.
-Different backends expose very different levers; the UI should surface what's real and skip what
-isn't.
-
----
-
-## What each backend actually exposes
-
-### ElevenLabs (richest controls)
-
-ElevenLabs has the most knobs, set in agent config and overridable per-conversation via
-`conversation_config_override.tts`:
-
-| Parameter | Type | Range | Effect |
-|-----------|------|-------|--------|
-| `stability` | float | 0.0–1.0 | Lower = more emotional/dynamic; higher = more consistent but can be monotonous. ElevenLabs recommends 0.30–0.50 for expressive delivery |
-| `similarity_boost` | float | 0.0–1.0 | How closely output matches the training voice. Higher = cleaner but less flexible |
-| `style` | float | 0.0–1.0 | Exaggerates the voice's natural style. 0 = neutral; higher = more dramatic. Costs extra compute at higher values |
-| `use_speaker_boost` | bool | — | Further boosts similarity to original speaker |
-| `speed` | float | 0.7–1.2 | Speaking rate. 0.9–1.1 recommended for natural conversation; default 1.0 |
-
-**There is no explicit emotion enum** — emotional affect emerges from the combination of
-`stability` and `style`. ElevenLabs' recommended "emotional" preset: stability 0.35,
-similarity_boost 0.75, style 0.35, speaker_boost on.
-
-**System prompt** is the primary lever for personality and engagement style. Controls:
-- Role, persona, name
-- Tone (formal, casual, warm, direct)
-- Engagement pattern (proactive vs reactive, how much it elaborates)
-- Response length/conciseness
-- When to ask clarifying questions vs just act
-- Dynamic variables allow runtime injection (e.g. current session name, user name) without
-  separate agents
-
-**Per-conversation override:** all of the above can be overridden when minting the conversation
-token, without changing the underlying agent config. Useful for context-specific personality
-shifts (e.g. more formal when a permission approval is pending).
+| Feature | ElevenLabs v3 | Gemini Live | Qwen Realtime |
+|---------|--------------|-------------|---------------|
+| Laughter / giggle | ✅ `[laughs]` tag | ⚠️ possible natively, not documented | ✅ instruction-based |
+| Sigh / gasp / gulp | ✅ explicit tags | ❌ not documented | ✅ instruction-based |
+| Whisper | ✅ `[whispers]` tag | ✅ "whisper" in prompt | ✅ instruction-based |
+| Emotional style tags | ✅ rich (see below) | ⚠️ prompt-only | ✅ instruction-based |
+| Thinking sounds / backchanneling | ✅ `[hesitates]` | ⚠️ prompt-only | ✅ **native full-duplex** |
+| Affective dialog (adapts to user) | ⚠️ via voice params | ✅ `enable_affective_dialog` | ✅ emotion recognition |
+| Paralinguistic sliders | ✅ 5 params | ❌ | ❌ |
+| SSML prosody | ❌ (v3 uses tags) | ⚠️ prompt-style only | ❌ |
 
 ---
 
-### Gemini Live (minimal direct controls)
+## ElevenLabs (richest)
 
-Gemini Live exposes very few paralinguistic API parameters:
+### Audio tags — the main lever
 
-| Parameter | Where | Notes |
+ElevenLabs v3 Conversational uses square-bracket audio tags embedded in the LLM's text output.
+The TTS pipeline renders them as actual audio — the ConvAI orchestrator LLM must be prompted to
+emit them, and v3 Conversational honours them without extra config.
+
+**Non-verbal vocalizations:**
+
+```
+[laughs]       [chuckles]     [giggles]
+[sighs]        [sigh]         [gasps]     [gulps]
+[whispers]     [clears throat]
+[hesitates]    [stammers]     [pauses]
+[short pause]  [long pause]
+```
+
+**Emotional delivery tags** (affect the next ~4–5 words then revert):
+
+```
+[excited]      [nervous]      [frustrated]   [sorrowful]    [calm]
+[cheerfully]   [playfully]    [sarcastically] [dramatically] [deadpan]
+[flatly]       [resigned tone] [confident]   [empathetic]   [warm tone]
+```
+
+**Character/style tags** (more sustained):
+
+```
+[whispers]     [pirate voice]   [British accent]   [French accent]
+[evil scientist voice]          [storytelling mode]
+```
+
+**Sound effects** (can be used sparingly for effect):
+
+```
+[clapping]     [gunshot]       [explosion]
+```
+
+**Important:** square brackets only — `*chuckles*`, `<laugh>`, SSML `<say-as>` are not v3 syntax.
+v3 also does not support SSML `<prosody>` or `<break>` — use `[slow]`, `[fast]`, `[pauses]`.
+
+### How to get the LLM to emit tags
+
+Tags must appear in the assistant's text output — the ConvAI orchestrator LLM (Gemini 2.5 Flash
+by default) needs to be instructed to use them. System prompt section to add:
+
+```
+## Expressive delivery
+You speak with natural warmth and occasional personality. Use audio cues where appropriate:
+- [laughs] or [chuckles] when something is genuinely funny
+- [sighs] for moments of mild exasperation or wistfulness  
+- [hesitates] before uncertain or sensitive statements
+- [excited] when sharing something genuinely interesting
+- [warm tone] as your default register in casual exchanges
+Do not overuse tags — one or two per response maximum. Never perform emotion that isn't earned.
+```
+
+### Paralinguistic sliders
+
+Set in agent config or overridden per-conversation via `conversation_config_override.tts`:
+
+| Parameter | Range | Notes |
 |-----------|-------|-------|
-| `voice_name` | `speech_config.voice_config.prebuilt_voice_config.voice_name` | Selects prebuilt voice |
-| (none) | — | No speaking rate, pitch, or emotion fields in the Live API |
+| `stability` | 0.0–1.0 | Lower = more dynamic/emotional; higher = consistent but flat |
+| `similarity_boost` | 0.0–1.0 | Adherence to training voice |
+| `style` | 0.0–1.0 | Exaggerates the voice's natural style; costs compute at high values |
+| `use_speaker_boost` | bool | Boosts voice similarity further |
+| `speed` | 0.7–1.2 | Speaking rate; 0.9–1.1 recommended for conversation |
 
-**Affective dialog** is available — the model reads the user's emotional tone from audio and adapts
-its response style — but you cannot *prescribe* an emotional target via API parameters. It's
-responsive, not configurable.
+**ElevenLabs' "emotional" preset**: stability 0.35, similarity 0.75, style 0.35, speaker_boost on.
+Good starting point for a warm, expressive long-session voice.
 
-**System prompt** is the primary (and essentially only) lever for personality. It reliably affects:
-- Response tone and register
-- Verbosity
-- Personality framing ("be warm and encouraging", "be terse and direct")
-- Whether the model elaborates or waits to be asked
+### Voice model requirement
 
-The Gemini TTS API (separate from Live) supports SSML-style prosody tags for pace/tone, but these
-are **not available in the Live/realtime endpoint** as of 2026-05.
+Audio tags require **Eleven v3 Conversational** as the TTS model in the agent config.
+Turbo v2 / Flash v2 use SSML syntax — different, not compatible. Use v3.
 
-**Takeaway for UI:** for Gemini, the only exposed controls worth surfacing are voice selection
-(see `voice-selection-all-backends.md`) and system prompt customisation. No sliders needed.
+### Voice selection
+
+5,000+ voices. For long-session warmth, filter the Voice Library by:
+- Category: "Conversational" or "Warm"
+- Mood tag: "Friendly", "Warm", "Empathetic"
+- Avoid: "Narrative" or "Audiobook" voices — optimised for reading, not dialogue
 
 ---
 
-### Qwen Realtime (instruction-based controls)
+## Gemini Live (most limited, but improving)
 
-Qwen takes a different approach — paralinguistic control is via natural language instructions
-rather than numeric parameters:
+### What works
 
-| Control | Mechanism | Example |
-|---------|-----------|---------|
-| Speaking rate | In-turn instruction | "speak faster", "speak slower" |
-| Volume | In-turn instruction | "speak louder" |
-| Emotion | In-turn instruction | "speak cheerfully", "speak warmly" |
-| Voice | `session.update` → `session.voice` field | "Mia", "Tina", etc. |
+**Affective dialog** (enable via `enable_affective_dialog: true` in session config, requires `v1alpha` API):
+- Model detects user's emotional tone from audio and adapts its response style
+- Not prescriptive — you can't say "be excited" as an API param, but the model modulates itself
 
-**Emotion recognition:** Qwen recognises 7 input emotions from the user's audio (surprised, neutral,
-happy, sad, disgusted, angry, fearful) and can adapt accordingly — similar to Gemini's affective
-dialog, but with a named taxonomy.
+**Natural language style instructions** in system prompt:
+```
+Speak warmly and conversationally. Use natural pacing with brief pauses.
+When something is genuinely interesting, let enthusiasm show in your delivery.
+Whisper for emphasis on sensitive points.
+```
 
-**55 voices available** (47 multilingual + 8 dialect), selected via `session.update`.
-Known English-suitable voices: Mia (default), Tina, Cherry, Chelsie, Serena, Ethan.
+**Proactivity** (`proactivity: true`): model decides when to respond vs stay silent; filters
+background noise and non-directed speech. Useful in a command centre where ambient audio is present.
 
-**System prompt** influences engagement style. Instruction-based emotion/pace control means the
-system prompt can include standing instructions: "speak at a relaxed, unhurried pace" or "respond
-with warmth and encouragement" — and Qwen will apply this without a per-parameter API call.
+### What doesn't work (yet)
 
-**Takeaway for UI:** for Qwen, surface voice selection and a system prompt editor. Consider a
-small set of preset "personality modes" that translate to natural language instructions baked into
-the prompt (see Presets section below).
+- No audio tags or SSML in the Live endpoint
+- No documented native laughter/gasp generation (the model *may* produce these natively given
+  its audio training, but it's not a controllable feature)
+- No speaking rate, pitch, or emotion API parameters
+- Thinking sounds / filler ("uh-huh", "hmm") not documented as produceable
+
+### Voices (8 available in Live half-cascade models)
+
+| Voice | Character |
+|-------|-----------|
+| **Puck** | Upbeat, conversational, lively — best for warm long sessions |
+| **Fenrir** | Warm, approachable, excitable |
+| **Aoede** | Not fully characterised in docs |
+| **Charon** | Deep, authoritative |
+| **Kore** | Firm, confident, neutral-professional |
+| **Leda** | (HD voice, characterisation TBD) |
+| **Orus** | (HD voice, characterisation TBD) |
+| **Zephyr** | (HD voice, characterisation TBD) |
+
+For long sessions: **Puck** or **Fenrir** first; Charon for a more serious command-centre feel.
+
+### Honest assessment for command-centre UX
+
+Gemini Live is the least expressive of the three for deliberate emotional control. The system
+prompt can shape tone but you're relying on the model's judgment, not reliable tags. Best used
+when you want Google's reasoning quality and can accept more neutral delivery.
+
+---
+
+## Qwen Realtime (native full-duplex, instruction-based expressiveness)
+
+### Backchanneling — genuine differentiator
+
+Qwen3-Omni natively distinguishes backchanneling ("uh-huh", "hmm", "I see", listener feedback)
+from semantic interruptions. In a long conversation, the model responds to these naturally without
+treating them as commands. This is **significantly better than ElevenLabs or Gemini** for extended
+back-and-forth — it makes the conversation feel genuinely mutual rather than turn-based.
+
+### Expressive vocalizations
+
+The model has been observed producing laughter natively (GitHub reports of "unwanted laughter"
+confirm it *can* — the goal is making it controlled rather than surprising). Instruction-based
+approach:
+
+```
+When something is genuinely amusing, it's natural to chuckle lightly.
+Use warm acknowledgements like "mmm" or "ah" to show you're following along.
+A gentle sigh is appropriate for moments of empathy or reflection.
+Don't suppress natural conversational sounds — they make dialogue feel more human.
+```
+
+### Emotion recognition (input → output loop)
+
+Qwen recognises 7 emotions in the user's voice: surprised, neutral, happy, sad, disgusted, angry,
+fearful. This feeds into adaptive response tone — the model's output modulates to match or
+complement the user's affect. No API param needed; it's always on.
+
+### Speed and expressiveness via instruction
+
+```
+speak at a relaxed, unhurried pace — never rushed
+speak with warmth and a gentle energy
+use natural pauses when considering something
+be enthusiastic about ideas without being excitable
+```
+
+These are reliable because Qwen's instruction-following for audio style is strong.
+
+### Voice selection
+
+55 voices (47 multilingual + 8 dialect). Known characterised voices:
+- **Mia** — current default
+- **Tina**, **Cherry**, **Chelsie**, **Serena**, **Ethan**, **Aiden**
+
+Full personality matrix requires DashScope console access or Chinese docs. Worth testing
+each candidate voice with a standard paragraph before committing.
 
 ---
 
 ## Settings UI design
 
-### Location
-
-`Settings → Voice Assistant` — extend the existing section rather than adding a new tab.
-Organisation within the section:
+### Structure
 
 ```
-Voice Assistant
-  ├─ Backend           [picker — Phase 1 of self-bootstrapping-config.md]
-  ├─ Voice             [per-backend picker — voice-selection-all-backends.md]
-  ├─ Personality       [new — this plan]
-  │    ├─ Preset       [dropdown]
-  │    └─ Custom prompt [expandable textarea]
-  └─ Advanced          [collapsible — ElevenLabs-only sliders]
-       ├─ Stability
-       ├─ Expressiveness (style)
-       ├─ Speaking rate
-       └─ Similarity boost
+Settings → Voice Assistant
+  ├─ Backend           [picker]
+  ├─ Voice             [per-backend picker]
+  ├─ Character         [new]
+  │    ├─ Preset       [dropdown: Balanced / Warm & Expressive / Calm / Direct / Custom]
+  │    └─ Personality notes [textarea — appended to system prompt]
+  └─ Voice tuning      [collapsible — ElevenLabs only]
+       ├─ Stability          [slider 0–1, default 0.5]
+       ├─ Expressiveness     [slider 0–1, default 0.1]
+       ├─ Speaking rate      [slider 0.7–1.2, default 1.0]
+       ├─ Similarity boost   [slider 0–1, default 0.75]
+       └─ [ ] Speaker boost
 ```
+
+Hide "Voice tuning" entirely for Gemini and Qwen — no grayed-out sliders.
 
 ---
 
 ### Personality presets
 
-A small set of named presets that configure the system prompt additions and (for ElevenLabs)
-the paralinguistic parameters together. Presets are backend-aware — they apply what each
-backend can actually do.
+Presets configure the system prompt addition and (for ElevenLabs) the paralinguistic parameters
+together. All presets include an audio tags instruction block for ElevenLabs.
 
-Suggested initial set:
+#### Balanced (default)
 
-| Preset | Feel | ElevenLabs params | Prompt addition |
-|--------|------|-------------------|-----------------|
-| **Balanced** (default) | Warm but focused | stability 0.5, style 0.1, speed 1.0 | (none — base prompt only) |
-| **Expressive** | Energetic, animated | stability 0.35, style 0.35, speed 1.05 | "Be enthusiastic and expressive. Vary your pace and energy." |
-| **Calm** | Measured, reassuring | stability 0.75, style 0.0, speed 0.95 | "Speak in a calm, measured way. Pause thoughtfully." |
-| **Direct** | Terse, efficient | stability 0.65, style 0.05, speed 1.1 | "Be concise and direct. Skip pleasantries unless asked." |
-| **Custom** | User-defined | user values | user prompt |
+*Warm, focused, professional. Good for task work.*
 
-For Gemini and Qwen, presets only affect the prompt addition (no sliders to set). The preset
-label still appears — it just means the prompt style, not the audio parameters.
+- ElevenLabs params: stability 0.50, style 0.10, speed 1.0
+- Prompt addition: *(none — base VOICE_SYSTEM_PROMPT only)*
+- Audio tags guidance: minimal — `[hesitates]`, `[warm tone]` only when natural
+
+#### Warm & Expressive
+
+*Human-feeling, animated. Best for long exploratory sessions.*
+
+- ElevenLabs params: stability 0.35, style 0.30, speed 0.97, speaker_boost on
+- Prompt addition:
+  ```
+  Speak with natural warmth and personality. Use audio cues where they fit:
+  [chuckles] or [laughs] when something is genuinely funny,
+  [excited] when sharing something interesting,
+  [sighs] for wistful or empathetic moments,
+  [warm tone] as your default register.
+  One or two tags per response maximum — never performed, always earned.
+  Speak at a relaxed pace. Pause before considered answers.
+  ```
+
+#### Calm
+
+*Measured, reassuring. Good for late-night sessions or complex problem-solving.*
+
+- ElevenLabs params: stability 0.75, style 0.0, speed 0.93
+- Prompt addition:
+  ```
+  Speak slowly and deliberately. [pauses] before important points.
+  Use [sighs] and [hesitates] naturally. Never rush.
+  Keep energy low and steady.
+  ```
+
+#### Direct
+
+*Terse, efficient. Good for rapid task execution.*
+
+- ElevenLabs params: stability 0.65, style 0.05, speed 1.08
+- Prompt addition:
+  ```
+  Be concise. Skip pleasantries unless asked. No filler phrases.
+  Short answers. Confirm before elaborating.
+  ```
+
+#### Custom
+
+User-defined values. Shows all sliders and a full textarea.
 
 ---
 
 ### System prompt customisation
 
-A textarea in Settings lets the operator append to (not replace) the base `VOICE_SYSTEM_PROMPT`:
+The personality notes textarea appends to (never replaces) `VOICE_SYSTEM_PROMPT`.
+Character limit: ~500 tokens — enough for a full persona description.
 
-```
-[Base VOICE_SYSTEM_PROMPT — not editable]
+For ElevenLabs, the custom prompt is included in `conversation_config_override.agent.prompt.prompt`
+when minting the conversation token (needs hub to fetch the existing agent base prompt and
+concatenate — verify ElevenLabs API behaviour before implementing).
 
-[Personality preset addition — auto-filled, editable]
-
-[Operator notes — free-form]
-```
-
-**Storage:** localStorage initially (`hapi-voice-custom-prompt`). Phase 3 of
-`self-bootstrapping-config.md` moves this to the SQLite config table so it persists across
-devices.
-
-**Scope:** custom prompt applies to all backends equally — it's appended to instructions before
-the session starts. Per-backend prompt overrides are a later enhancement if needed.
-
----
-
-### Advanced controls (ElevenLabs only)
-
-Show a collapsible "Advanced" section only when ElevenLabs is the active backend.
-Hide entirely for Gemini and Qwen — don't show grayed-out sliders that do nothing.
-
-```
-Advanced (ElevenLabs only)
-  Stability         [slider 0–1]  default: 0.5
-  Expressiveness    [slider 0–1]  default: 0.1   (maps to `style`)
-  Speaking rate     [slider 0.7–1.2]  default: 1.0
-  Similarity boost  [slider 0–1]  default: 0.75
-  [ ] Speaker boost              default: off
-```
-
-Label "Expressiveness" not "Style" — more intuitive. Tooltip explains the tradeoff.
-"Similarity boost" and "Speaker boost" grouped together with a note that these are voice-specific
-and may sound different with different voices.
-
-**Storage:** localStorage per-backend (`hapi-voice-el-stability` etc.) or a single JSON object
-(`hapi-voice-el-settings`). Phase 3 moves to DB.
+For Gemini and Qwen, it's included in system instructions on session start.
 
 ---
 
 ## Hub changes
 
-**`hub/src/web/routes/voice.ts`** — ElevenLabs token endpoint
+### ElevenLabs token endpoint (`POST /voice/token`)
 
-The existing `POST /voice/token` calls `getOrCreateAgentIdForVoice()`. Extend to accept
-paralinguistic overrides and pass them as `conversation_config_override.tts`:
+Accept and forward new optional fields:
 
 ```typescript
-// New optional fields on token request body:
 voice_settings?: {
     stability?: number
     similarity_boost?: number
@@ -209,64 +317,84 @@ voice_settings?: {
     use_speaker_boost?: boolean
     speed?: number
 }
+custom_prompt?: string
 ```
 
-Hub passes these through to the ElevenLabs `POST /v1/convai/conversation/token` call.
+Pass as `conversation_config_override.tts` and `conversation_config_override.agent.prompt.prompt`.
 
-For Gemini and Qwen no hub changes needed — voice params go through the frontend session config
-and the WebSocket proxy forwards them as-is.
+### No hub changes for Gemini / Qwen
 
----
-
-## Shared prompt infrastructure
-
-The custom prompt append should flow through the existing `sendContextualUpdate` /
-`updateInstructions` paths — not require new hub endpoints:
-
-- ElevenLabs: include in `conversation_config_override.agent.prompt.prompt` when minting token
-- Gemini: include in `systemInstruction` in `BidiGenerateContentSetup`
-- Qwen: include in `instructions` in `session.update`
-
-`VoiceSessionConfig` gains a `customPrompt?: string` field alongside `voiceName?`.
-`VoiceBackendSession` reads from localStorage and passes through.
+Voice and personality params go through the frontend session config and the WebSocket proxy
+forwards them as-is in `session.update`.
 
 ---
 
-## Files touched
+## `VoiceSessionConfig` additions
 
-| File | Change |
-|------|--------|
-| `shared/src/voice.ts` | `VOICE_SYSTEM_PROMPT` stays as base; `buildGeminiLiveConfig()` accepts `customPrompt?` |
-| `web/src/realtime/types.ts` | Add `voiceName?`, `customPrompt?`, `voiceSettings?` to `VoiceSessionConfig` |
-| `web/src/realtime/GeminiLiveVoiceSession.tsx` | Pass `customPrompt` into system instruction |
-| `web/src/realtime/QwenVoiceSession.tsx` | Pass `customPrompt` into `session.update` instructions |
-| `web/src/realtime/RealtimeVoiceSession.tsx` / token call | Pass `voice_settings` override |
-| `web/src/realtime/VoiceBackendSession.tsx` | Read all settings from localStorage, pass in config |
-| `web/src/routes/settings/index.tsx` | Preset picker, custom prompt textarea, ElevenLabs sliders |
-| `hub/src/web/routes/voice.ts` | Accept and forward `voice_settings` in token request |
+```typescript
+export interface VoiceSessionConfig {
+    language?: string
+    initialContext?: string
+    voiceName?: string          // from voice-selection-all-backends.md
+    customPrompt?: string       // personality notes appended to system prompt
+    voiceSettings?: {           // ElevenLabs only; ignored by other backends
+        stability?: number
+        similarityBoost?: number
+        style?: number
+        useSpeakerBoost?: boolean
+        speed?: number
+    }
+}
+```
 
 ---
 
-## What the Qwen instruction-based approach means for UI
+## Implementation notes
 
-For Qwen, "speaking faster" or "cheerfully" is a natural language instruction, not a slider.
-The Personality preset system handles this cleanly — the "Expressive" preset for Qwen just
-injects "Be enthusiastic and expressive. Vary your pace and energy." into the system prompt,
-which Qwen will follow. No need to expose a "send a message saying speak faster" control.
+### Getting ElevenLabs to emit audio tags reliably
+
+The audio tags instruction must be in the **agent system prompt**, not injected as a contextual
+update. Contextual updates are conversational turns, not standing instructions. Include in the
+`VOICE_SYSTEM_PROMPT` base or in the `conversation_config_override.agent.prompt.prompt` addition.
+
+### Tag density tuning
+
+One or two tags per response is the right ceiling. More than that tips into performance rather
+than natural speech. A useful test: read a response aloud and check whether the tags would feel
+genuine if a human said them. If not, the LLM is over-tagging — tighten the prompt instruction.
+
+### Qwen "unwanted laughter" risk
+
+Because Qwen can produce laughter natively and instruction-following is strong, a poorly worded
+prompt could make it laugh too readily. Include a qualifier:
+```
+Natural sounds are appropriate — but only when genuinely fitting. Never perform emotion.
+```
+
+### Gemini affective dialog API flag
+
+`enable_affective_dialog: true` is a `v1alpha` API feature — not in the stable endpoint.
+Use the alpha API path when enabling it and note it may change. Worth the instability for
+long sessions where user mood affects the interaction.
 
 ---
 
 ## Open questions
 
-1. **ElevenLabs per-conversation override** — does overriding `agent.prompt.prompt` in the token
-   request fully replace or append to the agent's configured prompt? Verify before implementing
-   — may need to fetch the agent's base prompt and concatenate.
-2. **Gemini SSML in Live** — Google may add prosody controls to Live API in future. Monitor
-   release notes; the UI should be easy to extend if sliders become meaningful.
-3. **Qwen full voice personality descriptions** — the 55-voice list with personality descriptions
-   is in Chinese docs. Worth translating/curating before shipping the picker.
-4. **Preset persistence** — localStorage for now; Phase 3 of self-bootstrapping-config.md moves
-   settings to SQLite. Design the storage shape so migration is a copy, not a restructure.
-5. **Per-session vs persistent** — should personality settings apply to all future sessions or
-   be overridable per-session-start? Start with persistent (stored settings always apply);
-   per-session override is a later enhancement.
+1. **ElevenLabs base prompt concatenation** — does `conversation_config_override.agent.prompt.prompt`
+   append or replace the agent's configured prompt? Must verify before implementing custom prompt
+   pass-through.
+2. **Gemini native laughter** — undocumented. Worth a practical test: prompt "laugh warmly when
+   something is funny" and try a few amusing inputs. Document the result.
+3. **Qwen full voice list** — 55 voices, personalities primarily in Chinese docs. Need a test
+   matrix: run a standard warmth-test paragraph through each available voice, note character.
+4. **Audio tag prompt engineering** — the right instruction density for tag emission needs
+   testing per-voice and per-model. Some ElevenLabs voices interpret tags more naturally than
+   others.
+5. **Per-session vs persistent personality** — start with persistent (stored settings apply to
+   all sessions). Per-session override (different character for different agent sessions) is a
+   later enhancement but worth designing the storage shape for.
+6. **Qwen backchanneling in HAPI** — Qwen's native full-duplex backchanneling handling means
+   the VAD (voice activity detection) threshold may need tuning. The hub's current Qwen proxy
+   uses server VAD with `threshold: 0.5, silence_duration_ms: 800`. These values may suppress
+   natural "mmm" and "uh-huh" sounds from the user. Worth testing.
