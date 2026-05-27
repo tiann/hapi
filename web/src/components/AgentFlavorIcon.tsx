@@ -25,9 +25,14 @@ const FLAVOR_BADGES: Record<string, { label: string; colors: string }> = {
     },
 }
 
+const UNKNOWN_FLAVOR_BADGE = {
+    label: 'Un',
+    colors: 'bg-[var(--app-secondary-bg)] text-[var(--app-hint)]',
+}
+
 export function AgentFlavorIcon({ flavor, className }: { flavor?: string | null; className?: string }) {
-    const normalized = (flavor ?? 'claude').trim().toLowerCase()
-    const badge = FLAVOR_BADGES[normalized] ?? FLAVOR_BADGES.claude
+    const normalized = (flavor ?? '').trim().toLowerCase()
+    const badge = FLAVOR_BADGES[normalized] ?? UNKNOWN_FLAVOR_BADGE
 
     return (
         <span
