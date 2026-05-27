@@ -7,7 +7,7 @@ import { z } from 'zod'
  */
 export const AGENT_MESSAGE_PAYLOAD_TYPE = 'codex' as const
 
-export const AGENT_FLAVORS = ['claude', 'codex', 'cursor', 'gemini', 'opencode'] as const
+export const AGENT_FLAVORS = ['claude', 'codex', 'cursor', 'gemini', 'kimi', 'opencode'] as const
 export type AgentFlavor = typeof AGENT_FLAVORS[number]
 export const AgentFlavorSchema = z.enum(AGENT_FLAVORS)
 
@@ -23,7 +23,10 @@ export type CodexCollaborationMode = typeof CODEX_COLLABORATION_MODES[number]
 export const GEMINI_PERMISSION_MODES = ['default', 'read-only', 'safe-yolo', 'yolo'] as const
 export type GeminiPermissionMode = typeof GEMINI_PERMISSION_MODES[number]
 
-export const OPENCODE_PERMISSION_MODES = ['default', 'yolo'] as const
+export const KIMI_PERMISSION_MODES = ['default', 'read-only', 'safe-yolo', 'yolo'] as const
+export type KimiPermissionMode = typeof KIMI_PERMISSION_MODES[number]
+
+export const OPENCODE_PERMISSION_MODES = ['default', 'plan', 'yolo'] as const
 export type OpencodePermissionMode = typeof OPENCODE_PERMISSION_MODES[number]
 
 export const CURSOR_PERMISSION_MODES = ['default', 'plan', 'ask', 'yolo'] as const
@@ -40,6 +43,7 @@ export const PERMISSION_MODES = [
     'yolo'
 ] as const
 export type PermissionMode = typeof PERMISSION_MODES[number]
+
 
 export const PERMISSION_MODE_LABELS: Record<PermissionMode, string> = {
     default: 'Default',
@@ -99,6 +103,9 @@ export function getPermissionModesForFlavor(flavor?: string | null): readonly Pe
     }
     if (flavor === 'gemini') {
         return GEMINI_PERMISSION_MODES
+    }
+    if (flavor === 'kimi') {
+        return KIMI_PERMISSION_MODES
     }
     if (flavor === 'opencode') {
         return OPENCODE_PERMISSION_MODES

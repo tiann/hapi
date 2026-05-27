@@ -5,12 +5,14 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createServer } from "node:http";
+import { lstat, readFile } from "node:fs/promises";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { AddressInfo } from "node:net";
 import { z } from "zod";
 import { logger } from "@/ui/logger";
 import { ApiSessionClient } from "@/api/apiSession";
 import { randomUUID } from "node:crypto";
+import { detectImageMimeType, registerGeneratedImage } from "@/modules/common/generatedImages";
 
 type StartHappyServerOptions = {
     emitTitleSummary?: boolean;
@@ -52,6 +54,11 @@ export async function startHappyServer(client: ApiSessionClient, options: StartH
         title: z.string().describe('The new title for the chat session'),
     });
 
+    const displayImageInputSchema: z.ZodTypeAny = z.object({
+        path: z.string().describe('Local filesystem path of the image to display to the user'),
+        title: z.string().optional().describe('Optional display title or filename for the image'),
+    });
+
     mcp.registerTool<any, any>('change_title', {
         description: 'Change the title of the current chat session',
         title: 'Change Chat Title',
@@ -76,6 +83,71 @@ export async function startHappyServer(client: ApiSessionClient, options: StartH
                     {
                         type: 'text' as const,
                         text: `Failed to change chat title: ${response.error || 'Unknown error'}`,
+                    },
+                ],
+                isError: true,
+            };
+        }
+    });
+
+
+    mcp.registerTool<any, any>('display_image', {
+        description: 'Display a local image file inline in the current HAPI chat session',
+        title: 'Display Image',
+        inputSchema: displayImageInputSchema,
+    }, async (args: { path: string; title?: string }) => {
+        logger.debug('[hapiMCP] Display image:', args.path);
+
+        try {
+            const info = await lstat(args.path);
+            if (!info.isFile()) {
+                throw new Error('Path is not a regular file');
+            }
+
+            const maxImageBytes = 25 * 1024 * 1024;
+            if (info.size > maxImageBytes) {
+                throw new Error('Image is too large to display inline');
+            }
+
+            const bytes = await readFile(args.path);
+            const mimeType = detectImageMimeType(bytes);
+            if (!mimeType) {
+                throw new Error('Unsupported image content');
+            }
+
+            const image = registerGeneratedImage({
+                id: randomUUID(),
+                path: args.path,
+                fileName: args.title,
+                mimeType,
+                bytes
+            });
+
+            client.sendAgentMessage({
+                type: 'generated-image',
+                imageId: image.id,
+                fileName: image.fileName,
+                mimeType: image.mimeType,
+                id: randomUUID()
+            });
+
+            return {
+                content: [
+                    {
+                        type: 'text' as const,
+                        text: `Displayed image: ${image.fileName}`,
+                    },
+                ],
+                isError: false,
+            };
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            logger.debug('[hapiMCP] Failed to display image:', message);
+            return {
+                content: [
+                    {
+                        type: 'text' as const,
+                        text: `Failed to display image: ${message}`,
                     },
                 ],
                 isError: true,
@@ -114,7 +186,7 @@ export async function startHappyServer(client: ApiSessionClient, options: StartH
 
     return {
         url: baseUrl.toString(),
-        toolNames: ['change_title'],
+        toolNames: ['change_title', 'display_image'],
         stop: () => {
             logger.debug('[hapiMCP] Stopping server');
             mcp.close();

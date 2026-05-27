@@ -1,5 +1,6 @@
 import React from 'react';
 import { randomUUID } from 'node:crypto';
+import { lstat, readFile } from 'node:fs/promises';
 
 import { CodexAppServerClient } from './codexAppServerClient';
 import { CodexPermissionHandler } from './utils/permissionHandler';
@@ -13,7 +14,7 @@ import type { CodexSession } from './session';
 import type { EnhancedMode } from './loop';
 import { hasCodexCliOverrides } from './utils/codexCliOverrides';
 import { AppServerEventConverter } from './utils/appServerEventConverter';
-import { registerGeneratedImage } from '@/modules/common/generatedImages';
+import { detectImageMimeType, registerGeneratedImage } from '@/modules/common/generatedImages';
 import { registerAppServerPermissionHandlers } from './utils/appServerPermissionAdapter';
 import { buildThreadStartParams, buildTurnStartParams } from './utils/appServerConfig';
 import type { ThreadGoal, ThreadGoalStatus } from './appServerTypes';
@@ -24,6 +25,35 @@ import {
     type RemoteLauncherDisplayContext,
     type RemoteLauncherExitReason
 } from '@/modules/common/remote/RemoteLauncherBase';
+
+
+async function registerGeneratedImageFromPath(args: { id: string; path: string; fileName?: string | null }): Promise<ReturnType<typeof registerGeneratedImage> | null> {
+    try {
+        const info = await lstat(args.path);
+        if (!info.isFile()) {
+            throw new Error('Path is not a regular file');
+        }
+        const maxImageBytes = 25 * 1024 * 1024;
+        if (info.size > maxImageBytes) {
+            throw new Error('Image is too large to display inline');
+        }
+        const bytes = await readFile(args.path);
+        const mimeType = detectImageMimeType(bytes);
+        if (!mimeType) {
+            throw new Error('Unsupported image content');
+        }
+        return registerGeneratedImage({
+            id: args.id,
+            path: args.path,
+            fileName: args.fileName,
+            mimeType,
+            bytes
+        });
+    } catch (error) {
+        logger.debug('[CodexRemoteLauncher] Failed to register generated image:', error instanceof Error ? error.message : String(error));
+        return null;
+    }
+}
 
 type HappyServer = Awaited<ReturnType<typeof buildHapiMcpBridge>>['server'];
 type QueuedMessage = { message: string; mode: EnhancedMode; isolate: boolean; hash: string };
@@ -1924,7 +1954,9 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             return true;
         };
 
-        const handleCodexEvent = (msg: Record<string, unknown>) => {
+        let codexEventQueue: Promise<void> | null = null;
+
+        const handleCodexEvent = async (msg: Record<string, unknown>): Promise<void> => {
             const msgType = asString(msg.type);
             if (!msgType) return;
             const eventTurnId = asString(msg.turn_id ?? msg.turnId);
@@ -2183,12 +2215,13 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 const imageId = randomUUID();
                 const savedPath = asString(msg.saved_path ?? msg.savedPath);
                 if (savedPath) {
-                    const image = registerGeneratedImage({
+                    const image = await registerGeneratedImageFromPath({
                         id: imageId,
                         path: savedPath,
-                        fileName: asString(msg.file_name ?? msg.fileName),
-                        mimeType: asString(msg.mime_type ?? msg.mimeType)
+                        fileName: asString(msg.file_name ?? msg.fileName)
                     });
+                    if (!image) return;
+
                     messageBuffer.addMessage(`Generated image: ${image.fileName}`, 'assistant');
                     session.sendAgentMessage({
                         type: 'generated-image',
@@ -2467,7 +2500,25 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             const events = appServerEventConverter.handleNotification(method, params);
             for (const event of events) {
                 const eventRecord = asRecord(event) ?? { type: undefined };
-                handleCodexEvent(eventRecord);
+                const msgType = asString(eventRecord.type);
+                const hasGeneratedImagePath = msgType === 'generated_image' && Boolean(asString(eventRecord.saved_path ?? eventRecord.savedPath));
+
+                if (codexEventQueue || hasGeneratedImagePath) {
+                    const previousQueue = codexEventQueue ?? Promise.resolve();
+                    const nextQueue = previousQueue
+                        .then(() => handleCodexEvent(eventRecord))
+                        .catch((error) => logger.debug('[Codex] Failed to handle app-server event:', error instanceof Error ? error.message : String(error)));
+                    const queued = nextQueue.finally(() => {
+                        if (codexEventQueue === queued) {
+                            codexEventQueue = null;
+                        }
+                    });
+                    codexEventQueue = queued;
+                } else {
+                    void handleCodexEvent(eventRecord).catch((error) => {
+                        logger.debug('[Codex] Failed to handle app-server event:', error instanceof Error ? error.message : String(error));
+                    });
+                }
             }
         });
 

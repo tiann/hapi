@@ -205,7 +205,7 @@ export function StatusBar(props: {
     const collaborationModeLabel = displayCollaborationMode
         ? getCodexCollaborationModeLabel(displayCollaborationMode)
         : null
-    const codexReasoningLabel = props.agentFlavor === 'codex'
+    const codexReasoningLabel = (props.agentFlavor === 'codex' || props.agentFlavor === 'opencode')
         ? formatCodexReasoningLabel(props.modelReasoningEffort)
         : null
     const codexFastMode = props.agentFlavor === 'codex'

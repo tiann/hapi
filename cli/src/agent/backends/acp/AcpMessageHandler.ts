@@ -40,6 +40,40 @@ function deriveToolNameFromUpdate(update: Record<string, unknown>): DerivedToolN
 }
 
 /**
+ * Normalises a kind string to a canonical category. Different ACP agents
+ * (Gemini, OpenCode, Kimi) use different vocabulary for the same semantic
+ * operation; mapping them here keeps the rest of the handler agent-agnostic.
+ */
+function normalizeToolKind(kind: string | null): 'read' | 'execute' | 'search' | 'edit' | 'think' | null {
+    if (!kind) return null;
+    const k = kind.toLowerCase().trim();
+    if (k === 'read' || k === 'read_file' || k === 'file_read' || k === 'view') return 'read';
+    if (k === 'execute' || k === 'shell' || k === 'bash' || k === 'run' || k === 'run_shell' || k === 'run_shell_command' || k === 'cmd' || k === 'terminal') return 'execute';
+    if (k === 'search' || k === 'grep' || k === 'find' || k === 'glob') return 'search';
+    if (k === 'edit' || k === 'write' || k === 'write_file' || k === 'replace' || k === 'file_edit' || k === 'modify') return 'edit';
+    if (k === 'think' || k === 'thought' || k === 'reasoning') return 'think';
+    return null;
+}
+
+/**
+ * Extracts the argument from a title that uses a "Category: argument" pattern.
+ * Many ACP agents (notably Kimi) emit titles like "Shell: free -h" or
+ * "Read: README.md" where the part after the colon is the actual tool argument.
+ *
+ * Only strips the prefix when the label before the colon normalizes to the
+ * same tool kind, so valid commands/paths that contain colons (e.g.
+ * curl http://localhost:3000, git commit -m "feat: add Kimi") are not corrupted.
+ * Returns the raw title when no matching prefix is found.
+ */
+function extractTitleArgument(title: string, kind: string | null): string {
+    const normalizedKind = normalizeToolKind(kind);
+    const match = title.match(/^([A-Za-z][A-Za-z _-]{0,31}):\s+(.+)$/);
+    if (!match) return title;
+    const labelKind = normalizeToolKind(match[1]);
+    return labelKind && labelKind === normalizedKind ? match[2] : title;
+}
+
+/**
  * Fallback for ACP agents that omit `rawInput` and emit prose thoughts
  * (no JSON-form to hoist). The `tool_call` event still carries a
  * human-readable `title`, a structural `kind`, and (for file-touching tools)
@@ -62,23 +96,84 @@ function deriveInputFromKindAndTitle(
     title: string | null,
     locations: unknown
 ): Record<string, unknown> | null {
-    if (kind === 'edit') {
+    const normalizedKind = normalizeToolKind(kind);
+    if (normalizedKind === 'edit') {
         const arr = Array.isArray(locations) ? locations : [];
         const first = arr[0];
         const path = isObject(first) ? asString(first.path) : null;
         return path ? { file_path: path } : null;
     }
     if (!title) return null;
-    switch (kind) {
+    const arg = extractTitleArgument(title, kind);
+    switch (normalizedKind) {
         case 'read':
-            return { file_path: title };
+            return { file_path: arg };
         case 'execute':
-            return { command: title };
+            return { command: arg };
         case 'search':
-            return { pattern: title };
+            return { pattern: arg };
         default:
             return null;
     }
+}
+
+/**
+ * Kimi ACP streams tool arguments as JSON text inside the `content` array
+ * (e.g. `[{type:'content', content:{type:'text', text:'{"command":"df -h"}'}}]`)
+ * instead of using `rawInput`. This helper extracts and parses that JSON.
+ *
+ * Returns the parsed object when the content is a single text block whose text
+ * is valid JSON object / array. Returns null for anything else so callers can
+ * keep their existing fallback.
+ */
+function extractJsonInputFromContent(content: unknown): Record<string, unknown> | unknown[] | null {
+    if (!Array.isArray(content) || content.length !== 1) return null;
+    const block = content[0];
+    if (!isObject(block)) return null;
+    if (block.type !== 'content') return null;
+    const inner = block.content;
+    if (!isObject(inner)) return null;
+    if (inner.type !== 'text') return null;
+    const text = typeof inner.text === 'string' ? inner.text : null;
+    if (!text || text.trim().length === 0) return null;
+    // Defensive: only parse when it looks like JSON (starts with { or [)
+    const trimmed = text.trim();
+    if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return null;
+    try {
+        const parsed = JSON.parse(trimmed);
+        if (typeof parsed === 'object' && parsed !== null) {
+            return parsed as Record<string, unknown> | unknown[];
+        }
+        return null;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Detects whether an existing tool input was derived from a placeholder title
+ * that did not yet contain the actual argument. This happens with agents like
+ * Kimi that send an initial tool_call with a generic title ("Shell") and later
+ * update it to a concrete one ("Shell: free -h").
+ *
+ * Returns true when:
+ *   - the update title contains a colon (indicating it carries the real arg)
+ *   - the existing input is a derived object whose value matches the OLD title
+ */
+function isStaleDerivedInput(existingInput: unknown, updateTitle: string | null, kind: string | null): boolean {
+    if (!updateTitle) return false;
+    const arg = extractTitleArgument(updateTitle, kind);
+    // No colon in title — nothing to extract, not stale
+    if (arg === updateTitle) return false;
+    if (!isObject(existingInput)) return false;
+    const values = Object.values(existingInput);
+    for (const value of values) {
+        if (typeof value === 'string' && value.trim() === arg) {
+            // Input already matches the new argument — not stale
+            return false;
+        }
+    }
+    return true;
 }
 
 type HoistedDiff =
@@ -548,11 +643,21 @@ export class AcpMessageHandler {
             metaKind: null
         });
         const name = derivedName.name;
-        // Priority: rawInput > kind+title fallback.
-        // Use `in` to distinguish "rawInput key absent" from "rawInput is {}".
-        const input = 'rawInput' in update
-            ? update.rawInput
-            : deriveInputFromKindAndTitle(asString(update.kind), asString(update.title), update.locations);
+        // Priority: rawInput > kind+title fallback > content JSON fallback.
+        // Kimi ACP streams tool arguments as JSON text in the content array
+        // instead of rawInput/kind. Try all three sources.
+        let input: unknown;
+        if (update.rawInput != null) {
+            input = update.rawInput;
+        } else {
+            const fromKindTitle = deriveInputFromKindAndTitle(asString(update.kind), asString(update.title), update.locations);
+            if (fromKindTitle) {
+                input = fromKindTitle;
+            } else {
+                const fromContent = extractJsonInputFromContent(update.content);
+                input = fromContent;
+            }
+        }
         const status = normalizeStatus(update.status);
 
         this.toolCalls.set(toolCallId, { name, input });
@@ -573,7 +678,7 @@ export class AcpMessageHandler {
         const status = normalizeStatus(update.status);
         const existing = this.toolCalls.get(toolCallId);
 
-        if (update.rawInput !== undefined) {
+        if (update.rawInput != null) {
             const derivedName = deriveToolNameFromUpdate(update);
             const name = this.selectToolNameForUpdate(existing?.name ?? null, derivedName);
             const input = update.rawInput;
@@ -591,16 +696,31 @@ export class AcpMessageHandler {
             // enriched the input or when the call is still active.
             let input = existing.input;
             let name = existing.name;
-            if (input == null) {
-                const fallback = deriveInputFromKindAndTitle(asString(update.kind), asString(update.title), update.locations);
+            let rederived = false;
+            const updateTitle = asString(update.title);
+            if (input == null || isStaleDerivedInput(input, updateTitle, asString(update.kind))) {
+                const fallback = deriveInputFromKindAndTitle(asString(update.kind), updateTitle, update.locations);
                 if (fallback) {
                     input = fallback;
                     const derivedName = deriveToolNameFromUpdate(update);
                     name = this.selectToolNameForUpdate(existing.name ?? null, derivedName);
                     this.toolCalls.set(toolCallId, { name, input });
+                    rederived = true;
                 }
             }
-            const justEnriched = existing.input == null && input != null;
+            // Kimi ACP streams tool arguments as JSON text in the content array.
+            // If we still don't have a useful input, try to parse the content.
+            if (!rederived && (input == null || isStaleDerivedInput(input, updateTitle, asString(update.kind)))) {
+                const fromContent = extractJsonInputFromContent(update.content);
+                if (fromContent && isObject(fromContent)) {
+                    input = fromContent;
+                    const derivedName = deriveToolNameFromUpdate(update);
+                    name = this.selectToolNameForUpdate(existing.name ?? null, derivedName);
+                    this.toolCalls.set(toolCallId, { name, input });
+                    rederived = true;
+                }
+            }
+            const justEnriched = (existing.input == null && input != null) || rederived;
             if (status === 'in_progress' || status === 'pending' || justEnriched) {
                 this.onMessage({
                     type: 'tool_call',

@@ -1,7 +1,31 @@
 import { useQuery } from '@tanstack/react-query'
+import type { OpencodeModelsResponse } from '@hapi/protocol/apiTypes'
 import type { ApiClient } from '@/api/client'
 import type { OpencodeModelSummary } from '@/types/api'
 import { queryKeys } from '@/lib/query-keys'
+
+export function shouldRetryOpencodeModelsQuery(failureCount: number): boolean {
+    return failureCount < 3
+}
+
+const MAX_OPENCODE_MODEL_DISCOVERY_POLLS = 10
+
+export function getOpencodeModelsRefetchInterval(
+    enabled: boolean,
+    data: OpencodeModelsResponse | undefined,
+    pollCount: number
+): 1000 | false {
+    if (!enabled || pollCount >= MAX_OPENCODE_MODEL_DISCOVERY_POLLS) {
+        return false
+    }
+    if (!data) {
+        return 1000
+    }
+    if (data.success === false) {
+        return 1000
+    }
+    return (data.availableModels?.length ?? 0) > 0 ? false : 1000
+}
 
 export function useOpencodeModels(args: {
     api: ApiClient | null
@@ -31,7 +55,12 @@ export function useOpencodeModels(args: {
         },
         enabled,
         staleTime: 30_000,
-        retry: false,
+        retry: (failureCount) => shouldRetryOpencodeModelsQuery(failureCount),
+        refetchInterval: (query) => getOpencodeModelsRefetchInterval(
+            enabled,
+            query.state.data as OpencodeModelsResponse | undefined,
+            query.state.dataUpdateCount + query.state.errorUpdateCount
+        ),
     })
 
     return {

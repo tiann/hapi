@@ -38,9 +38,13 @@ export function deriveToolNameWithSource(input: {
         }
     }
 
-    // Gemini ACP: kind=edit with _meta.kind distinguishes write_file (add) from replace (modify).
-    // Map to the canonical Claude tool names so existing Write/Edit registry entries are reused.
-    if (input.kind === 'edit') {
+    // ACP agents (Gemini, Kimi) use kind=edit/write/replace with _meta.kind to
+    // distinguish write_file (add) from replace (modify). Normalise the kind
+    // so aliases like 'write', 'replace', 'modify' are handled the same way.
+    const normalizedKind = typeof input.kind === 'string'
+        ? input.kind.toLowerCase().trim()
+        : null;
+    if (normalizedKind === 'edit' || normalizedKind === 'write' || normalizedKind === 'write_file' || normalizedKind === 'replace' || normalizedKind === 'modify' || normalizedKind === 'file_edit') {
         if (input.metaKind === 'add') {
             return { name: 'Write', source: 'kind' };
         }

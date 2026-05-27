@@ -14,15 +14,15 @@ import type { ConversationOutlineItem } from '@/chat/outline'
 
 const outlineItems: ConversationOutlineItem[] = [
     {
-        id: 'outline:user:m1',
-        targetMessageId: 'user:m1',
+        id: 'outline:user-text:m1',
+        targetMessageId: 'user-text:m1',
         kind: 'user',
         label: 'Implement the panel',
         createdAt: 1000
     },
     {
-        id: 'outline:user:m2',
-        targetMessageId: 'user:m2',
+        id: 'outline:user-text:m2',
+        targetMessageId: 'user-text:m2',
         kind: 'user',
         label: 'Second user prompt',
         createdAt: 2000
@@ -195,14 +195,14 @@ describe('outline target loading', () => {
         })
 
         const findTarget = vi.fn((anchorId: string) => {
-            if (anchorId !== 'hapi-message-user:target') {
+            if (anchorId !== 'hapi-message-user-text:target') {
                 return null
             }
             return loadCount >= 2 ? document.createElement('div') : null
         })
 
         const target = await locateOutlineTargetMessage({
-            targetMessageId: 'user:target',
+            targetMessageId: 'user-text:target',
             findTarget,
             hasMoreMessages: () => loadCount < 2,
             loadOlderPreservingScroll
@@ -210,14 +210,14 @@ describe('outline target loading', () => {
 
         expect(target).toBeInstanceOf(HTMLElement)
         expect(loadOlderPreservingScroll).toHaveBeenCalledTimes(2)
-        expect(findTarget).toHaveBeenCalledWith('hapi-message-user:target')
+        expect(findTarget).toHaveBeenCalledWith('hapi-message-user-text:target')
     })
 
     it('stops when history is exhausted before the target is loaded', async () => {
         const loadOlderPreservingScroll = vi.fn(async () => false)
 
         const target = await locateOutlineTargetMessage({
-            targetMessageId: 'user:missing',
+            targetMessageId: 'user-text:missing',
             findTarget: () => null,
             hasMoreMessages: () => true,
             loadOlderPreservingScroll

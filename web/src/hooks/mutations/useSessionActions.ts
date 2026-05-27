@@ -106,11 +106,11 @@ export function useSessionActions(
             if (!api || !sessionId) {
                 throw new Error('Session unavailable')
             }
-            if (agentFlavor !== 'codex') {
-                throw new Error('Model reasoning effort is only supported for Codex sessions')
+            if (agentFlavor !== 'codex' && agentFlavor !== 'opencode') {
+                throw new Error('Model reasoning effort is only supported for Codex and OpenCode sessions')
             }
-            if (!codexCollaborationModeSupported) {
-                throw new Error('Model reasoning effort is only supported for remote Codex sessions')
+            if (agentFlavor === 'codex' && !codexCollaborationModeSupported) {
+                throw new Error('Model reasoning effort is only supported for remote sessions')
             }
             await api.setModelReasoningEffort(sessionId, modelReasoningEffort)
         },

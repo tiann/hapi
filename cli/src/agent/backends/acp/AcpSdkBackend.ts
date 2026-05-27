@@ -3,12 +3,26 @@ import type { AgentBackend, AgentMessage, AgentSessionConfig, PermissionRequest,
 import { asString, isObject } from '@hapi/protocol';
 import { AcpStdioTransport, type AcpStderrError } from './AcpStdioTransport';
 import { AcpMessageHandler } from './AcpMessageHandler';
+import { ACP_SESSION_UPDATE_TYPES } from './constants';
 import { logger } from '@/ui/logger';
 import { withRetry } from '@/utils/time';
 import packageJson from '../../../../package.json';
 
 type PendingPermission = {
     resolve: (result: { outcome: { outcome: string; optionId?: string } }) => void;
+};
+
+type AcpPromptUsage = {
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens?: number;
+    thoughtTokens?: number;
+    cacheReadTokens?: number;
+};
+
+type AcpUsageUpdate = {
+    contextTokens: number | undefined;
+    contextWindow: number | undefined;
 };
 
 export type AcpModelDescriptor = {
@@ -21,17 +35,26 @@ export type AcpSessionModelsMetadata = {
     currentModelId: string | null;
 };
 
+export type AcpConfigOptionDescriptor = {
+    id: string;
+    category?: string;
+    currentValue?: string;
+    options: Array<{ value: string; name?: string }>;
+};
+
 export class AcpSdkBackend implements AgentBackend {
     private transport: AcpStdioTransport | null = null;
     private permissionHandler: ((request: PermissionRequest) => void) | null = null;
     private stderrErrorHandler: ((error: AcpStderrError) => void) | null = null;
     private readonly pendingPermissions = new Map<string, PendingPermission>();
     private readonly sessionModelsMetadata = new Map<string, AcpSessionModelsMetadata>();
+    private readonly sessionConfigOptions = new Map<string, AcpConfigOptionDescriptor[]>();
     private messageHandler: AcpMessageHandler | null = null;
     private activeSessionId: string | null = null;
     private isProcessingMessage = false;
     private responseCompleteResolvers: Array<() => void> = [];
     private lastSessionUpdateAt = 0;
+    private latestUsageUpdate: AcpUsageUpdate | null = null;
 
     /** Retry configuration for ACP initialization */
     private static readonly INIT_RETRY_OPTIONS = {
@@ -120,7 +143,7 @@ export class AcpSdkBackend implements AgentBackend {
         }
 
         this.activeSessionId = sessionId;
-        this.captureSessionModelsMetadata(sessionId, response);
+        this.captureSessionMetadata(sessionId, response);
         return sessionId;
     }
 
@@ -146,7 +169,7 @@ export class AcpSdkBackend implements AgentBackend {
         const loadedSessionId = isObject(response) ? asString(response.sessionId) : null;
         const sessionId = loadedSessionId ?? config.sessionId;
         this.activeSessionId = sessionId;
-        this.captureSessionModelsMetadata(sessionId, response);
+        this.captureSessionMetadata(sessionId, response);
         return sessionId;
     }
 
@@ -183,8 +206,27 @@ export class AcpSdkBackend implements AgentBackend {
         } else {
             // For other flavors (e.g. Gemini), if the response carries metadata,
             // capture it. Missing fields are silently ignored.
-            this.captureSessionModelsMetadata(sessionId, response);
+            this.captureSessionMetadata(sessionId, response);
         }
+    }
+
+    async setConfigOption(
+        sessionId: string,
+        configId: string,
+        value: string
+    ): Promise<void> {
+        if (!this.transport) {
+            throw new Error('ACP transport not initialized');
+        }
+
+        await this.waitForResponseComplete();
+
+        const response = await this.transport.sendRequest('session/set_config_option', {
+            sessionId,
+            configId,
+            value
+        });
+        this.captureSessionMetadata(sessionId, response);
     }
 
     /**
@@ -194,6 +236,10 @@ export class AcpSdkBackend implements AgentBackend {
      */
     getSessionModelsMetadata(sessionId: string): AcpSessionModelsMetadata | undefined {
         return this.sessionModelsMetadata.get(sessionId);
+    }
+
+    getThoughtLevelConfigOption(sessionId: string): AcpConfigOptionDescriptor | undefined {
+        return this.sessionConfigOptions.get(sessionId)?.find((option) => option.category === 'thought_level');
     }
 
     async prompt(
@@ -219,7 +265,9 @@ export class AcpSdkBackend implements AgentBackend {
         this.messageHandler = new AcpMessageHandler(onUpdate);
         this.isProcessingMessage = true;
         this.lastSessionUpdateAt = Date.now();
+        this.latestUsageUpdate = null;
         let stopReason: string | null = null;
+        let promptUsage: AcpPromptUsage | null = null;
 
         try {
             // No timeout for prompt requests - they can run for extended periods
@@ -230,6 +278,7 @@ export class AcpSdkBackend implements AgentBackend {
             }, { timeoutMs: Infinity });
 
             stopReason = isObject(response) ? asString(response.stopReason) : null;
+            promptUsage = this.extractPromptUsage(response);
         } finally {
             await this.waitForSessionUpdateQuiet(
                 AcpSdkBackend.UPDATE_QUIET_PERIOD_MS,
@@ -237,6 +286,19 @@ export class AcpSdkBackend implements AgentBackend {
             );
             this.messageHandler?.drainBuffers();
             try {
+                const latestUsageUpdate = this.readLatestUsageUpdate();
+                if (promptUsage) {
+                    onUpdate({
+                        type: 'usage',
+                        inputTokens: promptUsage.inputTokens,
+                        outputTokens: promptUsage.outputTokens,
+                        totalTokens: promptUsage.totalTokens,
+                        thoughtTokens: promptUsage.thoughtTokens,
+                        cacheReadTokens: promptUsage.cacheReadTokens,
+                        contextTokens: latestUsageUpdate ? latestUsageUpdate.contextTokens : undefined,
+                        contextWindow: latestUsageUpdate ? latestUsageUpdate.contextWindow : undefined
+                    });
+                }
                 if (stopReason) {
                     onUpdate({ type: 'turn_complete', stopReason });
                 }
@@ -336,7 +398,24 @@ export class AcpSdkBackend implements AgentBackend {
         }
         this.lastSessionUpdateAt = Date.now();
         const update = params.update;
+        this.captureUsageUpdate(update);
         this.messageHandler?.handleUpdate(update);
+    }
+
+    private captureUsageUpdate(update: unknown): void {
+        if (!isObject(update)) return;
+        if (asString(update.sessionUpdate) !== ACP_SESSION_UPDATE_TYPES.usageUpdate) return;
+
+        const contextTokens = this.asFiniteNumber(update.used);
+        const contextWindow = this.asFiniteNumber(update.size);
+        this.latestUsageUpdate = {
+            contextTokens: contextTokens ?? undefined,
+            contextWindow: contextWindow ?? undefined
+        };
+    }
+
+    private readLatestUsageUpdate(): AcpUsageUpdate | null {
+        return this.latestUsageUpdate;
     }
 
     private async waitForSessionUpdateQuiet(quietMs: number, timeoutMs: number): Promise<void> {
@@ -434,6 +513,64 @@ export class AcpSdkBackend implements AgentBackend {
         });
     }
 
+    private extractPromptUsage(response: unknown): AcpPromptUsage | null {
+        if (!isObject(response) || !isObject(response.usage)) return null;
+        const usage = response.usage;
+        const inputTokens = this.asFiniteNumber(usage.inputTokens ?? usage.input_tokens);
+        const outputTokens = this.asFiniteNumber(usage.outputTokens ?? usage.output_tokens);
+        if (inputTokens === null || outputTokens === null) return null;
+
+        return {
+            inputTokens,
+            outputTokens,
+            totalTokens: this.asFiniteNumber(usage.totalTokens ?? usage.total_tokens) ?? undefined,
+            thoughtTokens: this.asFiniteNumber(usage.thoughtTokens ?? usage.thought_tokens) ?? undefined,
+            cacheReadTokens: this.asFiniteNumber(
+                usage.cachedReadTokens
+                ?? usage.cached_read_tokens
+                ?? usage.cachedInputTokens
+                ?? usage.cached_input_tokens
+            ) ?? undefined
+        };
+    }
+
+    private asFiniteNumber(value: unknown): number | null {
+        return typeof value === 'number' && Number.isFinite(value) ? value : null;
+    }
+
+
+    private captureSessionMetadata(sessionId: string, response: unknown): void {
+        this.captureSessionModelsMetadata(sessionId, response);
+        this.captureSessionConfigOptions(sessionId, response);
+    }
+
+    private captureSessionConfigOptions(sessionId: string, response: unknown): void {
+        if (!isObject(response) || !Array.isArray(response.configOptions)) return;
+
+        const options = response.configOptions
+            .filter((entry): entry is Record<string, unknown> => isObject(entry))
+            .map((entry): AcpConfigOptionDescriptor | null => {
+                const id = asString(entry.id);
+                if (!id) return null;
+                const rawOptions = Array.isArray(entry.options) ? entry.options : [];
+                return {
+                    id,
+                    category: asString(entry.category) ?? undefined,
+                    currentValue: asString(entry.currentValue) ?? undefined,
+                    options: rawOptions
+                        .filter((option): option is Record<string, unknown> => isObject(option))
+                        .map((option) => ({
+                            value: asString(option.value) ?? '',
+                            name: asString(option.name) ?? undefined
+                        }))
+                        .filter((option) => option.value.length > 0)
+                };
+            })
+            .filter((entry): entry is AcpConfigOptionDescriptor => entry !== null);
+
+        this.sessionConfigOptions.set(sessionId, options);
+    }
+
     /**
      * Extract `availableModels` and `currentModelId` from an ACP response and
      * store them keyed by sessionId. Both top-level and nested-under-`models`
@@ -442,6 +579,24 @@ export class AcpSdkBackend implements AgentBackend {
      * expose model metadata (e.g. current Gemini ACP build) simply leave the
      * cache untouched.
      */
+    private extractModelConfigOption(response: Record<string, unknown>): {
+        currentValue: string | null;
+        options: unknown[];
+    } | null {
+        if (!Array.isArray(response.configOptions)) return null;
+
+        for (const entry of response.configOptions) {
+            if (!isObject(entry)) continue;
+            if (asString(entry.category) !== 'model') continue;
+            return {
+                currentValue: asString(entry.currentValue),
+                options: Array.isArray(entry.options) ? entry.options : []
+            };
+        }
+
+        return null;
+    }
+
     private captureSessionModelsMetadata(sessionId: string, response: unknown): void {
         if (!isObject(response)) return;
 
@@ -451,16 +606,17 @@ export class AcpSdkBackend implements AgentBackend {
         const nestedList = nested?.availableModels;
         const nestedCurrent = nested?.currentModelId;
 
+        const configModelOption = this.extractModelConfigOption(response);
         const rawModels = Array.isArray(directList)
             ? directList
             : Array.isArray(nestedList)
                 ? nestedList
-                : null;
+                : configModelOption?.options ?? null;
         const rawCurrent = typeof directCurrent === 'string'
             ? directCurrent
             : typeof nestedCurrent === 'string'
                 ? nestedCurrent
-                : null;
+                : configModelOption?.currentValue ?? null;
 
         if (rawModels === null && rawCurrent === null) {
             return;
@@ -470,7 +626,7 @@ export class AcpSdkBackend implements AgentBackend {
         if (Array.isArray(rawModels)) {
             for (const entry of rawModels) {
                 if (!isObject(entry)) continue;
-                const modelId = asString(entry.modelId);
+                const modelId = asString(entry.modelId) ?? asString(entry.value);
                 if (!modelId) continue;
                 const name = asString(entry.name) ?? undefined;
                 availableModels.push(name ? { modelId, name } : { modelId });

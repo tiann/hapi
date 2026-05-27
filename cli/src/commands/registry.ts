@@ -7,6 +7,7 @@ import { runnerCommand } from './runner'
 import { resumeCommand } from './resume'
 import { doctorCommand } from './doctor'
 import { geminiCommand } from './gemini'
+import { kimiCommand } from './kimi'
 import { opencodeCommand } from './opencode'
 import { hookForwarderCommand } from './hookForwarder'
 import { mcpCommand } from './mcp'
@@ -20,6 +21,7 @@ const COMMANDS: CommandDefinition[] = [
     codexCommand,
     cursorCommand,
     geminiCommand,
+    kimiCommand,
     opencodeCommand,
     mcpCommand,
     hubCommand,

@@ -402,7 +402,7 @@ describe('reduceTimeline', () => {
             sidechainId: 'msg-agent'
         } as TracedMessage
 
-        // Build groups map the way the real pipeline does it
+        // Build groups map the way the real pipeline does it (keyed by message id)
         const groups = new Map<string, TracedMessage[]>()
         groups.set('msg-agent', [sidechainChild])
 

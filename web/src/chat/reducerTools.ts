@@ -78,22 +78,24 @@ export function ensureToolBlock(
         // Preserve earliest createdAt for stable ordering.
         if (seed.createdAt < existing.createdAt) {
             existing.createdAt = seed.createdAt
-            existing.tool.createdAt = seed.createdAt
+            existing.tool = { ...existing.tool, createdAt: seed.createdAt }
         }
         if (seed.permission) {
-            existing.tool.permission = { ...existing.tool.permission, ...seed.permission }
+            const nextPermission = { ...existing.tool.permission, ...seed.permission }
+            let nextState = existing.tool.state
             if (existing.tool.state === 'running' && seed.permission.status === 'pending') {
-                existing.tool.state = 'pending'
+                nextState = 'pending'
             }
+            existing.tool = { ...existing.tool, permission: nextPermission, state: nextState }
         }
         if (seed.name && (!isPlaceholderToolName(seed.name) || isPlaceholderToolName(existing.tool.name))) {
-            existing.tool.name = seed.name
+            existing.tool = { ...existing.tool, name: seed.name }
         }
         if (seed.input !== null && seed.input !== undefined) {
-            existing.tool.input = seed.input
+            existing.tool = { ...existing.tool, input: seed.input }
         }
         if (seed.description !== null) {
-            existing.tool.description = seed.description
+            existing.tool = { ...existing.tool, description: seed.description }
         }
         // The first call (tool_use) records when the tool was invoked. The
         // second call (tool_result) carries the result message's invokedAt,

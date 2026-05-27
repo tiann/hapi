@@ -2,6 +2,7 @@ import { MessagePrimitive, useAssistantState } from '@assistant-ui/react'
 import { getEventPresentation } from '@/chat/presentation'
 import type { HappyChatMessageMetadata } from '@/lib/assistant-runtime'
 import { getConversationMessageAnchorId } from '@/chat/outline'
+import { MessageTimestamp } from '@/components/AssistantChat/messages/MessageTimestamp'
 
 export function HappySystemMessage() {
     const role = useAssistantState(({ message }) => message.role)
@@ -25,6 +26,7 @@ export function HappySystemMessage() {
                 <span className="inline-flex items-center gap-1">
                     {icon ? <span aria-hidden="true">{icon}</span> : null}
                     <span>{text}</span>
+                    <MessageTimestamp className="text-[10px]" />
                 </span>
             </div>
         </MessagePrimitive.Root>

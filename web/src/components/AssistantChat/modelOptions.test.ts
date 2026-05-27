@@ -53,6 +53,25 @@ describe('getModelOptionsForFlavor', () => {
         expect(options).toEqual([])
     })
 
+    it('returns only default/current for cursor before models are discovered (no claude fallback)', () => {
+        const options = getModelOptionsForFlavor('cursor', 'composer-2.5')
+        expect(options).toEqual([
+            { value: null, label: 'Default' },
+            { value: 'composer-2.5', label: 'composer-2.5' }
+        ])
+    })
+
+    it('returns dynamic cursor options when supplied', () => {
+        const options = getModelOptionsForFlavor('cursor', null, [
+            { value: 'composer-2.5', label: 'Composer 2.5' },
+            { value: 'gpt-5.5-high-fast', label: 'GPT-5.5 High Fast' }
+        ])
+        expect(options).toEqual([
+            { value: 'composer-2.5', label: 'Composer 2.5' },
+            { value: 'gpt-5.5-high-fast', label: 'GPT-5.5 High Fast' }
+        ])
+    })
+
     it('includes the current opencode model when it is missing from explicit options', () => {
         const options = getModelOptionsForFlavor('opencode', 'ollama/legacy', [
             { value: 'ollama/exaone:4.5-33b-q8', label: 'Ollama EXAONE' }
@@ -104,5 +123,10 @@ describe('getNextModelForFlavor', () => {
     it('returns null for opencode without a current model and without dynamic options (no Claude fallback)', () => {
         const next = getNextModelForFlavor('opencode', null, [])
         expect(next).toBeNull()
+    })
+
+    it('keeps the current cursor model when the dynamic list has not loaded', () => {
+        const next = getNextModelForFlavor('cursor', 'composer-2.5')
+        expect(next).toBe('composer-2.5')
     })
 })

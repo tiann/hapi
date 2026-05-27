@@ -14,6 +14,7 @@ import { ToolCard } from '@/components/ToolCard/ToolCard'
 import { useHappyChatContext } from '@/components/AssistantChat/context'
 import { CliOutputBlock } from '@/components/CliOutputBlock'
 import { UserBubbleContent, getUserBubbleClassName, shouldShowMessageStatus } from '@/components/AssistantChat/messages/user-bubble'
+import { ImagePreview } from '@/components/ImagePreview'
 
 function isToolCallBlock(value: unknown): value is ToolCallBlock {
     if (!isObject(value)) return false
@@ -84,11 +85,12 @@ function GeneratedImageCard(props: { block: GeneratedImageBlock }) {
                 Generated image · {props.block.fileName}
             </div>
             {objectUrl ? (
-                <img
+                <ImagePreview
                     src={objectUrl}
-                    alt={props.block.fileName}
-                    className="max-h-[min(28rem,60vh)] max-w-full rounded-xl object-contain"
-                    draggable={false}
+                    fileName={props.block.fileName}
+                    label={props.block.fileName}
+                    buttonClassName="block max-w-full cursor-zoom-in rounded-xl text-left"
+                    imageClassName="max-h-[min(28rem,60vh)] max-w-full rounded-xl object-contain"
                 />
             ) : error ? (
                 <div className="text-sm text-[var(--app-hint)]">

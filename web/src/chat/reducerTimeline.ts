@@ -25,9 +25,12 @@ function getAgentRunCompletedAt(event: Record<string, unknown>): number | null {
 
 function setEarliestStartedAt(block: ToolCallBlock, startedAt: number | null): void {
     if (startedAt === null) return
-    block.tool.startedAt = block.tool.startedAt === null
+    const nextStartedAt = block.tool.startedAt === null
         ? startedAt
         : Math.min(block.tool.startedAt, startedAt)
+    if (nextStartedAt !== block.tool.startedAt) {
+        block.tool = { ...block.tool, startedAt: nextStartedAt }
+    }
 }
 
 function getAgentRunCardId(event: Record<string, unknown>, fallback: string): string {
@@ -319,9 +322,12 @@ export function reduceTimeline(
 
     const patchAgentRunInput = (block: ToolCallBlock, patch: Record<string, unknown>): void => {
         const current = isObject(block.tool.input) ? block.tool.input : {}
-        block.tool.input = {
-            ...current,
-            ...patch
+        block.tool = {
+            ...block.tool,
+            input: {
+                ...current,
+                ...patch
+            }
         }
     }
 
@@ -530,8 +536,9 @@ export function reduceTimeline(
                         statusText: getEventString(event, 'statusText') ?? getEventString(event, 'status_text') ?? 'Starting',
                         ...getAgentRunDisplayPatch(event)
                     })
-                    block.tool.state = mapAgentRunStatusToToolState(status)
-                    if (block.tool.state === 'running') {
+                    const nextState = mapAgentRunStatusToToolState(status)
+                    block.tool = { ...block.tool, state: nextState }
+                    if (nextState === 'running') {
                         setEarliestStartedAt(block, startedAt)
                     }
                     continue
@@ -553,20 +560,20 @@ export function reduceTimeline(
                         statusText: getEventString(event, 'statusText') ?? getEventString(event, 'status_text') ?? status,
                         ...getAgentRunDisplayPatch(event)
                     })
-                    block.tool.state = nextState
-                    if (block.tool.state === 'running') {
+                    block.tool = { ...block.tool, state: nextState }
+                    if (nextState === 'running') {
                         setEarliestStartedAt(block, startedAt ?? msg.createdAt)
                     }
-                    if (block.tool.state === 'completed' || block.tool.state === 'error') {
+                    if (nextState === 'completed' || nextState === 'error') {
                         setEarliestStartedAt(block, startedAt)
-                        block.tool.completedAt = getAgentRunCompletedAt(event) ?? msg.createdAt
+                        block.tool = { ...block.tool, completedAt: getAgentRunCompletedAt(event) ?? msg.createdAt }
                     }
                     if ('result' in event) {
-                        block.tool.result = event.result
+                        block.tool = { ...block.tool, result: event.result }
                     } else if ('error' in event) {
-                        block.tool.result = event.error
+                        block.tool = { ...block.tool, result: event.error }
                     } else if ('spawnResult' in event) {
-                        block.tool.result = event.spawnResult
+                        block.tool = { ...block.tool, result: event.spawnResult }
                     }
                     continue
                 }
@@ -840,8 +847,7 @@ export function reduceTimeline(
                     })
 
                     if (block.tool.state === 'pending') {
-                        block.tool.state = 'running'
-                        block.tool.startedAt = msg.createdAt
+                        block.tool = { ...block.tool, state: 'running', startedAt: msg.createdAt }
                     }
 
                     if (isSubagentToolName(c.name) && !context.consumedGroupIds.has(msg.id)) {
@@ -909,9 +915,12 @@ export function reduceTimeline(
                         permission
                     })
 
-                    block.tool.result = c.content
-                    block.tool.completedAt = msg.createdAt
-                    block.tool.state = c.is_error ? 'error' : 'completed'
+                    block.tool = {
+                        ...block.tool,
+                        result: c.content,
+                        completedAt: msg.createdAt,
+                        state: c.is_error ? 'error' : 'completed'
+                    }
                     continue
                 }
 

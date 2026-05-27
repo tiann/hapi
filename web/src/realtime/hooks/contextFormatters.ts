@@ -92,20 +92,25 @@ export function formatPermissionRequest(
  * Format a single message for voice context
  */
 export function formatMessage(message: DecryptedMessage): string | null {
-    const lines: string[] = []
     const { role, content: wrappedContent } = unwrapRoleWrappedContent(message)
     const { roleOverride, content } = unwrapOutputContent(wrappedContent)
     const normalizedRole = roleOverride ?? role
 
-    if (!isContentArray(content)) {
-        if (typeof content === 'string') {
-            return formatPlainText(normalizedRole, content)
-        }
-        if (isObject(content) && content.type === 'text' && typeof content.text === 'string') {
-            return formatPlainText(normalizedRole, content.text)
-        }
+    if (isNonSpeakableAgentPayload(wrappedContent) || isNonSpeakableAgentPayload(content)) {
         return null
     }
+
+    const speakable = !isContentArray(content) ? extractSpeakableFromContent(content) : null
+    if (speakable) {
+        const roleForFormat = normalizedRole === 'user' ? 'user' : 'assistant'
+        return formatPlainText(roleForFormat, speakable)
+    }
+
+    if (!isContentArray(content)) {
+        return null
+    }
+
+    const lines: string[] = []
 
     // Determine message type by checking for tool_use (assistant) vs user content
     const hasToolUse = content.some(item => item.type === 'tool_use')
@@ -132,6 +137,81 @@ export function formatMessage(message: DecryptedMessage): string | null {
         return null
     }
     return lines.join('\n\n')
+}
+
+function extractSpeakableFromContent(content: unknown): string | null {
+    if (typeof content === 'string' && content.trim()) {
+        return content.trim()
+    }
+
+    if (isObject(content) && content.type === 'text' && typeof content.text === 'string' && content.text.trim()) {
+        return content.text.trim()
+    }
+
+    // Codex / stream-json agent messages: { type: 'codex', data: { type: 'message', message: '...' } }
+    if (isObject(content) && content.type === 'codex' && isObject(content.data)) {
+        const data = content.data
+        if (data.type === 'message' && typeof data.message === 'string' && data.message.trim()) {
+            return data.message.trim()
+        }
+    }
+
+    if (!isContentArray(content)) {
+        return null
+    }
+
+    const textParts = content
+        .filter((item) => item.type === 'text' && item.text)
+        .map((item) => item.text!.trim())
+        .filter(Boolean)
+
+    if (textParts.length > 0) {
+        return textParts.join('\n\n')
+    }
+
+    return null
+}
+
+function isNonSpeakableAgentPayload(content: unknown): boolean {
+    if (!isObject(content) || typeof content.type !== 'string') {
+        return false
+    }
+
+    if (content.type === 'codex' && isObject(content.data)) {
+        const eventType = content.data.type
+        return eventType === 'ready'
+            || eventType === 'tool-call'
+            || eventType === 'tool-call-result'
+            || eventType === 'event'
+    }
+
+    return false
+}
+
+export function extractLastAssistantSpeakable(messages: DecryptedMessage[]): string | null {
+    const sorted = [...messages].sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0))
+
+    for (let i = sorted.length - 1; i >= 0; i -= 1) {
+        const message = sorted[i]
+        const { role, content: wrappedContent } = unwrapRoleWrappedContent(message)
+        const { roleOverride, content } = unwrapOutputContent(wrappedContent)
+        const normalizedRole = roleOverride ?? role
+
+        if (normalizedRole === 'user') {
+            continue
+        }
+
+        if (isNonSpeakableAgentPayload(wrappedContent) || isNonSpeakableAgentPayload(content)) {
+            continue
+        }
+
+        const speakable = extractSpeakableFromContent(content)
+        if (speakable) {
+            return speakable
+        }
+    }
+
+    return null
 }
 
 export function formatNewSingleMessage(sessionId: string, message: DecryptedMessage): string | null {
@@ -199,6 +279,10 @@ export function formatSessionFocus(sessionId: string, _metadata?: SessionMetadat
     return `Session became focused: ${sessionId}`
 }
 
-export function formatReadyEvent(sessionId: string): string {
-    return `Claude Code done working in session: ${sessionId}. The previous message(s) are the summary of the work done. Report this to the human immediately.`
+export function formatReadyEvent(sessionId: string, lastAssistantText?: string | null): string {
+    const trimmed = lastAssistantText?.trim()
+    if (trimmed) {
+        return `The coding agent finished working in session: ${sessionId}. Summarize this for the human immediately:\n<text>${trimmed}</text>`
+    }
+    return `The coding agent finished working in session: ${sessionId}. Use the latest agent message already present in context and summarize it for the human immediately.`
 }

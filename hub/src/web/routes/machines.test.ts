@@ -120,4 +120,39 @@ describe('machines routes', () => {
             currentModelId: 'ollama/exaone:4.5-33b-q8'
         })
     })
+
+    it('returns Cursor models for an online machine', async () => {
+        const machine = createMachine()
+        const engine = {
+            getMachine: () => machine,
+            getMachineByNamespace: () => machine,
+            listCursorModelsForMachine: async () => ({
+                success: true,
+                availableModels: [
+                    { modelId: 'composer-2.5', name: 'Composer 2.5' },
+                    { modelId: 'gpt-5.5-high-fast', name: 'GPT-5.5 High Fast' }
+                ],
+                currentModelId: 'composer-2.5'
+            })
+        } as Partial<SyncEngine>
+
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createMachinesRoutes(() => engine as SyncEngine))
+
+        const response = await app.request('/api/machines/machine-1/cursor-models')
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({
+            success: true,
+            availableModels: [
+                { modelId: 'composer-2.5', name: 'Composer 2.5' },
+                { modelId: 'gpt-5.5-high-fast', name: 'GPT-5.5 High Fast' }
+            ],
+            currentModelId: 'composer-2.5'
+        })
+    })
 })

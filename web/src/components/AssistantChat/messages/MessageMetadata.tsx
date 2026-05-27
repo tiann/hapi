@@ -73,7 +73,7 @@ export function MessageMetadata({ invokedAt, durationMs, usage, model, turnCount
     if (parts.length === 0) return null
 
     return (
-        <div className={`text-[10px] text-[var(--app-hint)] flex flex-wrap gap-x-2 gap-y-0.5 mt-0.5 px-0.5 leading-tight opacity-60 ${className || ''}`}>
+        <div className={`text-[10px] text-[var(--app-hint)] bg-[var(--app-subtle-bg)] rounded px-2 py-1.5 flex flex-wrap gap-x-2 gap-y-0.5 mt-1 leading-tight ${className || ''}`}>
             {parts.map((part, i) => (
                 <span key={i} className="whitespace-nowrap">{part}</span>
             ))}

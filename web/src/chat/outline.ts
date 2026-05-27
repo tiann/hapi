@@ -25,8 +25,8 @@ export function truncateOutlineLabel(value: string, maxLength = MAX_OUTLINE_LABE
 function userBlockToOutlineItem(block: UserTextBlock): ConversationOutlineItem {
     const label = truncateOutlineLabel(block.text) || 'Empty message'
     return {
-        id: `outline:user:${block.id}`,
-        targetMessageId: `user:${block.id}`,
+        id: `outline:user-text:${block.id}`,
+        targetMessageId: `user-text:${block.id}`,
         kind: 'user',
         label,
         createdAt: block.createdAt

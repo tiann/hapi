@@ -9,6 +9,7 @@ export interface SkillSummary {
 }
 
 export interface ListSkillsRequest {
+    flavor?: string;
 }
 
 export interface ListSkillsResponse {
@@ -17,29 +18,65 @@ export interface ListSkillsResponse {
     error?: string;
 }
 
+type InstalledPlugin = {
+    installPath?: string;
+    installedAt?: string;
+    lastUpdated?: string;
+};
+
+type InstalledPluginsFile = {
+    plugins?: Record<string, InstalledPlugin[]>;
+};
+
 function getHomeDirectory(): string {
     return process.env.HOME ?? process.env.USERPROFILE ?? homedir();
 }
 
-function getUserSkillsRoots(): string[] {
+function normalizeFlavor(flavor?: string): string {
+    return (flavor ?? 'claude').trim().toLowerCase();
+}
+
+function getAgentConfigDir(flavor?: string): string {
+    const normalizedFlavor = normalizeFlavor(flavor);
+    switch (normalizedFlavor) {
+        case 'claude':
+            return process.env.CLAUDE_CONFIG_DIR || join(getHomeDirectory(), '.claude');
+        case 'codex':
+            return process.env.CODEX_HOME || join(getHomeDirectory(), '.codex');
+        default:
+            return join(getHomeDirectory(), `.${normalizedFlavor}`);
+    }
+}
+
+function getUserSkillsRoots(flavor?: string): string[] {
     const home = getHomeDirectory();
-    return [
-        join(home, '.agents', 'skills'),
-        join(home, '.claude', 'skills'),
-        join(home, '.codex', 'skills'),
-    ];
+    const roots = [join(home, '.agents', 'skills')];
+    switch (normalizeFlavor(flavor)) {
+        case 'claude':
+            roots.push(join(getAgentConfigDir(flavor), 'skills'));
+            break;
+        case 'codex':
+            roots.push(join(getAgentConfigDir(flavor), 'skills'));
+            break;
+    }
+    return roots;
 }
 
 function getAdminSkillsRoot(): string {
     return join('/etc', 'codex', 'skills');
 }
 
-function getProjectSkillsRoots(directory: string): string[] {
-    return [
-        join(directory, '.agents', 'skills'),
-        join(directory, '.claude', 'skills'),
-        join(directory, '.codex', 'skills'),
-    ];
+function getProjectSkillsRoots(directory: string, flavor?: string): string[] {
+    const roots = [join(directory, '.agents', 'skills')];
+    switch (normalizeFlavor(flavor)) {
+        case 'claude':
+            roots.push(join(directory, '.claude', 'skills'));
+            break;
+        case 'codex':
+            roots.push(join(directory, '.codex', 'skills'));
+            break;
+    }
+    return roots;
 }
 
 async function pathExists(path: string): Promise<boolean> {
@@ -51,7 +88,7 @@ async function pathExists(path: string): Promise<boolean> {
     }
 }
 
-async function listProjectSkillsRoots(workingDirectory?: string): Promise<string[]> {
+async function listProjectSkillsRoots(workingDirectory?: string, flavor?: string): Promise<string[]> {
     if (!workingDirectory) {
         return [];
     }
@@ -62,12 +99,12 @@ async function listProjectSkillsRoots(workingDirectory?: string): Promise<string
 
     while (true) {
         if (await pathExists(join(currentDirectory, '.git'))) {
-            return directories.flatMap(getProjectSkillsRoots);
+            return directories.flatMap((directory) => getProjectSkillsRoots(directory, flavor));
         }
 
         const parentDirectory = dirname(currentDirectory);
         if (parentDirectory === currentDirectory) {
-            return getProjectSkillsRoots(resolvedWorkingDirectory);
+            return getProjectSkillsRoots(resolvedWorkingDirectory, flavor);
         }
 
         currentDirectory = parentDirectory;
@@ -151,23 +188,58 @@ async function readSkillsFromDirs(skillDirs: string[]): Promise<SkillSummary[]> 
     return skills.filter((skill): skill is SkillSummary => skill !== null);
 }
 
-function isCodexSkillsRoot(root: string): boolean {
-    return root.endsWith(join('.codex', 'skills'));
+function shouldIncludeCodexSystem(root: string, flavor: string): boolean {
+    if (flavor !== 'codex') {
+        return false;
+    }
+
+    return root.endsWith(join('.codex', 'skills'))
+        || root === join(getAgentConfigDir('codex'), 'skills');
 }
 
-export async function listSkills(workingDirectory?: string): Promise<SkillSummary[]> {
-    const projectRoots = await listProjectSkillsRoots(workingDirectory);
-    const userRoots = getUserSkillsRoots();
+async function listPluginCacheSkillsRoots(flavor?: string): Promise<string[]> {
+    const installedPath = join(getAgentConfigDir(flavor), 'plugins', 'installed_plugins.json');
+    let installed: InstalledPluginsFile;
+
+    try {
+        installed = JSON.parse(await readFile(installedPath, 'utf-8')) as InstalledPluginsFile;
+    } catch {
+        return [];
+    }
+
+    const getInstallTime = (installation: InstalledPlugin): number => {
+        const lastUpdated = Date.parse(installation.lastUpdated ?? '');
+        if (Number.isFinite(lastUpdated)) return lastUpdated;
+        const installedAt = Date.parse(installation.installedAt ?? '');
+        return Number.isFinite(installedAt) ? installedAt : 0;
+    };
+
+    return Object.values(installed.plugins ?? {})
+        .filter((installations): installations is InstalledPlugin[] => Array.isArray(installations))
+        .map((installations) => [...installations]
+            .sort((a, b) => getInstallTime(b) - getInstallTime(a))[0]?.installPath)
+        .filter((installPath): installPath is string => typeof installPath === 'string' && installPath.length > 0)
+        .map((installPath) => join(installPath, 'skills'));
+}
+
+export async function listSkills(workingDirectory?: string, options: { flavor?: string } = {}): Promise<SkillSummary[]> {
+    const flavor = normalizeFlavor(options.flavor);
+    const projectRoots = await listProjectSkillsRoots(workingDirectory, flavor);
+    const userRoots = getUserSkillsRoots(flavor);
+    const pluginRoots = await listPluginCacheSkillsRoots(flavor);
     const adminRoot = getAdminSkillsRoot();
-    const [projectSkillDirs, userSkillDirs, adminSkillDirs] = await Promise.all([
-        Promise.all(projectRoots.map(async (root) => await listTopLevelSkillDirs(root, { includeCodexSystem: isCodexSkillsRoot(root) }))).then((dirs) => dirs.flat()),
-        Promise.all(userRoots.map(async (root) => await listTopLevelSkillDirs(root, { includeCodexSystem: isCodexSkillsRoot(root) }))).then((dirs) => dirs.flat()),
-        listTopLevelSkillDirs(adminRoot, { includeCodexSystem: true }),
+    const includeAdminRoots = flavor === 'codex';
+    const [projectSkillDirs, userSkillDirs, pluginSkillDirs, adminSkillDirs] = await Promise.all([
+        Promise.all(projectRoots.map(async (root) => await listTopLevelSkillDirs(root, { includeCodexSystem: shouldIncludeCodexSystem(root, flavor) }))).then((dirs) => dirs.flat()),
+        Promise.all(userRoots.map(async (root) => await listTopLevelSkillDirs(root, { includeCodexSystem: shouldIncludeCodexSystem(root, flavor) }))).then((dirs) => dirs.flat()),
+        Promise.all(pluginRoots.map(async (root) => await listTopLevelSkillDirs(root, { includeCodexSystem: false }))).then((dirs) => dirs.flat()),
+        includeAdminRoots ? listTopLevelSkillDirs(adminRoot, { includeCodexSystem: true }) : [],
     ]);
 
-    const [projectSkills, userSkills, adminSkills] = await Promise.all([
+    const [projectSkills, userSkills, pluginSkills, adminSkills] = await Promise.all([
         readSkillsFromDirs(projectSkillDirs),
         readSkillsFromDirs(userSkillDirs),
+        readSkillsFromDirs(pluginSkillDirs),
         readSkillsFromDirs(adminSkillDirs),
     ]);
 
@@ -175,6 +247,7 @@ export async function listSkills(workingDirectory?: string): Promise<SkillSummar
     for (const skill of [
         ...projectSkills,
         ...userSkills,
+        ...pluginSkills,
         ...adminSkills,
     ]) {
         if (!dedupedSkills.has(skill.name)) {

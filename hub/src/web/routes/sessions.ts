@@ -279,6 +279,9 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         if (!isPermissionModeAllowedForFlavor(mode, flavor)) {
             return c.json({ error: 'Invalid permission mode for session flavor' }, 400)
         }
+        if (flavor === 'opencode' && mode === 'plan' && sessionResult.session.agentState?.controlledByUser === true) {
+            return c.json({ error: 'OpenCode plan mode is only supported for remote sessions' }, 409)
+        }
 
         try {
             await engine.applySessionConfig(sessionResult.sessionId, { permissionMode: mode })
@@ -369,11 +372,11 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
 
         const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
-        if (flavor !== 'codex') {
-            return c.json({ error: 'Model reasoning effort is only supported for Codex sessions' }, 400)
+        if (flavor !== 'codex' && flavor !== 'opencode') {
+            return c.json({ error: 'Model reasoning effort is only supported for Codex and OpenCode sessions' }, 400)
         }
         if (sessionResult.session.agentState?.controlledByUser === true) {
-            return c.json({ error: 'Model reasoning effort can only be changed for remote Codex sessions' }, 409)
+            return c.json({ error: 'Model reasoning effort can only be changed for remote sessions' }, 409)
         }
 
         const body = await c.req.json().catch(() => null)
@@ -540,7 +543,10 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
 
         try {
-            const result = await engine.listSkills(sessionResult.sessionId)
+            const result = await engine.listSkills(
+                sessionResult.sessionId,
+                sessionResult.session.metadata?.flavor ?? 'claude'
+            )
             return c.json(result)
         } catch (error) {
             return c.json({
@@ -606,6 +612,36 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return c.json({
                 success: false,
                 error: error instanceof Error ? error.message : 'Failed to list OpenCode models'
+            }, 500)
+        }
+    })
+
+    app.get('/sessions/:id/cursor-models', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
+        if (flavor !== 'cursor') {
+            return c.json({
+                success: false,
+                error: 'Cursor models are only available for Cursor sessions'
+            }, 400)
+        }
+
+        try {
+            const result = await engine.listCursorModelsForSession(sessionResult.sessionId)
+            return c.json(result)
+        } catch (error) {
+            return c.json({
+                success: false,
+                error: error instanceof Error ? error.message : 'Failed to list Cursor models'
             }, 500)
         }
     })

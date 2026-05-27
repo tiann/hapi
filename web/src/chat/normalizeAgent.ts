@@ -88,7 +88,12 @@ function normalizeCodexTokenUsage(value: unknown, data?: Record<string, unknown>
             ?? usageSource.cacheReadInputTokens
             ?? usageSource.cache_read_input_tokens
         ) ?? undefined,
-        context_tokens: inputTokens,
+        context_tokens: asNumber(
+            info.contextTokens
+            ?? info.context_tokens
+            ?? usageSource.contextTokens
+            ?? usageSource.context_tokens
+        ) ?? inputTokens,
         context_window: asNumber(info.modelContextWindow ?? info.model_context_window) ?? undefined,
         thread_id: asString(
             data?.thread_id

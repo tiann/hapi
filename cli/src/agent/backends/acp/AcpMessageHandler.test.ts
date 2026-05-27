@@ -405,6 +405,159 @@ describe('AcpMessageHandler', () => {
         expect(calls[1].name).toBe('hapi_change_title');
     });
 
+    it('falls back to kind+title derivation when rawInput is explicitly null', () => {
+        // Kimi ACP sends rawInput: null on tool_call events. It must not be
+        // treated as a valid input — the kind+title fallback should still run.
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message));
+
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+            toolCallId: 'tool-null-1',
+            title: 'df -hT',
+            kind: 'execute',
+            rawInput: null,
+            status: 'in_progress'
+        });
+
+        const toolCall = messages.find(
+            (m): m is Extract<AgentMessage, { type: 'tool_call' }> => m.type === 'tool_call'
+        );
+        expect(toolCall).toBeDefined();
+        expect(toolCall!.input).toEqual({ command: 'df -hT' });
+    });
+
+    it('strips "Shell: " prefix from title when deriving execute input (Kimi)', () => {
+        // Kimi sends titles like "Shell: free -h" where the part after the colon
+        // is the actual command. The prefix must be stripped so the derived input
+        // contains the command, not the label.
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message));
+
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+            toolCallId: 'kimi-shell-1',
+            title: 'Shell: free -h',
+            kind: 'shell',
+            rawInput: null,
+            status: 'in_progress'
+        });
+
+        const toolCall = messages.find(
+            (m): m is Extract<AgentMessage, { type: 'tool_call' }> => m.type === 'tool_call'
+        );
+        expect(toolCall).toBeDefined();
+        expect(toolCall!.input).toEqual({ command: 'free -h' });
+    });
+
+    it('re-derives input when title changes from generic to concrete (Kimi)', () => {
+        // Kimi sends an initial tool_call with a generic title ("Shell") and later
+        // updates it to a concrete one ("Shell: free -h"). The input must be
+        // re-derived from the new title, not left as the stale placeholder.
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message));
+
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+            toolCallId: 'kimi-shell-2',
+            title: 'Shell',
+            kind: 'shell',
+            rawInput: null,
+            status: 'in_progress'
+        });
+
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCallUpdate,
+            toolCallId: 'kimi-shell-2',
+            title: 'Shell: free -h',
+            kind: 'shell',
+            rawInput: null,
+            status: 'completed'
+        });
+
+        const calls = messages.filter(
+            (m): m is Extract<AgentMessage, { type: 'tool_call' }> => m.type === 'tool_call'
+        );
+        expect(calls).toHaveLength(2);
+        // Initial call: derived from generic title (placeholder)
+        expect(calls[0].input).toEqual({ command: 'Shell' });
+        // Updated call: re-derived from concrete title
+        expect(calls[1].input).toEqual({ command: 'free -h' });
+    });
+
+    it('extracts tool input from content JSON text (Kimi ACP)', () => {
+        // Kimi ACP does not send rawInput or kind. Instead it streams tool
+        // arguments as JSON text inside the content array.
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message));
+
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+            toolCallId: 'kimi-json-1',
+            title: 'Shell',
+            status: 'in_progress',
+            content: [{ type: 'content', content: { type: 'text', text: '' } }]
+        });
+
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCallUpdate,
+            toolCallId: 'kimi-json-1',
+            title: 'Shell: df -h',
+            status: 'in_progress',
+            content: [{ type: 'content', content: { type: 'text', text: '{"command": "df -h"}' } }]
+        });
+
+        const calls = messages.filter(
+            (m): m is Extract<AgentMessage, { type: 'tool_call' }> => m.type === 'tool_call'
+        );
+        expect(calls).toHaveLength(2);
+        // Initial call has empty content → input is null
+        expect(calls[0].input).toBeNull();
+        // Update has JSON content → input is parsed
+        expect(calls[1].input).toEqual({ command: 'df -h' });
+    });
+
+    it('falls back to kind+title on tool_call_update when rawInput is null', () => {
+        // Initial tool_call has no rawInput key at all → input is derived.
+        // Subsequent update sends rawInput: null → falls through to enrichment
+        // branch, but since input was already derived, no re-emit is needed.
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message));
+
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+            toolCallId: 'tool-null-2',
+            title: 'cat README.md',
+            kind: 'read',
+            status: 'in_progress'
+        });
+
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCallUpdate,
+            toolCallId: 'tool-null-2',
+            title: 'cat README.md',
+            kind: 'read',
+            rawInput: null,
+            status: 'completed'
+        });
+
+        const calls = messages.filter(
+            (m): m is Extract<AgentMessage, { type: 'tool_call' }> => m.type === 'tool_call'
+        );
+        // Only one tool_call emitted (the initial one); the completed update
+        // does not re-emit because the input was already derived.
+        expect(calls).toHaveLength(1);
+        expect(calls[0].input).toEqual({ file_path: 'cat README.md' });
+        expect(calls[0].status).toBe('in_progress');
+
+        // The tool_result should still be emitted
+        const results = messages.filter(
+            (m): m is Extract<AgentMessage, { type: 'tool_result' }> => m.type === 'tool_result'
+        );
+        expect(results).toHaveLength(1);
+        expect(results[0].status).toBe('completed');
+    });
+
     it('intercepts rate_limit_event chunk before it enters the text buffer', () => {
         const messages: AgentMessage[] = [];
         const handler = new AcpMessageHandler((message) => messages.push(message));

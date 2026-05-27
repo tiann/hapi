@@ -10,5 +10,5 @@
  * Keeping both ensures sessions recorded under either name continue to work.
  */
 export function isSubagentToolName(name: string): boolean {
-    return name === 'Task' || name === 'Agent'
+    return name === 'Task' || name === 'Agent' || name.startsWith('Agent:') || name.startsWith('Task:')
 }

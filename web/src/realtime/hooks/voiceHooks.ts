@@ -6,7 +6,8 @@ import {
     formatSessionFocus,
     formatSessionFull,
     formatSessionOffline,
-    formatSessionOnline
+    formatSessionOnline,
+    extractLastAssistantSpeakable
 } from './contextFormatters'
 import { VOICE_CONFIG } from '../voiceConfig'
 import type { DecryptedMessage, Session } from '@/types/api'
@@ -67,6 +68,7 @@ function reportSession(sessionId: string) {
     const contextUpdate = formatSessionFull(session, messages)
     reportContextualUpdate(contextUpdate)
 }
+
 
 export const voiceHooks = {
     /**
@@ -147,7 +149,9 @@ export const voiceHooks = {
         if (VOICE_CONFIG.DISABLE_READY_EVENTS) return
 
         reportSession(sessionId)
-        reportTextUpdate(formatReadyEvent(sessionId))
+        const messages = messagesGetter?.(sessionId) ?? []
+        const lastAssistantText = extractLastAssistantSpeakable(messages)
+        reportTextUpdate(formatReadyEvent(sessionId, lastAssistantText))
     },
 
     /**

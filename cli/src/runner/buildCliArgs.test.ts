@@ -60,6 +60,17 @@ describe('buildCliArgs', () => {
         expect(args).toContain('ollama/exaone:4.5-33b-q8')
     })
 
+
+
+    it('passes --model-reasoning-effort through for opencode', () => {
+        const args = buildCliArgs('opencode', {
+            directory: '/tmp',
+            modelReasoningEffort: 'high',
+        })
+        expect(args).toContain('--model-reasoning-effort')
+        expect(args).toContain('high')
+    })
+
     it('validates all known permission modes', () => {
         for (const mode of ['default', 'acceptEdits', 'bypassPermissions', 'plan', 'ask', 'read-only', 'safe-yolo', 'yolo']) {
             const args = buildCliArgs('claude', {

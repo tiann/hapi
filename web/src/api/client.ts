@@ -19,6 +19,7 @@ import type {
 } from '@/types/api'
 import type {
     CodexModelsResponse,
+    CursorModelsResponse,
     DeleteUploadResponse,
     FileReadResponse,
     GitCommandResponse,
@@ -507,6 +508,18 @@ export class ApiClient {
         )
     }
 
+    async getSessionCursorModels(sessionId: string): Promise<CursorModelsResponse> {
+        return await this.request<CursorModelsResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/cursor-models`
+        )
+    }
+
+    async getMachineCursorModels(machineId: string): Promise<CursorModelsResponse> {
+        return await this.request<CursorModelsResponse>(
+            `/api/machines/${encodeURIComponent(machineId)}/cursor-models`
+        )
+    }
+
     async getMachineOpencodeModelsForCwd(machineId: string, cwd: string): Promise<OpencodeModelsResponse> {
         return await this.request<OpencodeModelsResponse>(
             `/api/machines/${encodeURIComponent(machineId)}/opencode-models?cwd=${encodeURIComponent(cwd)}`
@@ -538,7 +551,7 @@ export class ApiClient {
         })
     }
 
-    async fetchVoiceToken(options?: { customAgentId?: string; customApiKey?: string }): Promise<{
+    async fetchVoiceToken(options?: { customAgentId?: string; customApiKey?: string; voiceId?: string }): Promise<{
         allowed: boolean
         token?: string
         agentId?: string
@@ -547,6 +560,24 @@ export class ApiClient {
         return await this.request('/api/voice/token', {
             method: 'POST',
             body: JSON.stringify(options || {})
+        })
+    }
+
+    async fetchVoices(): Promise<{ voices: Array<{ id: string; name: string; previewUrl: string; category: string }> }> {
+        return await this.request('/api/voice/voices')
+    }
+
+    async sendVoiceTelemetry(event: {
+        stage: string
+        message: string
+        sessionId?: string
+        voiceId?: string
+        language?: string
+        details?: Record<string, unknown>
+    }): Promise<void> {
+        await this.request('/api/voice/telemetry', {
+            method: 'POST',
+            body: JSON.stringify(event)
         })
     }
 }

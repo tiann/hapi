@@ -8,7 +8,7 @@ import type { AgentFlavor } from '@hapi/protocol'
 
 export type AgentType = AgentFlavor
 export type SessionType = 'simple' | 'worktree'
-export type CodexReasoningEffort = 'default' | 'low' | 'medium' | 'high' | 'xhigh'
+export type CodexReasoningEffort = 'default' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 export type ClaudeEffort = 'auto' | 'medium' | 'high' | 'max'
 
 function modelPresetOptions<TModel extends string>(
@@ -27,6 +27,9 @@ export const MODEL_OPTIONS: Record<AgentType, { value: string; label: string }[]
         { value: 'auto', label: 'Default' },
     ],
     cursor: [],
+    kimi: [
+        { value: 'auto', label: 'Default' },
+    ],
     gemini: [
         { value: 'auto', label: 'Default' },
         ...modelPresetOptions(GEMINI_MODEL_PRESETS, GEMINI_MODEL_LABELS),
@@ -40,6 +43,7 @@ export const CODEX_REASONING_EFFORT_OPTIONS: { value: CodexReasoningEffort; labe
     { value: 'medium', label: 'Medium' },
     { value: 'high', label: 'High' },
     { value: 'xhigh', label: 'XHigh' },
+    { value: 'max', label: 'Max' },
 ]
 
 export const CLAUDE_EFFORT_OPTIONS: { value: ClaudeEffort; label: string }[] = [

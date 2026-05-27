@@ -4,11 +4,13 @@ export type CodexComposerReasoningEffortOption = {
 }
 
 const CODEX_REASONING_EFFORT_PRESETS = ['low', 'medium', 'high', 'xhigh'] as const
-const CODEX_REASONING_EFFORT_LABELS: Record<(typeof CODEX_REASONING_EFFORT_PRESETS)[number], string> = {
+const OPENCODE_REASONING_EFFORT_PRESETS = ['low', 'medium', 'high', 'max'] as const
+const CODEX_REASONING_EFFORT_LABELS: Record<string, string> = {
     low: 'Low',
     medium: 'Medium',
     high: 'High',
-    xhigh: 'XHigh'
+    xhigh: 'XHigh',
+    max: 'Max'
 }
 
 function normalizeCodexComposerReasoningEffort(effort?: string | null): string | null {
@@ -25,15 +27,19 @@ function formatCodexReasoningEffortLabel(effort: string): string {
         ?? `${effort.charAt(0).toUpperCase()}${effort.slice(1)}`
 }
 
-export function getCodexComposerReasoningEffortOptions(currentEffort?: string | null): CodexComposerReasoningEffortOption[] {
+export function getCodexComposerReasoningEffortOptions(
+    currentEffort?: string | null,
+    flavor?: string | null
+): CodexComposerReasoningEffortOption[] {
     const normalizedCurrentEffort = normalizeCodexComposerReasoningEffort(currentEffort)
+    const presets = flavor === 'opencode' ? OPENCODE_REASONING_EFFORT_PRESETS : CODEX_REASONING_EFFORT_PRESETS
     const options: CodexComposerReasoningEffortOption[] = [
         { value: null, label: 'Default' }
     ]
 
     if (
         normalizedCurrentEffort
-        && !CODEX_REASONING_EFFORT_PRESETS.includes(normalizedCurrentEffort as typeof CODEX_REASONING_EFFORT_PRESETS[number])
+        && !(presets as readonly string[]).includes(normalizedCurrentEffort)
     ) {
         options.push({
             value: normalizedCurrentEffort,
@@ -41,7 +47,7 @@ export function getCodexComposerReasoningEffortOptions(currentEffort?: string | 
         })
     }
 
-    options.push(...CODEX_REASONING_EFFORT_PRESETS.map((effort) => ({
+    options.push(...presets.map((effort) => ({
         value: effort,
         label: CODEX_REASONING_EFFORT_LABELS[effort]
     })))

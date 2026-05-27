@@ -38,6 +38,7 @@ export function toSessionSummary(session: Session): SessionSummary {
             ?? session.metadata.geminiSessionId
             ?? session.metadata.opencodeSessionId
             ?? session.metadata.cursorSessionId
+            ?? session.metadata.kimiSessionId
             ?? undefined
     } : null
 

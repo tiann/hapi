@@ -911,9 +911,11 @@ export function buildCliArgs(
       ? 'cursor'
       : agent === 'gemini'
         ? 'gemini'
-        : agent === 'opencode'
-          ? 'opencode'
-          : 'claude';
+        : agent === 'kimi'
+          ? 'kimi'
+          : agent === 'opencode'
+            ? 'opencode'
+            : 'claude';
   const args = [agentCommand];
   if (options.resumeSessionId) {
     if (agent === 'codex') {
@@ -931,7 +933,7 @@ export function buildCliArgs(
   if (options.effort && agent === 'claude') {
     args.push('--effort', options.effort);
   }
-  if (options.modelReasoningEffort && agent === 'codex') {
+  if (options.modelReasoningEffort && (agent === 'codex' || agent === 'opencode')) {
     args.push('--model-reasoning-effort', options.modelReasoningEffort);
   }
   if (options.permissionMode && (PERMISSION_MODES as readonly string[]).includes(options.permissionMode)) {

@@ -641,6 +641,42 @@ describe('normalizeDecryptedMessage', () => {
         })
     })
 
+    it('normalizes token_count payloads with explicit contextTokens', () => {
+        const message = makeMessage({
+            role: 'agent',
+            content: {
+                type: 'codex',
+                data: {
+                    type: 'token_count',
+                    info: {
+                        total: {
+                            inputTokens: 8_119,
+                            outputTokens: 2,
+                            cachedInputTokens: 5_760,
+                            thoughtTokens: 11,
+                            totalTokens: 13_892
+                        },
+                        contextTokens: 13_879,
+                        modelContextWindow: 65_536
+                    }
+                }
+            }
+        })
+
+        const normalized = normalizeDecryptedMessage(message)
+
+        expect(normalized).toMatchObject({
+            role: 'event',
+            usage: {
+                input_tokens: 8119,
+                output_tokens: 2,
+                cache_read_input_tokens: 5760,
+                context_tokens: 13879,
+                context_window: 65536
+            }
+        })
+    })
+
     it('normalizes Codex context_compacted as a compact event', () => {
         const message = makeMessage({
             role: 'agent',

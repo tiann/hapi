@@ -62,10 +62,9 @@ export function registerFileHandlers(rpcHandlerManager: RpcHandlerManager, worki
         }
 
         try {
-            const buffer = await readFile(image.path)
             return {
                 success: true,
-                content: buffer.toString('base64'),
+                content: image.content.toString('base64'),
                 mimeType: image.mimeType,
                 fileName: image.fileName
             }

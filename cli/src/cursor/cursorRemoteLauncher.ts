@@ -103,7 +103,7 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
                 cwd: session.path,
                 sessionId: cursorSessionId,
                 mode: agentMode,
-                model: session.model,
+                model: mode.model,
                 yolo
             });
 
