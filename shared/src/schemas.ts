@@ -52,6 +52,7 @@ export const MetadataSchema = z.object({
     lifecycleStateSince: z.number().optional(),
     archivedBy: z.string().optional(),
     archiveReason: z.string().optional(),
+    preferredPermissionMode: PermissionModeSchema.optional(),
     flavor: z.string().nullish(),
     capabilities: SessionCapabilitiesSchema.optional(),
     worktree: WorktreeMetadataSchema.optional()

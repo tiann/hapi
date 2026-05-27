@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { useTranslation } from '@/lib/use-translation'
 
 // ---------------------------------------------------------------------------
@@ -166,6 +166,7 @@ export function ScheduleTimePicker({ onSchedule, onClose, anchorRef, pendingSche
     const panelRef = useRef<HTMLDivElement>(null)
     const [pos, setPos] = useState<SchedulePickerPlacement | null>(null)
     const [isMobilePanel, setIsMobilePanel] = useState(false)
+    const [isContentConstrained, setIsContentConstrained] = useState(false)
 
     // Compute fixed position and keep it inside the visual viewport. On mobile,
     // use a bottom panel instead of anchoring to the tiny toolbar button.
@@ -176,23 +177,28 @@ export function ScheduleTimePicker({ onSchedule, onClose, anchorRef, pendingSche
             if (!anchor) return
             const mobile = window.matchMedia('(max-width: 640px), (pointer: coarse)').matches
             setIsMobilePanel(mobile)
+            const fullHeight = (panel?.scrollHeight ?? (tab === 'specific' ? 260 : 180)) + 4
             if (mobile) {
+                const viewportHeight = window.visualViewport?.height ?? window.innerHeight
+                setIsContentConstrained(fullHeight > Math.min(viewportHeight * 0.85, viewportHeight - 24))
                 setPos(null)
                 return
             }
             const rect = anchor.getBoundingClientRect()
             const viewport = window.visualViewport
-            setPos(computeSchedulePickerPlacement({
+            const placement = computeSchedulePickerPlacement({
                 anchor: rect,
-                panelWidth: panel?.offsetWidth || 288,
-                panelHeight: panel?.offsetHeight || 280,
+                panelWidth: panel?.offsetWidth || 320,
+                panelHeight: fullHeight,
                 viewport: {
                     width: viewport?.width ?? window.innerWidth,
                     height: viewport?.height ?? window.innerHeight,
                     offsetLeft: viewport?.offsetLeft ?? 0,
                     offsetTop: viewport?.offsetTop ?? 0,
                 },
-            }))
+            })
+            setIsContentConstrained(placement.maxHeight < fullHeight)
+            setPos(placement)
         }
         measure()
         window.addEventListener('resize', measure, { passive: true })
@@ -271,6 +277,13 @@ export function ScheduleTimePicker({ onSchedule, onClose, anchorRef, pendingSche
         if (specificError) setSpecificError(null)
     }
 
+    const handleSpecificKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+        if (event.key !== 'Enter') return
+        event.preventDefault()
+        event.stopPropagation()
+        handleSpecificSubmit()
+    }
+
     return (
         <div
             ref={panelRef}
@@ -285,8 +298,8 @@ export function ScheduleTimePicker({ onSchedule, onClose, anchorRef, pendingSche
             }
             className={
                 isMobilePanel
-                    ? 'z-50 box-border max-h-[min(60dvh,calc(var(--app-viewport-height,100dvh)-24px))] overflow-y-auto rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] shadow-lg fixed inset-x-3 bottom-[calc(env(safe-area-inset-bottom)+12px)]'
-                    : 'z-50 box-border w-72 overflow-y-auto rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] shadow-lg'
+                    ? `z-50 box-border max-h-[min(85dvh,calc(var(--app-viewport-height,100dvh)-24px))] ${isContentConstrained ? 'overflow-y-auto' : 'overflow-y-visible'} rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] shadow-lg fixed inset-x-3 bottom-[calc(env(safe-area-inset-bottom)+12px)] sm:left-1/2 sm:right-auto sm:w-80 sm:-translate-x-1/2`
+                    : `z-50 box-border w-80 max-w-[calc(100vw-16px)] ${isContentConstrained ? 'overflow-y-auto' : 'overflow-y-visible'} rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] shadow-lg`
             }
             onPointerDown={(e) => e.stopPropagation()}
         >
@@ -353,7 +366,8 @@ export function ScheduleTimePicker({ onSchedule, onClose, anchorRef, pendingSche
                             min={minDatetimeLocal}
                             max={maxDatetimeLocal}
                             onChange={(e) => handleSpecificChange(e.target.value)}
-                            className="w-full rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-1.5 text-sm text-[var(--app-fg)] focus:outline-none focus:ring-1 focus:ring-[var(--app-link)]"
+                            onKeyDown={handleSpecificKeyDown}
+                            className="w-full rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-2 text-sm text-[var(--app-fg)] focus:outline-none focus:ring-1 focus:ring-[var(--app-link)]"
                         />
                         {specificError ? (
                             <p className="text-xs text-red-500">{specificError}</p>
@@ -366,7 +380,7 @@ export function ScheduleTimePicker({ onSchedule, onClose, anchorRef, pendingSche
                             type="button"
                             disabled={!specificValue}
                             onClick={handleSpecificSubmit}
-                            className="w-full rounded-lg bg-blue-500 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-40"
+                            className="w-full rounded-lg bg-blue-500 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-40"
                         >
                             {t('composer.scheduleSend')}
                         </button>

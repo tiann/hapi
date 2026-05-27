@@ -467,8 +467,8 @@ export function HappyComposer(props: {
     }, [haptic])
 
     const handleSubmit = useCallback((event?: ReactFormEvent<HTMLFormElement>) => {
-        if (event && !attachmentsReady) {
-            event.preventDefault()
+        event?.preventDefault()
+        if (!attachmentsReady) {
             return
         }
         setShowContinueHint(false)
