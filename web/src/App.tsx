@@ -327,7 +327,7 @@ function AppInner() {
     useVisibilityReporter({
         api,
         subscriptionId: globalSubscriptionId,
-        enabled: sseEnabled && !sessionEventSubscription
+        enabled: sseEnabled
     })
 
     useVisibilityReporter({

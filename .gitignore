@@ -36,7 +36,6 @@ coverage/
 
 # Claude local settings
 .claude/settings.local.json
-AGENTS.local.md
 localdocs/
 execplan/
 
