@@ -140,6 +140,19 @@ export type PushVapidPublicKeyResponse = {
     publicKey: string
 }
 
+export type CodexDesktopScriptResponse = {
+    success: boolean
+    message?: string
+    pid?: number
+    command?: string
+    script?: string
+    cwd?: string
+    output?: string
+    error?: string
+    codexDesktopRunning?: boolean
+    codexClientAvailable?: boolean
+}
+
 export type VisibilityPayload = {
     subscriptionId: string
     visibility: 'visible' | 'hidden'

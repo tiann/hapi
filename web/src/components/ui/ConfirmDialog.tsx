@@ -63,7 +63,7 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
             <DialogContent className="max-w-sm">
                 <DialogHeader>
                     <DialogTitle>{title}</DialogTitle>
-                    <DialogDescription className="mt-2">
+                    <DialogDescription className="mt-2 whitespace-pre-line">
                         {description}
                     </DialogDescription>
                 </DialogHeader>

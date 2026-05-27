@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import {
     Navigate,
@@ -18,6 +18,7 @@ import { SessionList } from '@/components/SessionList'
 import { NewSession } from '@/components/NewSession'
 import { WorkspaceBrowser } from '@/components/WorkspaceBrowser'
 import { LoadingState } from '@/components/LoadingState'
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { useAppContext } from '@/lib/app-context'
 import { useAppGoBack } from '@/hooks/useAppGoBack'
 import { isTelegramApp } from '@/hooks/useTelegram'
@@ -79,6 +80,30 @@ function PlusIcon(props: { className?: string }) {
     )
 }
 
+function FileSyncIcon(props: { className?: string }) {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="20"
+            height="20"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={props.className}
+        >
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+            <path d="M14 2v6h6" />
+            <path d="M9 13a3 3 0 0 1 5-2.2l1 1" />
+            <path d="M15 9v3h-3" />
+            <path d="M15 15a3 3 0 0 1-5 2.2l-1-1" />
+            <path d="M9 19v-3h3" />
+        </svg>
+    )
+}
+
 function FolderOpenIcon(props: { className?: string }) {
     return (
         <svg
@@ -130,8 +155,13 @@ function SessionsPage() {
     const pathname = useLocation({ select: location => location.pathname })
     const matchRoute = useMatchRoute()
     const { t } = useTranslation()
+    const { addToast } = useToast()
     const { sessions, isLoading, error, refetch } = useSessions(api)
     const { machines } = useMachines(api, true)
+    const [isSyncingCodexSession, setIsSyncingCodexSession] = useState(false)
+    const [isSyncConfirmOpen, setIsSyncConfirmOpen] = useState(false)
+    const [isRestartConfirmOpen, setIsRestartConfirmOpen] = useState(false)
+    const [isRestartingCodexDesktop, setIsRestartingCodexDesktop] = useState(false)
 
     const handleRefresh = useCallback(() => {
         void refetch()
@@ -160,8 +190,132 @@ function SessionsPage() {
         })
     }, [navigate])
 
+    const isCodexScriptTimeout = useCallback((message: string | null | undefined): boolean => {
+        const raw = (message ?? '').trim()
+        return /执行超时|timed\s*out|timeout/i.test(raw)
+    }, [])
+
+    const normalizeCodexScriptError = useCallback((message: string | null | undefined, fallback: string): string => {
+        const raw = (message ?? '').trim()
+        if (!raw) return fallback
+        if (isCodexScriptTimeout(raw)) {
+            return t('codexSync.error.timeout')
+        }
+        if (/未安装\/找不到codex客户端|unable to find codex launcher|找不到.*codex/i.test(raw)) {
+            return t('codexSync.restart.failed.notFound')
+        }
+        return raw
+    }, [isCodexScriptTimeout, t])
+
+    const formatCodexSyncFailureBody = useCallback((reason: string): string => {
+        if (
+            reason === t('codexSync.error.timeout') ||
+            reason === t('codexSync.restart.failed.notFound')
+        ) {
+            return reason
+        }
+        return t('codexSync.failed.bodyWithReason', { reason })
+    }, [t])
+
+    const handleRestartCodexDesktop = useCallback(async () => {
+        setIsRestartingCodexDesktop(true)
+        try {
+            const result = await api.restartCodexDesktop()
+            if (!result.success) {
+                throw new Error(normalizeCodexScriptError(result.error, t('codexSync.restart.failed.body')))
+            }
+            addToast({
+                title: t('codexSync.restart.started.title'),
+                body: t('codexSync.restart.started.body'),
+                sessionId: '',
+                url: ''
+            })
+        } catch (error) {
+            throw new Error(normalizeCodexScriptError(error instanceof Error ? error.message : null, t('codexSync.restart.failed.body')))
+        } finally {
+            setIsRestartingCodexDesktop(false)
+        }
+    }, [addToast, api, normalizeCodexScriptError, t])
+
+    const handleCodexRestartFailureAfterSync = useCallback(async () => {
+        try {
+            await handleRestartCodexDesktop()
+        } catch (restartError) {
+            addToast({
+                title: t('codexSync.restart.failed.title'),
+                body: normalizeCodexScriptError(
+                    restartError instanceof Error ? restartError.message : null,
+                    t('codexSync.restart.failed.body')
+                ),
+                sessionId: '',
+                url: ''
+            })
+        }
+    }, [addToast, handleRestartCodexDesktop, normalizeCodexScriptError, t])
+
+    const handleSyncCodexSession = useCallback(async () => {
+        if (isSyncingCodexSession) return
+
+        setIsSyncingCodexSession(true)
+        try {
+            const result = await api.syncCodexSession()
+            if (!result.success) {
+                if (isCodexScriptTimeout(result.error)) {
+                    throw new Error(normalizeCodexScriptError(result.error, t('codexSync.failed.body')))
+                }
+
+                if (result.codexClientAvailable === false) {
+                    await handleCodexRestartFailureAfterSync()
+                    return
+                }
+
+                throw new Error(normalizeCodexScriptError(result.error, t('codexSync.failed.body')))
+            }
+
+            if (result.codexDesktopRunning) {
+                setIsRestartConfirmOpen(true)
+                return
+            }
+
+            if (result.codexClientAvailable === false) {
+                await handleCodexRestartFailureAfterSync()
+                return
+            }
+
+            addToast({
+                title: t('codexSync.success.title'),
+                body: t('codexSync.success.body'),
+                sessionId: '',
+                url: ''
+            })
+        } catch (syncError) {
+            const reason = normalizeCodexScriptError(
+                syncError instanceof Error ? syncError.message : null,
+                t('dialog.error.default')
+            )
+            addToast({
+                title: t('codexSync.failed.title'),
+                body: formatCodexSyncFailureBody(reason),
+                sessionId: '',
+                url: ''
+            })
+        } finally {
+            setIsSyncingCodexSession(false)
+        }
+    }, [
+        addToast,
+        api,
+        formatCodexSyncFailureBody,
+        handleCodexRestartFailureAfterSync,
+        isCodexScriptTimeout,
+        isSyncingCodexSession,
+        normalizeCodexScriptError,
+        t
+    ])
+
     return (
-        <div className="flex h-full min-h-0">
+        <>
+            <div className="flex h-full min-h-0">
             <div
                 className={`${isSessionsIndex ? 'flex' : 'hidden lg:flex'} w-full shrink-0 flex-col bg-[var(--app-bg)]`}
                 style={{ '--sidebar-w': `${sidebar.width}px` } as React.CSSProperties}
@@ -172,6 +326,17 @@ function SessionsPage() {
                             {t('sessions.count', { n: sessions.length, m: projectCount })}
                         </div>
                         <div className="flex items-center gap-2">
+                            <button
+                                type="button"
+                                onClick={() => setIsSyncConfirmOpen(true)}
+                                disabled={isSyncingCodexSession}
+                                aria-label={t('codexSync.tooltip')}
+                                aria-busy={isSyncingCodexSession}
+                                className="p-1.5 rounded-full text-[var(--app-hint)] hover:text-[var(--app-fg)] hover:bg-[var(--app-subtle-bg)] transition-colors disabled:opacity-60 disabled:cursor-wait"
+                                title={t('codexSync.tooltip')}
+                            >
+                                <FileSyncIcon className={`h-5 w-5 ${isSyncingCodexSession ? 'animate-spin' : ''}`} />
+                            </button>
                             <button
                                 type="button"
                                 onClick={() => navigate({ to: '/browse' })}
@@ -237,7 +402,28 @@ function SessionsPage() {
                     <Outlet />
                 </div>
             </div>
-        </div>
+            </div>
+            <ConfirmDialog
+                isOpen={isSyncConfirmOpen}
+                onClose={() => setIsSyncConfirmOpen(false)}
+                title={t('codexSync.confirm.title')}
+                description={t('codexSync.confirm.description')}
+                confirmLabel={t('codexSync.confirm.confirm')}
+                confirmingLabel={t('codexSync.confirm.confirming')}
+                onConfirm={handleSyncCodexSession}
+                isPending={isSyncingCodexSession}
+            />
+            <ConfirmDialog
+                isOpen={isRestartConfirmOpen}
+                onClose={() => setIsRestartConfirmOpen(false)}
+                title={t('codexSync.restart.title')}
+                description={t('codexSync.restart.description')}
+                confirmLabel={t('codexSync.restart.confirm')}
+                confirmingLabel={t('codexSync.restart.confirming')}
+                onConfirm={handleRestartCodexDesktop}
+                isPending={isRestartingCodexDesktop}
+            />
+        </>
     )
 }
 

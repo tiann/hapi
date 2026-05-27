@@ -1,6 +1,7 @@
 import type {
     AttachmentMetadata,
     AuthResponse,
+    CodexDesktopScriptResponse,
     CodexCollaborationMode,
     FileSearchResponse,
     MachinesResponse,
@@ -175,6 +176,18 @@ export class ApiClient {
         await this.request('/api/push/subscribe', {
             method: 'POST',
             body: JSON.stringify(payload)
+        })
+    }
+
+    async syncCodexSession(): Promise<CodexDesktopScriptResponse> {
+        return await this.request<CodexDesktopScriptResponse>('/api/codex/sync-session', {
+            method: 'POST'
+        })
+    }
+
+    async restartCodexDesktop(): Promise<CodexDesktopScriptResponse> {
+        return await this.request<CodexDesktopScriptResponse>('/api/codex/restart-desktop', {
+            method: 'POST'
         })
     }
 
