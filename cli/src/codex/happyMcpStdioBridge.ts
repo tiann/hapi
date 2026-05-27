@@ -16,6 +16,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { z } from 'zod';
+import { shouldEnableAutoTitle } from '@/claude/utils/claudeSettings';
 
 function parseArgs(argv: string[]): { url: string | null } {
   let url: string | null = null;
@@ -64,34 +65,34 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
       version: '1.0.0',
     });
 
-    // Register the single tool and forward to HTTP MCP
-    const changeTitleInputSchema: z.ZodTypeAny = z.object({
-      title: z.string().describe('The new title for the chat session'),
-    });
+    if (shouldEnableAutoTitle()) {
+      const changeTitleInputSchema: z.ZodTypeAny = z.object({
+        title: z.string().describe('The new title for the chat session'),
+      });
 
-    server.registerTool<any, any>(
-      'change_title',
-      {
-        description: 'Change the title of the current chat session',
-        title: 'Change Chat Title',
-        inputSchema: changeTitleInputSchema,
-      },
-      async (args: Record<string, unknown>) => {
-        try {
-          const client = await ensureHttpClient();
-          const response = await client.callTool({ name: 'change_title', arguments: args });
-          // Pass-through response from HTTP server
-          return response as any;
-        } catch (error) {
-          return {
-            content: [
-              { type: 'text' as const, text: `Failed to change chat title: ${error instanceof Error ? error.message : String(error)}` },
-            ],
-            isError: true,
-          };
+      server.registerTool<any, any>(
+        'change_title',
+        {
+          description: 'Change the title of the current chat session',
+          title: 'Change Chat Title',
+          inputSchema: changeTitleInputSchema,
+        },
+        async (args: Record<string, unknown>) => {
+          try {
+            const client = await ensureHttpClient();
+            const response = await client.callTool({ name: 'change_title', arguments: args });
+            return response as any;
+          } catch (error) {
+            return {
+              content: [
+                { type: 'text' as const, text: `Failed to change chat title: ${error instanceof Error ? error.message : String(error)}` },
+              ],
+              isError: true,
+            };
+          }
         }
-      }
-    );
+      );
+    }
 
     // Start STDIO transport
     const stdio = new StdioServerTransport();
