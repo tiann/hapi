@@ -7,8 +7,8 @@
  *
  * Env:
  *   HAPI_ACCESS_TOKEN — CLI token for auth
- *   HAPI_URL_FIXED — default http://127.0.0.1:3006 (PR #717 worktree)
- *   HAPI_URL_BROKEN — default http://127.0.0.1:3007 (upstream/main hub)
+ *   HAPI_URL_FIXED — default http://127.0.0.1:3006 (fixed build)
+ *   HAPI_URL_BROKEN — default http://127.0.0.1:3007 (upstream/main build)
  */
 import { spawnSync } from 'node:child_process'
 import { resolve, dirname } from 'node:path'
@@ -54,8 +54,10 @@ function runVariant(label, baseUrl) {
     )
     let parsed = null
     try {
-        const jsonStart = proc.stdout.lastIndexOf('{')
-        parsed = JSON.parse(proc.stdout.slice(jsonStart))
+        const stdout = proc.stdout.trim()
+        parsed = stdout
+            ? JSON.parse(stdout)
+            : { ok: false, parseError: true, stdout: '', stderr: proc.stderr }
     } catch {
         parsed = { ok: false, parseError: true, stdout: proc.stdout.slice(-2000), stderr: proc.stderr }
     }
@@ -72,8 +74,8 @@ console.log(`  FIXED  → ${fixedUrl}`)
 console.log(`  BROKEN → ${brokenUrl}`)
 console.log('')
 
+const fixed = runVariant('fixed (patched cache.set)', fixedUrl)
 const broken = runVariant('upstream-main (#707 unwrap)', brokenUrl)
-const fixed = runVariant('PR #717 (patched cache.set)', fixedUrl)
 
 const summary = {
     sessionId: args.sessionId,

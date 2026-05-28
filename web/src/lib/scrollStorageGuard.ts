@@ -68,7 +68,7 @@ function hardResetScrollRestorationPersistedState(
     // write throws again. Clear the library cache so persisted size matches.
     if (recoveryDepth.current > 0) {
         try {
-            storage.setItem(STORAGE_KEY, '{}')
+            originalSetItem.call(storage, STORAGE_KEY, '{}')
         } catch {
             // nested recovery already in progress
         }

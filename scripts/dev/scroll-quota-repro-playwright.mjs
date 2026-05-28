@@ -11,7 +11,7 @@ import { chromium } from 'playwright'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
-const BASE_URL = process.env.HAPI_URL ?? 'https://hapi.tail9944ee.ts.net'
+const BASE_URL = process.env.HAPI_URL ?? 'http://127.0.0.1:3006'
 const ACCESS_TOKEN = process.env.HAPI_ACCESS_TOKEN ?? ''
 const OUT_DIR = resolve('localdocs/playwright-runs')
 const SCROLL_KEY = 'tsr-scroll-restoration-v1_3'

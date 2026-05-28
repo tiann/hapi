@@ -45,14 +45,13 @@ function makeMockStorage(): Storage & { _store: Record<string, string>; _setItem
 describe('legacy #707 unwrap race (positive repro)', () => {
     let storage: ReturnType<typeof makeMockStorage>
     let guardedSetItem: Storage['setItem']
-    let originalSetItem: Storage['setItem']
 
     beforeEach(() => {
         storage = makeMockStorage()
-        originalSetItem = storage._setItem
+        const nativeSetItem = storage._setItem as unknown as (key: string, value: string) => void
         guardedSetItem = vi.fn((key: string, value: string) => {
             try {
-                originalSetItem.call(storage, key, value)
+                nativeSetItem(key, value)
             } catch (err) {
                 if (key === STORAGE_KEY) {
                     return
@@ -68,7 +67,7 @@ describe('legacy #707 unwrap race (positive repro)', () => {
     })
 
     it('legacy unwrap throws QuotaExceededError through native setItem (positive repro)', () => {
-        originalSetItem.mockImplementation((key: string) => {
+        storage._setItem.mockImplementation((key: string) => {
             if (key === STORAGE_KEY) {
                 throw new QuotaExceededError()
             }
@@ -79,12 +78,16 @@ describe('legacy #707 unwrap race (positive repro)', () => {
             storage.setItem(STORAGE_KEY, JSON.stringify(next))
         }
 
-        expect(() => legacyWriteScrollRestorationCache(storage, originalSetItem, tanStackPersist)).toThrow(QuotaExceededError)
+        expect(() => legacyWriteScrollRestorationCache(
+            storage,
+            storage._setItem as Storage['setItem'],
+            tanStackPersist,
+        )).toThrow(QuotaExceededError)
         expect(guardedSetItem).not.toHaveBeenCalled()
     })
 
     it('fixed pattern routes cache persist through guarded setItem and survives quota', () => {
-        originalSetItem.mockImplementation((key: string) => {
+        storage._setItem.mockImplementation((key: string) => {
             if (key === STORAGE_KEY) {
                 throw new QuotaExceededError()
             }

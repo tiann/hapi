@@ -258,6 +258,23 @@ describe('installScrollRestorationGuard', () => {
         off()
     })
 
+    it('does not recurse when nested recovery fallback write also fails on real sessionStorage', () => {
+        const realSessionStorage = makeMockStorage()
+        vi.stubGlobal('window', { sessionStorage: realSessionStorage })
+
+        const off = installScrollRestorationGuard(realSessionStorage)
+        realSessionStorage._setItem.mockImplementation((key: string) => {
+            if (key === STORAGE_KEY) {
+                throw new QuotaExceededError()
+            }
+        })
+
+        expect(() => realSessionStorage.setItem(STORAGE_KEY, JSON.stringify(makeFullScrollState()))).not.toThrow()
+        expect(realSessionStorage._setItem.mock.calls.length).toBeLessThan(20)
+
+        off()
+    })
+
     it('is idempotent — installing twice does not double-wrap', () => {
         const wrapped1 = storage.setItem
         const noop = installScrollRestorationGuard(storage)
