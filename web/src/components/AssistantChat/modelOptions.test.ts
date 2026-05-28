@@ -16,6 +16,35 @@ describe('getModelOptionsForFlavor', () => {
         expect(options.some((o) => o.value === 'opus')).toBe(true)
     })
 
+    it('keeps Claude presets when explicit options only include Sonnet models', () => {
+        const options = getModelOptionsForFlavor('claude', null, [
+            { value: null, label: 'Default' },
+            { value: 'sonnet', label: 'Sonnet' },
+            { value: 'sonnet[1m]', label: 'Sonnet 1M' }
+        ])
+        expect(options).toEqual([
+            { value: null, label: 'Default' },
+            { value: 'sonnet', label: 'Sonnet' },
+            { value: 'sonnet[1m]', label: 'Sonnet 1M' },
+            { value: 'opus', label: 'Opus' },
+            { value: 'opus[1m]', label: 'Opus 1M' }
+        ])
+    })
+
+    it('adds non-preset Claude options without hiding Opus presets', () => {
+        const options = getModelOptionsForFlavor('claude', null, [
+            { value: 'claude-opus-4-1-20250805', label: 'Claude Opus 4.1' }
+        ])
+        expect(options).toEqual([
+            { value: null, label: 'Default' },
+            { value: 'claude-opus-4-1-20250805', label: 'Claude Opus 4.1' },
+            { value: 'sonnet', label: 'Sonnet' },
+            { value: 'sonnet[1m]', label: 'Sonnet 1M' },
+            { value: 'opus', label: 'Opus' },
+            { value: 'opus[1m]', label: 'Opus 1M' }
+        ])
+    })
+
     it('includes custom Gemini model from env/config in options', () => {
         const options = getModelOptionsForFlavor('gemini', 'gemini-custom-experiment')
         expect(options.some((o) => o.value === 'gemini-custom-experiment')).toBe(true)
@@ -92,6 +121,14 @@ describe('getNextModelForFlavor', () => {
     it('cycles Claude models', () => {
         const next = getNextModelForFlavor('claude', null)
         expect(next).not.toBeNull()
+    })
+
+    it('cycles through Claude presets when explicit options only include Sonnet models', () => {
+        const next = getNextModelForFlavor('claude', 'sonnet[1m]', [
+            { value: 'sonnet', label: 'Sonnet' },
+            { value: 'sonnet[1m]', label: 'Sonnet 1M' }
+        ])
+        expect(next).toBe('opus')
     })
 
     it('cycles explicit model options', () => {
