@@ -476,7 +476,9 @@ export class MessageService {
      * expected behaviour. */
     releaseMatureScheduledMessages(now: number): void {
         const mature = this.store.messages.getMatureScheduledMessages(now)
+        const maturedSessionIds = new Set<string>()
         for (const msg of mature) {
+            maturedSessionIds.add(msg.sessionId)
             const update = {
                 id: msg.id,
                 seq: msg.seq,
@@ -496,6 +498,9 @@ export class MessageService {
             this.io.of('/cli').to(`session:${msg.sessionId}`).emit('update', update)
             // NOTE: do NOT call markMessagesInvoked here (pitfall #2).
             // CLI ack (messages-consumed) will handle invoked_at stamping.
+        }
+        for (const sessionId of maturedSessionIds) {
+            this.publisher.emit({ type: 'scheduled-matured', sessionId })
         }
     }
 }

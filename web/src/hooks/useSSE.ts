@@ -26,7 +26,8 @@ export type SSEScope = 'global' | 'full'
 const MESSAGE_STREAM_EVENT_TYPES = new Set<SyncEvent['type']>([
     'message-received',
     'messages-consumed',
-    'message-cancelled'
+    'message-cancelled',
+    'scheduled-matured'
 ])
 
 export function isGlobalScopedMessageStreamEvent(scope: SSEScope, eventType: SyncEvent['type']): boolean {
@@ -450,7 +451,11 @@ export function useSSE(options: {
                 if (event.type === 'message-received' && event.message.scheduledAt != null) {
                     queueSessionListInvalidation()
                 }
-                if (event.type === 'message-cancelled' || event.type === 'messages-consumed') {
+                if (
+                    event.type === 'message-cancelled'
+                    || event.type === 'messages-consumed'
+                    || event.type === 'scheduled-matured'
+                ) {
                     queueSessionListInvalidation()
                 }
                 onEventRef.current(event)

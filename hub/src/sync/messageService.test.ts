@@ -851,6 +851,24 @@ describe('MessageService.releaseMatureScheduledMessages', () => {
         expect(cliEmitted).toHaveLength(1)
     })
 
+    it('emits scheduled-matured once per session for web session-list refresh', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'release-sse')
+        const publisher = makePublisher()
+        const { io } = makeTrackingIo()
+
+        const now = Date.now()
+        const past = now - 1000
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'one' } }, 'local-a', past)
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'two' } }, 'local-b', past)
+
+        const service = new MessageService(store, io, publisher as any)
+        service.releaseMatureScheduledMessages(now)
+
+        const matured = publisher.events.filter((event) => event.type === 'scheduled-matured')
+        expect(matured).toEqual([{ type: 'scheduled-matured', sessionId: session.id }])
+    })
+
     it('does NOT call markMessagesInvoked (pitfall #2 guard): message is re-emitted on next tick', async () => {
         const store = makeStore()
         const session = makeSession(store, 'release-no-mark')

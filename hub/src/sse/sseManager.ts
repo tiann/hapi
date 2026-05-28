@@ -155,7 +155,7 @@ export class SSEManager {
             }
         }
 
-        if (event.type === 'message-received') {
+        if (event.type === 'message-received' || event.type === 'scheduled-matured') {
             return connection.all || connection.sessionId === event.sessionId
         }
 

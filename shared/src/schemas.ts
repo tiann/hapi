@@ -321,6 +321,9 @@ export const SyncEventSchema = z.discriminatedUnion('type', [
         type: z.literal('messages-invalidated')
     }),
     SessionChangedSchema.extend({
+        type: z.literal('scheduled-matured')
+    }),
+    SessionChangedSchema.extend({
         type: z.literal('session-ended'),
         reason: SessionEndReasonSchema.optional()
     }),
