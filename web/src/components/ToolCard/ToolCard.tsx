@@ -238,6 +238,7 @@ export function ToolDetailDialogContent(props: {
 
 function ToolCardInner(props: ToolCardProps) {
     const { t } = useTranslation()
+    const [detailsOpen, setDetailsOpen] = useState(false)
     const presentation = useMemo(() => getToolPresentation({
         toolName: props.block.tool.name,
         input: props.block.tool.input,
@@ -276,6 +277,7 @@ function ToolCardInner(props: ToolCardProps) {
     const hasBody = showInline || taskSummary !== null || showsPermissionFooter
     const stateColor = toolStatusColorClass(props.block.tool.state)
     const { suppressFocusRing, onTriggerPointerDown, onTriggerKeyDown, onTriggerBlur } = usePointerFocusRing()
+    const openDetails = () => setDetailsOpen(true)
 
     const header = (
         <div className="flex items-center justify-between gap-3">
@@ -320,7 +322,7 @@ function ToolCardInner(props: ToolCardProps) {
     return (
         <Card className="overflow-hidden rounded-[20px] bg-[var(--app-tool-card-bg)] shadow-none">
             <CardHeader className={cn('space-y-0 p-3', subtitle ? 'pb-2' : null)}>
-                <Dialog>
+                <Dialog open={detailsOpen} onOpenChange={setDetailsOpen}>
                     <DialogTrigger asChild>
                         <button
                             type="button"
@@ -354,16 +356,49 @@ function ToolCardInner(props: ToolCardProps) {
 
                     {showInline ? (
                         CompactToolView ? (
-                            <div className="mt-3">
+                            <div
+                                className="mt-3 cursor-pointer rounded-xl focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]"
+                                role="button"
+                                tabIndex={0}
+                                onClick={openDetails}
+                                onKeyDown={(event) => {
+                                    if (event.key === 'Enter' || event.key === ' ') {
+                                        event.preventDefault()
+                                        openDetails()
+                                    }
+                                }}
+                            >
                                 <CompactToolView block={props.block} metadata={props.metadata} surface="inline" />
                             </div>
                         ) : (
                             <div className="mt-3 flex flex-col gap-3">
-                                <div>
+                                <div
+                                    className="cursor-pointer rounded-xl focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]"
+                                    role="button"
+                                    tabIndex={0}
+                                    onClick={openDetails}
+                                    onKeyDown={(event) => {
+                                        if (event.key === 'Enter' || event.key === ' ') {
+                                            event.preventDefault()
+                                            openDetails()
+                                        }
+                                    }}
+                                >
                                     <div className="mb-1 text-xs font-medium text-[var(--app-hint)]">{t('tool.input')}</div>
                                     {renderToolInput(props.block, 'inline')}
                                 </div>
-                                <div>
+                                <div
+                                    className="cursor-pointer rounded-xl focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]"
+                                    role="button"
+                                    tabIndex={0}
+                                    onClick={openDetails}
+                                    onKeyDown={(event) => {
+                                        if (event.key === 'Enter' || event.key === ' ') {
+                                            event.preventDefault()
+                                            openDetails()
+                                        }
+                                    }}
+                                >
                                     <div className="mb-1 text-xs font-medium text-[var(--app-hint)]">{t('tool.result')}</div>
                                     <ResultToolView block={props.block} metadata={props.metadata} surface="inline" />
                                 </div>
