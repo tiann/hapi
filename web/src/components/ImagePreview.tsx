@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useRef, useState, type PointerEvent, type ReactNode, type WheelEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type PointerEvent, type ReactNode, type SyntheticEvent, type WheelEvent } from 'react'
 import { CloseIcon } from '@/components/icons'
 
 const MIN_IMAGE_SCALE = 0.25
 const MAX_IMAGE_SCALE = 8
 const IMAGE_SCALE_STEP = 0.25
+const BACKDROP_CLICK_MAX_MOVEMENT = 4
 
 function clampImageScale(value: number): number {
     return Math.min(MAX_IMAGE_SCALE, Math.max(MIN_IMAGE_SCALE, value))
@@ -38,6 +39,17 @@ export function ImagePreview(props: {
     const activePointersRef = useRef(new Map<number, ImagePoint>())
     const dragRef = useRef<{ pointerId: number; startX: number; startY: number; originX: number; originY: number } | null>(null)
     const pinchRef = useRef<{ startDistance: number; startScale: number; startCenter: ImagePoint; origin: ImagePoint } | null>(null)
+    const backdropPressRef = useRef<{ pointerId: number; x: number; y: number } | null>(null)
+
+    const stopEvent = useCallback((event: SyntheticEvent) => {
+        event.stopPropagation()
+    }, [])
+
+    const openViewer = useCallback((event: SyntheticEvent) => {
+        event.preventDefault()
+        event.stopPropagation()
+        setViewerOpen(true)
+    }, [])
 
     const updateScale = useCallback((next: number | ((current: number) => number)) => {
         setScale((current) => {
@@ -62,6 +74,7 @@ export function ImagePreview(props: {
         activePointersRef.current.clear()
         dragRef.current = null
         pinchRef.current = null
+        backdropPressRef.current = null
         resetView()
     }, [resetView])
 
@@ -93,8 +106,12 @@ export function ImagePreview(props: {
         if (event.button !== 0) return
         event.currentTarget.setPointerCapture(event.pointerId)
         activePointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY })
+        backdropPressRef.current = event.target === event.currentTarget
+            ? { pointerId: event.pointerId, x: event.clientX, y: event.clientY }
+            : null
 
         if (activePointersRef.current.size >= 2) {
+            backdropPressRef.current = null
             beginPinch()
             return
         }
@@ -139,7 +156,20 @@ export function ImagePreview(props: {
     }, [updateOffset, updateScale])
 
     const handlePointerUp = useCallback((event: PointerEvent<HTMLDivElement>) => {
+        const backdropPress = backdropPressRef.current
+        const moved = backdropPress
+            ? Math.hypot(event.clientX - backdropPress.x, event.clientY - backdropPress.y)
+            : Number.POSITIVE_INFINITY
+        const shouldCloseFromBackdrop = event.type === 'pointerup'
+            && backdropPress?.pointerId === event.pointerId
+            && event.target === event.currentTarget
+            && activePointersRef.current.size === 1
+            && moved <= BACKDROP_CLICK_MAX_MOVEMENT
+
         activePointersRef.current.delete(event.pointerId)
+        if (backdropPress?.pointerId === event.pointerId) {
+            backdropPressRef.current = null
+        }
         if (dragRef.current?.pointerId === event.pointerId) {
             dragRef.current = null
         }
@@ -155,7 +185,10 @@ export function ImagePreview(props: {
                 originY: offsetRef.current.y
             }
         }
-    }, [])
+        if (shouldCloseFromBackdrop) {
+            closeViewer()
+        }
+    }, [closeViewer])
 
     useEffect(() => {
         if (!viewerOpen) return
@@ -183,7 +216,11 @@ export function ImagePreview(props: {
         <>
             <button
                 type="button"
-                onClick={() => setViewerOpen(true)}
+                onPointerDown={stopEvent}
+                onMouseDown={stopEvent}
+                onTouchStart={stopEvent}
+                onClick={openViewer}
+                onTouchEnd={openViewer}
                 className={props.buttonClassName ?? 'group flex min-h-[18rem] w-full items-center justify-center overflow-auto rounded-md border border-[var(--app-border)] bg-[var(--app-code-bg)] p-3 text-left'}
                 title="Click to zoom"
             >
