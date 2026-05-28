@@ -6,6 +6,7 @@ import { existsSync } from 'node:fs'
 import { serveStatic } from 'hono/bun'
 import { getConfiguration } from '../configuration'
 import { PROTOCOL_VERSION } from '@hapi/protocol'
+import { buildGeminiLiveSetupMessage, QWEN_REALTIME_MODEL } from '@hapi/protocol/voice'
 import type { SyncEngine } from '../sync/syncEngine'
 import { createAuthMiddleware, type WebAppEnv } from './middleware/auth'
 import { createAuthRoutes } from './routes/auth'
@@ -38,6 +39,21 @@ function toClientCloseCode(code: number): number {
         : 1011
 }
 
+function decodeWsText(message: string | ArrayBuffer | Uint8Array): string {
+    if (typeof message === 'string') return message
+    const bytes = message instanceof Uint8Array ? message : new Uint8Array(message)
+    return new TextDecoder().decode(bytes)
+}
+
+function isGeminiSetupFrame(message: string | ArrayBuffer | Uint8Array): boolean {
+    try {
+        const parsed = JSON.parse(decodeWsText(message)) as unknown
+        return parsed !== null && typeof parsed === 'object' && 'setup' in (parsed as object)
+    } catch {
+        return false
+    }
+}
+
 // Gemini Live WebSocket proxy — relays browser WS to Google, bypassing region restrictions
 function createGeminiProxyWebSocketHandler() {
     const GEMINI_WS_BASE = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent'
@@ -46,7 +62,7 @@ function createGeminiProxyWebSocketHandler() {
 
     return {
         open(clientWs: ServerWebSocket<unknown>) {
-            const data = clientWs.data as { _geminiProxy: boolean; apiKey: string }
+            const data = clientWs.data as { _geminiProxy: boolean; apiKey: string; language?: string }
             const upstreamUrl = `${process.env.GEMINI_LIVE_WS_URL || GEMINI_WS_BASE}?key=${encodeURIComponent(data.apiKey)}`
             const pending: Array<string | ArrayBuffer | Uint8Array> = []
             pendingMap.set(clientWs, pending)
@@ -55,9 +71,12 @@ function createGeminiProxyWebSocketHandler() {
             upstreamMap.set(clientWs, upstream)
 
             upstream.onopen = () => {
-                // Flush any messages queued while upstream was connecting (e.g. setup frame)
+                // Hub-owned setup only — never forward client setup (prevents generic Gemini proxy abuse).
+                upstream.send(JSON.stringify(buildGeminiLiveSetupMessage(data.language)))
                 for (const queued of pending.splice(0)) {
-                    upstream.send(queued)
+                    if (!isGeminiSetupFrame(queued)) {
+                        upstream.send(queued)
+                    }
                 }
                 pendingMap.delete(clientWs)
             }
@@ -79,11 +98,14 @@ function createGeminiProxyWebSocketHandler() {
             }
         },
         message(clientWs: ServerWebSocket<unknown>, message: string | ArrayBuffer | Uint8Array) {
+            if (isGeminiSetupFrame(message)) {
+                try { clientWs.close(1008, 'Client-provided Gemini setup is not allowed') } catch { /* */ }
+                return
+            }
             const upstream = upstreamMap.get(clientWs)
             if (upstream?.readyState === WebSocket.OPEN) {
                 upstream.send(message)
             } else if (upstream?.readyState === WebSocket.CONNECTING) {
-                // Queue messages until upstream opens (critical for the setup frame)
                 const pending = pendingMap.get(clientWs)
                 if (pending) pending.push(message)
             }
@@ -424,8 +446,10 @@ export async function startWebServer(options: {
                 if (!apiKey) {
                     return new Response('Gemini API key not configured', { status: 400 })
                 }
+                const languageParam = url.searchParams.get('language')
+                const language = languageParam === 'zh' ? 'zh' : undefined
                 const upgraded = (server as unknown as { upgrade: (req: Request, opts: unknown) => boolean }).upgrade(req, {
-                    data: { _geminiProxy: true, apiKey }
+                    data: { _geminiProxy: true, apiKey, language }
                 })
                 if (!upgraded) {
                     return new Response('WebSocket upgrade failed', { status: 500 })
@@ -435,7 +459,7 @@ export async function startWebServer(options: {
             // Qwen Realtime WebSocket proxy
             if (url.pathname === '/api/voice/qwen-ws') {
                 const apiKey = process.env.DASHSCOPE_API_KEY || process.env.QWEN_API_KEY
-                const model = url.searchParams.get('model') || 'qwen3-omni-flash-realtime'
+                const model = QWEN_REALTIME_MODEL
                 if (!apiKey) {
                     return new Response('DashScope API key not configured', { status: 400 })
                 }

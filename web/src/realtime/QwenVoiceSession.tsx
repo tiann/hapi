@@ -6,7 +6,6 @@ import { GeminiAudioRecorder } from './gemini/audioRecorder'
 import { GeminiAudioPlayer } from './gemini/audioPlayer'
 import { realtimeClientTools } from './realtimeClientTools'
 import {
-    QWEN_REALTIME_MODEL,
     QWEN_REALTIME_VOICE,
     VOICE_SYSTEM_PROMPT,
     VOICE_CHINESE_LANGUAGE_BLOCK,
@@ -150,10 +149,9 @@ class QwenVoiceSessionImpl implements VoiceSession {
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
         const defaultProxyUrl = `${protocol}//${window.location.host}/api/voice/qwen-ws`
         const proxyUrl = state.wsBaseUrl || defaultProxyUrl
-        const model = QWEN_REALTIME_MODEL
         const authToken = this.api.getAuthToken() || ''
         const separator = proxyUrl.includes('?') ? '&' : '?'
-        const wsUrl = `${proxyUrl}${separator}model=${encodeURIComponent(model)}&token=${encodeURIComponent(authToken)}`
+        const wsUrl = `${proxyUrl}${separator}token=${encodeURIComponent(authToken)}`
         const ws = new WebSocket(wsUrl)
         state.ws = ws
 

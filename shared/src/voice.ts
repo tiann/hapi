@@ -295,6 +295,7 @@ export const QWEN_REALTIME_VOICE = 'Cherry'
 export const DEFAULT_VOICE_BACKEND: VoiceBackendType = 'elevenlabs'
 
 export const GEMINI_LIVE_MODEL = 'gemini-2.5-flash-native-audio-latest'
+export const GEMINI_LIVE_VOICE = 'Aoede'
 
 export interface VoiceToolDefinition {
     name: string
@@ -362,5 +363,33 @@ export function buildGeminiLiveConfig(language?: string): GeminiLiveConfig {
             }
         ],
         responseModalities: ['AUDIO']
+    }
+}
+
+/** Wire-format setup frame for Gemini Live BidiGenerateContent (hub proxy + web client). */
+export function buildGeminiLiveSetupMessage(language?: string): { setup: Record<string, unknown> } {
+    const liveConfig = buildGeminiLiveConfig(language)
+    return {
+        setup: {
+            model: `models/${liveConfig.model}`,
+            generationConfig: {
+                responseModalities: ['AUDIO'],
+                speechConfig: {
+                    voiceConfig: {
+                        prebuiltVoiceConfig: { voiceName: GEMINI_LIVE_VOICE }
+                    }
+                }
+            },
+            systemInstruction: {
+                parts: [{ text: liveConfig.systemInstruction }]
+            },
+            tools: liveConfig.tools.map((t) => ({
+                functionDeclarations: t.functionDeclarations.map((fd) => ({
+                    name: fd.name,
+                    description: fd.description,
+                    parameters: fd.parameters
+                }))
+            }))
+        }
     }
 }

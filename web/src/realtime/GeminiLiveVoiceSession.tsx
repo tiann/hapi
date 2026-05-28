@@ -5,7 +5,7 @@ import { fetchGeminiToken } from '@/api/voice'
 import { GeminiAudioRecorder } from './gemini/audioRecorder'
 import { GeminiAudioPlayer } from './gemini/audioPlayer'
 import { handleGeminiFunctionCalls } from './gemini/toolAdapter'
-import { buildGeminiLiveConfig } from '@hapi/protocol/voice'
+import { buildGeminiLiveSetupMessage } from '@hapi/protocol/voice'
 import type { VoiceSession, VoiceSessionConfig, StatusCallback } from './types'
 import type { ApiClient } from '@/api/client'
 import type { Session } from '@/types/api'
@@ -119,8 +119,9 @@ class GeminiLiveVoiceSessionImpl implements VoiceSession {
         const wsBase = state.wsBaseUrl || DEFAULT_GEMINI_LIVE_WS_BASE
         const isProxy = !!state.wsBaseUrl
         const authToken = this.api.getAuthToken() || ''
+        const languageParam = config.language === 'zh' ? '&language=zh' : ''
         const wsUrl = isProxy
-            ? `${wsBase}${wsBase.includes('?') ? '&' : '?'}token=${encodeURIComponent(authToken)}`
+            ? `${wsBase}${wsBase.includes('?') ? '&' : '?'}token=${encodeURIComponent(authToken)}${languageParam}`
             : `${wsBase}?key=${encodeURIComponent(state.apiKey)}`
         console.log('[GeminiLive] Connecting WebSocket to:', wsBase, isProxy ? '(proxied)' : '(direct)')
         const ws = new WebSocket(wsUrl)
@@ -130,34 +131,12 @@ class GeminiLiveVoiceSessionImpl implements VoiceSession {
             let setupDone = false
 
             ws.onopen = () => {
-                if (DEBUG) console.log('[GeminiLive] WebSocket connected, sending setup')
+                if (DEBUG) console.log('[GeminiLive] WebSocket connected', isProxy ? '(hub sends setup)' : ', sending setup')
 
-                const liveConfig = buildGeminiLiveConfig(config.language)
-                const setupMessage = {
-                    setup: {
-                        model: `models/${liveConfig.model}`,
-                        generationConfig: {
-                            responseModalities: ['AUDIO'],
-                            speechConfig: {
-                                voiceConfig: {
-                                    prebuiltVoiceConfig: { voiceName: 'Aoede' }
-                                }
-                            }
-                        },
-                        systemInstruction: {
-                            parts: [{ text: liveConfig.systemInstruction }]
-                        },
-                        tools: liveConfig.tools.map((t) => ({
-                            functionDeclarations: t.functionDeclarations.map((fd) => ({
-                                name: fd.name,
-                                description: fd.description,
-                                parameters: fd.parameters
-                            }))
-                        }))
-                    }
+                // Proxied sessions: hub sends HAPI-owned setup server-side (see gemini-ws proxy).
+                if (!isProxy) {
+                    ws.send(JSON.stringify(buildGeminiLiveSetupMessage(config.language)))
                 }
-
-                ws.send(JSON.stringify(setupMessage))
             }
 
             ws.onmessage = async (event) => {
