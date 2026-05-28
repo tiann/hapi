@@ -892,6 +892,103 @@ describe('session model', () => {
         }
     })
 
+    it('resume succeeds when session-alive races ahead of set-session-config and merges spawned session', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            const oldSession = engine.getOrCreateSession(
+                'session-resume-config-race',
+                {
+                    path: '/tmp/project',
+                    host: 'localhost',
+                    machineId: 'machine-1',
+                    flavor: 'codex',
+                    codexSessionId: 'codex-thread-race'
+                },
+                null,
+                'default',
+                'gpt-5.4'
+            )
+            engine.getOrCreateMachine(
+                'machine-1',
+                { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
+                null,
+                'default'
+            )
+            engine.handleMachineAlive({ machineId: 'machine-1', time: Date.now() })
+            engine.handleSessionAlive({
+                sid: oldSession.id,
+                permissionMode: 'yolo',
+                time: Date.now()
+            })
+            engine.handleSessionEnd({ sid: oldSession.id, time: Date.now() })
+
+            const spawnedSession = engine.getOrCreateSession(
+                'session-resume-config-race-spawned',
+                {
+                    path: '/tmp/project',
+                    host: 'localhost',
+                    machineId: 'machine-1',
+                    flavor: 'codex',
+                    codexSessionId: 'codex-thread-race'
+                },
+                null,
+                'default',
+                'gpt-5.4'
+            )
+            const spawnedSessionId = spawnedSession.id
+            let configRpcCalls = 0
+            let mergeCalls = 0
+            const sessionCache = (engine as any).sessionCache
+            const mergeSessions = sessionCache.mergeSessions.bind(sessionCache)
+            sessionCache.mergeSessions = async (oldSessionId: string, newSessionId: string, namespace: string) => {
+                mergeCalls += 1
+                return mergeSessions(oldSessionId, newSessionId, namespace)
+            }
+            ;(engine as any).rpcGateway.spawnSession = async (
+                _machineId: string,
+                _directory: string,
+                _agent: string,
+                _model?: string,
+                _modelReasoningEffort?: string,
+                _yolo?: boolean,
+                _sessionType?: string,
+                _worktreeName?: string,
+                _resumeSessionId?: string,
+                _effort?: string,
+                permissionMode?: string
+            ) => {
+                engine.handleSessionAlive({
+                    sid: spawnedSessionId,
+                    time: Date.now(),
+                    permissionMode: permissionMode as never
+                })
+                return { type: 'success', sessionId: spawnedSessionId }
+            }
+            ;(engine as any).rpcGateway.requestSessionConfig = async () => {
+                configRpcCalls += 1
+                throw new Error('RPC handler not registered')
+            }
+            ;(engine as any).waitForSessionActive = async () => true
+
+            const result = await engine.resumeSession(oldSession.id, 'default')
+
+            expect(result).toEqual({ type: 'success', sessionId: spawnedSessionId })
+            expect(configRpcCalls).toBe(0)
+            expect(mergeCalls).toBe(1)
+            expect(engine.getSession(spawnedSessionId)?.permissionMode).toBe('yolo')
+            expect(store.sessions.getSession(oldSession.id)).toBeNull()
+        } finally {
+            engine.stop()
+        }
+    })
+
     it('resolves a local resume target for a Codex session', () => {
         const store = new Store(':memory:')
         const engine = new SyncEngine(

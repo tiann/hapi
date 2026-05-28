@@ -681,14 +681,8 @@ export class SyncEngine {
             return { type: 'error', message: 'Session failed to become active', code: 'resume_failed' }
         }
 
-        if (preferredPermissionMode !== undefined) {
-            try {
-                await this.applySessionConfig(spawnResult.sessionId, { permissionMode: preferredPermissionMode })
-            } catch (error) {
-                const message = error instanceof Error ? error.message : 'Failed to restore permission mode'
-                return { type: 'error', message, code: 'resume_failed' }
-            }
-        }
+        // permissionMode is passed to spawnSession above; do not call set-session-config here.
+        // session-alive can arrive before the CLI registers that RPC handler, which caused resume_failed.
 
         if (spawnResult.sessionId !== access.sessionId) {
             // The old session may have already been merged by the automatic dedup path
