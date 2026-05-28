@@ -7,6 +7,13 @@ import { EventPublisher } from './eventPublisher'
 
 type StoredMessageForDelivery = ReturnType<Store['messages']['getMessages']>[number]
 
+/** Matches syncEngine.expireInactive cadence (releaseMatureScheduledMessages piggyback). */
+export const MATURE_SCHEDULED_TICK_MS = 5_000
+
+function isScheduledNewlyMature(scheduledAt: number | null, now: number): boolean {
+    return scheduledAt !== null && scheduledAt > now - MATURE_SCHEDULED_TICK_MS
+}
+
 function isWebVisibleStoredMessage(message: StoredMessageForDelivery): boolean {
     return !isRedundantGoalStatusEventContent(message.content)
 }
@@ -478,7 +485,9 @@ export class MessageService {
         const mature = this.store.messages.getMatureScheduledMessages(now)
         const maturedSessionIds = new Set<string>()
         for (const msg of mature) {
-            maturedSessionIds.add(msg.sessionId)
+            if (isScheduledNewlyMature(msg.scheduledAt, now)) {
+                maturedSessionIds.add(msg.sessionId)
+            }
             const update = {
                 id: msg.id,
                 seq: msg.seq,

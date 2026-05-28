@@ -11,7 +11,7 @@ import { describe, expect, it } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { MessageService } from './messageService'
+import { MessageService, MATURE_SCHEDULED_TICK_MS } from './messageService'
 import { Store } from '../store'
 import type { Server } from 'socket.io'
 import type { SyncEvent } from '@hapi/protocol/types'
@@ -867,6 +867,24 @@ describe('MessageService.releaseMatureScheduledMessages', () => {
 
         const matured = publisher.events.filter((event) => event.type === 'scheduled-matured')
         expect(matured).toEqual([{ type: 'scheduled-matured', sessionId: session.id }])
+    })
+
+    it('does NOT re-emit scheduled-matured on later ticks while CLI ack is pending', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'release-sse-no-repeat')
+        const publisher = makePublisher()
+        const { io } = makeTrackingIo()
+
+        const now = Date.now()
+        const past = now - 1000
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'hi' } }, 'local-repeat', past)
+
+        const service = new MessageService(store, io, publisher as any)
+        service.releaseMatureScheduledMessages(now)
+        service.releaseMatureScheduledMessages(now + MATURE_SCHEDULED_TICK_MS)
+
+        const matured = publisher.events.filter((event) => event.type === 'scheduled-matured')
+        expect(matured).toHaveLength(1)
     })
 
     it('does NOT call markMessagesInvoked (pitfall #2 guard): message is re-emitted on next tick', async () => {
