@@ -220,7 +220,6 @@ export function ImagePreview(props: {
                 onMouseDown={stopEvent}
                 onTouchStart={stopEvent}
                 onClick={openViewer}
-                onTouchEnd={openViewer}
                 className={props.buttonClassName ?? 'group flex min-h-[18rem] w-full items-center justify-center overflow-auto rounded-md border border-[var(--app-border)] bg-[var(--app-code-bg)] p-3 text-left'}
                 title="Click to zoom"
             >
