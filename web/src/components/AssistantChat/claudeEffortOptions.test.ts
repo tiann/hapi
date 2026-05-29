@@ -6,8 +6,10 @@ describe('getClaudeComposerEffortOptions', () => {
         expect(getClaudeComposerEffortOptions('ultra')).toEqual([
             { value: null, label: 'Auto' },
             { value: 'ultra', label: 'Ultra' },
+            { value: 'low', label: 'Low' },
             { value: 'medium', label: 'Medium' },
             { value: 'high', label: 'High' },
+            { value: 'xhigh', label: 'XHigh' },
             { value: 'max', label: 'Max' },
         ])
     })
@@ -15,8 +17,10 @@ describe('getClaudeComposerEffortOptions', () => {
     it('does not duplicate preset Claude effort values', () => {
         expect(getClaudeComposerEffortOptions('high')).toEqual([
             { value: null, label: 'Auto' },
+            { value: 'low', label: 'Low' },
             { value: 'medium', label: 'Medium' },
             { value: 'high', label: 'High' },
+            { value: 'xhigh', label: 'XHigh' },
             { value: 'max', label: 'Max' },
         ])
     })
