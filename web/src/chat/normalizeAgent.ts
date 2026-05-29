@@ -274,7 +274,8 @@ function normalizeAssistantOutput(
             output_tokens: outputTokens,
             cache_creation_input_tokens: asNumber(usage?.cache_creation_input_tokens) ?? undefined,
             cache_read_input_tokens: asNumber(usage?.cache_read_input_tokens) ?? undefined,
-            service_tier: asString(usage?.service_tier) ?? undefined
+            service_tier: asString(usage?.service_tier) ?? undefined,
+            context_window: asNumber(usage?.context_window) ?? undefined
         } : undefined
     }
 }

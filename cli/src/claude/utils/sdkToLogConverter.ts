@@ -57,6 +57,8 @@ export class SDKToLogConverter {
     private context: ConversionContext
     private responses?: Map<string, PermissionResponse>
     private sidechainLastUUID = new Map<string, string>();
+    private resolvedModel: string | null = null
+    private modelContextWindow: number | null = null
 
     constructor(
         context: Omit<ConversionContext, 'parentUuid'>,
@@ -195,6 +197,13 @@ export class SDKToLogConverter {
 
             case 'assistant': {
                 const assistantMsg = sdkMessage as SDKAssistantMessage
+                const message = assistantMsg.message as Record<string, unknown>
+                if (this.modelContextWindow !== null && message && typeof message.usage === 'object' && message.usage !== null) {
+                    const usage = message.usage as Record<string, unknown>
+                    if (usage.context_window === undefined) {
+                        usage.context_window = this.modelContextWindow
+                    }
+                }
                 logMessage = {
                     ...baseFields,
                     type: 'assistant',
@@ -220,6 +229,15 @@ export class SDKToLogConverter {
                     this.updateSessionId(systemMsg.session_id)
                 }
 
+                // Capture the resolved model name on init (e.g. "claude-opus-4-7[1m]").
+                // The `[1m]` suffix is stripped on per-turn assistant messages, so
+                // remember the full name here to derive an initial contextWindow
+                // estimate. The result message later refines it with the real value.
+                if (systemMsg.subtype === 'init' && typeof systemMsg.model === 'string') {
+                    this.resolvedModel = systemMsg.model
+                    this.modelContextWindow = systemMsg.model.endsWith('[1m]') ? 1_000_000 : 200_000
+                }
+
                 // System messages are typically not sent to logs
                 // but we can convert them if needed
                 logMessage = {
@@ -237,7 +255,17 @@ export class SDKToLogConverter {
             case 'result': {
                 // Result messages are not converted to log messages
                 // They're SDK-specific messages that indicate session completion
-                // Not part of the actual conversation log
+                // Not part of the actual conversation log.
+                //
+                // But they carry the authoritative per-model contextWindow,
+                // which we cache and inject into subsequent assistant messages.
+                const resultMsg = sdkMessage as SDKResultMessage
+                if (resultMsg.modelUsage && this.resolvedModel) {
+                    const cw = resultMsg.modelUsage[this.resolvedModel]?.contextWindow
+                    if (typeof cw === 'number' && cw > 0) {
+                        this.modelContextWindow = cw
+                    }
+                }
                 break
             }
 
