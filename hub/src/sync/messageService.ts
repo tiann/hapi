@@ -7,13 +7,6 @@ import { EventPublisher } from './eventPublisher'
 
 type StoredMessageForDelivery = ReturnType<Store['messages']['getMessages']>[number]
 
-/** Matches syncEngine.expireInactive cadence (releaseMatureScheduledMessages piggyback). */
-export const MATURE_SCHEDULED_TICK_MS = 5_000
-
-function isScheduledNewlyMature(scheduledAt: number | null, now: number): boolean {
-    return scheduledAt !== null && scheduledAt > now - MATURE_SCHEDULED_TICK_MS
-}
-
 function isWebVisibleStoredMessage(message: StoredMessageForDelivery): boolean {
     return !isRedundantGoalStatusEventContent(message.content)
 }
@@ -35,12 +28,21 @@ function toVisibleDecryptedMessages(messages: StoredMessageForDelivery[]): Decry
 }
 
 export class MessageService {
+    /** One scheduled-matured SSE per localId per hub process (cleared on cancel/consume paths here). */
+    private readonly scheduledMatureNotifiedLocalIds = new Set<string>()
+
     constructor(
         private readonly store: Store,
         private readonly io: Server,
         private readonly publisher: EventPublisher,
         private readonly onSessionActivity?: (sessionId: string, updatedAt: number) => void
     ) {
+    }
+
+    private forgetScheduledMatureNotified(localIds: Iterable<string>): void {
+        for (const localId of localIds) {
+            this.scheduledMatureNotifiedLocalIds.delete(localId)
+        }
     }
 
     getMessages(sessionId: string, limit: number = 200): DecryptedMessage[] {
@@ -203,6 +205,7 @@ export class MessageService {
         const now = Date.now()
         if (scheduledAt !== null && scheduledAt > now) {
             this.store.messages.deleteQueuedMessageById(sessionId, resolvedId)
+            this.forgetScheduledMatureNotified([localId])
             this.publisher.emit({
                 type: 'message-cancelled',
                 sessionId,
@@ -231,6 +234,7 @@ export class MessageService {
             const recheck = this.store.messages.lookupQueuedMessage(sessionId, resolvedId)
             if (recheck.status === 'invoked') {
                 // CLI beat us — treat identically to Race-B (ack returned not-found).
+                this.forgetScheduledMatureNotified([localId])
                 this.publisher.emit({
                     type: 'messages-consumed',
                     sessionId,
@@ -240,6 +244,7 @@ export class MessageService {
                 return recheck
             }
             // Row is gone (absent) — clean cancel.
+            this.forgetScheduledMatureNotified([localId])
             this.publisher.emit({
                 type: 'message-cancelled',
                 sessionId,
@@ -264,6 +269,7 @@ export class MessageService {
                 // DB write failed — let the HTTP 500 surface to the caller.
                 throw err
             }
+            this.forgetScheduledMatureNotified([localId])
             // Notify all SSE subscribers (other open tabs) that this queued row is now
             // invoked so they remove it from the floating bar.  Without this emit, only
             // the tab that sent the DELETE request learns about the status change via the
@@ -289,6 +295,7 @@ export class MessageService {
 
         // Phase 3: CLI confirmed removal.  Now DELETE the DB row and broadcast SSE.
         this.store.messages.deleteQueuedMessageById(sessionId, resolvedId)
+        this.forgetScheduledMatureNotified([localId])
         this.publisher.emit({
             type: 'message-cancelled',
             sessionId,
@@ -462,6 +469,7 @@ export class MessageService {
             .filter((id): id is string => typeof id === 'string')
         if (localIds.length === 0) return null
         this.store.messages.markMessagesInvoked(sessionId, localIds, invokedAt)
+        this.forgetScheduledMatureNotified(localIds)
         this.publisher.emit({ type: 'messages-consumed', sessionId, localIds, invokedAt })
         return { localIds, invokedAt }
     }
@@ -485,7 +493,9 @@ export class MessageService {
         const mature = this.store.messages.getMatureScheduledMessages(now)
         const maturedSessionIds = new Set<string>()
         for (const msg of mature) {
-            if (isScheduledNewlyMature(msg.scheduledAt, now)) {
+            const localId = msg.localId
+            if (typeof localId === 'string' && !this.scheduledMatureNotifiedLocalIds.has(localId)) {
+                this.scheduledMatureNotifiedLocalIds.add(localId)
                 maturedSessionIds.add(msg.sessionId)
             }
             const update = {
