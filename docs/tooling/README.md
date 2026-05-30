@@ -28,6 +28,7 @@ Feature agents should **read the relevant doc below at session start**; meta bot
 |-----|---------|
 | [new-feature-intake.md](./new-feature-intake.md) | **Operator requests new behavior** — discovery, playback, soup vs clean demo, gates before dogfood, PR after approval |
 | `scripts/tooling/hapi-sync-fork-main.sh` | Keep `~/coding/hapi` `main` = upstream + fork docs |
+| [commit-hooks.md](./commit-hooks.md) | `install-git-hooks.sh` — secrets + operator path gates |
 | [worktree-testing.md](./worktree-testing.md) | `hapi-active` symlink, `hapi-use-worktree`, service swing |
 | [driver-soup.md](./driver-soup.md) | Daily driver manifest, merge-train PR worktrees, garden vs soup |
 | [pr-review-loop.md](./pr-review-loop.md) | Pre-PR verification + cold review; pre-push open-PR gate; post-push PR comment poll |

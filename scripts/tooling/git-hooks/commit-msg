@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Block persona / operator leaks in commit messages.
+set -euo pipefail
+
+MSG_FILE="${1:?}"
+MSG="$(cat "$MSG_FILE")"
+
+if [[ "${HAPI_SKIP_COMMIT_HOOKS:-}" == "1" ]]; then
+    exit 0
+fi
+
+if printf '%s' "$MSG" | grep -qiE 'jessica-mood|SOUL\.md|AGENTS\.local|co-authored-by: cursor'; then
+    echo "commit-msg: message contains forbidden reference (persona/operator leak)" >&2
+    echo "Use HAPI_SKIP_COMMIT_HOOKS=1 only for emergencies." >&2
+    exit 1
+fi
+
+exit 0

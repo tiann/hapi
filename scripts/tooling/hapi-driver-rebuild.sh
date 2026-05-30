@@ -51,6 +51,7 @@ mkdir -p "$(dirname "$MANIFEST")"
 
 echo "Fetching upstream..."
 git -C "$PRIMARY" fetch upstream
+upstream_tip="$(git -C "$PRIMARY" rev-parse upstream/main 2>/dev/null || true)"
 
 SYNC_SCRIPT="$PRIMARY/scripts/tooling/hapi-sync-fork-main.sh"
 if [[ -x "$SYNC_SCRIPT" ]]; then

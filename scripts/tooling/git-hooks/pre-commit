@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+# Fork commit gate — secrets + operator-only paths/strings.
+# Install: scripts/tooling/install-git-hooks.sh
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
+
+if [[ "${HAPI_SKIP_COMMIT_HOOKS:-}" == "1" ]]; then
+    exit 0
+fi
+
+STAGED="$(git diff --cached --name-only --diff-filter=ACMR)"
+if [[ -z "$STAGED" ]]; then
+    exit 0
+fi
+
+BRANCH="$(git branch --show-current 2>/dev/null || echo '')"
+FAIL=0
+
+report() {
+    echo "pre-commit: $1" >&2
+    FAIL=1
+}
+
+# --- forbidden paths (never commit) ---
+while IFS= read -r path; do
+    [[ -z "$path" ]] && continue
+    case "$path" in
+        localdocs/*|*/localdocs/*)
+            report "refusing to commit localdocs/: $path"
+            ;;
+        .env|.env.*|*/.env|*/.env.*|hub/.env~|*/hub/.env~)
+            report "refusing to commit env file: $path"
+            ;;
+        AGENTS.local.md|*/AGENTS.local.md)
+            report "refusing to commit AGENTS.local.md: $path"
+            ;;
+        *~)
+            report "refusing to commit backup file: $path"
+            ;;
+    esac
+done <<< "$STAGED"
+
+# --- operator-only paths on upstream PR branches (not fork main / docs branches) ---
+if [[ "$BRANCH" != "main" && "$BRANCH" != driver/integration && "$BRANCH" != docs/* ]]; then
+    while IFS= read -r path; do
+        [[ -z "$path" ]] && continue
+        case "$path" in
+            docs/operator/*|docs/plans/*)
+                report "operator/plans path on PR branch '$BRANCH': $path (use fork main only)"
+                ;;
+        esac
+    done <<< "$STAGED"
+fi
+
+# --- forbidden substrings in staged content (operator / persona leaks) ---
+# Note: ElevenLabs voice name "Jessica" in product code is allowed; block fork-only routes/persona.
+PATTERNS=(
+    'jessica-mood'
+    'SOUL_SESSION'
+    'SOUL.md'
+    'AGENTS.local.md'
+    'localdocs/'
+)
+
+for pattern in "${PATTERNS[@]}"; do
+    if git diff --cached -G"$pattern" --quiet -- .; then
+        :
+    else
+        report "staged content matches forbidden pattern: $pattern"
+        git diff --cached -G"$pattern" --name-only -- . >&2 || true
+    fi
+done
+
+# --- crude secret patterns in staged diff ---
+SECRET_PATTERNS=(
+    'CLI_API_TOKEN=[^[:space:]]+'
+    'ELEVENLABS_API_KEY=[^[:space:]]+'
+    'GEMINI_API_KEY=[^[:space:]]+'
+    'OPENAI_API_KEY=[^[:space:]]+'
+    'sk-[A-Za-z0-9]{20,}'
+    'ghp_[A-Za-z0-9]{20,}'
+    'xox[baprs]-[A-Za-z0-9-]{10,}'
+)
+
+for pattern in "${SECRET_PATTERNS[@]}"; do
+    if git diff --cached -G"$pattern" --quiet -- . 2>/dev/null; then
+        continue
+    fi
+    if git diff --cached -G"$pattern" --name-only -- . 2>/dev/null | grep -q .; then
+        report "possible secret in staged diff (pattern: $pattern)"
+        git diff --cached -G"$pattern" --name-only -- . >&2 || true
+    fi
+done
+
+# --- commit message (when using commit-msg hook this is separate; cheap check for -m via env) ---
+
+if [[ "$FAIL" -ne 0 ]]; then
+    echo "" >&2
+    echo "Bypass only if you know what you are doing: HAPI_SKIP_COMMIT_HOOKS=1 git commit ..." >&2
+    exit 1
+fi
+
+exit 0
