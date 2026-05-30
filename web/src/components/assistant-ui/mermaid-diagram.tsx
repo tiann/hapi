@@ -101,6 +101,55 @@ export function uniqueifyMermaidSvgIds(svg: string, scope: string): string {
     return result
 }
 
+function parseViewBoxSize(svg: string): { width: number; height: number } | null {
+    const viewBoxMatch = svg.match(/\bviewBox="([\d.\s]+)"/)
+    if (!viewBoxMatch) return null
+    const parts = viewBoxMatch[1].trim().split(/\s+/).map(Number)
+    if (parts.length < 4 || parts[2] <= 0 || parts[3] <= 0) return null
+    return { width: parts[2], height: parts[3] }
+}
+
+/** Lightbox has no block width context; mermaid often emits width="100%" which collapses to 0. */
+export function prepareMermaidSvgForLightbox(svg: string, scope: string): string {
+    let result = uniqueifyMermaidSvgIds(svg, scope)
+    const viewBoxSize = parseViewBoxSize(result)
+    if (!viewBoxSize) return result
+
+    const { width, height } = viewBoxSize
+    result = result.replace(/\swidth="100%"/gi, '')
+    result = result.replace(/\sheight="100%"/gi, '')
+
+    if (/\sstyle="/i.test(result)) {
+        result = result.replace(
+            /(<svg[^>]*?\sstyle=")([^"]*)(")/i,
+            (_full, prefix: string, style: string, suffix: string) => {
+                const cleaned = style
+                    .replace(/(?:^|;)\s*max-width:\s*[^;]+/gi, '')
+                    .replace(/(?:^|;)\s*width:\s*[^;]+/gi, '')
+                    .replace(/(?:^|;)\s*height:\s*[^;]+/gi, '')
+                    .replace(/^;+|;+$/g, '')
+                    .replace(/;\s*;/g, ';')
+                    .trim()
+                const nextStyle = cleaned
+                    ? `${cleaned};width:${width}px;height:${height}px`
+                    : `width:${width}px;height:${height}px`
+                return `${prefix}${nextStyle}${suffix}`
+            },
+        )
+    } else {
+        result = result.replace(
+            /<svg/i,
+            `<svg width="${width}" height="${height}"`,
+        )
+    }
+
+    if (!/\bwidth="/i.test(result.split('>')[0] ?? '')) {
+        result = result.replace(/<svg/i, `<svg width="${width}" height="${height}"`)
+    }
+
+    return result
+}
+
 function MermaidFallback(props: ComponentPropsWithoutRef<'pre'> & { code: string }) {
     const { code, className, ...rest } = props
     return (
@@ -135,7 +184,7 @@ export function MermaidDiagram(props: SyntaxHighlighterProps) {
     const openLabel = t('mermaid.openFullscreen')
     const viewerLabel = t('mermaid.viewerTitle')
     const lightboxSvg = useMemo(
-        () => (svg ? uniqueifyMermaidSvgIds(svg, id) : null),
+        () => (svg ? prepareMermaidSvgForLightbox(svg, id) : null),
         [svg, id],
     )
 
