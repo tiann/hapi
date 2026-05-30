@@ -107,8 +107,6 @@ export function MermaidDiagram(props: SyntaxHighlighterProps) {
     const [renderError, setRenderError] = useState(false)
     const [svg, setSvg] = useState<string | null>(null)
     const [lightboxOpen, setLightboxOpen] = useState(false)
-    const [lightboxSvg, setLightboxSvg] = useState<string | null>(null)
-    const [lightboxLoading, setLightboxLoading] = useState(false)
     const id = useId().replace(/:/g, '-')
     const openLabel = t('mermaid.openFullscreen')
     const viewerLabel = t('mermaid.viewerTitle')
@@ -167,36 +165,6 @@ export function MermaidDiagram(props: SyntaxHighlighterProps) {
         }
     }, [id, props.code, theme])
 
-    useEffect(() => {
-        if (!lightboxOpen) {
-            setLightboxSvg(null)
-            setLightboxLoading(false)
-            return
-        }
-
-        let cancelled = false
-        setLightboxLoading(true)
-
-        const render = async () => {
-            try {
-                const nextSvg = await renderMermaidSvg(props.code, `mermaid-modal-${id}`, theme)
-                if (cancelled) return
-                setLightboxSvg(nextSvg)
-            } catch {
-                if (cancelled) return
-                setLightboxSvg(null)
-            } finally {
-                if (!cancelled) setLightboxLoading(false)
-            }
-        }
-
-        void render()
-
-        return () => {
-            cancelled = true
-        }
-    }, [id, lightboxOpen, props.code, theme])
-
     if (renderError || !svg) {
         return <MermaidFallback code={props.code} data-mermaid-diagram data-rendered="false" />
     }
@@ -224,18 +192,12 @@ export function MermaidDiagram(props: SyntaxHighlighterProps) {
                 onClose={() => setLightboxOpen(false)}
                 title={viewerLabel}
                 ariaLabel={viewerLabel}
-                fitContentKey={lightboxSvg}
+                fitContentKey={lightboxOpen ? svg : null}
             >
-                {lightboxLoading ? (
-                    <div className="px-8 py-6 text-sm text-white/80">{t('mermaid.loading')}</div>
-                ) : lightboxSvg ? (
-                    <MermaidSvgContent
-                        svg={lightboxSvg}
-                        className="[&_svg]:block [&_svg]:h-auto [&_svg]:max-h-none [&_svg]:max-w-none [&_svg]:w-auto"
-                    />
-                ) : (
-                    <div className="px-8 py-6 text-sm text-white/80">{t('mermaid.renderError')}</div>
-                )}
+                <MermaidSvgContent
+                    svg={svg}
+                    className="[&_svg]:block [&_svg]:h-auto [&_svg]:max-h-none [&_svg]:max-w-none [&_svg]:w-auto"
+                />
             </ZoomableLightbox>
         </>
     )

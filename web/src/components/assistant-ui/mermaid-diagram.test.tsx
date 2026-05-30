@@ -132,11 +132,13 @@ describe('MermaidDiagram', () => {
         fireEvent.click(document.querySelector('[data-mermaid-diagram][data-rendered="true"]') as HTMLButtonElement)
 
         await waitFor(() => {
-            expect(screen.getByRole('dialog', { name: 'Diagram' })).toBeTruthy()
+            const dialog = screen.getByRole('dialog', { name: 'Diagram' })
+            expect(dialog.querySelector('[data-testid="mock-mermaid"]')).toBeTruthy()
         })
 
+        expect(mermaidMocks.renderMock).toHaveBeenCalledTimes(1)
         expect(mermaidMocks.renderMock).toHaveBeenCalledWith(
-            expect.stringContaining('mermaid-modal-'),
+            expect.stringContaining('mermaid-'),
             'graph TD\nA --> B',
         )
     })

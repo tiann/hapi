@@ -33,13 +33,31 @@ function getPointCenter(a: Point, b: Point): Point {
     }
 }
 
+function measureSvgIntrinsicSize(svg: SVGSVGElement): { width: number; height: number } | null {
+    const box = svg.getBoundingClientRect()
+    if (box.width > 0 && box.height > 0) {
+        return { width: box.width, height: box.height }
+    }
+
+    const viewBox = svg.viewBox?.baseVal
+    if (viewBox && viewBox.width > 0 && viewBox.height > 0) {
+        return { width: viewBox.width, height: viewBox.height }
+    }
+
+    const widthAttr = Number.parseFloat(svg.getAttribute('width') ?? '')
+    const heightAttr = Number.parseFloat(svg.getAttribute('height') ?? '')
+    if (widthAttr > 0 && heightAttr > 0) {
+        return { width: widthAttr, height: heightAttr }
+    }
+
+    return null
+}
+
 function measureContentSize(content: HTMLElement): { width: number; height: number } | null {
     const svg = content.querySelector('svg')
     if (svg) {
-        const box = svg.getBoundingClientRect()
-        if (box.width > 0 && box.height > 0) {
-            return { width: box.width, height: box.height }
-        }
+        const intrinsic = measureSvgIntrinsicSize(svg)
+        if (intrinsic) return intrinsic
     }
 
     const rect = content.getBoundingClientRect()
@@ -246,18 +264,29 @@ export function ZoomableLightbox(props: ZoomableLightboxProps) {
         if (!open) return
 
         let frame = 0
+        let attempt = 0
+        const maxAttempts = 16
+
         const scheduleFit = () => {
             frame = requestAnimationFrame(() => {
+                const content = contentRef.current
+                const hadSize = content ? measureContentSize(content) : null
                 applyFitScale()
+                attempt += 1
+                if (!hadSize && attempt < maxAttempts) {
+                    scheduleFit()
+                }
             })
         }
 
         scheduleFit()
         const retry = window.setTimeout(scheduleFit, 50)
+        const lateRetry = window.setTimeout(scheduleFit, 200)
 
         return () => {
             cancelAnimationFrame(frame)
             window.clearTimeout(retry)
+            window.clearTimeout(lateRetry)
         }
     }, [open, fitContentKey, applyFitScale])
 

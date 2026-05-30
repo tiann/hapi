@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { render, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MermaidDiagram } from '@/components/assistant-ui/mermaid-diagram'
 import { I18nProvider } from '@/lib/i18n-context'
 
@@ -52,6 +52,19 @@ describe('MermaidDiagram live render', () => {
                 expect(diagram?.querySelector('svg')).toBeTruthy()
             },
             { timeout: 10000 },
+        )
+
+        fireEvent.click(document.querySelector('[data-mermaid-diagram][data-rendered="true"]') as HTMLButtonElement)
+
+        await waitFor(
+            () => {
+                const dialog = screen.getByRole('dialog', { name: 'Diagram' })
+                const dialogSvg = dialog.querySelector('svg')
+                expect(dialogSvg).toBeTruthy()
+                const transform = dialog.querySelector<HTMLElement>('[style*="transform"]')?.style.transform ?? ''
+                expect(transform).toMatch(/scale\([^0)]/)
+            },
+            { timeout: 5000 },
         )
     })
 })
