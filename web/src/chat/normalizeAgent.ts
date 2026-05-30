@@ -88,7 +88,12 @@ function normalizeCodexTokenUsage(value: unknown, data?: Record<string, unknown>
             ?? usageSource.cacheReadInputTokens
             ?? usageSource.cache_read_input_tokens
         ) ?? undefined,
-        context_tokens: inputTokens,
+        context_tokens: asNumber(
+            info.contextTokens
+            ?? info.context_tokens
+            ?? usageSource.contextTokens
+            ?? usageSource.context_tokens
+        ) ?? inputTokens,
         context_window: asNumber(info.modelContextWindow ?? info.model_context_window) ?? undefined,
         thread_id: asString(
             data?.thread_id
@@ -269,7 +274,8 @@ function normalizeAssistantOutput(
             output_tokens: outputTokens,
             cache_creation_input_tokens: asNumber(usage?.cache_creation_input_tokens) ?? undefined,
             cache_read_input_tokens: asNumber(usage?.cache_read_input_tokens) ?? undefined,
-            service_tier: asString(usage?.service_tier) ?? undefined
+            service_tier: asString(usage?.service_tier) ?? undefined,
+            context_window: asNumber(usage?.context_window) ?? undefined
         } : undefined
     }
 }

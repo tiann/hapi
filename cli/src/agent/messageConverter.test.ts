@@ -49,4 +49,32 @@ describe('convertAgentMessage', () => {
             id: 'reasoning-stream-1'
         });
     });
+
+    it('converts usage messages into token_count payloads', () => {
+        const converted = convertAgentMessage({
+            type: 'usage',
+            inputTokens: 8_119,
+            outputTokens: 2,
+            cacheReadTokens: 5_760,
+            thoughtTokens: 11,
+            totalTokens: 13_892,
+            contextTokens: 13_879,
+            contextWindow: 65_536
+        });
+
+        expect(converted).toEqual({
+            type: 'token_count',
+            info: {
+                total: {
+                    inputTokens: 8119,
+                    outputTokens: 2,
+                    cachedInputTokens: 5760,
+                    thoughtTokens: 11,
+                    totalTokens: 13892
+                },
+                contextTokens: 13879,
+                modelContextWindow: 65536
+            }
+        });
+    });
 });

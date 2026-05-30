@@ -74,16 +74,32 @@ describe('listOpencodeModelsForCwd', () => {
         expect(closeMock).toHaveBeenCalled()
     })
 
-    it('returns empty availableModels when session/new omits the models block', async () => {
+    it('reads availableModels from configOptions when session/new omits the models block', async () => {
         sendRequestMock
             .mockResolvedValueOnce({ protocolVersion: 1 })
-            .mockResolvedValueOnce({ sessionId: 'sess-2' })
+            .mockResolvedValueOnce({
+                sessionId: 'sess-2',
+                configOptions: [
+                    {
+                        id: 'model',
+                        category: 'model',
+                        currentValue: 'opencode/big-pickle',
+                        options: [
+                            { value: 'opencode/big-pickle', name: 'OpenCode Zen/Big Pickle' },
+                            { value: 'deepseek/deepseek-chat', name: 'DeepSeek/DeepSeek Chat' }
+                        ]
+                    }
+                ]
+            })
 
         const result = await listOpencodeModelsForCwd('/tmp/proj')
 
         expect(result.success).toBe(true)
-        expect(result.availableModels).toEqual([])
-        expect(result.currentModelId).toBeNull()
+        expect(result.availableModels).toEqual([
+            { modelId: 'opencode/big-pickle', name: 'OpenCode Zen/Big Pickle' },
+            { modelId: 'deepseek/deepseek-chat', name: 'DeepSeek/DeepSeek Chat' }
+        ])
+        expect(result.currentModelId).toBe('opencode/big-pickle')
     })
 
     it('reads availableModels from top-level fields too (alternate response shape)', async () => {

@@ -155,6 +155,45 @@ describe('AcpSdkBackend', () => {
         });
     });
 
+    it('captures model metadata from configOptions when models block is missing', async () => {
+        const backend = new AcpSdkBackend({ command: 'opencode' });
+        const backendInternal = backend as unknown as {
+            transport: { sendRequest: (method: string, params: unknown) => Promise<unknown>; close: () => Promise<void> } | null;
+        };
+        backendInternal.transport = {
+            sendRequest: async (method) => {
+                if (method === 'session/new') {
+                    return {
+                        sessionId: 'opencode-session-config-options',
+                        configOptions: [
+                            {
+                                id: 'model',
+                                category: 'model',
+                                currentValue: 'opencode/big-pickle',
+                                options: [
+                                    { value: 'opencode/big-pickle', name: 'OpenCode Zen/Big Pickle' },
+                                    { value: 'deepseek/deepseek-chat', name: 'DeepSeek/DeepSeek Chat' }
+                                ]
+                            }
+                        ]
+                    };
+                }
+                return null;
+            },
+            close: async () => {}
+        };
+
+        const sessionId = await backend.newSession({ cwd: '/tmp/x', mcpServers: [] });
+
+        expect(backend.getSessionModelsMetadata(sessionId)).toEqual({
+            availableModels: [
+                { modelId: 'opencode/big-pickle', name: 'OpenCode Zen/Big Pickle' },
+                { modelId: 'deepseek/deepseek-chat', name: 'DeepSeek/DeepSeek Chat' }
+            ],
+            currentModelId: 'opencode/big-pickle'
+        });
+    });
+
     it('returns undefined session metadata when session/new omits models', async () => {
         const backend = new AcpSdkBackend({ command: 'gemini' });
         const backendInternal = backend as unknown as {
@@ -210,6 +249,67 @@ describe('AcpSdkBackend', () => {
         expect(backend.getSessionModelsMetadata('s1')).toEqual({
             availableModels: fixtureModels,
             currentModelId: 'ollama/b'
+        });
+    });
+
+
+
+    it('captures and sets OpenCode thought-level config option', async () => {
+        const backend = new AcpSdkBackend({ command: 'opencode' });
+        const calls: Array<{ method: string; params: unknown }> = [];
+        const backendInternal = backend as unknown as {
+            transport: { sendRequest: (method: string, params: unknown) => Promise<unknown>; close: () => Promise<void> } | null;
+        };
+        backendInternal.transport = {
+            sendRequest: async (method, params) => {
+                calls.push({ method, params });
+                if (method === 'session/new') {
+                    return {
+                        sessionId: 's1',
+                        configOptions: [{
+                            id: 'effort',
+                            name: 'Effort',
+                            category: 'thought_level',
+                            type: 'select',
+                            currentValue: 'low',
+                            options: [
+                                { value: 'low', name: 'Low' },
+                                { value: 'high', name: 'High' }
+                            ]
+                        }]
+                    };
+                }
+                if (method === 'session/set_config_option') {
+                    return {
+                        configOptions: [{
+                            id: 'effort',
+                            category: 'thought_level',
+                            currentValue: 'high',
+                            options: [{ value: 'high', name: 'High' }]
+                        }]
+                    };
+                }
+                return null;
+            },
+            close: async () => {}
+        };
+
+        await backend.newSession({ cwd: '/tmp/x', mcpServers: [] });
+        expect(backend.getThoughtLevelConfigOption('s1')).toMatchObject({
+            id: 'effort',
+            currentValue: 'low',
+            options: [{ value: 'low', name: 'Low' }, { value: 'high', name: 'High' }]
+        });
+
+        await backend.setConfigOption('s1', 'effort', 'high');
+
+        expect(calls).toContainEqual({
+            method: 'session/set_config_option',
+            params: { sessionId: 's1', configId: 'effort', value: 'high' }
+        });
+        expect(backend.getThoughtLevelConfigOption('s1')).toMatchObject({
+            id: 'effort',
+            currentValue: 'high'
         });
     });
 
@@ -283,5 +383,66 @@ describe('AcpSdkBackend', () => {
             'tool_result',
             'turn_complete'
         ]);
+    });
+
+    it('combines OpenCode usage_update and prompt usage into a usage message', async () => {
+        backendStatics.UPDATE_QUIET_PERIOD_MS = 25;
+        backendStatics.UPDATE_DRAIN_TIMEOUT_MS = 200;
+        backendStatics.PRE_PROMPT_UPDATE_QUIET_PERIOD_MS = 1;
+        backendStatics.PRE_PROMPT_UPDATE_DRAIN_TIMEOUT_MS = 50;
+
+        const backend = new AcpSdkBackend({ command: 'opencode' });
+        const backendInternal = backend as unknown as {
+            transport: {
+                sendRequest: (...args: unknown[]) => Promise<unknown>;
+                close: () => Promise<void>;
+            } | null;
+            handleSessionUpdate: (params: unknown) => void;
+        };
+
+        const messages: AgentMessage[] = [];
+        backendInternal.transport = {
+            sendRequest: async () => {
+                setTimeout(() => {
+                    backendInternal.handleSessionUpdate({
+                        sessionId: 'session-1',
+                        update: {
+                            sessionUpdate: 'usage_update',
+                            used: 13_879,
+                            size: 65_536,
+                        }
+                    });
+                }, 0);
+
+                await sleep(5);
+
+                return {
+                    stopReason: 'end_turn',
+                    usage: {
+                        totalTokens: 13_892,
+                        inputTokens: 8_119,
+                        outputTokens: 2,
+                        thoughtTokens: 11,
+                        cachedReadTokens: 5_760
+                    }
+                };
+            },
+            close: async () => {}
+        };
+
+        await backend.prompt('session-1', [{ type: 'text', text: 'hello' }], (message) => {
+            messages.push(message);
+        });
+
+        expect(messages).toContainEqual({
+            type: 'usage',
+            inputTokens: 8_119,
+            outputTokens: 2,
+            cacheReadTokens: 5_760,
+            thoughtTokens: 11,
+            totalTokens: 13_892,
+            contextTokens: 13_879,
+            contextWindow: 65_536
+        });
     });
 });

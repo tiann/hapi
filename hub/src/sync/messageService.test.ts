@@ -851,6 +851,59 @@ describe('MessageService.releaseMatureScheduledMessages', () => {
         expect(cliEmitted).toHaveLength(1)
     })
 
+    it('emits scheduled-matured once per session for web session-list refresh', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'release-sse')
+        const publisher = makePublisher()
+        const { io } = makeTrackingIo()
+
+        const now = Date.now()
+        const past = now - 1000
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'one' } }, 'local-a', past)
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'two' } }, 'local-b', past)
+
+        const service = new MessageService(store, io, publisher as any)
+        service.releaseMatureScheduledMessages(now)
+
+        const matured = publisher.events.filter((event) => event.type === 'scheduled-matured')
+        expect(matured).toEqual([{ type: 'scheduled-matured', sessionId: session.id }])
+    })
+
+    it('does NOT re-emit scheduled-matured on later ticks while CLI ack is pending', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'release-sse-no-repeat')
+        const publisher = makePublisher()
+        const { io } = makeTrackingIo()
+
+        const now = Date.now()
+        const past = now - 1000
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'hi' } }, 'local-repeat', past)
+
+        const service = new MessageService(store, io, publisher as any)
+        service.releaseMatureScheduledMessages(now)
+        service.releaseMatureScheduledMessages(now + 60_000)
+
+        const matured = publisher.events.filter((event) => event.type === 'scheduled-matured')
+        expect(matured).toHaveLength(1)
+    })
+
+    it('emits scheduled-matured when first scan is long after scheduled_at', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'release-sse-late-scan')
+        const publisher = makePublisher()
+        const { io } = makeTrackingIo()
+
+        const now = Date.now()
+        const past = now - 60_000
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'hi' } }, 'local-late', past)
+
+        const service = new MessageService(store, io, publisher as any)
+        service.releaseMatureScheduledMessages(now)
+
+        const matured = publisher.events.filter((event) => event.type === 'scheduled-matured')
+        expect(matured).toEqual([{ type: 'scheduled-matured', sessionId: session.id }])
+    })
+
     it('does NOT call markMessagesInvoked (pitfall #2 guard): message is re-emitted on next tick', async () => {
         const store = makeStore()
         const session = makeSession(store, 'release-no-mark')

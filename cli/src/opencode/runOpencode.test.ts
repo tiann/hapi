@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mockOpencodeSession = vi.hoisted(() => ({
     setModel: vi.fn(),
     setPermissionMode: vi.fn(),
+    setModelReasoningEffort: vi.fn(),
     pushKeepAlive: vi.fn(),
     thinking: false,
     stopKeepAlive: vi.fn()
@@ -89,6 +90,7 @@ describe('runOpencode set-session-config handler', () => {
         harness.opencodeLoopError = null;
         mockOpencodeSession.setModel.mockReset();
         mockOpencodeSession.setPermissionMode.mockReset();
+        mockOpencodeSession.setModelReasoningEffort.mockReset();
         mockOpencodeSession.pushKeepAlive.mockReset();
         harness.session.onUserMessage.mockReset();
         harness.session.rpcHandlerManager.registerHandler.mockReset();
@@ -108,6 +110,20 @@ describe('runOpencode set-session-config handler', () => {
         expect(configHandler).toBeDefined();
         return configHandler![1] as (payload: unknown) => Promise<unknown>;
     }
+
+    it('rejects plan mode for local OpenCode startup', async () => {
+        await expect(runOpencode({ permissionMode: 'plan' })).rejects.toThrow(
+            'OpenCode plan mode is only supported in remote mode'
+        );
+        expect(harness.opencodeLoopArgs).toEqual([]);
+    });
+
+    it('allows plan mode for remote OpenCode startup', async () => {
+        await runOpencode({ permissionMode: 'plan', startingMode: 'remote' });
+
+        expect(harness.opencodeLoopArgs[0]?.permissionMode).toBe('plan');
+        expect(harness.opencodeLoopArgs[0]?.startingMode).toBe('remote');
+    });
 
     it('applies model change via set-session-config RPC', async () => {
         await runOpencode({});
@@ -176,6 +192,30 @@ describe('runOpencode set-session-config handler', () => {
         const result = await handler({ permissionMode: 'yolo' }) as Record<string, unknown>;
         const applied = result.applied as Record<string, unknown>;
         expect(applied.permissionMode).toBe('yolo');
+    });
+
+    it('accepts plan mode via set-session-config RPC', async () => {
+        await runOpencode({});
+
+        const handler = getConfigHandler();
+        const result = await handler({ permissionMode: 'plan' }) as Record<string, unknown>;
+        const applied = result.applied as Record<string, unknown>;
+
+        expect(applied.permissionMode).toBe('plan');
+        expect(mockOpencodeSession.setPermissionMode).toHaveBeenLastCalledWith('plan');
+    });
+
+
+
+    it('accepts model reasoning effort via set-session-config RPC', async () => {
+        await runOpencode({});
+
+        const handler = getConfigHandler();
+        const result = await handler({ modelReasoningEffort: 'high' }) as Record<string, unknown>;
+        const applied = result.applied as Record<string, unknown>;
+
+        expect(applied.modelReasoningEffort).toBe('high');
+        expect(mockOpencodeSession.setModelReasoningEffort).toHaveBeenLastCalledWith('high');
     });
 
     it('passes initial model from opts through to the loop', async () => {

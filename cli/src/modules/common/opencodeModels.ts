@@ -25,12 +25,30 @@ function normalizeAvailableModels(rawModels: unknown): OpencodeModelSummary[] {
     const out: OpencodeModelSummary[] = [];
     for (const entry of rawModels) {
         if (!isObject(entry)) continue;
-        const modelId = asString(entry.modelId);
+        const modelId = asString(entry.modelId) ?? asString(entry.value);
         if (!modelId) continue;
         const name = asString(entry.name) ?? undefined;
         out.push(name ? { modelId, name } : { modelId });
     }
     return out;
+}
+
+function extractModelConfigOption(response: Record<string, unknown>): {
+    currentValue: string | null;
+    options: unknown[];
+} | null {
+    if (!Array.isArray(response.configOptions)) return null;
+
+    for (const entry of response.configOptions) {
+        if (!isObject(entry)) continue;
+        if (asString(entry.category) !== 'model') continue;
+        return {
+            currentValue: asString(entry.currentValue),
+            options: Array.isArray(entry.options) ? entry.options : []
+        };
+    }
+
+    return null;
 }
 
 function extractModelsFromResponse(response: unknown): {
@@ -47,16 +65,17 @@ function extractModelsFromResponse(response: unknown): {
     const nestedList = nested?.availableModels;
     const nestedCurrent = nested?.currentModelId;
 
+    const configModelOption = extractModelConfigOption(response);
     const rawModels = Array.isArray(directList)
         ? directList
         : Array.isArray(nestedList)
             ? nestedList
-            : null;
+            : configModelOption?.options ?? null;
     const rawCurrent = typeof directCurrent === 'string'
         ? directCurrent
         : typeof nestedCurrent === 'string'
             ? nestedCurrent
-            : null;
+            : configModelOption?.currentValue ?? null;
 
     return {
         availableModels: normalizeAvailableModels(rawModels),

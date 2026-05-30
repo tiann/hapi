@@ -23,6 +23,10 @@ describe('sessionConfigRpc', () => {
         expect(() => resolveSessionConfigPermissionMode('bypassPermissions', 'gemini')).toThrow('Invalid permission mode')
     })
 
+    it('accepts OpenCode plan permission mode', () => {
+        expect(resolveSessionConfigPermissionMode('plan', 'opencode')).toBe('plan')
+    })
+
     it('accepts null model for agents that support model config', () => {
         expect(resolveNullableSessionModel(null)).toBeNull()
     })
@@ -66,6 +70,25 @@ describe('sessionConfigRpc', () => {
 
         expect(result.applied).toEqual({ permissionMode: 'default' })
         expect(onApply).toHaveBeenCalledWith({})
+    })
+
+
+
+    it('applies nullable model reasoning effort when supported', async () => {
+        const harness = createRpcHarness()
+        const onApply = vi.fn()
+
+        registerSessionConfigRpc({
+            rpcHandlerManager: harness.rpcHandlerManager,
+            flavor: 'opencode',
+            modelReasoningEffortMode: 'nullable',
+            onApply
+        })
+
+        const result = await harness.getHandler()({ modelReasoningEffort: 'high' }) as { applied: Record<string, unknown> }
+
+        expect(result.applied.modelReasoningEffort).toBe('high')
+        expect(onApply).toHaveBeenCalledWith({ modelReasoningEffort: 'high' })
     })
 
     it('rejects model config for agents configured to reject model changes', async () => {

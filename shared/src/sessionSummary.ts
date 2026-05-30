@@ -1,5 +1,15 @@
 import type { Session, WorktreeMetadata } from './schemas'
 
+export type PendingRequestKind = 'permission' | 'input'
+
+const INPUT_REQUEST_TOOLS = new Set([
+    'AskUserQuestion',
+    'ask_user_question',
+    'ExitPlanMode',
+    'exit_plan_mode',
+    'request_user_input'
+])
+
 export type SessionSummaryMetadata = {
     name?: string
     path: string
@@ -19,8 +29,27 @@ export type SessionSummary = {
     metadata: SessionSummaryMetadata | null
     todoProgress: { completed: number; total: number } | null
     pendingRequestsCount: number
+    pendingRequestKinds: PendingRequestKind[]
+    backgroundTaskCount: number
+    futureScheduledMessageCount: number
     model: string | null
     effort: string | null
+}
+
+export function getPendingRequestKinds(session: Session): PendingRequestKind[] {
+    const requests = session.agentState?.requests
+    if (!requests) {
+        return []
+    }
+
+    const kinds = new Set<PendingRequestKind>()
+    for (const request of Object.values(requests)) {
+        kinds.add(INPUT_REQUEST_TOOLS.has(request.tool) ? 'input' : 'permission')
+    }
+
+    return kinds.has('permission') && kinds.has('input')
+        ? ['permission', 'input']
+        : Array.from(kinds)
 }
 
 export function toSessionSummary(session: Session): SessionSummary {
@@ -56,6 +85,9 @@ export function toSessionSummary(session: Session): SessionSummary {
         metadata,
         todoProgress,
         pendingRequestsCount,
+        pendingRequestKinds: getPendingRequestKinds(session),
+        backgroundTaskCount: session.backgroundTaskCount ?? 0,
+        futureScheduledMessageCount: 0,
         model: session.model,
         effort: session.effort
     }

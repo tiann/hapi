@@ -64,7 +64,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         const getPendingCount = (s: Session) => s.agentState?.requests ? Object.keys(s.agentState.requests).length : 0
 
         const namespace = c.get('namespace')
-        const sessions = engine.getSessionsByNamespace(namespace)
+        const sessionRecords = engine.getSessionsByNamespace(namespace)
             .sort((a, b) => {
                 // Active sessions first
                 if (a.active !== b.active) {
@@ -79,7 +79,14 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
                 // Then by updatedAt
                 return b.updatedAt - a.updatedAt
             })
-            .map(toSessionSummary)
+        const scheduledCounts = engine.getFutureScheduledMessageCounts(sessionRecords.map((session) => session.id))
+        const sessions = sessionRecords.map((session) => {
+            const summary = toSessionSummary(session)
+            return {
+                ...summary,
+                futureScheduledMessageCount: scheduledCounts.get(session.id) ?? 0
+            }
+        })
 
         return c.json({ sessions })
     })
@@ -279,6 +286,9 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         if (!isPermissionModeAllowedForFlavor(mode, flavor)) {
             return c.json({ error: 'Invalid permission mode for session flavor' }, 400)
         }
+        if (flavor === 'opencode' && mode === 'plan' && sessionResult.session.agentState?.controlledByUser === true) {
+            return c.json({ error: 'OpenCode plan mode is only supported for remote sessions' }, 409)
+        }
 
         try {
             await engine.applySessionConfig(sessionResult.sessionId, { permissionMode: mode })
@@ -369,11 +379,11 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
 
         const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
-        if (flavor !== 'codex') {
-            return c.json({ error: 'Model reasoning effort is only supported for Codex sessions' }, 400)
+        if (flavor !== 'codex' && flavor !== 'opencode') {
+            return c.json({ error: 'Model reasoning effort is only supported for Codex and OpenCode sessions' }, 400)
         }
         if (sessionResult.session.agentState?.controlledByUser === true) {
-            return c.json({ error: 'Model reasoning effort can only be changed for remote Codex sessions' }, 409)
+            return c.json({ error: 'Model reasoning effort can only be changed for remote sessions' }, 409)
         }
 
         const body = await c.req.json().catch(() => null)

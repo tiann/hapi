@@ -26,7 +26,8 @@ export type SSEScope = 'global' | 'full'
 const MESSAGE_STREAM_EVENT_TYPES = new Set<SyncEvent['type']>([
     'message-received',
     'messages-consumed',
-    'message-cancelled'
+    'message-cancelled',
+    'scheduled-matured'
 ])
 
 export function isGlobalScopedMessageStreamEvent(scope: SSEScope, eventType: SyncEvent['type']): boolean {
@@ -299,9 +300,13 @@ export function useSSE(options: {
                     return previous
                 }
 
-                const summary = toSessionSummary(session)
+                const existingIndex = previous.sessions.findIndex((item) => item.id === session.id)
+                const existing = existingIndex >= 0 ? previous.sessions[existingIndex] : undefined
+                const summary = {
+                    ...toSessionSummary(session),
+                    futureScheduledMessageCount: existing?.futureScheduledMessageCount ?? 0
+                }
                 const nextSessions = previous.sessions.slice()
-                const existingIndex = nextSessions.findIndex((item) => item.id === session.id)
                 if (existingIndex >= 0) {
                     nextSessions[existingIndex] = summary
                 } else {
@@ -336,6 +341,9 @@ export function useSSE(options: {
                     thinking: patch.thinking ?? current.thinking,
                     activeAt: patch.activeAt ?? current.activeAt,
                     updatedAt: patch.updatedAt ?? current.updatedAt,
+                    backgroundTaskCount: Object.prototype.hasOwnProperty.call(patch, 'backgroundTaskCount')
+                        ? patch.backgroundTaskCount ?? 0
+                        : current.backgroundTaskCount,
                     model: Object.prototype.hasOwnProperty.call(patch, 'model') ? patch.model ?? null : current.model,
                     effort: Object.prototype.hasOwnProperty.call(patch, 'effort') ? patch.effort ?? null : current.effort
                 }
@@ -440,7 +448,14 @@ export function useSSE(options: {
             }
 
             if (scope === 'global' && MESSAGE_STREAM_EVENT_TYPES.has(event.type)) {
-                if (event.type === 'message-received') {
+                if (event.type === 'message-received' && event.message.scheduledAt != null) {
+                    queueSessionListInvalidation()
+                }
+                if (
+                    event.type === 'message-cancelled'
+                    || event.type === 'messages-consumed'
+                    || event.type === 'scheduled-matured'
+                ) {
                     queueSessionListInvalidation()
                 }
                 onEventRef.current(event)

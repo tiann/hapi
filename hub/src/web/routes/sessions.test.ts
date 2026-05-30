@@ -167,7 +167,7 @@ describe('sessions routes', () => {
         ])
     })
 
-    it('rejects model reasoning effort changes for non-Codex sessions', async () => {
+    it('rejects model reasoning effort changes for unsupported sessions', async () => {
         const session = createSession({
             metadata: {
                 path: '/tmp/project',
@@ -185,7 +185,7 @@ describe('sessions routes', () => {
 
         expect(response.status).toBe(400)
         expect(await response.json()).toEqual({
-            error: 'Model reasoning effort is only supported for Codex sessions'
+            error: 'Model reasoning effort is only supported for Codex and OpenCode sessions'
         })
         expect(applySessionConfigCalls).toEqual([])
     })
@@ -208,7 +208,7 @@ describe('sessions routes', () => {
 
         expect(response.status).toBe(409)
         expect(await response.json()).toEqual({
-            error: 'Model reasoning effort can only be changed for remote Codex sessions'
+            error: 'Model reasoning effort can only be changed for remote sessions'
         })
         expect(applySessionConfigCalls).toEqual([])
     })
@@ -226,6 +226,31 @@ describe('sessions routes', () => {
         expect(await response.json()).toEqual({ ok: true })
         expect(applySessionConfigCalls).toEqual([
             ['session-1', { modelReasoningEffort: 'xhigh' }]
+        ])
+    })
+
+
+
+    it('applies model reasoning effort changes for remote OpenCode sessions', async () => {
+        const session = createSession({
+            metadata: {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'opencode'
+            }
+        })
+        const { app, applySessionConfigCalls } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/model-reasoning-effort', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ modelReasoningEffort: 'high' })
+        })
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({ ok: true })
+        expect(applySessionConfigCalls).toEqual([
+            ['session-1', { modelReasoningEffort: 'high' }]
         ])
     })
 
@@ -440,6 +465,49 @@ describe('sessions routes', () => {
         const response = await app.request('/api/sessions/session-1/opencode-models')
 
         expect(response.status).toBe(400)
+    })
+
+    it('rejects OpenCode plan mode changes for local sessions', async () => {
+        const session = createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'opencode' },
+            agentState: {
+                controlledByUser: true,
+                requests: {},
+                completedRequests: {}
+            }
+        })
+        const { app, applySessionConfigCalls } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/permission-mode', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ mode: 'plan' })
+        })
+
+        expect(response.status).toBe(409)
+        expect(await response.json()).toEqual({
+            error: 'OpenCode plan mode is only supported for remote sessions'
+        })
+        expect(applySessionConfigCalls).toEqual([])
+    })
+
+    it('applies OpenCode plan mode changes for remote sessions', async () => {
+        const session = createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'opencode' }
+        })
+        const { app, applySessionConfigCalls } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/permission-mode', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ mode: 'plan' })
+        })
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({ ok: true })
+        expect(applySessionConfigCalls).toEqual([
+            ['session-1', { permissionMode: 'plan' }]
+        ])
     })
 
     it('applies permission mode changes for inactive sessions', async () => {

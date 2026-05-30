@@ -7,12 +7,14 @@ import type { RpcHandlerManager } from '@/api/rpc/RpcHandlerManager'
 type SessionConfigState<TPermissionMode extends PermissionMode = PermissionMode> = {
     permissionMode?: TPermissionMode
     model?: string | null
+    modelReasoningEffort?: string | null
 }
 
 type RegisterSessionConfigRpcOptions<TPermissionMode extends PermissionMode = PermissionMode> = {
     rpcHandlerManager: RpcHandlerManager
     flavor: AgentFlavor
     modelMode?: 'nullable' | 'ignore' | 'reject'
+    modelReasoningEffortMode?: 'nullable' | 'ignore' | 'reject'
     appliedFallback?: () => Record<string, unknown>
     onApply: (config: SessionConfigState<TPermissionMode>) => void
     onAfterApply?: () => void
@@ -43,6 +45,7 @@ export function registerSessionConfigRpc<TPermissionMode extends PermissionMode>
     rpcHandlerManager,
     flavor,
     modelMode = 'reject',
+    modelReasoningEffortMode = 'reject',
     appliedFallback,
     onApply,
     onAfterApply
@@ -52,7 +55,7 @@ export function registerSessionConfigRpc<TPermissionMode extends PermissionMode>
             throw new Error('Invalid session config payload')
         }
 
-        const config = payload as { permissionMode?: unknown; model?: unknown }
+        const config = payload as { permissionMode?: unknown; model?: unknown; modelReasoningEffort?: unknown }
         const applied: Record<string, unknown> = {}
         const next: SessionConfigState<TPermissionMode> = {}
 
@@ -68,6 +71,17 @@ export function registerSessionConfigRpc<TPermissionMode extends PermissionMode>
             if (modelMode === 'nullable') {
                 next.model = resolveNullableSessionModel(config.model)
                 applied.model = next.model
+            }
+        }
+
+
+        if (config.modelReasoningEffort !== undefined) {
+            if (modelReasoningEffortMode === 'reject') {
+                throw new Error('Invalid model reasoning effort')
+            }
+            if (modelReasoningEffortMode === 'nullable') {
+                next.modelReasoningEffort = resolveNullableSessionModel(config.modelReasoningEffort)
+                applied.modelReasoningEffort = next.modelReasoningEffort
             }
         }
 

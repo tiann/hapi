@@ -18,6 +18,9 @@
         "./voice": "./src/voice.ts"
     },
     "sideEffects": false,
+    "scripts": {
+        "test": "bun test"
+    },
     "dependencies": {
         "zod": "^4.2.1"
     }

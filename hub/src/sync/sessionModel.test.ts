@@ -291,6 +291,34 @@ describe('session model', () => {
         })
     })
 
+    it('rejects active session config updates when CLI ignores requested keys', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            { of: () => ({ to: () => ({ emit() {} }) }) } as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            const session = engine.getOrCreateSession(
+                'session-config-ignored',
+                { path: '/tmp/project', host: 'localhost', flavor: 'opencode' },
+                null,
+                'default'
+            )
+            engine.handleSessionAlive({ sid: session.id, time: Date.now() })
+            ;(engine as any).rpcGateway.requestSessionConfig = async () => ({ applied: {} })
+
+            await expect(
+                engine.applySessionConfig(session.id, { modelReasoningEffort: 'high' })
+            ).rejects.toThrow('Session did not apply modelReasoningEffort')
+            expect(engine.getSession(session.id)?.modelReasoningEffort).toBeNull()
+        } finally {
+            engine.stop()
+        }
+    })
+
     it('touches session updatedAt when web sends a message through sync engine', async () => {
         const store = new Store(':memory:')
         const engine = new SyncEngine(

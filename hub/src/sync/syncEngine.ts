@@ -176,6 +176,10 @@ export class SyncEngine {
         return this.sessionCache.getSessionsByNamespace(namespace)
     }
 
+    getFutureScheduledMessageCounts(sessionIds: string[], now: number = Date.now()): Map<string, number> {
+        return this.store.messages.countFutureScheduledBySessionIds(sessionIds, now)
+    }
+
     getSession(sessionId: string): Session | undefined {
         return this.sessionCache.getSession(sessionId) ?? this.sessionCache.refreshSession(sessionId) ?? undefined
     }
@@ -457,6 +461,13 @@ export class SyncEngine {
         const applied = obj.applied
         if (!applied || typeof applied !== 'object') {
             throw new Error('Missing applied session config')
+        }
+
+        const requestedKeys = Object.keys(config) as Array<keyof typeof config>
+        for (const key of requestedKeys) {
+            if (!(key in applied)) {
+                throw new Error(`Session did not apply ${key}`)
+            }
         }
 
         this.sessionCache.applySessionConfig(sessionId, applied)

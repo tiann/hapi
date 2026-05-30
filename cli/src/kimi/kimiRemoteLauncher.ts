@@ -228,6 +228,8 @@ class KimiRemoteLauncher extends RemoteLauncherBase {
             case 'tool_result':
                 this.messageBuffer.addMessage('Tool result received', 'result');
                 break;
+            case 'usage':
+                break;
             case 'plan':
                 this.messageBuffer.addMessage('Plan updated', 'status');
                 break;

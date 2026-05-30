@@ -623,7 +623,7 @@ export function SessionChat(props: {
                         collaborationMode={codexCollaborationModeSupported ? props.session.collaborationMode : undefined}
                         threadGoal={reduced.latestGoal}
                         model={props.session.model}
-                        modelReasoningEffort={agentFlavor === 'codex' ? props.session.modelReasoningEffort : undefined}
+                        modelReasoningEffort={agentFlavor === 'codex' || agentFlavor === 'opencode' ? props.session.modelReasoningEffort : undefined}
                         effort={props.session.effort}
                         agentFlavor={agentFlavor}
                         availableModelOptions={
@@ -658,7 +658,7 @@ export function SessionChat(props: {
                                     : handleModelChange
                         }
                         onModelReasoningEffortChange={
-                            agentFlavor === 'codex' && props.session.active && !controlledByUser
+                            (agentFlavor === 'codex' || agentFlavor === 'opencode') && props.session.active && !controlledByUser
                                 ? handleModelReasoningEffortChange
                                 : undefined
                         }

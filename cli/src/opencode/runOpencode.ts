@@ -19,6 +19,7 @@ export async function runOpencode(opts: {
     startingMode?: 'local' | 'remote';
     permissionMode?: PermissionMode;
     model?: string;
+    modelReasoningEffort?: string | null;
     resumeSessionId?: string;
     existingSessionId?: string;
     workingDirectory?: string;
@@ -33,6 +34,13 @@ export async function runOpencode(opts: {
         opts.startingMode = 'remote';
     }
 
+    const startingMode: 'local' | 'remote' = opts.startingMode
+        ?? (startedBy === 'runner' ? 'remote' : 'local');
+
+    if (opts.permissionMode === 'plan' && startingMode !== 'remote') {
+        throw new Error('OpenCode plan mode is only supported in remote mode');
+    }
+
     const initialState: AgentState = {
         controlledByUser: false
     };
@@ -41,6 +49,7 @@ export async function runOpencode(opts: {
     // Mid-session selections are persisted by the hub via the set-session-config RPC,
     // not by this initial bootstrap.
     const initialModel = opts.model ?? null;
+    const initialModelReasoningEffort = opts.modelReasoningEffort ?? null;
 
     const bootstrap = opts.existingSessionId
         ? await bootstrapExistingSession({
@@ -54,23 +63,23 @@ export async function runOpencode(opts: {
             startedBy,
             workingDirectory,
             agentState: initialState,
-            model: initialModel ?? undefined
+            model: initialModel ?? undefined,
+            modelReasoningEffort: initialModelReasoningEffort ?? undefined
         });
     const { api, session } = bootstrap;
-
-    const startingMode: 'local' | 'remote' = opts.startingMode
-        ?? (startedBy === 'runner' ? 'remote' : 'local');
 
     setControlledByUser(session, startingMode);
 
     const messageQueue = new MessageQueue2<OpencodeMode>((mode) => hashObject({
         permissionMode: mode.permissionMode,
-        model: mode.model ?? null
+        model: mode.model ?? null,
+        modelReasoningEffort: mode.modelReasoningEffort ?? null
     }));
 
     const sessionWrapperRef: { current: OpencodeSession | null } = { current: null };
     let currentPermissionMode: PermissionMode = opts.permissionMode ?? 'default';
     let sessionModel: string | null = initialModel;
+    let sessionModelReasoningEffort: string | null = initialModelReasoningEffort;
     const hookServer = await startOpencodeHookServer({
         onEvent: (event) => {
             const currentSession = sessionWrapperRef.current;
@@ -102,19 +111,21 @@ export async function runOpencode(opts: {
         }
         sessionInstance.setPermissionMode(currentPermissionMode);
         sessionInstance.setModel(sessionModel);
+        sessionInstance.setModelReasoningEffort(sessionModelReasoningEffort);
 
         // Notify hub immediately so the UI reflects the change without
         // waiting for the next 2s keepalive tick.
         sessionInstance.pushKeepAlive();
 
-        logger.debug(`[opencode] Synced session config for keepalive: permissionMode=${currentPermissionMode}, model=${sessionModel ?? '(default)'}`);
+        logger.debug(`[opencode] Synced session config for keepalive: permissionMode=${currentPermissionMode}, model=${sessionModel ?? '(default)'}, modelReasoningEffort=${sessionModelReasoningEffort ?? '(default)'}`);
     };
 
     session.onUserMessage((message, localId) => {
         const formattedText = formatMessageWithAttachments(message.content.text, message.content.attachments);
         const mode: OpencodeMode = {
             permissionMode: currentPermissionMode,
-            model: sessionModel ?? undefined
+            model: sessionModel ?? undefined,
+            modelReasoningEffort: sessionModelReasoningEffort
         };
         messageQueue.push(formattedText, mode, localId);
     });
@@ -129,12 +140,16 @@ export async function runOpencode(opts: {
         rpcHandlerManager: session.rpcHandlerManager,
         flavor: 'opencode',
         modelMode: 'nullable',
+        modelReasoningEffortMode: 'nullable',
         onApply: (config) => {
             if (config.permissionMode !== undefined) {
                 currentPermissionMode = config.permissionMode;
             }
             if (config.model !== undefined) {
                 sessionModel = config.model;
+            }
+            if (config.modelReasoningEffort !== undefined) {
+                sessionModelReasoningEffort = config.modelReasoningEffort;
             }
         },
         onAfterApply: syncSessionMode
@@ -152,10 +167,14 @@ export async function runOpencode(opts: {
             api,
             permissionMode: currentPermissionMode,
             model: sessionModel ?? undefined,
+            modelReasoningEffort: sessionModelReasoningEffort,
             resumeSessionId: opts.resumeSessionId,
             hookServer,
             hookUrl,
             onModeChange: createModeChangeHandler(session),
+            onReasoningEffortRollback: (effort) => {
+                sessionModelReasoningEffort = effort;
+            },
             onSessionReady: (instance) => {
                 sessionWrapperRef.current = instance;
                 syncSessionMode();

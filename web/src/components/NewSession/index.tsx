@@ -73,6 +73,7 @@ export function NewSession(props: {
     useEffect(() => {
         setModel('auto')
         setEffort('auto')
+        setModelReasoningEffort('default')
     }, [agent])
 
     useEffect(() => {
@@ -341,7 +342,7 @@ export function NewSession(props: {
                 ? (opencodeSelectedModel ?? undefined)
                 : (model !== 'auto' ? model : undefined)
             const resolvedEffort = agent === 'claude' && effort !== 'auto' ? effort : undefined
-            const resolvedModelReasoningEffort = agent === 'codex' && modelReasoningEffort !== 'default'
+            const resolvedModelReasoningEffort = (agent === 'codex' || agent === 'opencode') && modelReasoningEffort !== 'default'
                 ? modelReasoningEffort
                 : undefined
             const result = await spawnSession({

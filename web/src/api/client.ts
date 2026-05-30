@@ -538,7 +538,7 @@ export class ApiClient {
         })
     }
 
-    async fetchVoiceToken(options?: { customAgentId?: string; customApiKey?: string }): Promise<{
+    async fetchVoiceToken(options?: { customAgentId?: string; customApiKey?: string; voiceId?: string }): Promise<{
         allowed: boolean
         token?: string
         agentId?: string
@@ -547,6 +547,24 @@ export class ApiClient {
         return await this.request('/api/voice/token', {
             method: 'POST',
             body: JSON.stringify(options || {})
+        })
+    }
+
+    async fetchVoices(): Promise<{ voices: Array<{ id: string; name: string; previewUrl: string; category: string }> }> {
+        return await this.request('/api/voice/voices')
+    }
+
+    async sendVoiceTelemetry(event: {
+        stage: string
+        message: string
+        sessionId?: string
+        voiceId?: string
+        language?: string
+        details?: Record<string, unknown>
+    }): Promise<void> {
+        await this.request('/api/voice/telemetry', {
+            method: 'POST',
+            body: JSON.stringify(event)
         })
     }
 }

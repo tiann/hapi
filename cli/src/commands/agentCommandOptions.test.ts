@@ -26,6 +26,13 @@ describe('parseRemoteAgentCommandOptions', () => {
         ], OPENCODE_PERMISSION_MODES).permissionMode).toBe('default')
     })
 
+    it('accepts OpenCode plan permission mode', () => {
+        expect(parseRemoteAgentCommandOptions([
+            '--permission-mode',
+            'plan'
+        ], OPENCODE_PERMISSION_MODES).permissionMode).toBe('plan')
+    })
+
     it('keeps current unknown-arg behavior by ignoring unrecognized flags', () => {
         expect(parseRemoteAgentCommandOptions([
             '--unknown',
@@ -49,8 +56,16 @@ describe('parseRemoteAgentCommandOptions', () => {
         ], GEMINI_PERMISSION_MODES)).toThrow('Invalid --permission-mode value')
     })
 
+    it('parses model reasoning effort', () => {
+        expect(parseRemoteAgentCommandOptions([
+            '--model-reasoning-effort',
+            'high'
+        ], OPENCODE_PERMISSION_MODES).modelReasoningEffort).toBe('high')
+    })
+
     it('requires values for resume and model flags', () => {
         expect(() => parseRemoteAgentCommandOptions(['--resume'], OPENCODE_PERMISSION_MODES)).toThrow('Missing --resume value')
         expect(() => parseRemoteAgentCommandOptions(['--model'], OPENCODE_PERMISSION_MODES)).toThrow('Missing --model value')
+        expect(() => parseRemoteAgentCommandOptions(['--model-reasoning-effort'], OPENCODE_PERMISSION_MODES)).toThrow('Missing --model-reasoning-effort value')
     })
 })

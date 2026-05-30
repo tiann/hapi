@@ -5,6 +5,7 @@ export type RemoteAgentCommandOptions<TPermissionMode extends PermissionMode> = 
     startingMode?: 'local' | 'remote'
     permissionMode?: TPermissionMode
     model?: string
+    modelReasoningEffort?: string
     resumeSessionId?: string
 }
 
@@ -47,6 +48,12 @@ export function parseRemoteAgentCommandOptions<TPermissionMode extends Permissio
                 throw new Error('Missing --model value')
             }
             options.model = model
+        } else if (arg === '--model-reasoning-effort') {
+            const modelReasoningEffort = args[++i]
+            if (!modelReasoningEffort) {
+                throw new Error('Missing --model-reasoning-effort value')
+            }
+            options.modelReasoningEffort = modelReasoningEffort
         }
     }
 

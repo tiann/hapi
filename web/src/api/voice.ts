@@ -26,6 +26,7 @@ export interface VoiceTokenResponse {
 export interface VoiceTokenRequest {
     customAgentId?: string
     customApiKey?: string
+    voiceId?: string
 }
 
 /**
@@ -47,6 +48,22 @@ export async function fetchVoiceToken(
             allowed: false,
             error: error instanceof Error ? error.message : 'Network error'
         }
+    }
+}
+
+export interface VoiceInfo {
+    id: string
+    name: string
+    previewUrl: string
+    category: string
+}
+
+export async function fetchVoices(api: ApiClient): Promise<VoiceInfo[]> {
+    try {
+        const result = await api.fetchVoices()
+        return result.voices
+    } catch {
+        return []
     }
 }
 

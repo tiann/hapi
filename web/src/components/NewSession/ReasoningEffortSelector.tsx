@@ -10,7 +10,7 @@ export function ReasoningEffortSelector(props: {
 }) {
     const { t } = useTranslation()
 
-    if (props.agent !== 'codex') {
+    if (props.agent !== 'codex' && props.agent !== 'opencode') {
         return null
     }
 
@@ -26,7 +26,7 @@ export function ReasoningEffortSelector(props: {
                 disabled={props.isDisabled}
                 className="w-full px-3 py-2 text-sm rounded-lg border border-[var(--app-divider)] bg-[var(--app-bg)] text-[var(--app-text)] focus:outline-none focus:ring-2 focus:ring-[var(--app-link)] disabled:opacity-50"
             >
-                {CODEX_REASONING_EFFORT_OPTIONS.map((option) => (
+                {CODEX_REASONING_EFFORT_OPTIONS.filter((option) => props.agent === 'opencode' ? option.value !== 'xhigh' : option.value !== 'max').map((option) => (
                     <option key={option.value} value={option.value}>
                         {option.label}
                     </option>

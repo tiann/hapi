@@ -6,6 +6,7 @@ describe('useSSE scope handling', () => {
         expect(isGlobalScopedMessageStreamEvent('global', 'message-received')).toBe(true)
         expect(isGlobalScopedMessageStreamEvent('global', 'messages-consumed')).toBe(true)
         expect(isGlobalScopedMessageStreamEvent('global', 'message-cancelled')).toBe(true)
+        expect(isGlobalScopedMessageStreamEvent('global', 'scheduled-matured')).toBe(true)
     })
 
     it('does not skip session lifecycle events on the global connection', () => {

@@ -200,6 +200,116 @@ describe('SDKToLogConverter', () => {
         })
     })
 
+    describe('Context window propagation', () => {
+        function makeAssistantMessage(): SDKAssistantMessage {
+            return {
+                type: 'assistant',
+                message: {
+                    role: 'assistant',
+                    content: [{ type: 'text', text: 'hi' }],
+                    usage: {
+                        input_tokens: 10,
+                        output_tokens: 20,
+                        cache_creation_input_tokens: 0,
+                        cache_read_input_tokens: 0,
+                        service_tier: 'standard'
+                    }
+                } as any
+            }
+        }
+
+        it('infers 1M contextWindow from [1m] suffix on system.init', () => {
+            const initMsg: SDKSystemMessage = {
+                type: 'system',
+                subtype: 'init',
+                session_id: 'session-1',
+                model: 'claude-opus-4-7[1m]'
+            }
+            converter.convert(initMsg)
+
+            const assistantLog = converter.convert(makeAssistantMessage()) as any
+            expect(assistantLog?.message?.usage?.context_window).toBe(1_000_000)
+        })
+
+        it('infers 200k contextWindow when [1m] suffix is absent', () => {
+            const initMsg: SDKSystemMessage = {
+                type: 'system',
+                subtype: 'init',
+                session_id: 'session-2',
+                model: 'claude-sonnet-4-6'
+            }
+            converter.convert(initMsg)
+
+            const assistantLog = converter.convert(makeAssistantMessage()) as any
+            expect(assistantLog?.message?.usage?.context_window).toBe(200_000)
+        })
+
+        it('refines contextWindow from result.modelUsage and applies to later assistants', () => {
+            const initMsg: SDKSystemMessage = {
+                type: 'system',
+                subtype: 'init',
+                session_id: 'session-3',
+                model: 'claude-opus-4-7[1m]'
+            }
+            converter.convert(initMsg)
+
+            // First assistant gets the 1M estimate from the [1m] suffix
+            const first = converter.convert(makeAssistantMessage()) as any
+            expect(first?.message?.usage?.context_window).toBe(1_000_000)
+
+            // Result message reports authoritative contextWindow (say, 500k)
+            const resultMsg: SDKResultMessage = {
+                type: 'result',
+                subtype: 'success',
+                num_turns: 1,
+                total_cost_usd: 0,
+                duration_ms: 1,
+                duration_api_ms: 1,
+                is_error: false,
+                session_id: 'session-3',
+                modelUsage: {
+                    'claude-opus-4-7[1m]': { contextWindow: 500_000 }
+                }
+            }
+            converter.convert(resultMsg)
+
+            // Subsequent assistant message uses the refined value
+            const second = converter.convert(makeAssistantMessage()) as any
+            expect(second?.message?.usage?.context_window).toBe(500_000)
+        })
+
+        it('does not overwrite an explicit context_window already set by upstream', () => {
+            const initMsg: SDKSystemMessage = {
+                type: 'system',
+                subtype: 'init',
+                session_id: 'session-4',
+                model: 'claude-opus-4-7[1m]'
+            }
+            converter.convert(initMsg)
+
+            const assistantMsg: SDKAssistantMessage = {
+                type: 'assistant',
+                message: {
+                    role: 'assistant',
+                    content: [{ type: 'text', text: 'hi' }],
+                    usage: {
+                        input_tokens: 10,
+                        output_tokens: 20,
+                        context_window: 42
+                    }
+                } as any
+            }
+
+            const log = converter.convert(assistantMsg) as any
+            expect(log?.message?.usage?.context_window).toBe(42)
+        })
+
+        it('leaves usage untouched when no system.init was seen', () => {
+            const log = converter.convert(makeAssistantMessage()) as any
+            expect(log?.message?.usage?.context_window).toBeUndefined()
+        })
+    })
+
     describe('Parent-child relationships', () => {
         it('should track parent UUIDs across messages', () => {
             const msg1: SDKUserMessage = {

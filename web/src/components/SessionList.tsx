@@ -7,10 +7,15 @@ import { useSessionActions } from '@/hooks/mutations/useSessionActions'
 import { SessionActionMenu } from '@/components/SessionActionMenu'
 import { RenameSessionDialog } from '@/components/RenameSessionDialog'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
-import { CopyIcon, CheckIcon } from '@/components/icons'
+import { CopyIcon, CheckIcon, ScheduleIcon } from '@/components/icons'
 import { cn } from '@/lib/utils'
 import { useTranslation } from '@/lib/use-translation'
 import { DEFAULT_SESSION_PREVIEW_LIMIT, useSessionPreviewLimit } from '@/hooks/useSessionPreviewLimit'
+import { AgentFlavorIcon } from '@/components/AgentFlavorIcon'
+import { useSessionListStatusMode } from '@/hooks/useSessionListStatusMode'
+import { classifySessionAttention } from '@/lib/sessionAttention'
+import { getSessionLastSeenAt } from '@/lib/sessionLastSeen'
+import { getAttentionLabel, SessionAttentionIndicator } from '@/components/SessionAttentionIndicator'
 
 type SessionGroup = {
     key: string
@@ -481,45 +486,6 @@ function SessionListSearch(props: {
     )
 }
 
-const FLAVOR_BADGES: Record<string, { label: string; colors: string }> = {
-    claude: {
-        label: 'Cl',
-        colors: 'bg-[#d97706] text-white',
-    },
-    codex: {
-        label: 'Cx',
-        colors: 'bg-[#111827] text-white',
-    },
-    cursor: {
-        label: 'Cu',
-        colors: 'bg-[#0f766e] text-white',
-    },
-    gemini: {
-        label: 'Gm',
-        colors: 'bg-[#2563eb] text-white',
-    },
-    kimi: {
-        label: 'Km',
-        colors: 'bg-[#7c3aed] text-white',
-    },
-    opencode: {
-        label: 'Op',
-        colors: 'bg-[#15803d] text-white',
-    },
-}
-
-function FlavorIcon({ flavor, className }: { flavor?: string | null; className?: string }) {
-    const badge = FLAVOR_BADGES[(flavor ?? 'claude').trim().toLowerCase()] ?? FLAVOR_BADGES.claude
-    return (
-        <span
-            aria-hidden="true"
-            className={`inline-flex items-center justify-center rounded-sm text-[8px] font-semibold leading-none ${badge.colors} ${className ?? 'h-4 w-4'}`}
-        >
-            {badge.label}
-        </span>
-    )
-}
-
 function MachineIcon(props: { className?: string }) {
     return (
         <svg
@@ -561,9 +527,10 @@ function SessionItem(props: {
     showPath?: boolean
     api: ApiClient | null
     selected?: boolean
+    showDetailedStatus?: boolean
 }) {
     const { t } = useTranslation()
-    const { session: s, onSelect, showPath = true, api, selected = false } = props
+    const { session: s, onSelect, showPath = true, api, selected = false, showDetailedStatus = false } = props
     const { haptic } = usePlatform()
     const [menuOpen, setMenuOpen] = useState(false)
     const [menuAnchorPoint, setMenuAnchorPoint] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
@@ -593,6 +560,19 @@ function SessionItem(props: {
 
     const sessionName = getSessionTitle(s)
     const todoProgress = getTodoProgress(s)
+    const attention = useMemo(
+        () => showDetailedStatus
+            ? classifySessionAttention(s, {
+                selected,
+                lastSeenAt: getSessionLastSeenAt(s.id)
+            })
+            : null,
+        [s, selected, showDetailedStatus]
+    )
+    const attentionLabel = attention ? getAttentionLabel(attention, t) : null
+    const scheduledLabel = s.futureScheduledMessageCount > 1
+        ? t('session.item.scheduledMessages', { count: s.futureScheduledMessageCount })
+        : t('session.item.scheduledMessage')
     return (
         <>
             <button
@@ -604,12 +584,22 @@ function SessionItem(props: {
             >
                 <div className={`flex items-center justify-between gap-3 ${!s.active ? 'opacity-50' : ''}`}>
                     <div className="flex items-center gap-2 min-w-0">
-                        <FlavorIcon flavor={s.metadata?.flavor} className="h-4 w-4 shrink-0" />
+                        <AgentFlavorIcon flavor={s.metadata?.flavor} className="h-4 w-4 shrink-0" />
                         <div className={`truncate text-sm font-medium ${s.active ? 'text-[var(--app-fg)]' : 'text-[var(--app-hint)]'}`}>
                             {sessionName}
                         </div>
                         {s.active && s.thinking ? (
                             <LoaderIcon className="h-3.5 w-3.5 shrink-0 text-[var(--app-hint)] animate-spin-slow" />
+                        ) : attention ? (
+                            <SessionAttentionIndicator
+                                attention={attention}
+                                label={attentionLabel ?? ''}
+                            />
+                        ) : null}
+                        {showDetailedStatus && s.futureScheduledMessageCount > 0 ? (
+                            <span title={scheduledLabel} aria-label={scheduledLabel} className="inline-flex shrink-0">
+                                <ScheduleIcon className="h-3.5 w-3.5 text-[var(--app-hint)]" />
+                            </span>
                         ) : null}
                     </div>
                     <div className="flex items-center gap-2 shrink-0 text-xs">
@@ -619,7 +609,7 @@ function SessionItem(props: {
                                 {todoProgress.completed}/{todoProgress.total}
                             </span>
                         ) : null}
-                        {s.pendingRequestsCount > 0 ? (
+                        {!attention && s.pendingRequestsCount > 0 ? (
                             <span className="text-[var(--app-badge-warning-text)]">
                                 {t('session.item.pending')} {s.pendingRequestsCount}
                             </span>
@@ -697,6 +687,8 @@ export function SessionList(props: {
     const { t } = useTranslation()
     const { renderHeader = true, api, selectedSessionId, machineLabelsById = {}, onNewSessionInDirectory } = props
     const { sessionPreviewLimit } = useSessionPreviewLimit()
+    const { sessionListStatusMode } = useSessionListStatusMode()
+    const showDetailedStatus = sessionListStatusMode === 'detailed'
     const [searchQuery, setSearchQuery] = useState('')
     const normalizedQuery = normalizeSearch(searchQuery)
     const isSearching = normalizedQuery.length > 0
@@ -964,6 +956,7 @@ export function SessionList(props: {
                                                                 showPath={false}
                                                                 api={api}
                                                                 selected={s.id === selectedSessionId}
+                                                                showDetailedStatus={showDetailedStatus}
                                                             />
                                                         ))}
                                                         {!isSearching && group.sessions.length > sessionPreviewLimit && (sessionGroupExpanded || hiddenSessionCount > 0) ? (
