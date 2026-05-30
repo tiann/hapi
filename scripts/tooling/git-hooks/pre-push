@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# Block pushing fork-private paths to remotes (harvest resistance).
+set -euo pipefail
+
+if [[ "${HAPI_SKIP_COMMIT_HOOKS:-}" == "1" ]]; then
+    exit 0
+fi
+
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
+
+FORBIDDEN_PATH_RE='^(docs/operator/|docs/plans/|localdocs/|web/public/xr-poc/|\.cursor/rules/operator|AGENTS\.local\.md)'
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [[ -z "${local_ref:-}" || "$local_ref" == *'{'* ]] && continue
+
+  if [[ "$remote_sha" =~ ^0+$ ]]; then
+    range="$local_sha"
+    files="$(git rev-list --objects "$local_sha" 2>/dev/null | git diff-tree --no-commit-id --name-only -r "$local_sha" 2>/dev/null || git ls-tree -r --name-only "$local_sha")"
+  else
+    range="${remote_sha}..${local_sha}"
+    files="$(git diff --name-only "$remote_sha" "$local_sha" 2>/dev/null || true)"
+  fi
+
+  [[ -z "$files" ]] && continue
+
+  bad="$(printf '%s\n' "$files" | grep -E "$FORBIDDEN_PATH_RE" || true)"
+  if [[ -n "$bad" ]]; then
+    echo "pre-push: refusing to push commits that touch fork-private paths to remote" >&2
+    echo "  range: $range" >&2
+    printf '%s\n' "$bad" | sed 's/^/    /' >&2
+    echo "  Private docs stay local or use a different remote. Override: HAPI_SKIP_COMMIT_HOOKS=1" >&2
+    exit 1
+  fi
+
+  # Content scan on outgoing diff (persona / interior routes)
+  if [[ "$remote_sha" =~ ^0+$ ]]; then
+    continue
+  fi
+  if git diff "$remote_sha" "$local_sha" -G'jessica-mood' --quiet -- . 2>/dev/null; then
+    :
+  else
+    echo "pre-push: outgoing diff contains jessica-mood (fork-only route)" >&2
+    git diff "$remote_sha" "$local_sha" -G'jessica-mood' --name-only -- . >&2 || true
+    exit 1
+  fi
+  for pat in 'SOUL_SESSION' 'SOUL\.md' '~/coding/SOUL'; do
+    if ! git diff "$remote_sha" "$local_sha" -G"$pat" --quiet -- . 2>/dev/null; then
+      echo "pre-push: outgoing diff matches forbidden pattern: $pat" >&2
+      exit 1
+    fi
+  done
+done
+
+exit 0

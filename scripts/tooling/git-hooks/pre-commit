@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Fork commit gate — secrets + operator-only paths/strings.
+# Fork commit gate — no harvestable operator/persona material in git.
 # Install: scripts/tooling/install-git-hooks.sh
 set -euo pipefail
 
@@ -15,7 +15,6 @@ if [[ -z "$STAGED" ]]; then
     exit 0
 fi
 
-BRANCH="$(git branch --show-current 2>/dev/null || echo '')"
 FAIL=0
 
 report() {
@@ -23,57 +22,80 @@ report() {
     FAIL=1
 }
 
-# --- forbidden paths (never commit) ---
+# --- forbidden paths: never enter git (any branch) ---
+FORBIDDEN_PREFIXES=(
+    'docs/operator/'
+    'docs/plans/'
+    'localdocs/'
+    'web/public/xr-poc/'
+    '.cursor/rules/operator'
+)
+
 while IFS= read -r path; do
     [[ -z "$path" ]] && continue
+    for prefix in "${FORBIDDEN_PREFIXES[@]}"; do
+        if [[ "$path" == "$prefix"* ]]; then
+            if [[ "${HAPI_ALLOW_OPERATOR_COMMIT:-}" == "1" ]]; then
+                echo "pre-commit: WARN allowing fork-private path (HAPI_ALLOW_OPERATOR_COMMIT=1): $path" >&2
+            else
+                report "fork-private path blocked: $path (override: HAPI_ALLOW_OPERATOR_COMMIT=1)"
+            fi
+        fi
+    done
     case "$path" in
-        localdocs/*|*/localdocs/*)
-            report "refusing to commit localdocs/: $path"
-            ;;
-        .env|.env.*|*/.env|*/.env.*|hub/.env~|*/hub/.env~)
-            report "refusing to commit env file: $path"
+        .env|.env.*|hub/.env|hub/.env.*|*/.env|*/.env.*|hub/.env~|*/hub/.env~)
+            report "env file blocked: $path"
             ;;
         AGENTS.local.md|*/AGENTS.local.md)
-            report "refusing to commit AGENTS.local.md: $path"
+            report "AGENTS.local.md blocked: $path"
             ;;
         *~)
-            report "refusing to commit backup file: $path"
+            report "backup file blocked: $path"
+            ;;
+        *jessica-mood*|*jessica_mood*)
+            report "fork-only route path blocked: $path"
             ;;
     esac
 done <<< "$STAGED"
 
-# --- operator-only paths on upstream PR branches (not fork main / docs branches) ---
-if [[ "$BRANCH" != "main" && "$BRANCH" != driver/integration && "$BRANCH" != docs/* ]]; then
-    while IFS= read -r path; do
-        [[ -z "$path" ]] && continue
-        case "$path" in
-            docs/operator/*|docs/plans/*)
-                report "operator/plans path on PR branch '$BRANCH': $path (use fork main only)"
-                ;;
-        esac
-    done <<< "$STAGED"
-fi
-
-# --- forbidden substrings in staged content (operator / persona leaks) ---
-# Note: ElevenLabs voice name "Jessica" in product code is allowed; block fork-only routes/persona.
-PATTERNS=(
+# --- forbidden content in staged diff (any path) ---
+CONTENT_PATTERNS=(
     'jessica-mood'
+    'jessica_mood'
     'SOUL_SESSION'
-    'SOUL.md'
-    'AGENTS.local.md'
+    'SOUL\.md'
+    '~/coding/SOUL'
+    'AGENTS\.local'
     'localdocs/'
+    'docs/operator/'
+    'docs/plans/'
 )
 
-for pattern in "${PATTERNS[@]}"; do
-    if git diff --cached -G"$pattern" --quiet -- .; then
-        :
-    else
-        report "staged content matches forbidden pattern: $pattern"
-        git diff --cached -G"$pattern" --name-only -- . >&2 || true
+SCAN_PATHS=(hub web cli shared package.json)
+for pattern in "${CONTENT_PATTERNS[@]}"; do
+    if git diff --cached -G"$pattern" --quiet -- "${SCAN_PATHS[@]}" 2>/dev/null; then
+        continue
     fi
+    if [[ "${HAPI_ALLOW_OPERATOR_COMMIT:-}" == "1" ]]; then
+        echo "pre-commit: WARN content match $pattern (HAPI_ALLOW_OPERATOR_COMMIT=1)" >&2
+        continue
+    fi
+    report "staged product content matches: $pattern"
+    git diff --cached -G"$pattern" --name-only -- "${SCAN_PATHS[@]}" 2>/dev/null | sed 's/^/    /' >&2 || true
 done
 
-# --- crude secret patterns in staged diff ---
+# ElevenLabs voice label "Jessica" in product files is OK; block only in hub route files.
+while IFS= read -r path; do
+    [[ -z "$path" ]] && continue
+    case "$path" in
+        hub/*jessica*|web/*jessica-mood*)
+            if git diff --cached -- "$path" 2>/dev/null | grep -qi 'jessica'; then
+                report "jessica reference in fork route file: $path"
+            fi
+            ;;
+    esac
+done <<< "$STAGED"
+
 SECRET_PATTERNS=(
     'CLI_API_TOKEN=[^[:space:]]+'
     'ELEVENLABS_API_KEY=[^[:space:]]+'
@@ -81,24 +103,20 @@ SECRET_PATTERNS=(
     'OPENAI_API_KEY=[^[:space:]]+'
     'sk-[A-Za-z0-9]{20,}'
     'ghp_[A-Za-z0-9]{20,}'
-    'xox[baprs]-[A-Za-z0-9-]{10,}'
 )
 
 for pattern in "${SECRET_PATTERNS[@]}"; do
-    if git diff --cached -G"$pattern" --quiet -- . 2>/dev/null; then
+    if git diff --cached -G"$pattern" --quiet -- "${SCAN_PATHS[@]}" 2>/dev/null; then
         continue
     fi
-    if git diff --cached -G"$pattern" --name-only -- . 2>/dev/null | grep -q .; then
-        report "possible secret in staged diff (pattern: $pattern)"
-        git diff --cached -G"$pattern" --name-only -- . >&2 || true
-    fi
+    report "possible secret in staged product diff ($pattern)"
+    git diff --cached -G"$pattern" --name-only -- "${SCAN_PATHS[@]}" 2>/dev/null | sed 's/^/    /' >&2 || true
 done
-
-# --- commit message (when using commit-msg hook this is separate; cheap check for -m via env) ---
 
 if [[ "$FAIL" -ne 0 ]]; then
     echo "" >&2
-    echo "Bypass only if you know what you are doing: HAPI_SKIP_COMMIT_HOOKS=1 git commit ..." >&2
+    echo "Fork-private material must not land in git (harvest risk on push)." >&2
+    echo "Emergency: HAPI_SKIP_COMMIT_HOOKS=1  |  operator docs only: HAPI_ALLOW_OPERATOR_COMMIT=1" >&2
     exit 1
 fi
 

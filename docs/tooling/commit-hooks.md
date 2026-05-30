@@ -6,32 +6,29 @@ Install once per clone:
 ~/coding/hapi/scripts/tooling/install-git-hooks.sh
 ```
 
-Sets `core.hooksPath` → `scripts/tooling/git-hooks/` (no Husky/npm required).
+Sets `core.hooksPath` → `scripts/tooling/git-hooks/` (pre-commit, commit-msg, **pre-push**).
 
-## What is blocked
+## Harvest resistance
 
-| Gate | Scope |
-|------|--------|
-| **Paths** | `localdocs/`, `.env*`, `AGENTS.local.md`, `*~` |
-| **Operator paths on PR branches** | `docs/operator/`, `docs/plans/` when branch is not `main` / `driver/integration` / `docs/*` |
-| **Persona / fork-only strings** | `jessica-mood`, `SOUL_SESSION`, `SOUL.md`, `localdocs/` in staged content |
-| **Secrets (heuristic)** | `CLI_API_TOKEN=`, `*_API_KEY=`, `sk-`, `ghp_`, etc. in staged diff |
-| **Commit message** | `jessica-mood`, `SOUL.md`, `AGENTS.local`, `Co-authored-by: Cursor` |
+Fork branches on `origin` must not carry **operator canon**, **plans**, **localdocs**, **XR POC**, or **persona routes** — even on `main`. Hooks block **staging** and **push** of that material so clones/remotes are not a harvest target.
 
-**Allowed:** ElevenLabs voice name `Jessica` in product code (`web/src/lib/voices.ts`) — not the same as fork route `jessica-mood`.
+| Layer | Blocks |
+|-------|--------|
+| **pre-commit** | Staging `docs/operator/`, `docs/plans/`, `localdocs/`, `xr-poc`, `.cursor/rules/operator*`, env files, `jessica-mood` paths/content, `SOUL_*` / `SOUL.md`, secrets |
+| **pre-push** | Any **outgoing** commit range that touches those paths or adds `jessica-mood` / SOUL content |
+| **commit-msg** | Same tokens in message body |
 
-## Bypass
+**Allowed in product code:** ElevenLabs voice name `Jessica` in `web/src/lib/voices.ts` (upstream). **Not allowed:** `hub/.../jessica-mood`, interior-note persona wiring, `docs/operator/*`.
 
-```bash
-HAPI_SKIP_COMMIT_HOOKS=1 git commit ...
-```
+## Overrides
 
-Use only for emergencies; never on upstream PR branches.
+| Variable | Use |
+|----------|-----|
+| `HAPI_ALLOW_OPERATOR_COMMIT=1` | One-off commit that must touch `docs/operator/` or `docs/plans/` (still review before push) |
+| `HAPI_SKIP_COMMIT_HOOKS=1` | Emergency only — disables all three hooks |
 
-## Upstream PRs
+**Note:** `docs/operator/` already in historical `main` — hooks stop **new** leaks. To strip from remote history use a separate git history rewrite (not automated here).
 
-Hooks run on every commit in this clone. Upstream PR branches must still pass:
+## Upstream PR branches
 
-```bash
-git diff --name-only upstream/main...HEAD | grep -E '^(docs/operator|docs/plans)' && echo STOP
-```
+Product PRs to `tiann/hapi` must not include fork paths regardless — `git diff --name-only upstream/main...HEAD` should never list `docs/operator/` or `docs/plans/`.
