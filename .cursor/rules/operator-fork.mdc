@@ -9,5 +9,7 @@ This repo is a **fork** of `tiann/hapi`. Root **`AGENTS.md` is intentionally abs
 
 **Read `docs/operator/AGENTS.md`** - single canonical guide (HAPI baseline + fork intent + upstream PR discipline).
 
-- Upstream PR branches: from `upstream/main` only; never include `docs/operator/`, `docs/plans/`, or `AGENTS.md` edits in the PR diff.
+- **New functionality requests:** also read `docs/tooling/new-feature-intake.md`. Orchestrator spawns feature peers with explicit **done vs owned** intake steps (§0 handoff block).
+- **Workspace** = `~/coding/hapi` (mirror). **`hapi-driver`** = runtime on `:3006` via `hapi-active` — not the default instruction root.
+- Upstream PR branches: from `upstream/main` only; never include `docs/operator/`, `docs/plans/`, or root `AGENTS.md` body in the PR diff.
 - Plans: `docs/plans/`.

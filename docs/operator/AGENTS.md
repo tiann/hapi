@@ -45,8 +45,11 @@ ElevenLabs ConvAI today: handoff OK, readback weak, payment, no mode machine. Ta
 
 | Doc | Purpose |
 |-----|---------|
-| **`docs/operator/AGENTS.md`** | This file |
-| `docs/plans/*` | Integration plans, PR A-F |
+| **`docs/operator/AGENTS.md`** | This file (fork agent canon) |
+| [`docs/tooling/new-feature-intake.md`](../tooling/new-feature-intake.md) | **New behavior requests** — discovery, spawn handoff, soup vs clean, gates before operator test |
+| `docs/tooling/driver-soup.md` | Daily driver manifest, `hapi-active`, worktrees |
+| `docs/plans/*` | Integration plans, PR A-F; peer agent: `2026-05-30-peer-agent-offering.md` |
+| `docs/operator/xr/*` | **XR only (private):** work graph + mindmap visualization epic — start at `xr/work-graph-and-visualization.md` |
 | `docs/operator-local-tooling.md` | `localdocs/`, machine indexes |
 | `docs/dogfood/*.md` | Voice evidence for upstream PR bodies |
 
@@ -294,3 +297,21 @@ Vitest; `*.test.ts` next to source; hub + cli tests; no web tests currently.
 5. **Upstream first** - general fixes → upstream PR.
 6. **Maintainer canon read-only** - never PR edits to `AGENTS.md`, `CONTRIBUTING.md`, root `README.md`.
 7. **Fork agent doc is here only** - root `AGENTS.md` must not exist on fork `main`.
+
+---
+
+## New functionality intake
+
+When the operator asks for **new product behavior**, follow [`docs/tooling/new-feature-intake.md`](../tooling/new-feature-intake.md) end-to-end.
+
+**Orchestrator** completes steps 1-3 (and usually 4-5), then spawns a **feature peer** with the mandatory handoff block in that doc (completed steps vs peer-owned steps).
+
+**Feature peer** implements in `~/coding/hapi-<name>` — not in `~/coding/hapi-driver` by hand. Pass §6 (tests, cold review, Playwright) **before** asking the operator to browser-test. Upstream PR only after operator dogfood approval (§8).
+
+**Instruction roots:** agents read **this file** and tooling docs from the **`~/coding/hapi` workspace**, plus `~/coding/AGENTS.local.md`. The **daily driver** (`~/coding/hapi-driver`) is what **`hapi-active` runs** — not where IDE rules come from unless that tree is the opened workspace.
+
+---
+
+## Peer spawn handoff (required)
+
+Do not spawn a feature peer without filling the template in [`new-feature-intake.md` §0](../tooling/new-feature-intake.md#0--feature-peer-agent--mandatory-handoff). Minimum: parent session id, playback summary, which steps are **DONE** vs **peer-owned**, worktree path, demo topology (soup vs clean).

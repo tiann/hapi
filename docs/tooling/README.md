@@ -142,7 +142,7 @@ Then read both tooling docs if anything changed since last session.
 
 ## Session-start checklist (feature agents)
 
-1. Read repo [`AGENTS.md`](../AGENTS.md) — [New functionality intake](../AGENTS.md#new-functionality-intake) when the operator requests new behavior.
+1. Read [`docs/operator/AGENTS.md`](../operator/AGENTS.md) (fork canon). For new behavior, read [new-feature-intake.md](./new-feature-intake.md) (orchestrator handoff §0).
 2. Read repo `AGENTS.local.md` (or `~/coding/AGENTS.local.md`).
 3. Confirm `git branch --show-current` and `pwd` — worktree, not main checkout.
 4. Skim [new-feature-intake.md](./new-feature-intake.md) for soup vs clean demo and §6 gates (tests, cold review, Playwright **before** operator browser test).

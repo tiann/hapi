@@ -44,15 +44,67 @@ flowchart TD
 
 ## Step-by-step
 
-### 0 — Feature peer agent
+### 0 — Feature peer agent + mandatory handoff
 
-When intake starts, spawn (or hand off to) a **dedicated feature peer** that:
+When intake starts, spawn (or hand off to) a **dedicated feature peer**. The **orchestrator prompt is not optional** — it must list **which steps are already done** and **which steps the peer owns**.
 
-- Records the **parent session id** and operator request verbatim
-- Does not edit `~/coding/hapi-driver` by hand
-- Reports back to the orchestrator with evidence (search results, demo URL, test output)
+Copy and fill this block (do not spawn a peer with only "implement X"):
+
+```markdown
+## Parent
+- Orchestrator session: <cursor-session-id or HAPI session URL>
+- Operator request: <verbatim>
+
+## Intake status (orchestrator completed)
+- [ ] 1 Code search — DONE: <paths or "none found">
+- [ ] 2 Upstream search — DONE: <issue/PR links or "no match">
+- [ ] 3 Playback — DONE: operator confirmed on <date>
+- [ ] 4 Issue — <issue URL> OR spike-only (no issue yet)
+- [ ] 5 Demo topology — <soup | clean> — <port/URL if already provisioned>
+
+## Your assignment (feature peer)
+- Own steps: **<e.g. 5 implementation + 6 gates + iterate until 7 handoff>**
+- Do NOT redo: **<list completed step numbers>**
+- Worktree: `~/coding/hapi-<name>` @ branch `<branch>` (create if missing)
+- Do NOT edit `~/coding/hapi-driver` by hand
+- Read: `docs/operator/AGENTS.md` + this file (`docs/tooling/new-feature-intake.md`)
+- Before operator browser test: pass §6 (typecheck, test, cold review, Playwright)
+- Report back to orchestrator with: demo URLs, screenshot path, test output, diff stat
+
+## Links
+- Issue: ...
+- Playback summary: ...
+```
 
 One feature → one worktree → one peer. Do not share worktrees across agents.
+
+---
+
+## Where agents read instructions (not the daily driver)
+
+Confusion is common: **`hapi-active` → `~/coding/hapi-driver` is the running hub/runner**, not where Cursor rules usually live.
+
+| Source | Path | Applies when |
+|--------|------|----------------|
+| **Fork agent canon** | [`docs/operator/AGENTS.md`](../operator/AGENTS.md) | Workspace is `~/coding/hapi` (primary mirror). **Start here** on this fork. |
+| **Intake playbook** | This file | New product behavior (steps 0-8). |
+| **Tooling / soup** | [`driver-soup.md`](./driver-soup.md), [`README.md`](./README.md) | Manifest, rebuild, `hapi-use-driver`, worktrees. |
+| **Operator local (gitignored)** | `~/coding/AGENTS.local.md`, optional `AGENTS.local.md` in repo | Machine voice, pre-PR checklist, worktree discipline. Never upstream. |
+| **Global persona** | `~/coding/SOUL.md` | User-facing tone (never cite in PRs). |
+| **Upstream-style root `AGENTS.md`** | Only on **`upstream/main`** / `tiann/hapi` | Not used on fork `main` (fork deletes or stubs it). Do not treat upstream root copy as fork canon. |
+| **`cli/AGENTS.md`** | Package scope | Extra rules when the agent's focus is `cli/` only. |
+| **Daily driver tree** | `~/coding/hapi-driver` | **Runtime / served UI** after `hapi-driver-rebuild` + `hapi-use-driver`. **Not** the default instruction root unless you explicitly open that folder as the IDE workspace. |
+
+**Where to edit code**
+
+| Goal | Edit in |
+|------|---------|
+| Upstream PR | `~/coding/hapi-<feature>` worktree, branch from `upstream/main` |
+| Mirror / docs | `~/coding/hapi` (primary checkout) |
+| Soup on `:3006` | Manifest merge only — `hapi-driver-rebuild`, never hand-edit driver |
+| Try feature in browser | Whatever `readlink -f ~/coding/hapi-active` points at (usually driver after `hapi-use-driver`) |
+
+**Peer agents** spawned from an orchestrator inherit **files on disk** in the workspace (`~/coding/hapi`), not the orchestrator's chat memory. They only know completed intake steps if the handoff block above says so.
 
 ### 1 — Code search (mandatory)
 
