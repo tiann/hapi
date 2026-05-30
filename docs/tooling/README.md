@@ -27,6 +27,7 @@ Feature agents should **read the relevant doc below at session start**; meta bot
 | Doc | Purpose |
 |-----|---------|
 | [new-feature-intake.md](./new-feature-intake.md) | **Operator requests new behavior** — discovery, playback, soup vs clean demo, gates before dogfood, PR after approval |
+| `scripts/tooling/hapi-sync-fork-main.sh` | Keep `~/coding/hapi` `main` = upstream + fork docs |
 | [worktree-testing.md](./worktree-testing.md) | `hapi-active` symlink, `hapi-use-worktree`, service swing |
 | [driver-soup.md](./driver-soup.md) | Daily driver manifest, merge-train PR worktrees, garden vs soup |
 | [pr-review-loop.md](./pr-review-loop.md) | Pre-PR verification + cold review; pre-push open-PR gate; post-push PR comment poll |
@@ -103,7 +104,16 @@ cd web && bun run build   # before hub UI test
 
 Meta bot does not merge or declare "done" without evidence from these (or the repo's documented subset for a given change).
 
-### 5. Documentation maintenance
+### 5. Fork `main` sync (mandatory cadence)
+
+```bash
+hapi-sync-fork-main              # after upstream merges
+hapi-sync-fork-main --check-only # before driver rebuild / intake (also enforced by hapi-driver-rebuild)
+```
+
+Push `origin main` after sync. Fork `main` must stay **upstream/main + fork-only docs** — see [driver-soup.md](./driver-soup.md).
+
+### 6. Documentation maintenance (tooling docs)
 
 When tooling behavior changes, meta bot updates **in the same change**:
 
@@ -113,7 +123,7 @@ When tooling behavior changes, meta bot updates **in the same change**:
 
 Keep [pr-review-loop.md](./pr-review-loop.md) honest about IDE vs CLI hook support.
 
-### 6. Worktree lifecycle
+### 7. Worktree lifecycle
 
 After merge:
 

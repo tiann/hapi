@@ -29,6 +29,8 @@ upstream  →  https://github.com/tiann/hapi.git
 origin    →  https://github.com/heavygee/hapi.git
 ```
 
+**Fork `main` mirror:** after upstream activity run `hapi-sync-fork-main` (in `scripts/tooling/`) and `git push origin main`. Primary checkout `~/coding/hapi` must contain **upstream product code + fork docs** — not docs-only drift. `hapi-driver-rebuild` refuses if `main` is behind `upstream/main`.
+
 - Extend upstream; PR-sized slices; default path unchanged when new code off
 - **Never modify maintainer canon** in upstream PRs - see § Upstream file boundaries
 - **Upstream PR branches** start from `upstream/main` only - product code diffs, nothing fork-local

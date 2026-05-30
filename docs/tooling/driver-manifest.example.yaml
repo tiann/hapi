@@ -7,8 +7,7 @@
 base: upstream/main
 
 layers:
-  # Current daily-driver soup: pluggable voice + session list attention
+  # Open upstream PRs / fork branches only (drop when merged to upstream/main)
   - branch: feat/pluggable-voice-backend
-  - pr: 699
 
   # Add unmerged PRs / branches below (top merges last):

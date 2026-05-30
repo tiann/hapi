@@ -79,10 +79,16 @@ hapi-use-driver   # restarts hapi-hub + hapi-runner together
 
 ### When upstream moves
 
-1. Edit manifest (drop merged PRs, add new ones)
-2. `hapi-driver-rebuild --build-web --verify`
-3. Garden smoke: `curl -sf http://127.0.0.1:3006/health` + quick VR/web check
-4. Log drift in `~/coding/hapi-garden/GARDEN_LOGBOOK.md` if API changed
+1. **Sync fork mirror:** `hapi-sync-fork-main` then `git push origin main`
+2. Edit manifest — drop layers merged to `upstream/main`
+3. `hapi-driver-rebuild --build-web --verify` (refuses if fork `main` is behind upstream)
+4. `hapi-use-driver` when ready
+5. Garden smoke: `curl -sf http://127.0.0.1:3006/health` + quick web/VR check
+6. Log drift in `~/coding/hapi-garden/GARDEN_LOGBOOK.md` if API changed
+
+### Keeping fork `main` truthful
+
+Fork `main` = **`upstream/main` + fork-only docs/plans**. After upstream merges: run `hapi-sync-fork-main`. Meta bot: weekly `--check-only` even if idle.
 
 ---
 
