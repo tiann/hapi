@@ -2,6 +2,8 @@
 set -euo pipefail
 
 MSG_FILE="${1:?}"
+ROOT="$(git rev-parse --show-toplevel)"
+LEAK_CHECK="$ROOT/scripts/tooling/check-operator-leaks.sh"
 # Cursor may append Co-authored-by trailers; do not treat those as operator leaks.
 MSG="$(grep -viE '^[[:space:]]*co-authored-by:' "$MSG_FILE" || true)"
 
@@ -13,6 +15,10 @@ if printf '%s' "$MSG" | grep -qiE \
     'jessica-mood|jessica_mood|SOUL\.md|SOUL_SESSION|AGENTS\.local|docs/operator/|docs/plans/|localdocs/|co-authored-by:[[:space:]]*cursor'; then
     echo "commit-msg: forbidden reference in message (persona / fork-private)" >&2
     exit 1
+fi
+
+if [[ -x "$LEAK_CHECK" ]]; then
+    printf '%s' "$MSG" | "$LEAK_CHECK" --stdin || exit 1
 fi
 
 exit 0

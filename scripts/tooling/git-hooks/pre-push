@@ -8,6 +8,7 @@ fi
 
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
+LEAK_CHECK="$ROOT/scripts/tooling/check-operator-leaks.sh"
 
 FORBIDDEN_PATH_RE='^(docs/operator/|docs/plans/|localdocs/|web/public/xr-poc/|\.cursor/rules/operator|AGENTS\.local\.md)'
 
@@ -51,6 +52,10 @@ while read -r local_ref local_sha remote_ref remote_sha; do
       exit 1
     fi
   done
+
+  if [[ -x "$LEAK_CHECK" ]]; then
+    "$LEAK_CHECK" --git-range "$remote_sha" "$local_sha" || exit 1
+  fi
 done
 
 exit 0

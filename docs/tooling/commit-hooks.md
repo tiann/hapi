@@ -14,9 +14,9 @@ Fork branches on `origin` must not carry **operator canon**, **plans**, **locald
 
 | Layer | Blocks |
 |-------|--------|
-| **pre-commit** | Staging `docs/operator/`, `docs/plans/`, `localdocs/`, `xr-poc`, `.cursor/rules/operator*`, env files, `jessica-mood` paths/content, `SOUL_*` / `SOUL.md`, secrets |
-| **pre-push** | Any **outgoing** commit range that touches those paths or adds `jessica-mood` / SOUL content |
-| **commit-msg** | Same tokens in message body |
+| **pre-commit** | Staging `docs/operator/`, `docs/plans/`, `localdocs/`, `xr-poc`, `.cursor/rules/operator*`, env files, `jessica-mood` paths/content, `SOUL_*` / `SOUL.md`, secrets, **operator tailnet hostnames** (`*.tail9944ee.ts.net`) |
+| **pre-push** | Any **outgoing** commit range that touches those paths or adds `jessica-mood` / SOUL / tailnet URL content |
+| **commit-msg** | Same tokens in message body + tailnet URLs |
 
 **Allowed in product code:** ElevenLabs voice name `Jessica` in `web/src/lib/voices.ts` (upstream). **Not allowed:** `hub/.../jessica-mood`, interior-note persona wiring, `docs/operator/*`.
 
@@ -28,6 +28,17 @@ Fork branches on `origin` must not carry **operator canon**, **plans**, **locald
 | `HAPI_SKIP_COMMIT_HOOKS=1` | Emergency only — disables all three hooks |
 
 **Note:** `docs/operator/` already in historical `main` — hooks stop **new** leaks. To strip from remote history use a separate git history rewrite (not automated here).
+
+## Public GitHub text (issues / PRs)
+
+Git hooks do **not** run on `gh issue create`. Before filing upstream issues or PRs:
+
+```bash
+scripts/tooling/gh-public-body-check.sh /tmp/issue-body.md
+gh issue create --body-file /tmp/issue-body.md ...
+```
+
+Blocks operator MagicDNS hostnames (e.g. `hapi.tail9944ee.ts.net`). Use generic wording: "operator tailnet hub".
 
 ## Upstream PR branches
 

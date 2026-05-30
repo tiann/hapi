@@ -159,8 +159,9 @@ Ask explicitly: **soup** or **clean instance**?
 - Add branch to `~/.config/hapi/driver-manifest.yaml`
 - `hapi-driver-rebuild --build-web --verify`
 - `hapi-use-driver` when ready (**restarts hub + runner on :3006; kills live sessions**)
+- **Do not** run `hapi-watch-activate-driver` from this orchestrator/agent turn — it counts this session as WORKING until the turn ends ([watch-activate-driver.md](./watch-activate-driver.md)). Operator runs watch from an external shell, or `HAPI_STACK_SWITCH_YES=1 hapi-use-driver` when health shows WORKING=0.
 
-Operator URL: existing tailnet hub (e.g. `https://hapi.tail9944ee.ts.net`) after swing.
+Operator URL: existing tailnet hub (hostname in `~/.hapi/hub.env` / operator docs only — never in upstream issues) after swing.
 
 #### Clean (upstream/main only)
 

@@ -5,6 +5,7 @@ set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
+LEAK_CHECK="$ROOT/scripts/tooling/check-operator-leaks.sh"
 
 if [[ "${HAPI_SKIP_COMMIT_HOOKS:-}" == "1" ]]; then
     exit 0
@@ -112,6 +113,12 @@ for pattern in "${SECRET_PATTERNS[@]}"; do
     report "possible secret in staged product diff ($pattern)"
     git diff --cached -G"$pattern" --name-only -- "${SCAN_PATHS[@]}" 2>/dev/null | sed 's/^/    /' >&2 || true
 done
+
+if [[ -x "$LEAK_CHECK" ]]; then
+    if ! "$LEAK_CHECK" --git-staged; then
+        FAIL=1
+    fi
+fi
 
 if [[ "$FAIL" -ne 0 ]]; then
     echo "" >&2
