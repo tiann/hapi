@@ -1,5 +1,5 @@
 import type { SyntaxHighlighterProps } from '@assistant-ui/react-markdown'
-import { useEffect, useId, useState, type ComponentPropsWithoutRef, type SyntheticEvent } from 'react'
+import { useEffect, useId, useMemo, useState, type ComponentPropsWithoutRef, type SyntheticEvent } from 'react'
 import { ZoomableLightbox } from '@/components/ZoomableLightbox'
 import { cn } from '@/lib/utils'
 import { useTranslation } from '@/lib/use-translation'
@@ -77,6 +77,30 @@ export async function renderMermaidSvg(
     return result.svg
 }
 
+/** Clone markup for lightbox so url(#id) / defs are not shared with the inline copy. */
+export function uniqueifyMermaidSvgIds(svg: string, scope: string): string {
+    const prefix = `mermaid-lb-${scope}-`
+    const idRegex = /\bid="([^"]+)"/g
+    const ids: string[] = []
+    idRegex.lastIndex = 0
+    let match: RegExpExecArray | null = idRegex.exec(svg)
+    while (match !== null) {
+        ids.push(match[1])
+        match = idRegex.exec(svg)
+    }
+
+    const uniqueIds = [...new Set(ids)].sort((a, b) => b.length - a.length)
+    let result = svg
+    for (const id of uniqueIds) {
+        const next = `${prefix}${id}`
+        result = result.replaceAll(`id="${id}"`, `id="${next}"`)
+        result = result.replaceAll(`url(#${id})`, `url(#${next})`)
+        result = result.replaceAll(`href="#${id}"`, `href="#${next}"`)
+        result = result.replaceAll(`xlink:href="#${id}"`, `xlink:href="#${next}"`)
+    }
+    return result
+}
+
 function MermaidFallback(props: ComponentPropsWithoutRef<'pre'> & { code: string }) {
     const { code, className, ...rest } = props
     return (
@@ -110,6 +134,10 @@ export function MermaidDiagram(props: SyntaxHighlighterProps) {
     const id = useId().replace(/:/g, '-')
     const openLabel = t('mermaid.openFullscreen')
     const viewerLabel = t('mermaid.viewerTitle')
+    const lightboxSvg = useMemo(
+        () => (svg ? uniqueifyMermaidSvgIds(svg, id) : null),
+        [svg, id],
+    )
 
     const stopEvent = (event: SyntheticEvent) => {
         event.stopPropagation()
@@ -192,10 +220,10 @@ export function MermaidDiagram(props: SyntaxHighlighterProps) {
                 onClose={() => setLightboxOpen(false)}
                 title={viewerLabel}
                 ariaLabel={viewerLabel}
-                fitContentKey={lightboxOpen ? svg : null}
+                fitContentKey={lightboxOpen ? lightboxSvg : null}
             >
                 <MermaidSvgContent
-                    svg={svg}
+                    svg={lightboxSvg ?? svg}
                     className="[&_svg]:block [&_svg]:h-auto [&_svg]:max-h-none [&_svg]:max-w-none [&_svg]:w-auto"
                 />
             </ZoomableLightbox>
