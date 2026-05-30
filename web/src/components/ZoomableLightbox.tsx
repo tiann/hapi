@@ -5,7 +5,16 @@ const MIN_SCALE = 0.25
 const MAX_SCALE = 8
 const SCALE_STEP = 0.25
 const BACKDROP_CLICK_MAX_MOVEMENT = 4
-const FIT_PADDING_PX = 40
+/** Edge margin when fitting to the device screen (not the inner panel only). */
+const SCREEN_FIT_PADDING_PX = 12
+
+function getScreenFitSize(): { width: number; height: number } {
+    const viewport = window.visualViewport
+    if (viewport) {
+        return { width: viewport.width, height: viewport.height }
+    }
+    return { width: window.innerWidth, height: window.innerHeight }
+}
 
 type Point = { x: number; y: number }
 
@@ -49,7 +58,7 @@ export type ZoomableLightboxProps = {
     children: ReactNode
     /** When set, re-fit viewport when this value changes (e.g. after async SVG load). */
     fitContentKey?: string | number | null
-    /** Compute initial scale to fill the viewport (default true). */
+    /** Compute initial scale to fill the device screen (default true). */
     fitOnOpen?: boolean
 }
 
@@ -88,16 +97,16 @@ export function ZoomableLightbox(props: ZoomableLightboxProps) {
             return
         }
 
-        const viewport = viewportRef.current
         const content = contentRef.current
-        if (!viewport || !content) return
+        if (!content) return
 
         const contentSize = measureContentSize(content)
         if (!contentSize) return
 
-        const viewportRect = viewport.getBoundingClientRect()
-        const fitWidth = (viewportRect.width - FIT_PADDING_PX) / contentSize.width
-        const fitHeight = (viewportRect.height - FIT_PADDING_PX) / contentSize.height
+        const screen = getScreenFitSize()
+        const pad = SCREEN_FIT_PADDING_PX * 2
+        const fitWidth = (screen.width - pad) / contentSize.width
+        const fitHeight = (screen.height - pad) / contentSize.height
         const fitScale = clampScale(Math.min(fitWidth, fitHeight))
 
         baseScaleRef.current = fitScale
@@ -283,51 +292,14 @@ export function ZoomableLightbox(props: ZoomableLightboxProps) {
 
     return (
         <div
-            className="fixed inset-0 z-50 flex flex-col bg-black/90 text-white"
+            className="fixed inset-0 z-50 h-[100dvh] w-full bg-black text-white"
             role="dialog"
             aria-modal="true"
             aria-label={ariaLabel}
         >
-            <div className="flex items-center gap-2 border-b border-white/10 bg-black/50 px-3 py-2">
-                <div className="min-w-0 flex-1 truncate text-sm font-medium">{title ?? ariaLabel}</div>
-                <button
-                    type="button"
-                    onClick={() => zoomBy(-SCALE_STEP)}
-                    className="rounded bg-white/10 px-3 py-1 text-sm hover:bg-white/20 disabled:opacity-40"
-                    disabled={scale <= MIN_SCALE}
-                    title="Zoom out"
-                >
-                    −
-                </button>
-                <button
-                    type="button"
-                    onClick={resetView}
-                    className="rounded bg-white/10 px-3 py-1 text-sm hover:bg-white/20"
-                    title="Fit to screen"
-                >
-                    {zoomLabel}
-                </button>
-                <button
-                    type="button"
-                    onClick={() => zoomBy(SCALE_STEP)}
-                    className="rounded bg-white/10 px-3 py-1 text-sm hover:bg-white/20 disabled:opacity-40"
-                    disabled={scale >= MAX_SCALE}
-                    title="Zoom in"
-                >
-                    +
-                </button>
-                <button
-                    type="button"
-                    onClick={closeViewer}
-                    className="flex h-8 w-8 items-center justify-center rounded bg-white/10 hover:bg-white/20"
-                    title="Close"
-                >
-                    <CloseIcon className="h-4 w-4" />
-                </button>
-            </div>
             <div
                 ref={viewportRef}
-                className="relative min-h-0 flex-1 cursor-grab touch-none overflow-hidden active:cursor-grabbing"
+                className="absolute inset-0 cursor-grab touch-none overflow-hidden active:cursor-grabbing"
                 onWheel={handleWheel}
                 onPointerDown={handlePointerDown}
                 onPointerMove={handlePointerMove}
@@ -344,6 +316,48 @@ export function ZoomableLightbox(props: ZoomableLightboxProps) {
                     }}
                 >
                     {children}
+                </div>
+            </div>
+            <div
+                className="pointer-events-none absolute inset-x-0 top-0 z-10 pt-[env(safe-area-inset-top,0px)]"
+                onPointerDown={(event) => event.stopPropagation()}
+            >
+                <div className="pointer-events-auto flex items-center gap-2 border-b border-white/10 bg-black/70 px-3 py-2 backdrop-blur-sm">
+                    <div className="min-w-0 flex-1 truncate text-sm font-medium">{title ?? ariaLabel}</div>
+                    <button
+                        type="button"
+                        onClick={() => zoomBy(-SCALE_STEP)}
+                        className="rounded bg-white/10 px-3 py-1 text-sm hover:bg-white/20 disabled:opacity-40"
+                        disabled={scale <= MIN_SCALE}
+                        title="Zoom out"
+                    >
+                        −
+                    </button>
+                    <button
+                        type="button"
+                        onClick={resetView}
+                        className="rounded bg-white/10 px-3 py-1 text-sm hover:bg-white/20"
+                        title="Fit to screen"
+                    >
+                        {zoomLabel}
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => zoomBy(SCALE_STEP)}
+                        className="rounded bg-white/10 px-3 py-1 text-sm hover:bg-white/20 disabled:opacity-40"
+                        disabled={scale >= MAX_SCALE}
+                        title="Zoom in"
+                    >
+                        +
+                    </button>
+                    <button
+                        type="button"
+                        onClick={closeViewer}
+                        className="flex h-8 w-8 items-center justify-center rounded bg-white/10 hover:bg-white/20"
+                        title="Close"
+                    >
+                        <CloseIcon className="h-4 w-4" />
+                    </button>
                 </div>
             </div>
         </div>
