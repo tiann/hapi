@@ -26,6 +26,7 @@ Feature agents should **read the relevant doc below at session start**; meta bot
 
 | Doc | Purpose |
 |-----|---------|
+| [new-feature-intake.md](./new-feature-intake.md) | **Operator requests new behavior** — discovery, playback, soup vs clean demo, gates before dogfood, PR after approval |
 | [worktree-testing.md](./worktree-testing.md) | `hapi-active` symlink, `hapi-use-worktree`, service swing |
 | [driver-soup.md](./driver-soup.md) | Daily driver manifest, merge-train PR worktrees, garden vs soup |
 | [pr-review-loop.md](./pr-review-loop.md) | Pre-PR verification + cold review; pre-push open-PR gate; post-push PR comment poll |
@@ -141,10 +142,12 @@ Then read both tooling docs if anything changed since last session.
 
 ## Session-start checklist (feature agents)
 
-1. Read repo `AGENTS.local.md` (or `~/coding/AGENTS.local.md`).
-2. Confirm `git branch --show-current` and `pwd` — worktree, not main checkout.
-3. Skim [worktree-testing.md](./worktree-testing.md) if touching hub or systemd.
-4. Skim [pr-review-loop.md](./pr-review-loop.md) before push/PR.
+1. Read repo [`AGENTS.md`](../AGENTS.md) — [New functionality intake](../AGENTS.md#new-functionality-intake) when the operator requests new behavior.
+2. Read repo `AGENTS.local.md` (or `~/coding/AGENTS.local.md`).
+3. Confirm `git branch --show-current` and `pwd` — worktree, not main checkout.
+4. Skim [new-feature-intake.md](./new-feature-intake.md) for soup vs clean demo and §6 gates (tests, cold review, Playwright **before** operator browser test).
+5. Skim [worktree-testing.md](./worktree-testing.md) if touching hub or systemd.
+6. Skim [pr-review-loop.md](./pr-review-loop.md) before push/PR (after operator dogfood approval).
 
 ---
 
