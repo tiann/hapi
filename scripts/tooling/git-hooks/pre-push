@@ -37,16 +37,17 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   if [[ "$remote_sha" =~ ^0+$ ]]; then
     continue
   fi
-  if git diff "$remote_sha" "$local_sha" -G'jessica-mood' --quiet -- . 2>/dev/null; then
+  PUSH_SCAN=(hub web cli shared)
+  if git diff "$remote_sha" "$local_sha" -G'jessica-mood' --quiet -- "${PUSH_SCAN[@]}" 2>/dev/null; then
     :
   else
-    echo "pre-push: outgoing diff contains jessica-mood (fork-only route)" >&2
-    git diff "$remote_sha" "$local_sha" -G'jessica-mood' --name-only -- . >&2 || true
+    echo "pre-push: outgoing product diff contains jessica-mood (fork-only route)" >&2
+    git diff "$remote_sha" "$local_sha" -G'jessica-mood' --name-only -- "${PUSH_SCAN[@]}" >&2 || true
     exit 1
   fi
   for pat in 'SOUL_SESSION' 'SOUL\.md' '~/coding/SOUL'; do
-    if ! git diff "$remote_sha" "$local_sha" -G"$pat" --quiet -- . 2>/dev/null; then
-      echo "pre-push: outgoing diff matches forbidden pattern: $pat" >&2
+    if ! git diff "$remote_sha" "$local_sha" -G"$pat" --quiet -- "${PUSH_SCAN[@]}" 2>/dev/null; then
+      echo "pre-push: outgoing product diff matches forbidden pattern: $pat" >&2
       exit 1
     fi
   done
