@@ -818,7 +818,7 @@ describe('session model', () => {
 
             expect(result).toEqual({
                 type: 'error',
-                message: 'Resume session ID unavailable',
+                message: 'Resume session ID unavailable. Start a new session in this directory, or retry after the agent has initialized.',
                 code: 'resume_unavailable'
             })
         } finally {
@@ -1011,7 +1011,39 @@ describe('session model', () => {
 
             expect(engine.resolveLocalResumeTarget(session.id, 'default')).toEqual({
                 type: 'error',
-                message: 'Resume session ID unavailable',
+                message: 'Resume session ID unavailable. Start a new session in this directory, or retry after the agent has initialized.',
+                code: 'resume_unavailable'
+            })
+        } finally {
+            engine.stop()
+        }
+    })
+
+    it('returns resume_unavailable when a cursor session lacks cursorSessionId', () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            const session = engine.getOrCreateSession(
+                'local-resume-cursor-no-id',
+                {
+                    path: '/tmp/project',
+                    host: 'localhost',
+                    machineId: 'machine-1',
+                    flavor: 'cursor'
+                },
+                null,
+                'default'
+            )
+
+            expect(engine.resolveLocalResumeTarget(session.id, 'default')).toEqual({
+                type: 'error',
+                message: 'Resume session ID unavailable. Start a new session in this directory, or retry after the agent has initialized.',
                 code: 'resume_unavailable'
             })
         } finally {

@@ -540,7 +540,11 @@ export class SyncEngine {
 
         const agentSessionId = this.resolveAgentResumeId(session, namespace)
         if (!agentSessionId) {
-            return { type: 'error', message: 'Resume session ID unavailable', code: 'resume_unavailable' }
+            return {
+                type: 'error',
+                message: 'Resume session ID unavailable. Start a new session in this directory, or retry after the agent has initialized.',
+                code: 'resume_unavailable'
+            }
         }
 
         return {
