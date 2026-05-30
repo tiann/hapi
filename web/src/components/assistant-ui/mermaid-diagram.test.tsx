@@ -1,5 +1,7 @@
+import type { ComponentProps } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, render, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { I18nProvider } from '@/lib/i18n-context'
 
 const mermaidMocks = vi.hoisted(() => ({
     initializeMock: vi.fn(),
@@ -20,16 +22,16 @@ vi.mock('mermaid', () => ({
 import { MermaidDiagram } from '@/components/assistant-ui/mermaid-diagram'
 import { MARKDOWN_COMPONENTS_BY_LANGUAGE } from '@/components/assistant-ui/markdown-text'
 
-function renderMermaid(code: string) {
+const defaultComponents = {
+    Pre: (props: ComponentProps<'pre'>) => <pre {...props} />,
+    Code: (props: ComponentProps<'code'>) => <code {...props} />,
+}
+
+function renderDiagram(props: ComponentProps<typeof MermaidDiagram>) {
     return render(
-        <MermaidDiagram
-            code={code}
-            language="mermaid"
-            components={{
-                Pre: (props) => <pre {...props} />,
-                Code: (props) => <code {...props} />,
-            }}
-        />
+        <I18nProvider>
+            <MermaidDiagram {...props} />
+        </I18nProvider>,
     )
 }
 
@@ -41,7 +43,7 @@ describe('MermaidDiagram', () => {
         mermaidMocks.parseMock.mockResolvedValue({ diagramType: 'flowchart-v2' })
         mermaidMocks.renderMock.mockReset()
         mermaidMocks.renderMock.mockResolvedValue({
-            svg: '<svg data-testid="mock-mermaid"></svg>'
+            svg: '<svg data-testid="mock-mermaid"></svg>',
         })
     })
 
@@ -51,7 +53,11 @@ describe('MermaidDiagram', () => {
     })
 
     it('is wired into the shared markdown language overrides and renders svg output', async () => {
-        renderMermaid('graph TD\nA --> B')
+        renderDiagram({
+            code: 'graph TD\nA --> B',
+            language: 'mermaid',
+            components: defaultComponents,
+        })
 
         await waitFor(() => {
             const diagram = document.querySelector('[data-mermaid-diagram][data-rendered="true"]')
@@ -73,7 +79,11 @@ describe('MermaidDiagram', () => {
         document.documentElement.dataset.theme = 'dark'
         mermaidMocks.parseMock.mockResolvedValueOnce(false)
 
-        renderMermaid('graph TD\nA --')
+        renderDiagram({
+            code: 'graph TD\nA --',
+            language: 'mermaid',
+            components: defaultComponents,
+        })
 
         await waitFor(() => {
             const fallback = document.querySelector('.aui-mermaid-fallback')
@@ -90,7 +100,11 @@ describe('MermaidDiagram', () => {
         mermaidMocks.renderMock.mockRejectedValueOnce(new Error('render failed'))
         const code = 'gantt\ndateFormat YYYY-MM-DD\nsection A\nTask :a, 2024-01-01'
 
-        renderMermaid(code)
+        renderDiagram({
+            code,
+            language: 'mermaid',
+            components: defaultComponents,
+        })
 
         await waitFor(() => {
             const fallback = document.querySelector('.aui-mermaid-fallback')
@@ -104,4 +118,42 @@ describe('MermaidDiagram', () => {
         }))
     })
 
+    it('opens a zoomable lightbox when the rendered diagram is clicked', async () => {
+        renderDiagram({
+            code: 'graph TD\nA --> B',
+            language: 'mermaid',
+            components: defaultComponents,
+        })
+
+        await waitFor(() => {
+            expect(document.querySelector('[data-mermaid-diagram][data-rendered="true"]')).toBeTruthy()
+        })
+
+        fireEvent.click(document.querySelector('[data-mermaid-diagram][data-rendered="true"]') as HTMLButtonElement)
+
+        await waitFor(() => {
+            expect(screen.getByRole('dialog', { name: 'Diagram' })).toBeTruthy()
+        })
+
+        expect(mermaidMocks.renderMock).toHaveBeenCalledWith(
+            expect.stringContaining('mermaid-modal-'),
+            'graph TD\nA --> B',
+        )
+    })
+
+    it('does not expose a lightbox trigger when rendering fails', async () => {
+        mermaidMocks.renderMock.mockRejectedValue(new Error('syntax'))
+
+        renderDiagram({
+            code: 'not valid mermaid',
+            language: 'mermaid',
+            components: defaultComponents,
+        })
+
+        await waitFor(() => {
+            expect(document.querySelector('[data-mermaid-diagram][data-rendered="false"]')).toBeTruthy()
+        })
+
+        expect(screen.queryByRole('button', { name: 'Open diagram full screen' })).toBeNull()
+    })
 })

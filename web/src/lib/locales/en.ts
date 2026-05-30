@@ -182,6 +182,12 @@ export default {
   'session.export.toast.success.body': 'Downloaded {filename}',
   'session.export.toast.error.title': 'Export failed',
 
+  // Mermaid diagrams
+  'mermaid.openFullscreen': 'Open diagram full screen',
+  'mermaid.viewerTitle': 'Diagram',
+  'mermaid.loading': 'Loading diagram…',
+  'mermaid.renderError': 'Could not render diagram.',
+
   // Common buttons
   'button.cancel': 'Cancel',
   'button.save': 'Save',
