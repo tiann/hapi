@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useRef, useState, type PointerEvent, type ReactNode, type WheelEvent } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type PointerEvent, type ReactNode, type WheelEvent } from 'react'
 import { CloseIcon } from '@/components/icons'
 
 const MIN_SCALE = 0.25
 const MAX_SCALE = 8
 const SCALE_STEP = 0.25
 const BACKDROP_CLICK_MAX_MOVEMENT = 4
+const FIT_PADDING_PX = 40
 
 type Point = { x: number; y: number }
 
@@ -23,20 +24,44 @@ function getPointCenter(a: Point, b: Point): Point {
     }
 }
 
+function measureContentSize(content: HTMLElement): { width: number; height: number } | null {
+    const svg = content.querySelector('svg')
+    if (svg) {
+        const box = svg.getBoundingClientRect()
+        if (box.width > 0 && box.height > 0) {
+            return { width: box.width, height: box.height }
+        }
+    }
+
+    const rect = content.getBoundingClientRect()
+    if (rect.width > 0 && rect.height > 0) {
+        return { width: rect.width, height: rect.height }
+    }
+
+    return null
+}
+
 export type ZoomableLightboxProps = {
     open: boolean
     onClose: () => void
     title?: string
     ariaLabel: string
     children: ReactNode
+    /** When set, re-fit viewport when this value changes (e.g. after async SVG load). */
+    fitContentKey?: string | number | null
+    /** Compute initial scale to fill the viewport (default true). */
+    fitOnOpen?: boolean
 }
 
 export function ZoomableLightbox(props: ZoomableLightboxProps) {
-    const { open, onClose, title, ariaLabel, children } = props
+    const { open, onClose, title, ariaLabel, children, fitContentKey = null, fitOnOpen = true } = props
     const [scale, setScale] = useState(1)
     const [offset, setOffset] = useState({ x: 0, y: 0 })
     const scaleRef = useRef(scale)
     const offsetRef = useRef(offset)
+    const baseScaleRef = useRef(1)
+    const viewportRef = useRef<HTMLDivElement>(null)
+    const contentRef = useRef<HTMLDivElement>(null)
     const activePointersRef = useRef(new Map<number, Point>())
     const dragRef = useRef<{ pointerId: number; startX: number; startY: number; originX: number; originY: number } | null>(null)
     const pinchRef = useRef<{ startDistance: number; startScale: number; startCenter: Point; origin: Point } | null>(null)
@@ -55,8 +80,33 @@ export function ZoomableLightbox(props: ZoomableLightboxProps) {
         setOffset(next)
     }, [])
 
+    const applyFitScale = useCallback(() => {
+        if (!fitOnOpen) {
+            baseScaleRef.current = 1
+            updateScale(1)
+            updateOffset({ x: 0, y: 0 })
+            return
+        }
+
+        const viewport = viewportRef.current
+        const content = contentRef.current
+        if (!viewport || !content) return
+
+        const contentSize = measureContentSize(content)
+        if (!contentSize) return
+
+        const viewportRect = viewport.getBoundingClientRect()
+        const fitWidth = (viewportRect.width - FIT_PADDING_PX) / contentSize.width
+        const fitHeight = (viewportRect.height - FIT_PADDING_PX) / contentSize.height
+        const fitScale = clampScale(Math.min(fitWidth, fitHeight))
+
+        baseScaleRef.current = fitScale
+        updateScale(fitScale)
+        updateOffset({ x: 0, y: 0 })
+    }, [fitOnOpen, updateOffset, updateScale])
+
     const resetView = useCallback(() => {
-        updateScale(1)
+        updateScale(baseScaleRef.current)
         updateOffset({ x: 0, y: 0 })
     }, [updateOffset, updateScale])
 
@@ -66,8 +116,10 @@ export function ZoomableLightbox(props: ZoomableLightboxProps) {
         dragRef.current = null
         pinchRef.current = null
         backdropPressRef.current = null
-        resetView()
-    }, [onClose, resetView])
+        baseScaleRef.current = 1
+        updateScale(1)
+        updateOffset({ x: 0, y: 0 })
+    }, [onClose, updateOffset, updateScale])
 
     const zoomBy = useCallback((delta: number) => {
         updateScale((current) => clampScale(current + delta))
@@ -181,6 +233,25 @@ export function ZoomableLightbox(props: ZoomableLightboxProps) {
         }
     }, [closeViewer])
 
+    useLayoutEffect(() => {
+        if (!open) return
+
+        let frame = 0
+        const scheduleFit = () => {
+            frame = requestAnimationFrame(() => {
+                applyFitScale()
+            })
+        }
+
+        scheduleFit()
+        const retry = window.setTimeout(scheduleFit, 50)
+
+        return () => {
+            cancelAnimationFrame(frame)
+            window.clearTimeout(retry)
+        }
+    }, [open, fitContentKey, applyFitScale])
+
     useEffect(() => {
         if (!open) return
 
@@ -205,6 +276,11 @@ export function ZoomableLightbox(props: ZoomableLightboxProps) {
 
     if (!open) return null
 
+    const baseScale = baseScaleRef.current
+    const zoomLabel = baseScale > 0
+        ? `${Math.round((scale / baseScale) * 100)}%`
+        : `${Math.round(scale * 100)}%`
+
     return (
         <div
             className="fixed inset-0 z-50 flex flex-col bg-black/90 text-white"
@@ -227,9 +303,9 @@ export function ZoomableLightbox(props: ZoomableLightboxProps) {
                     type="button"
                     onClick={resetView}
                     className="rounded bg-white/10 px-3 py-1 text-sm hover:bg-white/20"
-                    title="Reset zoom"
+                    title="Fit to screen"
                 >
-                    {Math.round(scale * 100)}%
+                    {zoomLabel}
                 </button>
                 <button
                     type="button"
@@ -250,6 +326,7 @@ export function ZoomableLightbox(props: ZoomableLightboxProps) {
                 </button>
             </div>
             <div
+                ref={viewportRef}
                 className="relative min-h-0 flex-1 cursor-grab touch-none overflow-hidden active:cursor-grabbing"
                 onWheel={handleWheel}
                 onPointerDown={handlePointerDown}
@@ -259,7 +336,8 @@ export function ZoomableLightbox(props: ZoomableLightboxProps) {
                 onDoubleClick={resetView}
             >
                 <div
-                    className="absolute left-1/2 top-1/2 max-h-[90vh] max-w-[90vw] select-none"
+                    ref={contentRef}
+                    className="absolute left-1/2 top-1/2 select-none"
                     style={{
                         transform: `translate(calc(-50% + ${offset.x}px), calc(-50% + ${offset.y}px)) scale(${scale})`,
                         transformOrigin: 'center center',

@@ -224,13 +224,14 @@ export function MermaidDiagram(props: SyntaxHighlighterProps) {
                 onClose={() => setLightboxOpen(false)}
                 title={viewerLabel}
                 ariaLabel={viewerLabel}
+                fitContentKey={lightboxSvg}
             >
                 {lightboxLoading ? (
                     <div className="px-8 py-6 text-sm text-white/80">{t('mermaid.loading')}</div>
                 ) : lightboxSvg ? (
                     <MermaidSvgContent
                         svg={lightboxSvg}
-                        className="[&_svg]:max-h-[85vh] [&_svg]:max-w-[85vw]"
+                        className="[&_svg]:block [&_svg]:h-auto [&_svg]:max-h-none [&_svg]:max-w-none [&_svg]:w-auto"
                     />
                 ) : (
                     <div className="px-8 py-6 text-sm text-white/80">{t('mermaid.renderError')}</div>
