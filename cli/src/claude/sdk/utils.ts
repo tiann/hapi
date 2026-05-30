@@ -4,17 +4,61 @@
  */
 
 import { existsSync } from 'node:fs'
-import { execSync } from 'node:child_process'
+import { execFileSync, execSync } from 'node:child_process'
 import { homedir } from 'node:os'
+import path from 'node:path'
 import { logger } from '@/ui/logger'
+
+const windowsPath = path.win32
 
 /**
  * Find Claude executable path on Windows.
  * Returns absolute path to claude.exe for use with shell: false
  */
+function resolveWindowsNpmShimExecutable(shimPath: string): string | null {
+    const shimDirectory = windowsPath.dirname(shimPath)
+    const executableName = windowsPath.basename(shimPath, windowsPath.extname(shimPath))
+    const packageExecutable = windowsPath.join(shimDirectory, 'node_modules', '@anthropic-ai', 'claude-code', 'bin', `${executableName}.exe`)
+
+    if (existsSync(packageExecutable)) {
+        logger.debug(`[Claude SDK] Resolved Windows npm shim ${shimPath} to ${packageExecutable}`)
+        return packageExecutable
+    }
+
+    return null
+}
+
+function resolveWindowsClaudePathCandidate(candidate: string): string | null {
+    if (!existsSync(candidate)) {
+        return null
+    }
+
+    if (windowsPath.extname(candidate).toLowerCase() === '.exe') {
+        return candidate
+    }
+
+    return resolveWindowsNpmShimExecutable(candidate)
+}
+
+function findWhereResults(command: string): string[] {
+    try {
+        const result = execFileSync('where.exe', [command], {
+            encoding: 'utf8',
+            stdio: ['pipe', 'pipe', 'pipe'],
+            cwd: homedir()
+        })
+
+        return result
+            .split(/\r?\n/)
+            .map((line) => line.trim())
+            .filter(Boolean)
+    } catch {
+        return []
+    }
+}
+
 function findWindowsClaudePath(): string | null {
     const homeDir = homedir()
-    const path = require('node:path')
 
     // Known installation paths for Claude on Windows
     const candidates = [
@@ -24,25 +68,23 @@ function findWindowsClaudePath(): string | null {
     ]
 
     for (const candidate of candidates) {
-        if (existsSync(candidate)) {
-            logger.debug(`[Claude SDK] Found Windows claude.exe at: ${candidate}`)
-            return candidate
+        const resolved = resolveWindowsClaudePathCandidate(candidate)
+        if (resolved) {
+            logger.debug(`[Claude SDK] Found Windows claude.exe at: ${resolved}`)
+            return resolved
         }
     }
 
-    // Try 'where claude' to find in PATH
-    try {
-        const result = execSync('where claude.exe', {
-            encoding: 'utf8',
-            stdio: ['pipe', 'pipe', 'pipe'],
-            cwd: homeDir
-        }).trim().split('\n')[0].trim()
-        if (result && existsSync(result)) {
-            logger.debug(`[Claude SDK] Found Windows claude.exe via where: ${result}`)
-            return result
+    // Try PATH lookup. npm global installs usually expose claude.cmd/claude
+    // shims, while HAPI spawns Claude with shell:false and needs the real exe.
+    for (const command of ['claude.exe', 'claude.cmd', 'claude']) {
+        for (const result of findWhereResults(command)) {
+            const resolved = resolveWindowsClaudePathCandidate(result)
+            if (resolved) {
+                logger.debug(`[Claude SDK] Found Windows claude.exe via where ${command}: ${resolved}`)
+                return resolved
+            }
         }
-    } catch {
-        // where didn't find it
     }
 
     return null
@@ -100,10 +142,20 @@ function findGlobalClaudePath(): string | null {
  * - HAPI_CLAUDE_PATH: Force a specific path to claude executable
  */
 export function getDefaultClaudeCodePath(): string {
-    // Allow explicit override via env var
+    // Allow explicit override via env var. On Windows, tolerate npm
+    // shim paths (`claude.cmd` / extensionless `claude`) by resolving them
+    // to the real `claude.exe` because Claude is spawned with shell:false.
     if (process.env.HAPI_CLAUDE_PATH) {
-        logger.debug(`[Claude SDK] Using HAPI_CLAUDE_PATH: ${process.env.HAPI_CLAUDE_PATH}`)
-        return process.env.HAPI_CLAUDE_PATH
+        const configuredPath = process.env.HAPI_CLAUDE_PATH
+        if (process.platform === 'win32') {
+            const resolved = resolveWindowsClaudePathCandidate(configuredPath)
+            if (resolved) {
+                logger.debug(`[Claude SDK] Using resolved HAPI_CLAUDE_PATH: ${resolved}`)
+                return resolved
+            }
+        }
+        logger.debug(`[Claude SDK] Using HAPI_CLAUDE_PATH: ${configuredPath}`)
+        return configuredPath
     }
 
     // Find global claude
