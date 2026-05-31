@@ -217,8 +217,13 @@ function MermaidLightboxSvg(props: { svg: string }) {
     return <div ref={hostRef} className="aui-mermaid-lightbox-host" data-mermaid-lightbox />
 }
 
+function readMermaidE2eCaseId(code: string): string | undefined {
+    return code.match(/<!--\s*mermaid-e2e:([\w-]+)\s*-->/i)?.[1]
+}
+
 export function MermaidDiagram(props: SyntaxHighlighterProps) {
     const { t } = useTranslation()
+    const e2eCaseId = readMermaidE2eCaseId(props.code)
     const [theme, setTheme] = useState<'light' | 'dark'>(() => resolveTheme())
     const [renderError, setRenderError] = useState(false)
     const [svg, setSvg] = useState<string | null>(null)
@@ -305,6 +310,7 @@ export function MermaidDiagram(props: SyntaxHighlighterProps) {
                 className="aui-mermaid-diagram w-full cursor-zoom-in overflow-x-auto rounded-b-xl bg-[var(--app-code-bg)] px-4 py-3 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]"
                 data-mermaid-diagram
                 data-rendered="true"
+                data-mermaid-e2e-case={e2eCaseId}
                 data-mermaid-source={encodeURIComponent(props.code)}
             >
                 <MermaidSvgContent svg={svg} hostRef={inlineHostRef} />
