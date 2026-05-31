@@ -37,6 +37,7 @@ vi.mock('@/projectPath', () => ({
 const originalPlatformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
 const originalInvokedCwd = process.env.HAPI_INVOKED_CWD;
 const originalCliExecutable = process.env.HAPI_CLI_EXECUTABLE;
+const originalBunExec = process.env.HAPI_BUN_EXEC;
 
 function setPlatform(value: string) {
   Object.defineProperty(process, 'platform', {
@@ -77,6 +78,11 @@ describe('spawnHappyCLI windowsHide behavior', () => {
       delete process.env.HAPI_CLI_EXECUTABLE;
     } else {
       process.env.HAPI_CLI_EXECUTABLE = originalCliExecutable;
+    }
+    if (originalBunExec === undefined) {
+      delete process.env.HAPI_BUN_EXEC;
+    } else {
+      process.env.HAPI_BUN_EXEC = originalBunExec;
     }
   });
 
@@ -129,6 +135,8 @@ describe('spawnHappyCLI windowsHide behavior', () => {
   });
 
   it('forces Bun child processes to run with the cli project root as cwd', async () => {
+    // Clear the test-isolation override so we test the pure runtime behaviour
+    delete process.env.HAPI_BUN_EXEC;
     const { getHappyCliCommand } = await import('./spawnHappyCLI');
 
     const command = getHappyCliCommand(['mcp', '--url', 'http://127.0.0.1:1234/']);

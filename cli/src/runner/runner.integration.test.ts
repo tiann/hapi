@@ -16,7 +16,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { execSync, spawn } from 'child_process';
+import { spawn } from 'child_process';
 import { existsSync, unlinkSync, readFileSync, writeFileSync, readdirSync } from 'fs';
 import path, { join } from 'path';
 import { configuration } from '@/configuration';
@@ -435,14 +435,9 @@ describe.skipIf(!await isServerHealthy())('Runner Integration Tests', { timeout:
       expect(initialState!.startedWithCliVersion).toBe(originalVersion);
       const initialPid = initialState!.pid;
 
-      // Re-build the CLI - so it will import the new package.json in its configuartion.ts
-      // and think it is a new version
-      // We are not using yarn build here because it cleans out dist/
-      // and we want to avoid that, 
-      // otherwise runner will spawn a non existing happy js script.
-      // We need to remove index, but not the other files, otherwise some of our code might fail when called from within the runner.
-      execSync('yarn build', { stdio: 'ignore' });
-      
+      // No rebuild needed: bun runs TypeScript directly, so the spawned runner
+      // process reads package.json fresh and picks up the modified version automatically.
+
       console.log(`[TEST] Current runner running with version ${originalVersion}, PID: ${initialPid}`);
       
       console.log(`[TEST] Changed package.json version to ${testVersion}`);
@@ -462,8 +457,7 @@ describe.skipIf(!await isServerHealthy())('Runner Integration Tests', { timeout:
       writeFileSync(packagePath, packageJsonOriginalRawText);
       console.log(`[TEST] Restored package.json version to ${originalVersion}`);
 
-      // Lets rebuild it so we keep it as we found it
-      execSync('yarn build', { stdio: 'ignore' });
+      // No rebuild needed with bun (TypeScript is run directly).
     }
   });
 
