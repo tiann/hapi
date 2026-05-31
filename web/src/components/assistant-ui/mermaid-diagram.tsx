@@ -1,5 +1,5 @@
 import type { SyntaxHighlighterProps } from '@assistant-ui/react-markdown'
-import { useEffect, useId, useMemo, useState, type ComponentPropsWithoutRef, type SyntheticEvent } from 'react'
+import { useEffect, useId, useState, type ComponentPropsWithoutRef, type SyntheticEvent } from 'react'
 import { ZoomableLightbox } from '@/components/ZoomableLightbox'
 import { cn } from '@/lib/utils'
 import { useTranslation } from '@/lib/use-translation'
@@ -44,6 +44,15 @@ async function ensureMermaid(theme: 'light' | 'dark') {
                 clusterBkg: '#2d3440',
                 clusterBorder: '#6d8fd6',
                 edgeLabelBackground: '#2a2f35',
+                actorBkg: '#323843',
+                actorBorder: '#6d8fd6',
+                actorTextColor: '#edf1f5',
+                signalColor: '#94a3b8',
+                labelBoxBkgColor: '#323843',
+                labelTextColor: '#edf1f5',
+                loopTextColor: '#edf1f5',
+                noteBkgColor: '#2d3440',
+                noteTextColor: '#edf1f5',
             }
             : {
                 primaryColor: '#f8fbff',
@@ -58,6 +67,15 @@ async function ensureMermaid(theme: 'light' | 'dark') {
                 clusterBkg: '#eef4ff',
                 clusterBorder: '#b8cdfd',
                 edgeLabelBackground: '#f5f6f7',
+                actorBkg: '#f8fbff',
+                actorBorder: '#b8cdfd',
+                actorTextColor: '#2d333b',
+                signalColor: '#94a3b8',
+                labelBoxBkgColor: '#f8fbff',
+                labelTextColor: '#2d333b',
+                loopTextColor: '#2d333b',
+                noteBkgColor: '#eef4ff',
+                noteTextColor: '#2d333b',
             },
     })
 
@@ -126,11 +144,6 @@ export function normalizeMermaidSvgForStandaloneDisplay(svg: string): string {
     return result
 }
 
-export function mermaidSvgToDataUrl(svg: string): string {
-    const normalized = normalizeMermaidSvgForStandaloneDisplay(svg)
-    return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(normalized)}`
-}
-
 function MermaidFallback(props: ComponentPropsWithoutRef<'pre'> & { code: string }) {
     const { code, className, ...rest } = props
     return (
@@ -161,13 +174,11 @@ export function MermaidDiagram(props: SyntaxHighlighterProps) {
     const [renderError, setRenderError] = useState(false)
     const [svg, setSvg] = useState<string | null>(null)
     const [lightboxOpen, setLightboxOpen] = useState(false)
+    const [lightboxSvg, setLightboxSvg] = useState<string | null>(null)
+    const [lightboxLoading, setLightboxLoading] = useState(false)
     const id = useId().replace(/:/g, '-')
     const openLabel = t('mermaid.openFullscreen')
     const viewerLabel = t('mermaid.viewerTitle')
-    const lightboxSrc = useMemo(
-        () => (svg ? mermaidSvgToDataUrl(svg) : null),
-        [svg],
-    )
 
     const stopEvent = (event: SyntheticEvent) => {
         event.stopPropagation()
@@ -223,6 +234,36 @@ export function MermaidDiagram(props: SyntaxHighlighterProps) {
         }
     }, [id, props.code, theme])
 
+    useEffect(() => {
+        if (!lightboxOpen) {
+            setLightboxSvg(null)
+            setLightboxLoading(false)
+            return
+        }
+
+        let cancelled = false
+        setLightboxLoading(true)
+
+        const render = async () => {
+            try {
+                const nextSvg = await renderMermaidSvg(props.code, `mermaid-modal-${id}`, theme)
+                if (cancelled) return
+                setLightboxSvg(normalizeMermaidSvgForStandaloneDisplay(nextSvg))
+            } catch {
+                if (cancelled) return
+                setLightboxSvg(null)
+            } finally {
+                if (!cancelled) setLightboxLoading(false)
+            }
+        }
+
+        void render()
+
+        return () => {
+            cancelled = true
+        }
+    }, [id, lightboxOpen, props.code, theme])
+
     if (renderError || !svg) {
         return <MermaidFallback code={props.code} data-mermaid-diagram data-rendered="false" />
     }
@@ -250,16 +291,20 @@ export function MermaidDiagram(props: SyntaxHighlighterProps) {
                 onClose={() => setLightboxOpen(false)}
                 title={viewerLabel}
                 ariaLabel={viewerLabel}
-                fitContentKey={lightboxOpen ? lightboxSrc : null}
+                fitContentKey={lightboxOpen ? lightboxSvg : null}
             >
-                {lightboxSrc ? (
-                    <img
-                        src={lightboxSrc}
-                        alt={viewerLabel}
-                        draggable={false}
-                        className="block h-auto w-auto max-h-none max-w-none select-none"
-                    />
-                ) : null}
+                <div className="rounded-lg bg-[var(--app-code-bg)] px-3 py-3">
+                    {lightboxLoading ? (
+                        <div className="px-8 py-6 text-sm text-white/80">{t('mermaid.loading')}</div>
+                    ) : lightboxSvg ? (
+                        <MermaidSvgContent
+                            svg={lightboxSvg}
+                            className="[&_svg]:block [&_svg]:h-auto [&_svg]:max-h-none [&_svg]:max-w-none [&_svg]:w-auto"
+                        />
+                    ) : (
+                        <div className="px-8 py-6 text-sm text-white/80">{t('mermaid.renderError')}</div>
+                    )}
+                </div>
             </ZoomableLightbox>
         </>
     )
