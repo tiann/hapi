@@ -39,7 +39,18 @@ function agentMermaidEnvelope(caseId: string, code: string) {
 
 const db = new Database(dbPath)
 const now = Date.now()
-const existing = db.prepare('SELECT id FROM sessions WHERE id = ?').get(sessionId) as { id: string } | undefined
+const existing = db.prepare('SELECT id, tag FROM sessions WHERE id = ?').get(sessionId) as
+    | { id: string; tag: string | null }
+    | undefined
+
+if (existing && existing.tag !== sessionTag) {
+    throw new Error(
+        `Refusing to seed mermaid fixtures into session ${sessionId}: tag is `
+            + `${JSON.stringify(existing.tag)}, expected ${JSON.stringify(sessionTag)}. `
+            + `Unset SESSION_ID or use a session created by this script.`,
+    )
+}
+
 if (!existing) {
     db.prepare(`
         INSERT INTO sessions (
