@@ -359,9 +359,14 @@ export function ZoomableLightbox(props: ZoomableLightboxProps) {
         }
 
         apply()
+        window.addEventListener('resize', apply)
+
+        if (typeof ResizeObserver === 'undefined') {
+            return () => window.removeEventListener('resize', apply)
+        }
+
         const resize = new ResizeObserver(apply)
         resize.observe(toolbar)
-        window.addEventListener('resize', apply)
         return () => {
             resize.disconnect()
             window.removeEventListener('resize', apply)
