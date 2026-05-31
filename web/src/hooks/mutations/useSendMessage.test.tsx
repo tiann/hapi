@@ -158,21 +158,48 @@ describe('useSendMessage', () => {
         await expect(acceptedPromise!).resolves.toBe(false)
     })
 
-    it('resolves false when resolveSessionId throws (inactive-session resume failure)', async () => {
-        const api = createMockApi()
+    it('resolves false and keeps a failed prompt bubble when resolveSessionId throws', async () => {
+        const sendMock = vi.fn()
+        const api = createMockApi(sendMock)
         const resumeError = new Error('resume failed')
-        const { result } = renderHook(
-            () => useSendMessage(api, 'session-A', {
-                resolveSessionId: async () => { throw resumeError },
-                onSessionResolved: vi.fn(),
-            }),
-            { wrapper: createWrapper() },
-        )
-        let acceptedPromise: Promise<boolean> | undefined
-        act(() => {
-            acceptedPromise = result.current.sendMessage('hello')
-        })
-        await expect(acceptedPromise!).resolves.toBe(false)
+        const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+        const { appendOptimisticMessage } = await import('@/lib/message-window-store')
+        try {
+            const { result } = renderHook(
+                () => useSendMessage(api, 'session-A', {
+                    resolveSessionId: async () => { throw resumeError },
+                    onSessionResolved: vi.fn(),
+                }),
+                { wrapper: createWrapper() },
+            )
+            let acceptedPromise: Promise<boolean> | undefined
+            act(() => {
+                acceptedPromise = result.current.sendMessage('hello')
+            })
+            await expect(acceptedPromise!).resolves.toBe(false)
+            expect(sendMock).not.toHaveBeenCalled()
+            expect(appendOptimisticMessage).toHaveBeenCalledWith(
+                'session-A',
+                expect.objectContaining({
+                    id: 'local-id-1',
+                    localId: 'local-id-1',
+                    invokedAt: null,
+                    status: 'failed',
+                    originalText: 'hello',
+                    content: {
+                        role: 'user',
+                        content: {
+                            type: 'text',
+                            text: 'hello',
+                            attachments: undefined,
+                        }
+                    },
+                })
+            )
+            expect(consoleError).toHaveBeenCalledWith('Failed to resolve session before send:', resumeError)
+        } finally {
+            consoleError.mockRestore()
+        }
     })
 
     it('resolves true after async resolveSessionId succeeds and mutation starts', async () => {
@@ -232,6 +259,55 @@ describe('useSendMessage', () => {
             'local-retry-1',
             undefined,
             scheduledAt,
+        )
+    })
+
+    it('resolves the inactive session before retrying a preserved failed prompt', async () => {
+        const sendMock = vi.fn(async () => {})
+        const onSessionResolved = vi.fn()
+        const resolveSessionId = vi.fn(async () => 'session-resolved')
+        const api = createMockApi(sendMock)
+        const { getMessageWindowState, updateMessageStatus } = await import('@/lib/message-window-store')
+        vi.mocked(getMessageWindowState).mockReturnValueOnce({
+            messages: [{
+                id: 'local-retry-1',
+                seq: null,
+                localId: 'local-retry-1',
+                content: { role: 'user', content: { type: 'text', text: 'preserved prompt' } },
+                createdAt: 1_000,
+                invokedAt: null,
+                scheduledAt: null,
+                status: 'failed',
+                originalText: 'preserved prompt',
+            } as never],
+            pending: [],
+        } as never)
+
+        const { result } = renderHook(
+            () => useSendMessage(api, 'session-A', {
+                resolveSessionId,
+                onSessionResolved,
+            }),
+            { wrapper: createWrapper() },
+        )
+
+        act(() => {
+            expect(result.current.retryMessage('local-retry-1')).toBe(true)
+        })
+
+        await waitFor(() => {
+            expect(sendMock).toHaveBeenCalled()
+        })
+
+        expect(resolveSessionId).toHaveBeenCalledWith('session-A')
+        expect(onSessionResolved).toHaveBeenCalledWith('session-resolved')
+        expect(updateMessageStatus).toHaveBeenCalledWith('session-A', 'local-retry-1', 'sending')
+        expect(sendMock).toHaveBeenCalledWith(
+            'session-resolved',
+            'preserved prompt',
+            'local-retry-1',
+            undefined,
+            null,
         )
     })
 })
