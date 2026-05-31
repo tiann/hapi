@@ -795,35 +795,45 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         }
       }
 
-      // Check if runner needs update
-      const installedCliMtimeMs = getInstalledCliMtimeMs();
-      if (typeof installedCliMtimeMs === 'number' &&
-          typeof startedWithCliMtimeMs === 'number' &&
-          installedCliMtimeMs !== startedWithCliMtimeMs) {
-        logger.debug('[RUNNER RUN] Runner is outdated, triggering self-restart with latest version, clearing heartbeat interval');
-
-        clearInterval(restartOnStaleVersionAndHeartbeat);
-
-        // Spawn new runner through the CLI
-        // We do not need to clean ourselves up - we will be killed by
-        // the CLI start command.
-        // 1. It will first check if runner is running (yes in this case)
-        // 2. If the version is stale (it will read runner.state.json file and check startedWithCliVersion) & compare it to its own version
-        // 3. Next it will start a new runner with the latest version with runner-sync :D
-        // Done!
-        try {
-          spawnHappyCLI(['runner', 'start'], {
-            detached: true,
-            stdio: 'ignore'
-          });
-        } catch (error) {
-          logger.debug('[RUNNER RUN] Failed to spawn new runner, this is quite likely to happen during integration tests as we are cleaning out dist/ directory', error);
+      // Check if runner needs update.
+      // Skip entirely when the operator owns process supervision (systemd, tmux,
+      // soup rebuilds, etc.) and source mtimes change for reasons unrelated to
+      // an actual npm upgrade. HAPI_DISABLE_VERSION_HANDOFF=1 keeps the rest of
+      // the heartbeat (session pruning, state file persistence) intact.
+      if (process.env.HAPI_DISABLE_VERSION_HANDOFF === '1') {
+        if (process.env.DEBUG) {
+          logger.debug('[RUNNER RUN] HAPI_DISABLE_VERSION_HANDOFF=1 set, skipping mtime/version drift self-restart');
         }
+      } else {
+        const installedCliMtimeMs = getInstalledCliMtimeMs();
+        if (typeof installedCliMtimeMs === 'number' &&
+            typeof startedWithCliMtimeMs === 'number' &&
+            installedCliMtimeMs !== startedWithCliMtimeMs) {
+          logger.debug('[RUNNER RUN] Runner is outdated, triggering self-restart with latest version, clearing heartbeat interval');
 
-        // So we can just hang forever
-        logger.debug('[RUNNER RUN] Hanging for a bit - waiting for CLI to kill us because we are running outdated version of the code');
-        await new Promise(resolve => setTimeout(resolve, 10_000));
-        process.exit(0);
+          clearInterval(restartOnStaleVersionAndHeartbeat);
+
+          // Spawn new runner through the CLI
+          // We do not need to clean ourselves up - we will be killed by
+          // the CLI start command.
+          // 1. It will first check if runner is running (yes in this case)
+          // 2. If the version is stale (it will read runner.state.json file and check startedWithCliVersion) & compare it to its own version
+          // 3. Next it will start a new runner with the latest version with runner-sync :D
+          // Done!
+          try {
+            spawnHappyCLI(['runner', 'start'], {
+              detached: true,
+              stdio: 'ignore'
+            });
+          } catch (error) {
+            logger.debug('[RUNNER RUN] Failed to spawn new runner, this is quite likely to happen during integration tests as we are cleaning out dist/ directory', error);
+          }
+
+          // So we can just hang forever
+          logger.debug('[RUNNER RUN] Hanging for a bit - waiting for CLI to kill us because we are running outdated version of the code');
+          await new Promise(resolve => setTimeout(resolve, 10_000));
+          process.exit(0);
+        }
       }
 
       // Before wrecklessly overriting the runner state file, we should check if we are the ones who own it

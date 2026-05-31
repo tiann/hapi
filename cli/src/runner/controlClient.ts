@@ -185,17 +185,25 @@ export async function isRunnerRunningCurrentlyInstalledHappyVersion(): Promise<b
   const currentMachineId = settings.machineId;
   
   try {
-    const currentCliMtimeMs = getInstalledCliMtimeMs();
-    if (typeof currentCliMtimeMs === 'number' && typeof state.startedWithCliMtimeMs === 'number') {
-      logger.debug(`[RUNNER CONTROL] Current CLI mtime: ${currentCliMtimeMs}, Runner started with mtime: ${state.startedWithCliMtimeMs}`);
-      if (currentCliMtimeMs !== state.startedWithCliMtimeMs) {
-        return false;
-      }
+    // When HAPI_DISABLE_VERSION_HANDOFF=1 is set on the live runner (operator
+    // owns supervision via systemd/tmux/custom rebuild pipelines), a fresh CLI invocation must NOT
+    // treat the running runner as stale just because source mtimes shifted.
+    // Otherwise `hapi runner start` would kill the live runner mid-rebuild.
+    if (process.env.HAPI_DISABLE_VERSION_HANDOFF === '1') {
+      logger.debug('[RUNNER CONTROL] HAPI_DISABLE_VERSION_HANDOFF=1 set, skipping mtime/version drift check');
     } else {
-      const currentCliVersion = packageJson.version;
-      logger.debug(`[RUNNER CONTROL] Current CLI version: ${currentCliVersion}, Runner started with version: ${state.startedWithCliVersion}`);
-      if (currentCliVersion !== state.startedWithCliVersion) {
-        return false;
+      const currentCliMtimeMs = getInstalledCliMtimeMs();
+      if (typeof currentCliMtimeMs === 'number' && typeof state.startedWithCliMtimeMs === 'number') {
+        logger.debug(`[RUNNER CONTROL] Current CLI mtime: ${currentCliMtimeMs}, Runner started with mtime: ${state.startedWithCliMtimeMs}`);
+        if (currentCliMtimeMs !== state.startedWithCliMtimeMs) {
+          return false;
+        }
+      } else {
+        const currentCliVersion = packageJson.version;
+        logger.debug(`[RUNNER CONTROL] Current CLI version: ${currentCliVersion}, Runner started with version: ${state.startedWithCliVersion}`);
+        if (currentCliVersion !== state.startedWithCliVersion) {
+          return false;
+        }
       }
     }
 
