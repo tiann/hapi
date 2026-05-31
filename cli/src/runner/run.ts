@@ -17,7 +17,7 @@ import { PERMISSION_MODES } from '@hapi/protocol/modes';
 import { withRetry } from '@/utils/time';
 import { isRetryableConnectionError } from '@/utils/errorUtils';
 
-import { cleanupRunnerState, getInstalledCliMtimeMs, isRunnerRunningCurrentlyInstalledHappyVersion, stopRunner } from './controlClient';
+import { cleanupRunnerState, getInstalledCliMtimeMs, isRunnerRunningCurrentlyInstalledHappyVersion, stopRunner, waitForRunnerHandoff } from './controlClient';
 import { startRunnerControlServer } from './controlServer';
 import { createWorktree, removeWorktree, type WorktreeInfo } from './worktree';
 import { join } from 'path';
@@ -657,7 +657,16 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       onHappySessionWebhook
     });
 
-    const startedWithCliMtimeMs = getInstalledCliMtimeMs();
+    // Mutable: the heartbeat refreshes this baseline after a *failed* handoff
+    // so we do not respawn-loop on the same mtime drift every 60s. A successful
+    // handoff exits the process before the next tick, so the mutation is moot
+    // in the happy path.
+    let startedWithCliMtimeMs = getInstalledCliMtimeMs();
+    // Snapshot original argv (excluding node/bun + entrypoint) so the heartbeat's
+    // self-restart handoff can rebuild the same `runner start-sync --workspace-root ...`
+    // invocation instead of losing flags. process.argv[0] is the runtime, [1] is the
+    // script; everything after is operator-supplied.
+    const startedWithArgv = process.argv.slice(2);
 
     // Write initial runner state (no lock needed for state file)
     const fileState: RunnerLocallyPersistedState = {
@@ -669,6 +678,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       startedWithApiUrl: configuration.apiUrl,
       startedWithMachineId: machineId,
       startedWithCliApiTokenHash: hashRunnerCliApiToken(configuration.cliApiToken),
+      startedWithArgv,
       runnerLogPath: logger.logFilePath
     };
     writeRunnerState(fileState);
@@ -797,9 +807,10 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
 
       // Check if runner needs update.
       // Skip entirely when the operator owns process supervision (systemd, tmux,
-      // soup rebuilds, etc.) and source mtimes change for reasons unrelated to
-      // an actual npm upgrade. HAPI_DISABLE_VERSION_HANDOFF=1 keeps the rest of
-      // the heartbeat (session pruning, state file persistence) intact.
+      // custom rebuild pipelines, etc.) and source mtimes change for reasons
+      // unrelated to an actual npm upgrade. HAPI_DISABLE_VERSION_HANDOFF=1
+      // keeps the rest of the heartbeat (session pruning, state file
+      // persistence) intact.
       if (process.env.HAPI_DISABLE_VERSION_HANDOFF === '1') {
         if (process.env.DEBUG) {
           logger.debug('[RUNNER RUN] HAPI_DISABLE_VERSION_HANDOFF=1 set, skipping mtime/version drift self-restart');
@@ -809,29 +820,57 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         if (typeof installedCliMtimeMs === 'number' &&
             typeof startedWithCliMtimeMs === 'number' &&
             installedCliMtimeMs !== startedWithCliMtimeMs) {
-          logger.debug('[RUNNER RUN] Runner is outdated, triggering self-restart with latest version, clearing heartbeat interval');
+          logger.debug('[RUNNER RUN] Runner is outdated, triggering self-restart with latest version');
 
-          clearInterval(restartOnStaleVersionAndHeartbeat);
+          // Hand off to a fresh runner that inherits our original argv (workspace
+          // roots, flags, etc). Previously this called `runner start` with no
+          // args, which forwarded an arg-less `runner start-sync` and lost the
+          // operator's --workspace-root configuration. Worse, the old code
+          // cleared the heartbeat interval and process.exit(0)'d unconditionally,
+          // so any failure in the replacement left the machine offline with no
+          // runner at all (especially under systemd Restart=on-failure, which
+          // does not restart on clean exits).
+          //
+          // New behaviour:
+          // 1. Replay the original argv (default: ['runner','start-sync']) so the
+          //    new process boots with the same workspace roots / flags.
+          // 2. Wait for runner.state.json to show a different live PID, proving
+          //    the replacement actually came up.
+          // 3. Only clear the heartbeat + exit when handoff is confirmed; if it
+          //    fails, stay alive so the machine stays online. heartbeatRunning
+          //    re-entry guard prevents this block from running concurrently if
+          //    the next heartbeat fires while we are still waiting.
+          const handoffArgv = startedWithArgv.length > 0
+            ? startedWithArgv
+            : ['runner', 'start-sync'];
 
-          // Spawn new runner through the CLI
-          // We do not need to clean ourselves up - we will be killed by
-          // the CLI start command.
-          // 1. It will first check if runner is running (yes in this case)
-          // 2. If the version is stale (it will read runner.state.json file and check startedWithCliVersion) & compare it to its own version
-          // 3. Next it will start a new runner with the latest version with runner-sync :D
-          // Done!
           try {
-            spawnHappyCLI(['runner', 'start'], {
+            spawnHappyCLI(handoffArgv, {
               detached: true,
               stdio: 'ignore'
             });
           } catch (error) {
-            logger.debug('[RUNNER RUN] Failed to spawn new runner, this is quite likely to happen during integration tests as we are cleaning out dist/ directory', error);
+            logger.debug('[RUNNER RUN] Failed to spawn replacement runner; staying alive to avoid an offline machine', error);
+            startedWithCliMtimeMs = installedCliMtimeMs;
+            heartbeatRunning = false;
+            return;
           }
 
-          // So we can just hang forever
-          logger.debug('[RUNNER RUN] Hanging for a bit - waiting for CLI to kill us because we are running outdated version of the code');
-          await new Promise(resolve => setTimeout(resolve, 10_000));
+          logger.debug(`[RUNNER RUN] Spawned replacement runner with argv: ${JSON.stringify(handoffArgv)}; waiting for handoff`);
+
+          const handoffOk = await waitForRunnerHandoff(process.pid, { timeoutMs: 30_000 });
+          if (!handoffOk) {
+            logger.debug('[RUNNER RUN] Replacement runner did not register within 30s; staying alive to avoid leaving the machine offline');
+            // Refresh baseline so we do not loop on the same mtime every tick. The
+            // next genuine mtime change (e.g. a later rebuild step) will retrigger
+            // a handoff attempt.
+            startedWithCliMtimeMs = installedCliMtimeMs;
+            heartbeatRunning = false;
+            return;
+          }
+
+          logger.debug('[RUNNER RUN] Handoff confirmed; clearing heartbeat and exiting cleanly');
+          clearInterval(restartOnStaleVersionAndHeartbeat);
           process.exit(0);
         }
       }
@@ -855,6 +894,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           startedWithApiUrl: fileState.startedWithApiUrl,
           startedWithMachineId: fileState.startedWithMachineId,
           startedWithCliApiTokenHash: fileState.startedWithCliApiTokenHash,
+          startedWithArgv,
           lastHeartbeat: new Date().toLocaleString(),
           runnerLogPath: fileState.runnerLogPath
         };

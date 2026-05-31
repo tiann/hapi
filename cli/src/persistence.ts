@@ -38,6 +38,13 @@ export interface RunnerLocallyPersistedState {
   startedWithApiUrl?: string;
   startedWithMachineId?: string;
   startedWithCliApiTokenHash?: string;
+  /**
+   * Original process.argv.slice(2) of the runner process at start time, e.g.
+   * ['runner', 'start-sync', '--workspace-root', '/home/user/code'].
+   * Used by the self-restart handoff so the replacement runner inherits the
+   * same workspace-root / flag configuration instead of starting with defaults.
+   */
+  startedWithArgv?: string[];
   lastHeartbeat?: string;
   runnerLogPath?: string;
 }

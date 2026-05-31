@@ -225,6 +225,38 @@ export async function isRunnerRunningCurrentlyInstalledHappyVersion(): Promise<b
   }
 }
 
+/**
+ * Poll the runner state file waiting for a different PID to take ownership.
+ * Used by the self-restart handoff in run.ts so the dying runner does not exit
+ * until its replacement has actually come up and written its own state.
+ *
+ * Returns true when runner.state.json shows a different (and live) PID than
+ * `oldPid`, false on timeout.
+ */
+export async function waitForRunnerHandoff(
+  oldPid: number,
+  options: { timeoutMs?: number; pollIntervalMs?: number } = {}
+): Promise<boolean> {
+  const timeoutMs = options.timeoutMs ?? 30_000;
+  const pollIntervalMs = options.pollIntervalMs ?? 500;
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    try {
+      const state = await readRunnerState();
+      if (state && state.pid !== oldPid && isProcessAlive(state.pid)) {
+        logger.debug(`[RUNNER CONTROL] Handoff confirmed: new runner PID ${state.pid} replaced ${oldPid}`);
+        return true;
+      }
+    } catch (error) {
+      logger.debug('[RUNNER CONTROL] Error polling runner state during handoff wait', error);
+    }
+    await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+  }
+  logger.debug(`[RUNNER CONTROL] Handoff timeout: no replacement runner registered within ${timeoutMs}ms`);
+  return false;
+}
+
 export async function cleanupRunnerState(): Promise<void> {
   try {
     await clearRunnerState();
