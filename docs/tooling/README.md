@@ -31,6 +31,7 @@ Feature agents should **read the relevant doc below at session start**; meta bot
 | [commit-hooks.md](./commit-hooks.md) | `install-git-hooks.sh` — secrets + operator path gates |
 | [worktree-testing.md](./worktree-testing.md) | `hapi-active` symlink, `hapi-use-worktree`, service swing |
 | [driver-soup.md](./driver-soup.md) | Daily driver manifest, merge-train PR worktrees, garden vs soup |
+| [watch-activate-driver.md](./watch-activate-driver.md) | `hapi-watch-activate-driver` - external-only watch; ouroboros guard + excludes |
 | [pr-review-loop.md](./pr-review-loop.md) | Pre-PR verification + cold review; pre-push open-PR gate; post-push PR comment poll |
 | [cold-pr-review-rubric.md](./cold-pr-review-rubric.md) | Open-PR cold review bar (match upstream HAPI Bot severity) |
 

@@ -32,6 +32,8 @@ hapi-use-driver                          # same, daily driver path
 
 After `hapi-driver-rebuild`, run `hapi-use-driver` when ready — rebuild alone does not restart services.
 
+**Do not** run `hapi-watch-activate-driver` from inside a Cursor agent turn without `--exclude-agent-session` (ouroboros: this session stays WORKING until the agent exits). See [watch-activate-driver.md](./watch-activate-driver.md).
+
 ## Daily driver (soup)
 
 **Manifest:** `~/.config/hapi/driver-manifest.yaml` (operator-local; example in repo)
