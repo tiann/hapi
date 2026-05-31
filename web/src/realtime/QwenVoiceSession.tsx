@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback } from 'react'
+import { useEffect, useRef } from 'react'
 import { registerVoiceSession, resetRealtimeSessionState } from './RealtimeSession'
 import { registerSessionStore } from './realtimeClientTools'
 import { fetchQwenToken } from '@/api/voice'
@@ -6,10 +6,8 @@ import { GeminiAudioRecorder } from './gemini/audioRecorder'
 import { GeminiAudioPlayer } from './gemini/audioPlayer'
 import { realtimeClientTools } from './realtimeClientTools'
 import {
-    QWEN_REALTIME_VOICE,
     VOICE_SYSTEM_PROMPT,
     VOICE_CHINESE_LANGUAGE_BLOCK,
-    VOICE_TOOL_DEFINITIONS
 } from '@hapi/protocol/voice'
 import type { VoiceSession, VoiceSessionConfig, StatusCallback } from './types'
 import type { ApiClient } from '@/api/client'
@@ -76,42 +74,27 @@ function sendEvent(type: string, payload?: Record<string, unknown>): void {
     }))
 }
 
-interface QwenSessionConfig {
-    modalities: ['text', 'audio']
-    voice: string
-    input_audio_format: 'pcm'
-    output_audio_format: 'pcm'
-    instructions: string
-    temperature: number
-    turn_detection: {
-        type: 'server_vad'
-        threshold: number
-        silence_duration_ms: number
-        prefix_padding_ms: number
-    }
-    tools: Array<unknown>
-    tool_choice: 'auto'
-}
 
 class QwenVoiceSessionImpl implements VoiceSession {
     private api: ApiClient
-    private currentSessionConfig: QwenSessionConfig | null = null
+    private currentInstructions: string | null = null
 
     constructor(api: ApiClient) {
         this.api = api
     }
 
     private updateInstructions(update: string): void {
-        if (!this.currentSessionConfig) return
-        this.currentSessionConfig = {
-            ...this.currentSessionConfig,
-            instructions: `${this.currentSessionConfig.instructions}\n\n${update}`
-        }
-        sendEvent('session.update', { session: this.currentSessionConfig })
+        if (this.currentInstructions === null) return
+        this.currentInstructions = `${this.currentInstructions}\n\n${update}`
+        // Hub filter allows only instruction-only session.update frames.
+        sendEvent('session.update', { session: { instructions: this.currentInstructions } })
     }
 
     async startSession(config: VoiceSessionConfig): Promise<void> {
-        this.currentSessionConfig = null
+        // Mirror the base instructions the hub will send so subsequent updates accumulate correctly.
+        this.currentInstructions = config.language === 'zh'
+            ? `${VOICE_SYSTEM_PROMPT}${VOICE_CHINESE_LANGUAGE_BLOCK}`
+            : VOICE_SYSTEM_PROMPT
         cleanup()
         state.statusCallback?.('connecting')
 
@@ -151,7 +134,8 @@ class QwenVoiceSessionImpl implements VoiceSession {
         const proxyUrl = state.wsBaseUrl || defaultProxyUrl
         const authToken = this.api.getAuthToken() || ''
         const separator = proxyUrl.includes('?') ? '&' : '?'
-        const wsUrl = `${proxyUrl}${separator}token=${encodeURIComponent(authToken)}`
+        const langParam = config.language ? `&language=${encodeURIComponent(config.language)}` : ''
+        const wsUrl = `${proxyUrl}${separator}token=${encodeURIComponent(authToken)}${langParam}`
         const ws = new WebSocket(wsUrl)
         state.ws = ws
 
@@ -173,45 +157,9 @@ class QwenVoiceSessionImpl implements VoiceSession {
 
                 const eventType = data.type as string
 
-                // Session created - send configuration
-                if (eventType === 'session.created' && !sessionReady) {
-                    if (DEBUG) console.log('[Qwen] Session created')
-
-                    // Build tools config
-                    const tools = VOICE_TOOL_DEFINITIONS.map((td) => ({
-                        type: 'function' as const,
-                        function: {
-                            name: td.name,
-                            description: td.description,
-                            parameters: td.parameters
-                        }
-                    }))
-
-                    // Send session.update with full configuration
-                    const basePrompt = config.language === 'zh'
-                        ? `${VOICE_SYSTEM_PROMPT}${VOICE_CHINESE_LANGUAGE_BLOCK}`
-                        : VOICE_SYSTEM_PROMPT
-                    const instructions = config.initialContext
-                        ? `${basePrompt}\n\n[Current Context]\n${config.initialContext}`
-                        : basePrompt
-
-                    this.currentSessionConfig = {
-                        modalities: ['text', 'audio'],
-                        voice: QWEN_REALTIME_VOICE,
-                        input_audio_format: 'pcm',
-                        output_audio_format: 'pcm',
-                        instructions,
-                        temperature: 0.7,
-                        turn_detection: {
-                            type: 'server_vad',
-                            threshold: 0.5,
-                            silence_duration_ms: 800,
-                            prefix_padding_ms: 300
-                        },
-                        tools,
-                        tool_choice: 'auto'
-                    }
-                    sendEvent('session.update', { session: this.currentSessionConfig })
+                // Session created — hub sends the initial session.update; browser waits for session.updated.
+                if (eventType === 'session.created') {
+                    if (DEBUG) console.log('[Qwen] Session created (hub owns setup)')
                     return
                 }
 
@@ -354,7 +302,7 @@ class QwenVoiceSessionImpl implements VoiceSession {
     }
 
     async endSession(): Promise<void> {
-        this.currentSessionConfig = null
+        this.currentInstructions = null
         cleanup()
         resetRealtimeSessionState()
         state.statusCallback?.('disconnected')

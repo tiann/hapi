@@ -366,6 +366,59 @@ export function buildGeminiLiveConfig(language?: string): GeminiLiveConfig {
     }
 }
 
+/** Hub-owned initial session.update for Qwen Realtime (hub proxy). */
+export function buildQwenSessionUpdateMessage(language?: string): Record<string, unknown> {
+    const instructions = language === 'zh'
+        ? `${VOICE_SYSTEM_PROMPT}${VOICE_CHINESE_LANGUAGE_BLOCK}`
+        : VOICE_SYSTEM_PROMPT
+    const tools = VOICE_TOOL_DEFINITIONS.map((td) => ({
+        type: 'function' as const,
+        function: { name: td.name, description: td.description, parameters: td.parameters }
+    }))
+    return {
+        type: 'session.update',
+        session: {
+            modalities: ['text', 'audio'],
+            voice: QWEN_REALTIME_VOICE,
+            input_audio_format: 'pcm',
+            output_audio_format: 'pcm',
+            instructions,
+            temperature: 0.7,
+            turn_detection: {
+                type: 'server_vad',
+                threshold: 0.5,
+                silence_duration_ms: 800,
+                prefix_padding_ms: 300
+            },
+            tools,
+            tool_choice: 'auto'
+        }
+    }
+}
+
+/**
+ * Returns true if a client WebSocket frame is safe to forward to DashScope.
+ * Blocks session.update frames that touch config fields (tools, voice, etc.);
+ * allows instruction-only updates and all runtime event types.
+ */
+export function isQwenSafeClientFrame(message: string | ArrayBuffer | Uint8Array): boolean {
+    try {
+        const text = typeof message === 'string'
+            ? message
+            : new TextDecoder().decode(message instanceof ArrayBuffer ? new Uint8Array(message) : message)
+        const parsed = JSON.parse(text) as unknown
+        if (!parsed || typeof parsed !== 'object') return true
+        const p = parsed as Record<string, unknown>
+        if (p.type !== 'session.update') return true
+        const session = p.session as Record<string, unknown> | undefined
+        if (!session) return false
+        const keys = Object.keys(session)
+        return keys.length === 1 && keys[0] === 'instructions'
+    } catch {
+        return true
+    }
+}
+
 /** Wire-format setup frame for Gemini Live BidiGenerateContent (hub proxy + web client). */
 export function buildGeminiLiveSetupMessage(language?: string): { setup: Record<string, unknown> } {
     const liveConfig = buildGeminiLiveConfig(language)

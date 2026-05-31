@@ -6,7 +6,7 @@ import { existsSync } from 'node:fs'
 import { serveStatic } from 'hono/bun'
 import { getConfiguration } from '../configuration'
 import { PROTOCOL_VERSION } from '@hapi/protocol'
-import { buildGeminiLiveSetupMessage, QWEN_REALTIME_MODEL } from '@hapi/protocol/voice'
+import { buildGeminiLiveSetupMessage, buildQwenSessionUpdateMessage, isQwenSafeClientFrame, QWEN_REALTIME_MODEL } from '@hapi/protocol/voice'
 import type { SyncEngine } from '../sync/syncEngine'
 import { createAuthMiddleware, type WebAppEnv } from './middleware/auth'
 import { createAuthRoutes } from './routes/auth'
@@ -128,7 +128,7 @@ function createQwenProxyWebSocketHandler() {
 
     return {
         open(clientWs: ServerWebSocket<unknown>) {
-            const data = clientWs.data as { apiKey: string; model: string }
+            const data = clientWs.data as { apiKey: string; model: string; language?: string }
             const upstreamUrl = `${process.env.QWEN_REALTIME_WS_URL || QWEN_WS_BASE}?model=${encodeURIComponent(data.model)}`
 
             const upstream = new WebSocket(upstreamUrl, {
@@ -138,7 +138,8 @@ function createQwenProxyWebSocketHandler() {
             upstreamMap.set(clientWs, upstream)
 
             upstream.onopen = () => {
-                // Connection ready — upstream will send session.created
+                // Hub-owned setup — send initial session.update so client cannot override tools/voice/config.
+                upstream.send(JSON.stringify(buildQwenSessionUpdateMessage(data.language)))
             }
             upstream.onmessage = (event) => {
                 try {
@@ -157,6 +158,10 @@ function createQwenProxyWebSocketHandler() {
             }
         },
         message(clientWs: ServerWebSocket<unknown>, message: string | ArrayBuffer | Uint8Array) {
+            if (!isQwenSafeClientFrame(message)) {
+                try { clientWs.close(1008, 'Client session.update may only modify instructions') } catch { /* */ }
+                return
+            }
             const upstream = upstreamMap.get(clientWs)
             if (upstream?.readyState === WebSocket.OPEN) {
                 upstream.send(message)
@@ -460,11 +465,12 @@ export async function startWebServer(options: {
             if (url.pathname === '/api/voice/qwen-ws') {
                 const apiKey = process.env.DASHSCOPE_API_KEY || process.env.QWEN_API_KEY
                 const model = QWEN_REALTIME_MODEL
+                const language = url.searchParams.get('language') ?? undefined
                 if (!apiKey) {
                     return new Response('DashScope API key not configured', { status: 400 })
                 }
                 const upgraded = (server as unknown as { upgrade: (req: Request, opts: unknown) => boolean }).upgrade(req, {
-                    data: { _qwenProxy: true, apiKey, model }
+                    data: { _qwenProxy: true, apiKey, model, language }
                 })
                 if (!upgraded) {
                     return new Response('WebSocket upgrade failed', { status: 500 })
