@@ -58,4 +58,9 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   fi
 done
 
+ADVISORY="$ROOT/scripts/tooling/check-stash-advisory.sh"
+if [[ -x "$ADVISORY" ]]; then
+    "$ADVISORY" --quiet || true
+fi
+
 exit 0
