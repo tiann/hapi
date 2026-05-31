@@ -42,6 +42,18 @@ describe('classifySessionAttention', () => {
         expect(attention).toEqual({ kind: 'permission' })
     })
 
+    it('handles summaries from older APIs without pendingRequestKinds', () => {
+        const legacySummary = makeSummary({ id: 'legacy', updatedAt: 5000 }) as unknown as SessionSummary
+        delete (legacySummary as Partial<SessionSummary>).pendingRequestKinds
+
+        const attention = classifySessionAttention(
+            legacySummary,
+            { selected: false, lastSeenAt: 1000 }
+        )
+
+        expect(attention).toEqual({ kind: 'unread' })
+    })
+
     it('shows unread activity when the session has updated since last seen', () => {
         const attention = classifySessionAttention(
             makeSummary({ id: 'a', updatedAt: 5000 }),
