@@ -14,15 +14,19 @@ export function classifySessionAttention(
         return null
     }
 
-    if (summary.pendingRequestKinds.includes('permission')) {
+    const pendingRequestKinds = Array.isArray(summary.pendingRequestKinds)
+        ? summary.pendingRequestKinds
+        : []
+
+    if (pendingRequestKinds.includes('permission')) {
         return { kind: 'permission' }
     }
 
-    if (summary.pendingRequestKinds.includes('input')) {
+    if (pendingRequestKinds.includes('input')) {
         return { kind: 'input' }
     }
 
-    if (summary.active && summary.backgroundTaskCount > 0) {
+    if (summary.active && (summary.backgroundTaskCount ?? 0) > 0) {
         return { kind: 'background' }
     }
 

@@ -13,9 +13,12 @@ const harness = vi.hoisted(() => ({
     bootstrapArgs: [] as Array<Record<string, unknown>>,
     opencodeLoopArgs: [] as Array<Record<string, unknown>>,
     opencodeLoopError: null as Error | null,
+    listSlashCommands: vi.fn(async (..._args: unknown[]) => [] as Array<unknown>),
     session: {
         onUserMessage: vi.fn(),
         onCancelQueuedMessage: vi.fn(),
+        sendAgentMessage: vi.fn(),
+        emitMessagesConsumed: vi.fn(),
         rpcHandlerManager: {
             registerHandler: vi.fn()
         }
@@ -81,6 +84,10 @@ vi.mock('@/utils/attachmentFormatter', () => ({
     formatMessageWithAttachments: vi.fn((text: string) => text)
 }));
 
+vi.mock('@/modules/common/slashCommands', () => ({
+    listSlashCommands: (agent: string, projectDir?: string) => harness.listSlashCommands(agent, projectDir)
+}));
+
 import { runOpencode } from './runOpencode';
 
 describe('runOpencode set-session-config handler', () => {
@@ -93,7 +100,12 @@ describe('runOpencode set-session-config handler', () => {
         mockOpencodeSession.setModelReasoningEffort.mockReset();
         mockOpencodeSession.pushKeepAlive.mockReset();
         harness.session.onUserMessage.mockReset();
+        harness.session.onCancelQueuedMessage.mockReset();
+        harness.session.sendAgentMessage.mockReset();
+        harness.session.emitMessagesConsumed.mockReset();
         harness.session.rpcHandlerManager.registerHandler.mockReset();
+        harness.listSlashCommands.mockReset();
+        harness.listSlashCommands.mockResolvedValue([]);
         lifecycleMock.registerProcessHandlers.mockClear();
         lifecycleMock.cleanupAndExit.mockClear();
         lifecycleMock.markCrash.mockClear();
@@ -222,5 +234,57 @@ describe('runOpencode set-session-config handler', () => {
         await runOpencode({ model: 'ollama/exaone:4.5-33b-q8' });
 
         expect(harness.opencodeLoopArgs[0]?.model).toBe('ollama/exaone:4.5-33b-q8');
+    });
+
+    it('opts in to clearQueuedThinkingGrace when acking a handled slash command', async () => {
+        await runOpencode({});
+
+        const userMessageHandler = harness.session.onUserMessage.mock.calls[0]?.[0] as
+            ((msg: { content: { text: string; attachments?: unknown[] } }, localId?: string) => void)
+            | undefined;
+        expect(userMessageHandler).toBeDefined();
+
+        userMessageHandler!({ content: { text: '/status' } }, 'local-status');
+        // Drain microtasks so the chain runs and acks the slash command.
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        expect(harness.session.emitMessagesConsumed).toHaveBeenCalledWith(
+            ['local-status'],
+            { clearQueuedThinkingGrace: true }
+        );
+        // The slash reply should still have gone out as a separate message.
+        expect(harness.session.sendAgentMessage).toHaveBeenCalled();
+    });
+
+    it('cancels a slash command that is cancelled before listSlashCommands resolves', async () => {
+        let releaseListSlashCommands: () => void = () => {};
+        const slashCommandsPromise = new Promise<unknown[]>((resolve) => {
+            releaseListSlashCommands = () => resolve([]);
+        });
+        harness.listSlashCommands.mockReset();
+        harness.listSlashCommands.mockReturnValue(slashCommandsPromise);
+
+        await runOpencode({});
+
+        const userMessageHandler = harness.session.onUserMessage.mock.calls[0]?.[0] as
+            ((msg: { content: { text: string; attachments?: unknown[] } }, localId?: string) => void)
+            | undefined;
+        const cancelHandler = harness.session.onCancelQueuedMessage.mock.calls[0]?.[0] as
+            ((localId: string) => boolean) | undefined;
+        expect(userMessageHandler).toBeDefined();
+        expect(cancelHandler).toBeDefined();
+
+        userMessageHandler!({ content: { text: '/status' } }, 'local-1');
+        // Cancel arrives while listSlashCommands is still pending — the queue
+        // is empty, so without the preparing-localIds bookkeeping the cancel
+        // would return false and the slash reply would still fire when the
+        // chain resumes.
+        expect(cancelHandler!('local-1')).toBe(true);
+        releaseListSlashCommands();
+        // Drain microtasks so the chain runs the cancellation short-circuit.
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        expect(harness.session.sendAgentMessage).not.toHaveBeenCalled();
+        expect(harness.session.emitMessagesConsumed).not.toHaveBeenCalled();
     });
 });

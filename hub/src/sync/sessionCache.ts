@@ -260,6 +260,22 @@ export class SessionCache {
         }
     }
 
+    /**
+     * Drop the queued-message thinking grace timer for a session.
+     *
+     * `markMessageQueued` sets a 15s grace during which we keep `thinking=true`
+     * even if the CLI sends `keepAlive(thinking=false)` — that grace exists to
+     * cover the gap between the user POSTing a prompt and the CLI starting to
+     * stream. Sessions that handle the message synchronously (e.g. slash
+     * commands intercepted in `onUserMessage`) never call onThinkingChange and
+     * would otherwise leave the spinner stuck for the full grace window. The
+     * messages-consumed socket event signals the CLI has finished its
+     * synchronous handling, so it's safe to drop the grace.
+     */
+    clearQueuedThinkingGrace(sessionId: string): void {
+        this.pendingThinkingUntilBySessionId.delete(sessionId)
+    }
+
     markMessageQueued(sessionId: string, time: number = Date.now()): void {
         const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
         if (!session) return

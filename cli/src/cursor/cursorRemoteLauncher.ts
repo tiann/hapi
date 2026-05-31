@@ -82,6 +82,9 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
         };
 
         let cursorSessionId: string | null = session.sessionId;
+        if (cursorSessionId) {
+            session.onSessionFound(cursorSessionId);
+        }
 
         while (!this.shouldExit) {
             const waitSignal = this.abortController.signal;

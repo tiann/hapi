@@ -7,24 +7,32 @@ import { listSlashCommands } from './slashCommands'
 describe('listSlashCommands', () => {
     const originalClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR
     const originalCodexHome = process.env.CODEX_HOME
+    const originalXdgConfigHome = process.env.XDG_CONFIG_HOME
     let sandboxDir: string
     let claudeConfigDir: string
     let codexHome: string
+    let xdgConfigHome: string
+    let opencodeUserDir: string
     let projectDir: string
 
     beforeEach(async () => {
         sandboxDir = await mkdtemp(join(tmpdir(), 'hapi-slash-commands-'))
         claudeConfigDir = join(sandboxDir, 'global-claude')
         codexHome = join(sandboxDir, 'global-codex')
+        xdgConfigHome = join(sandboxDir, 'xdg-config')
+        opencodeUserDir = join(xdgConfigHome, 'opencode', 'command')
         projectDir = join(sandboxDir, 'project')
 
         process.env.CLAUDE_CONFIG_DIR = claudeConfigDir
         process.env.CODEX_HOME = codexHome
+        process.env.XDG_CONFIG_HOME = xdgConfigHome
 
         await mkdir(join(claudeConfigDir, 'commands'), { recursive: true })
         await mkdir(join(codexHome, 'prompts'), { recursive: true })
+        await mkdir(opencodeUserDir, { recursive: true })
         await mkdir(join(projectDir, '.claude', 'commands'), { recursive: true })
         await mkdir(join(projectDir, '.codex', 'prompts'), { recursive: true })
+        await mkdir(join(projectDir, '.opencode', 'command'), { recursive: true })
     })
 
     afterEach(async () => {
@@ -37,6 +45,11 @@ describe('listSlashCommands', () => {
             delete process.env.CODEX_HOME
         } else {
             process.env.CODEX_HOME = originalCodexHome
+        }
+        if (originalXdgConfigHome === undefined) {
+            delete process.env.XDG_CONFIG_HOME
+        } else {
+            process.env.XDG_CONFIG_HOME = originalXdgConfigHome
         }
 
         await rm(sandboxDir, { recursive: true, force: true })
@@ -162,6 +175,64 @@ describe('listSlashCommands', () => {
             description: 'Project Codex prompt',
             content: 'Project Codex body',
         })
+    })
+
+    it('exposes HAPI-supported OpenCode built-ins', async () => {
+        const commands = await listSlashCommands('opencode', projectDir)
+
+        const names = commands.map((command) => command.name)
+        expect(names).toEqual(expect.arrayContaining([
+            'help',
+            'status',
+            'plan',
+            'default',
+            'init',
+        ]))
+        // Anything covered by composer buttons, plus aliases and unsupported
+        // placeholders, must stay out of the autocomplete menu — the resolver
+        // still accepts them when typed manually.
+        for (const hidden of ['model', 'reasoning', 'effort', 'permissions', 'permission', 'clear', 'compact']) {
+            expect(names).not.toContain(hidden)
+        }
+    })
+
+    it('loads OpenCode user and project commands', async () => {
+        await writeFile(
+            join(opencodeUserDir, 'global-opencode.md'),
+            ['---', 'description: Global OpenCode prompt', '---', '', 'Global OpenCode body'].join('\n')
+        )
+        await writeFile(
+            join(projectDir, '.opencode', 'command', 'project-opencode.md'),
+            ['---', 'description: Project OpenCode prompt', '---', '', 'Project OpenCode body'].join('\n')
+        )
+
+        const commands = await listSlashCommands('opencode', projectDir)
+
+        expect(commands.find(cmd => cmd.name === 'global-opencode')).toMatchObject({
+            source: 'user',
+            description: 'Global OpenCode prompt',
+            content: 'Global OpenCode body',
+        })
+        expect(commands.find(cmd => cmd.name === 'project-opencode')).toMatchObject({
+            source: 'project',
+            description: 'Project OpenCode prompt',
+            content: 'Project OpenCode body',
+        })
+    })
+
+    it('lets project opencode prompts override same-name built-ins', async () => {
+        await writeFile(
+            join(projectDir, '.opencode', 'command', 'status.md'),
+            ['---', 'description: Project status', '---', '', 'Project status prompt'].join('\n')
+        )
+
+        const commands = await listSlashCommands('opencode', projectDir)
+        const statusCommands = commands.filter(cmd => cmd.name === 'status')
+
+        expect(statusCommands).toHaveLength(1)
+        expect(statusCommands[0]?.source).toBe('project')
+        expect(statusCommands[0]?.description).toBe('Project status')
+        expect(statusCommands[0]?.content).toBe('Project status prompt')
     })
 
     it('loads Codex project prompts from cwd up to repo root with nearest override', async () => {

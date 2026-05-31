@@ -123,7 +123,7 @@ describe('permission mode persistence', () => {
         restartedEngine.handleMachineAlive({ machineId: machine.id, time: Date.now() })
 
         let capturedSpawnPermissionMode: string | undefined
-        const calls: Array<{ type: 'spawn' } | { type: 'config'; sessionId: string; permissionMode?: string }> = []
+        let configRpcCalls = 0
         ;(restartedEngine as any).rpcGateway.spawnSession = async (
             _machineId: string,
             _directory: string,
@@ -138,7 +138,6 @@ describe('permission mode persistence', () => {
             permissionMode?: string
         ) => {
             capturedSpawnPermissionMode = permissionMode
-            calls.push({ type: 'spawn' })
             restartedEngine.handleSessionAlive({
                 sid: session.id,
                 time: Date.now(),
@@ -146,17 +145,9 @@ describe('permission mode persistence', () => {
             })
             return { type: 'success', sessionId: session.id }
         }
-        ;(restartedEngine as any).rpcGateway.requestSessionConfig = async (
-            sessionId: string,
-            config: { permissionMode?: string }
-        ) => {
-            calls.push({ type: 'config', sessionId, permissionMode: config.permissionMode })
-            restartedEngine.handleSessionAlive({
-                sid: sessionId,
-                time: Date.now(),
-                permissionMode: config.permissionMode as never
-            })
-            return { applied: { permissionMode: config.permissionMode } }
+        ;(restartedEngine as any).rpcGateway.requestSessionConfig = async () => {
+            configRpcCalls += 1
+            throw new Error('RPC handler not registered')
         }
         ;(restartedEngine as any).waitForSessionActive = async () => true
 
@@ -164,7 +155,6 @@ describe('permission mode persistence', () => {
 
         expect(result).toEqual({ type: 'success', sessionId: session.id })
         expect(capturedSpawnPermissionMode).toBe('yolo')
-        expect(calls).toContainEqual({ type: 'spawn' })
-        expect(calls).toContainEqual({ type: 'config', sessionId: session.id, permissionMode: 'yolo' })
+        expect(configRpcCalls).toBe(0)
     })
 })
