@@ -133,20 +133,16 @@ describe('MermaidDiagram', () => {
 
         await waitFor(() => {
             const dialog = screen.getByRole('dialog', { name: 'Diagram' })
-            expect(dialog.querySelector('[data-testid="mock-mermaid"]')).toBeTruthy()
+            const host = dialog.querySelector('[data-mermaid-lightbox]')
+            expect(host?.shadowRoot?.querySelector('[data-testid="mock-mermaid"]')).toBeTruthy()
         })
 
-        expect(mermaidMocks.renderMock).toHaveBeenCalledTimes(2)
-        expect(mermaidMocks.renderMock).toHaveBeenNthCalledWith(
-            1,
+        expect(mermaidMocks.renderMock).toHaveBeenCalledTimes(1)
+        expect(mermaidMocks.renderMock).toHaveBeenCalledWith(
             expect.stringContaining('mermaid-'),
             'graph TD\nA --> B',
         )
-        expect(mermaidMocks.renderMock).toHaveBeenNthCalledWith(
-            2,
-            expect.stringContaining('mermaid-modal-'),
-            'graph TD\nA --> B',
-        )
+        expect(document.querySelector('[data-mermaid-lightbox]')).toBeTruthy()
     })
 
     it('does not expose a lightbox trigger when rendering fails', async () => {

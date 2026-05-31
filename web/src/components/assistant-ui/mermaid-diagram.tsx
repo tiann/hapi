@@ -1,5 +1,5 @@
 import type { SyntaxHighlighterProps } from '@assistant-ui/react-markdown'
-import { useEffect, useId, useState, type ComponentPropsWithoutRef, type SyntheticEvent } from 'react'
+import { useEffect, useId, useRef, useState, type ComponentPropsWithoutRef, type SyntheticEvent } from 'react'
 import { ZoomableLightbox } from '@/components/ZoomableLightbox'
 import { cn } from '@/lib/utils'
 import { useTranslation } from '@/lib/use-translation'
@@ -95,7 +95,7 @@ export async function renderMermaidSvg(
     return result.svg
 }
 
-function parseViewBoxSize(svg: string): { width: number; height: number } | null {
+export function getMermaidSvgLayoutSize(svg: string): { width: number; height: number } | null {
     const viewBoxMatch = svg.match(/\bviewBox="([\d.\s]+)"/)
     if (!viewBoxMatch) return null
     const parts = viewBoxMatch[1].trim().split(/\s+/).map(Number)
@@ -106,7 +106,7 @@ function parseViewBoxSize(svg: string): { width: number; height: number } | null
 /** Mermaid often emits width="100%"; normalize before rasterizing for the lightbox. */
 export function normalizeMermaidSvgForStandaloneDisplay(svg: string): string {
     let result = svg
-    const viewBoxSize = parseViewBoxSize(result)
+    const viewBoxSize = getMermaidSvgLayoutSize(result)
     if (!viewBoxSize) return result
 
     const { width, height } = viewBoxSize
@@ -168,14 +168,27 @@ function MermaidSvgContent(props: { svg: string; className?: string }) {
     )
 }
 
+/** Shadow root isolates duplicate mermaid ids from the inline diagram in the page. */
+function MermaidLightboxSvg(props: { svg: string }) {
+    const hostRef = useRef<HTMLDivElement>(null)
+
+    useEffect(() => {
+        const host = hostRef.current
+        if (!host) return
+
+        const root = host.shadowRoot ?? host.attachShadow({ mode: 'open' })
+        root.innerHTML = `<style>svg{display:block;height:auto;width:auto;max-width:none;max-height:none}</style>${props.svg}`
+    }, [props.svg])
+
+    return <div ref={hostRef} className="aui-mermaid-lightbox-host" data-mermaid-lightbox />
+}
+
 export function MermaidDiagram(props: SyntaxHighlighterProps) {
     const { t } = useTranslation()
     const [theme, setTheme] = useState<'light' | 'dark'>(() => resolveTheme())
     const [renderError, setRenderError] = useState(false)
     const [svg, setSvg] = useState<string | null>(null)
     const [lightboxOpen, setLightboxOpen] = useState(false)
-    const [lightboxSvg, setLightboxSvg] = useState<string | null>(null)
-    const [lightboxLoading, setLightboxLoading] = useState(false)
     const id = useId().replace(/:/g, '-')
     const openLabel = t('mermaid.openFullscreen')
     const viewerLabel = t('mermaid.viewerTitle')
@@ -234,35 +247,7 @@ export function MermaidDiagram(props: SyntaxHighlighterProps) {
         }
     }, [id, props.code, theme])
 
-    useEffect(() => {
-        if (!lightboxOpen) {
-            setLightboxSvg(null)
-            setLightboxLoading(false)
-            return
-        }
-
-        let cancelled = false
-        setLightboxLoading(true)
-
-        const render = async () => {
-            try {
-                const nextSvg = await renderMermaidSvg(props.code, `mermaid-modal-${id}`, theme)
-                if (cancelled) return
-                setLightboxSvg(normalizeMermaidSvgForStandaloneDisplay(nextSvg))
-            } catch {
-                if (cancelled) return
-                setLightboxSvg(null)
-            } finally {
-                if (!cancelled) setLightboxLoading(false)
-            }
-        }
-
-        void render()
-
-        return () => {
-            cancelled = true
-        }
-    }, [id, lightboxOpen, props.code, theme])
+    const lightboxLayoutSize = svg ? getMermaidSvgLayoutSize(svg) : null
 
     if (renderError || !svg) {
         return <MermaidFallback code={props.code} data-mermaid-diagram data-rendered="false" />
@@ -291,19 +276,11 @@ export function MermaidDiagram(props: SyntaxHighlighterProps) {
                 onClose={() => setLightboxOpen(false)}
                 title={viewerLabel}
                 ariaLabel={viewerLabel}
-                fitContentKey={lightboxOpen ? lightboxSvg : null}
+                fitContentKey={lightboxOpen ? svg : null}
+                fitContentSize={lightboxLayoutSize}
             >
                 <div className="rounded-lg bg-[var(--app-code-bg)] px-3 py-3">
-                    {lightboxLoading ? (
-                        <div className="px-8 py-6 text-sm text-white/80">{t('mermaid.loading')}</div>
-                    ) : lightboxSvg ? (
-                        <MermaidSvgContent
-                            svg={lightboxSvg}
-                            className="[&_svg]:block [&_svg]:h-auto [&_svg]:max-h-none [&_svg]:max-w-none [&_svg]:w-auto"
-                        />
-                    ) : (
-                        <div className="px-8 py-6 text-sm text-white/80">{t('mermaid.renderError')}</div>
-                    )}
+                    <MermaidLightboxSvg svg={svg} />
                 </div>
             </ZoomableLightbox>
         </>

@@ -68,9 +68,15 @@ async function expectLightboxShowsDiagram(code: string) {
     await waitFor(
         () => {
             const dialog = screen.getByRole('dialog', { name: 'Diagram' })
-            const lightboxSvg = dialog.querySelector('.rounded-lg svg')
+            const host = dialog.querySelector('[data-mermaid-lightbox]')
+            expect(host).toBeTruthy()
+            const lightboxSvg = host?.shadowRoot?.querySelector('svg')
             expect(lightboxSvg).toBeTruthy()
             expect(lightboxSvg?.querySelector('path, line, rect')).toBeTruthy()
+            if (code.includes('sequenceDiagram')) {
+                const actorRects = lightboxSvg?.querySelectorAll('rect.actor, g.actor rect, rect').length ?? 0
+                expect(actorRects).toBeGreaterThanOrEqual(3)
+            }
         },
         { timeout: 10000 },
     )

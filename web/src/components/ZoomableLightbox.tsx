@@ -34,20 +34,30 @@ function getPointCenter(a: Point, b: Point): Point {
 }
 
 function measureSvgIntrinsicSize(svg: SVGSVGElement): { width: number; height: number } | null {
+    const widthAttr = svg.getAttribute('width') ?? ''
+    const heightAttr = svg.getAttribute('height') ?? ''
+    const usesRelativeSize = widthAttr.includes('%')
+        || heightAttr.includes('%')
+        || !widthAttr.trim()
+
+    const viewBox = svg.viewBox?.baseVal
+    if (viewBox && viewBox.width > 0 && viewBox.height > 0 && usesRelativeSize) {
+        return { width: viewBox.width, height: viewBox.height }
+    }
+
     const box = svg.getBoundingClientRect()
     if (box.width > 0 && box.height > 0) {
         return { width: box.width, height: box.height }
     }
 
-    const viewBox = svg.viewBox?.baseVal
     if (viewBox && viewBox.width > 0 && viewBox.height > 0) {
         return { width: viewBox.width, height: viewBox.height }
     }
 
-    const widthAttr = Number.parseFloat(svg.getAttribute('width') ?? '')
-    const heightAttr = Number.parseFloat(svg.getAttribute('height') ?? '')
-    if (widthAttr > 0 && heightAttr > 0) {
-        return { width: widthAttr, height: heightAttr }
+    const parsedWidth = Number.parseFloat(widthAttr)
+    const parsedHeight = Number.parseFloat(heightAttr)
+    if (parsedWidth > 0 && parsedHeight > 0) {
+        return { width: parsedWidth, height: parsedHeight }
     }
 
     return null
@@ -87,12 +97,23 @@ export type ZoomableLightboxProps = {
     children: ReactNode
     /** When set, re-fit viewport when this value changes (e.g. after async SVG load). */
     fitContentKey?: string | number | null
+    /** Intrinsic content size for fit (e.g. mermaid viewBox) when layout is not measurable yet. */
+    fitContentSize?: { width: number; height: number } | null
     /** Compute initial scale to fill the device screen (default true). */
     fitOnOpen?: boolean
 }
 
 export function ZoomableLightbox(props: ZoomableLightboxProps) {
-    const { open, onClose, title, ariaLabel, children, fitContentKey = null, fitOnOpen = true } = props
+    const {
+        open,
+        onClose,
+        title,
+        ariaLabel,
+        children,
+        fitContentKey = null,
+        fitContentSize = null,
+        fitOnOpen = true,
+    } = props
     const [scale, setScale] = useState(1)
     const [offset, setOffset] = useState({ x: 0, y: 0 })
     const scaleRef = useRef(scale)
@@ -129,7 +150,7 @@ export function ZoomableLightbox(props: ZoomableLightboxProps) {
         const content = contentRef.current
         if (!content) return
 
-        const contentSize = measureContentSize(content)
+        const contentSize = fitContentSize ?? measureContentSize(content)
         if (!contentSize) return
 
         const screen = getScreenFitSize()
@@ -141,7 +162,7 @@ export function ZoomableLightbox(props: ZoomableLightboxProps) {
         baseScaleRef.current = fitScale
         updateScale(fitScale)
         updateOffset({ x: 0, y: 0 })
-    }, [fitOnOpen, updateOffset, updateScale])
+    }, [fitContentSize, fitOnOpen, updateOffset, updateScale])
 
     const resetView = useCallback(() => {
         updateScale(baseScaleRef.current)
@@ -273,6 +294,7 @@ export function ZoomableLightbox(props: ZoomableLightboxProps) {
 
     useLayoutEffect(() => {
         if (!open) return
+        if (fitOnOpen && !fitContentKey) return
 
         let frame = 0
         let attempt = 0
@@ -281,7 +303,7 @@ export function ZoomableLightbox(props: ZoomableLightboxProps) {
         const scheduleFit = () => {
             frame = requestAnimationFrame(() => {
                 const content = contentRef.current
-                const hadSize = content ? measureContentSize(content) : null
+                const hadSize = fitContentSize ?? (content ? measureContentSize(content) : null)
                 applyFitScale()
                 attempt += 1
                 if (!hadSize && attempt < maxAttempts) {
@@ -299,7 +321,7 @@ export function ZoomableLightbox(props: ZoomableLightboxProps) {
             window.clearTimeout(retry)
             window.clearTimeout(lateRetry)
         }
-    }, [open, fitContentKey, applyFitScale])
+    }, [fitContentKey, fitContentSize, fitOnOpen, open, applyFitScale])
 
     useEffect(() => {
         if (!open) return
