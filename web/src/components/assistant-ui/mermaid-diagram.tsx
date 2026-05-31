@@ -236,6 +236,7 @@ export function MermaidDiagram(props: SyntaxHighlighterProps) {
     const openLightbox = (event: SyntheticEvent) => {
         event.preventDefault()
         event.stopPropagation()
+        if (!svg) return
         const inlineSvg = inlineHostRef.current?.querySelector('svg') ?? null
         setLightboxFitSize(resolveMermaidLightboxFitSize(inlineSvg, svg))
         setLightboxOpen(true)

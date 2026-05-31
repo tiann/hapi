@@ -2,6 +2,8 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type Pointer
 import { CloseIcon } from '@/components/icons'
 
 const MIN_SCALE = 0.25
+/** Floor for fit-to-screen only; dense diagrams can need under 25% to fit. */
+const MIN_FIT_SCALE = 0.01
 const MAX_SCALE = 8
 const SCALE_STEP = 0.25
 const BACKDROP_CLICK_MAX_MOVEMENT = 4
@@ -18,8 +20,8 @@ function getScreenFitSize(): { width: number; height: number } {
 
 type Point = { x: number; y: number }
 
-function clampScale(value: number): number {
-    return Math.min(MAX_SCALE, Math.max(MIN_SCALE, value))
+function clampScale(value: number, minScale = MIN_SCALE): number {
+    return Math.min(MAX_SCALE, Math.max(minScale, value))
 }
 
 function getPointDistance(a: Point, b: Point): number {
@@ -157,7 +159,7 @@ export function ZoomableLightbox(props: ZoomableLightboxProps) {
         const pad = SCREEN_FIT_PADDING_PX * 2
         const fitWidth = (screen.width - pad) / contentSize.width
         const fitHeight = (screen.height - pad) / contentSize.height
-        const fitScale = clampScale(Math.min(fitWidth, fitHeight))
+        const fitScale = clampScale(Math.min(fitWidth, fitHeight), MIN_FIT_SCALE)
 
         baseScaleRef.current = fitScale
         updateScale(fitScale)

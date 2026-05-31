@@ -1,4 +1,4 @@
 node_modules/
 dist/
 dev-dist/
-web/test-results/
+test-results/
