@@ -9,7 +9,7 @@
 set -euo pipefail
 
 PRIMARY="${HAPI_PRIMARY:-$HOME/coding/hapi}"
-HEALTH="${HAPI_SESSIONS_HEALTH:-$PRIMARY/scripts/hapi-sessions-health.sh}"
+HEALTH="${HAPI_SESSIONS_HEALTH:-$HOME/coding/server-setup/scripts/hapi/hapi-sessions-health.sh}"
 INTERVAL="${HAPI_WATCH_INTERVAL:-30}"
 ONCE=0
 

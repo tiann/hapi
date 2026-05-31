@@ -14,7 +14,7 @@ Feature agents should **read the relevant doc below at session start**; meta bot
 |-------|------|----------------|
 | **HAPI API / hub** | `~/coding/hapi` (upstream/main mirror), `~/coding/hapi-driver` (daily soup), `~/coding/hapi-*` PR worktrees, `hapi-active` symlink | Driver manifest rebuild, worktree hygiene, live swing |
 | **Adjacent HAPI repos** | e.g. `hapi-garden`, `hapi-session-attention`, any `~/coding/hapi-*` worktree with an open branch | Same rules; confirm which tree is active before debugging "prod" |
-| **Machine helpers** | `~/.local/bin/hapi-use-worktree`, `hapi-use-main`, `gh` wrapper, `pr-post-push-check*`, `hapi-sessions-health.sh` | Installed, executable, match docs |
+| **Machine helpers** | `~/.local/bin/hapi-use-worktree`, `hapi-use-main`, `gh` wrapper, `pr-post-push-check*`, `~/.local/bin/hapi-sessions-health.sh` → `server-setup/scripts/hapi/` | Installed, executable, match docs |
 | **Agent hooks** | `~/.claude/settings.json`, `~/.cursor/hooks.json`, `~/coding/AGENTS.local.md` | Policy text matches docs; note IDE vs CLI hook parity gaps |
 | **Upstream boundary** | `tiann/hapi` PRs | No operator-local files, no AI attribution (see repo `AGENTS.local.md`) |
 
@@ -91,7 +91,7 @@ hapi-sessions-health.sh jellybot  # filter by path/flavor/id
 
 Meta bot triages `STUCK?`, `ZOMBIE`, and missing runner PIDs; escalates or kills stale processes per operator policy.
 
-Script: `scripts/hapi-sessions-health.sh` (repo root).
+Script: `~/coding/server-setup/scripts/hapi/hapi-sessions-health.sh` (operator tooling; symlinked as `~/.local/bin/hapi-sessions-health.sh`). Used to live in this repo at `scripts/hapi-sessions-health.sh`; relocated 2026-05-31 so `git stash -u` operations on HAPI worktrees don't sweep it away.
 
 ### 4. Verification commands (HAPI default)
 
