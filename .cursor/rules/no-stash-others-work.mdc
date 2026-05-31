@@ -1,0 +1,49 @@
+---
+description: Multi-agent repo - never `git stash` work that is not yours; commit instead
+alwaysApply: true
+---
+
+# Do not `git stash` in this repo without thinking
+
+This is a **multi-agent monorepo**. Peer agents frequently leave **uncommitted changes** in `~/coding/hapi` (and worktrees) between turns. A blind `git stash` here will sweep their work into the stash list where it is easy to lose - and where rebuild / sync flows will silently leave it.
+
+This is not theoretical - it has happened multiple times. The watch-script ouroboros guard was wiped twice this way before being committed (`a5c0fd0`).
+
+## The rule
+
+Before you run `git stash` (or any command that invokes it - `git rebase`, `git pull --rebase`, `hapi-sync-fork-main`, `hapi-driver-rebuild`):
+
+1. Run `git status` and `git diff --stat`.
+2. If the dirty files are **yours** (you edited them this turn) - **commit them**, do not stash.
+3. If the dirty files are **not yours** - stop. Either:
+   - Search the agent transcripts for who owns them (`grep -l <filename> ~/.cursor/projects/*/agent-transcripts/*.jsonl`), or
+   - Move to a fresh **worktree** for your work (`hapi-worktree-create` / `git worktree add`), or
+   - Ask the operator before you touch them.
+
+## Why not stash?
+
+- `git stash` makes work invisible. The next agent does not see it in `git status`.
+- Stashes accumulate without owners (this repo had **16 lingering stashes** at last audit).
+- Rebuild / sync scripts that auto-stash before resetting can lose work permanently if the stash is later dropped.
+- Stashed WIP that lived only as a working-tree mod is **not version controlled** - it can be lost in a `reset --hard` or `clean -fd` you do not own.
+
+## Canonical alternatives
+
+| You want to ... | Do this |
+|------------------|--------|
+| Pause your own work | `git commit -am 'wip: <topic>'` on a feature branch (your worktree or a temp branch) |
+| Work without disturbing dirty primary | `hapi-worktree-create <name> <base>` then work there |
+| Rebuild driver soup with dirty primary | `git stash push -m 'wip <your-id> <topic>' -u` **then immediately** `git stash apply` after rebuild, OR commit to WIP branch first |
+| Rebase a branch with dirty other work | Switch to a worktree of that branch and rebase there |
+
+If you absolutely must stash, **label your stash** with your agent id / Cursor session id so the next agent can find it:
+
+```bash
+git stash push -m "wip <agent-name> <session-id-prefix> <topic>" -u
+```
+
+## Backstop
+
+`pre-push` hook + `scripts/tooling/check-stash-advisory.sh` surface stashes older than 30 minutes with WIP-style messages. If you see one and do not own it, do not drop it - leave it for the operator.
+
+See [docs/tooling/git-stash-policy.md](../../docs/tooling/git-stash-policy.md).

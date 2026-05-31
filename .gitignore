@@ -42,3 +42,11 @@ execplan/
 # Generated npm bundle output (local)
 cli/npm/main/
 .ace-tool/
+
+# Cursor: ignored by global ~/.config/git/ignore but we want shared rules tracked
+# in this repo. Negate the global rule for .cursor/rules/ only (per-user state
+# under .cursor/ stays ignored).
+!.cursor/
+.cursor/*
+!.cursor/rules/
+!.cursor/rules/**
