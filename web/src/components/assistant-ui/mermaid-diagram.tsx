@@ -1,5 +1,13 @@
 import type { SyntaxHighlighterProps } from '@assistant-ui/react-markdown'
-import { useEffect, useId, useRef, useState, type ComponentPropsWithoutRef, type SyntheticEvent } from 'react'
+import {
+    useEffect,
+    useId,
+    useRef,
+    useState,
+    type ComponentPropsWithoutRef,
+    type Ref,
+    type SyntheticEvent,
+} from 'react'
 import { ZoomableLightbox } from '@/components/ZoomableLightbox'
 import { cn } from '@/lib/utils'
 import { useTranslation } from '@/lib/use-translation'
@@ -159,13 +167,27 @@ function MermaidFallback(props: ComponentPropsWithoutRef<'pre'> & { code: string
     )
 }
 
-function MermaidSvgContent(props: { svg: string; className?: string }) {
+function MermaidSvgContent(props: { svg: string; className?: string; hostRef?: Ref<HTMLDivElement> }) {
     return (
         <div
+            ref={props.hostRef}
             className={cn('min-w-fit [&_svg]:mx-auto [&_svg]:h-auto [&_svg]:max-w-full', props.className)}
             dangerouslySetInnerHTML={{ __html: props.svg }}
         />
     )
+}
+
+function measureRenderedSvgContentSize(svgElement: SVGSVGElement | null): { width: number; height: number } | null {
+    if (!svgElement) return null
+    try {
+        const box = svgElement.getBBox()
+        if (box.width > 0 && box.height > 0) {
+            return { width: box.width, height: box.height }
+        }
+    } catch {
+        // getBBox unavailable (some test environments)
+    }
+    return getMermaidSvgLayoutSize(svgElement.outerHTML)
 }
 
 /** Shadow root isolates duplicate mermaid ids from the inline diagram in the page. */
@@ -189,6 +211,8 @@ export function MermaidDiagram(props: SyntaxHighlighterProps) {
     const [renderError, setRenderError] = useState(false)
     const [svg, setSvg] = useState<string | null>(null)
     const [lightboxOpen, setLightboxOpen] = useState(false)
+    const [lightboxFitSize, setLightboxFitSize] = useState<{ width: number; height: number } | null>(null)
+    const inlineHostRef = useRef<HTMLDivElement>(null)
     const id = useId().replace(/:/g, '-')
     const openLabel = t('mermaid.openFullscreen')
     const viewerLabel = t('mermaid.viewerTitle')
@@ -200,6 +224,8 @@ export function MermaidDiagram(props: SyntaxHighlighterProps) {
     const openLightbox = (event: SyntheticEvent) => {
         event.preventDefault()
         event.stopPropagation()
+        const inlineSvg = inlineHostRef.current?.querySelector('svg')
+        setLightboxFitSize(measureRenderedSvgContentSize(inlineSvg))
         setLightboxOpen(true)
     }
 
@@ -247,7 +273,7 @@ export function MermaidDiagram(props: SyntaxHighlighterProps) {
         }
     }, [id, props.code, theme])
 
-    const lightboxLayoutSize = svg ? getMermaidSvgLayoutSize(svg) : null
+    const lightboxLayoutSize = lightboxFitSize ?? (svg ? getMermaidSvgLayoutSize(svg) : null)
 
     if (renderError || !svg) {
         return <MermaidFallback code={props.code} data-mermaid-diagram data-rendered="false" />
@@ -268,7 +294,7 @@ export function MermaidDiagram(props: SyntaxHighlighterProps) {
                 data-rendered="true"
                 data-mermaid-source={encodeURIComponent(props.code)}
             >
-                <MermaidSvgContent svg={svg} />
+                <MermaidSvgContent svg={svg} hostRef={inlineHostRef} />
             </button>
 
             <ZoomableLightbox
