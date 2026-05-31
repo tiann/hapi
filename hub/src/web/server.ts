@@ -125,6 +125,9 @@ function createGeminiProxyWebSocketHandler() {
 function createQwenProxyWebSocketHandler() {
     const QWEN_WS_BASE = 'wss://dashscope.aliyuncs.com/api-ws/v1/realtime'
     const upstreamMap = new WeakMap<ServerWebSocket<unknown>, WebSocket>()
+    // Holds the hub-owned session.update payload until session.created arrives from DashScope.
+    // Sending session.update before session.created violates the Qwen Realtime protocol ordering.
+    const pendingSetupMap = new WeakMap<ServerWebSocket<unknown>, string>()
 
     return {
         open(clientWs: ServerWebSocket<unknown>) {
@@ -136,23 +139,42 @@ function createQwenProxyWebSocketHandler() {
             } as unknown as string[])
 
             upstreamMap.set(clientWs, upstream)
+            pendingSetupMap.set(clientWs, JSON.stringify(buildQwenSessionUpdateMessage(data.language)))
 
-            upstream.onopen = () => {
-                // Hub-owned setup — send initial session.update so client cannot override tools/voice/config.
-                upstream.send(JSON.stringify(buildQwenSessionUpdateMessage(data.language)))
-            }
             upstream.onmessage = (event) => {
+                const raw = event.data
+                const text = typeof raw === 'string'
+                    ? raw
+                    : new TextDecoder().decode(raw instanceof Uint8Array ? raw : new Uint8Array(raw as ArrayBuffer))
+
+                // Respect Qwen protocol ordering: relay session.created first, then send hub-owned
+                // session.update. DashScope must receive session.update after session.created.
+                const pendingSetup = pendingSetupMap.get(clientWs)
+                if (pendingSetup) {
+                    try {
+                        const parsed = JSON.parse(text) as { type?: string }
+                        if (parsed.type === 'session.created') {
+                            pendingSetupMap.delete(clientWs)
+                            try { if (clientWs.readyState === 1) clientWs.send(text) } catch { /* client gone */ }
+                            upstream.send(pendingSetup)
+                            return
+                        }
+                    } catch { /* not JSON — relay as-is below */ }
+                }
+
                 try {
                     if (clientWs.readyState === 1) {
-                        clientWs.send(typeof event.data === 'string' ? event.data : new Uint8Array(event.data as ArrayBuffer))
+                        clientWs.send(typeof raw === 'string' ? raw : new Uint8Array(raw as ArrayBuffer))
                     }
                 } catch { /* client gone */ }
             }
             upstream.onerror = () => {
+                pendingSetupMap.delete(clientWs)
                 upstreamMap.delete(clientWs)
                 try { clientWs.close(1011, 'Upstream error') } catch { /* */ }
             }
             upstream.onclose = (event) => {
+                pendingSetupMap.delete(clientWs)
                 try { clientWs.close(toClientCloseCode(event.code), event.reason || 'Upstream closed') } catch { /* client gone */ }
                 upstreamMap.delete(clientWs)
             }
@@ -168,6 +190,7 @@ function createQwenProxyWebSocketHandler() {
             }
         },
         close(clientWs: ServerWebSocket<unknown>, code: number, reason: string) {
+            pendingSetupMap.delete(clientWs)
             const upstream = upstreamMap.get(clientWs)
             if (upstream) {
                 try { upstream.close(toClientCloseCode(code), (reason || 'Client closed').slice(0, 123)) } catch { /* */ }
