@@ -9,7 +9,8 @@
         "build": "vite build && cp dist/index.html dist/404.html",
         "typecheck": "tsc --noEmit",
         "preview": "vite preview",
-        "test": "vitest run"
+        "test": "vitest run",
+        "test:mermaid-lightbox:e2e": "playwright test e2e/mermaid-lightbox.spec.ts"
     },
     "dependencies": {
         "@assistant-ui/react": "^0.11.53",
@@ -67,6 +68,7 @@
         "typescript": "^5.9.3",
         "unified": "^11.0.5",
         "vite": "^7.3.0",
-        "vitest": "^4.0.16"
+        "vitest": "^4.0.16",
+        "@playwright/test": "1.49.1"
     }
 }

@@ -177,17 +177,29 @@ function MermaidSvgContent(props: { svg: string; className?: string; hostRef?: R
     )
 }
 
-function measureRenderedSvgContentSize(svgElement: SVGSVGElement | null): { width: number; height: number } | null {
-    if (!svgElement) return null
+/** Prefer viewBox layout; use getBBox when Mermaid pads the viewBox (e.g. gitGraph). */
+export function resolveMermaidLightboxFitSize(
+    svgElement: SVGSVGElement | null,
+    svgString: string,
+): { width: number; height: number } | null {
+    const fromViewBox = getMermaidSvgLayoutSize(svgString)
+    if (!svgElement) return fromViewBox
+
     try {
-        const box = svgElement.getBBox()
-        if (box.width > 0 && box.height > 0) {
-            return { width: box.width, height: box.height }
+        const bbox = svgElement.getBBox()
+        if (bbox.width <= 0 || bbox.height <= 0) return fromViewBox
+        if (!fromViewBox) return { width: bbox.width, height: bbox.height }
+
+        const viewBoxArea = fromViewBox.width * fromViewBox.height
+        const bboxArea = bbox.width * bbox.height
+        if (viewBoxArea > bboxArea * 2) {
+            return { width: bbox.width, height: bbox.height }
         }
     } catch {
         // getBBox unavailable (some test environments)
     }
-    return getMermaidSvgLayoutSize(svgElement.outerHTML)
+
+    return fromViewBox
 }
 
 /** Shadow root isolates duplicate mermaid ids from the inline diagram in the page. */
@@ -224,8 +236,8 @@ export function MermaidDiagram(props: SyntaxHighlighterProps) {
     const openLightbox = (event: SyntheticEvent) => {
         event.preventDefault()
         event.stopPropagation()
-        const inlineSvg = inlineHostRef.current?.querySelector('svg')
-        setLightboxFitSize(measureRenderedSvgContentSize(inlineSvg))
+        const inlineSvg = inlineHostRef.current?.querySelector('svg') ?? null
+        setLightboxFitSize(resolveMermaidLightboxFitSize(inlineSvg, svg))
         setLightboxOpen(true)
     }
 
