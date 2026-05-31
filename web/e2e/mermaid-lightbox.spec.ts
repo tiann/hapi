@@ -15,36 +15,31 @@ type LightboxMetrics = {
     shapes: { rect: number; path: number; line: number }
 }
 
-async function openLightboxForCase(page: import('@playwright/test').Page, caseId: string) {
-    await page.goto(`/mermaid-lightbox-e2e.html?case=${encodeURIComponent(caseId)}`)
-    await page.waitForSelector('[data-mermaid-diagram][data-rendered="true"]', { timeout: 20_000 })
-    await page.locator('[data-mermaid-diagram][data-rendered="true"]').click()
-    await page.waitForSelector('[role="dialog"]', { timeout: 10_000 })
+type ExpandMetrics = {
+    inlineW: number
+    inlineH: number
+    lightboxW: number
+    lightboxH: number
+    areaRatio: number
+}
 
-    await page.waitForFunction(() => {
+async function readExpandMetrics(page: import('@playwright/test').Page): Promise<ExpandMetrics> {
+    return page.evaluate(() => {
+        const inlineSvg = document.querySelector('[data-mermaid-diagram][data-rendered="true"] svg')
+        const inlineBox = inlineSvg?.getBoundingClientRect()
         const host = document.querySelector('[data-mermaid-lightbox]')
-        const svg = host?.shadowRoot?.querySelector('svg')
-        const box = svg?.getBoundingClientRect()
-        return Boolean(box && box.width > 0 && box.height > 0)
-    }, { timeout: 15_000 })
-
-    await page
-        .waitForFunction(
-            (minCoverage) => {
-                const host = document.querySelector('[data-mermaid-lightbox]')
-                const svg = host?.shadowRoot?.querySelector('svg')
-                const box = svg?.getBoundingClientRect()
-                if (!box || box.width <= 0) return false
-                const vw = window.visualViewport?.width ?? window.innerWidth
-                const vh = window.visualViewport?.height ?? window.innerHeight
-                return Math.max(box.width / vw, box.height / vh) >= minCoverage
-            },
-            MIN_COVERAGE,
-            { timeout: 8_000 },
-        )
-        .catch(() => {
-            // Final expect below surfaces fit failures.
-        })
+        const lightboxSvg = host?.shadowRoot?.querySelector('svg')
+        const lightboxBox = lightboxSvg?.getBoundingClientRect()
+        const inlineArea = (inlineBox?.width ?? 0) * (inlineBox?.height ?? 0)
+        const lightboxArea = (lightboxBox?.width ?? 0) * (lightboxBox?.height ?? 0)
+        return {
+            inlineW: inlineBox?.width ?? 0,
+            inlineH: inlineBox?.height ?? 0,
+            lightboxW: lightboxBox?.width ?? 0,
+            lightboxH: lightboxBox?.height ?? 0,
+            areaRatio: inlineArea > 0 ? lightboxArea / inlineArea : 0,
+        }
+    })
 }
 
 async function readLightboxMetrics(page: import('@playwright/test').Page): Promise<LightboxMetrics> {
@@ -107,10 +102,55 @@ function assertMetrics(caseId: string, metrics: LightboxMetrics) {
     }
 }
 
+/** Lightbox should be visibly larger than the inline chat preview after click. */
+const MIN_EXPAND_AREA_RATIO = Number(process.env.MERMAID_E2E_MIN_EXPAND_RATIO ?? '1.4')
+
 for (const caseId of MERMAID_LIGHTBOX_CASE_IDS) {
     test(`mermaid lightbox: ${caseId}`, async ({ page }) => {
-        await openLightboxForCase(page, caseId)
+        await page.goto(`/mermaid-lightbox-e2e.html?case=${encodeURIComponent(caseId)}`)
+        await page.waitForSelector('[data-mermaid-diagram][data-rendered="true"]', { timeout: 20_000 })
+
+        const beforeExpand = await readExpandMetrics(page)
+        expect(beforeExpand.lightboxW, `${caseId}: dialog closed before click`).toBe(0)
+
+        await page.locator('[data-mermaid-diagram][data-rendered="true"]').click()
+        await page.waitForSelector('[role="dialog"]', { timeout: 10_000 })
+        await page.waitForFunction(() => {
+            const host = document.querySelector('[data-mermaid-lightbox]')
+            const svg = host?.shadowRoot?.querySelector('svg')
+            const box = svg?.getBoundingClientRect()
+            return Boolean(box && box.width > 0 && box.height > 0)
+        }, { timeout: 15_000 })
+
+        await page
+            .waitForFunction(
+                (minCoverage) => {
+                    const host = document.querySelector('[data-mermaid-lightbox]')
+                    const svg = host?.shadowRoot?.querySelector('svg')
+                    const box = svg?.getBoundingClientRect()
+                    if (!box || box.width <= 0) return false
+                    const vw = window.visualViewport?.width ?? window.innerWidth
+                    const vh = window.visualViewport?.height ?? window.innerHeight
+                    return Math.max(box.width / vw, box.height / vh) >= minCoverage
+                },
+                MIN_COVERAGE,
+                { timeout: 8_000 },
+            )
+            .catch(() => undefined)
+
+        const expand = await readExpandMetrics(page)
+        const inlineMax = Math.max(expand.inlineW, expand.inlineH)
+        const lightboxMax = Math.max(expand.lightboxW, expand.lightboxH)
+        const expandedVisibly =
+            expand.areaRatio >= MIN_EXPAND_AREA_RATIO || lightboxMax > inlineMax * 1.05
+        expect(expandedVisibly, `${caseId}: expand inline ${Math.round(expand.inlineW)}x${Math.round(expand.inlineH)} → lightbox ${Math.round(expand.lightboxW)}x${Math.round(expand.lightboxH)}`).toBe(true)
+
         const metrics = await readLightboxMetrics(page)
         assertMetrics(caseId, metrics)
+
+        test.info().annotations.push({
+            type: 'expand',
+            description: `${caseId}: inline ${Math.round(expand.inlineW)}x${Math.round(expand.inlineH)} → lightbox ${Math.round(expand.lightboxW)}x${Math.round(expand.lightboxH)} (${expand.areaRatio.toFixed(1)}x area)`,
+        })
     })
 }
