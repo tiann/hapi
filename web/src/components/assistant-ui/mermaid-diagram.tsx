@@ -77,30 +77,6 @@ export async function renderMermaidSvg(
     return result.svg
 }
 
-/** Clone markup for lightbox so url(#id) / defs are not shared with the inline copy. */
-export function uniqueifyMermaidSvgIds(svg: string, scope: string): string {
-    const prefix = `mermaid-lb-${scope}-`
-    const idRegex = /\bid="([^"]+)"/g
-    const ids: string[] = []
-    idRegex.lastIndex = 0
-    let match: RegExpExecArray | null = idRegex.exec(svg)
-    while (match !== null) {
-        ids.push(match[1])
-        match = idRegex.exec(svg)
-    }
-
-    const uniqueIds = [...new Set(ids)].sort((a, b) => b.length - a.length)
-    let result = svg
-    for (const id of uniqueIds) {
-        const next = `${prefix}${id}`
-        result = result.replaceAll(`id="${id}"`, `id="${next}"`)
-        result = result.replaceAll(`url(#${id})`, `url(#${next})`)
-        result = result.replaceAll(`href="#${id}"`, `href="#${next}"`)
-        result = result.replaceAll(`xlink:href="#${id}"`, `xlink:href="#${next}"`)
-    }
-    return result
-}
-
 function parseViewBoxSize(svg: string): { width: number; height: number } | null {
     const viewBoxMatch = svg.match(/\bviewBox="([\d.\s]+)"/)
     if (!viewBoxMatch) return null
@@ -109,9 +85,9 @@ function parseViewBoxSize(svg: string): { width: number; height: number } | null
     return { width: parts[2], height: parts[3] }
 }
 
-/** Lightbox has no block width context; mermaid often emits width="100%" which collapses to 0. */
-export function prepareMermaidSvgForLightbox(svg: string, scope: string): string {
-    let result = uniqueifyMermaidSvgIds(svg, scope)
+/** Mermaid often emits width="100%"; normalize before rasterizing for the lightbox. */
+export function normalizeMermaidSvgForStandaloneDisplay(svg: string): string {
+    let result = svg
     const viewBoxSize = parseViewBoxSize(result)
     if (!viewBoxSize) return result
 
@@ -150,6 +126,11 @@ export function prepareMermaidSvgForLightbox(svg: string, scope: string): string
     return result
 }
 
+export function mermaidSvgToDataUrl(svg: string): string {
+    const normalized = normalizeMermaidSvgForStandaloneDisplay(svg)
+    return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(normalized)}`
+}
+
 function MermaidFallback(props: ComponentPropsWithoutRef<'pre'> & { code: string }) {
     const { code, className, ...rest } = props
     return (
@@ -183,9 +164,9 @@ export function MermaidDiagram(props: SyntaxHighlighterProps) {
     const id = useId().replace(/:/g, '-')
     const openLabel = t('mermaid.openFullscreen')
     const viewerLabel = t('mermaid.viewerTitle')
-    const lightboxSvg = useMemo(
-        () => (svg ? prepareMermaidSvgForLightbox(svg, id) : null),
-        [svg, id],
+    const lightboxSrc = useMemo(
+        () => (svg ? mermaidSvgToDataUrl(svg) : null),
+        [svg],
     )
 
     const stopEvent = (event: SyntheticEvent) => {
@@ -269,12 +250,16 @@ export function MermaidDiagram(props: SyntaxHighlighterProps) {
                 onClose={() => setLightboxOpen(false)}
                 title={viewerLabel}
                 ariaLabel={viewerLabel}
-                fitContentKey={lightboxOpen ? lightboxSvg : null}
+                fitContentKey={lightboxOpen ? lightboxSrc : null}
             >
-                <MermaidSvgContent
-                    svg={lightboxSvg ?? svg}
-                    className="[&_svg]:block [&_svg]:h-auto [&_svg]:max-h-none [&_svg]:max-w-none [&_svg]:w-auto"
-                />
+                {lightboxSrc ? (
+                    <img
+                        src={lightboxSrc}
+                        alt={viewerLabel}
+                        draggable={false}
+                        className="block h-auto w-auto max-h-none max-w-none select-none"
+                    />
+                ) : null}
             </ZoomableLightbox>
         </>
     )

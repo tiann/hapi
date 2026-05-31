@@ -59,17 +59,11 @@ describe('MermaidDiagram live render', () => {
         await waitFor(
             () => {
                 const dialog = screen.getByRole('dialog', { name: 'Diagram' })
-                const dialogSvg = dialog.querySelector('svg')
-                expect(dialogSvg).toBeTruthy()
+                const img = dialog.querySelector('img')
+                expect(img).toBeTruthy()
+                expect(img?.getAttribute('src')?.startsWith('data:image/svg+xml')).toBe(true)
                 const transform = dialog.querySelector<HTMLElement>('[style*="transform"]')?.style.transform ?? ''
                 expect(transform).toMatch(/scale\([^0)]/)
-
-                const idCounts = new Map<string, number>()
-                for (const el of document.querySelectorAll('[id]')) {
-                    idCounts.set(el.id, (idCounts.get(el.id) ?? 0) + 1)
-                }
-                const duplicateIds = [...idCounts.entries()].filter(([, count]) => count > 1)
-                expect(duplicateIds).toEqual([])
             },
             { timeout: 5000 },
         )

@@ -133,7 +133,7 @@ describe('MermaidDiagram', () => {
 
         await waitFor(() => {
             const dialog = screen.getByRole('dialog', { name: 'Diagram' })
-            expect(dialog.querySelector('[data-testid="mock-mermaid"]')).toBeTruthy()
+            expect(dialog.querySelector('img[alt="Diagram"]')).toBeTruthy()
         })
 
         expect(mermaidMocks.renderMock).toHaveBeenCalledTimes(1)

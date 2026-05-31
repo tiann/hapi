@@ -54,6 +54,17 @@ function measureSvgIntrinsicSize(svg: SVGSVGElement): { width: number; height: n
 }
 
 function measureContentSize(content: HTMLElement): { width: number; height: number } | null {
+    const img = content.querySelector('img')
+    if (img) {
+        const box = img.getBoundingClientRect()
+        if (box.width > 0 && box.height > 0) {
+            return { width: box.width, height: box.height }
+        }
+        if (img.naturalWidth > 0 && img.naturalHeight > 0) {
+            return { width: img.naturalWidth, height: img.naturalHeight }
+        }
+    }
+
     const svg = content.querySelector('svg')
     if (svg) {
         const intrinsic = measureSvgIntrinsicSize(svg)
