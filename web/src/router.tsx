@@ -34,6 +34,7 @@ import { useToast } from '@/lib/toast-context'
 import { useTranslation } from '@/lib/use-translation'
 import { fetchLatestMessages, seedMessageWindowFromSession } from '@/lib/message-window-store'
 import { clearDraftsAfterSend } from '@/lib/clearDraftsAfterSend'
+import { inactiveSessionCanResume } from '@/lib/sessionResume'
 import { markSessionSeen } from '@/lib/sessionLastSeen'
 import type { Machine } from '@/types/api'
 import FilesPage from '@/routes/sessions/files'
@@ -295,6 +296,9 @@ function SessionPage() {
         resolveSessionId: async (currentSessionId) => {
             if (!api || !session || session.active) {
                 return currentSessionId
+            }
+            if (!inactiveSessionCanResume(session, messages.length)) {
+                throw new Error(t('resume.unavailable.noTarget'))
             }
             try {
                 return await api.resumeSession(currentSessionId, { permissionMode: session.permissionMode ?? undefined })
