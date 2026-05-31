@@ -202,7 +202,15 @@ export function resolveMermaidLightboxFitSize(
     return fromViewBox
 }
 
-/** Shadow root isolates duplicate mermaid ids from the inline diagram in the page. */
+/**
+ * Shadow root isolates duplicate mermaid ids from the inline diagram in the page.
+ *
+ * Mermaid emits `width="100%"` on every diagram. Inside a shadow root whose host
+ * has no explicit size, that collapses to zero in Chromium for most diagram types
+ * (only ones that ship pixel attrs - e.g. `journey` - happen to render). Strip
+ * the relative size and bake explicit pixels from the viewBox before injecting,
+ * and give the host an inline-block layout so it sizes to the SVG.
+ */
 function MermaidLightboxSvg(props: { svg: string }) {
     const hostRef = useRef<HTMLDivElement>(null)
 
@@ -211,7 +219,14 @@ function MermaidLightboxSvg(props: { svg: string }) {
         if (!host) return
 
         const root = host.shadowRoot ?? host.attachShadow({ mode: 'open' })
-        root.innerHTML = `<style>svg{display:block;height:auto;width:auto;max-width:none;max-height:none}</style>${props.svg}`
+        const normalized = normalizeMermaidSvgForStandaloneDisplay(props.svg)
+        root.innerHTML = [
+            '<style>',
+            ':host{display:inline-block;line-height:0}',
+            'svg{display:block;max-width:none;max-height:none}',
+            '</style>',
+            normalized,
+        ].join('')
     }, [props.svg])
 
     return <div ref={hostRef} className="aui-mermaid-lightbox-host" data-mermaid-lightbox />
