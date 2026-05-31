@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { measureContentSize, measureSvgIntrinsicSize } from './ZoomableLightbox'
+import { getScreenFitSize, measureContentSize, measureSvgIntrinsicSize } from './ZoomableLightbox'
 
 type Rect = { width: number; height: number }
 
@@ -72,6 +72,60 @@ describe('measureSvgIntrinsicSize', () => {
     it('returns null when no source is usable', () => {
         const svg = makeSvg({})
         expect(measureSvgIntrinsicSize(svg)).toBeNull()
+    })
+})
+
+describe('getScreenFitSize', () => {
+    const originalVisualViewport = Object.getOwnPropertyDescriptor(window, 'visualViewport')
+    const originalInnerWidth = window.innerWidth
+    const originalInnerHeight = window.innerHeight
+
+    function setViewport(width: number, height: number) {
+        Object.defineProperty(window, 'visualViewport', {
+            configurable: true,
+            value: { width, height },
+        })
+    }
+
+    function clearViewport() {
+        Object.defineProperty(window, 'visualViewport', { configurable: true, value: null })
+        Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalInnerWidth })
+        Object.defineProperty(window, 'innerHeight', { configurable: true, value: originalInnerHeight })
+    }
+
+    function restore() {
+        if (originalVisualViewport) {
+            Object.defineProperty(window, 'visualViewport', originalVisualViewport)
+        }
+    }
+
+    it('subtracts the reserved top region (toolbar) from height', () => {
+        setViewport(1000, 800)
+        try {
+            expect(getScreenFitSize(40)).toEqual({ width: 1000, height: 760 })
+        } finally {
+            restore()
+        }
+    })
+
+    it('clamps reserved height at zero (no negative regions)', () => {
+        setViewport(800, 100)
+        try {
+            expect(getScreenFitSize(200)).toEqual({ width: 800, height: 0 })
+        } finally {
+            restore()
+        }
+    })
+
+    it('falls back to window inner size when visualViewport is unavailable', () => {
+        clearViewport()
+        Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1280 })
+        Object.defineProperty(window, 'innerHeight', { configurable: true, value: 900 })
+        try {
+            expect(getScreenFitSize(60)).toEqual({ width: 1280, height: 840 })
+        } finally {
+            restore()
+        }
     })
 })
 

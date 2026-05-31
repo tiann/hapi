@@ -10,12 +10,12 @@ const BACKDROP_CLICK_MAX_MOVEMENT = 4
 /** Edge margin when fitting to the device screen (not the inner panel only). */
 const SCREEN_FIT_PADDING_PX = 12
 
-function getScreenFitSize(): { width: number; height: number } {
+export function getScreenFitSize(reservedTopPx = 0): { width: number; height: number } {
     const viewport = window.visualViewport
-    if (viewport) {
-        return { width: viewport.width, height: viewport.height }
-    }
-    return { width: window.innerWidth, height: window.innerHeight }
+    const width = viewport ? viewport.width : window.innerWidth
+    const fullHeight = viewport ? viewport.height : window.innerHeight
+    const reserved = Math.max(0, reservedTopPx)
+    return { width, height: Math.max(0, fullHeight - reserved) }
 }
 
 type Point = { x: number; y: number }
@@ -128,11 +128,13 @@ export function ZoomableLightbox(props: ZoomableLightboxProps) {
     } = props
     const [scale, setScale] = useState(1)
     const [offset, setOffset] = useState({ x: 0, y: 0 })
+    const [toolbarHeight, setToolbarHeight] = useState(0)
     const scaleRef = useRef(scale)
     const offsetRef = useRef(offset)
     const baseScaleRef = useRef(1)
     const viewportRef = useRef<HTMLDivElement>(null)
     const contentRef = useRef<HTMLDivElement>(null)
+    const toolbarRef = useRef<HTMLDivElement>(null)
     const activePointersRef = useRef(new Map<number, Point>())
     const dragRef = useRef<{ pointerId: number; startX: number; startY: number; originX: number; originY: number } | null>(null)
     const pinchRef = useRef<{ startDistance: number; startScale: number; startCenter: Point; origin: Point } | null>(null)
@@ -165,7 +167,7 @@ export function ZoomableLightbox(props: ZoomableLightboxProps) {
         const contentSize = fitContentSize ?? measureContentSize(content, scaleRef.current)
         if (!contentSize) return
 
-        const screen = getScreenFitSize()
+        const screen = getScreenFitSize(toolbarHeight)
         const pad = SCREEN_FIT_PADDING_PX * 2
         const fitWidth = (screen.width - pad) / contentSize.width
         const fitHeight = (screen.height - pad) / contentSize.height
@@ -174,7 +176,7 @@ export function ZoomableLightbox(props: ZoomableLightboxProps) {
         baseScaleRef.current = fitScale
         updateScale(fitScale)
         updateOffset({ x: 0, y: 0 })
-    }, [fitContentSize, fitOnOpen, updateOffset, updateScale])
+    }, [fitContentSize, fitOnOpen, toolbarHeight, updateOffset, updateScale])
 
     const resetView = useCallback(() => {
         updateScale(baseScaleRef.current)
@@ -346,6 +348,26 @@ export function ZoomableLightbox(props: ZoomableLightboxProps) {
         }
     }, [fitContentKey, fitContentSize, fitOnOpen, open, applyFitScale])
 
+    useLayoutEffect(() => {
+        if (!open) return undefined
+        const toolbar = toolbarRef.current
+        if (!toolbar) return undefined
+
+        const apply = () => {
+            const next = toolbar.getBoundingClientRect().height
+            setToolbarHeight((current) => (Math.abs(current - next) < 0.5 ? current : next))
+        }
+
+        apply()
+        const resize = new ResizeObserver(apply)
+        resize.observe(toolbar)
+        window.addEventListener('resize', apply)
+        return () => {
+            resize.disconnect()
+            window.removeEventListener('resize', apply)
+        }
+    }, [open])
+
     useEffect(() => {
         if (!open) return
 
@@ -385,7 +407,8 @@ export function ZoomableLightbox(props: ZoomableLightboxProps) {
         >
             <div
                 ref={viewportRef}
-                className="absolute inset-0 cursor-grab touch-none overflow-hidden active:cursor-grabbing"
+                className="absolute inset-x-0 bottom-0 cursor-grab touch-none overflow-hidden active:cursor-grabbing"
+                style={{ top: `${toolbarHeight}px` }}
                 onWheel={handleWheel}
                 onPointerDown={handlePointerDown}
                 onPointerMove={handlePointerMove}
@@ -405,6 +428,7 @@ export function ZoomableLightbox(props: ZoomableLightboxProps) {
                 </div>
             </div>
             <div
+                ref={toolbarRef}
                 className="pointer-events-none absolute inset-x-0 top-0 z-10 pt-[env(safe-area-inset-top,0px)]"
                 onPointerDown={(event) => event.stopPropagation()}
             >
