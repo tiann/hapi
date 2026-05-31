@@ -35,57 +35,67 @@ function getPointCenter(a: Point, b: Point): Point {
     }
 }
 
-function measureSvgIntrinsicSize(svg: SVGSVGElement): { width: number; height: number } | null {
-    const widthAttr = svg.getAttribute('width') ?? ''
-    const heightAttr = svg.getAttribute('height') ?? ''
-    const usesRelativeSize = widthAttr.includes('%')
-        || heightAttr.includes('%')
-        || !widthAttr.trim()
-
+/**
+ * Measure SVG intrinsic size, ignoring the wrapper's `scale(...)` transform.
+ * Order: viewBox -> width/height attrs -> bounding rect divided by current scale.
+ */
+export function measureSvgIntrinsicSize(
+    svg: SVGSVGElement,
+    currentScale = 1,
+): { width: number; height: number } | null {
     const viewBox = svg.viewBox?.baseVal
-    if (viewBox && viewBox.width > 0 && viewBox.height > 0 && usesRelativeSize) {
-        return { width: viewBox.width, height: viewBox.height }
-    }
-
-    const box = svg.getBoundingClientRect()
-    if (box.width > 0 && box.height > 0) {
-        return { width: box.width, height: box.height }
-    }
-
     if (viewBox && viewBox.width > 0 && viewBox.height > 0) {
         return { width: viewBox.width, height: viewBox.height }
     }
 
+    const widthAttr = svg.getAttribute('width') ?? ''
+    const heightAttr = svg.getAttribute('height') ?? ''
     const parsedWidth = Number.parseFloat(widthAttr)
     const parsedHeight = Number.parseFloat(heightAttr)
     if (parsedWidth > 0 && parsedHeight > 0) {
         return { width: parsedWidth, height: parsedHeight }
     }
 
+    const safeScale = currentScale > 0 ? currentScale : 1
+    const box = svg.getBoundingClientRect()
+    if (box.width > 0 && box.height > 0) {
+        return { width: box.width / safeScale, height: box.height / safeScale }
+    }
+
     return null
 }
 
-function measureContentSize(content: HTMLElement): { width: number; height: number } | null {
+/**
+ * Measure rendered content size, ignoring any ancestor `scale(...)` transform.
+ * Prefer intrinsic dimensions (img.naturalSize, SVG viewBox/attrs) before the
+ * bounding rect, which otherwise compounds with `scaleRef.current` on retry.
+ */
+export function measureContentSize(
+    content: HTMLElement,
+    currentScale = 1,
+): { width: number; height: number } | null {
+    const safeScale = currentScale > 0 ? currentScale : 1
+
     const img = content.querySelector('img')
     if (img) {
-        const box = img.getBoundingClientRect()
-        if (box.width > 0 && box.height > 0) {
-            return { width: box.width, height: box.height }
-        }
         if (img.naturalWidth > 0 && img.naturalHeight > 0) {
             return { width: img.naturalWidth, height: img.naturalHeight }
+        }
+        const box = img.getBoundingClientRect()
+        if (box.width > 0 && box.height > 0) {
+            return { width: box.width / safeScale, height: box.height / safeScale }
         }
     }
 
     const svg = content.querySelector('svg')
     if (svg) {
-        const intrinsic = measureSvgIntrinsicSize(svg)
+        const intrinsic = measureSvgIntrinsicSize(svg, safeScale)
         if (intrinsic) return intrinsic
     }
 
     const rect = content.getBoundingClientRect()
     if (rect.width > 0 && rect.height > 0) {
-        return { width: rect.width, height: rect.height }
+        return { width: rect.width / safeScale, height: rect.height / safeScale }
     }
 
     return null
@@ -152,7 +162,7 @@ export function ZoomableLightbox(props: ZoomableLightboxProps) {
         const content = contentRef.current
         if (!content) return
 
-        const contentSize = fitContentSize ?? measureContentSize(content)
+        const contentSize = fitContentSize ?? measureContentSize(content, scaleRef.current)
         if (!contentSize) return
 
         const screen = getScreenFitSize()
@@ -182,9 +192,17 @@ export function ZoomableLightbox(props: ZoomableLightboxProps) {
         updateOffset({ x: 0, y: 0 })
     }, [onClose, updateOffset, updateScale])
 
+    /**
+     * Lower bound for interactive zoom. Carries the fit floor when the diagram
+     * was opened below MIN_SCALE (e.g. 0.05); otherwise sticks at MIN_SCALE.
+     */
+    const getMinInteractiveScale = useCallback(() => {
+        return Math.min(MIN_SCALE, baseScaleRef.current)
+    }, [])
+
     const zoomBy = useCallback((delta: number) => {
-        updateScale((current) => clampScale(current + delta))
-    }, [updateScale])
+        updateScale((current) => clampScale(current + delta, getMinInteractiveScale()))
+    }, [getMinInteractiveScale, updateScale])
 
     const handleWheel = useCallback((event: WheelEvent<HTMLDivElement>) => {
         event.preventDefault()
@@ -240,7 +258,10 @@ export function ZoomableLightbox(props: ZoomableLightboxProps) {
             const center = getPointCenter(first, second)
             const pinch = pinchRef.current
             const nextScale = pinch.startDistance > 0
-                ? clampScale(pinch.startScale * (distance / pinch.startDistance))
+                ? clampScale(
+                    pinch.startScale * (distance / pinch.startDistance),
+                    getMinInteractiveScale(),
+                )
                 : pinch.startScale
 
             updateScale(nextScale)
@@ -257,7 +278,7 @@ export function ZoomableLightbox(props: ZoomableLightboxProps) {
             x: drag.originX + event.clientX - drag.startX,
             y: drag.originY + event.clientY - drag.startY,
         })
-    }, [updateOffset, updateScale])
+    }, [getMinInteractiveScale, updateOffset, updateScale])
 
     const handlePointerUp = useCallback((event: PointerEvent<HTMLDivElement>) => {
         const backdropPress = backdropPressRef.current
@@ -353,6 +374,7 @@ export function ZoomableLightbox(props: ZoomableLightboxProps) {
     const zoomLabel = baseScale > 0
         ? `${Math.round((scale / baseScale) * 100)}%`
         : `${Math.round(scale * 100)}%`
+    const minInteractiveScale = Math.min(MIN_SCALE, baseScale)
 
     return (
         <div
@@ -392,7 +414,7 @@ export function ZoomableLightbox(props: ZoomableLightboxProps) {
                         type="button"
                         onClick={() => zoomBy(-SCALE_STEP)}
                         className="rounded bg-white/10 px-3 py-1 text-sm hover:bg-white/20 disabled:opacity-40"
-                        disabled={scale <= MIN_SCALE}
+                        disabled={scale <= minInteractiveScale}
                         title="Zoom out"
                     >
                         −
