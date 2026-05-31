@@ -29,10 +29,13 @@ describe('buildQwenSessionUpdateMessage', () => {
 
     test('includes both tools', () => {
         const msg = buildQwenSessionUpdateMessage()
-        const session = msg.session as { tools: Array<{ function: { name: string } }> }
-        const names = session.tools.map(t => t.function.name)
+        // Realtime shape: flat {type, name, description, parameters} — NOT chat-completions {function:{...}}
+        const session = msg.session as { tools: Array<{ type: string; name: string }> }
+        const names = session.tools.map(t => t.name)
         expect(names).toContain('messageCodingAgent')
         expect(names).toContain('processPermissionRequest')
+        // Ensure no nested function key (would be wrong chat-completions shape)
+        session.tools.forEach(t => expect((t as Record<string, unknown>).function).toBeUndefined())
     })
 
     test('appends Chinese block when language is zh', () => {

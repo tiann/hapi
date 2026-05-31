@@ -371,9 +371,12 @@ export function buildQwenSessionUpdateMessage(language?: string): Record<string,
     const instructions = language === 'zh'
         ? `${VOICE_SYSTEM_PROMPT}${VOICE_CHINESE_LANGUAGE_BLOCK}`
         : VOICE_SYSTEM_PROMPT
+    // Qwen Realtime uses the flat Realtime shape, not the chat-completions nested {function:{...}} shape.
     const tools = VOICE_TOOL_DEFINITIONS.map((td) => ({
         type: 'function' as const,
-        function: { name: td.name, description: td.description, parameters: td.parameters }
+        name: td.name,
+        description: td.description,
+        parameters: td.parameters
     }))
     return {
         type: 'session.update',
