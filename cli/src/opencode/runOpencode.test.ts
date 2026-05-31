@@ -236,6 +236,26 @@ describe('runOpencode set-session-config handler', () => {
         expect(harness.opencodeLoopArgs[0]?.model).toBe('ollama/exaone:4.5-33b-q8');
     });
 
+    it('opts in to clearQueuedThinkingGrace when acking a handled slash command', async () => {
+        await runOpencode({});
+
+        const userMessageHandler = harness.session.onUserMessage.mock.calls[0]?.[0] as
+            ((msg: { content: { text: string; attachments?: unknown[] } }, localId?: string) => void)
+            | undefined;
+        expect(userMessageHandler).toBeDefined();
+
+        userMessageHandler!({ content: { text: '/status' } }, 'local-status');
+        // Drain microtasks so the chain runs and acks the slash command.
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        expect(harness.session.emitMessagesConsumed).toHaveBeenCalledWith(
+            ['local-status'],
+            { clearQueuedThinkingGrace: true }
+        );
+        // The slash reply should still have gone out as a separate message.
+        expect(harness.session.sendAgentMessage).toHaveBeenCalled();
+    });
+
     it('cancels a slash command that is cancelled before listSlashCommands resolves', async () => {
         let releaseListSlashCommands: () => void = () => {};
         const slashCommandsPromise = new Promise<unknown[]>((resolve) => {

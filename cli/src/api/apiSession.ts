@@ -585,9 +585,22 @@ export class ApiSessionClient extends EventEmitter {
         })
     }
 
-    emitMessagesConsumed(localIds: string[]): void {
+    emitMessagesConsumed(localIds: string[], options?: { clearQueuedThinkingGrace?: boolean }): void {
         if (localIds.length === 0) return
-        this.socket.emit('messages-consumed', { sid: this.sessionId, localIds })
+        // `clearQueuedThinkingGrace` is an opt-in signal for the hub to drop
+        // the 15s queued-thinking grace immediately. Only synchronous handlers
+        // that will never call `onThinkingChange(true)` (slash commands handled
+        // inside `onUserMessage`) should set it — normal queue drains still
+        // need the grace so the spinner doesn't flicker between drain and
+        // backend.prompt start.
+        const payload: { sid: string; localIds: string[]; clearQueuedThinkingGrace?: boolean } = {
+            sid: this.sessionId,
+            localIds
+        }
+        if (options?.clearQueuedThinkingGrace) {
+            payload.clearQueuedThinkingGrace = true
+        }
+        this.socket.emit('messages-consumed', payload)
     }
 
     sendSessionDeath(reason?: SessionEndReason): void {

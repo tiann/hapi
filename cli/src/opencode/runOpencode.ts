@@ -75,7 +75,10 @@ export async function runOpencode(opts: {
 
     const messageQueue = new MessageQueue2<OpencodeMode>((mode) => hashObject({
         permissionMode: mode.permissionMode,
-        model: mode.model ?? null,
+        // Distinguish "explicit reset" (null) from "no change" (undefined) so
+        // batches with different intent don't merge — the launcher uses null
+        // to mean "switch back to defaultBackendModel".
+        model: mode.model === null ? '__reset__' : mode.model ?? null,
         modelReasoningEffort: mode.modelReasoningEffort ?? null
     }));
 
@@ -142,7 +145,10 @@ export async function runOpencode(opts: {
             };
             const buildMode = (): OpencodeMode => ({
                 permissionMode: currentPermissionMode,
-                model: sessionModel ?? undefined,
+                // Propagate null distinctly from undefined so the launcher can
+                // tell "reset to default" (from `/model default`) apart from
+                // "model unchanged".
+                model: sessionModel,
                 modelReasoningEffort: sessionModelReasoningEffort
             });
             const pushPlain = () => {
@@ -179,9 +185,13 @@ export async function runOpencode(opts: {
                         // agent reply. The web sorts the conversation by
                         // `invokedAt ?? createdAt` (web/src/lib/messages.ts), so
                         // stamping invokedAt first keeps the user prompt above
-                        // the reply instead of below it.
+                        // the reply instead of below it. Pass
+                        // `clearQueuedThinkingGrace` so the hub drops its 15s
+                        // grace — this synchronous path never calls
+                        // `onThinkingChange(true)`, so the next `thinking=false`
+                        // keepalive must be honored immediately.
                         if (localId) {
-                            session.emitMessagesConsumed([localId]);
+                            session.emitMessagesConsumed([localId], { clearQueuedThinkingGrace: true });
                         }
                         if (slash.message) {
                             session.sendAgentMessage({

@@ -272,7 +272,7 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         onSessionAlive?.(data)
     })
 
-    socket.on('messages-consumed', (data: { sid: string; localIds: string[] }) => {
+    socket.on('messages-consumed', (data: { sid: string; localIds: string[]; clearQueuedThinkingGrace?: boolean }) => {
         if (!data || typeof data.sid !== 'string' || !Array.isArray(data.localIds)) {
             return
         }
@@ -289,7 +289,14 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         try {
             store.messages.markMessagesInvoked(data.sid, localIds, invokedAt)
             onSessionActivity?.(data.sid, invokedAt)
-            onMessagesConsumed?.(data.sid)
+            // Only drop the queued-thinking grace when the CLI explicitly opts in
+            // (synchronous handlers like slash commands that will never send
+            // their own `thinking=true` keepalive). Normal queue drains still
+            // need the grace so the spinner doesn't flicker between the queue
+            // shift and `backend.prompt` start.
+            if (data.clearQueuedThinkingGrace === true) {
+                onMessagesConsumed?.(data.sid)
+            }
             // Emit only after the DB write succeeds. Otherwise a transient SQLite
             // failure would broadcast an `invokedAt` that was never persisted —
             // live clients would hide the queued rows while a refresh / secondary
