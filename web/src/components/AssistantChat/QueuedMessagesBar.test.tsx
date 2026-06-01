@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { DecryptedMessage } from '@/types/api'
-import { computeCanCancel, computeEditPendingSchedule, formatScheduledTime, getQueuedMessagePreview, sortQueuedMessages } from './QueuedMessagesBar'
+import { computeCanCancel, computeEditPendingSchedule, formatScheduledTime, getQueuedMessageEditText, getQueuedMessagePreview, sortQueuedMessages } from './QueuedMessagesBar'
 
 /**
  * Unit tests for computeCanCancel — the race guard that prevents sending
@@ -188,6 +188,22 @@ describe('getQueuedMessagePreview', () => {
             text: '',
             attachmentNames: ['image.png'],
         })
+    })
+})
+
+describe('getQueuedMessageEditText', () => {
+    it('keeps the prompt text when queued message has both text and attachments', () => {
+        expect(getQueuedMessageEditText({
+            text: 'Analyze this screenshot',
+            attachmentNames: ['image.png'],
+        })).toBe('Analyze this screenshot')
+    })
+
+    it('falls back to attachment names for attachment-only queued messages', () => {
+        expect(getQueuedMessageEditText({
+            text: '',
+            attachmentNames: ['image.png', 'trace.log'],
+        })).toBe('image.png, trace.log')
     })
 })
 

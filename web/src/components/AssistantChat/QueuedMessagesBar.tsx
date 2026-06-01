@@ -89,6 +89,11 @@ export function getQueuedMessagePreview(msg: DecryptedMessage): { text: string; 
     }
 }
 
+/** @internal Exported for unit testing. */
+export function getQueuedMessageEditText(preview: { text: string; attachmentNames: string[] }): string {
+    return preview.text || preview.attachmentNames.join(', ')
+}
+
 /**
  * Computes the PendingSchedule to restore when editing a queued message.
  *
@@ -198,7 +203,9 @@ export function QueuedMessagesBar({
                     aria-label="Queued messages"
                 >
                     {queued.map((msg) => {
-                        const { text, attachmentNames } = getQueuedMessagePreview(msg)
+                        const preview = getQueuedMessagePreview(msg)
+                        const { text, attachmentNames } = preview
+                        const editText = getQueuedMessageEditText(preview)
                         const hasAttachments = attachmentNames.length > 0
                         const localId = msg.localId ?? msg.id
                         const isPending = cancelMutation.isPending && cancelMutation.variables?.localId === localId
@@ -241,11 +248,11 @@ export function QueuedMessagesBar({
                                             return
                                         }
                                         // Restore text into composer
-                                        if (text) {
-                                            assistantApi.composer().setText(text)
+                                        if (editText) {
+                                            assistantApi.composer().setText(editText)
                                         }
                                         // Restore schedule via parent callback (if provided)
-                                        onEdit?.({ text, pendingSchedule: restoredPendingSchedule })
+                                        onEdit?.({ text: editText, pendingSchedule: restoredPendingSchedule })
                                     },
                                 }
                             )
