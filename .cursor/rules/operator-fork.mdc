@@ -11,5 +11,6 @@ This repo is a **fork** of `tiann/hapi`. Root **`AGENTS.md` is intentionally abs
 
 - **New functionality requests:** also read `docs/tooling/new-feature-intake.md`. Orchestrator spawns feature peers with explicit **done vs owned** intake steps (§0 handoff block).
 - **Workspace** = `~/coding/hapi` (mirror). **`hapi-driver`** = runtime on `:3006` via `hapi-active` — not the default instruction root.
+- **Before any `hapi-driver-rebuild` or `hapi-use-worktree`:** run `hapi-driver-status --quiet` (exit 0 idle, 75 busy, 2 stale). The scripts auto-flock, but the precheck avoids 30-agent collisions on the stack. See `docs/tooling/driver-soup.md#coordination-avoid-stack-switch-contention`.
 - Upstream PR branches: from `upstream/main` only; never include `docs/operator/`, `docs/plans/`, or root `AGENTS.md` body in the PR diff.
 - Plans: `docs/plans/`.

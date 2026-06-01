@@ -16,6 +16,20 @@ if [[ ! -d "$WORKTREE/hub" ]] || [[ ! -d "$WORKTREE/cli" ]]; then
     exit 1
 fi
 
+# Concurrency guard + status reporting (see lib/driver-status.sh).
+# Bypassable: HAPI_SKIP_DRIVER_LOCK=1 (testing only).
+LIB_DIR="$(dirname "$(readlink -f "$0")")/lib"
+# shellcheck source=lib/driver-status.sh
+source "$LIB_DIR/driver-status.sh"
+if [[ "${HAPI_SKIP_DRIVER_LOCK:-}" != "1" ]]; then
+    driver_status_init
+    driver_status_acquire switch
+    PREV_ACTIVE="$(readlink -f "$ACTIVE_LINK" 2>/dev/null || echo unknown)"
+    driver_status_begin switch "$WORKTREE"
+    driver_status_set switch "from=$PREV_ACTIVE" "to=$WORKTREE"
+    trap 'driver_status_end switch "$?"' EXIT
+fi
+
 if [[ ! -e "$WORKTREE/hub/.env" ]]; then
     echo "Linking $HUB_ENV → $WORKTREE/hub/.env"
     ln -sfn "$HUB_ENV" "$WORKTREE/hub/.env"

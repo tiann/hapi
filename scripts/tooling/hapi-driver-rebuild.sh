@@ -19,6 +19,7 @@ PARSE="$PRIMARY/scripts/tooling/parse-driver-manifest.mjs"
 DRIVER_BRANCH="${HAPI_DRIVER_BRANCH:-driver/integration}"
 BUN="${BUN:-$HOME/.bun/bin/bun}"
 
+ORIG_ARGS=("$@")
 BUILD_WEB=0
 VERIFY=0
 ACTIVATE=0
@@ -35,6 +36,19 @@ while [[ $# -gt 0 ]]; do
         *) echo "Unknown option: $1" >&2; exit 2 ;;
     esac
 done
+
+# Concurrency guard + status reporting (see lib/driver-status.sh).
+# Bypassable: HAPI_SKIP_DRIVER_LOCK=1 (testing only -- corrupts driver tree
+# if two rebuilds collide).
+LIB_DIR="$(dirname "$(readlink -f "$0")")/lib"
+# shellcheck source=lib/driver-status.sh
+source "$LIB_DIR/driver-status.sh"
+if [[ "${HAPI_SKIP_DRIVER_LOCK:-}" != "1" ]]; then
+    driver_status_init
+    driver_status_acquire rebuild
+    driver_status_begin rebuild "${ORIG_ARGS[@]}"
+    trap 'driver_status_end rebuild "$?" head_sha="$(git -C "$DRIVER" rev-parse --short HEAD 2>/dev/null || echo unknown)" head_subject="$(git -C "$DRIVER" log -1 --format=%s 2>/dev/null || echo unknown)"' EXIT
+fi
 
 if [[ ! -f "$MANIFEST" ]]; then
     echo "ERROR: manifest not found: $MANIFEST" >&2
@@ -86,6 +100,10 @@ fi
 manifest_json="$("$BUN" run "$PARSE" "$MANIFEST")"
 base_ref="$(echo "$manifest_json" | jq -r '.base')"
 layer_count="$(echo "$manifest_json" | jq '.layers | length')"
+
+if [[ "${HAPI_SKIP_DRIVER_LOCK:-}" != "1" ]]; then
+    driver_status_set rebuild "manifest_layer_count=$layer_count"
+fi
 
 if echo "$manifest_json" | jq -e '.layers[] | select(.ref == "fix/web-scroll-guard-unwrap-race")' >/dev/null; then
     pr722_state="$(gh pr view 722 --repo "${HAPI_PR_REPO:-tiann/hapi}" --json state --jq '.state' 2>/dev/null || true)"
@@ -175,6 +193,16 @@ if [[ "$ACTIVATE" -eq 1 ]]; then
     else
         echo "Non-interactive: skipping activate (re-run with TTY or use hapi-use-worktree manually)." >&2
         exit 0
+    fi
+    # Hand off to the switch script. The EXIT trap won't fire under exec, so
+    # close the rebuild as successful here (head_sha is known good) and let
+    # use-worktree own the switch lock + status from here on.
+    if [[ "${HAPI_SKIP_DRIVER_LOCK:-}" != "1" ]]; then
+        driver_status_end rebuild 0 \
+            head_sha="$(git -C "$DRIVER" rev-parse --short HEAD 2>/dev/null || echo unknown)" \
+            head_subject="$(git -C "$DRIVER" log -1 --format=%s 2>/dev/null || echo unknown)"
+        trap - EXIT
+        eval "exec ${_HAPI_LOCK_FD_REBUILD}>&-"
     fi
     exec hapi-use-worktree "$DRIVER"
 fi

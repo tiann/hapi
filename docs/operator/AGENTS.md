@@ -49,7 +49,7 @@ ElevenLabs ConvAI today: handoff OK, readback weak, payment, no mode machine. Ta
 |-----|---------|
 | **`docs/operator/AGENTS.md`** | This file (fork agent canon) |
 | [`docs/tooling/new-feature-intake.md`](../tooling/new-feature-intake.md) | **New behavior requests** — discovery, spawn handoff, soup vs clean, gates before operator test |
-| `docs/tooling/driver-soup.md` | Daily driver manifest, `hapi-active`, worktrees |
+| `docs/tooling/driver-soup.md` | Daily driver manifest, `hapi-active`, worktrees, **coordination (`hapi-driver-status`) and DB jiu-jitsu** |
 | `docs/plans/*` | Integration plans, PR A-F; peer agent: `2026-05-30-peer-agent-offering.md` |
 | `docs/operator/xr/*` | **XR only (private):** work graph + mindmap visualization epic — start at `xr/work-graph-and-visualization.md` |
 | `docs/operator-local-tooling.md` | `localdocs/`, machine indexes |

@@ -139,10 +139,42 @@ Garden shared mode (`garden-web.service` → `:5174` → API `:3006`) always tal
 | `hapi-use-worktree <path>` | Swing `hapi-active` + **prep DB** + restart hub + runner |
 | `hapi-use-driver` | Swing to daily driver soup |
 | `hapi-driver-db-prep <target>` | Backup DB + auto-downgrade schema to match `<target>`'s SCHEMA_VERSION; called automatically by `hapi-use-worktree` |
+| `hapi-driver-status [--json\|--quiet\|--watch]` | Read coordination state — is a rebuild/switch in flight, when did the last one finish, what is `hapi-active` pointing at |
 | `hapi-runner-from-active` | systemd helper — runner CLI from `hapi-active/cli` |
 | `hapi-sessions-health.sh` | Session monitor |
 
 Sources: `scripts/tooling/` in repo; installed to `~/.local/bin/`.
+
+### Coordination (avoid stack-switch contention)
+
+With ~30 agents on this repo, two callers can land on `hapi-driver-rebuild` or `hapi-use-worktree` simultaneously — one rewrites the driver tree mid-merge while the other reads it, or two stack switches race on the symlink and hub restart.
+
+Both scripts now take a `flock` on `~/.hapi/locks/{rebuild,switch}.lock` and publish state to `~/.hapi/driver-status.json` (atomic rewrite, schema v1). A second concurrent invocation exits **75** (`EX_TEMPFAIL`) with a pointer at the first.
+
+**Before kicking off a rebuild or switch** (especially from a peer agent), run:
+
+```bash
+hapi-driver-status            # human summary
+hapi-driver-status --quiet    # exit 0 idle, 75 busy, 2 stale-pid
+```
+
+`--quiet` is the right thing for an agent precheck:
+
+```bash
+if ! hapi-driver-status --quiet; then
+    echo "driver stack busy or stale -- inspect with hapi-driver-status"
+    exit 1
+fi
+hapi-driver-rebuild --build-web --verify
+```
+
+**Stale state** (process died without releasing): `hapi-driver-status` prints `STALE pid=N (dead)` and the exact `rm` to clear the lock. The status file self-heals on the next successful run.
+
+**Bypass** (testing only): `HAPI_SKIP_DRIVER_LOCK=1`. Skips both flock and status writes; collisions corrupt the driver tree.
+
+**Why no hub API route?** The hub may be down *during* a switch — exactly when status is most wanted. File-backed status is readable when the hub is dead.
+
+---
 
 ### DB schema jiu-jitsu (auto-handled, 2026-06-01)
 
