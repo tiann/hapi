@@ -33,8 +33,12 @@ When you create a new worktree:
 - The mirror dir (`~/coding/hapi`) stays clean of sibling clutter; the gitignore at root masks `/worktrees/`, `/driver`, `/upstream`, `/active`.
 - Cursor project ids are path-hashed - moving worktrees breaks agent resume continuity. The canonical layout puts new work in stable paths that will not move again.
 
-## Backstop
+## Backstops (three of them)
 
-`scripts/tooling/check-worktree-layout.sh` runs in the `pre-push` hook (advisory). It warns when worktrees live outside the canonical layout. Drift is expected during Phase 2 of the reorg; new drift after that is a bug.
+1. **Carrot:** `hapi-worktree-create <name> --branch <branch>` defaults to the canonical bucket. Use it.
+2. **Hard stop at `git` invocation:** `~/.local/bin/git` is a wrapper that intercepts `git worktree add` inside the hapi clone and refuses non-canonical targets (source: `scripts/tooling/git-shim-worktree-guard.sh`). This catches direct `git worktree add` calls from agents, scripts, and IDE integrations. Bypass once with `HAPI_SKIP_WORKTREE_GUARD=1 git worktree add ...`.
+3. **Drift audit on push:** `scripts/tooling/check-worktree-layout.sh` runs in the `pre-push` hook (advisory). It warns when ANY worktree of this clone lives outside the canonical layout — catches legacy drift and anything that snuck past the shim.
+
+Drift is expected during Phase 2 of the reorg; new drift after that is a bug.
 
 See [docs/plans/2026-06-01-hapi-folders-reorganization.md](../../docs/plans/2026-06-01-hapi-folders-reorganization.md) for the full reorganization plan and migration phases.

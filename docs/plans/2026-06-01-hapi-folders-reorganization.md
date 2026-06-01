@@ -12,7 +12,7 @@ Author note: this is a multi-agent repo. ~31 active agents have CWDs that may be
 | Rename `~/coding/hapi-companion/`? | **No** - stays as-is, it's the independent Android companion product repo |
 | Keep backward-compat symlinks (`~/coding/hapi-driver` -> `~/coding/hapi/driver`) after Phase 3? | **No** - hard-cut. Switch happens once, agents adapt. |
 | Communication channel for the 31 agents about the new convention? | Per-directory awareness: when a worktree gets removed or moved, message the session in it before action. Bulk announcement not needed because the Cursor rule + audit warning catch new drift. |
-| Can we PREVENT wrong-place worktree creation? | Git does not support aliasing built-in subcommands so we can't intercept `git worktree add`. Instead: carrot (`hapi-worktree-create` defaults to canonical path) + stick (Cursor rule `worktree-layout.mdc` + `check-worktree-layout.sh` audit in pre-push hook). |
+| Can we PREVENT wrong-place worktree creation? | **Yes** - via PATH-precedence wrapper at `~/.local/bin/git` that intercepts `git worktree add` inside the hapi clone and refuses non-canonical targets (source tracked at `scripts/tooling/git-shim-worktree-guard.sh`). Wrapper passes through everything else; ~2.4ms overhead per git call. Bypass with `HAPI_SKIP_WORKTREE_GUARD=1`. Original answer ("git won't let us alias built-in subcommands") was lazy - the right answer is to wrap `git` itself at the PATH layer, not alias the subcommand. Carrot (`hapi-worktree-create`) and audit (`check-worktree-layout.sh` in pre-push) remain as additional layers. |
 
 ---
 
@@ -238,6 +238,7 @@ Then update docs + tooling to PREFER `~/coding/hapi/<sub>` paths going forward. 
 - [x] Created `.cursor/rules/worktree-layout.mdc` (alwaysApply rule) so future agents pick new convention by default
 - [x] Created `scripts/tooling/check-worktree-layout.sh` (mirrors `check-stash-advisory.sh` pattern)
 - [x] Wired audit into `scripts/tooling/git-hooks/pre-push` (advisory, non-blocking, `HAPI_SKIP_WORKTREE_AUDIT=1` to bypass)
+- [x] Created `scripts/tooling/git-shim-worktree-guard.sh` and patched `~/.local/bin/git` wrapper to call it before `git worktree add`. Hard block on non-canonical paths inside the hapi clone (bypass: `HAPI_SKIP_WORKTREE_GUARD=1`). 13 unit + 4 E2E tests pass. Non-hapi repos unaffected. ~2.4ms overhead per git invocation.
 - [x] Documented new convention in `docs/operator/AGENTS.md`
 - Awareness for already-running agents: handled per-directory when their worktree gets drained in Phase 2 (no bulk broadcast needed - audit + rule catch new drift)
 
