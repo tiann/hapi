@@ -58,7 +58,8 @@ export function assertCodexLocalSupported(): void {
 
     const result = spawn.sync(codexCommand.command, [...codexCommand.args, '--version'], {
         encoding: 'utf8',
-        env: withBunRuntimeEnv()
+        env: withBunRuntimeEnv(),
+        windowsHide: process.platform === 'win32'
     })
 
     if (result.error) {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { DecryptedMessage } from '@/types/api'
-import { computeCanCancel, computeEditPendingSchedule, formatScheduledTime, sortQueuedMessages } from './QueuedMessagesBar'
+import { computeCanCancel, computeEditPendingSchedule, formatScheduledTime, getQueuedMessageEditText, getQueuedMessagePreview, sortQueuedMessages } from './QueuedMessagesBar'
 
 /**
  * Unit tests for computeCanCancel — the race guard that prevents sending
@@ -126,6 +126,84 @@ describe('sortQueuedMessages', () => {
         const sched2 = make('sched-far', 600, 10_000)
         const result = sortQueuedMessages([sched2, im2, sched1, im1])
         expect(result.map((m) => m.id)).toEqual(['im1', 'im2', 'sched-near', 'sched-far'])
+    })
+})
+
+describe('getQueuedMessagePreview', () => {
+    it('keeps attachment names with a text prompt', () => {
+        const message = {
+            id: 'queued-with-image',
+            localId: 'queued-with-image',
+            createdAt: 1000,
+            seq: null,
+            invokedAt: null,
+            status: 'queued',
+            content: {
+                role: 'user',
+                content: {
+                    type: 'text',
+                    text: 'Analyze this screenshot',
+                    attachments: [{
+                        id: 'att-1',
+                        filename: 'image.png',
+                        mimeType: 'image/png',
+                        size: 1234,
+                        path: '/tmp/image.png',
+                    }],
+                },
+            },
+        } as unknown as DecryptedMessage
+
+        expect(getQueuedMessagePreview(message)).toEqual({
+            text: 'Analyze this screenshot',
+            attachmentNames: ['image.png'],
+        })
+    })
+
+    it('uses attachment names for attachment-only queued messages', () => {
+        const message = {
+            id: 'queued-image-only',
+            localId: 'queued-image-only',
+            createdAt: 1000,
+            seq: null,
+            invokedAt: null,
+            status: 'queued',
+            content: {
+                role: 'user',
+                content: {
+                    type: 'text',
+                    text: '',
+                    attachments: [{
+                        id: 'att-1',
+                        filename: 'image.png',
+                        mimeType: 'image/png',
+                        size: 1234,
+                        path: '/tmp/image.png',
+                    }],
+                },
+            },
+        } as unknown as DecryptedMessage
+
+        expect(getQueuedMessagePreview(message)).toEqual({
+            text: '',
+            attachmentNames: ['image.png'],
+        })
+    })
+})
+
+describe('getQueuedMessageEditText', () => {
+    it('keeps the prompt text when queued message has both text and attachments', () => {
+        expect(getQueuedMessageEditText({
+            text: 'Analyze this screenshot',
+            attachmentNames: ['image.png'],
+        })).toBe('Analyze this screenshot')
+    })
+
+    it('falls back to attachment names for attachment-only queued messages', () => {
+        expect(getQueuedMessageEditText({
+            text: '',
+            attachmentNames: ['image.png', 'trace.log'],
+        })).toBe('image.png, trace.log')
     })
 })
 

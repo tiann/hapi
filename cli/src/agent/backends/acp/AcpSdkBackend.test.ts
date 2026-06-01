@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { AgentMessage } from '@/agent/types';
 import { AcpSdkBackend } from './AcpSdkBackend';
+import { buildAcpStdioSpawnOptions } from './AcpStdioTransport';
 import { ACP_SESSION_UPDATE_TYPES } from './constants';
 
 function sleep(ms: number): Promise<void> {
@@ -27,6 +28,14 @@ const originalStatics = {
     lateFlushQuietPeriodMs: backendStatics.LATE_FLUSH_QUIET_PERIOD_MS,
     lateFlushWindowMs: backendStatics.LATE_FLUSH_WINDOW_MS
 };
+const originalPlatformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+
+function setPlatform(value: string) {
+    Object.defineProperty(process, 'platform', {
+        value,
+        configurable: true
+    });
+}
 
 afterEach(() => {
     backendStatics.UPDATE_QUIET_PERIOD_MS = originalStatics.updateQuietPeriodMs;
@@ -36,9 +45,23 @@ afterEach(() => {
     backendStatics.LATE_FLUSH_INTERVAL_MS = originalStatics.lateFlushIntervalMs;
     backendStatics.LATE_FLUSH_QUIET_PERIOD_MS = originalStatics.lateFlushQuietPeriodMs;
     backendStatics.LATE_FLUSH_WINDOW_MS = originalStatics.lateFlushWindowMs;
+    if (originalPlatformDescriptor) {
+        Object.defineProperty(process, 'platform', originalPlatformDescriptor);
+    }
 });
 
 describe('AcpSdkBackend', () => {
+    it('hides the ACP stdio shell on Windows', () => {
+        setPlatform('win32');
+
+        expect(buildAcpStdioSpawnOptions({ TEST_ENV: '1' })).toMatchObject({
+            env: { TEST_ENV: '1' },
+            stdio: ['pipe', 'pipe', 'pipe'],
+            shell: true,
+            windowsHide: true
+        });
+    });
+
     it('allows the permission handler to resolve requests immediately', async () => {
         const backend = new AcpSdkBackend({ command: 'opencode' });
         let capturedRequestId: string | null = null;

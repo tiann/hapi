@@ -78,6 +78,13 @@ export class Session extends AgentSessionBase<EnhancedMode> {
         this.permissionMode = mode;
     };
 
+    // Override base getPermissionMode to return the Claude-narrow type. Safe
+    // because the only writer (setPermissionMode above) accepts only Claude
+    // PermissionMode, so the field cannot hold a foreign flavor value.
+    getPermissionMode(): PermissionMode | undefined {
+        return this.permissionMode as PermissionMode | undefined;
+    }
+
     setModel = (model: SessionModel): void => {
         this.model = model;
     };

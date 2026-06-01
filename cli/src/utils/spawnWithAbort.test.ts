@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'node:events';
 
 // Create a fake child process emitter for each test
@@ -26,6 +26,24 @@ vi.mock('@/utils/process', () => ({
 }));
 
 import { spawnWithAbort } from './spawnWithAbort';
+
+const originalPlatformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+
+function setPlatform(value: string) {
+    Object.defineProperty(process, 'platform', {
+        value,
+        configurable: true
+    });
+}
+
+function getSpawnOptions() {
+    const firstCall = spawnMock.mock.calls[0] as unknown[] | undefined;
+    const options = firstCall?.[2] as { windowsHide?: boolean; shell?: unknown } | undefined;
+    if (!options) {
+        throw new Error('Expected spawn options');
+    }
+    return options;
+}
 
 function makeOptions(overrides: Partial<Parameters<typeof spawnWithAbort>[0]> = {}) {
     const controller = new AbortController();
@@ -55,7 +73,37 @@ describe('spawnWithAbort', () => {
         vi.clearAllMocks();
     });
 
+    afterEach(() => {
+        if (originalPlatformDescriptor) {
+            Object.defineProperty(process, 'platform', originalPlatformDescriptor);
+        }
+    });
+
     describe('normal exit (no abort)', () => {
+        it('hides spawned console windows on Windows by default', async () => {
+            setPlatform('win32');
+            const { opts } = makeOptions();
+            const p = spawnWithAbort(opts);
+            await waitForExitListener();
+
+            expect(getSpawnOptions().windowsHide).toBe(true);
+
+            childEmitter.emit('exit', 0, null);
+            await expect(p).resolves.toBeUndefined();
+        });
+
+        it('allows callers to explicitly keep Windows child windows visible', async () => {
+            setPlatform('win32');
+            const { opts } = makeOptions({ windowsHide: false });
+            const p = spawnWithAbort(opts);
+            await waitForExitListener();
+
+            expect(getSpawnOptions().windowsHide).toBe(false);
+
+            childEmitter.emit('exit', 0, null);
+            await expect(p).resolves.toBeUndefined();
+        });
+
         it('resolves when process exits with code 0', async () => {
             const { opts } = makeOptions();
             const p = spawnWithAbort(opts);

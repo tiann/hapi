@@ -197,7 +197,8 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
                 cwd,
                 env: process.env,
                 stdio: ['ignore', 'pipe', 'pipe'],
-                shell: process.platform === 'win32'
+                shell: process.platform === 'win32',
+                windowsHide: process.platform === 'win32'
             });
 
             const abortHandler = () => {

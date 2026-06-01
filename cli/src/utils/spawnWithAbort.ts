@@ -30,6 +30,7 @@ export type SpawnWithAbortOptions = {
     logExit?: boolean;
     shell?: SpawnOptions['shell'];
     stdio?: StdioOptions;
+    windowsHide?: SpawnOptions['windowsHide'];
 };
 
 export async function spawnWithAbort(options: SpawnWithAbortOptions): Promise<void> {
@@ -52,7 +53,8 @@ export async function spawnWithAbort(options: SpawnWithAbortOptions): Promise<vo
             stdio,
             cwd: options.cwd,
             env: options.env,
-            shell: options.shell
+            shell: options.shell,
+            windowsHide: options.windowsHide ?? process.platform === 'win32'
         });
 
         let abortKillTimeout: NodeJS.Timeout | null = null;

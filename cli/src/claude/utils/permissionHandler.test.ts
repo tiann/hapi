@@ -5,6 +5,7 @@ import type { Session } from '../session';
 
 function createFakeSession() {
     const queueItems: { message: string; mode: unknown }[] = [];
+    let permissionMode: string | undefined;
 
     const session = {
         client: {
@@ -18,7 +19,10 @@ function createFakeSession() {
                 queueItems.push({ message, mode });
             }),
         },
-        setPermissionMode: vi.fn(),
+        setPermissionMode: vi.fn((mode: string) => {
+            permissionMode = mode;
+        }),
+        getPermissionMode: vi.fn(() => permissionMode),
     } as unknown as Session;
 
     return { session, queueItems };
@@ -104,5 +108,36 @@ describe('PermissionHandler — YOLO plan mode', () => {
 
         expect(result.behavior).toBe('allow');
         expect(queueItems).toHaveLength(0);
+    });
+
+    // Regression: turn-in-progress switch from default to bypassPermissions via
+    // SetSessionConfig RPC updates session.setPermissionMode but doesn't go
+    // through handler.handleModeChange. The next canCallTool must reflect the
+    // new mode. See issue #735.
+    it('reflects session permission mode changes between tool calls', async () => {
+        const { session } = createFakeSession();
+        const handler = new PermissionHandler(session);
+        handler.handleModeChange('default');
+
+        // Simulate RPC handler in runClaude updating the session directly,
+        // bypassing handler.handleModeChange (as happens on web dropdown change).
+        session.setPermissionMode('bypassPermissions');
+
+        handler.onMessage({
+            type: 'assistant',
+            message: {
+                role: 'assistant',
+                content: [{ type: 'tool_use', id: 'tc-4', name: 'Bash', input: { command: 'ls' } }],
+            },
+        } as any);
+
+        const result = await handler.handleToolCall(
+            'Bash',
+            { command: 'ls' },
+            { permissionMode: 'bypassPermissions' } as any,
+            { signal: new AbortController().signal }
+        );
+
+        expect(result.behavior).toBe('allow');
     });
 });

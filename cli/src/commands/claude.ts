@@ -122,7 +122,12 @@ ${chalk.bold.cyan('Claude Code Options (from `claude --help`):')}
                 const claudeHelp = execFileSync(
                     'claude',
                     ['--help'],
-                    { encoding: 'utf8', env: withBunRuntimeEnv(), shell: process.platform === 'win32' }
+                    {
+                        encoding: 'utf8',
+                        env: withBunRuntimeEnv(),
+                        shell: process.platform === 'win32',
+                        windowsHide: process.platform === 'win32'
+                    }
                 )
                 console.log(claudeHelp)
             } catch {

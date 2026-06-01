@@ -43,7 +43,8 @@ export function run(args: string[], options?: DifftasticOptions): Promise<Diffta
                 ...process.env,
                 // Force color output when needed
                 FORCE_COLOR: '1'
-            }
+            },
+            windowsHide: process.platform === 'win32'
         });
 
         let stdout = '';
