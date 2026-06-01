@@ -136,12 +136,93 @@ Garden shared mode (`garden-web.service` → `:5174` → API `:3006`) always tal
 |---------|---------|
 | `hapi-driver-rebuild` | Rebuild soup from manifest |
 | `hapi-worktree-create` | New PR worktree (+ merge train) |
-| `hapi-use-worktree <path>` | Swing `hapi-active` + restart **hub + runner** |
-| `hapi-use-driver` | Swing to daily driver soup |
+| `hapi-use-worktree <path> [--impatient]` | **Patient by default** — drain WORKING sessions, swing `hapi-active`, prep DB, restart hub + runner |
+| `hapi-use-driver` | Swing to daily driver soup (inherits patient default) |
+| `hapi-restart-hub [--impatient] [--no-runner]` | **Patient hub bounce** — drain WORKING sessions, then `systemctl restart`. Use INSTEAD of raw `sudo systemctl restart hapi-hub.service` |
+| `hapi-driver-db-prep <target>` | Backup DB + auto-downgrade schema to match `<target>`'s SCHEMA_VERSION; called automatically by `hapi-use-worktree` |
+| `hapi-driver-status [--json\|--quiet\|--watch]` | Read coordination state — is a rebuild/switch in flight, when did the last one finish, how many WORKING sessions right now |
 | `hapi-runner-from-active` | systemd helper — runner CLI from `hapi-active/cli` |
 | `hapi-sessions-health.sh` | Session monitor |
 
 Sources: `scripts/tooling/` in repo; installed to `~/.local/bin/`.
+
+### Coordination (avoid stack-switch contention)
+
+With ~30 agents on this repo, two callers can land on `hapi-driver-rebuild` or `hapi-use-worktree` simultaneously — one rewrites the driver tree mid-merge while the other reads it, or two stack switches race on the symlink and hub restart.
+
+Both scripts now take a `flock` on `~/.hapi/locks/{rebuild,switch}.lock` and publish state to `~/.hapi/driver-status.json` (atomic rewrite, schema v1). A second concurrent invocation exits **75** (`EX_TEMPFAIL`) with a pointer at the first.
+
+**Before kicking off a rebuild or switch** (especially from a peer agent), run:
+
+```bash
+hapi-driver-status            # human summary
+hapi-driver-status --quiet    # exit 0 idle, 75 busy, 2 stale-pid
+```
+
+`--quiet` is the right thing for an agent precheck:
+
+```bash
+if ! hapi-driver-status --quiet; then
+    echo "driver stack busy or stale -- inspect with hapi-driver-status"
+    exit 1
+fi
+hapi-driver-rebuild --build-web --verify
+```
+
+**Stale state** (process died without releasing): `hapi-driver-status` prints `STALE pid=N (dead)` and the exact `rm` to clear the lock. The status file self-heals on the next successful run.
+
+**Bypass** (testing only): `HAPI_SKIP_DRIVER_LOCK=1`. Skips both flock and status writes; collisions corrupt the driver tree.
+
+**Why no hub API route?** The hub may be down *during* a switch — exactly when status is most wanted. File-backed status is readable when the hub is dead.
+
+### Patient restarts (don't yank live agents)
+
+`hapi-use-worktree` and `hapi-restart-hub` are **patient by default**: they poll `hapi-sessions-health.sh` for `WORKING` sessions and wait (default 30s poll, 10min timeout) before tearing the hub down. The timeout is a safety valve — a stuck agent that never finishes WORKING shouldn't deadlock the whole stack — but normal turns will complete and the restart proceeds cleanly.
+
+**Never do this:**
+
+```bash
+sudo systemctl restart hapi-hub.service           # kills mid-turn agents
+sudo systemctl restart hapi-hub.service hapi-runner.service
+```
+
+**Always do this:**
+
+```bash
+hapi-restart-hub              # bounce hub + runner, patient
+hapi-restart-hub --no-runner  # bounce hub only
+hapi-use-worktree <path>      # stack switch, patient
+```
+
+**Tuning:**
+
+| Env / flag | Default | Effect |
+|-----------|---------|--------|
+| `--impatient` | off | Skip drain. Restart now. Use when the hub is hung. |
+| `HAPI_IMPATIENT=1` | off | Same, via env. For non-interactive watchdogs. |
+| `HAPI_PATIENT_TIMEOUT=<sec>` | 600 | Max drain wait before proceeding with WORKING>0. `0` = wait forever (deadlock risk). |
+| `HAPI_PATIENT_INTERVAL=<sec>` | 30 | Poll cadence. |
+
+If the timeout fires, both wrappers log which sessions were still WORKING before proceeding — that's the signal an operator wants to see, not a silent yank.
+
+**Known gap:** the underlying `hapi-sessions-health.sh --json` returns `id: null, tag: null` for WORKING entries (only the count is right). The drain still works (it acts on count), and `hapi-driver-status` shows the count, but identifying *who* is still working requires a separate read against the hub. Filed as a follow-up.
+
+---
+
+### DB schema jiu-jitsu (auto-handled, 2026-06-01)
+
+The hub's SQLite store has **forward step-migrations only** (v1 -> v2 -> ... -> N). When the manifest changes the effective SCHEMA_VERSION, the live DB at `~/.hapi/hapi.db` must match the target tree before hub boot:
+
+- **Adding a schema-bumping layer (e.g. `feat/android-wear-companion` v9 -> v10):** automatic. Hub boots, `stepMigrations[N]` runs, DB ratchets forward. Nothing to do.
+- **Removing one (rolling back to upstream/main; v10 -> v9):** the hub code has no down-migrations. `hapi-driver-db-prep.sh` auto-invokes from `hapi-use-worktree`, backs up the DB (timestamped `~/.hapi/hapi.db.bak.pre-activate-<UTC>`), and applies known reverse SQL.
+
+**Known reverse transitions** (extend `apply_downgrade_step()` in `scripts/tooling/hapi-driver-db-prep.sh` when a new bump lands):
+
+| Direction | Effect | Data loss |
+|-----------|--------|-----------|
+| v10 -> v9 | DROP TABLE `fcm_devices` + 2 indexes (introduced by `feat/android-wear-companion`) | FCM device registrations gone from live DB; preserved in backup; Android companion re-registers on next launch |
+
+**Bypass** (not recommended): `HAPI_SKIP_DB_PREP=1 hapi-use-worktree ...`. This restores the old behavior (raw `systemctl restart`) and you eat the hub-crash-on-schema-mismatch if you're going backward.
 
 ---
 
