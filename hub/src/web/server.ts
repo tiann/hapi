@@ -474,8 +474,7 @@ export async function startWebServer(options: {
                 if (!apiKey) {
                     return new Response('Gemini API key not configured', { status: 400 })
                 }
-                const languageParam = url.searchParams.get('language')
-                const language = languageParam === 'zh' ? 'zh' : undefined
+                const language = url.searchParams.get('language') ?? undefined
                 const upgraded = (server as unknown as { upgrade: (req: Request, opts: unknown) => boolean }).upgrade(req, {
                     data: { _geminiProxy: true, apiKey, language }
                 })

@@ -7,7 +7,7 @@ import { GeminiAudioPlayer } from './gemini/audioPlayer'
 import { realtimeClientTools } from './realtimeClientTools'
 import {
     VOICE_SYSTEM_PROMPT,
-    VOICE_CHINESE_LANGUAGE_BLOCK,
+    buildVoiceLanguageBlock,
 } from '@hapi/protocol/voice'
 import type { VoiceSession, VoiceSessionConfig, StatusCallback } from './types'
 import type { ApiClient } from '@/api/client'
@@ -92,9 +92,7 @@ class QwenVoiceSessionImpl implements VoiceSession {
 
     async startSession(config: VoiceSessionConfig): Promise<void> {
         // Mirror the base instructions the hub will send so subsequent updates accumulate correctly.
-        this.currentInstructions = config.language === 'zh'
-            ? `${VOICE_SYSTEM_PROMPT}${VOICE_CHINESE_LANGUAGE_BLOCK}`
-            : VOICE_SYSTEM_PROMPT
+        this.currentInstructions = `${VOICE_SYSTEM_PROMPT}${buildVoiceLanguageBlock(config.language)}`
         cleanup()
         state.statusCallback?.('connecting')
 
@@ -309,11 +307,14 @@ class QwenVoiceSessionImpl implements VoiceSession {
     }
 
     sendTextMessage(message: string): void {
-        // Qwen only supports conversation.item.create for function_call_output.
-        // Inject text as an instruction update then trigger a response.
-        // response.create without a prior conversation.item.create is valid —
-        // it generates from the current session context (updated instructions).
-        this.updateInstructions(message)
+        // Qwen Realtime requires a user conversation item before response.create.
+        sendEvent('conversation.item.create', {
+            item: {
+                type: 'message',
+                role: 'user',
+                content: [{ type: 'input_text', text: message }]
+            }
+        })
         sendEvent('response.create')
     }
 

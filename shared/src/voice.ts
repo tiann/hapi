@@ -149,8 +149,11 @@ For builds, tests, or large file operations:
 When the user speaks to you for the first time, begin your response with a brief greeting before addressing their request. If their first message is a coding request, greet briefly AND call the tool — do both.`
 
 /**
- * Additional language block appended to VOICE_SYSTEM_PROMPT for Gemini/Qwen
- * backends (which don't have a separate language field like ElevenLabs).
+ * Language blocks appended to VOICE_SYSTEM_PROMPT for Gemini/Qwen backends
+ * (ElevenLabs has its own language field).
+ *
+ * Always append one of these — silence causes models to drift to their training
+ * language (Chinese for Qwen, mixed for Gemini).
  */
 export const VOICE_CHINESE_LANGUAGE_BLOCK = `
 
@@ -161,6 +164,57 @@ IMPORTANT: Always respond in Chinese (Mandarin). Use natural spoken Chinese.
 - Summarize technical content in Chinese
 - Use English only for proper nouns, tool names, and code identifiers
 - Keep the same warm, concise conversational style in Chinese`
+
+/** When no language is selected: mirror the user's detected speech language. */
+const VOICE_LANGUAGE_BLOCK_AUTO = `
+
+# Language
+
+Detect the language the user is speaking and respond in that same language.
+Maintain it consistently throughout the session — do not drift between turns.
+If the language cannot be determined, default to English.`
+
+/** BCP-47 code → spoken language name (for explicit-language block). */
+const LANGUAGE_NAMES: Record<string, string> = {
+    en: 'English',
+    es: 'Spanish',
+    fr: 'French',
+    de: 'German',
+    ja: 'Japanese',
+    ko: 'Korean',
+    pt: 'Portuguese',
+    it: 'Italian',
+    ar: 'Arabic',
+    ru: 'Russian',
+    hi: 'Hindi',
+    th: 'Thai',
+    vi: 'Vietnamese',
+    id: 'Indonesian',
+    nl: 'Dutch',
+    sv: 'Swedish',
+    pl: 'Polish',
+    tr: 'Turkish',
+}
+
+/**
+ * Returns the language instruction block to append to VOICE_SYSTEM_PROMPT.
+ * - Explicit 'zh' → Chinese block
+ * - Other explicit code → "Always respond in [Language]"
+ * - undefined/auto → "detect from user speech and maintain it"
+ */
+export function buildVoiceLanguageBlock(language?: string): string {
+    if (!language) return VOICE_LANGUAGE_BLOCK_AUTO
+    if (language === 'zh' || language.startsWith('zh-')) return VOICE_CHINESE_LANGUAGE_BLOCK
+    const name = LANGUAGE_NAMES[language] ?? language
+    return `
+
+# Language
+
+IMPORTANT: Always respond in ${name}. Maintain ${name} consistently throughout
+the session — do not drift to a different language between turns.
+Use English only for proper nouns, code identifiers, and technical terms with
+no ${name} equivalent.`
+}
 
 /** ElevenLabs first message — language controlled by ElevenLabs language field */
 export const VOICE_FIRST_MESSAGE = "Hey! Hapi here — what can I help you with?"
@@ -351,9 +405,7 @@ export function buildGeminiLiveFunctionDeclarations(): GeminiLiveFunctionDeclara
 }
 
 export function buildGeminiLiveConfig(language?: string): GeminiLiveConfig {
-    const systemInstruction = language === 'zh'
-        ? `${VOICE_SYSTEM_PROMPT}${VOICE_CHINESE_LANGUAGE_BLOCK}`
-        : VOICE_SYSTEM_PROMPT
+    const systemInstruction = `${VOICE_SYSTEM_PROMPT}${buildVoiceLanguageBlock(language)}`
     return {
         model: GEMINI_LIVE_MODEL,
         systemInstruction,
@@ -368,9 +420,7 @@ export function buildGeminiLiveConfig(language?: string): GeminiLiveConfig {
 
 /** Hub-owned initial session.update for Qwen Realtime (hub proxy). */
 export function buildQwenSessionUpdateMessage(language?: string): Record<string, unknown> {
-    const instructions = language === 'zh'
-        ? `${VOICE_SYSTEM_PROMPT}${VOICE_CHINESE_LANGUAGE_BLOCK}`
-        : VOICE_SYSTEM_PROMPT
+    const instructions = `${VOICE_SYSTEM_PROMPT}${buildVoiceLanguageBlock(language)}`
     // Qwen Realtime uses the flat Realtime shape, not the chat-completions nested {function:{...}} shape.
     const tools = VOICE_TOOL_DEFINITIONS.map((td) => ({
         type: 'function' as const,
