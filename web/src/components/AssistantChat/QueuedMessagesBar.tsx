@@ -75,23 +75,18 @@ function useQueuedMessages(sessionId: string): DecryptedMessage[] {
     }, [state])
 }
 
-function getTextFromMessage(msg: DecryptedMessage): string {
+/** @internal Exported for unit testing. */
+export function getQueuedMessagePreview(msg: DecryptedMessage): { text: string; attachmentNames: string[] } {
     const normalized = normalizeDecryptedMessage(msg)
     if (!normalized || normalized.role !== 'user') {
-        return ''
+        return { text: '', attachmentNames: [] }
     }
     const text = (normalized.content.text ?? '').trim()
-    if (text) {
-        return text
-    }
-    // Attachment-only sends: the composer / POST /messages allow empty text
-    // when attachments are present. Fall back to the filenames so the chip
-    // is not blank.
     const attachments = normalized.content.attachments ?? []
-    if (attachments.length === 0) {
-        return ''
+    return {
+        text,
+        attachmentNames: attachments.map((a) => a.filename ?? 'attachment'),
     }
-    return attachments.map((a) => a.filename ?? 'attachment').join(', ')
 }
 
 /**
@@ -203,7 +198,8 @@ export function QueuedMessagesBar({
                     aria-label="Queued messages"
                 >
                     {queued.map((msg) => {
-                        const text = getTextFromMessage(msg)
+                        const { text, attachmentNames } = getQueuedMessagePreview(msg)
+                        const hasAttachments = attachmentNames.length > 0
                         const localId = msg.localId ?? msg.id
                         const isPending = cancelMutation.isPending && cancelMutation.variables?.localId === localId
                         const canCancel = computeCanCancel({ id: msg.id, localId: msg.localId, isPending })
@@ -263,9 +259,25 @@ export function QueuedMessagesBar({
                                 className="flex items-start gap-2 min-w-0 rounded-lg bg-[var(--app-secondary-bg)] px-3 py-2 shadow-sm"
                             >
                                 <div className="flex-1 min-w-0">
-                                    <span className="line-clamp-3 whitespace-pre-wrap break-words text-[var(--app-fg)]">
-                                        {text}
-                                    </span>
+                                    {text ? (
+                                        <span className="line-clamp-3 whitespace-pre-wrap break-words text-[var(--app-fg)]">
+                                            {text}
+                                        </span>
+                                    ) : null}
+                                    {hasAttachments ? (
+                                        <div className={text ? 'mt-1 flex flex-wrap gap-1' : 'flex flex-wrap gap-1'}>
+                                            {attachmentNames.map((name, index) => (
+                                                <span
+                                                    key={`${name}-${index}`}
+                                                    className="inline-flex max-w-full items-center gap-1 rounded-md bg-[var(--app-bg)] px-2 py-0.5 text-xs text-[var(--app-hint)]"
+                                                    title={name}
+                                                >
+                                                    <span aria-hidden="true">📎</span>
+                                                    <span className="truncate">{name}</span>
+                                                </span>
+                                            ))}
+                                        </div>
+                                    ) : null}
                                     {msg.scheduledAt != null && msg.scheduledAt > Date.now() && (
                                         <div className="mt-1 flex items-center gap-1 text-xs text-[var(--app-hint)]">
                                             <ClockIcon />

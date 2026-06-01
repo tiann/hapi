@@ -1,4 +1,4 @@
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { spawn, type ChildProcessWithoutNullStreams, type SpawnOptions } from 'node:child_process';
 import { logger } from '@/ui/logger';
 import { killProcessByChildProcess } from '@/utils/process';
 import { GEMINI_MODEL_PRESETS } from '@hapi/protocol';
@@ -37,6 +37,16 @@ export type AcpStderrError = {
     raw: string;
 };
 
+/** @internal Exported for regression tests. */
+export function buildAcpStdioSpawnOptions(env?: Record<string, string>): SpawnOptions {
+    return {
+        env,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        shell: process.platform === 'win32',
+        windowsHide: process.platform === 'win32'
+    };
+}
+
 export class AcpStdioTransport {
     private readonly process: ChildProcessWithoutNullStreams;
     private readonly pending = new Map<string | number, {
@@ -55,11 +65,11 @@ export class AcpStdioTransport {
         args?: string[];
         env?: Record<string, string>;
     }) {
-        this.process = spawn(options.command, options.args ?? [], {
-            env: options.env,
-            stdio: ['pipe', 'pipe', 'pipe'],
-            shell: process.platform === 'win32'
-        });
+        this.process = spawn(
+            options.command,
+            options.args ?? [],
+            buildAcpStdioSpawnOptions(options.env)
+        ) as ChildProcessWithoutNullStreams;
 
         this.process.stdout.setEncoding('utf8');
         this.process.stdout.on('data', (chunk) => this.handleStdout(chunk));

@@ -45,7 +45,8 @@ function findWhereResults(command: string): string[] {
         const result = execFileSync('where.exe', [command], {
             encoding: 'utf8',
             stdio: ['pipe', 'pipe', 'pipe'],
-            cwd: homedir()
+            cwd: homedir(),
+            windowsHide: process.platform === 'win32'
         })
 
         return result
