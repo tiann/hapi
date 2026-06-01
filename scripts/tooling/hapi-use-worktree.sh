@@ -53,8 +53,32 @@ fi
 echo "Pointing hapi-active → $WORKTREE"
 ln -sfn "$WORKTREE" "$ACTIVE_LINK"
 
-echo "Restarting hapi-hub.service + hapi-runner.service ..."
-sudo systemctl restart hapi-hub.service hapi-runner.service
+# DB jiu-jitsu: ensure ~/.hapi/hapi.db schema matches the target tree before the
+# hub starts. Skip with HAPI_SKIP_DB_PREP=1 (not recommended).
+DB_PREP="$(dirname "$(readlink -f "$0")")/hapi-driver-db-prep.sh"
+if [[ "${HAPI_SKIP_DB_PREP:-}" != "1" && -x "$DB_PREP" ]]; then
+    echo ""
+    echo "Stopping hub to prep DB ..."
+    sudo systemctl stop hapi-hub.service || true
+    if ! "$DB_PREP" "$WORKTREE"; then
+        echo "ERROR: DB prep failed; refusing to restart hub on incompatible schema" >&2
+        echo "       Live DB and backup are untouched if downgrade aborted." >&2
+        echo "       Restart hub manually after resolving: sudo systemctl start hapi-hub.service" >&2
+        exit 1
+    fi
+    echo ""
+    echo "Starting hub + restarting runner ..."
+    sudo systemctl start hapi-hub.service
+    sudo systemctl restart hapi-runner.service
+else
+    if [[ "${HAPI_SKIP_DB_PREP:-}" == "1" ]]; then
+        echo "WARN: HAPI_SKIP_DB_PREP=1 -- skipping DB schema check + backup" >&2
+    else
+        echo "WARN: hapi-driver-db-prep.sh not found at $DB_PREP -- skipping" >&2
+    fi
+    echo "Restarting hapi-hub.service + hapi-runner.service ..."
+    sudo systemctl restart hapi-hub.service hapi-runner.service
+fi
 
 echo ""
 echo "Active stack:"

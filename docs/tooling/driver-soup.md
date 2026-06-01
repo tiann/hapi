@@ -136,12 +136,28 @@ Garden shared mode (`garden-web.service` → `:5174` → API `:3006`) always tal
 |---------|---------|
 | `hapi-driver-rebuild` | Rebuild soup from manifest |
 | `hapi-worktree-create` | New PR worktree (+ merge train) |
-| `hapi-use-worktree <path>` | Swing `hapi-active` + restart **hub + runner** |
+| `hapi-use-worktree <path>` | Swing `hapi-active` + **prep DB** + restart hub + runner |
 | `hapi-use-driver` | Swing to daily driver soup |
+| `hapi-driver-db-prep <target>` | Backup DB + auto-downgrade schema to match `<target>`'s SCHEMA_VERSION; called automatically by `hapi-use-worktree` |
 | `hapi-runner-from-active` | systemd helper — runner CLI from `hapi-active/cli` |
 | `hapi-sessions-health.sh` | Session monitor |
 
 Sources: `scripts/tooling/` in repo; installed to `~/.local/bin/`.
+
+### DB schema jiu-jitsu (auto-handled, 2026-06-01)
+
+The hub's SQLite store has **forward step-migrations only** (v1 -> v2 -> ... -> N). When the manifest changes the effective SCHEMA_VERSION, the live DB at `~/.hapi/hapi.db` must match the target tree before hub boot:
+
+- **Adding a schema-bumping layer (e.g. `feat/android-wear-companion` v9 -> v10):** automatic. Hub boots, `stepMigrations[N]` runs, DB ratchets forward. Nothing to do.
+- **Removing one (rolling back to upstream/main; v10 -> v9):** the hub code has no down-migrations. `hapi-driver-db-prep.sh` auto-invokes from `hapi-use-worktree`, backs up the DB (timestamped `~/.hapi/hapi.db.bak.pre-activate-<UTC>`), and applies known reverse SQL.
+
+**Known reverse transitions** (extend `apply_downgrade_step()` in `scripts/tooling/hapi-driver-db-prep.sh` when a new bump lands):
+
+| Direction | Effect | Data loss |
+|-----------|--------|-----------|
+| v10 -> v9 | DROP TABLE `fcm_devices` + 2 indexes (introduced by `feat/android-wear-companion`) | FCM device registrations gone from live DB; preserved in backup; Android companion re-registers on next launch |
+
+**Bypass** (not recommended): `HAPI_SKIP_DB_PREP=1 hapi-use-worktree ...`. This restores the old behavior (raw `systemctl restart`) and you eat the hub-crash-on-schema-mismatch if you're going backward.
 
 ---
 
