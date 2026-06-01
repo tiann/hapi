@@ -93,4 +93,22 @@ describe('sessionResume', () => {
     it('inactiveSessionCanResume rejects when metadata path is missing', () => {
         expect(inactiveSessionCanResume(makeSession({ metadata: { path: '', host: 'localhost' } }), 0)).toBe(false)
     })
+
+    it('inactiveSessionCanResume allows claude resume by message recovery when no claudeSessionId is stored', () => {
+        expect(inactiveSessionCanResume(makeSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'claude' },
+        }), 3)).toBe(true)
+    })
+
+    it('inactiveSessionCanResume allows claude recovery when flavor is missing (defaults to claude)', () => {
+        expect(inactiveSessionCanResume(makeSession({
+            metadata: { path: '/tmp/project', host: 'localhost' },
+        }), 3)).toBe(true)
+    })
+
+    it('inactiveSessionCanResume rejects non-claude flavors with messages but no flavor-specific id (no recovery path)', () => {
+        expect(inactiveSessionCanResume(makeSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+        }), 3)).toBe(false)
+    })
 })
