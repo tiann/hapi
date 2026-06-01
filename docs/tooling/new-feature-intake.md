@@ -186,7 +186,8 @@ Document port, `HAPI_HOME`, and branch in the handoff message.
 
 1. **`bun typecheck`** and **`bun run test`** (and `cd web && bun run test` if web touched)
 2. **Cold code review** — full diff vs `upstream/main`; use [cold-pr-review-rubric.md](./cold-pr-review-rubric.md); fix Blocker/Major before handoff
-3. **Playwright smoke** — real browser, demo URL, auth token from operator env:
+3. **DB schema check** — if your branch bumps `SCHEMA_VERSION` in `hub/src/store/index.ts` (i.e. adds a `migrateFromVxToVy()` step), you MUST also add the reverse-SQL case to `apply_downgrade_step()` in [`scripts/tooling/hapi-driver-db-prep.sh`](../../scripts/tooling/hapi-driver-db-prep.sh). Without this, swinging `hapi-active` away from your layer later (back to upstream, or to a soup without it) aborts the activation cleanly but blocks until someone writes the SQL. See [driver-soup.md "DB schema jiu-jitsu"](./driver-soup.md#db-schema-jiu-jitsu-auto-handled-2026-06-01).
+4. **Playwright smoke** — real browser, demo URL, auth token from operator env:
 
 ```bash
 # Linux: bundled Chromium may hang; prefer system Chrome
@@ -203,7 +204,7 @@ Assert: no `QuotaExceededError` / error-boundary strings in console; `failedRequ
 
 Optional feature-specific repro scripts live under `scripts/dev/*-playwright.mjs`.
 
-Only after (1)-(3): send operator **links**, **what to click**, and **screenshot path**.
+Only after (1)-(4): send operator **links**, **what to click**, and **screenshot path**.
 
 ### 7 — Operator dogfood
 

@@ -3,6 +3,20 @@
 #
 # ~/coding/hapi-driver is READ-ONLY between rebuilds — only hapi-driver-rebuild may change it.
 # Layer order matters. Each layer merges into driver/integration on top of base.
+#
+# DB schema:
+#   Hub's SQLite store has FORWARD step-migrations only. Layers that bump
+#   SCHEMA_VERSION (in hub/src/store/index.ts) auto-migrate the live DB at hub
+#   boot. Removing them later requires reverse SQL, which the hub code does NOT
+#   carry — `hapi-use-worktree` auto-invokes `hapi-driver-db-prep.sh` to back up
+#   the DB and apply known reverse transitions when going backward.
+#
+#   If you add a layer here that bumps SCHEMA_VERSION, ALSO add the reverse SQL
+#   case to `apply_downgrade_step()` in scripts/tooling/hapi-driver-db-prep.sh
+#   in this repo. Without that, swinging active away from this layer later will
+#   abort the activation cleanly but block until you write the SQL.
+#
+#   See docs/tooling/driver-soup.md "DB schema jiu-jitsu" for the full flow.
 
 base: upstream/main
 
