@@ -1,0 +1,40 @@
+---
+description: New git worktrees on this repo must live under ~/coding/hapi/worktrees/<name>
+alwaysApply: true
+---
+
+# Canonical worktree layout (2026-06-01 onward)
+
+This repo uses **one** canonical place for new git worktrees: **`~/coding/hapi/worktrees/<name>`**.
+
+| Path | What it is | Created how |
+|------|------------|-------------|
+| `~/coding/hapi/` | Main mirror, branch=`main` | clone |
+| `~/coding/hapi/driver` | Daily-driver soup worktree | one-shot, lives forever |
+| `~/coding/hapi/upstream` | Clean `upstream/main` worktree | one-shot, lives forever |
+| `~/coding/hapi/active` | Symlink at runtime - points at driver or upstream | runtime, not a worktree |
+| `~/coding/hapi/worktrees/<name>` | **All new feature/PR worktrees** | `hapi-worktree-create <name> --branch <branch>` |
+
+Pre-2026-06-01 worktrees still exist under `~/coding/hapi-<name>/` and a sibling `~/coding/hapi-worktrees/<name>/`. Those are legacy and being drained, do not add to them.
+
+## The rule
+
+When you create a new worktree:
+
+1. **Default tool:** `hapi-worktree-create <name> --branch <branch>` - it places the worktree in `~/coding/hapi/worktrees/<name>` automatically.
+2. **Manual `git worktree add`:** the path argument must start with `~/coding/hapi/worktrees/` (or be one of the three reserved names `driver`, `upstream` - but those already exist).
+3. **Never** create a worktree at `~/coding/hapi-<name>/` or `~/coding/hapi-worktrees/<name>/` - those are legacy locations that the next agent will not find without `git worktree list`.
+4. **Never** create a worktree from inside another worktree without an explicit path under `~/coding/hapi/worktrees/`. Nested or doubly-nested worktrees (e.g. `hapi-X/hapi-Y-worktrees/Z`) are the bug we are trying to stop.
+
+## Why
+
+- One predictable place per agent / per `ls` to find work in flight.
+- `git worktree list` mirrors filesystem layout - no surprise paths.
+- The mirror dir (`~/coding/hapi`) stays clean of sibling clutter; the gitignore at root masks `/worktrees/`, `/driver`, `/upstream`, `/active`.
+- Cursor project ids are path-hashed - moving worktrees breaks agent resume continuity. The canonical layout puts new work in stable paths that will not move again.
+
+## Backstop
+
+`scripts/tooling/check-worktree-layout.sh` runs in the `pre-push` hook (advisory). It warns when worktrees live outside the canonical layout. Drift is expected during Phase 2 of the reorg; new drift after that is a bug.
+
+See [docs/plans/2026-06-01-hapi-folders-reorganization.md](../../docs/plans/2026-06-01-hapi-folders-reorganization.md) for the full reorganization plan and migration phases.

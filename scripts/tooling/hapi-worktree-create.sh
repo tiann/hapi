@@ -1,22 +1,38 @@
 #!/usr/bin/env bash
-# Create a PR formulation worktree.
+# Create a PR formulation worktree, in the canonical location.
+#
+# CANONICAL LAYOUT (2026-06-01 onward):
+#   ~/coding/hapi/                 main mirror, branch=main
+#   ~/coding/hapi/worktrees/<name> NEW worktrees go here (default)
+#   ~/coding/hapi/driver           the daily-driver soup worktree (already exists)
+#   ~/coding/hapi/upstream         clean upstream-main worktree (already exists)
+#   ~/coding/hapi/active           symlink, points at one of the above
+#
+# Pre-2026-06-01 worktrees still live at ~/coding/hapi-<name>/ during Phase 2 drain.
+# See docs/plans/2026-06-01-hapi-folders-reorganization.md.
 #
 # Usage:
 #   hapi-worktree-create <name> --branch <branch-name> [--after branch:foo] [--after pr:692] ...
 #   hapi-worktree-create pluggable-voice --branch feat/pluggable-voice-backend
 #   hapi-worktree-create stacked-foo --branch feat/foo --after feat/pluggable-voice-backend
 #
+# Flags:
+#   --at top              (DEPRECATED) Create at ~/coding/hapi-<name>/ legacy location.
+#                         Will warn loudly. Do not use for new work.
+#
 set -euo pipefail
 
 PRIMARY="${HAPI_PRIMARY:-$HOME/coding/hapi}"
 BUN="${BUN:-$HOME/.bun/bin/bun}"
 BASE="${HAPI_WORKTREE_BASE:-upstream/main}"
+WORKTREE_ROOT="${HAPI_WORKTREE_ROOT:-$PRIMARY/worktrees}"
 NAME=""
 BRANCH=""
+AT_TOP=0
 AFTER=()
 
 usage() {
-    sed -n '2,10p' "$0"
+    sed -n '2,22p' "$0"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -24,6 +40,13 @@ while [[ $# -gt 0 ]]; do
         --branch) BRANCH="${2:?}"; shift 2 ;;
         --base) BASE="${2:?}"; shift 2 ;;
         --after) AFTER+=("${2:?}"); shift 2 ;;
+        --at)
+            case "${2:?}" in
+                top) AT_TOP=1; shift 2 ;;
+                canonical|worktrees) AT_TOP=0; shift 2 ;;
+                *) echo "ERROR: --at takes 'top' (deprecated) or 'canonical'" >&2; exit 2 ;;
+            esac
+            ;;
         -h|--help) usage; exit 0 ;;
         -*) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
         *)
@@ -36,7 +59,14 @@ done
 [[ -n "$NAME" ]] || { echo "Usage: hapi-worktree-create <name> --branch <branch> [--after ref...]" >&2; exit 2; }
 [[ -n "$BRANCH" ]] || { echo "ERROR: --branch required" >&2; exit 2; }
 
-PATH_DIR="$HOME/coding/hapi-${NAME}"
+if [[ "$AT_TOP" == "1" ]]; then
+    PATH_DIR="$HOME/coding/hapi-${NAME}"
+    echo "WARN: --at top is deprecated; new worktrees should live in $WORKTREE_ROOT/" >&2
+    echo "WARN: see docs/plans/2026-06-01-hapi-folders-reorganization.md" >&2
+else
+    mkdir -p "$WORKTREE_ROOT"
+    PATH_DIR="$WORKTREE_ROOT/${NAME}"
+fi
 HUB_ENV="$HOME/.hapi/hub.env"
 
 if [[ -e "$PATH_DIR" ]]; then

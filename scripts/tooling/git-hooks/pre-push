@@ -63,4 +63,9 @@ if [[ -x "$ADVISORY" ]]; then
     "$ADVISORY" --quiet || true
 fi
 
+WT_AUDIT="$ROOT/scripts/tooling/check-worktree-layout.sh"
+if [[ -x "$WT_AUDIT" ]]; then
+    "$WT_AUDIT" --quiet || true
+fi
+
 exit 0

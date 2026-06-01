@@ -43,6 +43,16 @@ execplan/
 cli/npm/main/
 .ace-tool/
 
+# Canonical worktree layout (2026-06-01 onward, Phase 1 / Option B).
+# These subdirs are git worktrees of this same .git or operator-only shells.
+# Tracked: this gitignore + worktrees/.gitkeep. Everything else under them = worktree contents.
+# See docs/plans/2026-06-01-hapi-folders-reorganization.md.
+/active
+/driver
+/upstream
+/worktrees/*
+!/worktrees/.gitkeep
+
 # Cursor: ignored by global ~/.config/git/ignore but we want shared rules tracked
 # in this repo. Negate the global rule for .cursor/rules/ only (per-user state
 # under .cursor/ stays ignored).

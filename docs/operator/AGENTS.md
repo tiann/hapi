@@ -308,9 +308,11 @@ When the operator asks for **new product behavior**, follow [`docs/tooling/new-f
 
 **Orchestrator** completes steps 1-3 (and usually 4-5), then spawns a **feature peer** with the mandatory handoff block in that doc (completed steps vs peer-owned steps).
 
-**Feature peer** implements in `~/coding/hapi-<name>` — not in `~/coding/hapi-driver` by hand. Pass §6 (tests, cold review, Playwright) **before** asking the operator to browser-test. Upstream PR only after operator dogfood approval (§8).
+**Feature peer** implements in **`~/coding/hapi/worktrees/<name>`** (created via `hapi-worktree-create <name> --branch <branch>`) — not in `~/coding/hapi/driver` by hand. Pass §6 (tests, cold review, Playwright) **before** asking the operator to browser-test. Upstream PR only after operator dogfood approval (§8).
 
-**Instruction roots:** agents read **this file** and tooling docs from the **`~/coding/hapi` workspace**, plus `~/coding/AGENTS.local.md`. The **daily driver** (`~/coding/hapi-driver`) is what **`hapi-active` runs** — not where IDE rules come from unless that tree is the opened workspace.
+**Instruction roots:** agents read **this file** and tooling docs from the **`~/coding/hapi` workspace**, plus `~/coding/AGENTS.local.md`. The **daily driver** (`~/coding/hapi/driver`) is what **`hapi-active` runs** — not where IDE rules come from unless that tree is the opened workspace.
+
+**Canonical worktree layout (2026-06-01 onward):** see [`.cursor/rules/worktree-layout.mdc`](../../.cursor/rules/worktree-layout.mdc) and [`docs/plans/2026-06-01-hapi-folders-reorganization.md`](../plans/2026-06-01-hapi-folders-reorganization.md). Summary: `~/coding/hapi/{driver,upstream,worktrees/<name>}` — never create new worktrees at `~/coding/hapi-<name>/` or `~/coding/hapi-worktrees/<name>/` (those are pre-reorg legacy locations being drained).
 
 ---
 
