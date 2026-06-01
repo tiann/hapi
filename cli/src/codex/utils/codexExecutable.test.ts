@@ -93,18 +93,40 @@ describe('resolveCodexCommand', () => {
         }
     });
 
-    it('resolves a Windows npm codex.cmd shim to the native Codex exe without changing PATH precedence', async () => {
+    it('resolves a Windows npm codex.cmd shim through the Codex launcher', async () => {
         setPlatform('win32');
         const shim = codexShimPath();
         const laterExe = userCodexExePath();
         const executable = nativeCodexPath();
+        const script = codexScriptPath();
         execFileSyncMock.mockImplementation((command: string, args: string[]) => {
             if (command === 'where.exe' && args[0] === 'codex') {
                 return `${shim}\r\n${laterExe}\r\n`;
             }
             throw new Error('not found');
         });
-        existsSyncMock.mockImplementation((candidate: string) => candidate === shim || candidate === laterExe || candidate === executable);
+        existsSyncMock.mockImplementation((candidate: string) =>
+            candidate === shim || candidate === laterExe || candidate === executable || candidate === script
+        );
+        const { resolveCodexCommand } = await import('./codexExecutable');
+
+        expect(resolveCodexCommand()).toEqual({
+            command: 'node',
+            args: [script]
+        });
+    });
+
+    it('continues to the next Windows PATH candidate when a shim has no launcher script', async () => {
+        setPlatform('win32');
+        const shim = codexShimPath();
+        const executable = userCodexExePath();
+        execFileSyncMock.mockImplementation((command: string, args: string[]) => {
+            if (command === 'where.exe' && args[0] === 'codex') {
+                return `${shim}\r\n${executable}\r\n`;
+            }
+            throw new Error('not found');
+        });
+        existsSyncMock.mockImplementation((candidate: string) => candidate === shim || candidate === executable);
         const { resolveCodexCommand } = await import('./codexExecutable');
 
         expect(resolveCodexCommand()).toEqual({

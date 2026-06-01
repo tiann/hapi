@@ -27,27 +27,6 @@ function findWhereResults(command: string): string[] {
     }
 }
 
-function resolveNativePackageExecutable(shimPath: string): string | null {
-    const shimDirectory = windowsPath.dirname(shimPath);
-    const packageRoot = windowsPath.join(shimDirectory, 'node_modules', '@openai', 'codex');
-    const executable = windowsPath.join(
-        packageRoot,
-        'node_modules',
-        '@openai',
-        'codex-win32-x64',
-        'vendor',
-        'x86_64-pc-windows-msvc',
-        'bin',
-        'codex.exe'
-    );
-
-    if (existsSync(executable)) {
-        return executable;
-    }
-
-    return null;
-}
-
 function resolveShimScript(shimPath: string): string | null {
     const shimDirectory = windowsPath.dirname(shimPath);
     const script = windowsPath.join(shimDirectory, 'node_modules', '@openai', 'codex', 'bin', 'codex.js');
@@ -66,11 +45,6 @@ function resolveWindowsCandidate(candidate: string): CodexCommand | null {
 
     if (windowsPath.extname(candidate).toLowerCase() === '.exe') {
         return { command: candidate, args: [] };
-    }
-
-    const nativeExecutable = resolveNativePackageExecutable(candidate);
-    if (nativeExecutable) {
-        return { command: nativeExecutable, args: [] };
     }
 
     const script = resolveShimScript(candidate);
