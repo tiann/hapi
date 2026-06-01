@@ -19,9 +19,18 @@ function parsePort(value: string | undefined): number | null {
     return port;
 }
 
-function parseArgs(args: string[]): { port: number | null; token: string | null } {
+function parsePath(value: string | undefined): string | null {
+    if (!value || !value.startsWith('/')) {
+        return null;
+    }
+
+    return value;
+}
+
+function parseArgs(args: string[]): { port: number | null; token: string | null; path: string } {
     let port: number | null = null;
     let token: string | null = null;
+    let path = '/hook/session-start';
 
     for (let i = 0; i < args.length; i += 1) {
         const arg = args[i];
@@ -51,6 +60,17 @@ function parseArgs(args: string[]): { port: number | null; token: string | null 
             continue;
         }
 
+        if (arg === '--path') {
+            path = parsePath(args[i + 1]) ?? path;
+            i += 1;
+            continue;
+        }
+
+        if (arg.startsWith('--path=')) {
+            path = parsePath(arg.slice('--path='.length)) ?? path;
+            continue;
+        }
+
         if (!port) {
             port = parsePort(arg);
             continue;
@@ -61,11 +81,11 @@ function parseArgs(args: string[]): { port: number | null; token: string | null 
         }
     }
 
-    return { port, token };
+    return { port, token, path };
 }
 
 export async function runSessionHookForwarder(args: string[]): Promise<void> {
-    const { port, token } = parseArgs(args);
+    const { port, token, path } = parseArgs(args);
     if (!port) {
         logError('Invalid or missing port argument');
         process.exitCode = 1;
@@ -97,7 +117,7 @@ export async function runSessionHookForwarder(args: string[]): Promise<void> {
                 host: '127.0.0.1',
                 port,
                 method: 'POST',
-                path: '/hook/session-start',
+                path,
                 headers: {
                     'Content-Type': 'application/json',
                     'Content-Length': body.length,
@@ -108,13 +128,21 @@ export async function runSessionHookForwarder(args: string[]): Promise<void> {
                     hadError = true;
                     logError(`Hook server responded with status ${res.statusCode}`);
                 }
+                const responseChunks: Buffer[] = [];
+                res.on('data', (chunk) => {
+                    responseChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+                });
                 res.on('error', (error) => {
                     hadError = true;
                     logError('Error reading hook server response', error);
                     resolve();
                 });
-                res.on('end', () => resolve());
-                res.resume();
+                res.on('end', () => {
+                    if (path !== '/hook/session-start' && responseChunks.length > 0) {
+                        process.stdout.write(Buffer.concat(responseChunks));
+                    }
+                    resolve();
+                });
             });
 
             req.on('error', (error) => {

@@ -52,6 +52,17 @@ function shellJoin(parts: string[]): string {
     return parts.map(shellQuote).join(' ');
 }
 
+function buildHookCommand(command: string, args: string[]): string {
+    const joined = shellJoin([command, ...args]);
+    if (process.platform !== 'win32') {
+        return joined;
+    }
+
+    // Codex executes hooks through the user's Windows shell. In PowerShell, a
+    // quoted executable path is treated as a string unless invoked with `&`.
+    return `& ${joined}`;
+}
+
 function canonicalJson(value: unknown): unknown {
     if (Array.isArray(value)) {
         return value.map(canonicalJson);
@@ -86,11 +97,32 @@ function buildSessionStartHookTrustedHash(command: string): string {
     });
 }
 
+function buildPermissionRequestHookTrustedHash(command: string): string {
+    return versionForTomlLikeValue({
+        event_name: 'permission_request',
+        hooks: [
+            {
+                async: false,
+                command,
+                timeout: 600,
+                type: 'command'
+            }
+        ]
+    });
+}
+
 function sessionFlagsHookStateKey(): string {
     const sourcePath = process.platform === 'win32'
         ? 'C:\\<session-flags>\\config.toml'
         : '/<session-flags>/config.toml';
     return `${sourcePath}:session_start:0:0`;
+}
+
+function permissionRequestFlagsHookStateKey(): string {
+    const sourcePath = process.platform === 'win32'
+        ? 'C:\\<session-flags>\\config.toml'
+        : '/<session-flags>/config.toml';
+    return `${sourcePath}:permission_request:0:0`;
 }
 
 export function buildSessionStartHookConfigArgs(port: number, token: string): string[] {
@@ -101,12 +133,31 @@ export function buildSessionStartHookConfigArgs(port: number, token: string): st
         '--token',
         token
     ]);
-    const hookCommand = shellJoin([command, ...args]);
+    const hookCommand = buildHookCommand(command, args);
     const escapedHookCommand = escapeTomlString(hookCommand);
     const hookConfig = `hooks.SessionStart=[{ hooks = [{ type = "command", command = "${escapedHookCommand}" }] }]`;
     const trustedHash = buildSessionStartHookTrustedHash(hookCommand);
     const escapedStateKey = escapeTomlString(sessionFlagsHookStateKey());
-    const hookState = `hooks.state={"${escapedStateKey}"={trusted_hash="${trustedHash}"}}`;
+    const hookState = `hooks.state."${escapedStateKey}".trusted_hash="${trustedHash}"`;
+    return ['-c', hookConfig, '-c', hookState];
+}
+
+export function buildPermissionRequestHookConfigArgs(port: number, token: string): string[] {
+    const { command, args } = getHappyCliCommand([
+        'hook-forwarder',
+        '--port',
+        String(port),
+        '--token',
+        token,
+        '--path',
+        '/hook/permission-request'
+    ]);
+    const hookCommand = buildHookCommand(command, args);
+    const escapedHookCommand = escapeTomlString(hookCommand);
+    const hookConfig = `hooks.PermissionRequest=[{ hooks = [{ type = "command", command = "${escapedHookCommand}" }] }]`;
+    const trustedHash = buildPermissionRequestHookTrustedHash(hookCommand);
+    const escapedStateKey = escapeTomlString(permissionRequestFlagsHookStateKey());
+    const hookState = `hooks.state."${escapedStateKey}".trusted_hash="${trustedHash}"`;
     return ['-c', hookConfig, '-c', hookState];
 }
 

@@ -1,6 +1,6 @@
 import { logger } from '@/ui/logger';
 
-type ConvertedEvent = {
+export type ConvertedEvent = {
     type: string;
     [key: string]: unknown;
 };

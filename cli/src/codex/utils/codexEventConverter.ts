@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { logger } from '@/ui/logger';
+import { AppServerEventConverter, type ConvertedEvent } from './appServerEventConverter';
 
 const CodexSessionEventSchema = z.object({
     timestamp: z.string().optional(),
@@ -14,6 +15,14 @@ export type CodexMessage = {
     type: 'message';
     message: string;
     id: string;
+} | {
+    type: 'thread_goal_updated';
+    thread_id: string;
+    turn_id?: string;
+    goal: Record<string, unknown>;
+} | {
+    type: 'thread_goal_cleared';
+    thread_id: string;
 } | {
     type: 'reasoning';
     message: string;
@@ -40,9 +49,60 @@ export type CodexMessage = {
 
 export type CodexConversionResult = {
     sessionId?: string;
-    message?: CodexMessage;
+    message?: CodexMessage | ConvertedEvent;
     userMessage?: string;
 };
+
+export class CodexTranscriptEventConverter {
+    private readonly appServerEventConverter = new AppServerEventConverter();
+
+    convert(rawEvent: unknown): CodexConversionResult[] {
+        const direct = convertCodexEvent(rawEvent);
+        if (direct) {
+            return [direct];
+        }
+
+        const appServerEvents = this.convertAppServerEvent(rawEvent);
+        return appServerEvents.map((message) => ({ message }));
+    }
+
+    reset(): void {
+        this.appServerEventConverter.reset();
+    }
+
+    private convertAppServerEvent(rawEvent: unknown): ConvertedEvent[] {
+        const parsed = CodexSessionEventSchema.safeParse(rawEvent);
+        if (!parsed.success) {
+            return [];
+        }
+
+        const payloadRecord = asRecord(parsed.data.payload);
+
+        if (parsed.data.type === 'notification' || parsed.data.type === 'app_server_notification') {
+            const method = asString(payloadRecord?.method);
+            if (!method) {
+                return [];
+            }
+            return this.appServerEventConverter.handleNotification(method, payloadRecord?.params);
+        }
+
+        if (parsed.data.type.startsWith('codex/event/')) {
+            const msgType = parsed.data.type.slice('codex/event/'.length);
+            return this.appServerEventConverter.handleNotification(parsed.data.type, {
+                msg: payloadRecord?.type ? payloadRecord : {
+                    ...(payloadRecord ?? {}),
+                    type: msgType
+                }
+            });
+        }
+
+        if (parsed.data.type.includes('/')) {
+            return this.appServerEventConverter.handleNotification(parsed.data.type, payloadRecord ?? {});
+        }
+
+        return [];
+    }
+}
 
 function asRecord(value: unknown): Record<string, unknown> | null {
     if (!value || typeof value !== 'object') {
@@ -181,6 +241,39 @@ export function convertCodexEvent(rawEvent: unknown): CodexConversionResult | nu
                     type: 'token_count',
                     info,
                     id: randomUUID()
+                }
+            };
+        }
+
+        if (eventType === 'thread_goal_updated') {
+            const goal = asRecord(payloadRecord.goal);
+            const threadId = asString(payloadRecord.thread_id)
+                ?? asString(payloadRecord.threadId)
+                ?? asString(goal?.thread_id)
+                ?? asString(goal?.threadId);
+            if (!goal || !threadId) {
+                return null;
+            }
+            const turnId = asString(payloadRecord.turn_id) ?? asString(payloadRecord.turnId);
+            return {
+                message: {
+                    type: 'thread_goal_updated',
+                    thread_id: threadId,
+                    ...(turnId ? { turn_id: turnId } : {}),
+                    goal
+                }
+            };
+        }
+
+        if (eventType === 'thread_goal_cleared') {
+            const threadId = asString(payloadRecord.thread_id) ?? asString(payloadRecord.threadId);
+            if (!threadId) {
+                return null;
+            }
+            return {
+                message: {
+                    type: 'thread_goal_cleared',
+                    thread_id: threadId
                 }
             };
         }

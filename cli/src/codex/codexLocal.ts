@@ -4,6 +4,7 @@ import {
     buildMcpServerConfigArgs,
     buildDeveloperInstructionsArg,
     buildSessionStartHookConfigArgs,
+    buildPermissionRequestHookConfigArgs,
     buildModelReasoningEffortConfigArgs
 } from './utils/codexMcpConfig';
 import { codexSystemPrompt } from './utils/systemPrompt';
@@ -42,6 +43,10 @@ export async function codexLocal(opts: {
         port: number;
         token: string;
     };
+    permissionHook?: {
+        port: number;
+        token: string;
+    };
 }): Promise<void> {
     const args: string[] = [];
 
@@ -69,6 +74,10 @@ export async function codexLocal(opts: {
 
     if (opts.sessionHook) {
         args.push(...buildSessionStartHookConfigArgs(opts.sessionHook.port, opts.sessionHook.token));
+    }
+
+    if (opts.permissionHook) {
+        args.push(...buildPermissionRequestHookConfigArgs(opts.permissionHook.port, opts.permissionHook.token));
     }
 
     // Add developer instructions (system prompt)
