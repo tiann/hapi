@@ -15,18 +15,37 @@ function makeSession(overrides: Partial<Session> = {}): Session {
 }
 
 describe('sessionResume', () => {
-    it('resolveAgentSessionIdFromMetadata matches hub flavor precedence (codex before cursor)', () => {
+    it('resolveAgentSessionIdFromMetadata picks the id matching the session flavor', () => {
         expect(resolveAgentSessionIdFromMetadata({
             path: '/p',
             host: 'h',
+            flavor: 'codex',
             codexSessionId: 'codex-1',
             cursorSessionId: 'cursor-1',
         })).toBe('codex-1')
         expect(resolveAgentSessionIdFromMetadata({
             path: '/p',
             host: 'h',
+            flavor: 'cursor',
             cursorSessionId: 'cursor-1',
         })).toBe('cursor-1')
+    })
+
+    it('resolveAgentSessionIdFromMetadata ignores stale cross-flavor ids', () => {
+        expect(resolveAgentSessionIdFromMetadata({
+            path: '/p',
+            host: 'h',
+            flavor: 'cursor',
+            codexSessionId: 'codex-1',
+        })).toBeUndefined()
+    })
+
+    it('resolveAgentSessionIdFromMetadata defaults to claude when flavor is missing', () => {
+        expect(resolveAgentSessionIdFromMetadata({
+            path: '/p',
+            host: 'h',
+            claudeSessionId: 'claude-1',
+        })).toBe('claude-1')
     })
 
     it('inactiveSessionCanResume is true for active sessions', () => {
@@ -50,6 +69,25 @@ describe('sessionResume', () => {
 
     it('inactiveSessionCanResume rejects inactive sessions with messages but no agent id', () => {
         expect(inactiveSessionCanResume(makeSession(), 3)).toBe(false)
+    })
+
+    it('inactiveSessionCanResume rejects when stale cross-flavor agent id is present but no messages', () => {
+        expect(inactiveSessionCanResume(makeSession({
+            metadata: {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'cursor',
+                codexSessionId: 'stale-codex-1',
+            },
+        }), 0)).toBe(true)
+        expect(inactiveSessionCanResume(makeSession({
+            metadata: {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'cursor',
+                codexSessionId: 'stale-codex-1',
+            },
+        }), 3)).toBe(false)
     })
 
     it('inactiveSessionCanResume rejects when metadata path is missing', () => {

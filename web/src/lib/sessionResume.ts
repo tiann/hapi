@@ -1,19 +1,24 @@
+import { isKnownFlavor } from '@hapi/protocol'
 import type { Session } from '@/types/api'
 
-/** Agent thread id used by hub `resolveAgentResumeId` (any flavor). */
+/** Agent thread id used by hub `resolveAgentResumeId`, flavor-specific.
+ *  Mirrors hub: cross-flavor ids are ignored to avoid the web layer claiming a
+ *  session is resumable when the hub will only honor the current flavor's id. */
 export function resolveAgentSessionIdFromMetadata(
     metadata: Session['metadata'] | null | undefined,
 ): string | undefined {
     if (!metadata) {
         return undefined
     }
-    return metadata.codexSessionId
-        ?? metadata.claudeSessionId
-        ?? metadata.geminiSessionId
-        ?? metadata.opencodeSessionId
-        ?? metadata.cursorSessionId
-        ?? metadata.kimiSessionId
-        ?? undefined
+    const flavor = isKnownFlavor(metadata.flavor) ? metadata.flavor : 'claude'
+    switch (flavor) {
+        case 'codex': return metadata.codexSessionId ?? undefined
+        case 'gemini': return metadata.geminiSessionId ?? undefined
+        case 'opencode': return metadata.opencodeSessionId ?? undefined
+        case 'cursor': return metadata.cursorSessionId ?? undefined
+        case 'kimi': return metadata.kimiSessionId ?? undefined
+        default: return metadata.claudeSessionId ?? undefined
+    }
 }
 
 /**
