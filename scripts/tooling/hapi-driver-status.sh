@@ -118,6 +118,24 @@ render_op() {
     return 0
 }
 
+render_working() {
+    local health="${HAPI_SESSIONS_HEALTH:-$HOME/coding/hapi/scripts/hapi-sessions-health.sh}"
+    if [[ ! -x "$health" ]]; then
+        echo "working   (health script not available)"
+        return 0
+    fi
+    local count
+    count="$("$health" --json 2>/dev/null | jq -r '[.sessions[]? | select(.status == "WORKING")] | length' 2>/dev/null || echo 0)"
+    if [[ "$count" == "0" ]]; then
+        echo "working   WORKING=0  (safe to restart hub without --impatient)"
+    else
+        echo "working   WORKING=$count  (a restart will yank these unless you wait or use hapi-restart-hub)"
+        local color="" reset=""
+        [[ -t 1 ]] && { color="\033[33m"; reset="\033[0m"; }
+        printf '          %busage: hapi-restart-hub  (patient by default, 10min timeout)%b\n' "$color" "$reset"
+    fi
+}
+
 render_human() {
     echo "=== hapi-driver-status ($STATUS_FILE) ==="
     echo ""
@@ -136,6 +154,8 @@ render_human() {
     [[ "$is_driver" == "true" ]] || tag="FEATURE WORKTREE"
     echo "active    -> $active_target"
     echo "          [$tag]  last swung $mtime ($(humanize_age "$mtime"))"
+    echo ""
+    render_working
 
     # Aggregate exit code: 75 busy > 2 stale > 0 idle.
     (( rebuild_rc == 1 || switch_rc == 1 )) && return 75
