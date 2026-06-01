@@ -32,4 +32,22 @@ describe('enqueueCursorUserMessage', () => {
         const second = await queue.waitForMessagesAndGetAsString();
         expect(second?.message).toBe('next task');
     });
+
+    it('preserves a normal prompt queued before a slash command', async () => {
+        const queue = new MessageQueue2<EnhancedMode>((m) => m.permissionMode);
+        enqueueCursorUserMessage(queue, 'first work', mode, 'a');
+        enqueueCursorUserMessage(queue, '/summarize', mode, 'b');
+        enqueueCursorUserMessage(queue, 'after summarize', mode, 'c');
+
+        const first = await queue.waitForMessagesAndGetAsString();
+        expect(first?.message).toBe('first work');
+        expect(first?.isolate).toBe(false);
+
+        const second = await queue.waitForMessagesAndGetAsString();
+        expect(second?.message).toBe('/summarize');
+        expect(second?.isolate).toBe(true);
+
+        const third = await queue.waitForMessagesAndGetAsString();
+        expect(third?.message).toBe('after summarize');
+    });
 });

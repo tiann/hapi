@@ -14,7 +14,7 @@ export function enqueueCursorUserMessage(
 ): void {
     const specialCommand = parseCursorSpecialCommand(formattedText);
     if (specialCommand.type !== null) {
-        messageQueue.pushIsolateAndClear(formattedText.trim(), enhancedMode, localId);
+        messageQueue.pushIsolated(formattedText.trim(), enhancedMode, localId);
         return;
     }
     messageQueue.push(formattedText, enhancedMode, localId);
