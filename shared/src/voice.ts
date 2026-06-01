@@ -289,8 +289,8 @@ export function buildVoiceAgentConfig(): VoiceAgentConfig {
 
 export type VoiceBackendType = 'elevenlabs' | 'gemini-live' | 'qwen-realtime'
 
-export const QWEN_REALTIME_MODEL = 'qwen3-omni-flash-realtime'
-export const QWEN_REALTIME_VOICE = 'Cherry'
+export const QWEN_REALTIME_MODEL = 'qwen3.5-omni-flash-realtime'
+export const QWEN_REALTIME_VOICE = 'Tina'
 
 export const DEFAULT_VOICE_BACKEND: VoiceBackendType = 'elevenlabs'
 

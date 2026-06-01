@@ -123,7 +123,7 @@ function createGeminiProxyWebSocketHandler() {
 
 // Qwen Realtime WebSocket proxy — bridges browser (no custom headers) to DashScope (requires Authorization header)
 function createQwenProxyWebSocketHandler() {
-    const QWEN_WS_BASE = 'wss://dashscope.aliyuncs.com/api-ws/v1/realtime'
+    const QWEN_WS_BASE = 'wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime'
     const upstreamMap = new WeakMap<ServerWebSocket<unknown>, WebSocket>()
     // Holds the hub-owned session.update payload until session.created arrives from DashScope.
     // Sending session.update before session.created violates the Qwen Realtime protocol ordering.
