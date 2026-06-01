@@ -104,10 +104,10 @@ export async function renderMermaidSvg(
 }
 
 export function getMermaidSvgLayoutSize(svg: string): { width: number; height: number } | null {
-    const viewBoxMatch = svg.match(/\bviewBox="([\d.\s]+)"/)
+    const viewBoxMatch = svg.match(/\bviewBox=(['"])([^'"]+)\1/i)
     if (!viewBoxMatch) return null
-    const parts = viewBoxMatch[1].trim().split(/\s+/).map(Number)
-    if (parts.length < 4 || parts[2] <= 0 || parts[3] <= 0) return null
+    const parts = viewBoxMatch[2].trim().split(/[\s,]+/).map(Number)
+    if (parts.length < 4 || parts.some(Number.isNaN) || parts[2] <= 0 || parts[3] <= 0) return null
     return { width: parts[2], height: parts[3] }
 }
 
