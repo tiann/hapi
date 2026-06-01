@@ -617,6 +617,18 @@ export class SyncEngine {
         return undefined
     }
 
+    /** Inactive session with directory path but no agent thread and no prior user turn. */
+    private canFreshSpawnNeverStartedSession(session: Session, sessionId: string, namespace: string): boolean {
+        const metadata = session.metadata
+        if (!metadata || typeof metadata.path !== 'string' || metadata.path.length === 0) {
+            return false
+        }
+        if (this.resolveAgentResumeId(session, namespace)) {
+            return false
+        }
+        return this.store.messages.getFirstMessages(sessionId, 1).length === 0
+    }
+
     async resumeSession(sessionId: string, namespace: string, opts?: { permissionMode?: PermissionMode }): Promise<ResumeSessionResult> {
         const access = this.sessionCache.resolveSessionAccess(sessionId, namespace)
         if (!access.ok) {
@@ -633,14 +645,27 @@ export class SyncEngine {
         }
 
         const targetResult = this.resolveLocalResumeTarget(access.sessionId, namespace)
-        if (targetResult.type === 'error') {
+        let flavor: AgentFlavor
+        let resumeToken: string | undefined
+        let directory: string
+
+        if (targetResult.type === 'success') {
+            flavor = targetResult.target.flavor
+            resumeToken = targetResult.target.agentSessionId
+            directory = targetResult.target.directory
+        } else if (
+            targetResult.code === 'resume_unavailable'
+            && this.canFreshSpawnNeverStartedSession(session, access.sessionId, namespace)
+        ) {
+            const metadata = session.metadata!
+            flavor = this.resolveFlavor(session)
+            resumeToken = undefined
+            directory = metadata.path
+        } else {
             return targetResult
         }
 
-        const target = targetResult.target
         const metadata = session.metadata!
-        const flavor = target.flavor
-        const resumeToken = target.agentSessionId
 
         const onlineMachines = this.machineCache.getOnlineMachinesByNamespace(namespace)
         if (onlineMachines.length === 0) {
@@ -668,7 +693,7 @@ export class SyncEngine {
             ?? session.metadata?.preferredPermissionMode
         const spawnResult = await this.rpcGateway.spawnSession(
             targetMachine.id,
-            target.directory,
+            directory,
             flavor,
             session.model ?? undefined,
             session.modelReasoningEffort ?? undefined,

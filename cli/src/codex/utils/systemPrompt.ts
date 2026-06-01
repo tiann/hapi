@@ -13,10 +13,11 @@ import { trimIdent } from '@/utils/trimIdent';
  * so the tool is called as `functions.hapi__change_title`.
  */
 export const TITLE_INSTRUCTION = trimIdent(`
-    ALWAYS when you start a new chat, call the title tool to set a concise task title.
+    Use the title tool sparingly. For a new chat, call it once after the user's initial request is clear, and set a concise task title.
     Prefer calling functions.hapi__change_title.
     If that exact tool name is unavailable, call an equivalent alias such as hapi__change_title, mcp__hapi__change_title, or hapi_change_title.
-    If the task focus changes significantly later, call the title tool again with a better title.
+    Do not rename the chat for routine progress, substeps, implementation details, or a slightly better wording.
+    Rename only when the user's primary objective changes substantially and the existing title would be misleading.
     When you create or find a local image file that the user should see, call functions.hapi__display_image with the image path. If that exact tool name is unavailable, use an equivalent alias such as hapi__display_image, mcp__hapi__display_image, or hapi_display_image.
 `);
 

@@ -56,7 +56,12 @@ export function mergeMessages(existing: DecryptedMessage[], incoming: DecryptedM
         byId.set(msg.id, msg)
     }
     for (const msg of incoming) {
-        byId.set(msg.id, msg)
+        const existing = byId.get(msg.id)
+        if (existing && existing.invokedAt != null && msg.invokedAt == null) {
+            byId.set(msg.id, { ...msg, invokedAt: existing.invokedAt })
+        } else {
+            byId.set(msg.id, msg)
+        }
     }
 
     let merged = Array.from(byId.values())

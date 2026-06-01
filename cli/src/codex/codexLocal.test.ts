@@ -1,7 +1,13 @@
+import { win32 } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { spawnWithTerminalGuardMock } = vi.hoisted(() => ({
+const { resolveCodexCommandMock, spawnWithTerminalGuardMock } = vi.hoisted(() => ({
+    resolveCodexCommandMock: vi.fn(() => ({ command: 'codex', args: [] as string[] })),
     spawnWithTerminalGuardMock: vi.fn(async (_options: unknown) => {})
+}));
+
+vi.mock('./utils/codexExecutable', () => ({
+    resolveCodexCommand: resolveCodexCommandMock
 }));
 
 vi.mock('@/utils/spawnWithTerminalGuard', () => ({
@@ -15,6 +21,10 @@ vi.mock('@/ui/logger', () => ({
 }));
 
 import { codexLocal, filterResumeSubcommand } from './codexLocal';
+
+const codexScriptPath = win32.join('toolchains', 'nodejs', 'node_modules', '@openai', 'codex', 'bin', 'codex.js');
+const hapiCommandPath = win32.join('hapi-bin', 'hapi.exe');
+const workspacePath = win32.join('workspace', 'project');
 
 describe('filterResumeSubcommand', () => {
     it('returns empty array unchanged', () => {
@@ -50,20 +60,26 @@ describe('filterResumeSubcommand', () => {
 
 describe('codexLocal', () => {
     beforeEach(() => {
+        resolveCodexCommandMock.mockReset();
+        resolveCodexCommandMock.mockReturnValue({ command: 'codex', args: [] as string[] });
         spawnWithTerminalGuardMock.mockClear();
     });
 
-    it('launches codex without shell so Windows keeps -c config values as argv elements', async () => {
+    it('launches the resolved Codex command without shell so Windows keeps -c config values as argv elements', async () => {
         const controller = new AbortController();
+        resolveCodexCommandMock.mockReturnValue({
+            command: 'node',
+            args: [codexScriptPath]
+        });
 
         await codexLocal({
             abort: controller.signal,
             sessionId: null,
-            path: 'C:\\workspace\\project',
+            path: workspacePath,
             onSessionFound: vi.fn(),
             mcpServers: {
                 hapi: {
-                    command: 'C:\\Users\\test\\AppData\\Local\\hapi.exe',
+                    command: hapiCommandPath,
                     args: ['mcp', '--url', 'http://127.0.0.1:63995/']
                 }
             },
@@ -81,12 +97,13 @@ describe('codexLocal', () => {
             shell?: unknown;
         };
         expect(spawnOptions).toEqual(expect.objectContaining({
-            command: 'codex',
-            cwd: 'C:\\workspace\\project'
+            command: 'node',
+            cwd: workspacePath
         }));
         expect(spawnOptions).not.toHaveProperty('shell');
 
         const args = spawnOptions.args;
+        expect(args[0]).toBe(codexScriptPath);
         const hookArg = args.find((arg) => arg.startsWith('hooks.SessionStart='));
         expect(hookArg).toBeDefined();
         expect(hookArg).toContain('{ hooks = [{ type = "command", command = "');
@@ -99,7 +116,7 @@ describe('codexLocal', () => {
         await codexLocal({
             abort: controller.signal,
             sessionId: 'codex-session-1',
-            path: '/workspace/project',
+            path: workspacePath,
             modelReasoningEffort: 'high',
             onSessionFound: vi.fn()
         });

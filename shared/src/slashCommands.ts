@@ -39,7 +39,10 @@ export const BUILTIN_SLASH_COMMANDS = {
         { name: 'default', description: 'Return OpenCode permission mode to default', source: 'builtin' },
         { name: 'init', description: 'Generate or refresh AGENTS.md for this project', source: 'builtin' },
     ],
-    cursor: [],
+    cursor: [
+        { name: 'summarize', description: 'Summarize conversation context to free window space (pass-through to Cursor agent)', source: 'builtin' },
+        { name: 'clear', description: 'Clear conversation context if supported by Cursor agent', source: 'builtin' },
+    ],
 } as const satisfies Record<string, readonly SlashCommand[]>
 
 export function getBuiltinSlashCommands(agent: string): SlashCommand[] {

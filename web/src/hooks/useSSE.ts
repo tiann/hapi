@@ -458,6 +458,16 @@ export function useSSE(options: {
                 ) {
                     queueSessionListInvalidation()
                 }
+                // The global `all` subscription also receives message-stream events.
+                // Session-scoped SSE normally drives the message window, but during
+                // reconnect gaps or while another session is selected, only the global
+                // connection may be alive — still clear the queued bar / optimistic rows.
+                if (event.type === 'messages-consumed') {
+                    markMessagesConsumed(event.sessionId, event.localIds, event.invokedAt)
+                }
+                if (event.type === 'message-cancelled') {
+                    removeOptimisticMessage(event.sessionId, event.messageId)
+                }
                 onEventRef.current(event)
                 return
             }

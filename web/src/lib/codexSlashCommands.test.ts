@@ -19,6 +19,12 @@ describe('getBuiltinSlashCommands', () => {
             'permission',
         ]))
     })
+
+    it('exposes Cursor summarize and clear builtins', () => {
+        expect(getBuiltinSlashCommands('cursor').map((command) => command.name)).toEqual(
+            expect.arrayContaining(['summarize', 'clear'])
+        )
+    })
 })
 
 describe('mergeSlashCommands', () => {
