@@ -14,6 +14,8 @@
         "build:win": "bun run build && cross-env HAPI_DESKTOP_CLI_PLATFORM=win32 bun run prepare:cli && bun run patch:portable-template && electron-builder --win portable && bun run patch:win-metadata",
         "build:win:fast": "bun run build && cross-env HAPI_DESKTOP_CLI_PLATFORM=win32 bun run prepare:cli && electron-builder --win dir && bun run patch:win-metadata",
         "build:mac": "bun run build && cross-env HAPI_DESKTOP_CLI_PLATFORM=darwin bun run prepare:cli && electron-builder --mac dir",
+        "package:win:prebundled": "bun run build && bun run patch:portable-template && electron-builder --win portable && bun run patch:win-metadata",
+        "package:mac:prebundled": "bun run build && electron-builder --mac dir",
         "typecheck": "tsc --noEmit",
         "patch:win-metadata": "bun run scripts/patch-win-metadata.ts",
         "patch:portable-template": "bun run scripts/patch-portable-template.ts",

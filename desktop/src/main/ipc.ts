@@ -5,7 +5,16 @@ import type { LauncherConfig } from '../shared'
 
 export function registerIpc(configStore: ConfigStore, processManager: ProcessManager, getWindow: () => BrowserWindow | null): void {
     ipcMain.handle('config:get', async () => await configStore.read())
-    ipcMain.handle('config:save', async (_event, config: LauncherConfig) => await configStore.write(config))
+    ipcMain.handle('config:save', async (_event, config: LauncherConfig) => {
+        const status = processManager.getState().status
+        if (status !== 'stopped' && status !== 'error') {
+            return await configStore.update((current) => ({
+                ...current,
+                locale: config.locale
+            }))
+        }
+        return await configStore.write(config)
+    })
     ipcMain.handle('state:get', () => processManager.getState())
     ipcMain.handle('service:start', async () => await processManager.start())
     ipcMain.handle('service:stop', async () => await processManager.stop())

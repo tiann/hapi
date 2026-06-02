@@ -43,6 +43,7 @@ jobs:
                   if-no-files-found: error
 
     desktop-windows:
+        needs: cli
         runs-on: windows-latest
         steps:
             - uses: actions/checkout@v4
@@ -50,7 +51,20 @@ jobs:
               with:
                   bun-version: 1.3.14
             - run: bun install
-            - run: bun run build:desktop:win
+            - name: Download CLI release artifacts
+              uses: actions/download-artifact@v4
+              with:
+                  name: cli-release-artifacts
+                  path: cli-release-artifacts
+            - name: Bundle release CLI for Windows desktop
+              shell: pwsh
+              run: |
+                  New-Item -ItemType Directory -Force desktop/resources/hapi-cli/win | Out-Null
+                  Expand-Archive -LiteralPath "cli-release-artifacts/hapi-win32-x64.zip" -DestinationPath "desktop/resources/hapi-cli/win" -Force
+                  if (-not (Test-Path -LiteralPath "desktop/resources/hapi-cli/win/hapi.exe")) {
+                      throw "Bundled Windows CLI artifact not found."
+                  }
+            - run: cd desktop && bun run package:win:prebundled
             - name: Package Windows desktop release artifact
               shell: pwsh
               run: |
@@ -72,6 +86,7 @@ jobs:
                   if-no-files-found: error
 
     desktop-macos:
+        needs: cli
         runs-on: macos-latest
         steps:
             - uses: actions/checkout@v4
@@ -79,7 +94,24 @@ jobs:
               with:
                   bun-version: 1.3.14
             - run: bun install
-            - run: bun run build:desktop:mac
+            - name: Download CLI release artifacts
+              uses: actions/download-artifact@v4
+              with:
+                  name: cli-release-artifacts
+                  path: cli-release-artifacts
+            - name: Bundle release CLI for macOS desktop
+              run: |
+                  arch="$(uname -m)"
+                  case "$arch" in
+                      arm64) desktop_arch="arm64" ;;
+                      x86_64) desktop_arch="x64" ;;
+                      *) desktop_arch="$arch" ;;
+                  esac
+                  mkdir -p desktop/resources/hapi-cli/mac
+                  tar -xzf "cli-release-artifacts/hapi-darwin-${desktop_arch}.tar.gz" -C desktop/resources/hapi-cli/mac
+                  chmod +x desktop/resources/hapi-cli/mac/hapi
+                  test -x desktop/resources/hapi-cli/mac/hapi
+            - run: cd desktop && bun run package:mac:prebundled
             - name: Package macOS desktop release artifact
               run: |
                   mkdir -p desktop/release-artifacts
