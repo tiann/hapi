@@ -119,7 +119,7 @@ class GeminiLiveVoiceSessionImpl implements VoiceSession {
         const wsBase = state.wsBaseUrl || DEFAULT_GEMINI_LIVE_WS_BASE
         const isProxy = !!state.wsBaseUrl
         const authToken = this.api.getAuthToken() || ''
-        const languageParam = config.language === 'zh' ? '&language=zh' : ''
+        const languageParam = config.language ? `&language=${encodeURIComponent(config.language)}` : ''
         const wsUrl = isProxy
             ? `${wsBase}${wsBase.includes('?') ? '&' : '?'}token=${encodeURIComponent(authToken)}${languageParam}`
             : `${wsBase}?key=${encodeURIComponent(state.apiKey)}`
