@@ -7,7 +7,8 @@ import type {
     SandboxMode,
     SandboxPolicy,
     ThreadStartParams,
-    TurnStartParams
+    TurnStartParams,
+    UserInput
 } from '../appServerTypes';
 import { resolveCodexPermissionModeConfig } from './permissionModeConfig';
 
@@ -86,6 +87,44 @@ function appendCollaborationInstructions(developerInstructions: string): string 
     return `${developerInstructions}\n\n${codexCollaborationSpawnAgentInstructions}`;
 }
 
+function mentionNameFromPath(path: string): string {
+    const parts = path.split(/[\\/]/).filter(Boolean);
+    return parts[parts.length - 1] ?? path;
+}
+
+export function buildUserInputFromMessage(message: string): UserInput[] {
+    const inputs: UserInput[] = [];
+    const mentionPattern = /(^|\s)@([^\s]+)/g;
+    let lastIndex = 0;
+    let match: RegExpExecArray | null;
+
+    while ((match = mentionPattern.exec(message)) !== null) {
+        const prefix = match[1] ?? '';
+        const path = match[2] ?? '';
+        if (!path) continue;
+
+        const atIndex = match.index + prefix.length;
+        const textBeforeMention = message.slice(lastIndex, atIndex);
+        if (textBeforeMention) {
+            inputs.push({ type: 'text', text: textBeforeMention });
+        }
+
+        inputs.push({
+            type: 'mention',
+            name: mentionNameFromPath(path),
+            path
+        });
+        lastIndex = atIndex + path.length + 1;
+    }
+
+    const remainder = message.slice(lastIndex);
+    if (remainder || inputs.length === 0) {
+        inputs.push({ type: 'text', text: remainder });
+    }
+
+    return inputs;
+}
+
 export function buildThreadStartParams(args: {
     cwd: string;
     mode: EnhancedMode;
@@ -146,7 +185,7 @@ export function buildTurnStartParams(args: {
     const params: TurnStartParams = {
         threadId: args.threadId,
         cwd: args.cwd,
-        input: [{ type: 'text', text: args.message }]
+        input: buildUserInputFromMessage(args.message)
     };
 
     const allowCliOverrides = args.mode?.permissionMode === 'default';

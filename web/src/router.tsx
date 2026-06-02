@@ -364,11 +364,23 @@ function SessionPage() {
     } = useSkills(api, sessionId)
 
     const getAutocompleteSuggestions = useCallback(async (query: string) => {
+        if (query.startsWith('@')) {
+            if (!api || !sessionId) return []
+            const search = query.slice(1)
+            const response = await api.searchSessionFiles(sessionId, search, 50)
+            if (!response.success || !response.files) return []
+            return response.files.map((file) => ({
+                key: `@${file.fullPath}`,
+                text: `@${file.fullPath}`,
+                label: `@${file.fileName}`,
+                description: file.filePath || file.fullPath
+            }))
+        }
         if (query.startsWith('$')) {
             return await getSkillSuggestions(query)
         }
         return await getSlashSuggestions(query)
-    }, [getSkillSuggestions, getSlashSuggestions])
+    }, [api, sessionId, getSkillSuggestions, getSlashSuggestions])
 
     const refreshSelectedSession = useCallback(() => {
         void refetchSession()

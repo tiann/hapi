@@ -3,6 +3,7 @@ import type { EnhancedMode } from '../loop';
 import {
     buildThreadStartParams,
     buildTurnStartParams,
+    buildUserInputFromMessage,
     codexCollaborationSpawnAgentInstructions,
     supportsReasoningSummary
 } from './appServerConfig';
@@ -362,5 +363,13 @@ describe('appServerConfig', () => {
 
         expect(params.collaborationMode).toBeUndefined();
         expect(params.model).toBe('o3');
+    });
+
+    it('builds mention inputs from @file tokens', () => {
+        expect(buildUserInputFromMessage('please inspect @src/index.ts now')).toEqual([
+            { type: 'text', text: 'please inspect ' },
+            { type: 'mention', name: 'index.ts', path: 'src/index.ts' },
+            { type: 'text', text: ' now' }
+        ]);
     });
 });
