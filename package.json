@@ -1,7 +1,7 @@
 {
     "name": "hapi",
     "private": true,
-    "workspaces": ["cli", "shared", "hub", "web", "website", "docs"],
+    "workspaces": ["cli", "shared", "hub", "web", "website", "docs", "desktop"],
     "scripts": {
         "build:site": "bun run --cwd website build && bun run --cwd docs docs:build && cp -r docs/.vitepress/dist website/dist/public/docs",
         "dev": "concurrently \"bun run dev:hub\" \"bun run dev:web\" --kill-others-on-exit",
@@ -14,17 +14,23 @@
         "build:web": "cd web && bun run build",
         "dev:hub": "cd hub && bun run dev",
         "dev:web": "cd web && bun run dev",
-        "typecheck": "bun run typecheck:cli && bun run typecheck:web && bun run typecheck:hub",
+        "typecheck": "bun run typecheck:cli && bun run typecheck:web && bun run typecheck:hub && bun run typecheck:desktop",
         "typecheck:cli": "cd cli && bun run typecheck",
         "typecheck:hub": "cd hub && bun run typecheck",
         "typecheck:web": "cd web && bun run typecheck",
+        "typecheck:desktop": "cd desktop && bun run typecheck",
         "test": "bun run test:cli && bun run test:hub && bun run test:web && bun run test:shared",
         "test:cli": "cd cli && bun run test",
         "test:hub": "cd hub && bun run test",
         "test:web": "cd web && bun run test",
         "test:shared": "cd shared && bun run test",
         "clean-session": "bun run hub/scripts/cleanup-sessions.ts",
-        "release-all": "cd cli && bun run release-all"
+        "release-all": "cd cli && bun run release-all",
+        "dev:desktop": "cd desktop && bun run dev",
+        "build:desktop": "cd desktop && bun run build",
+        "build:desktop:win": "cd desktop && bun run build:win",
+        "build:desktop:win:fast": "cd desktop && bun run build:win:fast",
+        "build:desktop:mac": "cd desktop && bun run build:mac"
     },
     "devDependencies": {
         "concurrently": "^9.2.1",

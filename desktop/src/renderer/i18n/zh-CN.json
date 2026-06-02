@@ -1,0 +1,46 @@
+{
+    "appName": "HAPI Desktop",
+    "home": "首页",
+    "settings": "设置",
+    "openWeb": "打开 Web",
+    "status": {
+        "stopped": "未运行",
+        "starting": "启动中",
+        "running": "运行中",
+        "stopping": "停止中",
+        "error": "异常"
+    },
+    "homePage": {
+        "notRunning": "HAPI 未运行",
+        "running": "HAPI 正在运行",
+        "starting": "HAPI 启动中",
+        "stopping": "HAPI 停止中",
+        "error": "HAPI 启动异常",
+        "idleText": "本机服务未启动",
+        "runningText": "本机服务可用",
+        "start": "启动 HAPI",
+        "stop": "停止 HAPI",
+        "settingsInfo": "设置信息",
+        "directories": "目录",
+        "directoryCount": "{count} 个",
+        "port": "端口",
+        "relay": "Relay",
+        "relayOn": "开启",
+        "relayOff": "关闭",
+        "console": "控制台",
+        "clear": "清空",
+        "waiting": "等待启动。"
+    },
+    "settingsPage": {
+        "directories": "目录",
+        "directoriesHint": "允许 Runner 使用的本机目录",
+        "addDirectory": "添加目录",
+        "remove": "移除",
+        "hub": "Hub",
+        "port": "端口",
+        "relay": "Relay",
+        "language": "语言",
+        "cancel": "取消",
+        "save": "保存"
+    }
+}

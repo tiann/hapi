@@ -1,0 +1,42 @@
+{
+    "name": "hapi-desktop",
+    "productName": "HAPI Desktop",
+    "private": true,
+    "version": "0.1.0",
+    "license": "AGPL-3.0-only",
+    "type": "module",
+    "main": "dist/main/index.js",
+    "scripts": {
+        "dev": "bun run build:main && concurrently -k \"vite --config vite.config.ts --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron dist/main/index.js\"",
+        "build": "bun run typecheck && bun run build:main && bun run build:renderer",
+        "build:main": "vite build --config vite.main.config.ts && vite build --config vite.preload.config.ts",
+        "build:renderer": "vite build --config vite.config.ts",
+        "build:win": "bun run build && cross-env HAPI_DESKTOP_CLI_PLATFORM=win32 bun run prepare:cli && bun run patch:portable-template && electron-builder --win portable && bun run patch:win-metadata",
+        "build:win:fast": "bun run build && cross-env HAPI_DESKTOP_CLI_PLATFORM=win32 bun run prepare:cli && electron-builder --win dir && bun run patch:win-metadata",
+        "build:mac": "bun run build && cross-env HAPI_DESKTOP_CLI_PLATFORM=darwin bun run prepare:cli && electron-builder --mac dir",
+        "typecheck": "tsc --noEmit",
+        "patch:win-metadata": "bun run scripts/patch-win-metadata.ts",
+        "patch:portable-template": "bun run scripts/patch-portable-template.ts",
+        "prepare:cli": "bun run scripts/prepare-bundled-cli.ts"
+    },
+    "dependencies": {
+        "@vitejs/plugin-react": "^5.1.2",
+        "vite": "^7.3.0",
+        "typescript": "^5.9.3",
+        "react": "^19.2.3",
+        "react-dom": "^19.2.3"
+    },
+    "devDependencies": {
+        "@types/node": ">=25",
+        "@types/react": "^19.2.7",
+        "@types/react-dom": "^19.2.3",
+        "concurrently": "^9.2.1",
+        "cross-env": "^10.1.0",
+        "electron": "39.8.10",
+        "electron-builder": "^26.0.12",
+        "rcedit": "^5.0.2",
+        "wait-on": "^9.0.3"
+    },
+    "description": "Desktop launcher for HAPI Hub and Runner",
+    "author": "HAPI contributors"
+}
