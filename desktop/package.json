@@ -19,7 +19,8 @@
         "typecheck": "tsc --noEmit",
         "patch:win-metadata": "bun run scripts/patch-win-metadata.ts",
         "patch:portable-template": "bun run scripts/patch-portable-template.ts",
-        "prepare:cli": "bun run scripts/prepare-bundled-cli.ts"
+        "prepare:cli": "bun run scripts/prepare-bundled-cli.ts",
+        "sync:release-version": "bun run scripts/sync-release-version.ts"
     },
     "dependencies": {
         "@vitejs/plugin-react": "^5.1.2",

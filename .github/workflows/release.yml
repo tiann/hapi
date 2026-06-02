@@ -64,7 +64,7 @@ jobs:
                   if (-not (Test-Path -LiteralPath "desktop/resources/hapi-cli/win/hapi.exe")) {
                       throw "Bundled Windows CLI artifact not found."
                   }
-            - run: cd desktop && bun run package:win:prebundled
+            - run: cd desktop && bun run sync:release-version && bun run package:win:prebundled
             - name: Package Windows desktop release artifact
               shell: pwsh
               run: |
@@ -111,7 +111,7 @@ jobs:
                   tar -xzf "cli-release-artifacts/hapi-darwin-${desktop_arch}.tar.gz" -C desktop/resources/hapi-cli/mac
                   chmod +x desktop/resources/hapi-cli/mac/hapi
                   test -x desktop/resources/hapi-cli/mac/hapi
-            - run: cd desktop && bun run package:mac:prebundled
+            - run: cd desktop && bun run sync:release-version && bun run package:mac:prebundled
             - name: Package macOS desktop release artifact
               run: |
                   mkdir -p desktop/release-artifacts
