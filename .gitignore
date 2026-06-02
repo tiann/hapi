@@ -42,3 +42,8 @@ execplan/
 # Generated npm bundle output (local)
 cli/npm/main/
 .ace-tool/
+# Desktop generated packaging output
+**/release/
+**/release-artifacts/
+desktop/resources/hapi-cli/*/*
+!desktop/resources/hapi-cli/*/.gitkeep

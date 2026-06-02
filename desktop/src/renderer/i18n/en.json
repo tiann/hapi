@@ -1,0 +1,46 @@
+{
+    "appName": "HAPI Desktop",
+    "home": "Home",
+    "settings": "Settings",
+    "openWeb": "Open Web",
+    "status": {
+        "stopped": "Stopped",
+        "starting": "Starting",
+        "running": "Running",
+        "stopping": "Stopping",
+        "error": "Error"
+    },
+    "homePage": {
+        "notRunning": "HAPI is stopped",
+        "running": "HAPI is running",
+        "starting": "HAPI is starting",
+        "stopping": "HAPI is stopping",
+        "error": "HAPI has an error",
+        "idleText": "Local services are not running",
+        "runningText": "Local services are ready",
+        "start": "Start HAPI",
+        "stop": "Stop HAPI",
+        "settingsInfo": "Settings info",
+        "directories": "Directories",
+        "directoryCount": "{count}",
+        "port": "Port",
+        "relay": "Relay",
+        "relayOn": "On",
+        "relayOff": "Off",
+        "console": "Console",
+        "clear": "Clear",
+        "waiting": "Waiting to start."
+    },
+    "settingsPage": {
+        "directories": "Directories",
+        "directoriesHint": "Local directories available to Runner",
+        "addDirectory": "Add directory",
+        "remove": "Remove",
+        "hub": "Hub",
+        "port": "Port",
+        "relay": "Relay",
+        "language": "Language",
+        "cancel": "Cancel",
+        "save": "Save"
+    }
+}

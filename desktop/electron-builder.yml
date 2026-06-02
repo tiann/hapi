@@ -1,0 +1,26 @@
+appId: run.hapi.desktop
+productName: HAPI Desktop
+electronVersion: 39.8.10
+directories:
+  output: release
+files:
+  - dist/**
+  - assets/**
+  - package.json
+extraResources:
+  - from: resources/hapi-cli
+    to: hapi-cli
+win:
+  icon: assets/icon.ico
+  signAndEditExecutable: false
+  target:
+    - target: portable
+      arch:
+        - x64
+portable:
+  unpackDirName: hapi-desktop-portable
+  splashImage: assets/portable-splash.bmp
+mac:
+  target:
+    - target: dir
+  category: public.app-category.developer-tools
