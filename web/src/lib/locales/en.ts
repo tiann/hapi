@@ -206,6 +206,7 @@ export default {
   'chat.settings': 'Settings',
   'chat.terminal': 'Terminal',
   'chat.switchRemote': 'Switch to remote mode',
+  'chat.sendError.fallback': "Couldn't send your message. Edit and try again.",
 
   // Codex review
   'codexReview.title': 'Codex review',
