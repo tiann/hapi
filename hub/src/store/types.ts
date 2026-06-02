@@ -64,6 +64,16 @@ export type StoredPushSubscription = {
     createdAt: number
 }
 
+export type StoredFcmDevice = {
+    id: number
+    namespace: string
+    token: string
+    platform: 'phone' | 'wear'
+    deviceId: string
+    createdAt: number
+    updatedAt: number
+}
+
 export type VersionedUpdateResult<T> =
     | { result: 'success'; version: number; value: T }
     | { result: 'version-mismatch'; version: number; value: T }

@@ -75,4 +75,99 @@ describe('PushNotificationChannel', () => {
         expect(pushed[0].payload.tag).toBeUndefined()
         expect(pushed[1].payload.tag).toBeUndefined()
     })
+
+    it('skips web-push fallback when a native companion is registered for the namespace', async () => {
+        const pushed: Array<{ namespace: string; payload: PushPayload }> = []
+        const channel = new PushNotificationChannel(
+            {
+                sendToNamespace: async (namespace: string, payload: PushPayload) => {
+                    pushed.push({ namespace, payload })
+                }
+            } as never,
+            {
+                sendToast: async () => 0
+            } as never,
+            {
+                hasVisibleConnection: () => false
+            } as never,
+            '',
+            (namespace: string) => namespace === 'default'
+        )
+
+        await channel.sendPermissionRequest(createSession({
+            agentState: {
+                requests: { 'req-1': { tool: 'Bash', arguments: {} } }
+            }
+        }))
+        await channel.sendReady(createSession())
+        await channel.sendTaskNotification(createSession(), {
+            status: 'completed',
+            summary: 'Done'
+        })
+
+        // Native companion handles all three; web-push must stay quiet to
+        // avoid double-notifying the operator on phone+watch+browser.
+        expect(pushed).toHaveLength(0)
+    })
+
+    it('still sends web-push when namespace has no native companion', async () => {
+        const pushed: Array<{ namespace: string; payload: PushPayload }> = []
+        const channel = new PushNotificationChannel(
+            {
+                sendToNamespace: async (namespace: string, payload: PushPayload) => {
+                    pushed.push({ namespace, payload })
+                }
+            } as never,
+            {
+                sendToast: async () => 0
+            } as never,
+            {
+                hasVisibleConnection: () => false
+            } as never,
+            '',
+            () => false
+        )
+
+        await channel.sendReady(createSession())
+
+        expect(pushed).toHaveLength(1)
+    })
+
+    it('also skips SSE in-page toast when a native companion is registered (defer-to-native)', async () => {
+        const pushed: Array<{ namespace: string; payload: PushPayload }> = []
+        const toasts: unknown[] = []
+        const channel = new PushNotificationChannel(
+            {
+                sendToNamespace: async (namespace: string, payload: PushPayload) => {
+                    pushed.push({ namespace, payload })
+                }
+            } as never,
+            {
+                sendToast: async (_namespace: string, event: unknown) => {
+                    toasts.push(event)
+                    return 99
+                }
+            } as never,
+            {
+                hasVisibleConnection: () => true
+            } as never,
+            '',
+            (namespace: string) => namespace === 'default'
+        )
+
+        await channel.sendReady(createSession())
+        await channel.sendPermissionRequest(createSession({
+            agentState: { requests: { 'r-1': { tool: 'Bash', arguments: {} } } }
+        }))
+        await channel.sendTaskNotification(createSession(), {
+            status: 'completed',
+            summary: 'Done'
+        })
+
+        // Even when the PWA is foreground/visible, the operator asked to mute
+        // it - the in-page React toast and the OS web-push are both dropped
+        // when an FCM companion is on the wrist.
+        expect(toasts).toHaveLength(0)
+        expect(pushed).toHaveLength(0)
+    })
 })
