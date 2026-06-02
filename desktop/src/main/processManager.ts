@@ -210,16 +210,20 @@ export class ProcessManager {
         this.hubProcess = null
         await new Promise<void>((resolveStop) => {
             let resolved = false
+            let exited = false
             const finish = () => {
                 if (!resolved) {
                     resolved = true
                     resolveStop()
                 }
             }
-            proc.once('exit', finish)
+            proc.once('exit', () => {
+                exited = true
+                finish()
+            })
             proc.kill('SIGTERM')
             setTimeout(() => {
-                if (!proc.killed) {
+                if (!exited) {
                     proc.kill('SIGKILL')
                 }
                 finish()
