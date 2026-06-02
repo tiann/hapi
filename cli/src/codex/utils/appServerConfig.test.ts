@@ -380,4 +380,12 @@ describe('appServerConfig', () => {
             { type: 'text', text: ' now' }
         ]);
     });
+
+    it('keeps trailing sentence punctuation outside unquoted @file tokens', () => {
+        expect(buildUserInputFromMessage('please inspect @src/index.ts.')).toEqual([
+            { type: 'text', text: 'please inspect ' },
+            { type: 'mention', name: 'index.ts', path: 'src/index.ts' },
+            { type: 'text', text: '.' }
+        ]);
+    });
 });
