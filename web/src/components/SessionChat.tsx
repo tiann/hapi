@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
-import { AssistantRuntimeProvider } from '@assistant-ui/react'
+import { AssistantRuntimeProvider, useAssistantApi } from '@assistant-ui/react'
 import type { ApiClient } from '@/api/client'
 import type {
     AttachmentMetadata,
@@ -24,6 +24,7 @@ import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePic
 import { resolvePendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
 import { HappyThread } from '@/components/AssistantChat/HappyThread'
 import { QueuedMessagesBar } from '@/components/AssistantChat/QueuedMessagesBar'
+import { ScratchlistPanel } from '@/components/AssistantChat/ScratchlistPanel'
 import { useHappyRuntime } from '@/lib/assistant-runtime'
 import { createAttachmentAdapter } from '@/lib/attachmentAdapter'
 import { useTranslation } from '@/lib/use-translation'
@@ -53,6 +54,35 @@ export function shouldAutoClearPendingSchedule(pending: PendingSchedule | null):
 
 function isUninvokedScheduledMessage(message: DecryptedMessage): boolean {
     return message.invokedAt == null && message.scheduledAt != null
+}
+
+/**
+ * Mounts the per-session scratchlist (issue #11) inside the AssistantUI
+ * runtime so promote-to-composer can call `composer().setText(...)`.
+ * Promote-to-queue routes to the same `onSend` path as a normal composer
+ * send, so a promoted entry shows up immediately in `QueuedMessagesBar`.
+ */
+function ScratchlistHost({
+    sessionId,
+    onSend,
+}: {
+    sessionId: string
+    onSend: (text: string, attachments?: AttachmentMetadata[], scheduledAt?: number | null) => Promise<boolean>
+}) {
+    const assistantApi = useAssistantApi()
+    const handlePromoteToComposer = useCallback((text: string) => {
+        assistantApi.composer().setText(text)
+    }, [assistantApi])
+    const handlePromoteToQueue = useCallback(async (text: string) => {
+        return await onSend(text)
+    }, [onSend])
+    return (
+        <ScratchlistPanel
+            sessionId={sessionId}
+            onPromoteToComposer={handlePromoteToComposer}
+            onPromoteToQueue={handlePromoteToQueue}
+        />
+    )
 }
 
 export function buildGoalStateMessages(
@@ -606,6 +636,10 @@ export function SessionChat(props: {
                     ) : null}
 
                     <div className="px-3">
+                        <ScratchlistHost
+                            sessionId={props.session.id}
+                            onSend={props.onSend}
+                        />
                         <QueuedMessagesBar
                             sessionId={props.session.id}
                             api={props.api}

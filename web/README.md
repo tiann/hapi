@@ -51,6 +51,11 @@ See `src/router.tsx` for route definitions.
 - Model selection (default/sonnet/sonnet[1m]/opus/opus[1m]).
 - Session abort and mode switch controls.
 - Context size display.
+- Per-session scratchlist (`src/components/AssistantChat/ScratchlistPanel.tsx`)
+  - Workbench panel for held notes/drafts; **distinct from the queue**.
+  - Add/delete/reorder entries; promote to composer (copy) or queue (send).
+  - Persists across reloads via `localStorage` keyed per session.
+  - Keyboard shortcut: Ctrl/Cmd+Shift+S to focus the add-input.
 
 ### File browser (`src/routes/sessions/files.tsx`)
 
