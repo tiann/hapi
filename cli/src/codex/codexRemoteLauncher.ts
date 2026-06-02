@@ -2829,10 +2829,10 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             const localId = readLocalIdParam(payload);
             return await runCodexOperation(async () => {
                 const threadId = await ensureThreadForRpc();
+                const plan = await resolveRollbackPlan(threadId, localId);
                 await interruptActiveTurn();
                 resetCurrentTurnState();
 
-                const plan = await resolveRollbackPlan(threadId, localId);
                 await appServerClient.rollbackThread({
                     threadId,
                     numTurns: plan.numTurns

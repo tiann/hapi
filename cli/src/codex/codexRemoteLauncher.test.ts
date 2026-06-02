@@ -1115,6 +1115,35 @@ describe('codexRemoteLauncher', () => {
         });
     });
 
+    it('does not interrupt an active turn when rollback target lookup fails', async () => {
+        harness.suppressTurnCompletion = true;
+        harness.emitTurnAbortedOnInterrupt = true;
+        harness.threadTurns = [
+            {
+                id: 'turn-1',
+                items: [{ type: 'userMessage', clientId: 'different-local' }]
+            }
+        ];
+        const { session, rpcHandlers } = createSessionStub(['first message'], createMode(), ['local-1']);
+
+        const running = codexRemoteLauncher(session as never);
+        await vi.waitFor(() => {
+            expect(harness.startTurnThreadIds).toEqual(['thread-1']);
+            expect(rpcHandlers.has('codexRollbackToMessage')).toBe(true);
+            expect(rpcHandlers.has('abort')).toBe(true);
+        });
+
+        await expect(rpcHandlers.get('codexRollbackToMessage')?.({ localId: 'missing-local' }))
+            .rejects.toThrow('Message is not present in the current Codex thread history');
+        expect(harness.interruptedTurns).toEqual([]);
+
+        await rpcHandlers.get('abort')?.({});
+        const exitReason = await running;
+
+        expect(exitReason).toBe('exit');
+        expect(harness.interruptedTurns).toEqual([{ threadId: 'thread-1', turnId: 'turn-1' }]);
+    });
+
     it('forks the Codex thread and rolls back the fork to the mapped user message via RPC', async () => {
         harness.suppressTurnCompletion = true;
         harness.emitTurnAbortedOnInterrupt = true;
