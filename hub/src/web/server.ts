@@ -63,6 +63,11 @@ function isGeminiSetupCompleteFrame(message: string | ArrayBuffer | Uint8Array):
     }
 }
 
+const MAX_GEMINI_PENDING_BYTES = 1024 * 1024 // 1 MiB — rejects setup-window floods
+function frameByteSize(msg: string | ArrayBuffer | Uint8Array): number {
+    return typeof msg === 'string' ? msg.length : (msg as ArrayBuffer | Uint8Array).byteLength
+}
+
 // Gemini Live WebSocket proxy — relays browser WS to Google, bypassing region restrictions
 function createGeminiProxyWebSocketHandler() {
     const GEMINI_WS_BASE = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent'
@@ -70,6 +75,7 @@ function createGeminiProxyWebSocketHandler() {
     // pendingMap holds queued client frames until Google acknowledges setup via setupComplete.
     // Flushed on setupComplete; until then message() queues rather than forwards.
     const pendingMap = new WeakMap<ServerWebSocket<unknown>, Array<string | ArrayBuffer | Uint8Array>>()
+    const pendingBytesMap = new WeakMap<ServerWebSocket<unknown>, number>()
 
     return {
         open(clientWs: ServerWebSocket<unknown>) {
@@ -77,6 +83,7 @@ function createGeminiProxyWebSocketHandler() {
             const upstreamUrl = `${process.env.GEMINI_LIVE_WS_URL || GEMINI_WS_BASE}?key=${encodeURIComponent(data.apiKey)}`
             const pending: Array<string | ArrayBuffer | Uint8Array> = []
             pendingMap.set(clientWs, pending)
+            pendingBytesMap.set(clientWs, 0)
 
             const upstream = new WebSocket(upstreamUrl)
             upstreamMap.set(clientWs, upstream)
@@ -96,17 +103,20 @@ function createGeminiProxyWebSocketHandler() {
                 const pending = pendingMap.get(clientWs)
                 if (pending && isGeminiSetupCompleteFrame(event.data as string | ArrayBuffer)) {
                     pendingMap.delete(clientWs)
+                    pendingBytesMap.delete(clientWs)
                     for (const queued of pending) {
-                        try { upstream.send(queued) } catch { /* client gone */ }
+                        try { upstream.send(queued) } catch { /* upstream gone */ }
                     }
                 }
             }
             upstream.onerror = () => {
                 pendingMap.delete(clientWs)
+                pendingBytesMap.delete(clientWs)
                 try { clientWs.close(1011, 'Upstream error') } catch { /* */ }
             }
             upstream.onclose = (event) => {
                 pendingMap.delete(clientWs)
+                pendingBytesMap.delete(clientWs)
                 try { clientWs.close(toClientCloseCode(event.code), event.reason || 'Upstream closed') } catch { /* client gone */ }
                 upstreamMap.delete(clientWs)
             }
@@ -119,7 +129,13 @@ function createGeminiProxyWebSocketHandler() {
             const upstream = upstreamMap.get(clientWs)
             const pending = pendingMap.get(clientWs)
             if (pending) {
-                // Still awaiting setupComplete (or upstream still connecting) — queue.
+                // Still awaiting setupComplete — queue, but cap to prevent setup-window floods.
+                const total = (pendingBytesMap.get(clientWs) ?? 0) + frameByteSize(message)
+                if (total > MAX_GEMINI_PENDING_BYTES) {
+                    try { clientWs.close(1009, 'Setup-window frame budget exceeded') } catch { /* */ }
+                    return
+                }
+                pendingBytesMap.set(clientWs, total)
                 pending.push(message)
             } else if (upstream?.readyState === WebSocket.OPEN) {
                 upstream.send(message)
@@ -128,6 +144,7 @@ function createGeminiProxyWebSocketHandler() {
         close(clientWs: ServerWebSocket<unknown>, code: number, reason: string) {
             const upstream = upstreamMap.get(clientWs)
             pendingMap.delete(clientWs)
+            pendingBytesMap.delete(clientWs)
             if (upstream) {
                 try { upstream.close(toClientCloseCode(code), (reason || 'Client closed').slice(0, 123)) } catch { /* */ }
                 upstreamMap.delete(clientWs)
