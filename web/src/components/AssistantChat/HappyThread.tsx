@@ -244,8 +244,12 @@ export function HappyThread(props: {
     sessionId: string
     metadata: SessionMetadataSummary | null
     disabled: boolean
+    agentFlavor?: string | null
+    codexMessageOpsEnabled?: boolean
     onRefresh: () => void
     onRetryMessage?: (localId: string) => void
+    onCodexRewindAndResend?: (localId: string, text: string) => Promise<void>
+    onCodexForkFromMessage?: (localId: string, text: string) => Promise<void>
     onFlushPending: () => void
     onAtBottomChange: (atBottom: boolean) => void
     isLoadingMessages: boolean
@@ -680,8 +684,12 @@ export function HappyThread(props: {
             metadata: props.metadata,
             terminalToolDisplayMode,
             disabled: props.disabled,
+            agentFlavor: props.agentFlavor,
+            codexMessageOpsEnabled: props.codexMessageOpsEnabled,
             onRefresh: props.onRefresh,
             onRetryMessage: props.onRetryMessage,
+            onCodexRewindAndResend: props.onCodexRewindAndResend,
+            onCodexForkFromMessage: props.onCodexForkFromMessage,
             hasMoreMessages: props.hasMoreMessages,
             isLoadingMoreMessages: props.isLoadingMoreMessages,
             loadOlderMessagesPreservingScroll: loadOlderPreservingScroll

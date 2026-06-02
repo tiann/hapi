@@ -29,6 +29,8 @@ import {
     type RpcListCodexModelsResponse,
     type RpcListCursorModelsResponse,
     type RpcListOpencodeModelsResponse,
+    type RpcCodexMessageOperationResponse,
+    type RpcCodexSteerResponse,
     type RpcCursorModel,
     type RpcOpencodeModel,
     type RpcPathExistsResponse,
@@ -49,6 +51,8 @@ export type {
     RpcListCodexModelsResponse,
     RpcListCursorModelsResponse,
     RpcListOpencodeModelsResponse,
+    RpcCodexMessageOperationResponse,
+    RpcCodexSteerResponse,
     RpcCursorModel,
     RpcOpencodeModel,
     RpcPathExistsResponse,
@@ -962,6 +966,53 @@ export class SyncEngine {
 
     async listCodexModelsForSession(sessionId: string): Promise<RpcListCodexModelsResponse> {
         return await this.rpcGateway.listCodexModelsForSession(sessionId)
+    }
+
+    async rollbackCodexAndTruncateMessages(sessionId: string, localId: string): Promise<RpcCodexMessageOperationResponse> {
+        const target = this.store.messages.getMessageByLocalId(sessionId, localId)
+        if (!target) {
+            return { success: false, error: 'Message not found' }
+        }
+        const result = await this.rpcGateway.rollbackCodexToMessage(sessionId, localId)
+        if (result?.success !== true) {
+            return {
+                success: false,
+                error: result?.error ?? 'Codex rollback failed'
+            }
+        }
+        this.store.messages.deleteMessagesFromSeq(sessionId, target.seq)
+        this.eventPublisher.emit({
+            type: 'messages-invalidated',
+            sessionId,
+            namespace: this.getSession(sessionId)?.namespace
+        })
+        this.sessionCache.recordSessionActivity(sessionId, Date.now())
+        return result
+    }
+
+    async forkCodexFromMessage(sessionId: string, localId: string): Promise<RpcCodexMessageOperationResponse> {
+        return await this.rpcGateway.forkCodexFromMessage(sessionId, localId)
+    }
+
+    copyMessagesBeforeLocalId(fromSessionId: string, toSessionId: string, localId: string): number {
+        const target = this.store.messages.getMessageByLocalId(fromSessionId, localId)
+        if (!target) {
+            return 0
+        }
+        const copied = this.store.messages.copyMessagesBeforeSeq(fromSessionId, toSessionId, target.seq)
+        if (copied > 0) {
+            this.eventPublisher.emit({
+                type: 'messages-invalidated',
+                sessionId: toSessionId,
+                namespace: this.getSession(toSessionId)?.namespace ?? this.getSession(fromSessionId)?.namespace
+            })
+            this.sessionCache.recordSessionActivity(toSessionId, Date.now())
+        }
+        return copied
+    }
+
+    async steerCodexCurrentTurn(sessionId: string, text: string, localId?: string): Promise<RpcCodexSteerResponse> {
+        return await this.rpcGateway.steerCodexCurrentTurn(sessionId, text, localId)
     }
 
     async listCodexModelsForMachine(machineId: string): Promise<RpcListCodexModelsResponse> {

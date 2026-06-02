@@ -77,6 +77,7 @@ export function HappyComposer(props: {
     onEffortChange?: (effort: string | null) => void
     onSwitchToRemote?: () => void
     onTerminal?: () => void
+    onSteerCurrentTurn?: (text: string) => Promise<void>
     terminalUnsupported?: boolean
     autocompletePrefixes?: string[]
     autocompleteSuggestions?: (query: string) => Promise<Suggestion[]>
@@ -122,6 +123,7 @@ export function HappyComposer(props: {
         onEffortChange,
         onSwitchToRemote,
         onTerminal,
+        onSteerCurrentTurn,
         terminalUnsupported = false,
         autocompletePrefixes = ['@', '/', '$'],
         autocompleteSuggestions = defaultSuggestionHandler,
@@ -171,6 +173,7 @@ export function HappyComposer(props: {
     const [showSettings, setShowSettings] = useState(false)
     const [isAborting, setIsAborting] = useState(false)
     const [isSwitching, setIsSwitching] = useState(false)
+    const [isSteering, setIsSteering] = useState(false)
     const [showContinueHint, setShowContinueHint] = useState(false)
     // pendingSchedule is controlled externally when onSchedule prop is provided; otherwise local state
     const [pendingScheduleLocal, setPendingScheduleLocal] = useState<PendingSchedule | null>(null)
@@ -553,13 +556,26 @@ export function HappyComposer(props: {
     const voiceEnabled = Boolean(onVoiceToggle)
 
     const handleSend = useCallback(() => {
+        if (onSteerCurrentTurn && thinking && hasText && !hasAttachments && pendingSchedule == null) {
+            const text = composerText.trim()
+            setIsSteering(true)
+            void onSteerCurrentTurn(text)
+                .then(() => {
+                    api.composer().setText('')
+                })
+                .catch((error) => {
+                    console.error('Failed to steer Codex turn:', error)
+                })
+                .finally(() => setIsSteering(false))
+            return
+        }
         api.composer().send()
         // SessionChat owns clearing the schedule — it clears only after awaiting
         // the send hook's accepted result, which covers both pre-mutation guards
         // and async inactive-session resume failure. Clearing here unconditionally
         // would race ahead of that check and drop the user's schedule on every
         // rejected send path.
-    }, [api])
+    }, [api, onSteerCurrentTurn, thinking, hasText, hasAttachments, pendingSchedule, composerText])
 
     const overlays = useMemo(() => {
         if (showSettings && (showCollaborationSettings || showPermissionSettings || showModelSettings || showModelEffortSettings || showModelReasoningEffortSettings || showEffortSettings)) {
@@ -937,6 +953,8 @@ export function HappyComposer(props: {
                             onVoiceToggle={onVoiceToggle ?? (() => {})}
                             onVoiceMicToggle={onVoiceMicToggle}
                             onSend={handleSend}
+                            sendTitle={onSteerCurrentTurn && thinking && hasText && !hasAttachments && pendingSchedule == null ? 'Steer current turn' : undefined}
+                            sendDisabled={isSteering}
                             pendingSchedule={pendingSchedule}
                             onSchedule={setPendingSchedule}
                             onClearSchedule={isControlled ? onClearScheduleProp : () => setPendingScheduleLocal(null)}

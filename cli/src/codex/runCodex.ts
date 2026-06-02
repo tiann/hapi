@@ -227,7 +227,12 @@ export async function runCodex(opts: {
                     messageQueue.pushIsolateAndClear(isolatedCommandText, enhancedMode, localId);
                     return;
                 }
-                messageQueue.push(text, enhancedMode, localId);
+                if (localId) {
+                    // Keep HAPI localIds one-to-one with Codex turns so rewind/fork can target a single user bubble.
+                    messageQueue.pushIsolated(text, enhancedMode, localId);
+                    return;
+                }
+                messageQueue.push(text, enhancedMode);
             } catch (error) {
                 logger.debug('[Codex] Failed to handle user message', error);
                 const enhancedMode: EnhancedMode = {
@@ -236,7 +241,13 @@ export async function runCodex(opts: {
                     modelReasoningEffort: currentModelReasoningEffort,
                     collaborationMode: currentCollaborationMode
                 };
-                messageQueue.push(formatMessageWithAttachments(message.content.text, message.content.attachments), enhancedMode, localId);
+                const formattedText = formatMessageWithAttachments(message.content.text, message.content.attachments);
+                if (localId) {
+                    // Keep HAPI localIds one-to-one with Codex turns so rewind/fork can target a single user bubble.
+                    messageQueue.pushIsolated(formattedText, enhancedMode, localId);
+                    return;
+                }
+                messageQueue.push(formattedText, enhancedMode);
             }
         }).catch((error) => {
             logger.debug('[Codex] User message handler chain failed', error);

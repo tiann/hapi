@@ -235,6 +235,8 @@ function UnifiedButton(props: {
     voiceStatus: ConversationStatus
     voiceEnabled: boolean
     controlsDisabled: boolean
+    title?: string
+    disabled?: boolean
     onSend: () => void
     onVoiceToggle: () => void
 }) {
@@ -284,7 +286,10 @@ function UnifiedButton(props: {
         ariaLabel = t('composer.send')
     }
 
-    const isDisabled = props.controlsDisabled || (!hasText && !props.voiceEnabled && !isVoiceActive)
+    const isDisabled = props.disabled || props.controlsDisabled || (!hasText && !props.voiceEnabled && !isVoiceActive)
+    if (props.title && hasText && !isVoiceActive) {
+        ariaLabel = props.title
+    }
 
     return (
         <button
@@ -323,6 +328,8 @@ export function ComposerButtons(props: {
     onVoiceToggle: () => void
     onVoiceMicToggle?: () => void
     onSend: () => void
+    sendTitle?: string
+    sendDisabled?: boolean
     pendingSchedule?: PendingSchedule | null
     onSchedule?: (pending: PendingSchedule) => void
     onClearSchedule?: () => void
@@ -464,6 +471,8 @@ export function ComposerButtons(props: {
                 voiceStatus={props.voiceStatus}
                 voiceEnabled={props.voiceEnabled}
                 controlsDisabled={props.controlsDisabled}
+                title={props.sendTitle}
+                disabled={props.sendDisabled}
                 onSend={props.onSend}
                 onVoiceToggle={props.onVoiceToggle}
             />

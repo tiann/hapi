@@ -8,6 +8,7 @@ function createSession(overrides?: Partial<Session>): Session {
     const baseMetadata = {
         path: '/tmp/project',
         host: 'localhost',
+        machineId: 'machine-1',
         flavor: 'codex' as const
     }
     const base: Session = {
@@ -54,10 +55,22 @@ function createApp(session: Session, opts?: {
     resumeSession?: (sessionId: string, namespace: string, resumeOpts?: { permissionMode?: string }) => Promise<{ type: string; sessionId?: string; message?: string; code?: string }>
     listSlashCommands?: SyncEngine['listSlashCommands']
     getSessionExport?: (sessionId: string, session: Session) => unknown
+    rollbackCodexAndTruncateMessages?: SyncEngine['rollbackCodexAndTruncateMessages']
+    forkCodexFromMessage?: SyncEngine['forkCodexFromMessage']
+    steerCodexCurrentTurn?: SyncEngine['steerCodexCurrentTurn']
+    spawnSession?: SyncEngine['spawnSession']
+    copyMessagesBeforeLocalId?: SyncEngine['copyMessagesBeforeLocalId']
 }) {
     const applySessionConfigCalls: Array<[string, Record<string, unknown>]> = []
+    const sentMessages: Array<{ sessionId: string; payload: { text: string; localId?: string | null; sentFrom?: string } }> = []
     const applySessionConfig = async (sessionId: string, config: Record<string, unknown>) => {
         applySessionConfigCalls.push([sessionId, config])
+    }
+    const sendMessage = async (
+        sessionId: string,
+        payload: { text: string; localId?: string | null; sentFrom?: string }
+    ) => {
+        sentMessages.push({ sessionId, payload })
     }
     const listCodexModelsForSession = async () => ({
         success: true,
@@ -98,6 +111,23 @@ function createApp(session: Session, opts?: {
                 messages: []
             }
         })),
+        sendMessage,
+        rollbackCodexAndTruncateMessages: opts?.rollbackCodexAndTruncateMessages ?? (async () => ({
+            success: true,
+            warning: 'rewound'
+        })),
+        forkCodexFromMessage: opts?.forkCodexFromMessage ?? (async () => ({
+            success: true,
+            threadId: 'fork-thread',
+            warning: 'forked'
+        })),
+        steerCodexCurrentTurn: opts?.steerCodexCurrentTurn ?? (async () => ({
+            success: true,
+            turnId: 'turn-1',
+            localId: 'steer-local'
+        })),
+        spawnSession: opts?.spawnSession ?? (async () => ({ type: 'success', sessionId: 'fork-session' })),
+        copyMessagesBeforeLocalId: opts?.copyMessagesBeforeLocalId ?? (() => 0),
         listSlashCommands: opts?.listSlashCommands ?? (async () => ({
             success: true,
             commands: []
@@ -111,7 +141,7 @@ function createApp(session: Session, opts?: {
     })
     app.route('/api', createSessionsRoutes(() => engine as SyncEngine))
 
-    return { app, applySessionConfigCalls }
+    return { app, applySessionConfigCalls, sentMessages }
 }
 
 describe('sessions routes', () => {
@@ -579,6 +609,144 @@ describe('sessions routes', () => {
         const response = await app.request('/api/sessions/session-1/opencode-models')
 
         expect(response.status).toBe(400)
+    })
+
+    it('rewinds Codex context and sends the replacement message', async () => {
+        const rollbackCalls: Array<[string, string]> = []
+        const { app, sentMessages } = createApp(createSession(), {
+            rollbackCodexAndTruncateMessages: async (sessionId, localId) => {
+                rollbackCalls.push([sessionId, localId])
+                return { success: true, warning: 'local files unchanged' }
+            }
+        })
+
+        const response = await app.request('/api/sessions/session-1/codex/rewind-resend', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ localId: 'local-1', text: 'replacement prompt' })
+        })
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({ success: true, warning: 'local files unchanged' })
+        expect(rollbackCalls).toEqual([['session-1', 'local-1']])
+        expect(sentMessages).toHaveLength(1)
+        expect(sentMessages[0]?.sessionId).toBe('session-1')
+        expect(sentMessages[0]?.payload.text).toBe('replacement prompt')
+        expect(sentMessages[0]?.payload.sentFrom).toBe('webapp')
+        expect(typeof sentMessages[0]?.payload.localId).toBe('string')
+    })
+
+    it('forks Codex context, resumes the forked thread, and sends the replacement message', async () => {
+        const forkCalls: Array<[string, string]> = []
+        const spawnCalls: unknown[][] = []
+        const copyCalls: Array<[string, string, string]> = []
+        const { app, sentMessages } = createApp(createSession(), {
+            forkCodexFromMessage: async (sessionId, localId) => {
+                forkCalls.push([sessionId, localId])
+                return { success: true, threadId: 'thread-forked', warning: 'fork warning' }
+            },
+            spawnSession: async (...args) => {
+                spawnCalls.push(args)
+                return { type: 'success', sessionId: 'session-forked' }
+            },
+            copyMessagesBeforeLocalId: (fromSessionId, toSessionId, localId) => {
+                copyCalls.push([fromSessionId, toSessionId, localId])
+                return 2
+            },
+        })
+
+        const response = await app.request('/api/sessions/session-1/codex/fork', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ localId: 'local-2', text: 'fork prompt' })
+        })
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({
+            success: true,
+            sessionId: 'session-forked',
+            threadId: 'thread-forked',
+            warning: 'fork warning'
+        })
+        expect(forkCalls).toEqual([['session-1', 'local-2']])
+        expect(spawnCalls).toEqual([[
+            'machine-1',
+            '/tmp/project',
+            'codex',
+            'gpt-5.4',
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            'thread-forked',
+            undefined,
+            'default'
+        ]])
+        expect(copyCalls).toEqual([['session-1', 'session-forked', 'local-2']])
+        expect(sentMessages).toHaveLength(1)
+        expect(sentMessages[0]?.sessionId).toBe('session-forked')
+        expect(sentMessages[0]?.payload.text).toBe('fork prompt')
+        expect(typeof sentMessages[0]?.payload.localId).toBe('string')
+    })
+
+    it('steers the active Codex turn', async () => {
+        const steerCalls: Array<[string, string, string | undefined]> = []
+        const { app } = createApp(createSession(), {
+            steerCodexCurrentTurn: async (sessionId, text, localId) => {
+                steerCalls.push([sessionId, text, localId])
+                return { success: true, turnId: 'turn-steered', localId: localId ?? 'generated-local' }
+            }
+        })
+
+        const response = await app.request('/api/sessions/session-1/codex/steer', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ text: 'adjust course', localId: 'steer-local' })
+        })
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({
+            success: true,
+            turnId: 'turn-steered',
+            localId: 'steer-local'
+        })
+        expect(steerCalls).toEqual([['session-1', 'adjust course', 'steer-local']])
+    })
+
+    it('rejects Codex message operations for non-Codex sessions', async () => {
+        const session = createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'claude' }
+        })
+        const { app, sentMessages } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/codex/rewind-resend', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ localId: 'local-1', text: 'replacement prompt' })
+        })
+
+        expect(response.status).toBe(400)
+        expect(sentMessages).toEqual([])
+    })
+
+    it('rejects Codex message operations for local Codex sessions', async () => {
+        const session = createSession({
+            agentState: {
+                controlledByUser: true,
+                requests: {},
+                completedRequests: {}
+            }
+        })
+        const { app, sentMessages } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/codex/fork', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ localId: 'local-1', text: 'replacement prompt' })
+        })
+
+        expect(response.status).toBe(409)
+        expect(sentMessages).toEqual([])
     })
 
     it('rejects OpenCode plan mode changes for local sessions', async () => {

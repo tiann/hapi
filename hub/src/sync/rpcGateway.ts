@@ -37,6 +37,21 @@ export type RpcCursorModel = CursorModelSummary
 export type RpcListCursorModelsResponse = CursorModelsResponse
 export type RpcOpencodeModel = OpencodeModelSummary
 export type RpcListOpencodeModelsResponse = OpencodeModelsResponse
+export type RpcCodexMessageOperationResponse = {
+    success?: boolean
+    threadId?: string
+    sourceThreadId?: string
+    targetTurnId?: string
+    rolledBackTurns?: number
+    warning?: string
+    error?: string
+}
+export type RpcCodexSteerResponse = {
+    success?: boolean
+    turnId?: string
+    localId?: string
+    error?: string
+}
 
 export class RpcGateway {
     constructor(
@@ -236,6 +251,33 @@ export class RpcGateway {
 
     async listCodexModelsForSession(sessionId: string): Promise<RpcListCodexModelsResponse> {
         return await this.sessionRpc(sessionId, RPC_METHODS.ListCodexModels, {}, MODEL_LIST_RPC_TIMEOUT_MS) as RpcListCodexModelsResponse
+    }
+
+    async rollbackCodexToMessage(sessionId: string, localId: string): Promise<RpcCodexMessageOperationResponse> {
+        return await this.sessionRpc(
+            sessionId,
+            RPC_METHODS.CodexRollbackToMessage,
+            { localId },
+            DEFAULT_RPC_TIMEOUT_MS
+        ) as RpcCodexMessageOperationResponse
+    }
+
+    async forkCodexFromMessage(sessionId: string, localId: string): Promise<RpcCodexMessageOperationResponse> {
+        return await this.sessionRpc(
+            sessionId,
+            RPC_METHODS.CodexForkFromMessage,
+            { localId },
+            DEFAULT_RPC_TIMEOUT_MS
+        ) as RpcCodexMessageOperationResponse
+    }
+
+    async steerCodexCurrentTurn(sessionId: string, text: string, localId?: string): Promise<RpcCodexSteerResponse> {
+        return await this.sessionRpc(
+            sessionId,
+            RPC_METHODS.CodexSteerCurrentTurn,
+            { text, localId },
+            DEFAULT_RPC_TIMEOUT_MS
+        ) as RpcCodexSteerResponse
     }
 
     async listCodexModelsForMachine(machineId: string): Promise<RpcListCodexModelsResponse> {

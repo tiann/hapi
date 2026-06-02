@@ -10,8 +10,12 @@ export type HappyChatContextValue = {
     metadata: SessionMetadataSummary | null
     terminalToolDisplayMode: TerminalToolDisplayMode
     disabled: boolean
+    agentFlavor?: string | null
+    codexMessageOpsEnabled?: boolean
     onRefresh: () => void
     onRetryMessage?: (localId: string) => void
+    onCodexRewindAndResend?: (localId: string, text: string) => Promise<void>
+    onCodexForkFromMessage?: (localId: string, text: string) => Promise<void>
     hasMoreMessages: boolean
     isLoadingMoreMessages: boolean
     loadOlderMessagesPreservingScroll: () => Promise<boolean>

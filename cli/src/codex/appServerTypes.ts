@@ -77,12 +77,44 @@ export interface ThreadStartParams {
 export interface ThreadStartResponse {
     thread: {
         id: string;
+        turns?: ThreadTurn[];
     };
     model: string;
     [key: string]: unknown;
 }
 
 export type ResponseItem = Record<string, unknown>;
+
+export type ThreadItem = {
+    type?: string;
+    id?: string;
+    clientId?: string | null;
+    client_id?: string | null;
+    content?: unknown;
+    [key: string]: unknown;
+};
+
+export type ThreadTurn = {
+    id: string;
+    items?: ThreadItem[];
+    status?: string;
+    startedAt?: number | null;
+    started_at?: number | null;
+    completedAt?: number | null;
+    completed_at?: number | null;
+    [key: string]: unknown;
+};
+
+export type Thread = {
+    id: string;
+    sessionId?: string;
+    session_id?: string;
+    forkedFromId?: string | null;
+    forked_from_id?: string | null;
+    preview?: string;
+    turns?: ThreadTurn[];
+    [key: string]: unknown;
+};
 
 export interface ThreadResumeParams {
     threadId: string;
@@ -100,9 +132,7 @@ export interface ThreadResumeParams {
 }
 
 export interface ThreadResumeResponse {
-    thread: {
-        id: string;
-    };
+    thread: Thread;
     model: string;
     [key: string]: unknown;
 }
@@ -156,6 +186,7 @@ export type CollaborationMode = {
 
 export interface TurnStartParams {
     threadId: string;
+    clientUserMessageId?: string | null;
     input: UserInput[];
     cwd?: string;
     approvalPolicy?: ApprovalPolicy;
@@ -166,6 +197,72 @@ export interface TurnStartParams {
     personality?: string;
     outputSchema?: unknown;
     collaborationMode?: CollaborationMode;
+}
+
+export interface ThreadReadParams {
+    threadId: string;
+    includeTurns?: boolean;
+}
+
+export interface ThreadReadResponse {
+    thread: Thread;
+    [key: string]: unknown;
+}
+
+export interface ThreadForkParams {
+    threadId: string;
+    model?: string | null;
+    modelProvider?: string | null;
+    serviceTier?: string | null;
+    cwd?: string | null;
+    approvalPolicy?: ApprovalPolicy | null;
+    sandbox?: SandboxMode | null;
+    config?: Record<string, unknown> | null;
+    baseInstructions?: string | null;
+    developerInstructions?: string | null;
+    ephemeral?: boolean;
+}
+
+export interface ThreadForkResponse {
+    thread: Thread;
+    model?: string;
+    modelProvider?: string;
+    cwd?: string;
+    [key: string]: unknown;
+}
+
+export interface ThreadRollbackParams {
+    threadId: string;
+    /**
+     * Drops turns from Codex thread history only. This does not revert local files.
+     */
+    numTurns: number;
+}
+
+export interface ThreadRollbackResponse {
+    thread: Thread;
+    [key: string]: unknown;
+}
+
+export interface TurnSteerParams {
+    threadId: string;
+    clientUserMessageId?: string | null;
+    input: UserInput[];
+    expectedTurnId: string;
+}
+
+export interface TurnSteerResponse {
+    turnId: string;
+    [key: string]: unknown;
+}
+
+export interface ThreadInjectItemsParams {
+    threadId: string;
+    items: unknown[];
+}
+
+export interface ThreadInjectItemsResponse {
+    [key: string]: unknown;
 }
 
 export interface TurnStartResponse {

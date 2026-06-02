@@ -110,6 +110,7 @@ describe('appServerConfig', () => {
         const params = buildTurnStartParams({
             threadId: 'thread-1',
             message: 'hello',
+            clientUserMessageId: 'local-1',
             cwd: '/workspace/project',
             mode: {
                 permissionMode: 'read-only',
@@ -120,6 +121,7 @@ describe('appServerConfig', () => {
         });
 
         expect(params.threadId).toBe('thread-1');
+        expect(params.clientUserMessageId).toBe('local-1');
         expect(params.cwd).toBe('/workspace/project');
         expect(params.input).toEqual([{ type: 'text', text: 'hello' }]);
         expect(params.approvalPolicy).toBe('never');
@@ -363,4 +365,5 @@ describe('appServerConfig', () => {
         expect(params.collaborationMode).toBeUndefined();
         expect(params.model).toBe('o3');
     });
+
 });

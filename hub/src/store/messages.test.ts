@@ -206,6 +206,58 @@ describe('addMessage: scheduledAt invariants', () => {
     })
 })
 
+describe('Codex rewind helpers', () => {
+    it('finds a message by localId within the session', () => {
+        const store = makeStore()
+        const sessionA = makeSession(store, 'lookup-local-a')
+        const sessionB = makeSession(store, 'lookup-local-b')
+        store.messages.addMessage(sessionA.id, { role: 'user', content: { type: 'text', text: 'a' } }, 'same-local')
+        store.messages.addMessage(sessionB.id, { role: 'user', content: { type: 'text', text: 'b' } }, 'same-local')
+
+        const found = store.messages.getMessageByLocalId(sessionA.id, 'same-local')
+
+        expect(found?.sessionId).toBe(sessionA.id)
+        expect(found?.localId).toBe('same-local')
+        expect(found?.content).toEqual({ role: 'user', content: { type: 'text', text: 'a' } })
+    })
+
+    it('deletes messages from a sequence onward in one session only', () => {
+        const store = makeStore()
+        const sessionA = makeSession(store, 'delete-from-seq-a')
+        const sessionB = makeSession(store, 'delete-from-seq-b')
+        const keep = store.messages.addMessage(sessionA.id, { role: 'user', content: { type: 'text', text: 'keep' } }, 'keep')
+        const target = store.messages.addMessage(sessionA.id, { role: 'user', content: { type: 'text', text: 'target' } }, 'target')
+        store.messages.addMessage(sessionA.id, { role: 'assistant', content: { type: 'text', text: 'later' } })
+        const other = store.messages.addMessage(sessionB.id, { role: 'user', content: { type: 'text', text: 'other' } }, 'other')
+
+        const deleted = store.messages.deleteMessagesFromSeq(sessionA.id, target.seq)
+
+        expect(deleted).toBe(2)
+        expect(store.messages.getMessages(sessionA.id).map((m) => m.id)).toEqual([keep.id])
+        expect(store.messages.getMessages(sessionB.id).map((m) => m.id)).toEqual([other.id])
+    })
+
+    it('copies invoked messages before a sequence into a fork session', () => {
+        const store = makeStore()
+        const source = makeSession(store, 'copy-before-source')
+        const fork = makeSession(store, 'copy-before-fork')
+        const first = store.messages.addMessage(source.id, { role: 'user', content: { type: 'text', text: 'first' } }, 'first')
+        const second = store.messages.addMessage(source.id, { role: 'assistant', content: { type: 'text', text: 'second' } })
+        const target = store.messages.addMessage(source.id, { role: 'user', content: { type: 'text', text: 'target' } }, 'target')
+        store.messages.addMessage(source.id, { role: 'assistant', content: { type: 'text', text: 'later' } })
+        store.messages.markMessagesInvoked(source.id, ['first', 'target'], Date.now())
+
+        const copied = store.messages.copyMessagesBeforeSeq(source.id, fork.id, target.seq)
+
+        expect(copied).toBe(2)
+        const forkMessages = store.messages.getMessages(fork.id)
+        expect(forkMessages.map((m) => m.content)).toEqual([first.content, second.content])
+        expect(forkMessages.map((m) => m.localId)).toEqual(['first', null])
+        expect(forkMessages.every((m) => m.invokedAt !== null)).toBe(true)
+        expect(forkMessages.map((m) => m.scheduledAt)).toEqual([null, null])
+    })
+})
+
 describe('getDeliverableMessagesAfter: CLI backfill excludes future-scheduled rows', () => {
     it('omits rows whose scheduled_at > now (would otherwise be replayed early on reconnect)', () => {
         const store = makeStore()

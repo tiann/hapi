@@ -25,6 +25,7 @@ import {
     type RemoteLauncherDisplayContext,
     type RemoteLauncherExitReason
 } from '@/modules/common/remote/RemoteLauncherBase';
+import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 
 
 async function registerGeneratedImageFromPath(args: { id: string; path: string; fileName?: string | null }): Promise<ReturnType<typeof registerGeneratedImage> | null> {
@@ -56,7 +57,8 @@ async function registerGeneratedImageFromPath(args: { id: string; path: string; 
 }
 
 type HappyServer = Awaited<ReturnType<typeof buildHapiMcpBridge>>['server'];
-type QueuedMessage = { message: string; mode: EnhancedMode; isolate: boolean; hash: string };
+type QueuedMessage = { message: string; mode: EnhancedMode; isolate: boolean; hash: string; localIds: string[] };
+type CodexTurnMapping = { threadId: string; turnId: string };
 type ChildAgentRuntime = {
     reasoningProcessor: ReasoningProcessor;
     diffProcessor: DiffProcessor;
@@ -185,6 +187,8 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
     private currentThreadId: string | null = null;
     private currentTurnId: string | null = null;
     private readonly activeChildTurns = new Map<string, string>();
+    private readonly turnByLocalId = new Map<string, CodexTurnMapping>();
+    private readonly localIdsByTurnId = new Map<string, string[]>();
 
     constructor(session: CodexSession) {
         super(process.env.DEBUG ? session.logPath : undefined);
@@ -2039,6 +2043,9 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 const turnId = eventTurnId;
                 if (turnId) {
                     this.currentTurnId = turnId;
+                    if (activeMessage && (eventThreadId ?? this.currentThreadId)) {
+                        rememberTurnMapping(activeMessage.localIds, eventThreadId ?? this.currentThreadId!, turnId);
+                    }
                     allowAnonymousTerminalEvent = false;
                 } else if (!this.currentTurnId) {
                     allowAnonymousTerminalEvent = true;
@@ -2646,6 +2653,137 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             });
         };
 
+        const rememberTurnMapping = (localIds: string[], threadId: string, turnId: string): void => {
+            const firstLocalId = localIds.find((id) => id.length > 0);
+            if (!firstLocalId) {
+                return;
+            }
+            const uniqueLocalIds = [firstLocalId];
+            this.localIdsByTurnId.set(turnId, uniqueLocalIds);
+            for (const localId of uniqueLocalIds) {
+                this.turnByLocalId.set(localId, { threadId, turnId });
+            }
+        };
+
+        const forgetTurnMappings = (turnIds: string[]): void => {
+            for (const turnId of turnIds) {
+                const localIds = this.localIdsByTurnId.get(turnId) ?? [];
+                for (const localId of localIds) {
+                    this.turnByLocalId.delete(localId);
+                }
+                this.localIdsByTurnId.delete(turnId);
+            }
+        };
+
+        const getCurrentModeForRpc = (): EnhancedMode => ({
+            permissionMode: (session.getPermissionMode() as EnhancedMode['permissionMode'] | undefined) ?? 'default',
+            model: session.getModel() ?? undefined,
+            modelReasoningEffort: (session.getModelReasoningEffort() as EnhancedMode['modelReasoningEffort'] | undefined) ?? undefined,
+            collaborationMode: (session.getCollaborationMode() as EnhancedMode['collaborationMode'] | undefined) ?? 'default'
+        });
+
+        const ensureThreadForRpc = async (): Promise<string> => {
+            if (this.currentThreadId && this.currentThreadId !== invalidThreadId) {
+                hasThread = true;
+                return this.currentThreadId;
+            }
+
+            const resumeCandidate = session.sessionId && session.sessionId !== invalidThreadId
+                ? session.sessionId
+                : null;
+            if (!resumeCandidate) {
+                throw new Error('No Codex thread is available yet');
+            }
+
+            const threadParams = buildThreadStartParams({
+                cwd: session.path,
+                mode: getCurrentModeForRpc(),
+                mcpServers,
+                cliOverrides: session.codexCliOverrides
+            });
+            const resumeResponse = await appServerClient.resumeThread({
+                threadId: resumeCandidate,
+                ...threadParams
+            }, {
+                signal: this.abortController.signal
+            });
+            const resumeRecord = asRecord(resumeResponse);
+            const resumeThread = resumeRecord ? asRecord(resumeRecord.thread) : null;
+            const threadId = asString(resumeThread?.id) ?? resumeCandidate;
+            applyResolvedModel(resumeRecord?.model);
+            this.currentThreadId = threadId;
+            session.onSessionFound(threadId);
+            hasThread = true;
+            return threadId;
+        };
+
+        const getThreadTurns = (thread: unknown): Array<Record<string, unknown>> => {
+            const record = asRecord(thread);
+            const turns = record && Array.isArray(record.turns) ? record.turns : [];
+            return turns
+                .map((turn) => asRecord(turn))
+                .filter((turn): turn is Record<string, unknown> => turn !== null);
+        };
+
+        const turnHasClientLocalId = (turn: Record<string, unknown>, localId: string): boolean => {
+            const items = Array.isArray(turn.items) ? turn.items : [];
+            return items.some((item) => {
+                const record = asRecord(item);
+                if (!record || record.type !== 'userMessage') {
+                    return false;
+                }
+                return asString(record.clientId ?? record.client_id) === localId;
+            });
+        };
+
+        const resolveRollbackPlan = async (
+            threadId: string,
+            localId: string
+        ): Promise<{
+            turns: Array<Record<string, unknown>>;
+            targetIndex: number;
+            targetTurnId: string;
+            numTurns: number;
+        }> => {
+            if (!localId) {
+                throw new Error('Missing message localId');
+            }
+
+            const readResponse = await appServerClient.readThread({
+                threadId,
+                includeTurns: true
+            }, {
+                signal: this.abortController.signal
+            });
+            const turns = getThreadTurns(readResponse.thread);
+            if (turns.length === 0) {
+                throw new Error('Codex thread has no readable turns');
+            }
+
+            const mapped = this.turnByLocalId.get(localId);
+            let targetIndex = mapped?.threadId === threadId
+                ? turns.findIndex((turn) => asString(turn.id) === mapped.turnId)
+                : -1;
+            if (targetIndex < 0) {
+                targetIndex = turns.findIndex((turn) => turnHasClientLocalId(turn, localId));
+            }
+            if (targetIndex < 0) {
+                throw new Error('Message is not present in the current Codex thread history');
+            }
+
+            const targetTurnId = asString(turns[targetIndex]?.id);
+            if (!targetTurnId) {
+                throw new Error('Matched Codex turn is missing an id');
+            }
+
+            const numTurns = turns.length - targetIndex;
+            if (numTurns < 1) {
+                throw new Error('Nothing to rewind');
+            }
+
+            return { turns, targetIndex, targetTurnId, numTurns };
+        };
+
         const resetCurrentTurnState = () => {
             turnInFlight = false;
             allowAnonymousTerminalEvent = false;
@@ -2661,6 +2799,133 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             suppressReadyForInterruptedTurn(this.currentTurnId);
             await this.interruptActiveTurns('slash command');
         };
+
+        let codexOperationChain: Promise<void> = Promise.resolve();
+        const runCodexOperation = async <T,>(operation: () => Promise<T>): Promise<T> => {
+            const run = codexOperationChain.then(operation, operation);
+            codexOperationChain = run.then(() => undefined, () => undefined);
+            return await run;
+        };
+
+        const readLocalIdParam = (payload: unknown): string => {
+            const record = asRecord(payload);
+            const localId = asString(record?.localId ?? record?.local_id);
+            if (!localId) {
+                throw new Error('localId is required');
+            }
+            return localId;
+        };
+
+        const readTextParam = (payload: unknown): string => {
+            const record = asRecord(payload);
+            const text = typeof record?.text === 'string' ? record.text.trim() : '';
+            if (!text) {
+                throw new Error('text is required');
+            }
+            return text;
+        };
+
+        session.client.rpcHandlerManager.registerHandler(RPC_METHODS.CodexRollbackToMessage, async (payload: unknown) => {
+            const localId = readLocalIdParam(payload);
+            return await runCodexOperation(async () => {
+                const threadId = await ensureThreadForRpc();
+                await interruptActiveTurn();
+                resetCurrentTurnState();
+
+                const plan = await resolveRollbackPlan(threadId, localId);
+                await appServerClient.rollbackThread({
+                    threadId,
+                    numTurns: plan.numTurns
+                }, {
+                    signal: this.abortController.signal
+                });
+                forgetTurnMappings(
+                    plan.turns
+                        .slice(plan.targetIndex)
+                        .map((turn) => asString(turn.id))
+                        .filter((turnId): turnId is string => turnId !== null)
+                );
+                activeMessage = null;
+                pending = null;
+                hasThread = true;
+                invalidThreadId = null;
+                sendVisibleStatus('Codex context rewound. Local file changes were not reverted.');
+                wakeLoop();
+                return {
+                    success: true,
+                    threadId,
+                    targetTurnId: plan.targetTurnId,
+                    rolledBackTurns: plan.numTurns,
+                    warning: 'Codex context was rewound, but local file changes were not reverted.'
+                };
+            });
+        });
+
+        session.client.rpcHandlerManager.registerHandler(RPC_METHODS.CodexForkFromMessage, async (payload: unknown) => {
+            const localId = readLocalIdParam(payload);
+            return await runCodexOperation(async () => {
+                const sourceThreadId = await ensureThreadForRpc();
+                const plan = await resolveRollbackPlan(sourceThreadId, localId);
+                const forkParams = buildThreadStartParams({
+                    cwd: session.path,
+                    mode: getCurrentModeForRpc(),
+                    mcpServers,
+                    cliOverrides: session.codexCliOverrides
+                });
+                const forkResponse = await appServerClient.forkThread({
+                    threadId: sourceThreadId,
+                    ...forkParams
+                }, {
+                    signal: this.abortController.signal
+                });
+                const forkThread = asRecord(forkResponse.thread);
+                const forkThreadId = asString(forkThread?.id);
+                if (!forkThreadId) {
+                    throw new Error('thread/fork did not return thread.id');
+                }
+
+                await appServerClient.rollbackThread({
+                    threadId: forkThreadId,
+                    numTurns: plan.numTurns
+                }, {
+                    signal: this.abortController.signal
+                });
+
+                return {
+                    success: true,
+                    sourceThreadId,
+                    threadId: forkThreadId,
+                    targetTurnId: plan.targetTurnId,
+                    rolledBackTurns: plan.numTurns,
+                    warning: 'Forked Codex context does not revert local file changes.'
+                };
+            });
+        });
+
+        session.client.rpcHandlerManager.registerHandler(RPC_METHODS.CodexSteerCurrentTurn, async (payload: unknown) => {
+            const text = readTextParam(payload);
+            const record = asRecord(payload);
+            const clientUserMessageId = asString(record?.localId ?? record?.local_id) ?? randomUUID();
+            return await runCodexOperation(async () => {
+                if (!this.currentThreadId || !this.currentTurnId || !turnInFlight) {
+                    throw new Error('No active Codex turn to steer');
+                }
+                const response = await appServerClient.steerTurn({
+                    threadId: this.currentThreadId,
+                    expectedTurnId: this.currentTurnId,
+                    clientUserMessageId,
+                    input: [{ type: 'text', text }]
+                }, {
+                    signal: this.abortController.signal
+                });
+                session.sendUserMessage(text);
+                return {
+                    success: true,
+                    turnId: response.turnId,
+                    localId: clientUserMessageId
+                };
+            });
+        });
 
         const resumeExistingThreadForCompact = async (mode: EnhancedMode): Promise<string | null> => {
             if (this.currentThreadId && this.currentThreadId !== invalidThreadId) {
@@ -3062,6 +3327,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 const buildParams = (suppressCollaborationMode: boolean) => buildTurnStartParams({
                     threadId: this.currentThreadId!,
                     message: message.message,
+                    clientUserMessageId: message.localIds[0] ?? null,
                     cwd: session.path,
                     mode,
                     cliOverrides: session.codexCliOverrides,
@@ -3105,6 +3371,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 if (turnInFlight) {
                     if (turnId) {
                         this.currentTurnId = turnId;
+                        rememberTurnMapping(message.localIds, this.currentThreadId!, turnId);
                     } else if (!this.currentTurnId) {
                         allowAnonymousTerminalEvent = true;
                     }
@@ -3169,6 +3436,18 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         }
 
         this.clearAbortHandlers(this.session.client.rpcHandlerManager);
+        this.session.client.rpcHandlerManager.registerHandler(RPC_METHODS.CodexRollbackToMessage, async () => ({
+            success: false,
+            error: 'Codex remote launcher is not active'
+        }));
+        this.session.client.rpcHandlerManager.registerHandler(RPC_METHODS.CodexForkFromMessage, async () => ({
+            success: false,
+            error: 'Codex remote launcher is not active'
+        }));
+        this.session.client.rpcHandlerManager.registerHandler(RPC_METHODS.CodexSteerCurrentTurn, async () => ({
+            success: false,
+            error: 'Codex remote launcher is not active'
+        }));
 
         if (this.happyServer) {
             this.happyServer.stop();

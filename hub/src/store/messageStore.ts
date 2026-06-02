@@ -4,8 +4,13 @@ import type { StoredMessage } from './types'
 import {
     addMessage,
     cancelQueuedMessage,
+    copyMessageToSession as copyStoredMessageToSession,
+    copyMessagesBeforeSeq,
+    deleteMessagesFromSeq,
     deleteQueuedMessageById,
     lookupQueuedMessage,
+    getAllMessages,
+    getMessageByLocalId,
     getMessages,
     getFirstMessages,
     getDeliverableMessagesAfter,
@@ -17,8 +22,6 @@ import {
     countFutureScheduledLocalMessages,
     markMessagesInvoked,
     mergeSessionMessages,
-    copyMessageToSession as copyStoredMessageToSession,
-    getAllMessages,
     type CancelQueuedMessageResult,
     type LookupQueuedMessageResult,
 } from './messages'
@@ -52,6 +55,18 @@ export class MessageStore {
 
     getFirstMessages(sessionId: string, limit: number = 50): StoredMessage[] {
         return getFirstMessages(this.db, sessionId, limit)
+    }
+
+    getMessageByLocalId(sessionId: string, localId: string): StoredMessage | null {
+        return getMessageByLocalId(this.db, sessionId, localId)
+    }
+
+    deleteMessagesFromSeq(sessionId: string, seq: number): number {
+        return deleteMessagesFromSeq(this.db, sessionId, seq)
+    }
+
+    copyMessagesBeforeSeq(fromSessionId: string, toSessionId: string, beforeSeq: number): number {
+        return copyMessagesBeforeSeq(this.db, fromSessionId, toSessionId, beforeSeq)
     }
 
     getDeliverableMessagesAfter(sessionId: string, afterSeq: number, now: number, limit: number = 200): StoredMessage[] {

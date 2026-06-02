@@ -18,6 +18,12 @@ const harness = vi.hoisted(() => ({
     startTurnParams: [] as Array<Record<string, unknown>>,
     startTurnErrors: [] as Error[],
     interruptedTurns: [] as Array<{ threadId: string; turnId: string }>,
+    readThreadCalls: [] as Array<Record<string, unknown>>,
+    forkThreadCalls: [] as Array<Record<string, unknown>>,
+    rollbackThreadCalls: [] as Array<Record<string, unknown>>,
+    steerTurnCalls: [] as Array<Record<string, unknown>>,
+    threadTurns: [] as Array<Record<string, unknown>>,
+    forkThreadId: 'thread-forked',
     compactThreadIds: [] as string[],
     goalSetCalls: [] as unknown[],
     goalGetCalls: [] as unknown[],
@@ -768,6 +774,31 @@ vi.mock('./codexAppServerClient', () => {
             return { turn: { id: turnId } };
         }
 
+        async readThread(params?: { threadId?: string; includeTurns?: boolean }): Promise<{ thread: { id: string; turns: Array<Record<string, unknown>> } }> {
+            harness.readThreadCalls.push((params ?? {}) as Record<string, unknown>);
+            return {
+                thread: {
+                    id: params?.threadId ?? 'thread-unknown',
+                    turns: harness.threadTurns
+                }
+            };
+        }
+
+        async forkThread(params?: { threadId?: string }): Promise<{ thread: { id: string }; model: string }> {
+            harness.forkThreadCalls.push((params ?? {}) as Record<string, unknown>);
+            return { thread: { id: harness.forkThreadId }, model: 'gpt-5.4' };
+        }
+
+        async rollbackThread(params?: { threadId?: string; numTurns?: number }): Promise<{ thread: { id: string } }> {
+            harness.rollbackThreadCalls.push((params ?? {}) as Record<string, unknown>);
+            return { thread: { id: params?.threadId ?? 'thread-unknown' } };
+        }
+
+        async steerTurn(params?: { threadId?: string; expectedTurnId?: string }): Promise<{ turnId: string }> {
+            harness.steerTurnCalls.push((params ?? {}) as Record<string, unknown>);
+            return { turnId: params?.expectedTurnId ?? 'turn-steered' };
+        }
+
         async interruptTurn(params?: { threadId?: string; turnId?: string }): Promise<Record<string, never>> {
             const threadId = params?.threadId ?? 'thread-unknown';
             const turnId = params?.turnId ?? 'turn-unknown';
@@ -818,13 +849,13 @@ function createMode(): EnhancedMode {
     };
 }
 
-function createSessionStub(messages = ['hello from launcher test'], mode = createMode()) {
+function createSessionStub(messages = ['hello from launcher test'], mode = createMode(), localIds: string[] = []) {
     const queue = new MessageQueue2<EnhancedMode>((mode) => JSON.stringify(mode));
     messages.forEach((message, index) => {
         if (index === 0 && messages.length > 1) {
-            queue.pushIsolateAndClear(message, mode);
+            queue.pushIsolateAndClear(message, mode, localIds[index]);
         } else {
-            queue.push(message, mode);
+            queue.push(message, mode, localIds[index]);
         }
     });
     queue.close();
@@ -838,6 +869,7 @@ function createSessionStub(messages = ['hello from launcher test'], mode = creat
     const collaborationModes: Array<EnhancedMode['collaborationMode'] | undefined> = [];
     let currentPermissionMode: EnhancedMode['permissionMode'] = mode.permissionMode;
     let currentModel: string | null | undefined = mode.model;
+    let currentModelReasoningEffort: EnhancedMode['modelReasoningEffort'] | undefined = mode.modelReasoningEffort;
     let currentCollaborationMode: EnhancedMode['collaborationMode'] | undefined = mode.collaborationMode;
     let agentState: FakeAgentState = {
         requests: {},
@@ -883,6 +915,9 @@ function createSessionStub(messages = ['hello from launcher test'], mode = creat
         },
         getModel() {
             return currentModel;
+        },
+        getModelReasoningEffort() {
+            return currentModelReasoningEffort;
         },
         getCollaborationMode() {
             return currentCollaborationMode;
@@ -950,6 +985,12 @@ describe('codexRemoteLauncher', () => {
         harness.startTurnParams = [];
         harness.startTurnErrors = [];
         harness.interruptedTurns = [];
+        harness.readThreadCalls = [];
+        harness.forkThreadCalls = [];
+        harness.rollbackThreadCalls = [];
+        harness.steerTurnCalls = [];
+        harness.threadTurns = [];
+        harness.forkThreadId = 'thread-forked';
         harness.compactThreadIds = [];
         harness.goalSetCalls = [];
         harness.goalGetCalls = [];
@@ -1023,6 +1064,123 @@ describe('codexRemoteLauncher', () => {
         expect(sessionEvents.filter((event) => event.type === 'ready').length).toBeGreaterThanOrEqual(1);
         expect(thinkingChanges).toContain(true);
         expect(session.thinking).toBe(false);
+    });
+
+    it('passes queued localId as the Codex client user message id', async () => {
+        const { session } = createSessionStub(['hello with local id'], createMode(), ['local-1']);
+
+        const exitReason = await codexRemoteLauncher(session as never);
+
+        expect(exitReason).toBe('exit');
+        expect(harness.startTurnParams[0]?.clientUserMessageId).toBe('local-1');
+    });
+
+    it('rolls back the Codex thread to a mapped user message via RPC', async () => {
+        harness.suppressTurnCompletion = true;
+        harness.emitTurnAbortedOnInterrupt = true;
+        harness.threadTurns = [
+            {
+                id: 'turn-1',
+                items: [{ type: 'userMessage', clientId: 'local-1' }]
+            },
+            {
+                id: 'turn-2',
+                items: [{ type: 'agentMessage' }]
+            }
+        ];
+        const { session, rpcHandlers } = createSessionStub(['first message'], createMode(), ['local-1']);
+
+        const running = codexRemoteLauncher(session as never);
+        await vi.waitFor(() => {
+            expect(harness.startTurnThreadIds).toEqual(['thread-1']);
+            expect(rpcHandlers.has('codexRollbackToMessage')).toBe(true);
+        });
+
+        const result = await rpcHandlers.get('codexRollbackToMessage')?.({ localId: 'local-1' });
+        const exitReason = await running;
+
+        expect(exitReason).toBe('exit');
+        expect(harness.interruptedTurns).toEqual([{ threadId: 'thread-1', turnId: 'turn-1' }]);
+        expect(harness.readThreadCalls).toEqual([{ threadId: 'thread-1', includeTurns: true }]);
+        expect(harness.rollbackThreadCalls).toEqual([{ threadId: 'thread-1', numTurns: 2 }]);
+        expect(result).toMatchObject({
+            success: true,
+            threadId: 'thread-1',
+            targetTurnId: 'turn-1',
+            rolledBackTurns: 2
+        });
+    });
+
+    it('forks the Codex thread and rolls back the fork to the mapped user message via RPC', async () => {
+        harness.suppressTurnCompletion = true;
+        harness.emitTurnAbortedOnInterrupt = true;
+        harness.threadTurns = [
+            {
+                id: 'turn-1',
+                items: [{ type: 'userMessage', clientId: 'local-1' }]
+            },
+            {
+                id: 'turn-2',
+                items: [{ type: 'agentMessage' }]
+            }
+        ];
+        const { session, rpcHandlers } = createSessionStub(['first message'], createMode(), ['local-1']);
+
+        const running = codexRemoteLauncher(session as never);
+        await vi.waitFor(() => {
+            expect(harness.startTurnThreadIds).toEqual(['thread-1']);
+            expect(rpcHandlers.has('codexForkFromMessage')).toBe(true);
+            expect(rpcHandlers.has('abort')).toBe(true);
+        });
+
+        const result = await rpcHandlers.get('codexForkFromMessage')?.({ localId: 'local-1' });
+        await rpcHandlers.get('abort')?.({});
+        const exitReason = await running;
+
+        expect(exitReason).toBe('exit');
+        expect(harness.readThreadCalls).toEqual([{ threadId: 'thread-1', includeTurns: true }]);
+        expect(harness.forkThreadCalls[0]).toMatchObject({ threadId: 'thread-1' });
+        expect(harness.rollbackThreadCalls).toEqual([{ threadId: 'thread-forked', numTurns: 2 }]);
+        expect(result).toMatchObject({
+            success: true,
+            sourceThreadId: 'thread-1',
+            threadId: 'thread-forked',
+            targetTurnId: 'turn-1',
+            rolledBackTurns: 2
+        });
+    });
+
+    it('steers the active Codex turn via RPC', async () => {
+        harness.suppressTurnCompletion = true;
+        harness.emitTurnAbortedOnInterrupt = true;
+        const { session, rpcHandlers } = createSessionStub(['first message']);
+
+        const running = codexRemoteLauncher(session as never);
+        await vi.waitFor(() => {
+            expect(harness.startTurnThreadIds).toEqual(['thread-1']);
+            expect(rpcHandlers.has('codexSteerCurrentTurn')).toBe(true);
+            expect(rpcHandlers.has('abort')).toBe(true);
+        });
+
+        const result = await rpcHandlers.get('codexSteerCurrentTurn')?.({
+            text: 'please adjust',
+            localId: 'steer-local'
+        });
+        await rpcHandlers.get('abort')?.({});
+        const exitReason = await running;
+
+        expect(exitReason).toBe('exit');
+        expect(harness.steerTurnCalls).toEqual([{
+            threadId: 'thread-1',
+            expectedTurnId: 'turn-1',
+            clientUserMessageId: 'steer-local',
+            input: [{ type: 'text', text: 'please adjust' }]
+        }]);
+        expect(result).toEqual({
+            success: true,
+            turnId: 'turn-1',
+            localId: 'steer-local'
+        });
     });
 
     it('uses live permission mode for app-server MCP elicitation handlers', async () => {

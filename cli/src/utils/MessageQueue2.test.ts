@@ -12,14 +12,15 @@ describe('MessageQueue2', () => {
     it('should push and retrieve messages with same mode', async () => {
         const queue = new MessageQueue2<string>(mode => mode);
         
-        queue.push('message1', 'local');
-        queue.push('message2', 'local');
-        queue.push('message3', 'local');
+        queue.push('message1', 'local', 'local-1');
+        queue.push('message2', 'local', 'local-2');
+        queue.push('message3', 'local', 'local-3');
         
         const result = await queue.waitForMessagesAndGetAsString();
         expect(result).not.toBeNull();
         expect(result?.message).toBe('message1\nmessage2\nmessage3');
         expect(result?.mode).toBe('local');
+        expect(result?.localIds).toEqual(['local-1', 'local-2', 'local-3']);
         expect(queue.size()).toBe(0);
     });
 

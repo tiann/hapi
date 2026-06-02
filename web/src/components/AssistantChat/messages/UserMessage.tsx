@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { MessagePrimitive, useAssistantState } from '@assistant-ui/react'
+import { MessagePrimitive, useAssistantApi, useAssistantState } from '@assistant-ui/react'
 import { useHappyChatContext } from '@/components/AssistantChat/context'
 import type { HappyChatMessageMetadata } from '@/lib/assistant-runtime'
 import { MessageStatusIndicator } from '@/components/AssistantChat/messages/MessageStatusIndicator'
@@ -14,8 +14,10 @@ import { MessageTimestamp } from '@/components/AssistantChat/messages/MessageTim
 
 export function HappyUserMessage() {
     const ctx = useHappyChatContext()
+    const api = useAssistantApi()
     const { copied, copy } = useCopyToClipboard()
     const [showMetadata, setShowMetadata] = useState(false)
+    const [operationPending, setOperationPending] = useState(false)
     const role = useAssistantState(({ message }) => message.role)
     const messageId = useAssistantState(({ message }) => message.id)
     const text = useAssistantState(({ message }) => {
@@ -54,6 +56,48 @@ export function HappyUserMessage() {
     const canRetry = status === 'failed' && typeof localId === 'string' && Boolean(ctx.onRetryMessage)
     const onRetry = canRetry ? () => ctx.onRetryMessage!(localId) : undefined
     const showStatus = shouldShowMessageStatus(status)
+    const hasText = text.length > 0
+    const canCodexMessageOps = Boolean(
+        ctx.codexMessageOpsEnabled
+        && typeof localId === 'string'
+        && localId.length > 0
+        && hasText
+    )
+
+    const editInComposer = () => {
+        api.composer().setText(text)
+    }
+
+    const promptReplacement = (title: string): string | null => {
+        const next = window.prompt(title, text)
+        if (next === null) return null
+        const trimmed = next.trim()
+        return trimmed.length > 0 ? trimmed : null
+    }
+
+    const runMessageOperation = async (operation: 'rewind' | 'fork') => {
+        if (!canCodexMessageOps || typeof localId !== 'string') return
+        const next = promptReplacement(operation === 'rewind' ? 'Edit and resend from here' : 'Fork from here with message')
+        if (!next) return
+        const ok = window.confirm(
+            operation === 'rewind'
+                ? 'This rewinds Codex conversation context and removes later HAPI messages. It does not revert local file changes. Continue?'
+                : 'This forks Codex conversation context. It does not copy/revert local file changes. Continue?'
+        )
+        if (!ok) return
+        setOperationPending(true)
+        try {
+            if (operation === 'rewind') {
+                await ctx.onCodexRewindAndResend?.(localId, next)
+            } else {
+                await ctx.onCodexForkFromMessage?.(localId, next)
+            }
+        } catch (error) {
+            window.alert(error instanceof Error ? error.message : String(error))
+        } finally {
+            setOperationPending(false)
+        }
+    }
 
     if (isCliOutput) {
         return (
@@ -84,7 +128,6 @@ export function HappyUserMessage() {
         )
     }
 
-    const hasText = text.length > 0
     const hasAttachments = attachments && attachments.length > 0
 
     return (
@@ -112,6 +155,38 @@ export function HappyUserMessage() {
                                         : <CopyIcon className="h-3.5 w-3.5 text-[var(--app-hint)]" />}
                                 </button>
                             )}
+                            {hasText && (
+                                <button
+                                    type="button"
+                                    title="Edit in composer"
+                                    className="rounded-md px-1 py-0.5 text-[10px] text-[var(--app-hint)] opacity-60 transition-[opacity,background-color] hover:bg-[var(--app-chat-user-chip-bg)] hover:text-[var(--app-fg)] sm:opacity-0 sm:group-hover/msg:opacity-100"
+                                    onClick={editInComposer}
+                                >
+                                    Edit
+                                </button>
+                            )}
+                            {canCodexMessageOps ? (
+                                <>
+                                    <button
+                                        type="button"
+                                        title="Rewind Codex context and resend"
+                                        disabled={operationPending}
+                                        className="rounded-md px-1 py-0.5 text-[10px] text-[var(--app-hint)] opacity-60 transition-[opacity,background-color] hover:bg-[var(--app-chat-user-chip-bg)] hover:text-[var(--app-fg)] disabled:opacity-40 sm:opacity-0 sm:group-hover/msg:opacity-100"
+                                        onClick={() => { void runMessageOperation('rewind') }}
+                                    >
+                                        Rewind
+                                    </button>
+                                    <button
+                                        type="button"
+                                        title="Fork Codex context from here"
+                                        disabled={operationPending}
+                                        className="rounded-md px-1 py-0.5 text-[10px] text-[var(--app-hint)] opacity-60 transition-[opacity,background-color] hover:bg-[var(--app-chat-user-chip-bg)] hover:text-[var(--app-fg)] disabled:opacity-40 sm:opacity-0 sm:group-hover/msg:opacity-100"
+                                        onClick={() => { void runMessageOperation('fork') }}
+                                    >
+                                        Fork
+                                    </button>
+                                </>
+                            ) : null}
                             {showStatus ? <MessageStatusIndicator status={status} onRetry={onRetry} /> : null}
                         </div>
                     )}

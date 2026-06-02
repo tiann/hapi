@@ -11,12 +11,22 @@ import type {
     ThreadStartResponse,
     ThreadResumeParams,
     ThreadResumeResponse,
+    ThreadReadParams,
+    ThreadReadResponse,
+    ThreadForkParams,
+    ThreadForkResponse,
+    ThreadRollbackParams,
+    ThreadRollbackResponse,
     TurnStartParams,
     TurnStartResponse,
+    TurnSteerParams,
+    TurnSteerResponse,
     TurnInterruptParams,
     TurnInterruptResponse,
     ThreadCompactStartParams,
     ThreadCompactStartResponse,
+    ThreadInjectItemsParams,
+    ThreadInjectItemsResponse,
     ThreadGoalSetParams,
     ThreadGoalSetResponse,
     ThreadGoalGetParams,
@@ -192,12 +202,44 @@ export class CodexAppServerClient {
         return response as ThreadResumeResponse;
     }
 
+    async readThread(params: ThreadReadParams, options?: { signal?: AbortSignal }): Promise<ThreadReadResponse> {
+        const response = await this.sendRequest('thread/read', params, {
+            signal: options?.signal,
+            timeoutMs: 30_000
+        });
+        return response as ThreadReadResponse;
+    }
+
+    async forkThread(params: ThreadForkParams, options?: { signal?: AbortSignal }): Promise<ThreadForkResponse> {
+        const response = await this.sendRequest('thread/fork', params, {
+            signal: options?.signal,
+            timeoutMs: CodexAppServerClient.DEFAULT_TIMEOUT_MS
+        });
+        return response as ThreadForkResponse;
+    }
+
+    async rollbackThread(params: ThreadRollbackParams, options?: { signal?: AbortSignal }): Promise<ThreadRollbackResponse> {
+        const response = await this.sendRequest('thread/rollback', params, {
+            signal: options?.signal,
+            timeoutMs: CodexAppServerClient.DEFAULT_TIMEOUT_MS
+        });
+        return response as ThreadRollbackResponse;
+    }
+
     async startTurn(params: TurnStartParams, options?: { signal?: AbortSignal }): Promise<TurnStartResponse> {
         const response = await this.sendRequest('turn/start', params, {
             signal: options?.signal,
             timeoutMs: CodexAppServerClient.DEFAULT_TIMEOUT_MS
         });
         return response as TurnStartResponse;
+    }
+
+    async steerTurn(params: TurnSteerParams, options?: { signal?: AbortSignal }): Promise<TurnSteerResponse> {
+        const response = await this.sendRequest('turn/steer', params, {
+            signal: options?.signal,
+            timeoutMs: CodexAppServerClient.DEFAULT_TIMEOUT_MS
+        });
+        return response as TurnSteerResponse;
     }
 
     async interruptTurn(params: TurnInterruptParams): Promise<TurnInterruptResponse> {
@@ -216,6 +258,17 @@ export class CodexAppServerClient {
             timeoutMs: CodexAppServerClient.DEFAULT_TIMEOUT_MS
         });
         return response as ThreadCompactStartResponse;
+    }
+
+    async injectThreadItems(
+        params: ThreadInjectItemsParams,
+        options?: { signal?: AbortSignal }
+    ): Promise<ThreadInjectItemsResponse> {
+        const response = await this.sendRequest('thread/inject_items', params, {
+            signal: options?.signal,
+            timeoutMs: 30_000
+        });
+        return response as ThreadInjectItemsResponse;
     }
 
     async setThreadGoal(

@@ -628,6 +628,37 @@ export function SessionChat(props: {
         props.onRefresh()
     }, [switchSession, props.onRefresh])
 
+    const handleCodexRewindAndResend = useCallback(async (localId: string, text: string) => {
+        const result = await props.api.codexRewindAndResend(props.session.id, localId, text)
+        if (!result.success) {
+            throw new Error(result.error ?? 'Codex rewind failed')
+        }
+        haptic.notification('success')
+        props.onRefresh()
+        setForceScrollToken((token) => token + 1)
+    }, [props.api, props.session.id, props.onRefresh, haptic])
+
+    const handleCodexForkFromMessage = useCallback(async (localId: string, text: string) => {
+        const result = await props.api.codexForkFromMessage(props.session.id, localId, text)
+        if (!result.success || !result.sessionId) {
+            throw new Error(result.error ?? 'Codex fork failed')
+        }
+        haptic.notification('success')
+        navigate({
+            to: '/sessions/$sessionId',
+            params: { sessionId: result.sessionId }
+        })
+    }, [props.api, props.session.id, navigate, haptic])
+
+    const handleCodexSteerCurrentTurn = useCallback(async (text: string) => {
+        const result = await props.api.codexSteerCurrentTurn(props.session.id, text)
+        if (!result.success) {
+            throw new Error(result.error ?? 'Codex steer failed')
+        }
+        haptic.notification('success')
+        props.onRefresh()
+    }, [props.api, props.session.id, props.onRefresh, haptic])
+
     const handleViewFiles = useCallback(() => {
         navigate({
             to: '/sessions/$sessionId/files',
@@ -733,8 +764,12 @@ export function SessionChat(props: {
                         sessionId={props.session.id}
                         metadata={props.session.metadata}
                         disabled={sessionInactive}
+                        agentFlavor={agentFlavor}
+                        codexMessageOpsEnabled={agentFlavor === 'codex' && props.session.active && !controlledByUser}
                         onRefresh={props.onRefresh}
                         onRetryMessage={props.onRetryMessage}
+                        onCodexRewindAndResend={handleCodexRewindAndResend}
+                        onCodexForkFromMessage={handleCodexForkFromMessage}
                         onFlushPending={props.onFlushPending}
                         onAtBottomChange={props.onAtBottomChange}
                         isLoadingMessages={props.isLoadingMessages}
@@ -882,6 +917,11 @@ export function SessionChat(props: {
                         onTerminal={props.session.active && terminalSupported ? handleViewTerminal : undefined}
                         terminalUnsupported={props.session.active && !terminalSupported}
                         autocompleteSuggestions={props.autocompleteSuggestions}
+                        onSteerCurrentTurn={
+                            agentFlavor === 'codex' && props.session.active && props.session.thinking && !controlledByUser
+                                ? handleCodexSteerCurrentTurn
+                                : undefined
+                        }
                         voiceStatus={voice?.status}
                         voiceMicMuted={voice?.micMuted}
                         onVoiceToggle={voice && voiceBackendReady ? handleVoiceToggle : undefined}

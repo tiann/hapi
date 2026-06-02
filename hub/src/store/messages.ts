@@ -186,6 +186,74 @@ export function getFirstMessages(
     return rows.map(toStoredMessage)
 }
 
+export function getMessageByLocalId(
+    db: Database,
+    sessionId: string,
+    localId: string
+): StoredMessage | null {
+    const row = db.prepare(
+        'SELECT * FROM messages WHERE session_id = ? AND local_id = ? LIMIT 1'
+    ).get(sessionId, localId) as DbMessageRow | undefined
+    return row ? toStoredMessage(row) : null
+}
+
+export function deleteMessagesFromSeq(
+    db: Database,
+    sessionId: string,
+    seq: number
+): number {
+    const result = db.prepare(
+        'DELETE FROM messages WHERE session_id = ? AND seq >= ?'
+    ).run(sessionId, seq)
+    return result.changes
+}
+
+export function copyMessagesBeforeSeq(
+    db: Database,
+    fromSessionId: string,
+    toSessionId: string,
+    beforeSeq: number
+): number {
+    if (fromSessionId === toSessionId) {
+        return 0
+    }
+
+    const rows = db.prepare(`
+        SELECT * FROM messages
+        WHERE session_id = ?
+          AND seq < ?
+          AND invoked_at IS NOT NULL
+        ORDER BY seq ASC
+    `).all(fromSessionId, beforeSeq) as DbMessageRow[]
+    if (rows.length === 0) {
+        return 0
+    }
+
+    return db.transaction(() => {
+        let nextSeq = getMaxSeq(db, toSessionId)
+        const insert = db.prepare(`
+            INSERT INTO messages (
+                id, session_id, content, created_at, seq, local_id, invoked_at, scheduled_at
+            ) VALUES (
+                @id, @session_id, @content, @created_at, @seq, @local_id, @invoked_at, NULL
+            )
+        `)
+        for (const row of rows) {
+            nextSeq += 1
+            insert.run({
+                id: randomUUID(),
+                session_id: toSessionId,
+                content: row.content,
+                created_at: row.created_at,
+                seq: nextSeq,
+                local_id: row.local_id,
+                invoked_at: row.invoked_at ?? row.created_at
+            })
+        }
+        return rows.length
+    })()
+}
+
 /** CLI reconnect backfill: returns messages above the seq cursor that are
  *  deliverable now, i.e. excludes future-scheduled rows (scheduled_at > now).
  *  Without this filter, a CLI reconnect between schedule time and release time

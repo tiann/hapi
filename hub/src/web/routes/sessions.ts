@@ -1,4 +1,6 @@
 import {
+    CodexMessageOperationRequestSchema,
+    CodexSteerRequestSchema,
     DeleteUploadRequestSchema,
     getPermissionModesForFlavor,
     isPermissionModeAllowedForFlavor,
@@ -14,12 +16,14 @@ import {
     UploadFileRequestSchema
 } from '@hapi/protocol'
 import type { SlashCommand } from '@hapi/protocol/apiTypes'
+import { randomUUID } from 'node:crypto'
 import { Hono } from 'hono'
 import type { SyncEngine, Session } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 import { requireSessionFromParam, requireSyncEngine } from './guards'
 
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+const CODEX_FILE_WARNING = 'Codex context was changed, but local file changes were not reverted.'
 
 function commandsFromMetadataSlashCommands(names: readonly string[] | undefined): SlashCommand[] {
     if (!names?.length) {
@@ -589,6 +593,179 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
                 success: false,
                 error: error instanceof Error ? error.message : 'Failed to list skills'
             })
+        }
+    })
+
+    app.post('/sessions/:id/codex/rewind-resend', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const session = sessionResult.session
+        if ((session.metadata?.flavor ?? 'claude') !== 'codex') {
+            return c.json({ success: false, error: 'Rewind is only supported for Codex sessions' }, 400)
+        }
+        if (session.agentState?.controlledByUser === true) {
+            return c.json({ success: false, error: 'Rewind is only supported for remote Codex app-server sessions' }, 409)
+        }
+
+        const body = await c.req.json().catch(() => null)
+        const parsed = CodexMessageOperationRequestSchema.safeParse(body)
+        if (!parsed.success || !parsed.data.text?.trim()) {
+            return c.json({ success: false, error: 'Invalid body' }, 400)
+        }
+
+        try {
+            const rollback = await engine.rollbackCodexAndTruncateMessages(sessionResult.sessionId, parsed.data.localId)
+            if (rollback.success !== true) {
+                return c.json({ success: false, error: rollback.error ?? 'Codex rollback failed' }, 409)
+            }
+
+            await engine.sendMessage(sessionResult.sessionId, {
+                text: parsed.data.text,
+                localId: randomUUID(),
+                sentFrom: 'webapp'
+            })
+            return c.json({
+                success: true,
+                warning: rollback.warning ?? CODEX_FILE_WARNING
+            })
+        } catch (error) {
+            return c.json({
+                success: false,
+                error: error instanceof Error ? error.message : 'Codex rewind failed'
+            }, 500)
+        }
+    })
+
+    app.post('/sessions/:id/codex/fork', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const session = sessionResult.session
+        if ((session.metadata?.flavor ?? 'claude') !== 'codex') {
+            return c.json({ success: false, error: 'Fork is only supported for Codex sessions' }, 400)
+        }
+        if (session.agentState?.controlledByUser === true) {
+            return c.json({ success: false, error: 'Fork is only supported for remote Codex app-server sessions' }, 409)
+        }
+
+        const body = await c.req.json().catch(() => null)
+        const parsed = CodexMessageOperationRequestSchema.safeParse(body)
+        if (!parsed.success || !parsed.data.text?.trim()) {
+            return c.json({ success: false, error: 'Invalid body' }, 400)
+        }
+
+        const machineId = session.metadata?.machineId
+        const directory = session.metadata?.path
+        if (!machineId || !directory) {
+            return c.json({ success: false, error: 'Session machine/path metadata is missing' }, 409)
+        }
+
+        try {
+            const fork = await engine.forkCodexFromMessage(sessionResult.sessionId, parsed.data.localId)
+            if (fork.success !== true || !fork.threadId) {
+                return c.json({ success: false, error: fork.error ?? 'Codex fork failed' }, 409)
+            }
+
+            const spawn = await engine.spawnSession(
+                machineId,
+                directory,
+                'codex',
+                session.model ?? undefined,
+                session.modelReasoningEffort ?? undefined,
+                undefined,
+                undefined,
+                undefined,
+                fork.threadId,
+                undefined,
+                session.permissionMode
+            )
+            if (spawn.type === 'error') {
+                return c.json({
+                    success: false,
+                    threadId: fork.threadId,
+                    error: spawn.message
+                }, 503)
+            }
+
+            engine.copyMessagesBeforeLocalId(sessionResult.sessionId, spawn.sessionId, parsed.data.localId)
+            await engine.sendMessage(spawn.sessionId, {
+                text: parsed.data.text,
+                localId: randomUUID(),
+                sentFrom: 'webapp'
+            })
+            return c.json({
+                success: true,
+                sessionId: spawn.sessionId,
+                threadId: fork.threadId,
+                warning: fork.warning ?? CODEX_FILE_WARNING
+            })
+        } catch (error) {
+            return c.json({
+                success: false,
+                error: error instanceof Error ? error.message : 'Codex fork failed'
+            }, 500)
+        }
+    })
+
+    app.post('/sessions/:id/codex/steer', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const session = sessionResult.session
+        if ((session.metadata?.flavor ?? 'claude') !== 'codex') {
+            return c.json({ success: false, error: 'Steer is only supported for Codex sessions' }, 400)
+        }
+        if (session.agentState?.controlledByUser === true) {
+            return c.json({ success: false, error: 'Steer is only supported for remote Codex app-server sessions' }, 409)
+        }
+
+        const body = await c.req.json().catch(() => null)
+        const parsed = CodexSteerRequestSchema.safeParse(body)
+        if (!parsed.success) {
+            return c.json({ success: false, error: 'Invalid body' }, 400)
+        }
+
+        try {
+            const result = await engine.steerCodexCurrentTurn(
+                sessionResult.sessionId,
+                parsed.data.text,
+                parsed.data.localId
+            )
+            if (result.success !== true) {
+                return c.json({ success: false, error: result.error ?? 'Codex steer failed' }, 409)
+            }
+            return c.json({
+                success: true,
+                turnId: result.turnId,
+                localId: result.localId
+            })
+        } catch (error) {
+            return c.json({
+                success: false,
+                error: error instanceof Error ? error.message : 'Codex steer failed'
+            }, 500)
         }
     })
 

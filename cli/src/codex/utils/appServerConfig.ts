@@ -131,6 +131,7 @@ export function buildThreadStartParams(args: {
 export function buildTurnStartParams(args: {
     threadId: string;
     message: string;
+    clientUserMessageId?: string | null;
     cwd: string;
     mode?: EnhancedMode;
     cliOverrides?: CodexCliOverrides;
@@ -148,6 +149,10 @@ export function buildTurnStartParams(args: {
         cwd: args.cwd,
         input: [{ type: 'text', text: args.message }]
     };
+
+    if (args.clientUserMessageId) {
+        params.clientUserMessageId = args.clientUserMessageId;
+    }
 
     const allowCliOverrides = args.mode?.permissionMode === 'default';
     const cliOverrides = allowCliOverrides ? args.cliOverrides : undefined;

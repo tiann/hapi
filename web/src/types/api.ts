@@ -11,6 +11,9 @@ import type {
 export type {
     CodexModelsResponse,
     CodexModelSummary,
+    CodexForkResponse,
+    CodexRewindResponse,
+    CodexSteerResponse,
     CommandResponse,
     CursorModelsResponse,
     CursorModelSummary,

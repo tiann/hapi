@@ -174,6 +174,41 @@ export const SendMessageRequestSchema = z.object({
 
 export type SendMessageRequest = z.infer<typeof SendMessageRequestSchema>
 
+export const CodexMessageOperationRequestSchema = z.object({
+    localId: z.string().min(1),
+    text: z.string().min(1).optional()
+})
+
+export type CodexMessageOperationRequest = z.infer<typeof CodexMessageOperationRequestSchema>
+
+export const CodexSteerRequestSchema = z.object({
+    text: z.string().min(1),
+    localId: z.string().min(1).optional()
+})
+
+export type CodexSteerRequest = z.infer<typeof CodexSteerRequestSchema>
+
+export type CodexRewindResponse = {
+    success: boolean
+    warning?: string
+    error?: string
+}
+
+export type CodexForkResponse = {
+    success: boolean
+    sessionId?: string
+    threadId?: string
+    warning?: string
+    error?: string
+}
+
+export type CodexSteerResponse = {
+    success: boolean
+    turnId?: string
+    localId?: string
+    error?: string
+}
+
 export const SpawnSessionRequestSchema = z.object({
     directory: z.string().min(1),
     agent: AgentFlavorSchema.optional(),

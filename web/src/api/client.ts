@@ -8,6 +8,7 @@ import type {
     CodexDesktopSyncRequest,
     CodexDesktopStatusResponse,
     CodexCollaborationMode,
+    CodexForkResponse,
     FileSearchResponse,
     MachinesResponse,
     MessagesResponse,
@@ -17,6 +18,8 @@ import type {
     PushVapidPublicKeyResponse,
     SlashCommandsResponse,
     SkillsResponse,
+    CodexRewindResponse,
+    CodexSteerResponse,
     SpawnResponse,
     VisibilityPayload,
     HapiSessionExport,
@@ -392,6 +395,36 @@ export class ApiClient {
             { method: 'DELETE' }
         )
         return response as CancelMessageResponse
+    }
+
+    async codexRewindAndResend(sessionId: string, localId: string, text: string): Promise<CodexRewindResponse> {
+        return await this.request<CodexRewindResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/codex/rewind-resend`,
+            {
+                method: 'POST',
+                body: JSON.stringify({ localId, text })
+            }
+        )
+    }
+
+    async codexForkFromMessage(sessionId: string, localId: string, text: string): Promise<CodexForkResponse> {
+        return await this.request<CodexForkResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/codex/fork`,
+            {
+                method: 'POST',
+                body: JSON.stringify({ localId, text })
+            }
+        )
+    }
+
+    async codexSteerCurrentTurn(sessionId: string, text: string): Promise<CodexSteerResponse> {
+        return await this.request<CodexSteerResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/codex/steer`,
+            {
+                method: 'POST',
+                body: JSON.stringify({ text })
+            }
+        )
     }
 
     async abortSession(sessionId: string): Promise<void> {
