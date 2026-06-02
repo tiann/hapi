@@ -129,13 +129,16 @@ const channel = new FcmNotificationChannel(fcmService, sseStub, visibilityStub)
 
 // Construct a Session-shaped object that triggers `sendPermissionRequest`'s
 // enrichment branch. agentState.requests is the only thing the channel
-// needs beyond the basics.
+// needs beyond the basics. The session name carries a [SMOKE] prefix so
+// the wrist body is unmistakable - tapping Approve on a fake requestId
+// produces a 404 from the hub (the request literally does not exist),
+// so the operator must NOT tap Approve/Deny on these pings.
 const fakeSession = {
     id: sessionId,
     namespace,
-    name: 'Permission smoke test',
+    name: '[SMOKE] do not approve',
     active: true,
-    metadata: { flavor: 'codex', name: 'Permission smoke test' },
+    metadata: { flavor: 'codex', name: '[SMOKE] do not approve' },
     agentState: {
         requests: {
             'smoke-req-1': {
