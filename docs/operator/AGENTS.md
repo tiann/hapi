@@ -57,6 +57,33 @@ ElevenLabs ConvAI today: handoff OK, readback weak, payment, no mode machine. Ta
 
 ---
 
+## Daily ops: hub & runner restart discipline
+
+**NEVER** run `sudo systemctl restart hapi-hub.service` (alone, with `hapi-runner.service`, or any variant). It sends `SIGTERM` immediately - every WORKING agent loses its socket mid-turn, in-flight tokens vanish, the agent that issued the restart often vanishes from the DB along with everyone else (no graceful drain, no notice, no mercy).
+
+**Always use the wrappers.** Both share a switch lock so they can't race.
+
+| Need | Command | Behavior |
+|------|---------|----------|
+| Bounce hub only (env change, hung process, stuck websocket - **same stack**) | `hapi-restart-hub` | Patient drain: polls `hapi-sessions-health.sh` for `WORKING=0`, waits up to `HAPI_PATIENT_TIMEOUT=600s`, logs offenders before proceeding. Adds `hapi-runner.service` unless `--no-runner`. |
+| Switch active stack to a different worktree | `hapi-use-worktree <path>` | Same patient drain, then swings `hapi-active`, restarts hub + runner. |
+| Status preflight before any of the above | `hapi-driver-status --quiet` | Exit 0 idle / 75 busy / 2 stale; surfaces WORKING count and warns to use `hapi-restart-hub`. |
+| Hung-hub emergency only | `hapi-restart-hub --impatient` (or `HAPI_IMPATIENT=1`) | Skip drain, accept the yank. Use only when the hub itself is unresponsive. |
+
+**Verify the wrapper is reachable before you sudo:**
+
+```bash
+command -v hapi-restart-hub && hapi-restart-hub --help | head -3
+```
+
+If the symlink is dangling (workspace branch may have rotated `scripts/tooling/hapi-restart-hub.sh` out of tree), **cherry-pick `212ce0e` onto the current branch** before restarting anything; the wrapper file lives in-tree and the symlink relies on it. Don't fall back to raw `systemctl` because the wrapper isn't there - **fix the wrapper first.**
+
+Casualty pattern when this rule is broken: the agent that issued the restart sometimes vanishes from `~/.hapi/hapi.db` entirely (zero session row, zero messages) because mid-write `SIGTERM` rolls back the SQLite WAL. The agent commits seppuku.
+
+See `docs/tooling/driver-soup.md#patient-restarts-dont-yank-live-agents` for the full bypass matrix and design notes.
+
+---
+
 ## Upstream PR series
 
 | PR | Scope |
