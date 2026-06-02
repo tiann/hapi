@@ -94,13 +94,14 @@ function mentionNameFromPath(path: string): string {
 
 export function buildUserInputFromMessage(message: string): UserInput[] {
     const inputs: UserInput[] = [];
-    const mentionPattern = /(^|\s)@([^\s]+)/g;
+    const mentionPattern = /(^|\s)@(?:"((?:\\.|[^"\\])*)"|([^\s]+))/g;
     let lastIndex = 0;
     let match: RegExpExecArray | null;
 
     while ((match = mentionPattern.exec(message)) !== null) {
         const prefix = match[1] ?? '';
-        const path = match[2] ?? '';
+        const rawPath = match[2] ?? match[3] ?? '';
+        const path = rawPath.replace(/\\(["\\])/g, '$1');
         if (!path) continue;
 
         const atIndex = match.index + prefix.length;
@@ -114,7 +115,7 @@ export function buildUserInputFromMessage(message: string): UserInput[] {
             name: mentionNameFromPath(path),
             path
         });
-        lastIndex = atIndex + path.length + 1;
+        lastIndex = mentionPattern.lastIndex;
     }
 
     const remainder = message.slice(lastIndex);

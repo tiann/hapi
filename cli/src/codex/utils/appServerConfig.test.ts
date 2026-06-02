@@ -372,4 +372,12 @@ describe('appServerConfig', () => {
             { type: 'text', text: ' now' }
         ]);
     });
+
+    it('builds mention inputs from quoted @file tokens with spaces', () => {
+        expect(buildUserInputFromMessage('please inspect @"docs/My File.md" now')).toEqual([
+            { type: 'text', text: 'please inspect ' },
+            { type: 'mention', name: 'My File.md', path: 'docs/My File.md' },
+            { type: 'text', text: ' now' }
+        ]);
+    });
 });

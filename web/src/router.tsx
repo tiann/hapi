@@ -369,12 +369,17 @@ function SessionPage() {
             const search = query.slice(1)
             const response = await api.searchSessionFiles(sessionId, search, 50)
             if (!response.success || !response.files) return []
-            return response.files.map((file) => ({
-                key: `@${file.fullPath}`,
-                text: `@${file.fullPath}`,
-                label: `@${file.fileName}`,
-                description: file.filePath || file.fullPath
-            }))
+            return response.files.map((file) => {
+                const mentionText = /\s/.test(file.fullPath)
+                    ? `@"${file.fullPath.replace(/(["\\])/g, '\\$1')}"`
+                    : `@${file.fullPath}`
+                return {
+                    key: mentionText,
+                    text: mentionText,
+                    label: `@${file.fileName}`,
+                    description: file.filePath || file.fullPath
+                }
+            })
         }
         if (query.startsWith('$')) {
             return await getSkillSuggestions(query)
