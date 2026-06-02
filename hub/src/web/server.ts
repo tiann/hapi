@@ -22,6 +22,7 @@ import { createGitRoutes } from './routes/git'
 import { createCliRoutes } from './routes/cli'
 import { createCodexDesktopRoutes } from './routes/codexDesktop'
 import { createPushRoutes } from './routes/push'
+import { createDevicesRoutes } from './routes/devices'
 import { createVoiceRoutes } from './routes/voice'
 import type { SSEManager } from '../sse/sseManager'
 import type { VisibilityTracker } from '../visibility/visibilityTracker'
@@ -254,6 +255,7 @@ function createWebApp(options: {
         getSyncEngine: options.getSyncEngine
     }))
     app.route('/api', createPushRoutes(options.store, options.vapidPublicKey))
+    app.route('/api', createDevicesRoutes(options.store))
     app.route('/api', createVoiceRoutes())
 
     // Skip static serving in relay mode, show helpful message on root

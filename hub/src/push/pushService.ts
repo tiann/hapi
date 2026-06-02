@@ -10,6 +10,8 @@ export type PushPayload = {
         type: string
         sessionId: string
         url: string
+        /** First pending permission request id (permission-request pushes only). */
+        requestId?: string
     }
 }
 

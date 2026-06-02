@@ -11,6 +11,9 @@ import { SSEManager } from './sse/sseManager'
 import { getOrCreateVapidKeys } from './config/vapidKeys'
 import { PushService } from './push/pushService'
 import { PushNotificationChannel } from './push/pushNotificationChannel'
+import { FcmService } from './fcm/fcmService'
+import { FcmNotificationChannel } from './fcm/fcmNotificationChannel'
+import { resolveFcmConfig } from './fcm/fcmConfig'
 import { VisibilityTracker } from './visibility/visibilityTracker'
 import { TunnelManager } from './tunnel'
 import { waitForTunnelTlsReady } from './tunnel/tlsGate'
@@ -196,9 +199,30 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
 
     syncEngine = new SyncEngine(store, socketServer.io, socketServer.rpcRegistry, sseManager)
 
+    // When a native companion (Android FCM) device is registered for a
+    // namespace, the web-push fallback is suppressed - otherwise the
+    // operator gets duplicate notifications: one in the native app, one
+    // from the PWA service worker. The probe is namespace-scoped so a user
+    // who has only registered the PWA still gets web-push as today.
+    const nativeFallbackProbe = (namespace: string): boolean =>
+        store.fcm.getDevicesByNamespace(namespace).length > 0
+
     const notificationChannels: NotificationChannel[] = [
-        new PushNotificationChannel(pushService, sseManager, visibilityTracker, config.publicUrl)
+        new PushNotificationChannel(
+            pushService,
+            sseManager,
+            visibilityTracker,
+            config.publicUrl,
+            nativeFallbackProbe
+        )
     ]
+
+    const fcmConfig = resolveFcmConfig()
+    if (fcmConfig) {
+        const fcmService = new FcmService(fcmConfig.projectId, fcmConfig.serviceAccount, store)
+        notificationChannels.push(new FcmNotificationChannel(fcmService, sseManager, visibilityTracker, store))
+        console.log('[Fcm] Native companion push enabled (project:', fcmConfig.projectId + ')')
+    }
 
     if (config.serverChanSendKey && config.serverChanNotification) {
         notificationChannels.push(new ServerChanChannel(config.serverChanSendKey, config.publicUrl))
