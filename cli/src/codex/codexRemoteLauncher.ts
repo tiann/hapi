@@ -2918,7 +2918,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 }, {
                     signal: this.abortController.signal
                 });
-                session.sendUserMessage(text);
+                session.sendUserMessage(text, undefined, clientUserMessageId);
                 return {
                     success: true,
                     turnId: response.turnId,

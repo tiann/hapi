@@ -498,7 +498,7 @@ export class ApiSessionClient extends EventEmitter {
         }
     }
 
-    sendUserMessage(text: string, meta?: MessageMeta): void {
+    sendUserMessage(text: string, meta?: MessageMeta, localId?: string): void {
         if (!text) {
             return
         }
@@ -517,7 +517,8 @@ export class ApiSessionClient extends EventEmitter {
 
         this.socket.emit('message', {
             sid: this.sessionId,
-            message: content
+            message: content,
+            ...(localId ? { localId } : {})
         })
     }
 

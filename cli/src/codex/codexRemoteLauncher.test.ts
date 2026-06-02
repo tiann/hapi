@@ -862,6 +862,7 @@ function createSessionStub(messages = ['hello from launcher test'], mode = creat
 
     const sessionEvents: Array<{ type: string; [key: string]: unknown }> = [];
     const codexMessages: unknown[] = [];
+    const userMessages: Array<{ text: string; meta?: unknown; localId?: string }> = [];
     const summaryMessages: unknown[] = [];
     const thinkingChanges: boolean[] = [];
     const foundSessionIds: string[] = [];
@@ -889,7 +890,9 @@ function createSessionStub(messages = ['hello from launcher test'], mode = creat
         sendAgentMessage(message: unknown) {
             codexMessages.push(message);
         },
-        sendUserMessage(_text: string) {},
+        sendUserMessage(text: string, meta?: unknown, localId?: string) {
+            userMessages.push({ text, meta, localId });
+        },
         sendClaudeSessionMessage(message: unknown) {
             summaryMessages.push(message);
         },
@@ -944,8 +947,8 @@ function createSessionStub(messages = ['hello from launcher test'], mode = creat
         sendSessionEvent(event: { type: string; [key: string]: unknown }) {
             client.sendSessionEvent(event);
         },
-        sendUserMessage(text: string) {
-            client.sendUserMessage(text);
+        sendUserMessage(text: string, meta?: unknown, localId?: string) {
+            client.sendUserMessage(text, meta, localId);
         }
     };
 
@@ -953,6 +956,7 @@ function createSessionStub(messages = ['hello from launcher test'], mode = creat
         session,
         sessionEvents,
         codexMessages,
+        userMessages,
         summaryMessages,
         thinkingChanges,
         foundSessionIds,
@@ -1153,7 +1157,7 @@ describe('codexRemoteLauncher', () => {
     it('steers the active Codex turn via RPC', async () => {
         harness.suppressTurnCompletion = true;
         harness.emitTurnAbortedOnInterrupt = true;
-        const { session, rpcHandlers } = createSessionStub(['first message']);
+        const { session, rpcHandlers, userMessages } = createSessionStub(['first message']);
 
         const running = codexRemoteLauncher(session as never);
         await vi.waitFor(() => {
@@ -1176,6 +1180,7 @@ describe('codexRemoteLauncher', () => {
             clientUserMessageId: 'steer-local',
             input: [{ type: 'text', text: 'please adjust' }]
         }]);
+        expect(userMessages).toEqual([{ text: 'please adjust', meta: undefined, localId: 'steer-local' }]);
         expect(result).toEqual({
             success: true,
             turnId: 'turn-1',
