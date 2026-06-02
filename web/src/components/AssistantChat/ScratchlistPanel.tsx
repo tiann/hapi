@@ -310,7 +310,17 @@ export function ScratchlistPanel({
                     aria-hidden={collapsed}
                     {...(!collapsed ? { 'data-open': '' } : {})}
                 >
-                    <div className="collapsible-inner">
+                    {/*
+                     * `inert` removes the inner controls from the focus and
+                     * pointer-events tree (and the accessibility tree) while
+                     * collapsed. CSS-only collapse left the textarea + buttons
+                     * focusable under aria-hidden, which is the regression
+                     * flagged by the upstream PR review (a11y violation:
+                     * focusable descendants inside an aria-hidden subtree).
+                     * Using inert preserves the grid-template-rows expand
+                     * animation while keeping the collapsed body unreachable.
+                     */}
+                    <div className="collapsible-inner" inert={collapsed}>
                         <div className="px-3 pb-3">
                             <form onSubmit={handleSubmit} className="flex items-start gap-2">
                                 <textarea

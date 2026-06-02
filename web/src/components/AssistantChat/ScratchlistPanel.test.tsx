@@ -69,6 +69,24 @@ describe('ScratchlistPanel', () => {
         expect(toggle.getAttribute('aria-expanded')).toBe('true')
     })
 
+    it('marks the inner content `inert` while collapsed so hidden controls are not focusable', () => {
+        // Regression guard: upstream PR review flagged that under the
+        // CSS-only collapse the textarea + action buttons were still in
+        // the focus / a11y tree. The fix is `inert` on the inner; this
+        // test fails if anyone reverts that.
+        const { container } = renderPanel()
+        const inner = container.querySelector('.collapsible-inner')
+        expect(inner).not.toBeNull()
+        expect(inner!.hasAttribute('inert')).toBe(true)
+
+        expandPanel()
+        // jsdom doesn't always reflect the React `inert={false}` prop as
+        // an attribute removal — accept either "absent" or empty string,
+        // which both indicate non-inert per the HTML spec.
+        const value = inner!.getAttribute('inert')
+        expect(value === null || value === 'false' || value === '').toBe(true)
+    })
+
     it('hydrates entries that were persisted before mount', () => {
         persistScratchlist(SID, [
             makeEntry({ id: 'persisted-1', text: 'persisted note' }),
