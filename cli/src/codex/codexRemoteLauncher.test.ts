@@ -863,6 +863,7 @@ function createSessionStub(messages = ['hello from launcher test'], mode = creat
     const sessionEvents: Array<{ type: string; [key: string]: unknown }> = [];
     const codexMessages: unknown[] = [];
     const userMessages: Array<{ text: string; meta?: unknown; localId?: string }> = [];
+    const consumedLocalIds: string[][] = [];
     const summaryMessages: unknown[] = [];
     const thinkingChanges: boolean[] = [];
     const foundSessionIds: string[] = [];
@@ -892,6 +893,9 @@ function createSessionStub(messages = ['hello from launcher test'], mode = creat
         },
         sendUserMessage(text: string, meta?: unknown, localId?: string) {
             userMessages.push({ text, meta, localId });
+        },
+        emitMessagesConsumed(localIds: string[]) {
+            consumedLocalIds.push(localIds);
         },
         sendClaudeSessionMessage(message: unknown) {
             summaryMessages.push(message);
@@ -957,6 +961,7 @@ function createSessionStub(messages = ['hello from launcher test'], mode = creat
         sessionEvents,
         codexMessages,
         userMessages,
+        consumedLocalIds,
         summaryMessages,
         thinkingChanges,
         foundSessionIds,
@@ -1186,7 +1191,7 @@ describe('codexRemoteLauncher', () => {
     it('steers the active Codex turn via RPC', async () => {
         harness.suppressTurnCompletion = true;
         harness.emitTurnAbortedOnInterrupt = true;
-        const { session, rpcHandlers, userMessages } = createSessionStub(['first message']);
+        const { session, rpcHandlers, userMessages, consumedLocalIds } = createSessionStub(['first message']);
 
         const running = codexRemoteLauncher(session as never);
         await vi.waitFor(() => {
@@ -1210,6 +1215,7 @@ describe('codexRemoteLauncher', () => {
             input: [{ type: 'text', text: 'please adjust' }]
         }]);
         expect(userMessages).toEqual([{ text: 'please adjust', meta: undefined, localId: 'steer-local' }]);
+        expect(consumedLocalIds).toEqual([['steer-local']]);
         expect(result).toEqual({
             success: true,
             turnId: 'turn-1',
