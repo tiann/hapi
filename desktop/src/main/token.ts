@@ -1,8 +1,8 @@
 import { randomBytes } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
-import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { ConfigStore } from './configStore'
+import { getHapiHome } from './hapiHome'
 
 type HapiSettings = {
     cliApiToken?: unknown
@@ -29,7 +29,7 @@ export async function resolveCliApiToken(configStore: ConfigStore): Promise<stri
 }
 
 async function readTokenFromSettings(): Promise<string | null> {
-    const settingsPath = join(homedir(), '.hapi', 'settings.json')
+    const settingsPath = join(getHapiHome(), 'settings.json')
     try {
         const raw = await readFile(settingsPath, 'utf8')
         const settings = JSON.parse(raw) as HapiSettings

@@ -3,12 +3,12 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { readFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
-import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { ConsoleLogEntry, LauncherConfig, RuntimeState } from '../shared'
 import { resolveCliApiToken } from './token'
 import type { ConfigStore } from './configStore'
+import { getHapiHome } from './hapiHome'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const repoRoot = resolve(__dirname, '../../..')
@@ -348,7 +348,7 @@ async function isPortAvailable(port: number): Promise<boolean> {
 
 async function readMachineId(): Promise<string | null> {
     try {
-        const raw = await readFile(join(homedir(), '.hapi', 'settings.json'), 'utf8')
+        const raw = await readFile(join(getHapiHome(), 'settings.json'), 'utf8')
         const parsed = JSON.parse(raw) as { machineId?: unknown }
         return typeof parsed.machineId === 'string' ? parsed.machineId : null
     } catch {
