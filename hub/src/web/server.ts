@@ -54,10 +54,21 @@ function isGeminiSetupFrame(message: string | ArrayBuffer | Uint8Array): boolean
     }
 }
 
+function isGeminiSetupCompleteFrame(message: string | ArrayBuffer | Uint8Array): boolean {
+    try {
+        const parsed = JSON.parse(decodeWsText(message)) as unknown
+        return parsed !== null && typeof parsed === 'object' && 'setupComplete' in (parsed as object)
+    } catch {
+        return false
+    }
+}
+
 // Gemini Live WebSocket proxy — relays browser WS to Google, bypassing region restrictions
 function createGeminiProxyWebSocketHandler() {
     const GEMINI_WS_BASE = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent'
     const upstreamMap = new WeakMap<ServerWebSocket<unknown>, WebSocket>()
+    // pendingMap holds queued client frames until Google acknowledges setup via setupComplete.
+    // Flushed on setupComplete; until then message() queues rather than forwards.
     const pendingMap = new WeakMap<ServerWebSocket<unknown>, Array<string | ArrayBuffer | Uint8Array>>()
 
     return {
@@ -72,13 +83,8 @@ function createGeminiProxyWebSocketHandler() {
 
             upstream.onopen = () => {
                 // Hub-owned setup only — never forward client setup (prevents generic Gemini proxy abuse).
+                // Do NOT flush pending here: wait for Google's setupComplete before forwarding client frames.
                 upstream.send(JSON.stringify(buildGeminiLiveSetupMessage(data.language)))
-                for (const queued of pending.splice(0)) {
-                    if (!isGeminiSetupFrame(queued)) {
-                        upstream.send(queued)
-                    }
-                }
-                pendingMap.delete(clientWs)
             }
             upstream.onmessage = (event) => {
                 try {
@@ -86,6 +92,14 @@ function createGeminiProxyWebSocketHandler() {
                         clientWs.send(typeof event.data === 'string' ? event.data : new Uint8Array(event.data as ArrayBuffer))
                     }
                 } catch { /* client gone */ }
+                // Flush queued client frames only after Google acknowledges setup.
+                const pending = pendingMap.get(clientWs)
+                if (pending && isGeminiSetupCompleteFrame(event.data as string | ArrayBuffer)) {
+                    pendingMap.delete(clientWs)
+                    for (const queued of pending) {
+                        try { upstream.send(queued) } catch { /* client gone */ }
+                    }
+                }
             }
             upstream.onerror = () => {
                 pendingMap.delete(clientWs)
@@ -103,11 +117,12 @@ function createGeminiProxyWebSocketHandler() {
                 return
             }
             const upstream = upstreamMap.get(clientWs)
-            if (upstream?.readyState === WebSocket.OPEN) {
+            const pending = pendingMap.get(clientWs)
+            if (pending) {
+                // Still awaiting setupComplete (or upstream still connecting) — queue.
+                pending.push(message)
+            } else if (upstream?.readyState === WebSocket.OPEN) {
                 upstream.send(message)
-            } else if (upstream?.readyState === WebSocket.CONNECTING) {
-                const pending = pendingMap.get(clientWs)
-                if (pending) pending.push(message)
             }
         },
         close(clientWs: ServerWebSocket<unknown>, code: number, reason: string) {
