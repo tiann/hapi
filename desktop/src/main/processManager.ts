@@ -43,6 +43,7 @@ type TypedEventEmitter<TEvents extends Record<string, unknown[]>> = {
 export class ProcessManager {
     private readonly emitter = new EventEmitter() as EventEmitter & TypedEventEmitter<ProcessManagerEvents>
     private hubProcess: ChildProcessWithoutNullStreams | null = null
+    private lifecycleQueue: Promise<void> = Promise.resolve()
     private state: RuntimeState = {
         status: 'stopped',
         error: null,
@@ -69,6 +70,30 @@ export class ProcessManager {
     }
 
     async start(): Promise<void> {
+        await this.enqueueLifecycle(async () => {
+            if (this.state.status === 'starting' || this.state.status === 'running' || this.state.status === 'stopping') {
+                return
+            }
+            await this.startInternal()
+        })
+    }
+
+    async stop(): Promise<void> {
+        await this.enqueueLifecycle(async () => {
+            if (this.state.status === 'stopped' || this.state.status === 'stopping') {
+                return
+            }
+            await this.stopInternal()
+        })
+    }
+
+    private async enqueueLifecycle(task: () => Promise<void>): Promise<void> {
+        const run = this.lifecycleQueue.then(task, task)
+        this.lifecycleQueue = run.catch(() => {})
+        await run
+    }
+
+    private async startInternal(): Promise<void> {
         if (this.state.status === 'starting' || this.state.status === 'running') {
             return
         }
@@ -98,7 +123,7 @@ export class ProcessManager {
         }
     }
 
-    async stop(): Promise<void> {
+    private async stopInternal(): Promise<void> {
         if (this.state.status === 'stopped' || this.state.status === 'stopping') {
             return
         }
@@ -235,7 +260,7 @@ export class ProcessManager {
     private appendProcessOutput(source: 'hub' | 'runner', chunk: Buffer): void {
         const lines = chunk.toString('utf8').split(/\r?\n/).filter((line) => line.length > 0)
         for (const line of lines) {
-            this.appendLog(source, line)
+            this.appendLog(source, redactSensitiveLogLine(line))
         }
     }
 
@@ -260,6 +285,13 @@ export class ProcessManager {
             return runnerOnline && rootsSynced
         }, 60000, 'Runner 没有完成连接')
     }
+}
+
+function redactSensitiveLogLine(line: string): string {
+    return line
+        .replace(/([?&]token=)[^&\s]+/gi, '$1[REDACTED]')
+        .replace(/(Token:\s*)\S+/gi, '$1[REDACTED]')
+        .replace(/(CLI_API_TOKEN=)\S+/gi, '$1[REDACTED]')
 }
 
 function getHapiCommand(): HapiCommand {
