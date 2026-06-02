@@ -230,6 +230,7 @@ export default {
   'chat.settings': '设置',
   'chat.terminal': '终端',
   'chat.switchRemote': '切换到远程模式',
+  'chat.sendError.fallback': '消息未能发送。请修改后重试。',
 
   // Codex review
   'codexReview.title': 'Codex review',

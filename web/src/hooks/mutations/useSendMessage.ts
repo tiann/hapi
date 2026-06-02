@@ -6,6 +6,7 @@ import { makeClientSideId } from '@/lib/messages'
 import {
     appendOptimisticMessage,
     getMessageWindowState,
+    removeOptimisticMessage,
     updateMessageStatus,
 } from '@/lib/message-window-store'
 import { usePlatform } from '@/hooks/usePlatform'
@@ -21,11 +22,49 @@ type SendMessageInput = {
 
 type BlockedReason = 'no-api' | 'no-session' | 'pending'
 
+/**
+ * Information about a send that the underlying mutation rejected.
+ *
+ * Surfaced via the `onError` option so the consumer can keep the typed
+ * text in the composer (composer must NOT clear on 4xx/5xx or network
+ * failure) and render an inline affordance.
+ *
+ * - `sessionId` is the session the failed send was actually targeting
+ *   (post-`resolveSessionId`).  Inactive-session resume can resolve a
+ *   target id, kick off async navigation, and then have the POST fail
+ *   before navigation completes; without this id the consumer would
+ *   restore the text into the wrong composer (the old session) and the
+ *   sessionId-change effect would clear it again.
+ * - `text` is the original input the user typed, captured before the
+ *   mutation cleared the composer.
+ * - `error` is the raw thrown value (typically `Error`) so the consumer
+ *   can inspect status / message.
+ * - `scheduledAt` is the absolute epoch-ms the send was bound for, or
+ *   null for an immediate send.  Carried through so a failed scheduled
+ *   send can be restored as a scheduled send instead of silently
+ *   downgrading to immediate -- `SessionChat.handleSend` clears the
+ *   pendingSchedule the moment the mutation is accepted, so without
+ *   this the schedule is gone by the time onError fires.
+ *
+ * Only fired for text-only sends.  Sends with attachments fall back to
+ * the legacy failed-bubble UX (the optimistic row stays as `failed` and
+ * the user retries via the in-thread retry button); the composer-restore
+ * path can't reinstate uploaded attachment metadata, so doing the swap
+ * for attachment sends would silently drop the attachments.
+ */
+export type SendErrorInfo = {
+    sessionId: string
+    text: string
+    error: unknown
+    scheduledAt: number | null
+}
+
 type UseSendMessageOptions = {
     resolveSessionId?: (sessionId: string) => Promise<string>
     onSessionResolved?: (sessionId: string) => void
     onBlocked?: (reason: BlockedReason) => void
     onSuccess?: (sessionId: string) => void
+    onError?: (info: SendErrorInfo) => void
     isSessionThinking?: boolean
 }
 
@@ -67,6 +106,30 @@ function findMessageByLocalId(
         if (message.localId === localId) return message
     }
     return null
+}
+
+/** Pull attachments off a stored optimistic user message.  The schema types
+ *  `content` as `unknown`, so this is a defensive narrow: we accept only the
+ *  exact shape `createOptimisticMessage` produces (`role: 'user'`, text-typed
+ *  content, attachments array) and return undefined otherwise.  Used by
+ *  retryMessage so an attachment send retried from the failed-bubble button
+ *  re-fires with its attachments instead of becoming a text-only send. */
+function getMessageAttachments(message: DecryptedMessage): AttachmentMetadata[] | undefined {
+    const content = message.content as unknown
+    if (
+        typeof content !== 'object' ||
+        content === null
+    ) {
+        return undefined
+    }
+    const outer = content as { role?: unknown; content?: unknown }
+    if (outer.role !== 'user') return undefined
+    const inner = outer.content as { type?: unknown; attachments?: unknown } | null
+    if (!inner || inner.type !== 'text') return undefined
+    if (!Array.isArray(inner.attachments) || inner.attachments.length === 0) {
+        return undefined
+    }
+    return inner.attachments as AttachmentMetadata[]
 }
 
 export function useSendMessage(
@@ -111,9 +174,34 @@ export function useSendMessage(
             haptic.notification('success')
             options?.onSuccess?.(input.sessionId)
         },
-        onError: (_, input) => {
-            updateMessageStatus(input.sessionId, input.localId, 'failed')
+        onError: (error, input) => {
+            // Attachment sends keep the legacy failed-bubble UX: the
+            // composer-restore path can only re-seat text + scheduledAt,
+            // not the uploaded attachment metadata.  Removing the row
+            // would destroy the attachment preview AND leave the operator
+            // with no retry surface for it.  Keep the row as `failed` so
+            // the in-thread retry button can re-fire the send (with
+            // attachments) via retryMessage.
+            if (input.attachments && input.attachments.length > 0) {
+                updateMessageStatus(input.sessionId, input.localId, 'failed')
+                haptic.notification('error')
+                return
+            }
+            // Text-only sends use the composer-restore path: drop the
+            // optimistic row from the thread (otherwise the failed bubble
+            // would visually duplicate the same text the composer is
+            // about to restore, and the operator could stack a stale
+            // failed turn next to a fresh send) and hand the text +
+            // scheduledAt + sessionId back so the route can put both
+            // back into the composer keyed to the right session.
+            removeOptimisticMessage(input.sessionId, input.localId)
             haptic.notification('error')
+            options?.onError?.({
+                sessionId: input.sessionId,
+                text: input.text,
+                error,
+                scheduledAt: input.scheduledAt ?? null
+            })
         },
     })
 
@@ -190,6 +278,7 @@ export function useSendMessage(
             text: message.originalText,
             localId,
             createdAt: message.createdAt,
+            attachments: getMessageAttachments(message),
             scheduledAt: message.scheduledAt ?? null,
         })
         return true

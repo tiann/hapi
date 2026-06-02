@@ -19,7 +19,7 @@ import { buildConversationOutline } from '@/chat/outline'
 import { buildVisibleChatBlocks, isToolGroupBlock, type ToolGroupBlock } from '@/chat/toolGroups'
 import { isQueuedForInvocation, mergeMessages } from '@/lib/messages'
 import { inactiveSessionCanResume } from '@/lib/sessionResume'
-import { HappyComposer } from '@/components/AssistantChat/HappyComposer'
+import { HappyComposer, type ComposerSendError } from '@/components/AssistantChat/HappyComposer'
 import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
 import { resolvePendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
 import { HappyThread } from '@/components/AssistantChat/HappyThread'
@@ -266,6 +266,12 @@ type SessionChatProps = {
     onRetryMessage?: (localId: string) => void
     autocompleteSuggestions?: (query: string) => Promise<Suggestion[]>
     availableSlashCommands?: readonly SlashCommand[]
+    // The latest send the hub rejected (4xx/5xx/network).  When set, the
+    // composer is asked to restore the typed text and surface an inline
+    // error -- see HappyComposer.  Cleared by `onClearSendError` once the
+    // user dismisses or starts editing.
+    sendError?: ComposerSendError | null
+    onClearSendError?: () => void
 }
 
 /**
@@ -1102,6 +1108,8 @@ function SessionChatInner(props: SessionChatProps) {
                         scratchlistMode={scratchlistMode}
                         scratchlistCount={scratchlist.entries.length}
                         onScratchlistToggle={handleScratchlistToggle}
+                        sendError={props.sendError ?? null}
+                        onClearSendError={props.onClearSendError}
                     />
                 </div>
             </AssistantRuntimeProvider>
