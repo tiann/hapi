@@ -295,21 +295,7 @@ Issue bodies with backticks, code blocks, or `$` characters should always go thr
 - Do NOT reference this handoff document (`docs/plans/peer-handoff-overseer-build-plan.md`) in any issue body - that file is operator-private and references to it shouldn't appear on the public-fork GitHub page.
 - Do NOT reference the candid backstory in §1 of this handoff anywhere - it's for your context only.
 
-**When done**, post a single summary message to this session via:
-
-```bash
-curl -X POST http://localhost:3006/api/sessions/<this-session-id>/messages \
-  -H "Cookie: hapi_token=$HAPI_API_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d "$(cat <<'EOF'
-{
-  "body": "[your summary per §4]"
-}
-EOF
-)"
-```
-
-The session ID will be provided when you're spawned. Treat the message as a final report; the spawning thread will be watching for it.
+**When done**: your final assistant response in this Claude session IS the summary report. Write it per §4's acceptance criteria. The spawning thread (the operator agent) will read the report from your session transcript via the HAPI UI - no API ping back is required. You do not need to know or care about the spawning session's ID.
 
 ---
 
