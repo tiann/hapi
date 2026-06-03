@@ -145,7 +145,7 @@ export function voicePromptLayersFromPrefs(prefs: VoicePersonalityPreferences): 
 /** Bundled composed prompt for the session language (editable copy baseline in Settings). */
 export function getDefaultVoiceSystemPrompt(language?: string): string {
     return composeVoiceAgentPrompt(voicePromptLayersFromPrefs(DEFAULT_VOICE_PERSONALITY))
-        + buildVoiceLanguageBlock(language)
+        + (language ? buildVoiceLanguageBlock(language) : '')
 }
 
 export interface VoicePromptComposeResult {
@@ -163,8 +163,9 @@ export function resolveComposedVoiceSystemPrompt(
         maxWireBytes?: number
     }
 ): VoicePromptComposeResult {
+    const lang = options?.language
     let prompt = composeVoiceAgentPrompt(voicePromptLayersFromPrefs(prefs))
-        + buildVoiceLanguageBlock(options?.language)
+        + (lang ? buildVoiceLanguageBlock(lang) : '')
     prompt += getResponseLengthInstruction(prefs.responseLength ?? 'balanced')
 
     const maxBytes = options?.maxWireBytes
