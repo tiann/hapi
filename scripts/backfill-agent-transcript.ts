@@ -34,6 +34,7 @@ function argValue(name: string): string | undefined {
 function usage(): never {
     console.error(`Usage: bun scripts/backfill-agent-transcript.ts \\
   --session <hapiSessionId> (--agent cursor|claude|codex --chat-id <uuid> | --transcript <path>) \\
+  [--project <projectDir>]  # tie-breaker when the same chat UUID exists under multiple Cursor/Claude projects
   [--db ~/.hapi/hapi.db] [--dry-run] [--force]`)
     process.exit(2)
 }
@@ -42,79 +43,147 @@ function expandHome(path: string): string {
     return path.startsWith('~/') ? join(homedir(), path.slice(2)) : path
 }
 
-function findCursorTranscript(chatId: string): string | null {
-    const root = join(homedir(), '.cursor', 'projects')
-    if (!existsSync(root)) return null
+type TranscriptCandidate = {
+    path: string
+    slug: string
+    size: number
+}
+
+function projectPathToSlug(projectPath: string): string {
+    // Cursor / Claude project dirs replace path separators with single hyphens,
+    // e.g. /home/heavygee/coding/openab -> home-heavygee-coding-openab
+    // Claude prefixes with a single leading dash.
+    const trimmed = projectPath.replace(/^\/+|\/+$/g, '')
+    return trimmed.split('/').filter(Boolean).join('-')
+}
+
+function scoreCandidate(c: TranscriptCandidate, projectHint?: string): number {
+    // Higher is better. Matching slug wins decisively; size breaks ties.
+    let score = c.size
+    if (projectHint) {
+        const wantSlug = projectPathToSlug(projectHint)
+        if (c.slug === wantSlug || c.slug === `-${wantSlug}`) score += 1_000_000_000
+    }
+    return score
+}
+
+function pickCandidate(
+    agent: AgentFlavor,
+    chatId: string,
+    candidates: TranscriptCandidate[],
+    projectHint?: string
+): string | null {
+    if (candidates.length === 0) return null
+    if (candidates.length === 1) return candidates[0]!.path
+    const ranked = [...candidates].sort((a, b) => scoreCandidate(b, projectHint) - scoreCandidate(a, projectHint))
+    const winner = ranked[0]!
+    const loserPaths = ranked.slice(1).map((c) => `  - ${c.path} (size=${c.size})`).join('\n')
+    console.warn(
+        `warn: ${candidates.length} ${agent} transcripts found for chat ${chatId}; ` +
+        `using "${winner.path}" (size=${winner.size}${projectHint ? `, projectHint=${projectHint}` : ''}).\n` +
+        `  other candidates:\n${loserPaths}`
+    )
+    return winner.path
+}
+
+function findCursorTranscriptCandidates(chatId: string, rootOverride?: string): TranscriptCandidate[] {
+    const root = rootOverride ?? join(homedir(), '.cursor', 'projects')
+    if (!existsSync(root)) return []
     const needle = chatId.toLowerCase()
+    const found: TranscriptCandidate[] = []
     for (const slug of readdirSync(root)) {
-        const candidate = join(root, slug, 'agent-transcripts', chatId, `${chatId}.jsonl`)
-        if (existsSync(candidate)) return candidate
+        const tryPush = (p: string) => {
+            if (!existsSync(p)) return
+            try {
+                const st = statSync(p)
+                if (st.isFile()) found.push({ path: p, slug, size: st.size })
+            } catch {
+                // ignore stat errors
+            }
+        }
+        tryPush(join(root, slug, 'agent-transcripts', chatId, `${chatId}.jsonl`))
         const dir = join(root, slug, 'agent-transcripts')
         if (!existsSync(dir)) continue
         for (const entry of readdirSync(dir)) {
+            if (entry.toLowerCase() === needle) continue // already pushed above
             if (!entry.toLowerCase().startsWith(needle)) continue
-            const full = join(dir, entry, `${entry}.jsonl`)
-            if (existsSync(full)) return full
+            tryPush(join(dir, entry, `${entry}.jsonl`))
         }
     }
-    return null
+    // De-dupe by path
+    const seen = new Set<string>()
+    return found.filter((c) => (seen.has(c.path) ? false : (seen.add(c.path), true)))
 }
 
-function findClaudeTranscript(chatId: string): string | null {
-    const root = join(homedir(), '.claude', 'projects')
-    if (!existsSync(root)) return null
+function findClaudeTranscriptCandidates(chatId: string, rootOverride?: string): TranscriptCandidate[] {
+    const root = rootOverride ?? join(homedir(), '.claude', 'projects')
+    if (!existsSync(root)) return []
     const needle = chatId.toLowerCase()
+    const found: TranscriptCandidate[] = []
     for (const slug of readdirSync(root)) {
-        const direct = join(root, slug, `${chatId}.jsonl`)
-        if (existsSync(direct)) return direct
+        const tryPush = (p: string) => {
+            if (!existsSync(p)) return
+            try {
+                const st = statSync(p)
+                if (st.isFile()) found.push({ path: p, slug, size: st.size })
+            } catch {
+                // ignore
+            }
+        }
+        tryPush(join(root, slug, `${chatId}.jsonl`))
         const projectDir = join(root, slug)
+        if (!existsSync(projectDir)) continue
         for (const name of readdirSync(projectDir)) {
             if (!name.endsWith('.jsonl')) continue
             const base = name.slice(0, -'.jsonl'.length)
-            if (base.toLowerCase().startsWith(needle)) {
-                return join(projectDir, name)
-            }
+            if (base.toLowerCase() === needle) continue
+            if (base.toLowerCase().startsWith(needle)) tryPush(join(projectDir, name))
         }
     }
-    return null
+    const seen = new Set<string>()
+    return found.filter((c) => (seen.has(c.path) ? false : (seen.add(c.path), true)))
 }
 
-function findCodexTranscript(chatId: string): string | null {
-    const root = join(homedir(), '.codex', 'sessions')
-    if (!existsSync(root)) return null
+function findCodexTranscriptCandidates(chatId: string, rootOverride?: string): TranscriptCandidate[] {
+    const root = rootOverride ?? join(homedir(), '.codex', 'sessions')
+    if (!existsSync(root)) return []
+    const found: TranscriptCandidate[] = []
 
-    function walk(dir: string): string | null {
+    function walk(dir: string): void {
         for (const entry of readdirSync(dir)) {
             const full = join(dir, entry)
-            const st = statSync(full)
-            if (st.isDirectory()) {
-                const hit = walk(full)
-                if (hit) return hit
-                continue
-            }
+            let st
+            try { st = statSync(full) } catch { continue }
+            if (st.isDirectory()) { walk(full); continue }
             if (!entry.startsWith('rollout-') || !entry.endsWith('.jsonl')) continue
-            const text = readFileSync(full, 'utf8')
-            const first = text.split('\n').find((l) => l.trim())
-            if (!first) continue
             try {
+                const text = readFileSync(full, 'utf8')
+                const first = text.split('\n').find((l) => l.trim())
+                if (!first) continue
                 const row = JSON.parse(first) as { type?: string; payload?: { id?: string } }
                 if (row.type === 'session_meta' && row.payload?.id === chatId) {
-                    return full
+                    found.push({ path: full, slug: '', size: st.size })
                 }
             } catch {
-                continue
+                // skip malformed
             }
         }
-        return null
     }
 
-    return walk(root)
+    walk(root)
+    return found
 }
 
-export function resolveTranscriptPath(agent: AgentFlavor, chatId: string): string | null {
-    if (agent === 'cursor') return findCursorTranscript(chatId)
-    if (agent === 'claude') return findClaudeTranscript(chatId)
-    return findCodexTranscript(chatId)
+export function resolveTranscriptPath(
+    agent: AgentFlavor,
+    chatId: string,
+    projectHint?: string,
+    rootOverride?: string
+): string | null {
+    const candidates = agent === 'cursor' ? findCursorTranscriptCandidates(chatId, rootOverride)
+        : agent === 'claude' ? findClaudeTranscriptCandidates(chatId, rootOverride)
+        : findCodexTranscriptCandidates(chatId, rootOverride)
+    return pickCandidate(agent, chatId, candidates, projectHint)
 }
 
 function extractCursorText(content: unknown): string {
@@ -303,10 +372,11 @@ export function backfillSessionMessages(opts: {
     agent: AgentFlavor
     chatId: string
     transcriptPath?: string
+    projectHint?: string
     dryRun?: boolean
     force?: boolean
 }): { inserted: number; skipped: number; transcriptPath: string; total: number } {
-    const transcriptPath = opts.transcriptPath ?? resolveTranscriptPath(opts.agent, opts.chatId)
+    const transcriptPath = opts.transcriptPath ?? resolveTranscriptPath(opts.agent, opts.chatId, opts.projectHint)
     if (!transcriptPath) {
         throw new Error(`transcript not found for ${opts.agent} chat ${opts.chatId}`)
     }
@@ -353,6 +423,7 @@ if (import.meta.main) {
     const agentRaw = argValue('--agent') as AgentFlavor | undefined
     const chatId = argValue('--chat-id')
     const transcript = argValue('--transcript')
+    const projectHint = argValue('--project')
     const dbPath = expandHome(argValue('--db') ?? process.env.HAPI_DB ?? join(homedir(), '.hapi', 'hapi.db'))
     const dryRun = process.argv.includes('--dry-run')
     const force = process.argv.includes('--force')
@@ -370,6 +441,7 @@ if (import.meta.main) {
         agent,
         chatId: resolvedChatId,
         transcriptPath: transcript ? expandHome(transcript) : undefined,
+        projectHint: projectHint ? expandHome(projectHint) : undefined,
         dryRun,
         force
     })
