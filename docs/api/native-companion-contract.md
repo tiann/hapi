@@ -3,6 +3,10 @@
 **Audience:** Implementers of native companion apps (Android phone + Wear OS, iOS, etc.) that pair with a hapi hub via FCM.  
 **Auth:** Same JWT as the web client (`POST /api/bind` → `Authorization: Bearer`).
 
+## Scope
+
+A companion implementing this contract is a **thin client to a remote hub**, not a hub-on-phone. It receives notifications and acts as a reply / approval surface for a hub running on a server the operator controls. It is not a substitute for `hapi-runner` running on Android via Termux.
+
 ---
 
 ## Device registration (FCM)
