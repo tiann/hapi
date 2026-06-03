@@ -164,8 +164,11 @@ export function resolveComposedVoiceSystemPrompt(
     }
 ): VoicePromptComposeResult {
     const lang = options?.language
+    const isElevenLabs = options?.backend === 'elevenlabs'
+    // ElevenLabs has its own language field; Gemini/Qwen need the block in the prompt.
+    // For Gemini/Qwen, always include it: undefined → auto-detect block, code → explicit block.
     let prompt = composeVoiceAgentPrompt(voicePromptLayersFromPrefs(prefs))
-        + (lang ? buildVoiceLanguageBlock(lang) : '')
+        + (isElevenLabs ? (lang ? buildVoiceLanguageBlock(lang) : '') : buildVoiceLanguageBlock(lang))
     prompt += getResponseLengthInstruction(prefs.responseLength ?? 'balanced')
 
     const maxBytes = options?.maxWireBytes
