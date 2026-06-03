@@ -21,7 +21,8 @@ export const CreateOrLoadSessionRequestSchema = z.object({
     agentState: z.unknown().nullable().optional(),
     model: z.string().optional(),
     modelReasoningEffort: z.string().optional(),
-    effort: z.string().optional()
+    effort: z.string().optional(),
+    serviceTier: z.string().optional()
 })
 
 export type CreateOrLoadSessionRequest = z.infer<typeof CreateOrLoadSessionRequestSchema>
@@ -119,6 +120,12 @@ export const SessionModelReasoningEffortRequestSchema = z.object({
 
 export type SessionModelReasoningEffortRequest = z.infer<typeof SessionModelReasoningEffortRequestSchema>
 
+export const SessionServiceTierRequestSchema = z.object({
+    serviceTier: z.string().trim().min(1).nullable()
+})
+
+export type SessionServiceTierRequest = z.infer<typeof SessionServiceTierRequestSchema>
+
 export const SessionEffortRequestSchema = z.object({
     effort: z.string().trim().min(1).nullable()
 })
@@ -180,6 +187,7 @@ export const SpawnSessionRequestSchema = z.object({
     model: z.string().optional(),
     effort: z.string().optional(),
     modelReasoningEffort: z.string().optional(),
+    serviceTier: z.string().optional(),
     yolo: z.boolean().optional(),
     sessionType: z.enum(['simple', 'worktree']).optional(),
     worktreeName: z.string().optional()
@@ -272,12 +280,20 @@ export type PathExistsResponse = {
 
 export type MachinePathsExistsResponse = PathExistsResponse
 
+export type CodexServiceTierSummary = {
+    id: string
+    name: string
+    description?: string | null
+}
+
 export type CodexModelSummary = {
     id: string
     displayName: string
     isDefault: boolean
     defaultReasoningEffort?: string | null
     supportedReasoningEfforts?: string[]
+    serviceTiers?: CodexServiceTierSummary[]
+    defaultServiceTier?: string | null
 }
 
 export type CodexModelsResponse = {

@@ -199,6 +199,15 @@ export function SessionChat(props: {
         }
         return options
     }, [agentFlavor, codexModelsState.models])
+    const codexFastServiceTier = useMemo(() => {
+        if (agentFlavor !== 'codex') {
+            return null
+        }
+        const selectedModel = props.session.model ?? codexModelsState.models.find((model) => model.isDefault)?.id ?? null
+        const modelSummary = codexModelsState.models.find((codexModel) => codexModel.id === selectedModel)
+        const tiers = modelSummary?.serviceTiers ?? []
+        return tiers.find((tier) => tier.name.toLowerCase() === 'fast') ?? null
+    }, [agentFlavor, props.session.model, codexModelsState.models])
     const opencodeModelsState = useOpencodeModels({
         api: props.api,
         sessionId: props.session.id,
@@ -311,6 +320,7 @@ export function SessionChat(props: {
         setCollaborationMode,
         setModel,
         setModelReasoningEffort,
+        setServiceTier,
         setEffort
     } = useSessionActions(
         props.api,
@@ -605,6 +615,17 @@ export function SessionChat(props: {
         }
     }, [setModelReasoningEffort, props.onRefresh, haptic])
 
+    const handleServiceTierChange = useCallback(async (serviceTier: string | null) => {
+        try {
+            await setServiceTier(serviceTier)
+            haptic.notification('success')
+            props.onRefresh()
+        } catch (e) {
+            haptic.notification('error')
+            console.error('Failed to set service tier:', e)
+        }
+    }, [setServiceTier, props.onRefresh, haptic])
+
     const handleEffortChange = useCallback(async (effort: string | null) => {
         try {
             await setEffort(effort)
@@ -802,8 +823,10 @@ export function SessionChat(props: {
                         threadGoal={reduced.latestGoal}
                         model={props.session.model}
                         modelReasoningEffort={agentFlavor === 'codex' || agentFlavor === 'opencode' ? props.session.modelReasoningEffort : undefined}
+                        serviceTier={agentFlavor === 'codex' ? props.session.serviceTier : undefined}
                         effort={props.session.effort}
                         agentFlavor={agentFlavor}
+                        codexFastServiceTier={codexFastServiceTier}
                         availableModelOptions={
                             agentFlavor === 'codex'
                                 ? codexModelOptions
@@ -875,6 +898,11 @@ export function SessionChat(props: {
                         onModelReasoningEffortChange={
                             (agentFlavor === 'codex' || agentFlavor === 'opencode') && props.session.active && !controlledByUser
                                 ? handleModelReasoningEffortChange
+                                : undefined
+                        }
+                        onServiceTierChange={
+                            agentFlavor === 'codex' && props.session.active && !controlledByUser
+                                ? handleServiceTierChange
                                 : undefined
                         }
                         onEffortChange={handleEffortChange}

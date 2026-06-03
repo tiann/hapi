@@ -14,6 +14,7 @@ export type PermissionMode = CodexPermissionMode;
 export interface EnhancedMode {
     permissionMode: PermissionMode;
     model?: string;
+    serviceTier?: string | null;
     collaborationMode: CodexCollaborationMode;
     modelReasoningEffort?: ReasoningEffort;
 }
@@ -30,6 +31,7 @@ interface LoopOptions {
     codexCliOverrides?: CodexCliOverrides;
     permissionMode?: PermissionMode;
     model?: string;
+    serviceTier?: string | null;
     modelReasoningEffort?: ReasoningEffort;
     collaborationMode?: CodexCollaborationMode;
     resumeSessionId?: string;
@@ -56,6 +58,7 @@ export async function loop(opts: LoopOptions): Promise<void> {
         codexCliOverrides: opts.codexCliOverrides,
         permissionMode: opts.permissionMode ?? 'default',
         model: opts.model,
+        serviceTier: opts.serviceTier,
         modelReasoningEffort: opts.modelReasoningEffort,
         collaborationMode: opts.collaborationMode ?? 'default',
         replayTranscriptHistoryOnStart: opts.replayTranscriptHistoryOnStart ?? false

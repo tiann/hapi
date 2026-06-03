@@ -304,6 +304,28 @@ describe('session model', () => {
         expect(store.sessions.getSession(session.id)?.modelReasoningEffort).toBeNull()
     })
 
+    it('persists applied session service tier updates, including clear-to-default', () => {
+        const store = new Store(':memory:')
+        const events: SyncEvent[] = []
+        const cache = new SessionCache(store, createPublisher(events))
+
+        const session = cache.getOrCreateSession(
+            'session-service-tier-config',
+            { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+            null,
+            'default',
+            'gpt-5.4'
+        )
+
+        cache.applySessionConfig(session.id, { serviceTier: 'priority' })
+        expect(cache.getSession(session.id)?.serviceTier).toBe('priority')
+        expect(store.sessions.getSession(session.id)?.serviceTier).toBe('priority')
+
+        cache.applySessionConfig(session.id, { serviceTier: null })
+        expect(cache.getSession(session.id)?.serviceTier).toBeNull()
+        expect(store.sessions.getSession(session.id)?.serviceTier).toBeNull()
+    })
+
     it('persists keepalive effort changes, including clearing the effort', () => {
         const store = new Store(':memory:')
         const events: SyncEvent[] = []
@@ -1145,6 +1167,7 @@ describe('session model', () => {
                     agentSessionId: 'codex-thread-1',
                     model: 'gpt-5.4',
                     effort: null,
+                    serviceTier: null,
                     modelReasoningEffort: 'xhigh',
                     permissionMode: undefined,
                     collaborationMode: undefined

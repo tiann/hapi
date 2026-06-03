@@ -4,7 +4,7 @@ import { AgentSessionBase } from '@/agent/sessionBase';
 import type { EnhancedMode, PermissionMode } from './loop';
 import type { CodexCliOverrides } from './utils/codexCliOverrides';
 import type { LocalLaunchExitReason } from '@/agent/localLaunchPolicy';
-import type { Metadata, SessionModel, SessionModelReasoningEffort } from '@/api/types';
+import type { Metadata, SessionModel, SessionModelReasoningEffort, SessionServiceTier } from '@/api/types';
 
 type LocalLaunchFailure = {
     message: string;
@@ -38,6 +38,7 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
         permissionMode?: PermissionMode;
         model?: SessionModel;
         modelReasoningEffort?: SessionModelReasoningEffort;
+        serviceTier?: SessionServiceTier;
         collaborationMode?: EnhancedMode['collaborationMode'];
         replayTranscriptHistoryOnStart?: boolean;
     }) {
@@ -59,6 +60,7 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
             permissionMode: opts.permissionMode,
             model: opts.model,
             modelReasoningEffort: opts.modelReasoningEffort,
+            serviceTier: opts.serviceTier,
             collaborationMode: opts.collaborationMode
         });
 
@@ -70,6 +72,7 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
         this.permissionMode = opts.permissionMode;
         this.model = opts.model;
         this.modelReasoningEffort = opts.modelReasoningEffort;
+        this.serviceTier = opts.serviceTier;
         this.collaborationMode = opts.collaborationMode;
     }
 
@@ -118,6 +121,10 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
 
     setModelReasoningEffort = (modelReasoningEffort: SessionModelReasoningEffort): void => {
         this.modelReasoningEffort = modelReasoningEffort;
+    };
+
+    setServiceTier = (serviceTier: SessionServiceTier): void => {
+        this.serviceTier = serviceTier;
     };
 
     setCollaborationMode = (mode: EnhancedMode['collaborationMode']): void => {

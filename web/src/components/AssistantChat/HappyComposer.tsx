@@ -50,6 +50,7 @@ export function HappyComposer(props: {
     threadGoal?: ThreadGoal | null
     model?: string | null
     modelReasoningEffort?: string | null
+    serviceTier?: string | null
     effort?: string | null
     active?: boolean
     allowSendWhenInactive?: boolean
@@ -68,12 +69,14 @@ export function HappyComposer(props: {
     selectedModelVariant?: string | null
     /** Cursor: effort/variant wire ids for the selected base model. */
     modelEffortOptions?: Array<{ value: string; label: string }>
+    codexFastServiceTier?: { id: string; name: string; description?: string | null } | null
     onCollaborationModeChange?: (mode: CodexCollaborationMode) => void
     onPermissionModeChange?: (mode: PermissionMode) => void
     onModelChange?: (model: string | null) => void
     /** Cursor: effort/variant wire id (separate from base model change). */
     onModelEffortChange?: (wireId: string | null) => void
     onModelReasoningEffortChange?: (modelReasoningEffort: string | null) => void
+    onServiceTierChange?: (serviceTier: string | null) => void
     onEffortChange?: (effort: string | null) => void
     onSwitchToRemote?: () => void
     onTerminal?: () => void
@@ -99,6 +102,7 @@ export function HappyComposer(props: {
         threadGoal,
         model: rawModel,
         modelReasoningEffort: rawModelReasoningEffort,
+        serviceTier: rawServiceTier,
         effort: rawEffort,
         active = true,
         allowSendWhenInactive = false,
@@ -114,11 +118,13 @@ export function HappyComposer(props: {
         selectedModelBase,
         selectedModelVariant,
         modelEffortOptions,
+        codexFastServiceTier,
         onCollaborationModeChange,
         onPermissionModeChange,
         onModelChange,
         onModelEffortChange,
         onModelReasoningEffortChange,
+        onServiceTierChange,
         onEffortChange,
         onSwitchToRemote,
         onTerminal,
@@ -139,6 +145,7 @@ export function HappyComposer(props: {
     const collaborationMode = rawCollaborationMode ?? 'default'
     const model = rawModel ?? null
     const modelReasoningEffort = rawModelReasoningEffort ?? null
+    const serviceTier = rawServiceTier ?? null
     const effort = rawEffort ?? null
 
     const api = useAssistantApi()
@@ -524,6 +531,13 @@ export function HappyComposer(props: {
         haptic('light')
     }, [onModelReasoningEffortChange, controlsDisabled, haptic])
 
+    const handleServiceTierChange = useCallback((nextServiceTier: string | null) => {
+        if (!onServiceTierChange || controlsDisabled || !codexFastServiceTier) return
+        onServiceTierChange(nextServiceTier)
+        setShowSettings(false)
+        haptic('light')
+    }, [onServiceTierChange, controlsDisabled, codexFastServiceTier, haptic])
+
     const handleEffortChange = useCallback((nextEffort: string | null) => {
         if (!onEffortChange || controlsDisabled) return
         onEffortChange(nextEffort)
@@ -540,6 +554,9 @@ export function HappyComposer(props: {
         && modelEffortOptions.length > 0
     )
     const showModelReasoningEffortSettings = Boolean(onModelReasoningEffortChange && codexReasoningEffortOptions.length > 0)
+    const fastTierId = codexFastServiceTier?.id ?? null
+    const fastTierSupported = Boolean(fastTierId)
+    const showServiceTierSettings = Boolean(onServiceTierChange && agentFlavor === 'codex')
     const showEffortSettings = Boolean(onEffortChange && supportsEffort(agentFlavor))
     const showSettingsButton = Boolean(
         showCollaborationSettings
@@ -547,6 +564,7 @@ export function HappyComposer(props: {
         || showModelSettings
         || showModelEffortSettings
         || showModelReasoningEffortSettings
+        || showServiceTierSettings
         || showEffortSettings
     )
     const showAbortButton = true
@@ -562,7 +580,7 @@ export function HappyComposer(props: {
     }, [api])
 
     const overlays = useMemo(() => {
-        if (showSettings && (showCollaborationSettings || showPermissionSettings || showModelSettings || showModelEffortSettings || showModelReasoningEffortSettings || showEffortSettings)) {
+        if (showSettings && (showCollaborationSettings || showPermissionSettings || showModelSettings || showModelEffortSettings || showModelReasoningEffortSettings || showServiceTierSettings || showEffortSettings)) {
             return (
                 <div className="absolute bottom-[100%] mb-2 w-full">
                     <FloatingOverlay maxHeight={320}>
@@ -603,7 +621,7 @@ export function HappyComposer(props: {
                             </div>
                         ) : null}
 
-                        {showCollaborationSettings && (showPermissionSettings || showModelSettings || showModelReasoningEffortSettings || showEffortSettings) ? (
+                        {showCollaborationSettings && (showPermissionSettings || showModelSettings || showModelReasoningEffortSettings || showServiceTierSettings || showEffortSettings) ? (
                             <div className="mx-3 h-px bg-[var(--app-divider)]" />
                         ) : null}
 
@@ -644,7 +662,7 @@ export function HappyComposer(props: {
                             </div>
                         ) : null}
 
-                        {(showCollaborationSettings || showPermissionSettings) && (showModelSettings || showModelEffortSettings || showModelReasoningEffortSettings || showEffortSettings) ? (
+                        {(showCollaborationSettings || showPermissionSettings) && (showModelSettings || showModelEffortSettings || showModelReasoningEffortSettings || showServiceTierSettings || showEffortSettings) ? (
                             <div className="mx-3 h-px bg-[var(--app-divider)]" />
                         ) : null}
 
@@ -731,7 +749,7 @@ export function HappyComposer(props: {
                             </div>
                         ) : null}
 
-                        {(showModelSettings || showModelEffortSettings || showModelReasoningEffortSettings) && showEffortSettings ? (
+                        {(showModelSettings || showModelEffortSettings) && (showModelReasoningEffortSettings || showServiceTierSettings || showEffortSettings) ? (
                             <div className="mx-3 h-px bg-[var(--app-divider)]" />
                         ) : null}
 
@@ -772,7 +790,52 @@ export function HappyComposer(props: {
                             </div>
                         ) : null}
 
-                        {showModelReasoningEffortSettings && showEffortSettings ? (
+                        {showServiceTierSettings ? (
+                            <div className="py-2">
+                                <div className="px-3 pb-1 text-xs font-semibold text-[var(--app-hint)]">
+                                    {t('misc.serviceTier')}
+                                </div>
+                                <button
+                                    type="button"
+                                    disabled={controlsDisabled || !fastTierSupported}
+                                    className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
+                                        controlsDisabled || !fastTierSupported
+                                            ? 'cursor-not-allowed opacity-50'
+                                            : 'cursor-pointer hover:bg-[var(--app-secondary-bg)]'
+                                    }`}
+                                    onClick={() => fastTierId ? handleServiceTierChange(serviceTier === fastTierId ? null : fastTierId) : undefined}
+                                    onMouseDown={(e) => e.preventDefault()}
+                                >
+                                    <div
+                                        className={`flex h-4 w-4 items-center justify-center rounded border-2 ${
+                                            fastTierId && serviceTier === fastTierId
+                                                ? 'border-[var(--app-link)] bg-[var(--app-link)]'
+                                                : 'border-[var(--app-hint)]'
+                                        }`}
+                                    >
+                                        {fastTierId && serviceTier === fastTierId && (
+                                            <div className="h-2 w-2 rounded-sm bg-white" />
+                                        )}
+                                    </div>
+                                    <div className="min-w-0">
+                                        <div className={fastTierId && serviceTier === fastTierId ? 'text-[var(--app-link)]' : ''}>
+                                            {t('misc.fast')}
+                                        </div>
+                                        {!fastTierSupported ? (
+                                            <div className="text-xs text-[var(--app-hint)]">
+                                                {t('misc.fastUnsupported')}
+                                            </div>
+                                        ) : codexFastServiceTier?.description ? (
+                                            <div className="text-xs text-[var(--app-hint)]">
+                                                {codexFastServiceTier.description}
+                                            </div>
+                                        ) : null}
+                                    </div>
+                                </button>
+                            </div>
+                        ) : null}
+
+                        {(showModelReasoningEffortSettings || showServiceTierSettings) && showEffortSettings ? (
                             <div className="mx-3 h-px bg-[var(--app-divider)]" />
                         ) : null}
 
@@ -842,6 +905,7 @@ export function HappyComposer(props: {
         selectedModelBase,
         selectedModelVariant,
         showModelReasoningEffortSettings,
+        showServiceTierSettings,
         showEffortSettings,
         modelOptions,
         codexReasoningEffortOptions,
@@ -853,6 +917,7 @@ export function HappyComposer(props: {
         permissionMode,
         model,
         modelReasoningEffort,
+        serviceTier,
         effort,
         collaborationModeOptions,
         permissionModeOptions,
@@ -860,8 +925,12 @@ export function HappyComposer(props: {
         handlePermissionChange,
         handleModelChange,
         handleModelReasoningEffortChange,
+        handleServiceTierChange,
         handleEffortChange,
         handleSuggestionSelect,
+        fastTierSupported,
+        fastTierId,
+        codexFastServiceTier,
         t
     ])
 
@@ -882,6 +951,7 @@ export function HappyComposer(props: {
                             contextWindow={contextWindow}
                             model={model}
                             modelReasoningEffort={modelReasoningEffort}
+                            serviceTier={serviceTier}
                             permissionMode={permissionMode}
                             collaborationMode={collaborationMode}
                             threadGoal={threadGoal}

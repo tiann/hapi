@@ -34,6 +34,9 @@ export interface ModelListItem {
         description?: string;
     }>;
     defaultReasoningEffort?: string | null;
+    serviceTiers?: Array<{ id?: string; name?: string; description?: string }>;
+    defaultServiceTier?: string | null;
+    additionalSpeedTiers?: string[];
     isDefault?: boolean;
     [key: string]: unknown;
 }
@@ -63,6 +66,7 @@ export interface CollaborationModeListResponse {
 export interface ThreadStartParams {
     model?: string;
     modelProvider?: string;
+    serviceTier?: string | null;
     cwd?: string;
     approvalPolicy?: ApprovalPolicy;
     sandbox?: SandboxMode;
@@ -90,6 +94,7 @@ export interface ThreadResumeParams {
     path?: string;
     model?: string;
     modelProvider?: string;
+    serviceTier?: string | null;
     cwd?: string;
     approvalPolicy?: ApprovalPolicy;
     sandbox?: SandboxMode;
@@ -161,6 +166,7 @@ export interface TurnStartParams {
     approvalPolicy?: ApprovalPolicy;
     sandboxPolicy?: SandboxPolicy;
     model?: string;
+    serviceTier?: string | null;
     effort?: ReasoningEffort;
     summary?: ReasoningSummary;
     personality?: string;

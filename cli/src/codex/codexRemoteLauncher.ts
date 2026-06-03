@@ -3055,7 +3055,8 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 allowAnonymousTerminalEvent = false;
                 const mode = {
                     ...message.mode,
-                    model: session.getModel() ?? message.mode.model
+                    model: session.getModel() ?? message.mode.model,
+                    serviceTier: session.getServiceTier() !== undefined ? session.getServiceTier() : message.mode.serviceTier
                 };
                 const shouldSendCollaborationMode = supportsTurnCollaborationMode
                     && Boolean(mode.collaborationMode);

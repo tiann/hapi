@@ -30,6 +30,7 @@ export async function runCodex(opts: {
     permissionMode?: PermissionMode;
     resumeSessionId?: string;
     model?: string;
+    serviceTier?: string | null;
     modelReasoningEffort?: ReasoningEffort;
     collaborationMode?: EnhancedMode['collaborationMode'];
     existingSessionId?: string;
@@ -56,6 +57,7 @@ export async function runCodex(opts: {
             workingDirectory,
             agentState: state,
             model: opts.model,
+            serviceTier: opts.serviceTier ?? undefined,
             modelReasoningEffort: opts.modelReasoningEffort
         });
     const { api, session } = bootstrap;
@@ -68,6 +70,7 @@ export async function runCodex(opts: {
         permissionMode: mode.permissionMode,
         model: mode.model,
         modelReasoningEffort: mode.modelReasoningEffort,
+        serviceTier: mode.serviceTier,
         collaborationMode: mode.collaborationMode
     }));
 
@@ -80,6 +83,7 @@ export async function runCodex(opts: {
     let currentPermissionMode: PermissionMode = opts.permissionMode ?? 'default';
     let currentModel = opts.model;
     let currentModelReasoningEffort: ReasoningEffort | undefined = opts.modelReasoningEffort;
+    let currentServiceTier: string | null | undefined = opts.serviceTier;
     let currentCollaborationMode: EnhancedMode['collaborationMode'] = opts.collaborationMode ?? 'default';
 
     const lifecycle = createRunnerLifecycle({
@@ -102,6 +106,7 @@ export async function runCodex(opts: {
             sessionInstance.setModel(currentModel ?? null);
         }
         sessionInstance.setModelReasoningEffort(currentModelReasoningEffort ?? null);
+        sessionInstance.setServiceTier(currentServiceTier ?? null);
         sessionInstance.setCollaborationMode(currentCollaborationMode);
         logger.debug(
             `[Codex] Synced session config for keepalive: ` +
@@ -114,6 +119,7 @@ export async function runCodex(opts: {
         permissionMode?: PermissionMode;
         model?: string | null;
         modelReasoningEffort?: ReasoningEffort | null;
+        serviceTier?: string | null;
         collaborationMode?: EnhancedMode['collaborationMode'];
     } | undefined): void => {
         if (!updates) return;
@@ -125,6 +131,9 @@ export async function runCodex(opts: {
         }
         if (updates.modelReasoningEffort !== undefined) {
             currentModelReasoningEffort = updates.modelReasoningEffort ?? undefined;
+        }
+        if (updates.serviceTier !== undefined) {
+            currentServiceTier = updates.serviceTier;
         }
         if (updates.collaborationMode !== undefined) {
             currentCollaborationMode = updates.collaborationMode;
@@ -140,6 +149,10 @@ export async function runCodex(opts: {
         const sessionModel = sessionWrapperRef.current?.getModel();
         if (sessionModel !== undefined) {
             currentModel = sessionModel ?? undefined;
+        }
+        const sessionServiceTier = sessionWrapperRef.current?.getServiceTier();
+        if (sessionServiceTier !== undefined) {
+            currentServiceTier = sessionServiceTier;
         }
         const sessionModelReasoningEffort = sessionWrapperRef.current?.getModelReasoningEffort();
         if (sessionModelReasoningEffort !== undefined) {
@@ -220,6 +233,7 @@ export async function runCodex(opts: {
                 const enhancedMode: EnhancedMode = {
                     permissionMode: messagePermissionMode ?? 'default',
                     model: currentModel,
+                    serviceTier: currentServiceTier,
                     modelReasoningEffort: currentModelReasoningEffort,
                     collaborationMode: currentCollaborationMode
                 };
@@ -233,6 +247,7 @@ export async function runCodex(opts: {
                 const enhancedMode: EnhancedMode = {
                     permissionMode: currentPermissionMode ?? 'default',
                     model: currentModel,
+                    serviceTier: currentServiceTier,
                     modelReasoningEffort: currentModelReasoningEffort,
                     collaborationMode: currentCollaborationMode
                 };
@@ -286,6 +301,20 @@ export async function runCodex(opts: {
         return value as ReasoningEffort;
     };
 
+    const resolveServiceTier = (value: unknown): string | null => {
+        if (value === null) {
+            return null;
+        }
+        if (typeof value !== 'string') {
+            throw new Error('Invalid service tier');
+        }
+        const trimmedValue = value.trim();
+        if (!trimmedValue) {
+            throw new Error('Invalid service tier');
+        }
+        return trimmedValue;
+    };
+
     const resolveModel = (value: unknown): string => {
         if (typeof value !== 'string') {
             throw new Error('Invalid model');
@@ -301,7 +330,7 @@ export async function runCodex(opts: {
         if (!payload || typeof payload !== 'object') {
             throw new Error('Invalid session config payload');
         }
-        const config = payload as { permissionMode?: unknown; model?: unknown; modelReasoningEffort?: unknown; collaborationMode?: unknown };
+        const config = payload as { permissionMode?: unknown; model?: unknown; modelReasoningEffort?: unknown; serviceTier?: unknown; collaborationMode?: unknown };
 
         if (config.permissionMode !== undefined) {
             currentPermissionMode = resolvePermissionMode(config.permissionMode);
@@ -316,6 +345,10 @@ export async function runCodex(opts: {
             currentModelReasoningEffort = resolveModelReasoningEffort(config.modelReasoningEffort);
         }
 
+        if (config.serviceTier !== undefined) {
+            currentServiceTier = resolveServiceTier(config.serviceTier);
+        }
+
         if (config.collaborationMode !== undefined) {
             currentCollaborationMode = resolveCollaborationMode(config.collaborationMode);
         }
@@ -325,10 +358,12 @@ export async function runCodex(opts: {
             permissionMode: PermissionMode;
             model?: string | null;
             modelReasoningEffort: ReasoningEffort | null;
+            serviceTier: string | null;
             collaborationMode: EnhancedMode['collaborationMode'];
         } = {
             permissionMode: currentPermissionMode,
             modelReasoningEffort: currentModelReasoningEffort ?? null,
+            serviceTier: currentServiceTier ?? null,
             collaborationMode: currentCollaborationMode
         };
         if (shouldSyncModel) {
@@ -353,6 +388,7 @@ export async function runCodex(opts: {
             startedBy,
             permissionMode: currentPermissionMode,
             model: currentModel,
+            serviceTier: currentServiceTier,
             modelReasoningEffort: currentModelReasoningEffort,
             collaborationMode: currentCollaborationMode,
             resumeSessionId: opts.resumeSessionId,

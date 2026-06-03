@@ -97,6 +97,7 @@ async function dispatchLocalResume(target: LocalResumeTarget): Promise<void> {
             startedBy: base.startedBy,
             permissionMode: base.permissionMode as CodexPermissionMode | undefined,
             model: target.model ?? undefined,
+            serviceTier: target.serviceTier ?? undefined,
             modelReasoningEffort: (target.modelReasoningEffort ?? undefined) as ReasoningEffort | undefined,
             collaborationMode: target.collaborationMode
         })

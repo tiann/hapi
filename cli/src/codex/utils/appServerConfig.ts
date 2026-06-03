@@ -124,6 +124,9 @@ export function buildThreadStartParams(args: {
     if (args.mode.model) {
         params.model = args.mode.model;
     }
+    if (args.mode.serviceTier !== undefined) {
+        params.serviceTier = args.mode.serviceTier ?? null;
+    }
 
     return params;
 }
@@ -169,6 +172,7 @@ export function buildTurnStartParams(args: {
         ? undefined
         : args.mode?.collaborationMode;
     const model = args.overrides?.model ?? args.mode?.model;
+    const serviceTier = args.mode?.serviceTier ?? null;
     const modelReasoningEffort = args.mode?.modelReasoningEffort;
 
     if (modelReasoningEffort) {
@@ -193,6 +197,10 @@ export function buildTurnStartParams(args: {
         };
     } else if (model) {
         params.model = model;
+    }
+
+    if (args.mode && args.mode.serviceTier !== undefined) {
+        params.serviceTier = serviceTier;
     }
 
     return params;

@@ -129,14 +129,10 @@ function formatCodexReasoningLabel(effort?: string | null): string {
     return `reasoning ${normalized}`
 }
 
-function isCodexFastMode(model?: string | null, effort?: string | null): boolean {
-    const normalizedEffort = effort?.trim().toLowerCase()
-    if (normalizedEffort === 'none' || normalizedEffort === 'minimal' || normalizedEffort === 'low') {
-        return true
-    }
-
-    const normalizedModel = model?.trim().toLowerCase() ?? ''
-    return normalizedModel.includes('mini') || normalizedModel.includes('fast')
+function formatCodexServiceTierLabel(serviceTier?: string | null): string | null {
+    const normalized = serviceTier?.trim()
+    if (!normalized) return null
+    return normalized === 'priority' ? 'fast' : `tier ${normalized}`
 }
 
 /** Cursor native ACP does not emit usage_update; hide the bar to avoid empty/misleading UI. */
@@ -154,6 +150,7 @@ export function StatusBar(props: {
     contextWindow?: number | null
     model?: string | null
     modelReasoningEffort?: string | null
+    serviceTier?: string | null
     permissionMode?: PermissionMode
     collaborationMode?: CodexCollaborationMode
     threadGoal?: ThreadGoal | null
@@ -213,9 +210,9 @@ export function StatusBar(props: {
     const codexReasoningLabel = (props.agentFlavor === 'codex' || props.agentFlavor === 'opencode')
         ? formatCodexReasoningLabel(props.modelReasoningEffort)
         : null
-    const codexFastMode = props.agentFlavor === 'codex'
-        ? isCodexFastMode(props.model, props.modelReasoningEffort)
-        : false
+    const codexServiceTierLabel = props.agentFlavor === 'codex'
+        ? formatCodexServiceTierLabel(props.serviceTier)
+        : null
     const goalLabel = props.agentFlavor === 'codex' && props.threadGoal
         ? props.threadGoal.status === 'active'
             ? 'goal'
@@ -256,9 +253,9 @@ export function StatusBar(props: {
                         {codexReasoningLabel}
                     </span>
                 ) : null}
-                {codexFastMode ? (
+                {codexServiceTierLabel ? (
                     <span className="whitespace-nowrap text-xs text-[#34C759]">
-                        fast
+                        {codexServiceTierLabel}
                     </span>
                 ) : null}
                 {goalLabel ? (

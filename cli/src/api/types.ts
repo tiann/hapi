@@ -41,6 +41,7 @@ export type SessionCollaborationMode = CodexCollaborationMode
 export type SessionModel = string | null
 export type SessionModelReasoningEffort = string | null
 export type SessionEffort = string | null
+export type SessionServiceTier = string | null
 
 export { AgentStateSchema, AttachmentMetadataSchema, MachineMetadataSchema, MetadataSchema, RunnerStateSchema }
 

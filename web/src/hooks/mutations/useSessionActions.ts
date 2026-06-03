@@ -19,6 +19,7 @@ export function useSessionActions(
     setCollaborationMode: (mode: CodexCollaborationMode) => Promise<void>
     setModel: (model: string | null) => Promise<void>
     setModelReasoningEffort: (modelReasoningEffort: string | null) => Promise<void>
+    setServiceTier: (serviceTier: string | null) => Promise<void>
     setEffort: (effort: string | null) => Promise<void>
     renameSession: (name: string) => Promise<void>
     deleteSession: () => Promise<void>
@@ -128,6 +129,19 @@ export function useSessionActions(
         onSuccess: () => void invalidateSession(),
     })
 
+    const serviceTierMutation = useMutation({
+        mutationFn: async (serviceTier: string | null) => {
+            if (!api || !sessionId) {
+                throw new Error('Session unavailable')
+            }
+            if (agentFlavor !== 'codex' || !codexCollaborationModeSupported) {
+                throw new Error('Service tier is only supported for remote Codex sessions')
+            }
+            await api.setServiceTier(sessionId, serviceTier)
+        },
+        onSuccess: () => void invalidateSession(),
+    })
+
     const effortMutation = useMutation({
         mutationFn: async (effort: string | null) => {
             if (!api || !sessionId) {
@@ -171,6 +185,7 @@ export function useSessionActions(
         setCollaborationMode: collaborationMutation.mutateAsync,
         setModel: modelMutation.mutateAsync,
         setModelReasoningEffort: modelReasoningEffortMutation.mutateAsync,
+        setServiceTier: serviceTierMutation.mutateAsync,
         setEffort: effortMutation.mutateAsync,
         renameSession: renameMutation.mutateAsync,
         deleteSession: deleteMutation.mutateAsync,
@@ -181,6 +196,7 @@ export function useSessionActions(
             || collaborationMutation.isPending
             || modelMutation.isPending
             || modelReasoningEffortMutation.isPending
+            || serviceTierMutation.isPending
             || effortMutation.isPending
             || renameMutation.isPending
             || deleteMutation.isPending,
