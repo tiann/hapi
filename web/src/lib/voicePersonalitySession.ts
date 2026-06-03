@@ -30,6 +30,7 @@ function ttsDiffersFromDefault(tts: ElevenLabsVoiceSettings): boolean {
         || tts.similarity_boost !== d.similarity_boost
         || tts.style !== d.style
         || tts.speed !== d.speed
+        || tts.use_speaker_boost !== d.use_speaker_boost
 }
 
 function buildElevenLabsTtsOverride(
@@ -41,6 +42,7 @@ function buildElevenLabsTtsOverride(
         similarity_boost: tts.similarity_boost,
         style: tts.style,
         speed: tts.speed,
+        use_speaker_boost: tts.use_speaker_boost,
         ...(voiceId ? { voice_id: voiceId } : {})
     }
 }
