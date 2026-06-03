@@ -10,6 +10,7 @@ import {
     extractLastAssistantSpeakable
 } from './contextFormatters'
 import { VOICE_CONFIG } from '../voiceConfig'
+import { buildSessionVoiceContextPlan, type SessionVoiceContextPlan } from './voiceContextPlan'
 import type { DecryptedMessage, Session } from '@/types/api'
 
 interface SessionMetadata {
@@ -125,9 +126,9 @@ export const voiceHooks = {
     },
 
     /**
-     * Called when voice session starts - returns initial context
+     * Build bootstrap + deferred stream plan when voice starts.
      */
-    onVoiceStarted(sessionId: string): string {
+    prepareVoiceSession(sessionId: string): SessionVoiceContextPlan {
         if (VOICE_CONFIG.ENABLE_DEBUG_LOGGING) {
             console.log('[Voice] Voice session started for:', sessionId)
         }
@@ -135,11 +136,14 @@ export const voiceHooks = {
 
         const session = sessionGetter?.(sessionId) ?? null
         const messages = messagesGetter?.(sessionId) ?? []
-
-        let prompt = 'THIS IS AN ACTIVE SESSION: \n\n' + formatSessionFull(session, messages)
+        const plan = buildSessionVoiceContextPlan(session, messages)
         shownSessions.add(sessionId)
+        return plan
+    },
 
-        return prompt
+    /** @deprecated Use prepareVoiceSession().bootstrap */
+    onVoiceStarted(sessionId: string): string {
+        return voiceHooks.prepareVoiceSession(sessionId).bootstrap
     },
 
     /**

@@ -57,6 +57,8 @@ export interface VoiceInfo {
     name: string
     previewUrl: string
     category: string
+    /** Static-catalog hint (Gemini/Qwen); ElevenLabs uses API name only. */
+    description?: string
 }
 
 export async function fetchVoices(api: ApiClient): Promise<VoiceInfo[]> {
@@ -202,7 +204,10 @@ export async function fetchQwenToken(api: ApiClient): Promise<QwenTokenResponse>
 }
 
 export interface VoiceBackendResponse {
+    /** Hub default (VOICE_BACKEND env, validated against configured backends). */
     backend: VoiceBackendType
+    /** Backends with API keys configured on the hub. */
+    backends: VoiceBackendType[]
 }
 
 export interface GeminiTokenResponse {
@@ -217,13 +222,22 @@ export interface GeminiTokenResponse {
  * Discover which voice backend the hub is configured to use.
  * Throws on network/server error or unrecognised backend value — callers must handle failures explicitly.
  */
+function isVoiceBackendType(value: string): value is VoiceBackendType {
+    return value === 'elevenlabs' || value === 'gemini-live' || value === 'qwen-realtime'
+}
+
 export async function fetchVoiceBackend(api: ApiClient): Promise<VoiceBackendResponse> {
     const result = await api.fetchVoiceBackend()
     const { backend } = result
-    if (backend === 'elevenlabs' || backend === 'gemini-live' || backend === 'qwen-realtime') {
-        return { backend }
+    if (!isVoiceBackendType(backend)) {
+        throw new Error(`Unrecognised voice backend: ${backend}`)
     }
-    throw new Error(`Unrecognised voice backend: ${backend}`)
+    const rawBackends = Array.isArray(result.backends) ? result.backends : [backend]
+    const backends = rawBackends.filter(isVoiceBackendType)
+    if (backends.length === 0) {
+        backends.push(backend)
+    }
+    return { backend, backends }
 }
 
 /**

@@ -133,6 +133,102 @@ describe('POST /api/voice/token', () => {
         else delete process.env.ELEVENLABS_AGENT_ID
     })
 
+    it('reconciles platform_settings.overrides on existing agents (one PATCH per process)', async () => {
+        const app = createApp()
+        const headers = {
+            ...(await authHeaders()),
+            'content-type': 'application/json'
+        }
+
+        const prevKey = process.env.ELEVENLABS_API_KEY
+        const prevAgent = process.env.ELEVENLABS_AGENT_ID
+        process.env.ELEVENLABS_API_KEY = 'test-key-ensure'
+        delete process.env.ELEVENLABS_AGENT_ID
+
+        const existingAgentId = `agent_ensure_${Math.random().toString(36).slice(2, 10)}`
+        const existingAgentName = `Hapi Voice Assistant [voice:ensure-voice-${Math.random().toString(36).slice(2, 6)}]`
+        const voiceId = existingAgentName.match(/\[voice:([^\]]+)\]/)?.[1] ?? ''
+
+        const patchCalls: Array<{ url: string; body: unknown }> = []
+        const originalFetch = global.fetch
+        // @ts-expect-error test override
+        global.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+            const url = String(input)
+
+            if (url.endsWith('/convai/agents') && init?.method === 'GET') {
+                return new Response(JSON.stringify({
+                    agents: [{ agent_id: existingAgentId, name: existingAgentName }]
+                }), { status: 200 })
+            }
+            if (
+                url.includes(`/convai/agents/${existingAgentId}`)
+                && init?.method === 'PATCH'
+            ) {
+                const body = init?.body ? JSON.parse(String(init.body)) : null
+                patchCalls.push({ url, body })
+                return new Response(JSON.stringify({ agent_id: existingAgentId }), { status: 200 })
+            }
+            if (url.includes('/convai/conversation/token?agent_id=')) {
+                return new Response(JSON.stringify({ token: 'tok_ensure' }), { status: 200 })
+            }
+            return new Response('not found', { status: 404 })
+        }) as typeof fetch
+
+        const first = await app.request('/api/voice/token', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ voiceId })
+        })
+        expect(first.status).toBe(200)
+        expect(await first.json()).toMatchObject({
+            allowed: true,
+            agentId: existingAgentId,
+            token: 'tok_ensure'
+        })
+
+        expect(patchCalls.length).toBeGreaterThanOrEqual(1)
+        const patchedBody = patchCalls[0]?.body as {
+            platform_settings?: {
+                overrides?: {
+                    conversation_config_override?: {
+                        agent?: { language?: boolean; prompt?: { prompt?: boolean } }
+                        tts?: {
+                            voice_id?: boolean
+                            stability?: boolean
+                            similarity_boost?: boolean
+                            style?: boolean
+                            speed?: boolean
+                        }
+                    }
+                }
+            }
+        }
+        const overrides = patchedBody.platform_settings?.overrides?.conversation_config_override
+        expect(overrides?.agent?.language).toBe(true)
+        expect(overrides?.agent?.prompt?.prompt).toBe(true)
+        expect(overrides?.tts?.voice_id).toBe(true)
+        expect(overrides?.tts?.stability).toBe(true)
+        expect(overrides?.tts?.similarity_boost).toBe(true)
+        expect(overrides?.tts?.style).toBe(true)
+        expect(overrides?.tts?.speed).toBe(true)
+
+        // Second call within the same process must NOT re-issue the PATCH.
+        const before = patchCalls.length
+        const second = await app.request('/api/voice/token', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ voiceId })
+        })
+        expect(second.status).toBe(200)
+        expect(patchCalls.length).toBe(before)
+
+        global.fetch = originalFetch
+        if (prevKey) process.env.ELEVENLABS_API_KEY = prevKey
+        else delete process.env.ELEVENLABS_API_KEY
+        if (prevAgent) process.env.ELEVENLABS_AGENT_ID = prevAgent
+        else delete process.env.ELEVENLABS_AGENT_ID
+    })
+
     it('prefers voice-specific agent over ELEVENLABS_AGENT_ID when voiceId is provided', async () => {
         const app = createApp()
         const headers = {
@@ -190,54 +286,83 @@ describe('POST /api/voice/token', () => {
 })
 
 describe('GET /api/voice/backend', () => {
-    const originalEnv = process.env.VOICE_BACKEND
+    const originalEnv = {
+        VOICE_BACKEND: process.env.VOICE_BACKEND,
+        ELEVENLABS_API_KEY: process.env.ELEVENLABS_API_KEY,
+        GEMINI_API_KEY: process.env.GEMINI_API_KEY,
+        GOOGLE_API_KEY: process.env.GOOGLE_API_KEY,
+        DASHSCOPE_API_KEY: process.env.DASHSCOPE_API_KEY,
+        QWEN_API_KEY: process.env.QWEN_API_KEY
+    }
 
     afterEach(() => {
-        if (originalEnv === undefined) {
-            delete process.env.VOICE_BACKEND
-        } else {
-            process.env.VOICE_BACKEND = originalEnv
+        for (const [key, value] of Object.entries(originalEnv)) {
+            if (value === undefined) {
+                delete process.env[key]
+            } else {
+                process.env[key] = value
+            }
         }
     })
 
-    test('returns elevenlabs by default', async () => {
+    test('returns elevenlabs by default with backends list', async () => {
         delete process.env.VOICE_BACKEND
+        delete process.env.GEMINI_API_KEY
+        delete process.env.GOOGLE_API_KEY
+        delete process.env.DASHSCOPE_API_KEY
+        delete process.env.QWEN_API_KEY
+        process.env.ELEVENLABS_API_KEY = 'test-el'
         const app = createApp()
         const headers = await authHeaders()
         const res = await app.request('/api/voice/backend', { headers })
         expect(res.status).toBe(200)
-        const body = await res.json() as { backend: string }
+        const body = await res.json() as { backend: string; backends: string[] }
         expect(body.backend).toBe('elevenlabs')
+        expect(body.backends).toEqual(['elevenlabs'])
     })
 
-    test('returns gemini-live when configured', async () => {
+    test('returns gemini-live when configured and key present', async () => {
         process.env.VOICE_BACKEND = 'gemini-live'
+        process.env.GEMINI_API_KEY = 'test-gm'
+        delete process.env.ELEVENLABS_API_KEY
+        delete process.env.DASHSCOPE_API_KEY
         const app = createApp()
         const headers = await authHeaders()
         const res = await app.request('/api/voice/backend', { headers })
         expect(res.status).toBe(200)
-        const body = await res.json() as { backend: string }
+        const body = await res.json() as { backend: string; backends: string[] }
         expect(body.backend).toBe('gemini-live')
+        expect(body.backends).toEqual(['gemini-live'])
     })
 
-    test('returns qwen-realtime when configured', async () => {
-        process.env.VOICE_BACKEND = 'qwen-realtime'
+    test('lists every backend with credentials', async () => {
+        process.env.VOICE_BACKEND = 'gemini-live'
+        process.env.ELEVENLABS_API_KEY = 'test-el'
+        process.env.GEMINI_API_KEY = 'test-gm'
+        process.env.DASHSCOPE_API_KEY = 'test-qw'
         const app = createApp()
         const headers = await authHeaders()
         const res = await app.request('/api/voice/backend', { headers })
         expect(res.status).toBe(200)
-        const body = await res.json() as { backend: string }
-        expect(body.backend).toBe('qwen-realtime')
+        const body = await res.json() as { backend: string; backends: string[] }
+        expect(body.backend).toBe('gemini-live')
+        expect(body.backends).toEqual(['elevenlabs', 'gemini-live', 'qwen-realtime'])
     })
 
-    test('falls back to elevenlabs for unknown values', async () => {
+    test('falls back to elevenlabs for unknown VOICE_BACKEND values', async () => {
         process.env.VOICE_BACKEND = 'unknown-backend'
+        delete process.env.GEMINI_API_KEY
+        delete process.env.GOOGLE_API_KEY
+        delete process.env.DASHSCOPE_API_KEY
+        delete process.env.QWEN_API_KEY
+        process.env.ELEVENLABS_API_KEY = 'test-el'
         const app = createApp()
         const headers = await authHeaders()
         const res = await app.request('/api/voice/backend', { headers })
         expect(res.status).toBe(200)
-        const body = await res.json() as { backend: string }
+        const body = await res.json() as { backend: string; backends: string[] }
         expect(body.backend).toBe('elevenlabs')
+        expect(body.backends).toEqual(['elevenlabs'])
     })
 })
 

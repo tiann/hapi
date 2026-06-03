@@ -5,10 +5,14 @@ import { fetchQwenToken } from '@/api/voice'
 import { GeminiAudioRecorder } from './gemini/audioRecorder'
 import { GeminiAudioPlayer } from './gemini/audioPlayer'
 import { realtimeClientTools } from './realtimeClientTools'
+import { resolveQwenRealtimeVoice } from '@hapi/protocol/voicePickerCatalog'
 import {
-    VOICE_SYSTEM_PROMPT,
-    buildVoiceLanguageBlock,
-} from '@hapi/protocol/voice'
+    buildResolvedVoiceSystemPrompt,
+    encodeVoiceSystemPromptForProxy,
+    truncatePromptForProxy
+} from '@/lib/voicePersonalitySession'
+import { isVoiceProactiveSummaryEnabled, streamDeferredVoiceContext } from '@/lib/voiceContextStream'
+import { readStoredVoiceSelection } from '@/lib/voicePickerPreferences'
 import type { VoiceSession, VoiceSessionConfig, StatusCallback } from './types'
 import type { ApiClient } from '@/api/client'
 import type { Session } from '@/types/api'
@@ -92,7 +96,12 @@ class QwenVoiceSessionImpl implements VoiceSession {
 
     async startSession(config: VoiceSessionConfig): Promise<void> {
         // Mirror the base instructions the hub will send so subsequent updates accumulate correctly.
-        this.currentInstructions = `${VOICE_SYSTEM_PROMPT}${buildVoiceLanguageBlock(config.language)}`
+        // buildResolvedVoiceSystemPrompt returns the user-customised prompt when set; with empty prefs
+        // it falls back to VOICE_SYSTEM_PROMPT + buildVoiceLanguageBlock(language) (general language handling).
+        this.currentInstructions = buildResolvedVoiceSystemPrompt({
+            language: config.language,
+            backend: 'qwen-realtime'
+        })
         cleanup()
         state.statusCallback?.('connecting')
 
@@ -133,7 +142,16 @@ class QwenVoiceSessionImpl implements VoiceSession {
         const authToken = this.api.getAuthToken() || ''
         const separator = proxyUrl.includes('?') ? '&' : '?'
         const langParam = config.language ? `&language=${encodeURIComponent(config.language)}` : ''
-        const wsUrl = `${proxyUrl}${separator}token=${encodeURIComponent(authToken)}${langParam}`
+        // Voice picker selection is forwarded to the hub so the hub-owned session.update uses it.
+        const resolvedVoice = resolveQwenRealtimeVoice(
+            config.voiceName ?? readStoredVoiceSelection('qwen-realtime')
+        )
+        const voiceParam = `&voice=${encodeURIComponent(resolvedVoice)}`
+        // User's resolved system prompt is forwarded so the hub's session.update applies the override.
+        // Truncate before encoding so long prompts are trimmed rather than silently dropped.
+        const encodedPrompt = encodeVoiceSystemPromptForProxy(truncatePromptForProxy(this.currentInstructions ?? ''))
+        const promptParam = `&systemPrompt=${encodeURIComponent(encodedPrompt)}`
+        const wsUrl = `${proxyUrl}${separator}token=${encodeURIComponent(authToken)}${langParam}${voiceParam}${promptParam}`
         const ws = new WebSocket(wsUrl)
         state.ws = ws
 
@@ -179,14 +197,26 @@ class QwenVoiceSessionImpl implements VoiceSession {
                     }
                     state.statusCallback?.('connected')
 
-                    const proactive = localStorage.getItem('hapi-voice-proactive') === 'true'
-                    if (proactive && config.initialContext) {
-                        this.sendTextMessage(`[Context] ${config.initialContext}`)
-                    } else {
-                        if (config.initialContext) {
+                    await streamDeferredVoiceContext(
+                        (chunk) => this.sendContextualUpdate(chunk),
+                        config.streamContextChunks ?? []
+                    )
+
+                    const proactive = isVoiceProactiveSummaryEnabled()
+                    if (proactive) {
+                        if (config.initialContext?.trim()) {
                             this.sendContextualUpdate(config.initialContext)
                         }
-                        this.sendTextMessage('[Greet the user as HAPI. Say a brief hello and invite them to speak. Do not mention Qwen or any model name. Do not reference any context or recent activity.]')
+                        this.sendTextMessage(
+                            'Based on all session context above, give me a brief spoken summary of what the coding agent has been doing, then wait.'
+                        )
+                    } else {
+                        if (config.initialContext?.trim()) {
+                            this.sendContextualUpdate(config.initialContext)
+                        }
+                        this.sendTextMessage(
+                            '[Greet the user. Say a brief hello and invite them to speak. Do not mention Qwen or any model name.]'
+                        )
                     }
 
                     resolve()

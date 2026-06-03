@@ -5,7 +5,8 @@ import {
     ELEVENLABS_API_BASE,
     VOICE_AGENT_NAME,
     buildVoiceAgentConfig,
-    DEFAULT_VOICE_BACKEND
+    listConfiguredVoiceBackends,
+    resolveHubVoiceBackend
 } from '@hapi/protocol/voice'
 import type { VoiceBackendType } from '@hapi/protocol/voice'
 
@@ -36,9 +37,72 @@ const telemetryEventSchema = z.object({
 // Cache for auto-created agent IDs (keyed by API key hash)
 const agentIdCache = new Map<string, string>()
 
+// Per-process set of agent IDs that already had their platform_settings.overrides
+// reconciled with the canonical buildVoiceAgentConfig() shape. Reset on process restart.
+const overridesEnsuredAgents = new Set<string>()
+
 interface ElevenLabsAgent {
     agent_id: string
     name: string
+}
+
+/**
+ * Ensure an existing ElevenLabs ConvAI agent has the platform_settings.overrides
+ * declared by buildVoiceAgentConfig(). Without these overrides, the client-side
+ * SDK crashes with `Cannot read properties of undefined (reading 'error_type')`
+ * when a session sends agent.prompt / tts.* override fields the server rejects.
+ *
+ * Idempotent and best-effort: PATCH failures are logged and swallowed so token
+ * issuance is never blocked by reconciliation. Cached per agent_id per process.
+ *
+ * See: https://elevenlabs.io/docs/agents-platform/customization/personalization/overrides
+ */
+async function ensureAgentOverrides(apiKey: string, agentId: string): Promise<void> {
+    if (overridesEnsuredAgents.has(agentId)) return
+    overridesEnsuredAgents.add(agentId)
+
+    const canonical = buildVoiceAgentConfig().platform_settings
+    if (!canonical) return
+
+    try {
+        const response = await fetch(
+            `${ELEVENLABS_API_BASE}/convai/agents/${encodeURIComponent(agentId)}`,
+            {
+                method: 'PATCH',
+                headers: {
+                    'xi-api-key': apiKey,
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json'
+                },
+                body: JSON.stringify({ platform_settings: canonical })
+            }
+        )
+
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => ({})) as {
+                detail?: { message?: string } | string
+            }
+            const errorMessage = typeof errorData.detail === 'string'
+                ? errorData.detail
+                : (errorData.detail as { message?: string })?.message
+                || `API error: ${response.status}`
+            console.warn('[Voice] Failed to ensure agent overrides (non-fatal)', {
+                agentId,
+                status: response.status,
+                errorMessage
+            })
+            overridesEnsuredAgents.delete(agentId)
+            return
+        }
+
+        console.log('[Voice] Reconciled platform_settings.overrides on agent', { agentId })
+    } catch (error) {
+        console.warn('[Voice] Error reconciling agent overrides (non-fatal)', {
+            agentId,
+            error: error instanceof Error ? error.message : String(error)
+        })
+        overridesEnsuredAgents.delete(agentId)
+    }
 }
 
 function parseVoiceAgentMap(): Record<string, string> {
@@ -157,12 +221,18 @@ async function getOrCreateAgentIdForVoice(apiKey: string, voiceId?: string): Pro
 
     if (agentId) {
         console.log('[Voice] Found existing agent:', agentId)
+        // Existing agents may predate the platform_settings.overrides we declare
+        // in buildVoiceAgentConfig() — reconcile so client overrides are accepted.
+        await ensureAgentOverrides(apiKey, agentId)
     } else {
         // Create new agent
         console.log('[Voice] No existing agent found, creating new one...')
         agentId = await createNamedHapiAgent(apiKey, agentName, voiceId)
         if (agentId) {
             console.log('[Voice] Created new agent:', agentId)
+            // Newly-created agents already carry the canonical overrides, but
+            // mark as ensured so we don't re-PATCH on every token request.
+            overridesEnsuredAgents.add(agentId)
         }
     }
 
@@ -177,14 +247,11 @@ async function getOrCreateAgentIdForVoice(apiKey: string, voiceId?: string): Pro
 export function createVoiceRoutes(): Hono<WebAppEnv> {
     const app = new Hono<WebAppEnv>()
 
-    // Return the configured voice backend type
+    // Hub default backend + all backends with credentials configured
     app.get('/voice/backend', (c) => {
-        const raw = process.env.VOICE_BACKEND
-        const backend: VoiceBackendType =
-            raw === 'gemini-live' ? 'gemini-live'
-            : raw === 'qwen-realtime' ? 'qwen-realtime'
-            : DEFAULT_VOICE_BACKEND
-        return c.json({ backend })
+        const backends = listConfiguredVoiceBackends(process.env)
+        const backend = resolveHubVoiceBackend(process.env)
+        return c.json({ backend, backends })
     })
 
     // Get Gemini API key for Gemini Live voice sessions
@@ -285,6 +352,11 @@ export function createVoiceRoutes(): Hono<WebAppEnv> {
                 error: 'Failed to create ElevenLabs agent automatically'
             }, 500)
         }
+
+        // Operator-supplied agent ids (env ELEVENLABS_AGENT_ID, ELEVENLABS_VOICE_AGENT_MAP,
+        // customAgentId) won't have been routed through ensureAgentOverrides above —
+        // reconcile here so the client overrides payload is always accepted.
+        await ensureAgentOverrides(apiKey, agentId)
 
         try {
             console.log('[Voice][Token] Requesting ElevenLabs conversation token', {
