@@ -1,6 +1,7 @@
 import * as React from 'react'
 import * as DialogPrimitive from '@radix-ui/react-dialog'
 import { cn } from '@/lib/utils'
+import { CloseIcon } from '@/components/icons'
 
 export const Dialog = DialogPrimitive.Root
 export const DialogTrigger = DialogPrimitive.Trigger
@@ -8,7 +9,7 @@ export const DialogTrigger = DialogPrimitive.Trigger
 export const DialogContent = React.forwardRef<
     HTMLDivElement,
     React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content>
->(({ className, ...props }, ref) => (
+>(({ className, children, ...props }, ref) => (
     <DialogPrimitive.Portal>
         <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/50" />
         <DialogPrimitive.Content
@@ -18,7 +19,15 @@ export const DialogContent = React.forwardRef<
                 className
             )}
             {...props}
-        />
+        >
+            {children}
+            <DialogPrimitive.Close
+                className="absolute right-3 top-3 flex h-8 w-8 items-center justify-center rounded-full text-[var(--app-hint)] transition-colors hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]"
+                aria-label="Close"
+            >
+                <CloseIcon className="h-4 w-4" />
+            </DialogPrimitive.Close>
+        </DialogPrimitive.Content>
     </DialogPrimitive.Portal>
 ))
 DialogContent.displayName = 'DialogContent'
