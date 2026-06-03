@@ -172,6 +172,7 @@ export interface VoiceAgentConfig {
                     similarity_boost?: boolean
                     style?: boolean
                     speed?: boolean
+                    use_speaker_boost?: boolean
                 }
             }
         }
@@ -223,7 +224,8 @@ export function buildVoiceAgentConfig(): VoiceAgentConfig {
                         stability: true,
                         similarity_boost: true,
                         style: true,
-                        speed: true
+                        speed: true,
+                        use_speaker_boost: true
                     }
                 }
             }
