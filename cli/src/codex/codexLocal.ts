@@ -35,6 +35,7 @@ export async function codexLocal(opts: {
     path: string;
     model?: string;
     modelReasoningEffort?: ReasoningEffort;
+    serviceTier?: string | null;
     sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access';
     onSessionFound: (id: string) => void;
     codexArgs?: string[];
@@ -57,6 +58,10 @@ export async function codexLocal(opts: {
 
     if (opts.modelReasoningEffort) {
         args.push(...buildModelReasoningEffortConfigArgs(opts.modelReasoningEffort));
+    }
+
+    if (opts.serviceTier) {
+        args.push('--service-tier', opts.serviceTier);
     }
 
     if (opts.sandbox) {

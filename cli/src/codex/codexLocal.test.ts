@@ -130,4 +130,24 @@ describe('codexLocal', () => {
         expect(spawnOptions.args).toContain('model_reasoning_effort="high"');
         expect(spawnOptions.args).not.toContain('--model-reasoning-effort');
     });
+
+    it('passes service tier through to Codex CLI', async () => {
+        const controller = new AbortController();
+
+        await codexLocal({
+            abort: controller.signal,
+            sessionId: null,
+            path: workspacePath,
+            serviceTier: 'priority',
+            onSessionFound: vi.fn()
+        });
+
+        expect(spawnWithTerminalGuardMock).toHaveBeenCalledOnce();
+        const spawnOptions = spawnWithTerminalGuardMock.mock.calls[0][0] as {
+            args: string[];
+        };
+
+        expect(spawnOptions.args).toContain('--service-tier');
+        expect(spawnOptions.args).toContain('priority');
+    });
 });
