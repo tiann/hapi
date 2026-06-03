@@ -10,14 +10,33 @@ ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
 LEAK_CHECK="$ROOT/scripts/tooling/check-operator-leaks.sh"
 
+# Always-private paths (operator infra, internal docs, persona).
 FORBIDDEN_PATH_RE='^(docs/operator/|docs/plans/|localdocs/|web/public/xr-poc/|\.cursor/rules/operator|AGENTS\.local\.md)'
+
+# Fork-private feature paths: blocked on upstream-PR-bound branches, allowed on
+# our private daily refs (driver/* and garden/*). Garden lives in daily web but
+# must not accidentally land in a PR aimed at tiann/hapi.
+FORK_PRIVATE_PATH_RE='^(web/src/garden/)'
+DAILY_REF_RE='^refs/heads/(driver/|garden/)'
 
 while read -r local_ref local_sha remote_ref remote_sha; do
   [[ -z "${local_ref:-}" || "$local_ref" == *'{'* ]] && continue
 
   if [[ "$remote_sha" =~ ^0+$ ]]; then
-    range="$local_sha"
-    files="$(git rev-list --objects "$local_sha" 2>/dev/null | git diff-tree --no-commit-id --name-only -r "$local_sha" 2>/dev/null || git ls-tree -r --name-only "$local_sha")"
+    # New branch on remote: diff against the closest known public base
+    # (origin/main or upstream/main) so we only scan NEW commits, not the
+    # entire tree (the old fallback to `git ls-tree -r` flagged files that
+    # were already on the public remote).
+    base="$(git merge-base "$local_sha" origin/main 2>/dev/null \
+            || git merge-base "$local_sha" upstream/main 2>/dev/null \
+            || true)"
+    if [[ -n "$base" ]]; then
+      range="${base}..${local_sha}"
+      files="$(git diff --name-only "$base" "$local_sha" 2>/dev/null || true)"
+    else
+      range="$local_sha"
+      files="$(git ls-tree -r --name-only "$local_sha")"
+    fi
   else
     range="${remote_sha}..${local_sha}"
     files="$(git diff --name-only "$remote_sha" "$local_sha" 2>/dev/null || true)"
@@ -32,6 +51,20 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     printf '%s\n' "$bad" | sed 's/^/    /' >&2
     echo "  Private docs stay local or use a different remote. Override: HAPI_SKIP_COMMIT_HOOKS=1" >&2
     exit 1
+  fi
+
+  # Garden is allowed on daily refs (driver/*, garden/*) but blocked elsewhere
+  # to keep upstream-PR branches free of fork-only feature code.
+  if ! [[ "${remote_ref:-}" =~ $DAILY_REF_RE ]]; then
+    bad_fork="$(printf '%s\n' "$files" | grep -E "$FORK_PRIVATE_PATH_RE" || true)"
+    if [[ -n "$bad_fork" ]]; then
+      echo "pre-push: refusing to push fork-private feature paths to non-daily ref ($remote_ref)" >&2
+      echo "  range: $range" >&2
+      printf '%s\n' "$bad_fork" | sed 's/^/    /' >&2
+      echo "  Garden lives in daily (driver/*, garden/*). Rebase your branch onto upstream/main." >&2
+      echo "  Override: HAPI_SKIP_COMMIT_HOOKS=1" >&2
+      exit 1
+    fi
   fi
 
   # Content scan on outgoing diff (persona / interior routes)
