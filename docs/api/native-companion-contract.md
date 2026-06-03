@@ -5,7 +5,7 @@
 
 ## Scope
 
-A companion implementing this contract is a **thin client to a remote hub**, not a hub-on-phone. It receives notifications and acts as a reply / approval surface for a hub running on a server the operator controls. It is not a substitute for `hapi-runner` running on Android via Termux.
+A companion implementing this contract is a **native client to the same hub the PWA talks to**, surfacing notifications and reply / approve actions on a phone or wearable. Hub topology is unchanged - the hub still runs on the operator's dev machine.
 
 ---
 
