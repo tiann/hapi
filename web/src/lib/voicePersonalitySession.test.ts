@@ -77,7 +77,7 @@ describe('buildElevenLabsSessionOverridesFromPrefs', () => {
         expect(capped).toContain('truncated')
     })
 
-    test('does not send use_speaker_boost in tts override', () => {
+    test('sends use_speaker_boost in tts override when set', () => {
         const overrides = buildElevenLabsSessionOverridesFromPrefs(
             {
                 ...DEFAULT_VOICE_PERSONALITY,
@@ -89,6 +89,6 @@ describe('buildElevenLabsSessionOverridesFromPrefs', () => {
             },
             { language: 'en' }
         )
-        expect(overrides.tts).not.toHaveProperty('use_speaker_boost')
+        expect(overrides.tts).toHaveProperty('use_speaker_boost', true)
     })
 })
