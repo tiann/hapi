@@ -8,6 +8,13 @@
  * `e2e`) so individual specs can isolate localStorage state simply by
  * navigating to a unique URL.
  *
+ * The fixture also exposes `window.__scratchlistE2E.setSessionId(id)`
+ * so a spec can switch sessions WITHOUT a full page reload — this
+ * reproduces the SessionChat pattern where the parent stays mounted
+ * across same-route navigation. Used by the regression test for the
+ * "stale entries leak from session A into session B" bug fixed in
+ * `SessionChat.tsx` by keying the host by `session.id`.
+ *
  * Promote callbacks are exposed on `window.__scratchlistE2E` so the
  * spec can assert that the right text reached `setText` (composer)
  * and `onSend` (queue) without involving the real composer / queue.
@@ -26,35 +33,35 @@ declare global {
             promotedToComposer: string[]
             promotedToQueue: string[]
             queueSendMode: 'success' | 'failure'
+            /** Whether the fixture's host wrapper applies `key={sessionId}`.
+             * Mirrors the SessionChat fix; toggle via `?key=0` to repro the
+             * pre-fix bug for red/green tests. Defaults to `true`. */
+            keyByedSessionId: boolean
+            setSessionId(id: string): void
             reset(): void
         }
     }
 }
 
-function getSessionId(): string {
+function getInitialSessionId(): string {
     const url = new URL(window.location.href)
     return url.searchParams.get('session') ?? 'e2e'
 }
 
-function App() {
-    const sessionId = React.useMemo(() => getSessionId(), [])
+function getKeyByedSessionId(): boolean {
+    const url = new URL(window.location.href)
+    const raw = url.searchParams.get('key')
+    if (raw === '0' || raw === 'false') return false
+    return true
+}
 
-    if (!window.__scratchlistE2E) {
-        window.__scratchlistE2E = {
-            sessionId,
-            promotedToComposer: [],
-            promotedToQueue: [],
-            queueSendMode: 'success',
-            reset() {
-                this.promotedToComposer = []
-                this.promotedToQueue = []
-                this.queueSendMode = 'success'
-            },
-        }
-    } else {
-        window.__scratchlistE2E.sessionId = sessionId
-    }
-
+/*
+ * Mirror of SessionChat's ScratchlistHost: a thin wrapper that owns
+ * the promote callbacks. The spec drives sessionId changes through
+ * the parent (App), while this host either keys by sessionId
+ * (production behaviour) or doesn't (pre-fix repro).
+ */
+function ScratchlistHost({ sessionId, keyed }: { sessionId: string; keyed: boolean }) {
     const handlePromoteToComposer = React.useCallback((text: string) => {
         window.__scratchlistE2E?.promotedToComposer.push(text)
     }, [])
@@ -70,12 +77,45 @@ function App() {
     }, [])
 
     return (
+        <ScratchlistPanel
+            key={keyed ? sessionId : undefined}
+            sessionId={sessionId}
+            onPromoteToComposer={handlePromoteToComposer}
+            onPromoteToQueue={handlePromoteToQueue}
+        />
+    )
+}
+
+function App() {
+    const [sessionId, setSessionId] = React.useState<string>(() => getInitialSessionId())
+    const keyed = React.useMemo(() => getKeyByedSessionId(), [])
+
+    React.useEffect(() => {
+        const harness: NonNullable<Window['__scratchlistE2E']> = {
+            sessionId,
+            promotedToComposer: [],
+            promotedToQueue: [],
+            queueSendMode: 'success',
+            keyByedSessionId: keyed,
+            setSessionId: (id: string) => setSessionId(id),
+            reset() {
+                this.promotedToComposer = []
+                this.promotedToQueue = []
+                this.queueSendMode = 'success'
+            },
+        }
+        window.__scratchlistE2E = harness
+    }, [keyed])
+
+    React.useEffect(() => {
+        if (window.__scratchlistE2E) {
+            window.__scratchlistE2E.sessionId = sessionId
+        }
+    }, [sessionId])
+
+    return (
         <I18nProvider>
-            <ScratchlistPanel
-                sessionId={sessionId}
-                onPromoteToComposer={handlePromoteToComposer}
-                onPromoteToQueue={handlePromoteToQueue}
-            />
+            <ScratchlistHost sessionId={sessionId} keyed={keyed} />
         </I18nProvider>
     )
 }

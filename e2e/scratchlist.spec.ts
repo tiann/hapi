@@ -219,7 +219,84 @@ test.describe('scratchlist e2e', () => {
         ).toBe('TEXTAREA')
     })
 
-    test('per-session isolation: switching sessions does not leak entries', async ({ page }) => {
+    test('regression: in-place sessionId change does not leak entries (host keyed by sessionId)', async ({ page }) => {
+        // Reproduces the bug flagged by the upstream PR review:
+        // ScratchlistPanel reads `sessionId` once via useState and
+        // rehydrates in useEffect. If a parent stays mounted across
+        // session changes (SessionChat does, on same-route nav), the
+        // persist effect for the stale entries fires under the new
+        // sessionId BEFORE the rehydrate effect's setEntries triggers a
+        // correction render. That race writes A's entries into B's
+        // localStorage, even though the second render then overwrites
+        // it with [] - leaving a transient bad write in storage that
+        // a tab/network race could observe.
+        //
+        // Reading localStorage AFTER the dust settles is too late: the
+        // bug write has already been overwritten by the correction
+        // write. We instead install a setItem spy BEFORE mount so every
+        // write during the session switch is recorded, then assert no
+        // write to the new sessionId's key contained the old session's
+        // entry text. This catches the race deterministically.
+        //
+        // The fix is `key={sessionId}` on ScratchlistHost in
+        // SessionChat.tsx (and the equivalent `keyed=true` path in
+        // this fixture). With the key, React unmounts/remounts on
+        // session change, so the new mount reads B's storage from
+        // scratch and never touches B's key with A's data.
+        await page.addInitScript(() => {
+            const writes: { key: string; value: string }[] = []
+            const orig = window.localStorage.setItem.bind(window.localStorage)
+            window.localStorage.setItem = (k: string, v: string) => {
+                writes.push({ key: String(k), value: String(v) })
+                return orig(k, v)
+            }
+            ;(window as unknown as { __lsWrites: typeof writes }).__lsWrites = writes
+        })
+
+        await page.goto(`/e2e-fixtures/scratchlist-fixture.html?session=leak-A`)
+        await expect(page.getByTestId('scratchlist-panel')).toBeVisible()
+        await expandPanel(page)
+        await addEntry(page, 'A-only entry')
+        await expect(page.getByText('A-only entry')).toBeVisible()
+
+        // Clear the recorded writes from the setup phase so the
+        // assertion below only inspects writes that happened DURING
+        // the session switch.
+        await page.evaluate(() => {
+            ;(window as unknown as { __lsWrites: { key: string; value: string }[] }).__lsWrites.length = 0
+        })
+
+        // Switch sessionId in-place WITHOUT reloading the parent.
+        await page.evaluate(() => window.__scratchlistE2E!.setSessionId('leak-B'))
+
+        // Wait for the dust to settle (effects + re-render).
+        await expect(page.getByRole('button', { name: 'Scratchlist' })).toHaveAttribute(
+            'aria-expanded',
+            'false'
+        )
+
+        // No write to leak-B's storage key should contain A's entry.
+        const writes = await page.evaluate(
+            () => (window as unknown as { __lsWrites: { key: string; value: string }[] }).__lsWrites.slice()
+        )
+        const leakBKey = 'hapi.scratchlist.v1.leak-B'
+        const corruptingWrite = writes.find(
+            (w) => w.key === leakBKey && w.value.includes('A-only entry')
+        )
+        expect(corruptingWrite, `found corrupting write to ${leakBKey}: ${JSON.stringify(corruptingWrite)}`).toBeUndefined()
+
+        // Final state assertions: leak-B is empty, leak-A retains its
+        // entry on round-trip back.
+        await expandPanel(page)
+        await expect(page.getByText('empty', { exact: true })).toBeVisible()
+        await expect(page.getByText('A-only entry')).toHaveCount(0)
+
+        await page.evaluate(() => window.__scratchlistE2E!.setSessionId('leak-A'))
+        await expandPanel(page)
+        await expect(page.getByText('A-only entry')).toBeVisible()
+    })
+
+    test('per-session isolation: full reload across sessions does not leak entries', async ({ page }) => {
         await gotoFixture(page, 'session-a')
         await expandPanel(page)
         await addEntry(page, 'Note for session A')

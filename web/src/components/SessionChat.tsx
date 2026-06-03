@@ -636,7 +636,21 @@ export function SessionChat(props: {
                     ) : null}
 
                     <div className="px-3">
+                        {/*
+                         * Key by session id so React unmounts/remounts when
+                         * the operator switches sessions without remounting
+                         * SessionChat (e.g. same-route navigation A -> B).
+                         * Without this, ScratchlistPanel's useState
+                         * initializer reads sessionId once at mount; the
+                         * useEffect rehydrate then races against the persist
+                         * effect, briefly rendering A's entries under B and
+                         * writing them into B's localStorage before
+                         * correcting. Keying makes the first render for B
+                         * read B's storage directly. Cleaner than chasing
+                         * the race inside the panel.
+                         */}
                         <ScratchlistHost
+                            key={props.session.id}
                             sessionId={props.session.id}
                             onSend={props.onSend}
                         />
