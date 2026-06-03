@@ -107,8 +107,8 @@ vi.mock('@/lib/languages', () => ({
 const { mockFetchVoices, mockFetchVoiceBackend, mockApi } = vi.hoisted(() => {
     const mockFetchVoices = vi.fn(() => Promise.resolve<unknown[]>([]))
     const mockFetchVoiceBackend = vi.fn(() => Promise.resolve({
-        backend: 'elevenlabs' as const,
-        backends: ['elevenlabs' as const]
+        backend: 'elevenlabs' as 'elevenlabs' | 'gemini-live' | 'qwen-realtime',
+        backends: ['elevenlabs'] as Array<'elevenlabs' | 'gemini-live' | 'qwen-realtime'>
     }))
     const mockApi = {
         fetchVoices: vi.fn(() => Promise.resolve({ voices: [] })),

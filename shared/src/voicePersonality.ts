@@ -190,7 +190,8 @@ export function resolveVoiceSystemPrompt(
 }
 
 export function isDefaultVoicePersonality(prefs: VoicePersonalityPreferences): boolean {
-    return !prefs.identity.trim()
+    return (prefs.preset ?? 'balanced') === 'balanced'
+        && !prefs.identity.trim()
         && !prefs.character.trim()
         && !prefs.systemPrompt.trim()
         && (prefs.responseLength ?? 'balanced') === 'balanced'
