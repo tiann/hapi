@@ -33,7 +33,9 @@ export const DialogContent = React.forwardRef<
 DialogContent.displayName = 'DialogContent'
 
 export const DialogHeader = ({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) => (
-    <div className={cn('flex flex-col space-y-1.5 text-center sm:text-left', className)} {...props} />
+    // pr-12 reserves space for the absolutely-positioned close button (top-right)
+    // so long/breaking titles don't wrap underneath the tap target.
+    <div className={cn('flex flex-col space-y-1.5 pr-12 text-center sm:text-left', className)} {...props} />
 )
 
 export const DialogTitle = React.forwardRef<
