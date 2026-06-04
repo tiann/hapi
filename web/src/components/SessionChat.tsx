@@ -65,6 +65,31 @@ export function shouldAutoClearPendingSchedule(pending: PendingSchedule | null):
     return pending !== null && pending.type === 'absolute'
 }
 
+/**
+ * Decide whether a submit should be routed to the per-session scratchlist
+ * or to the regular chat send. Scratchlist entries are pure text - they
+ * don't carry attachments or schedules - so any submit that includes
+ * either of those MUST fall through to the normal chat path even if the
+ * scratchlist toggle is on. Otherwise the wrapper would silently drop
+ * attachments / scheduled-send metadata while telling the composer the
+ * submission succeeded (which then clears the composer state, losing
+ * the user's data).
+ *
+ * Per upstream review on PR #798 (github-actions[bot] [Major]).
+ *
+ * Pure / exported so it can be unit tested without mounting SessionChat.
+ */
+export function shouldRouteToScratchlist(
+    scratchlistMode: boolean,
+    attachments: AttachmentMetadata[] | undefined,
+    scheduledAt: number | null | undefined,
+): boolean {
+    if (!scratchlistMode) return false
+    if (attachments && attachments.length > 0) return false
+    if (scheduledAt != null) return false
+    return true
+}
+
 function isUninvokedScheduledMessage(message: DecryptedMessage): boolean {
     return message.invokedAt == null && message.scheduledAt != null
 }
@@ -195,15 +220,22 @@ export function SessionChat(props: {
         setScratchlistMode((m) => !m)
     }, [])
     /**
-     * onSend wrapper: when scratchlist mode is on, the operator's submit
-     * is treated as "add to scratchlist" instead of "send to chat". The
-     * composer (HappyComposer) uses the boolean return value to decide
-     * whether to clear text/attachments/schedule, so we resolve true on
-     * a successful add - the operator's text gets cleared and they can
-     * keep adding entries while sticky-mode is on.
+     * onSend wrapper: when scratchlist mode is on AND the submission is
+     * pure text (no attachments, no scheduledAt), the operator's submit
+     * is treated as "add to scratchlist" instead of "send to chat".
      *
-     * If add() returns false (empty after trim, at-cap), we resolve
-     * false so the composer keeps its text and the operator can fix it.
+     * If the submission carries attachments or a scheduledAt value,
+     * scratchlist can't represent it (entries are text-only), so we
+     * fall through to the normal chat send. Silently dropping
+     * attachments / schedule while reporting success to the composer
+     * caused PR #798 review's [Major] data-loss finding.
+     *
+     * The composer (HappyComposer) uses the boolean return value to
+     * decide whether to clear text/attachments/schedule, so we resolve
+     * true on a successful add - the operator's text gets cleared and
+     * they can keep adding entries while sticky-mode is on. If add()
+     * returns false (empty after trim, at-cap), we resolve false so
+     * the composer keeps its text and the operator can fix it.
      */
     const onSendForComposer = useCallback(
         async (
@@ -211,11 +243,7 @@ export function SessionChat(props: {
             attachments?: AttachmentMetadata[],
             scheduledAt?: number | null,
         ): Promise<boolean> => {
-            if (scratchlistMode) {
-                // Scratchlist doesn't support attachments or scheduled-send
-                // semantics - silently ignore those parts of the submission.
-                // If the operator wanted that flow, they shouldn't be in
-                // scratchlist mode.
+            if (shouldRouteToScratchlist(scratchlistMode, attachments, scheduledAt)) {
                 return scratchlist.add(text)
             }
             return props.onSend(text, attachments, scheduledAt)

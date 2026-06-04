@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { buildGoalStateMessages, shouldAutoClearPendingSchedule } from './SessionChat'
+import {
+    buildGoalStateMessages,
+    shouldAutoClearPendingSchedule,
+    shouldRouteToScratchlist,
+} from './SessionChat'
 import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
-import type { DecryptedMessage } from '@/types/api'
+import type { AttachmentMetadata, DecryptedMessage } from '@/types/api'
 
 function userMessage(props: {
     id: string
@@ -64,6 +68,53 @@ describe('shouldAutoClearPendingSchedule', () => {
     it('returns true for expired absolute schedule (ms in the past)', () => {
         const expired: PendingSchedule = { type: 'absolute', ms: Date.now() - 1000 }
         expect(shouldAutoClearPendingSchedule(expired)).toBe(true)
+    })
+})
+
+/**
+ * Unit tests for shouldRouteToScratchlist.
+ *
+ * Regression cover for upstream review on PR #798 (github-actions[bot]
+ * [Major]): scratchlist-mode submissions used to silently drop
+ * attachments and scheduledAt because the wrapper short-circuited to
+ * scratchlist.add(text) regardless of payload. The fix is to fall
+ * through to the regular chat send whenever the submission can't be
+ * represented as a pure-text scratchlist entry.
+ */
+describe('shouldRouteToScratchlist', () => {
+    function attachment(): AttachmentMetadata {
+        return {
+            id: 'attach-1',
+            kind: 'image',
+            mimeType: 'image/png',
+            sizeBytes: 1024,
+        } as AttachmentMetadata
+    }
+
+    it('returns false when scratchlist mode is off, regardless of payload', () => {
+        expect(shouldRouteToScratchlist(false, undefined, null)).toBe(false)
+        expect(shouldRouteToScratchlist(false, [attachment()], null)).toBe(false)
+        expect(shouldRouteToScratchlist(false, undefined, Date.now() + 60_000)).toBe(false)
+    })
+
+    it('returns true when scratchlist mode is on and the payload is pure text', () => {
+        expect(shouldRouteToScratchlist(true, undefined, null)).toBe(true)
+        expect(shouldRouteToScratchlist(true, undefined, undefined)).toBe(true)
+        expect(shouldRouteToScratchlist(true, [], null)).toBe(true)
+    })
+
+    it('returns false when scratchlist mode is on but attachments are present', () => {
+        expect(shouldRouteToScratchlist(true, [attachment()], null)).toBe(false)
+        expect(shouldRouteToScratchlist(true, [attachment(), attachment()], null)).toBe(false)
+    })
+
+    it('returns false when scratchlist mode is on but a scheduled-send is set', () => {
+        expect(shouldRouteToScratchlist(true, undefined, Date.now() + 60_000)).toBe(false)
+        expect(shouldRouteToScratchlist(true, [], 0)).toBe(false)
+    })
+
+    it('returns false when both attachments and scheduledAt are set', () => {
+        expect(shouldRouteToScratchlist(true, [attachment()], Date.now() + 60_000)).toBe(false)
     })
 })
 
