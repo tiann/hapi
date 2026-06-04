@@ -68,7 +68,7 @@ hapi-use-driver
 
 ```bash
 hapi-driver-rebuild                 # merge from manifest
-hapi-driver-rebuild --build-web     # also build web/dist
+hapi-driver-rebuild --build-web     # also build web/dist (atomic swap, agent-safe)
 hapi-driver-rebuild --verify        # typecheck + test
 hapi-driver-rebuild --activate      # calls hapi-use-worktree (hub + runner; prompts)
 ```
@@ -78,6 +78,36 @@ hapi-driver-rebuild --activate      # calls hapi-use-worktree (hub + runner; pro
 ```bash
 hapi-use-driver   # restarts hapi-hub + hapi-runner together
 ```
+
+### Atomic web swap (no 503 / blank-shell window)
+
+`--build-web` is **agent-safe by default**. The hub serves web/dist from disk on :3006 — naive `vite build` empties dist before writing, leaving a multi-second window where any browser reload returns a blank shell and live agent sessions get nudged out-of-band.
+
+The rebuild script instead:
+
+1. builds into `web/dist.next/` (sibling, untouched while building)
+2. sanity-checks `dist.next/index.html` exists
+3. renames the current `web/dist/` → `web/dist.prev/` (atomic)
+4. renames `web/dist.next/` → `web/dist/` (atomic)
+
+The window where `web/dist/` is absent shrinks to the gap between two `rename(2)` calls — well below TCP retry granularity. Live sessions on :3006 are unaffected; nobody has to coordinate a refresh.
+
+**Web-only fix to live `:3006` while sessions are working:**
+
+```bash
+hapi-driver-rebuild --build-web   # merge manifest + atomic swap; hub keeps running
+# Hard-reload one browser to confirm the new bundle, then announce.
+```
+
+No `hapi-use-driver` needed unless `hub/` or `cli/` changed.
+
+**Cheap rollback** if the new bundle is broken:
+
+```bash
+hapi-driver-rollback-web          # promotes web/dist.prev back to live
+```
+
+`dist.prev` only holds the **most recent** prior build (each rebuild rotates it). For deeper rollback, re-run `hapi-driver-rebuild` against an earlier manifest.
 
 ### When upstream moves
 
@@ -134,7 +164,8 @@ Garden shared mode (`garden-web.service` → `:5174` → API `:3006`) always tal
 
 | Command | Purpose |
 |---------|---------|
-| `hapi-driver-rebuild` | Rebuild soup from manifest |
+| `hapi-driver-rebuild` | Rebuild soup from manifest (`--build-web` swaps atomically — agent-safe) |
+| `hapi-driver-rollback-web` | Promote `web/dist.prev` back to live (no hub restart) |
 | `hapi-worktree-create` | New PR worktree (+ merge train) |
 | `hapi-use-worktree <path> [--impatient]` | **Patient by default** — drain WORKING sessions, swing `hapi-active`, prep DB, restart hub + runner |
 | `hapi-use-driver` | Swing to daily driver soup (inherits patient default) |
