@@ -89,6 +89,12 @@ export function HappyComposer(props: {
     pendingSchedule?: PendingSchedule | null
     onSchedule?: (pending: PendingSchedule) => void
     onClearSchedule?: () => void
+    // Scratchlist drawer props - SessionChat owns the state. Threaded
+    // straight through to ComposerButtons. When undefined, the toggle
+    // button doesn't render (back-compat for any other consumer).
+    scratchlistMode?: boolean
+    scratchlistCount?: number
+    onScratchlistToggle?: () => void
 }) {
     const { t } = useTranslation()
     const {
@@ -941,6 +947,9 @@ export function HappyComposer(props: {
                             onSchedule={setPendingSchedule}
                             onClearSchedule={isControlled ? onClearScheduleProp : () => setPendingScheduleLocal(null)}
                             hasAttachments={hasAttachments}
+                            scratchlistMode={props.scratchlistMode}
+                            scratchlistCount={props.scratchlistCount}
+                            onScratchlistToggle={props.onScratchlistToggle}
                         />
                     </div>
                 </ComposerPrimitive.Root>

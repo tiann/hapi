@@ -24,7 +24,8 @@ import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePic
 import { resolvePendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
 import { HappyThread } from '@/components/AssistantChat/HappyThread'
 import { QueuedMessagesBar } from '@/components/AssistantChat/QueuedMessagesBar'
-import { ScratchlistPanel } from '@/components/AssistantChat/ScratchlistPanel'
+import { ScratchlistDrawer } from '@/components/AssistantChat/ScratchlistPanel'
+import { useScratchlist } from '@/lib/use-scratchlist'
 import { useHappyRuntime } from '@/lib/assistant-runtime'
 import { createAttachmentAdapter } from '@/lib/attachmentAdapter'
 import { useTranslation } from '@/lib/use-translation'
@@ -69,16 +70,21 @@ function isUninvokedScheduledMessage(message: DecryptedMessage): boolean {
 }
 
 /**
- * Mounts the per-session scratchlist (issue #11) inside the AssistantUI
- * runtime so promote-to-composer can call `composer().setText(...)`.
- * Promote-to-queue routes to the same `onSend` path as a normal composer
- * send, so a promoted entry shows up immediately in `QueuedMessagesBar`.
+ * Mounts the per-session scratchlist DRAWER (composer-controlled).
+ *
+ * The drawer renders only when the operator toggles into "scratchlist
+ * mode" via the notepad icon in the composer toolbar. While in that mode:
+ * - drawer (this component) is visible above the composer
+ * - composer's send button repaints amber (handled in ComposerButtons)
+ * - SessionChat's wrapped onSend routes adds into the scratchlist
+ *
+ * Entries state is owned by SessionChat's useScratchlist() so the
+ * composer-toolbar counter and the drawer share one source of truth.
  */
-function ScratchlistHost({
-    sessionId,
-    onSend,
-}: {
-    sessionId: string
+function ScratchlistDrawerHost(props: {
+    entries: ReturnType<typeof useScratchlist>['entries']
+    onMove: ReturnType<typeof useScratchlist>['move']
+    onDelete: ReturnType<typeof useScratchlist>['remove']
     onSend: (text: string, attachments?: AttachmentMetadata[], scheduledAt?: number | null) => Promise<boolean>
 }) {
     const assistantApi = useAssistantApi()
@@ -86,11 +92,13 @@ function ScratchlistHost({
         assistantApi.composer().setText(text)
     }, [assistantApi])
     const handlePromoteToQueue = useCallback(async (text: string) => {
-        return await onSend(text)
-    }, [onSend])
+        return await props.onSend(text)
+    }, [props.onSend])
     return (
-        <ScratchlistPanel
-            sessionId={sessionId}
+        <ScratchlistDrawer
+            entries={props.entries}
+            onMove={props.onMove}
+            onDelete={props.onDelete}
             onPromoteToComposer={handlePromoteToComposer}
             onPromoteToQueue={handlePromoteToQueue}
         />
@@ -177,6 +185,43 @@ export function SessionChat(props: {
     const [outlineOpen, setOutlineOpen] = useState(false)
     const [cursorSelectedBase, setCursorSelectedBase] = useState('auto')
     const lastSyncedCursorModelRef = useRef<string | null | undefined>(undefined)
+    const scratchlist = useScratchlist(props.session.id)
+    const [scratchlistMode, setScratchlistMode] = useState(false)
+    // Reset scratchlist mode when switching sessions - mode is per-session
+    // intent, not global. (Entries are already keyed by session inside the
+    // hook, so they reset on their own.)
+    useEffect(() => { setScratchlistMode(false) }, [props.session.id])
+    const handleScratchlistToggle = useCallback(() => {
+        setScratchlistMode((m) => !m)
+    }, [])
+    /**
+     * onSend wrapper: when scratchlist mode is on, the operator's submit
+     * is treated as "add to scratchlist" instead of "send to chat". The
+     * composer (HappyComposer) uses the boolean return value to decide
+     * whether to clear text/attachments/schedule, so we resolve true on
+     * a successful add - the operator's text gets cleared and they can
+     * keep adding entries while sticky-mode is on.
+     *
+     * If add() returns false (empty after trim, at-cap), we resolve
+     * false so the composer keeps its text and the operator can fix it.
+     */
+    const onSendForComposer = useCallback(
+        async (
+            text: string,
+            attachments?: AttachmentMetadata[],
+            scheduledAt?: number | null,
+        ): Promise<boolean> => {
+            if (scratchlistMode) {
+                // Scratchlist doesn't support attachments or scheduled-send
+                // semantics - silently ignore those parts of the submission.
+                // If the operator wanted that flow, they shouldn't be in
+                // scratchlist mode.
+                return scratchlist.add(text)
+            }
+            return props.onSend(text, attachments, scheduledAt)
+        },
+        [props.onSend, scratchlist, scratchlistMode],
+    )
     const agentFlavor = props.session.metadata?.flavor ?? null
     const controlledByUser = props.session.agentState?.controlledByUser === true
     const codexCollaborationModeSupported = agentFlavor === 'codex' && !controlledByUser
@@ -671,15 +716,26 @@ export function SessionChat(props: {
     }, [pendingSchedule])
 
     const handleSend = useCallback(async (text: string, attachments?: AttachmentMetadata[], scheduledAt?: number | null) => {
-        const accepted = await props.onSend(text, attachments, scheduledAt)
+        // Route through the scratchlist-aware wrapper. When scratchlistMode
+        // is on, this turns into addScratchlistEntry; otherwise it goes to
+        // props.onSend (the chat send path). The wrapper resolves true on
+        // success either way so the composer-clear / scroll dance below
+        // still applies (we want the composer cleared after a scratchlist
+        // add too - mode is sticky, not the input).
+        const accepted = await onSendForComposer(text, attachments, scheduledAt)
         if (!accepted) return
-        // Clear pendingSchedule only after the mutation is actually accepted —
-        // covers both pre-mutation guards AND async inactive-session resume
-        // failure. SessionChat is the single owner of schedule clear (HappyComposer
-        // no longer clears on its own send path).
-        setPendingSchedule(null)
-        setForceScrollToken((token) => token + 1)
-    }, [props.onSend])
+        if (!scratchlistMode) {
+            // Clear pendingSchedule only after the mutation is actually accepted —
+            // covers both pre-mutation guards AND async inactive-session resume
+            // failure. SessionChat is the single owner of schedule clear (HappyComposer
+            // no longer clears on its own send path).
+            // Schedule clear / forced scroll only matter for chat sends.
+            // Scratchlist adds don't have a schedule and shouldn't move
+            // the chat viewport.
+            setPendingSchedule(null)
+            setForceScrollToken((token) => token + 1)
+        }
+    }, [onSendForComposer, scratchlistMode])
 
     const attachmentAdapter = useMemo(() => {
         if (!props.session.active) {
@@ -763,23 +819,20 @@ export function SessionChat(props: {
 
                     <div className="px-3">
                         {/*
-                         * Key by session id so React unmounts/remounts when
-                         * the operator switches sessions without remounting
-                         * SessionChat (e.g. same-route navigation A -> B).
-                         * Without this, ScratchlistPanel's useState
-                         * initializer reads sessionId once at mount; the
-                         * useEffect rehydrate then races against the persist
-                         * effect, briefly rendering A's entries under B and
-                         * writing them into B's localStorage before
-                         * correcting. Keying makes the first render for B
-                         * read B's storage directly. Cleaner than chasing
-                         * the race inside the panel.
+                         * Scratchlist drawer - composer-controlled. Only
+                         * mounted when the operator clicks the notepad icon
+                         * in the composer toolbar. State lives in the
+                         * useScratchlist hook above (so the toolbar counter
+                         * and the drawer share one source of truth).
                          */}
-                        <ScratchlistHost
-                            key={props.session.id}
-                            sessionId={props.session.id}
-                            onSend={props.onSend}
-                        />
+                        {scratchlistMode ? (
+                            <ScratchlistDrawerHost
+                                entries={scratchlist.entries}
+                                onMove={scratchlist.move}
+                                onDelete={scratchlist.remove}
+                                onSend={props.onSend}
+                            />
+                        ) : null}
                         <QueuedMessagesBar
                             sessionId={props.session.id}
                             api={props.api}
@@ -886,6 +939,9 @@ export function SessionChat(props: {
                         voiceMicMuted={voice?.micMuted}
                         onVoiceToggle={voice && voiceBackendReady ? handleVoiceToggle : undefined}
                         onVoiceMicToggle={voice && voiceBackendReady ? handleVoiceMicToggle : undefined}
+                        scratchlistMode={scratchlistMode}
+                        scratchlistCount={scratchlist.entries.length}
+                        onScratchlistToggle={handleScratchlistToggle}
                     />
                 </div>
             </AssistantRuntimeProvider>
