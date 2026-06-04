@@ -34,10 +34,17 @@ import type { MarkdownTextPrimitiveProps } from '@assistant-ui/react-markdown'
 // from them. Both must come before remarkMath (to avoid treating TeX as URI).
 // remarkFilePathLinks runs last to convert file paths → links after all other
 // transforms have settled.
+//
+// remarkMath is configured with `singleDollarTextMath: false` so that prose
+// containing currency amounts (e.g. "$200/mo ... $80 bill") is not garbled
+// into KaTeX output. Block math `$$...$$` (on its own line) still works.
+// This matches GitHub-flavored markdown behavior. The option lives on the
+// shared TAIL so both MARKDOWN_PLUGINS (default) and MARKDOWN_PLUGINS_WITH_BREAKS
+// (user-prompt rendering with hard breaks) inherit the fix.
 const MARKDOWN_PLUGIN_TAIL = [
     remarkNonHttpsAutolink,
     remarkStripCjkAutolink,
-    remarkMath,
+    [remarkMath, { singleDollarTextMath: false }],
     remarkDisableIndentedCode,
     remarkFilePathLinks,        // upstream — file path → link conversion, runs last
 ] satisfies NonNullable<MarkdownTextPrimitiveProps['remarkPlugins']>
